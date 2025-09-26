@@ -531,26 +531,47 @@ def export_outliers_csv(path: str, threshold: float, supabase_client: Client):
 
     outlier_post_ids = [row["post_id"] for row in outliers_result.data]
 
-    # Get post details for outliers
-    posts_result = supabase_client.table("posts").select("post_url, post_id, account_id").in_("id", outlier_post_ids).execute()
+    # Get post details for outliers with views
+    posts_result = supabase_client.table("posts").select("id, post_url, post_id, account_id, views").in_("id", outlier_post_ids).execute()
 
-    # Get account handles
+    # Get account handles and summaries
     account_ids = list(set([p["account_id"] for p in posts_result.data]))
     accounts_result = supabase_client.table("accounts").select("id, handle").in_("id", account_ids).execute()
+    summaries_result = supabase_client.table("account_summaries").select("account_id, trimmed_mean_views, trimmed_sd_views").in_("account_id", account_ids).execute()
 
-    # Create account mapping
+    # Create mappings
     account_map = {a["id"]: a["handle"] for a in accounts_result.data}
+    summaries_map = {s["account_id"]: s for s in summaries_result.data}
 
-    # Combine data
+    # Combine data with statistics
     export_data = []
     for post in posts_result.data:
+        account_id = post["account_id"]
+        views = post["views"] or 0
+        summary = summaries_map.get(account_id, {})
+
+        trimmed_mean = float(summary.get("trimmed_mean_views", 0))
+        trimmed_sd = float(summary.get("trimmed_sd_views", 1))
+
+        # Calculate how many standard deviations away from mean
+        if trimmed_sd > 0:
+            sd_away = (views - trimmed_mean) / trimmed_sd
+        else:
+            sd_away = 0
+
         export_data.append({
             "post_url": post["post_url"],
-            "account": account_map.get(post["account_id"], "unknown"),
-            "post_id": post["post_id"]
+            "account": account_map.get(account_id, "unknown"),
+            "post_id": post["post_id"],
+            "views": views,
+            "trimmed_mean_views": round(trimmed_mean, 0),
+            "standard_deviations_away": round(sd_away, 2)
         })
 
     if export_data:
+        # Sort by standard deviations away (highest first)
+        export_data.sort(key=lambda x: x["standard_deviations_away"], reverse=True)
+
         df = pd.DataFrame(export_data)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         df.to_csv(path, index=False)
@@ -575,30 +596,49 @@ def export_review_csv(path: str, supabase_client: Client):
         logger.warning("No posts found for review export")
         return
 
-    # Get all accounts
+    # Get all accounts and summaries
     account_ids = list(set([p["account_id"] for p in posts_result.data]))
     accounts_result = supabase_client.table("accounts").select("id, handle").in_("id", account_ids).execute()
+    summaries_result = supabase_client.table("account_summaries").select("account_id, trimmed_mean_views, trimmed_sd_views").in_("account_id", account_ids).execute()
+
+    # Create mappings
     account_map = {a["id"]: a["handle"] for a in accounts_result.data}
+    summaries_map = {s["account_id"]: s for s in summaries_result.data}
 
     # Get all reviews
     post_ids = [p["id"] for p in posts_result.data]
     reviews_result = supabase_client.table("post_review").select("*").in_("post_id", post_ids).execute()
     reviews_map = {r["post_id"]: r for r in reviews_result.data}
 
-    # Combine data
+    # Combine data with statistics
     export_data = []
     for post in posts_result.data:
         review = reviews_map.get(post["id"], {})
+        account_id = post["account_id"]
+        views = post["views"] or 0
+        summary = summaries_map.get(account_id, {})
+
+        trimmed_mean = float(summary.get("trimmed_mean_views", 0))
+        trimmed_sd = float(summary.get("trimmed_sd_views", 1))
+
+        # Calculate how many standard deviations away from mean
+        if trimmed_sd > 0:
+            sd_away = (views - trimmed_mean) / trimmed_sd
+        else:
+            sd_away = 0
+
         export_data.append({
-            "account": account_map.get(post["account_id"], "unknown"),
+            "account": account_map.get(account_id, "unknown"),
             "post_url": post["post_url"],
             "posted_at": post["posted_at"],
-            "views": post["views"],
+            "views": views,
             "likes": post["likes"],
             "comments": post["comments"],
             "caption": post["caption"],
             "length_sec": post["length_sec"],
             "outlier": review.get("outlier", False),
+            "trimmed_mean_views": round(trimmed_mean, 0),
+            "standard_deviations_away": round(sd_away, 2),
             "keep": review.get("keep"),
             "reject_reason": review.get("reject_reason"),
             "reject_notes": review.get("reject_notes"),
@@ -606,8 +646,8 @@ def export_review_csv(path: str, supabase_client: Client):
         })
 
     df = pd.DataFrame(export_data)
-    # Sort by account and posted_at
-    df = df.sort_values(["account", "posted_at"], ascending=[True, False])
+    # Sort by standard deviations away (highest first), then account
+    df = df.sort_values(["standard_deviations_away", "account"], ascending=[False, True])
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     df.to_csv(path, index=False)
