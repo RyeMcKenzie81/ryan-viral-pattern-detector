@@ -327,6 +327,54 @@ APIFY_TIMEOUT_SECONDS=600
 - `trimmed_mean_views`, `trimmed_sd_views` (NUMERIC)
 - `last_updated` (TIMESTAMPTZ)
 
+## Export Features
+
+### Statistical Context in Exports
+
+All exports now include powerful statistical columns for better VA analysis:
+
+- **`trimmed_mean_views`** - Account baseline performance (p10-p90 trimmed mean)
+- **`standard_deviations_away`** - How viral this post is relative to the account's normal performance
+
+### Export Examples
+
+**Outliers Export** (`outliers_to_download_YYYY-MM-DD.csv`):
+```csv
+post_url,account,post_id,views,trimmed_mean_views,standard_deviations_away
+https://www.instagram.com/p/DORh7J3jpxn/,natgeo,DORh7J3jpxn,5765419,444352.0,20.39
+https://www.instagram.com/p/DN81L3ZjDNY/,bbcnews,DN81L3ZjDNY,6571872,739408.0,13.48
+```
+
+**Key Benefits:**
+- **Easy prioritization** - Sort by `standard_deviations_away` for most viral content
+- **Account context** - See baseline performance for each account
+- **Relative performance** - Understand what's viral *for that specific account*
+- **Pre-sorted data** - Already ordered by viral performance
+
+**Review Export** (`review_export_YYYY-MM-DD.csv`):
+- Complete dataset with statistical context
+- Pre-sorted by viral performance (highest first)
+- Accounts with insufficient data (< 3 posts) show null values
+- All review fields for VA editing
+
+**AI Batch Export** (`ai_batch_YYYY-MM-DD.jsonl`):
+- JSON Lines format for AI processing
+- Outliers only with content and metrics
+
+## Statistical Methodology
+
+The system uses **trimmed statistics** for robust outlier detection:
+
+1. **Calculate p10 and p90** percentiles for each account
+2. **Trim dataset** to [p10, p90] range (removes extreme outliers)
+3. **Compute baseline** using trimmed mean and standard deviation
+4. **Flag outliers** when views > trimmed_mean + (threshold × trimmed_SD)
+
+This approach ensures:
+- **Account-specific baselines** (1M views might be normal for some accounts)
+- **Robust to outliers** (ignores extreme low/high performance posts)
+- **Statistical validity** (requires minimum 3 posts per account)
+
 ## Troubleshooting
 
 ### Common Issues
