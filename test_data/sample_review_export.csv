@@ -1,0 +1,4 @@
+account,post_url,posted_at,views,likes,comments,caption,length_sec,outlier,keep,reject_reason,reject_notes,video_file_url
+natgeo,https://www.instagram.com/p/ABC123/,2024-01-15T10:30:00.000Z,128750,15420,245,"Amazing nature footage from our latest expedition! 🌍 #nature #wildlife",45,true,true,,,https://storage.supabase.co/videos/natgeo_ABC123.mp4
+nasa,https://www.instagram.com/p/DEF456/,2024-01-14T16:45:00.000Z,234560,45670,892,"Space exploration never stops inspiring us! 🚀 Check out this incredible view from the ISS.",33,true,true,,,
+bbcnews,https://www.instagram.com/p/GHI789/,2024-01-13T12:20:00.000Z,67890,8930,156,"Breaking: Major developments in climate policy announced today. Here's what you need to know 📰",58,false,,NSFW,Contains inappropriate content,

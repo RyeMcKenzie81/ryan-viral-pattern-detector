@@ -1,0 +1,23 @@
+{
+  "natgeo": {
+    "n_posts": 25,
+    "p10_views": 12500,
+    "p90_views": 150000,
+    "trimmed_mean_views": 45000,
+    "trimmed_sd_views": 25000
+  },
+  "nasa": {
+    "n_posts": 18,
+    "p10_views": 8900,
+    "p90_views": 280000,
+    "trimmed_mean_views": 52000,
+    "trimmed_sd_views": 35000
+  },
+  "bbcnews": {
+    "n_posts": 42,
+    "p10_views": 5600,
+    "p90_views": 95000,
+    "trimmed_mean_views": 28000,
+    "trimmed_sd_views": 18000
+  }
+}
