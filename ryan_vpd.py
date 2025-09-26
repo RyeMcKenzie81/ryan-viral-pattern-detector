@@ -554,23 +554,26 @@ def export_outliers_csv(path: str, threshold: float, supabase_client: Client):
         trimmed_sd = float(summary.get("trimmed_sd_views", 1))
 
         # Calculate how many standard deviations away from mean
-        if trimmed_sd > 0:
+        if trimmed_sd > 0 and trimmed_mean > 0:
             sd_away = (views - trimmed_mean) / trimmed_sd
         else:
-            sd_away = 0
+            # For accounts without sufficient data, use null values
+            sd_away = None
+            if trimmed_mean == 0:
+                trimmed_mean = None
 
         export_data.append({
             "post_url": post["post_url"],
             "account": account_map.get(account_id, "unknown"),
             "post_id": post["post_id"],
             "views": views,
-            "trimmed_mean_views": round(trimmed_mean, 0),
-            "standard_deviations_away": round(sd_away, 2)
+            "trimmed_mean_views": round(trimmed_mean, 0) if trimmed_mean is not None else None,
+            "standard_deviations_away": round(sd_away, 2) if sd_away is not None else None
         })
 
     if export_data:
-        # Sort by standard deviations away (highest first)
-        export_data.sort(key=lambda x: x["standard_deviations_away"], reverse=True)
+        # Sort by standard deviations away (highest first), None values last
+        export_data.sort(key=lambda x: (x["standard_deviations_away"] is None, x["standard_deviations_away"] or 0), reverse=True)
 
         df = pd.DataFrame(export_data)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -622,10 +625,13 @@ def export_review_csv(path: str, supabase_client: Client):
         trimmed_sd = float(summary.get("trimmed_sd_views", 1))
 
         # Calculate how many standard deviations away from mean
-        if trimmed_sd > 0:
+        if trimmed_sd > 0 and trimmed_mean > 0:
             sd_away = (views - trimmed_mean) / trimmed_sd
         else:
-            sd_away = 0
+            # For accounts without sufficient data, use null values
+            sd_away = None
+            if trimmed_mean == 0:
+                trimmed_mean = None
 
         export_data.append({
             "account": account_map.get(account_id, "unknown"),
@@ -637,8 +643,8 @@ def export_review_csv(path: str, supabase_client: Client):
             "caption": post["caption"],
             "length_sec": post["length_sec"],
             "outlier": review.get("outlier", False),
-            "trimmed_mean_views": round(trimmed_mean, 0),
-            "standard_deviations_away": round(sd_away, 2),
+            "trimmed_mean_views": round(trimmed_mean, 0) if trimmed_mean is not None else None,
+            "standard_deviations_away": round(sd_away, 2) if sd_away is not None else None,
             "keep": review.get("keep"),
             "reject_reason": review.get("reject_reason"),
             "reject_notes": review.get("reject_notes"),
@@ -646,8 +652,8 @@ def export_review_csv(path: str, supabase_client: Client):
         })
 
     df = pd.DataFrame(export_data)
-    # Sort by standard deviations away (highest first), then account
-    df = df.sort_values(["standard_deviations_away", "account"], ascending=[False, True])
+    # Sort by standard deviations away (highest first), then account (None values last)
+    df = df.sort_values(["standard_deviations_away", "account"], ascending=[False, True], na_position='last')
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     df.to_csv(path, index=False)
