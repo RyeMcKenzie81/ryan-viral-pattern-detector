@@ -130,7 +130,9 @@ def start_apify_run(usernames: List[str], days_back: int = 120, post_type: str =
         "resultsType": "posts",
         "resultsLimit": 200,
         "onlyPostsNewerThan": f"{days_back} days",
-        "addParentData": False
+        "addParentData": False,
+        "maxRequestRetries": 3,
+        "enhanceUserSearchWithFacebookPage": False
     }
 
     # Add reels-specific parameter if post_type is reels
@@ -323,9 +325,14 @@ def upsert_accounts(df: pd.DataFrame, supabase_client: Client) -> Dict[str, str]
 
             if result.data:
                 account_id = result.data[0]["id"]
+                # Update last_scraped_at timestamp
+                supabase_client.table("accounts").update({"last_scraped_at": datetime.now().isoformat()}).eq("id", account_id).execute()
             else:
-                # Insert new account
-                result = supabase_client.table("accounts").insert({"handle": handle}).execute()
+                # Insert new account with current timestamp
+                result = supabase_client.table("accounts").insert({
+                    "handle": handle,
+                    "last_scraped_at": datetime.now().isoformat()
+                }).execute()
                 account_id = result.data[0]["id"]
 
             account_map[handle] = account_id
@@ -354,10 +361,23 @@ def upsert_posts(df: pd.DataFrame, account_map: Dict[str, str], supabase_client:
     df = df.dropna(subset=['account_id'])
 
     # Prepare data for upsert
+    # Replace NaN with None for JSON compatibility
     posts_data = df[[
         'account_id', 'post_url', 'post_id', 'posted_at',
         'views', 'likes', 'comments', 'caption', 'length_sec'
-    ]].to_dict('records')
+    ]].replace({pd.NA: None, float('nan'): None}).to_dict('records')
+
+    # Convert NaN to None and ensure integers are properly typed
+    for post in posts_data:
+        for key, value in post.items():
+            if pd.isna(value):
+                post[key] = None
+            # Convert float integers to proper int type for database
+            elif key in ['views', 'likes', 'comments', 'length_sec'] and value is not None:
+                try:
+                    post[key] = int(value)
+                except (ValueError, TypeError):
+                    post[key] = None
 
     # Process in chunks
     total_posts = len(posts_data)
@@ -531,8 +551,8 @@ def export_outliers_csv(path: str, threshold: float, supabase_client: Client):
 
     outlier_post_ids = [row["post_id"] for row in outliers_result.data]
 
-    # Get post details for outliers with views
-    posts_result = supabase_client.table("posts").select("id, post_url, post_id, account_id, views").in_("id", outlier_post_ids).execute()
+    # Get post details for outliers with views and caption
+    posts_result = supabase_client.table("posts").select("id, post_url, post_id, account_id, views, caption").in_("id", outlier_post_ids).execute()
 
     # Get account handles and summaries
     account_ids = list(set([p["account_id"] for p in posts_result.data]))
@@ -566,6 +586,7 @@ def export_outliers_csv(path: str, threshold: float, supabase_client: Client):
             "post_url": post["post_url"],
             "account": account_map.get(account_id, "unknown"),
             "post_id": post["post_id"],
+            "caption": post["caption"],
             "views": views,
             "trimmed_mean_views": round(trimmed_mean, 0) if trimmed_mean is not None else None,
             "standard_deviations_away": round(sd_away, 2) if sd_away is not None else None
@@ -608,10 +629,16 @@ def export_review_csv(path: str, supabase_client: Client):
     account_map = {a["id"]: a["handle"] for a in accounts_result.data}
     summaries_map = {s["account_id"]: s for s in summaries_result.data}
 
-    # Get all reviews
+    # Get all reviews in batches to avoid URL too long errors
     post_ids = [p["id"] for p in posts_result.data]
-    reviews_result = supabase_client.table("post_review").select("*").in_("post_id", post_ids).execute()
-    reviews_map = {r["post_id"]: r for r in reviews_result.data}
+    reviews_map = {}
+    batch_size = 100  # Process 100 post IDs at a time
+
+    for i in range(0, len(post_ids), batch_size):
+        batch = post_ids[i:i + batch_size]
+        reviews_result = supabase_client.table("post_review").select("*").in_("post_id", batch).execute()
+        for r in reviews_result.data:
+            reviews_map[r["post_id"]] = r
 
     # Combine data with statistics
     export_data = []
@@ -678,16 +705,22 @@ def export_ai_jsonl(path: str, threshold: float, supabase_client: Client):
         logger.warning("No posts found for AI export")
         return
 
-    # Get post details for outliers
+    # Get post details for outliers in batches to avoid URL too long errors
     outlier_post_ids = [row["post_id"] for row in outliers_result.data]
-    posts_result = supabase_client.table("posts").select("id, post_url, caption, views, length_sec").in_("id", outlier_post_ids).execute()
+    posts_data = []
+    batch_size = 100  # Process 100 post IDs at a time
+
+    for i in range(0, len(outlier_post_ids), batch_size):
+        batch = outlier_post_ids[i:i + batch_size]
+        posts_result = supabase_client.table("posts").select("id, post_url, caption, views, length_sec").in_("id", batch).execute()
+        posts_data.extend(posts_result.data)
 
     # Create review mapping
     reviews_map = {r["post_id"]: r for r in outliers_result.data}
 
     # Combine data and sort by views
     export_data = []
-    for post in posts_result.data:
+    for post in posts_data:
         review = reviews_map.get(post["id"], {})
         export_data.append({
             "post_url": post["post_url"],
@@ -866,13 +899,36 @@ def cli():
 @click.option('--post-type', default=POST_TYPE,
               type=click.Choice(['all', 'posts', 'reels', 'tagged']),
               help='Type of posts to scrape')
-def scrape(usernames, days, concurrency, post_type):
+@click.option('--skip-recent', default=24, type=int, help='Skip accounts scraped within this many hours (0 to disable)')
+def scrape(usernames, days, concurrency, post_type, skip_recent):
     """Scrape Instagram posts for specified usernames"""
     try:
         supabase = get_supabase_client()
 
         # Load usernames
         username_list = load_usernames(usernames)
+
+        # Filter out recently scraped accounts if skip_recent is enabled
+        if skip_recent > 0:
+            cutoff_time = datetime.now() - timedelta(hours=skip_recent)
+
+            # Check last_scraped_at for all accounts
+            accounts_result = supabase.table("accounts").select("handle, last_scraped_at").in_("handle", username_list).execute()
+            recently_scraped = set()
+
+            for account in accounts_result.data:
+                if account.get("last_scraped_at"):
+                    last_scraped = datetime.fromisoformat(account["last_scraped_at"].replace('Z', '+00:00'))
+                    if last_scraped > cutoff_time:
+                        recently_scraped.add(account["handle"])
+
+            if recently_scraped:
+                logger.info(f"Skipping {len(recently_scraped)} accounts scraped within last {skip_recent} hours: {', '.join(recently_scraped)}")
+                username_list = [u for u in username_list if u not in recently_scraped]
+
+            if not username_list:
+                logger.info("All accounts were recently scraped. Nothing to do.")
+                return
 
         if len(username_list) > MAX_USERNAMES_PER_RUN:
             logger.warning(f"Too many usernames ({len(username_list)}). Processing first {MAX_USERNAMES_PER_RUN}")
@@ -902,6 +958,14 @@ def scrape(usernames, days, concurrency, post_type):
         # Normalize and save processed data
         # This actor returns all items together, not separated by username
         combined_df = normalize_items(items)
+
+        # Filter to only keep posts from the accounts we requested
+        if len(combined_df) > 0:
+            original_count = len(combined_df)
+            combined_df = combined_df[combined_df['account'].isin(username_list)]
+            filtered_count = original_count - len(combined_df)
+            if filtered_count > 0:
+                logger.info(f"Filtered out {filtered_count} posts from unrelated accounts")
 
         if len(combined_df) > 0:
 

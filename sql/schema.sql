@@ -2,6 +2,7 @@
 create table if not exists accounts (
   id uuid primary key default gen_random_uuid(),
   handle text unique not null,
+  last_scraped_at timestamptz,
   created_at timestamptz default now()
 );
 
