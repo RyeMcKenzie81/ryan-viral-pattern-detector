@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Environment
+.env
+.env.local
+
+# Data
+data/
+downloads/
+exports/
+temp/
+logs/
+*.log
+
+# OS
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+
+# Output files
+*.json
+*.csv
+*.jsonl
+!products/*.json
+!platforms/*.json
+
+# Next.js (removed)
+.next/
+node_modules/
