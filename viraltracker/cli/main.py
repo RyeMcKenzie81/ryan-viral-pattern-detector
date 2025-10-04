@@ -4,6 +4,9 @@ Main CLI entry point for ViralTracker
 
 import click
 from .import_urls import import_url_group
+from .brand import brand_group
+from .product import product_group
+from .project import project_group
 
 
 @click.group()
@@ -19,6 +22,9 @@ def cli():
 
 
 # Register command groups
+cli.add_command(brand_group)
+cli.add_command(product_group)
+cli.add_command(project_group)
 cli.add_command(import_url_group)
 
 
