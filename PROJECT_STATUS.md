@@ -105,29 +105,59 @@ ViralTracker is a multi-brand, multi-platform viral content analysis system that
 
 ---
 
-### 📋 Phase 4: TikTok Integration (PLANNED)
+### 🔄 Phase 4: Complete Instagram Workflow (NEXT - REVISED)
+**Estimated:** 2-3 weeks
+
+**NOTE:** Phase order revised after completing Phase 3. Original plan assumed URL importers would fetch metadata. We learned they should only save URLs, with Apify populating metadata. Completing Instagram end-to-end before adding platforms makes more sense.
+
+**Sub-Phase 4a: Project/Brand/Product Management CLI**
+- `vt project list/create/show/add-accounts` commands
+- `vt brand list/create/show` commands
+- `vt product list/create/show` commands
+- Allow creating projects, brands, products via CLI
+
+**Sub-Phase 4b: Apify Scraper Integration**
+- Update legacy Instagram scraper to use new schema
+- Make scraper project-aware
+- Populate metadata for imported URLs
+- Test scraping workflow end-to-end
+
+**Sub-Phase 4c: Video Download & Analysis** (Optional - can defer)
+- Implement video download using yt-dlp
+- Update video analysis to use new schema
+- Test analysis workflow end-to-end
+
+**Success Criteria:**
+- User can create projects via CLI
+- User can import competitor URLs via CLI
+- Apify scraper populates metadata for imported URLs
+- Full workflow: Import URL → Scrape metadata → Analyze video
+
+---
+
+### 📋 Phase 5: TikTok Integration (MOVED FROM PHASE 4)
 **Estimated:** 1 week
 
 **Goals:**
-- TikTok scraper implementation
-- TikTok URL importer (already 80% done via yt-dlp)
+- TikTok URL importer (URL validation + post ID extraction)
+- TikTok scraper (Apify integration)
 - TikTok-specific metric extraction
 - Testing with real TikTok accounts
 
 ---
 
-### 📋 Phase 5: YouTube Shorts Integration (PLANNED)
+### 📋 Phase 6: YouTube Shorts Integration (MOVED FROM PHASE 5)
 **Estimated:** 1 week
 
 **Goals:**
-- YouTube Shorts scraper implementation
-- YouTube URL importer (already 80% done via yt-dlp)
+- YouTube Shorts URL importer
+- YouTube Shorts scraper
 - YouTube-specific metric extraction
 - Testing with real YouTube channels
 
 ---
 
-### 📋 Phase 6: Generic Product Adapter (PLANNED)
+### 📋 Phase 7: Generic Product Adapter (MOVED FROM PHASE 6)
 **Estimated:** 1 week
 
 **Goals:**
@@ -138,7 +168,7 @@ ViralTracker is a multi-brand, multi-platform viral content analysis system that
 
 ---
 
-### 📋 Phase 7: Cross-Platform Analysis (PLANNED)
+### 📋 Phase 8: Cross-Platform Analysis (MOVED FROM PHASE 7)
 **Estimated:** 1 week
 
 **Goals:**
@@ -149,7 +179,7 @@ ViralTracker is a multi-brand, multi-platform viral content analysis system that
 
 ---
 
-### 📋 Phase 8: Testing & Documentation (PLANNED)
+### 📋 Phase 9: Testing & Documentation (MOVED FROM PHASE 8)
 **Estimated:** 1 week
 
 **Goals:**
@@ -334,5 +364,7 @@ viraltracker/
 ---
 
 **Last Checkpoint:** Phase 3 Complete
-**Next Milestone:** Phase 4 - TBD (Project Management or Platform Expansion)
-**Overall Progress:** 37.5% (3/8 phases complete)
+**Next Milestone:** Phase 4 - Complete Instagram Workflow (Project Management + Apify Integration)
+**Overall Progress:** 33.3% (3/9 phases complete)
+
+**Plan Revision:** Phase order updated after Phase 3 learnings. Now completing Instagram workflow end-to-end before adding platforms.

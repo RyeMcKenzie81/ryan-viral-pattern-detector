@@ -846,7 +846,11 @@ class CrossPlatformAnalyzer:
 
 ## Implementation Phases
 
-### Phase 1: Database Migration (Week 1)
+**NOTE:** Phase order revised 2025-10-03 after completing Phase 3. Original plan assumed URL importers would fetch metadata. We learned URL importers should only save URLs, and Apify populates metadata. Therefore, completing the Instagram workflow end-to-end before adding platforms makes more sense.
+
+---
+
+### Phase 1: Database Migration ✅ COMPLETE (2025-10-03)
 **Goal:** Update schema without breaking existing data
 
 1. Create new tables: `brands`, `products`, `platforms`, `projects`, `project_accounts`, `project_posts`, `product_adaptations`
@@ -861,66 +865,105 @@ class CrossPlatformAnalyzer:
 5. Test migration on staging environment
 
 **Deliverables:**
-- `sql/migration_multi_brand.sql`
-- `scripts/migrate_existing_data.py`
+- ✅ `sql/01_migration_multi_brand.sql`
+- ✅ `scripts/migrate_existing_data.py`
+- ✅ 100% data migration success (1000 posts, 77 accounts, 104 analyses)
 
 ---
 
-### Phase 2: Core Refactoring + URL Import (Week 2)
-**Goal:** Refactor code to use new schema AND add URL import capability
+### Phase 2: Core Refactoring + URL Import Foundation ✅ COMPLETE (2025-10-03)
+**Goal:** Refactor code to use new schema AND add URL import foundation
 
-1. Create new module structure (`core/`, `scrapers/`, `importers/`, `analysis/`)
+1. Create new module structure (`core/`, `scrapers/`, `importers/`)
 2. Build abstract `BaseScraper` class
 3. Build abstract `BaseURLImporter` class
-4. Refactor existing Instagram code to use new structure
-5. Implement Instagram URL importer using yt-dlp
-6. Update database queries to be project-aware
-7. Create Pydantic models for all tables
+4. Create Pydantic models for all tables
+5. Implement Instagram URL importer (URL validation only, no metadata scraping)
+6. Update database layer with new models
 
 **Deliverables:**
-- New module structure
-- Refactored Instagram scraper
-- Working Instagram URL importer (supports direct URL analysis)
-- Updated database layer
+- ✅ New module structure (`viraltracker/core/`, `scrapers/`, `importers/`)
+- ✅ `BaseScraper` abstract class
+- ✅ `BaseURLImporter` abstract class
+- ✅ `InstagramURLImporter` (URL validation + post ID extraction)
+- ✅ Pydantic models for all tables
+- ✅ Configuration and database management
 
-**Why do this early:** URL import is valuable immediately and works with just Instagram
+**Key Learning:** URL importers should NOT fetch metadata (no yt-dlp). They only validate URLs and extract post IDs. Metadata is populated by Apify scraping.
 
 ---
 
-### Phase 3: CLI Redesign (Week 2-3)
-**Goal:** New CLI commands for multi-brand/product + URL import
+### Phase 3: CLI Implementation - URL Import ✅ COMPLETE (2025-10-03)
+**Goal:** Build Click-based CLI with URL import commands
 
-1. Implement brand/product/project management commands
-2. Implement URL import commands (`import-url`, `import-urls`, `import-csv`)
-3. Update scrape command to be project-based
-4. Update analyze command to support cross-platform and filter by import source
-5. Implement product adaptation command
-6. Add content comparison commands (own vs competitor)
-7. Maintain backward compatibility where possible
+1. ✅ Create CLI framework with Click
+2. ✅ Implement `vt import url` command (single URL import)
+3. ✅ Implement `vt import urls` command (batch import from file)
+4. ✅ URL validation and duplicate detection
+5. ✅ Project linking with notes
+6. ✅ Own vs competitor content flagging
 
 **Deliverables:**
-- New CLI structure
-- URL import commands working
-- All new commands implemented
-- Migration guide for existing workflows
+- ✅ `viraltracker/cli/` module structure
+- ✅ `vt` executable CLI script
+- ✅ URL import commands working
+- ✅ Complete documentation (PHASE_3_SUMMARY.md)
 
-**User Value:** Users can now analyze their own published videos and specific competitor videos
+**Architecture Decision:** Simplified URL importers to only save URLs. Metadata (views, likes, comments) deferred to Apify scraping. yt-dlp reserved for future video download/analysis phase.
 
 ---
 
-### Phase 4: TikTok Integration (Week 3-4)
+### Phase 4: Complete Instagram Workflow (NEW - REVISED)
+**Goal:** Get full end-to-end workflow working for Instagram before adding platforms
+
+**Why this order:** URL import creates posts without metadata. Need Apify integration working to populate metadata. Need project management to create/manage projects. Complete one platform fully before expanding horizontally.
+
+**Sub-Phase 4a: Project/Brand/Product Management CLI**
+1. Implement `vt project list/create/show/add-accounts` commands
+2. Implement `vt brand list/create/show` commands
+3. Implement `vt product list/create/show` commands
+4. Allow creating projects, brands, products via CLI (not just Supabase)
+
+**Sub-Phase 4b: Apify Scraper Integration**
+1. Update legacy Instagram scraper (`ryan-viral-pattern-detector/ryan_vpd.py`) to use new schema
+2. Make scraper project-aware (scrape accounts linked to a project)
+3. Populate metadata for imported URLs (find posts by URL, fill in views/likes/comments)
+4. Test scraping workflow end-to-end
+
+**Sub-Phase 4c: Video Download & Analysis Pipeline** (Optional - can defer to Phase 6)
+1. Implement video download using yt-dlp
+2. Update video analysis to use new schema
+3. Test analysis workflow end-to-end
+
+**Deliverables:**
+- Full CLI for project/brand/product management
+- Updated Apify scraper using new multi-brand schema
+- Complete Instagram workflow: Import URL → Scrape metadata → Analyze video
+- Documentation
+
+**Success Criteria:**
+User can:
+1. Create a project via CLI
+2. Import competitor URLs via CLI
+3. Run Apify scraper to populate metadata
+4. Analyze videos with Gemini
+5. Generate product adaptations
+
+---
+
+### Phase 5: TikTok Integration (MOVED FROM PHASE 4)
 **Goal:** Add TikTok scraping, URL import, and analysis
 
 1. Research TikTok scraping options (Apify actor, APIs, etc.)
-2. Implement `TikTokScraper` class
-3. Implement `TikTokURLImporter` class (yt-dlp supports TikTok)
+2. Implement `TikTokURLImporter` class (URL validation + post ID extraction)
+3. Implement `TikTokScraper` class (Apify integration)
 4. Add TikTok-specific metric extraction
 5. Test with real TikTok accounts and URLs
-6. Update documentation
+6. Update CLI to support TikTok platform flag
 
 **Deliverables:**
-- Working TikTok scraper
 - Working TikTok URL importer
+- Working TikTok scraper
 - TikTok platform in database
 - Documentation
 
@@ -928,20 +971,20 @@ class CrossPlatformAnalyzer:
 
 ---
 
-### Phase 5: YouTube Shorts Integration (Week 4-5)
+### Phase 6: YouTube Shorts Integration (MOVED FROM PHASE 5)
 **Goal:** Add YouTube Shorts scraping and URL import
 
 1. Research YouTube scraping options (Apify actor, YouTube Data API, etc.)
-2. Implement `YouTubeScraper` class
-3. Implement `YouTubeURLImporter` class (yt-dlp has excellent YouTube support)
+2. Implement `YouTubeURLImporter` class (URL validation + post ID extraction)
+3. Implement `YouTubeScraper` class
 4. Add Shorts-specific metric extraction
 5. Handle YouTube-specific nuances (thumbnails, chapters)
 6. Test with real accounts and URLs
-7. Update documentation
+7. Update CLI to support YouTube platform flag
 
 **Deliverables:**
+- Working YouTube Shorts URL importer
 - Working YouTube Shorts scraper
-- Working YouTube URL importer
 - YouTube platform in database
 - Documentation
 
@@ -949,10 +992,10 @@ class CrossPlatformAnalyzer:
 
 ---
 
-### Phase 6: Generic Product Adapter (Week 5-6)
+### Phase 7: Generic Product Adapter (MOVED FROM PHASE 6)
 **Goal:** Make video adaptation work for any product
 
-1. Remove Yakety Pack hardcoding
+1. Remove Yakety Pack hardcoding from video analysis
 2. Implement generic `ProductAdapter` class
 3. Update AI prompts to use `product.context_prompt`
 4. Test with multiple products
@@ -965,7 +1008,7 @@ class CrossPlatformAnalyzer:
 
 ---
 
-### Phase 7: Cross-Platform Analysis (Week 6-7)
+### Phase 8: Cross-Platform Analysis (MOVED FROM PHASE 7)
 **Goal:** Aggregate insights across platforms
 
 1. Implement `CrossPlatformAnalyzer`
@@ -980,7 +1023,7 @@ class CrossPlatformAnalyzer:
 
 ---
 
-### Phase 8: Testing & Documentation (Week 7-8)
+### Phase 9: Testing & Documentation (MOVED FROM PHASE 8)
 **Goal:** Polish and document everything
 
 1. Comprehensive testing of all platforms
