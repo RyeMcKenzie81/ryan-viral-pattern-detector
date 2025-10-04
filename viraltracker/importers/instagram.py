@@ -1,13 +1,14 @@
 """
 Instagram URL importer
+
+Validates Instagram URLs and saves them to database.
+Metadata (views, likes, comments) is populated later by Apify scraping.
 """
 
-from datetime import datetime
-from typing import Dict
+import re
 import logging
 
 from .base import BaseURLImporter
-from ..core.models import PostCreate, ImportSource
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,8 @@ class InstagramURLImporter(BaseURLImporter):
     """
     Import Instagram posts/reels via direct URL
 
-    Uses yt-dlp to extract metadata without downloading the video.
+    Validates URLs and extracts post IDs.
+    Metadata will be populated later by Apify scraping.
     Works for both /p/ (posts) and /reel/ URLs.
     """
 
@@ -60,84 +62,26 @@ class InstagramURLImporter(BaseURLImporter):
 
         return True
 
-    def normalize_metadata(self, metadata: Dict) -> PostCreate:
+    def extract_post_id(self, url: str) -> str:
         """
-        Convert yt-dlp metadata to PostCreate format
+        Extract post ID from Instagram URL
 
         Args:
-            metadata: Raw metadata from yt-dlp
+            url: Instagram URL
 
         Returns:
-            PostCreate object with normalized Instagram data
+            Post ID (shortcode)
 
-        Note:
-            yt-dlp extracts different fields depending on whether the user
-            is logged in. We handle both cases gracefully.
+        Examples:
+            'https://www.instagram.com/reel/ABC123/' -> 'ABC123'
+            'https://www.instagram.com/p/XYZ789/' -> 'XYZ789'
+            'https://instagram.com/p/XYZ789/?utm_source=ig_web' -> 'XYZ789'
         """
-        # Extract post ID from URL
-        post_id = metadata.get('id') or metadata.get('display_id')
+        # Match /p/ or /reel/ followed by the shortcode
+        pattern = r'/(?:p|reel)/([A-Za-z0-9_-]+)'
+        match = re.search(pattern, url)
 
-        # Get timestamp
-        timestamp = metadata.get('timestamp')
-        posted_at = datetime.fromtimestamp(timestamp) if timestamp else None
+        if match:
+            return match.group(1)
 
-        # Views (may not be available for all posts)
-        views = metadata.get('view_count', 0) or metadata.get('play_count', 0)
-
-        # Likes
-        likes = metadata.get('like_count', 0)
-
-        # Comments
-        comments = metadata.get('comment_count', 0)
-
-        # Caption/description
-        caption = metadata.get('description', '') or metadata.get('title', '')
-
-        # Duration
-        duration = metadata.get('duration')
-        length_sec = int(duration) if duration else None
-
-        # Username
-        username = metadata.get('uploader') or metadata.get('uploader_id') or metadata.get('channel')
-
-        # Create PostCreate object
-        return PostCreate(
-            platform_id=self.platform_id,
-            post_url=metadata['webpage_url'],
-            post_id=post_id,
-            views=views if views > 0 else None,
-            likes=likes if likes > 0 else None,
-            comments=comments if comments > 0 else None,
-            caption=caption[:2200] if caption else None,  # Max 2200 chars
-            posted_at=posted_at,
-            length_sec=length_sec,
-            import_source=ImportSource.DIRECT_URL,
-        )
-
-    def extract_platform_specific_metrics(self, metadata: Dict) -> Dict:
-        """
-        Extract Instagram-specific metrics
-
-        Args:
-            metadata: Raw metadata from yt-dlp
-
-        Returns:
-            Dictionary with Instagram-specific data
-
-        Example:
-            {
-                'instagram': {
-                    'is_video': True,
-                    'product_type': 'clips',  # reels are called 'clips' internally
-                    'has_audio': True,
-                }
-            }
-        """
-        return {
-            'instagram': {
-                'is_video': metadata.get('is_live', False) == False,
-                'uploader': metadata.get('uploader'),
-                'uploader_id': metadata.get('uploader_id'),
-                'has_audio': metadata.get('audio_channels', 0) > 0,
-            }
-        }
+        return None

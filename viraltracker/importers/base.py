@@ -1,15 +1,17 @@
 """
 Base URL importer for direct video imports
+
+URL importers validate and save URLs without fetching metadata.
+Metadata (views, likes, comments) is populated later by Apify scraping.
 """
 
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 from datetime import datetime
-import yt_dlp
 import logging
 
 from ..core.database import get_supabase_client
-from ..core.models import PostCreate, ProjectPostCreate, ImportSource, ImportMethod
+from ..core.models import PostCreate, ImportSource, ImportMethod
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +20,8 @@ class BaseURLImporter(ABC):
     """
     Abstract base class for URL importers
 
-    Uses yt-dlp to extract metadata from video URLs without downloading
-    the actual video file.
+    Validates URLs and saves them to the database.
+    Metadata is populated later by Apify scraping.
     """
 
     def __init__(self, platform_slug: str, platform_id: str):
@@ -43,6 +45,9 @@ class BaseURLImporter(ABC):
     ) -> Dict:
         """
         Import a single URL into a project
+
+        Validates the URL and saves it to the database.
+        Metadata (views, likes, comments) will be populated later by Apify scraping.
 
         Args:
             url: Video URL to import
@@ -68,31 +73,38 @@ class BaseURLImporter(ABC):
 
             logger.info(f"Importing URL: {url}")
 
-            # 2. Check if already exists
+            # 2. Extract post ID from URL
+            post_id = self.extract_post_id(url)
+            if not post_id:
+                raise ValueError(f"Could not extract post ID from URL: {url}")
+
+            # 3. Check if already exists
             existing = self.supabase.table('posts').select('id').eq('post_url', url).execute()
             if existing.data:
-                post_id = existing.data[0]['id']
-                logger.info(f"Post already exists: {post_id}")
+                db_post_id = existing.data[0]['id']
+                logger.info(f"Post already exists: {db_post_id}")
 
                 # Link to project if not already linked
-                self._link_to_project(post_id, project_id, is_own_content, notes)
+                self._link_to_project(db_post_id, project_id, is_own_content, notes)
 
                 return {
-                    'post_id': post_id,
+                    'id': db_post_id,
                     'post_url': url,
+                    'post_id': post_id,
                     'status': 'already_exists',
                     'message': 'Post already exists, linked to project'
                 }
 
-            # 3. Extract metadata using yt-dlp
-            logger.info("Extracting metadata...")
-            metadata = await self.extract_metadata(url)
-
-            # 4. Normalize to standard format
-            normalized = self.normalize_metadata(metadata)
+            # 4. Create minimal post record (metadata will be populated by Apify later)
+            post_data = PostCreate(
+                platform_id=self.platform_id,
+                post_url=url,
+                post_id=post_id,
+                import_source=ImportSource.DIRECT_URL,
+            )
 
             # 5. Save to database
-            post = self._save_post(normalized, is_own_content)
+            post = self._save_post(post_data, is_own_content)
 
             # 6. Link to project
             self._link_to_project(post['id'], project_id, is_own_content, notes)
@@ -100,10 +112,11 @@ class BaseURLImporter(ABC):
             logger.info(f"Successfully imported: {post['id']}")
 
             return {
-                'post_id': post['id'],
+                'id': post['id'],
                 'post_url': post['post_url'],
+                'post_id': post_id,
                 'status': 'imported',
-                'message': 'Successfully imported'
+                'message': 'Successfully imported (metadata will be populated by next scrape)'
             }
 
         except Exception as e:
@@ -126,59 +139,20 @@ class BaseURLImporter(ABC):
         """
         pass
 
-    async def extract_metadata(self, url: str) -> Dict:
+    @abstractmethod
+    def extract_post_id(self, url: str) -> str:
         """
-        Extract metadata using yt-dlp (works for all platforms)
+        Extract post ID from URL
 
         Args:
             url: Video URL
 
         Returns:
-            Dictionary with video metadata from yt-dlp
+            Post ID string
 
-        Note:
-            This method works for Instagram, TikTok, YouTube, and 1000+ other platforms
-            that yt-dlp supports. No need to override unless you want custom behavior.
-        """
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'skip_download': True,  # Don't download video, just get metadata
-        }
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return info
-        except Exception as e:
-            logger.error(f"yt-dlp failed to extract metadata: {str(e)}")
-            raise
-
-    @abstractmethod
-    def normalize_metadata(self, metadata: Dict) -> PostCreate:
-        """
-        Convert yt-dlp metadata to standard Post format
-
-        Args:
-            metadata: Raw metadata from yt-dlp
-
-        Returns:
-            PostCreate object with normalized data
-
-        Example:
-            PostCreate(
-                platform_id=self.platform_id,
-                post_url=metadata['webpage_url'],
-                post_id=metadata.get('id'),
-                views=metadata.get('view_count', 0),
-                likes=metadata.get('like_count', 0),
-                comments=metadata.get('comment_count', 0),
-                caption=metadata.get('description', ''),
-                posted_at=datetime.fromtimestamp(metadata.get('timestamp')),
-                length_sec=metadata.get('duration'),
-                import_source=ImportSource.DIRECT_URL,
-            )
+        Example for Instagram:
+            'https://www.instagram.com/reel/ABC123/' -> 'ABC123'
+            'https://www.instagram.com/p/XYZ789/' -> 'XYZ789'
         """
         pass
 
@@ -193,8 +167,8 @@ class BaseURLImporter(ABC):
         Returns:
             Created post record
         """
-        # Convert Pydantic model to dict
-        data = post_data.model_dump(exclude_unset=True)
+        # Convert Pydantic model to dict (mode='json' converts UUIDs to strings)
+        data = post_data.model_dump(exclude_unset=True, mode='json')
         data['is_own_content'] = is_own_content
 
         # Insert into database
