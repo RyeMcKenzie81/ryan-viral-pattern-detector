@@ -367,10 +367,11 @@ viraltracker/
 3. **PHASE_2_SUMMARY.md** - Phase 2 technical documentation
 4. **PHASE_3_SUMMARY.md** - Phase 3 CLI documentation
 5. **PHASE_4A_SUMMARY.md** - Phase 4a management CLI documentation
-6. **PROJECT_STATUS.md** - This file (current status)
-7. **sql/README.md** - Database migration guide
-8. **ryan-viral-pattern-detector/README.md** - Legacy Instagram tool
-9. **video-processor/README.md** - Legacy video processor
+6. **HANDOFF_PHASE_4B.md** - Phase 4b planning and handoff
+7. **PROJECT_STATUS.md** - This file (current status)
+8. **sql/README.md** - Database migration guide
+9. **ryan-viral-pattern-detector/README.md** - Legacy Instagram tool
+10. **video-processor/README.md** - Legacy video processor
 
 ---
 
