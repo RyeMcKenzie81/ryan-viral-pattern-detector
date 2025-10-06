@@ -7,6 +7,9 @@ from .import_urls import import_url_group
 from .brand import brand_group
 from .product import product_group
 from .project import project_group
+from .scrape import scrape_command
+from .process import process_group
+from .analyze import analyze_group
 
 
 @click.group()
@@ -26,6 +29,9 @@ cli.add_command(brand_group)
 cli.add_command(product_group)
 cli.add_command(project_group)
 cli.add_command(import_url_group)
+cli.add_command(scrape_command)
+cli.add_command(process_group)
+cli.add_command(analyze_group)
 
 
 if __name__ == '__main__':

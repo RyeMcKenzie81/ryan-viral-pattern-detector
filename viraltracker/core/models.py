@@ -99,7 +99,20 @@ class Account(BaseModel):
     handle: str  # Legacy field, kept for backwards compatibility
     platform_id: Optional[UUID4] = None
     platform_username: Optional[str] = None
-    last_scraped_at: Optional[datetime] = None
+
+    # Account metadata
+    follower_count: Optional[int] = None
+    following_count: Optional[int] = None
+    bio: Optional[str] = None
+    display_name: Optional[str] = None
+    profile_pic_url: Optional[str] = None
+    is_verified: bool = False
+    account_type: Optional[str] = None
+    external_url: Optional[str] = None
+
+    # Timestamps
+    last_scraped_at: Optional[datetime] = None  # When posts were last scraped
+    metadata_updated_at: Optional[datetime] = None  # When account metadata was last updated
     created_at: datetime
 
 
