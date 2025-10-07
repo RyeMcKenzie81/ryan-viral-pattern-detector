@@ -233,8 +233,17 @@ class VideoAnalyzer:
         accounts = posts.get('accounts', {})
         username = accounts.get('platform_username', 'unknown')
 
+        # Get platform name
+        platforms = accounts.get('platforms', {})
+        platform_slug = platforms.get('slug', 'instagram')
+        platform_name = {
+            'instagram': 'Instagram',
+            'tiktok': 'TikTok',
+            'youtube_shorts': 'YouTube Shorts'
+        }.get(platform_slug, 'Instagram')
+
         # Base analysis prompt
-        base_prompt = f"""Analyze this viral Instagram video and provide a comprehensive breakdown.
+        base_prompt = f"""Analyze this viral {platform_name} video and provide a comprehensive breakdown.
 
 **Video Context:**
 - Username: @{username}
