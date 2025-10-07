@@ -10,6 +10,7 @@ from .project import project_group
 from .scrape import scrape_command
 from .process import process_group
 from .analyze import analyze_group
+from .script import script_group
 
 
 @click.group()
@@ -32,6 +33,7 @@ cli.add_command(import_url_group)
 cli.add_command(scrape_command)
 cli.add_command(process_group)
 cli.add_command(analyze_group)
+cli.add_command(script_group)
 
 
 if __name__ == '__main__':
