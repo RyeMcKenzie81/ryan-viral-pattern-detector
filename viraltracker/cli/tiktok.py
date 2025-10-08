@@ -4,8 +4,9 @@ TikTok CLI Commands
 Commands for scraping and analyzing TikTok content.
 """
 
+import json
 import logging
-from typing import Optional
+from typing import Optional, Dict
 
 import click
 import pandas as pd
@@ -22,6 +23,149 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def display_analysis_results(analysis: Dict, post: Dict):
+    """
+    Display detailed analysis results in formatted output.
+
+    Args:
+        analysis: Analysis data from video_analysis table
+        post: Post data including account info
+    """
+    click.echo(f"\n{'='*60}")
+    click.echo(f"📊 ANALYSIS RESULTS")
+    click.echo(f"{'='*60}\n")
+
+    # Video Info
+    username = post['accounts']['platform_username']
+    click.echo(f"@{username}")
+    click.echo(f"URL: {post['post_url']}")
+    click.echo(f"Views: {post['views']:,}")
+    click.echo(f"Caption: {post['caption'][:100]}...")
+    click.echo()
+
+    # Hook Analysis
+    click.echo("HOOK ANALYSIS")
+    click.echo("-" * 60)
+    if analysis.get('hook_transcript'):
+        click.echo(f"Transcript: \"{analysis['hook_transcript']}\"")
+    if analysis.get('hook_type'):
+        click.echo(f"Type: {analysis['hook_type']}")
+    if analysis.get('hook_timestamp'):
+        click.echo(f"Duration: {analysis['hook_timestamp']} seconds")
+
+    if analysis.get('hook_visual_storyboard'):
+        try:
+            hook_visual = json.loads(analysis['hook_visual_storyboard'])
+            if hook_visual.get('visual_description'):
+                click.echo(f"Visual: {hook_visual['visual_description']}")
+            if hook_visual.get('effectiveness_score'):
+                click.echo(f"Effectiveness: {hook_visual['effectiveness_score']}/10")
+        except:
+            pass
+    click.echo()
+
+    # Full Transcript
+    if analysis.get('transcript'):
+        click.echo("FULL TRANSCRIPT")
+        click.echo("-" * 60)
+        try:
+            transcript = json.loads(analysis['transcript'])
+            if transcript.get('segments'):
+                for seg in transcript['segments'][:10]:  # Show first 10 segments
+                    speaker = seg.get('speaker', 'unknown')
+                    text = seg.get('text', '')
+                    ts = seg.get('timestamp', 0.0)
+                    click.echo(f"[{ts:.1f}s] {speaker.upper()}: {text}")
+                if len(transcript['segments']) > 10:
+                    click.echo(f"... and {len(transcript['segments']) - 10} more segments")
+        except:
+            pass
+        click.echo()
+
+    # Text Overlays
+    if analysis.get('text_overlays'):
+        click.echo("TEXT OVERLAYS")
+        click.echo("-" * 60)
+        try:
+            overlays = json.loads(analysis['text_overlays'])
+            if overlays.get('overlays'):
+                for overlay in overlays['overlays']:
+                    ts = overlay.get('timestamp', 0.0)
+                    text = overlay.get('text', '')
+                    style = overlay.get('style', 'normal')
+                    click.echo(f"[{ts:.1f}s] {text} (style: {style})")
+        except:
+            pass
+        click.echo()
+
+    # Visual Storyboard
+    if analysis.get('storyboard'):
+        click.echo("VISUAL STORYBOARD")
+        click.echo("-" * 60)
+        try:
+            storyboard = json.loads(analysis['storyboard'])
+            if storyboard.get('scenes'):
+                for scene in storyboard['scenes']:
+                    ts = scene.get('timestamp', 0.0)
+                    duration = scene.get('duration', 0.0)
+                    desc = scene.get('description', '')
+                    end_ts = ts + duration
+                    click.echo(f"[{ts:.1f}s - {end_ts:.1f}s] ({duration:.1f}s)")
+                    click.echo(f"  {desc}")
+        except:
+            pass
+        click.echo()
+
+    # Key Moments
+    if analysis.get('key_moments'):
+        click.echo("KEY MOMENTS")
+        click.echo("-" * 60)
+        try:
+            moments = json.loads(analysis['key_moments'])
+            if moments.get('moments'):
+                for moment in moments['moments']:
+                    ts = moment.get('timestamp', 0.0)
+                    mtype = moment.get('type', '')
+                    desc = moment.get('description', '')
+                    click.echo(f"[{ts:.1f}s] {mtype.upper()}: {desc}")
+        except:
+            pass
+        click.echo()
+
+    # Viral Factors
+    if analysis.get('viral_factors'):
+        click.echo("VIRAL FACTORS")
+        click.echo("-" * 60)
+        try:
+            factors = json.loads(analysis['viral_factors'])
+            for key, value in factors.items():
+                click.echo(f"  - {key.replace('_', ' ').title()}: {value}")
+        except:
+            pass
+        click.echo()
+
+    # Why It Went Viral
+    if analysis.get('viral_explanation'):
+        click.echo("WHY IT WENT VIRAL")
+        click.echo("-" * 60)
+        click.echo(analysis['viral_explanation'])
+        click.echo()
+
+    # Improvement Suggestions
+    if analysis.get('improvement_suggestions'):
+        click.echo("IMPROVEMENT SUGGESTIONS")
+        click.echo("-" * 60)
+        try:
+            suggestions = json.loads(analysis['improvement_suggestions'])
+            for idx, sug in enumerate(suggestions, 1):
+                click.echo(f"  {idx}. {sug}")
+        except:
+            click.echo(analysis['improvement_suggestions'])
+        click.echo()
+
+    click.echo(f"{'='*60}\n")
 
 
 @click.group(name="tiktok")
@@ -382,41 +526,59 @@ def scrape_user(
 
 @tiktok_group.command(name="analyze-url")
 @click.argument('url')
-@click.option('--brand', '-b', required=True, help='Brand slug (required for feedback tracking)')
+@click.option('--project', '-p', required=True, help='Project slug (required for organization)')
+@click.option('--product', help='Product slug for adaptations (optional)')
 @click.option('--download/--no-download', default=True, help='Download and analyze video (default: True)')
-def analyze_url(url: str, brand: str, download: bool):
+def analyze_url(url: str, project: str, product: Optional[str], download: bool):
     """
     Analyze a single TikTok video from URL
 
     Fetches video metadata, downloads, and analyzes with Gemini AI.
-    Must link to a brand for feedback tracking.
+    Must link to a project for organization. Optionally generate product adaptations.
 
     Examples:
-        vt tiktok analyze-url https://www.tiktok.com/@user/video/123 --brand wonder-paws
-        vt tiktok analyze-url https://vt.tiktok.com/ZS12345/ --brand yakety-pack
+        vt tiktok analyze-url https://www.tiktok.com/@user/video/123 --project wonder-paws-tiktok
+        vt tiktok analyze-url https://www.tiktok.com/@user/video/123 --project wonder-paws-tiktok --product collagen-3x-drops
     """
     try:
         click.echo(f"\n{'='*60}")
         click.echo(f"🎬 TikTok URL Analyzer")
         click.echo(f"{'='*60}\n")
 
-        # Get brand/product info
+        # Get project/brand/product info
         supabase = get_supabase_client()
-        brand_result = supabase.table("brands").select("id, name, products(id, name)").eq("slug", brand).execute()
+        project_result = supabase.table("projects").select("id, name, brand_id, product_id, brands(id, name, products(id, name))").eq("slug", project).execute()
 
-        if not brand_result.data:
-            click.echo(f"❌ Brand '{brand}' not found", err=True)
-            click.echo("\n💡 List brands: vt brands list")
+        if not project_result.data:
+            click.echo(f"❌ Project '{project}' not found", err=True)
+            click.echo("\n💡 List available projects")
             raise click.Abort()
 
-        brand_data = brand_result.data[0]
+        project_data = project_result.data[0]
+        project_id = project_data['id']
+        project_name = project_data['name']
+        brand_data = project_data['brands']
         brand_id = brand_data['id']
         brand_name = brand_data['name']
         products = brand_data.get('products', [])
 
+        # Get product ID if specified
+        product_id = None
+        product_name = None
+        if product:
+            product_result = supabase.table("products").select("id, name").eq("slug", product).execute()
+            if not product_result.data:
+                click.echo(f"❌ Product '{product}' not found", err=True)
+                raise click.Abort()
+            product_id = product_result.data[0]['id']
+            product_name = product_result.data[0]['name']
+
+        click.echo(f"Project: {project_name}")
         click.echo(f"Brand: {brand_name}")
         if products:
             click.echo(f"Products: {', '.join([p['name'] for p in products])}")
+        if product_name:
+            click.echo(f"Generating adaptations for: {product_name}")
         click.echo(f"URL: {url}\n")
 
         # Initialize scraper
@@ -450,7 +612,14 @@ def analyze_url(url: str, brand: str, download: bool):
             raise click.Abort()
 
         post_id = post_ids[0]
-        click.echo(f"✅ Saved post: {post_id}")
+
+        # Link to project
+        supabase.table("project_posts").upsert({
+            "project_id": project_id,
+            "post_id": post_id
+        }, on_conflict="project_id,post_id").execute()
+
+        click.echo(f"✅ Saved post to database")
 
         # Download and analyze if requested
         if download:
@@ -471,10 +640,9 @@ def analyze_url(url: str, brand: str, download: bool):
 
             # Analyze with Gemini
             click.echo("\n🤖 Analyzing with Gemini AI...")
+            if product_id:
+                click.echo(f"   Generating product adaptations for {product_name}...")
             analyzer = VideoAnalyzer(supabase)
-
-            # Use first product if available
-            product_id = products[0]['id'] if products else None
 
             # Get video record
             video_record = supabase.table("video_processing_log")\
@@ -487,14 +655,67 @@ def analyze_url(url: str, brand: str, download: bool):
 
             if analysis_result.status == "completed":
                 click.echo(f"✅ Analysis complete ({analysis_result.processing_time:.1f}s)")
-                click.echo(f"\n📊 Results:")
-                click.echo(f"   Hook: {analysis_result.hook_transcript[:100]}...")
-                click.echo(f"   Type: {analysis_result.hook_type}")
-                click.echo(f"   Why viral: {analysis_result.viral_explanation[:150]}...")
+
+                # Fetch full analysis with all details
+                analysis_data = supabase.table("video_analysis")\
+                    .select("*")\
+                    .eq("post_id", post_id)\
+                    .single()\
+                    .execute()
+
+                # Fetch post with account info
+                post_data = supabase.table("posts")\
+                    .select("*, accounts(platform_username)")\
+                    .eq("id", post_id)\
+                    .single()\
+                    .execute()
+
+                # Display detailed results
+                display_analysis_results(analysis_data.data, post_data.data)
+
+                # Show product adaptations if available
+                if product_id:
+                    adaptation_result = supabase.table("product_adaptations")\
+                        .select("*")\
+                        .eq("post_id", post_id)\
+                        .eq("product_id", product_id)\
+                        .execute()
+
+                    if adaptation_result.data:
+                        adapt = adaptation_result.data[0]
+                        click.echo(f"{'='*60}")
+                        click.echo(f"🎯 PRODUCT ADAPTATIONS")
+                        click.echo(f"{'='*60}\n")
+
+                        click.echo("ADAPTATION SCORES")
+                        click.echo("-" * 60)
+                        click.echo(f"  Hook Relevance: {adapt.get('hook_relevance_score', 'N/A')}/10")
+                        click.echo(f"  Audience Match: {adapt.get('audience_match_score', 'N/A')}/10")
+                        click.echo(f"  Transition Ease: {adapt.get('transition_ease_score', 'N/A')}/10")
+                        click.echo(f"  Viral Replicability: {adapt.get('viral_replicability_score', 'N/A')}/10")
+                        click.echo(f"  OVERALL SCORE: {adapt.get('overall_score', 'N/A')}/10\n")
+
+                        if adapt.get('adapted_hook'):
+                            click.echo("ADAPTED HOOK")
+                            click.echo("-" * 60)
+                            click.echo(adapt['adapted_hook'])
+                            click.echo()
+
+                        if adapt.get('adapted_script'):
+                            click.echo("ADAPTED SCRIPT")
+                            click.echo("-" * 60)
+                            click.echo(adapt['adapted_script'][:500])
+                            if len(adapt['adapted_script']) > 500:
+                                click.echo("...")
+                            click.echo()
+
+                        click.echo(f"{'='*60}\n")
             else:
                 click.echo(f"❌ Analysis failed: {analysis_result.error_message}")
 
-        click.echo()
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Complete!")
+        click.echo(f"{'='*60}\n")
 
     except Exception as e:
         click.echo(f"\n❌ URL analysis failed: {e}", err=True)
@@ -504,41 +725,59 @@ def analyze_url(url: str, brand: str, download: bool):
 
 @tiktok_group.command(name="analyze-urls")
 @click.argument('file_path', type=click.Path(exists=True))
-@click.option('--brand', '-b', required=True, help='Brand slug (required for feedback tracking)')
+@click.option('--project', '-p', required=True, help='Project slug (required for organization)')
+@click.option('--product', help='Product slug for adaptations (optional)')
 @click.option('--download/--no-download', default=True, help='Download and analyze videos (default: True)')
-def analyze_urls(file_path: str, brand: str, download: bool):
+def analyze_urls(file_path: str, project: str, product: Optional[str], download: bool):
     """
     Analyze multiple TikTok videos from a file of URLs
 
     Reads URLs from file (one per line), fetches, downloads, and analyzes.
-    Must link to a brand for feedback tracking.
+    Must link to a project for organization. Optionally generate product adaptations.
 
     Examples:
-        vt tiktok analyze-urls urls.txt --brand wonder-paws
-        vt tiktok analyze-urls tiktok_links.txt --brand yakety-pack --no-download
+        vt tiktok analyze-urls urls.txt --project wonder-paws-tiktok
+        vt tiktok analyze-urls urls.txt --project wonder-paws-tiktok --product collagen-3x-drops
     """
     try:
         click.echo(f"\n{'='*60}")
         click.echo(f"🎬 TikTok Batch URL Analyzer")
         click.echo(f"{'='*60}\n")
 
-        # Get brand/product info
+        # Get project/brand/product info
         supabase = get_supabase_client()
-        brand_result = supabase.table("brands").select("id, name, products(id, name)").eq("slug", brand).execute()
+        project_result = supabase.table("projects").select("id, name, brand_id, product_id, brands(id, name, products(id, name))").eq("slug", project).execute()
 
-        if not brand_result.data:
-            click.echo(f"❌ Brand '{brand}' not found", err=True)
-            click.echo("\n💡 List brands: vt brands list")
+        if not project_result.data:
+            click.echo(f"❌ Project '{project}' not found", err=True)
+            click.echo("\n💡 List available projects")
             raise click.Abort()
 
-        brand_data = brand_result.data[0]
+        project_data = project_result.data[0]
+        project_id = project_data['id']
+        project_name = project_data['name']
+        brand_data = project_data['brands']
         brand_id = brand_data['id']
         brand_name = brand_data['name']
         products = brand_data.get('products', [])
 
+        # Get product ID if specified
+        product_id = None
+        product_name = None
+        if product:
+            product_result = supabase.table("products").select("id, name").eq("slug", product).execute()
+            if not product_result.data:
+                click.echo(f"❌ Product '{product}' not found", err=True)
+                raise click.Abort()
+            product_id = product_result.data[0]['id']
+            product_name = product_result.data[0]['name']
+
+        click.echo(f"Project: {project_name}")
         click.echo(f"Brand: {brand_name}")
         if products:
             click.echo(f"Products: {', '.join([p['name'] for p in products])}")
+        if product_name:
+            click.echo(f"Generating adaptations for: {product_name}")
 
         # Read URLs from file
         with open(file_path, 'r') as f:
@@ -558,7 +797,6 @@ def analyze_urls(file_path: str, brand: str, download: bool):
             from ..analysis.video_analyzer import VideoAnalyzer
             processor = VideoProcessor(supabase)
             analyzer = VideoAnalyzer(supabase)
-            product_id = products[0]['id'] if products else None
 
         # Process each URL
         stats = {"fetched": 0, "downloaded": 0, "analyzed": 0, "failed": 0}
@@ -585,6 +823,13 @@ def analyze_urls(file_path: str, brand: str, download: bool):
 
                 post_id = post_ids[0]
                 video = df.iloc[0]
+
+                # Link to project
+                supabase.table("project_posts").upsert({
+                    "project_id": project_id,
+                    "post_id": post_id
+                }, on_conflict="project_id,post_id").execute()
+
                 click.echo(f"   ✅ Saved: @{video['username']} ({video['views']:,} views)")
                 stats["fetched"] += 1
 
@@ -611,8 +856,62 @@ def analyze_urls(file_path: str, brand: str, download: bool):
                     analysis_result = analyzer.process_video(video_record.data, product_id=product_id)
 
                     if analysis_result.status == "completed":
-                        click.echo(f"   ✅ Analyzed: {analysis_result.hook_type} hook")
+                        click.echo(f"   ✅ Analyzed")
                         stats["analyzed"] += 1
+
+                        # Fetch and display full analysis
+                        analysis_data = supabase.table("video_analysis")\
+                            .select("*")\
+                            .eq("post_id", post_id)\
+                            .single()\
+                            .execute()
+
+                        post_data = supabase.table("posts")\
+                            .select("*, accounts(platform_username)")\
+                            .eq("id", post_id)\
+                            .single()\
+                            .execute()
+
+                        # Display detailed results
+                        display_analysis_results(analysis_data.data, post_data.data)
+
+                        # Show product adaptations if available
+                        if product_id:
+                            adaptation_result = supabase.table("product_adaptations")\
+                                .select("*")\
+                                .eq("post_id", post_id)\
+                                .eq("product_id", product_id)\
+                                .execute()
+
+                            if adaptation_result.data:
+                                adapt = adaptation_result.data[0]
+                                click.echo(f"{'='*60}")
+                                click.echo(f"🎯 PRODUCT ADAPTATIONS")
+                                click.echo(f"{'='*60}\n")
+
+                                click.echo("ADAPTATION SCORES")
+                                click.echo("-" * 60)
+                                click.echo(f"  Hook Relevance: {adapt.get('hook_relevance_score', 'N/A')}/10")
+                                click.echo(f"  Audience Match: {adapt.get('audience_match_score', 'N/A')}/10")
+                                click.echo(f"  Transition Ease: {adapt.get('transition_ease_score', 'N/A')}/10")
+                                click.echo(f"  Viral Replicability: {adapt.get('viral_replicability_score', 'N/A')}/10")
+                                click.echo(f"  OVERALL SCORE: {adapt.get('overall_score', 'N/A')}/10\n")
+
+                                if adapt.get('adapted_hook'):
+                                    click.echo("ADAPTED HOOK")
+                                    click.echo("-" * 60)
+                                    click.echo(adapt['adapted_hook'])
+                                    click.echo()
+
+                                if adapt.get('adapted_script'):
+                                    click.echo("ADAPTED SCRIPT")
+                                    click.echo("-" * 60)
+                                    click.echo(adapt['adapted_script'][:500])
+                                    if len(adapt['adapted_script']) > 500:
+                                        click.echo("...")
+                                    click.echo()
+
+                                click.echo(f"{'='*60}\n")
                     else:
                         click.echo(f"   ❌ Analysis failed")
                         stats["failed"] += 1
@@ -624,13 +923,16 @@ def analyze_urls(file_path: str, brand: str, download: bool):
 
         # Summary
         click.echo(f"\n{'='*60}")
+        click.echo(f"✅ BATCH ANALYSIS COMPLETE")
+        click.echo(f"{'='*60}\n")
         click.echo(f"📊 Summary:")
-        click.echo(f"   Fetched: {stats['fetched']}/{len(urls)}")
+        click.echo(f"   Total URLs: {len(urls)}")
+        click.echo(f"   Fetched: {stats['fetched']}")
         if download:
-            click.echo(f"   Downloaded: {stats['downloaded']}/{len(urls)}")
-            click.echo(f"   Analyzed: {stats['analyzed']}/{len(urls)}")
-        click.echo(f"   Failed: {stats['failed']}/{len(urls)}")
-        click.echo()
+            click.echo(f"   Downloaded: {stats['downloaded']}")
+            click.echo(f"   Analyzed: {stats['analyzed']}")
+        click.echo(f"   Failed: {stats['failed']}")
+        click.echo(f"\n{'='*60}\n")
 
     except Exception as e:
         click.echo(f"\n❌ Batch analysis failed: {e}", err=True)
