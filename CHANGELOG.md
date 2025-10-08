@@ -1,5 +1,86 @@
 # ViralTracker Changelog
 
+## 2025-10-07 - TikTok URL Analysis Feature
+
+### Phase 5c: TikTok URL Import & Analysis
+
+**New Feature: Direct URL Analysis**
+Added ability to analyze TikTok videos from URLs (complementing existing search/hashtag/user scraping).
+
+**New CLI Commands:**
+```bash
+vt tiktok analyze-url <URL> --brand <brand-slug> [--download]
+vt tiktok analyze-urls <file> --brand <brand-slug> [--download]
+```
+
+**Key Implementation Details:**
+- Uses ScrapTik's `post_awemeId` endpoint (extracts aweme_id from URL)
+- Links videos to brands via `brand_posts` table (not just projects)
+- Supports all TikTok URL formats: standard, vt.tiktok.com, vm.tiktok.com
+- Optional `--download` flag for end-to-end processing
+
+**Code Changes:**
+- `viraltracker/cli/tiktok.py`: Added `analyze-url` and `analyze-urls` commands
+- `viraltracker/scrapers/tiktok.py`: New methods:
+  - `fetch_video_by_url()` - Fetch single video metadata
+  - `_start_post_fetch_run()` - Apify run with aweme_id
+  - `_normalize_single_post()` - Parse `{aweme_detail: {...}}` response
+  - `_link_posts_to_brand()` - Link to brands table
+- Updated `save_posts_to_db()` to accept `brand_id` parameter
+
+**Production Test:**
+- Brand: Wonder Paws (Collagen 3X Drops)
+- Imported: 10 TikTok URLs from file
+- Total views: 3.6M (avg 363K per video)
+- All downloaded: 121MB total
+- All analyzed: Gemini 2.0 Flash with product adaptations
+
+**Viral Patterns Identified:**
+- Problem-based hooks (dog health issues)
+- Natural alternatives to vet treatments
+- Emotional storytelling (suffering → relief)
+- Specific claims (80% improvement, 3 weeks)
+- Personal testimonials with before/after
+
+**Files Created:**
+- `test_tiktok_urls.txt` - Example URL input
+- `tiktok_wonder_paws_urls.csv` - Metadata export
+- `tiktok_analysis_results.csv` - Full analysis with adaptations
+
+**Known Issues:**
+1. ⚠️ Gemini model name in CLI: uses deprecated `models/gemini-1.5-flash-latest`
+   - Workaround: Use `--gemini-model models/gemini-2.0-flash-exp`
+   - TODO: Update default in `video_analyzer.py`
+
+2. ⚠️ Output formatting inconsistent with search command
+   - URL commands need better progress indicators
+   - TODO: Match search command output format
+
+3. ⚠️ Brand vs Project workflow confusing
+   - URL import links to brands
+   - Process/analyze commands require projects
+   - Had to manually link posts to project for processing
+   - TODO: Unify brand/project handling
+
+**Successful Workflow Pattern:**
+```bash
+# 1. Import URLs to brand
+vt tiktok analyze-urls urls.txt --brand wonder-paws --no-download
+
+# 2. Link to project (manual Python)
+# [Script to link brand_posts to project_posts]
+
+# 3. Download videos
+vt process videos --project wonder-paws-tiktok
+
+# 4. Analyze with Gemini
+vt analyze videos --project wonder-paws-tiktok \
+  --product collagen-3x-drops \
+  --gemini-model models/gemini-2.0-flash-exp
+```
+
+---
+
 ## 2025-01-07 - TikTok Integration Complete
 
 ### Phase 5b: TikTok Integration

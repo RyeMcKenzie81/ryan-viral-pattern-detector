@@ -378,3 +378,261 @@ def scrape_user(
         click.echo(f"\n❌ User scraping failed: {e}", err=True)
         logger.exception(e)
         raise click.Abort()
+
+
+@tiktok_group.command(name="analyze-url")
+@click.argument('url')
+@click.option('--brand', '-b', required=True, help='Brand slug (required for feedback tracking)')
+@click.option('--download/--no-download', default=True, help='Download and analyze video (default: True)')
+def analyze_url(url: str, brand: str, download: bool):
+    """
+    Analyze a single TikTok video from URL
+
+    Fetches video metadata, downloads, and analyzes with Gemini AI.
+    Must link to a brand for feedback tracking.
+
+    Examples:
+        vt tiktok analyze-url https://www.tiktok.com/@user/video/123 --brand wonder-paws
+        vt tiktok analyze-url https://vt.tiktok.com/ZS12345/ --brand yakety-pack
+    """
+    try:
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🎬 TikTok URL Analyzer")
+        click.echo(f"{'='*60}\n")
+
+        # Get brand/product info
+        supabase = get_supabase_client()
+        brand_result = supabase.table("brands").select("id, name, products(id, name)").eq("slug", brand).execute()
+
+        if not brand_result.data:
+            click.echo(f"❌ Brand '{brand}' not found", err=True)
+            click.echo("\n💡 List brands: vt brands list")
+            raise click.Abort()
+
+        brand_data = brand_result.data[0]
+        brand_id = brand_data['id']
+        brand_name = brand_data['name']
+        products = brand_data.get('products', [])
+
+        click.echo(f"Brand: {brand_name}")
+        if products:
+            click.echo(f"Products: {', '.join([p['name'] for p in products])}")
+        click.echo(f"URL: {url}\n")
+
+        # Initialize scraper
+        scraper = TikTokScraper()
+
+        # Fetch video metadata
+        click.echo("📥 Fetching video metadata...")
+        df = scraper.fetch_video_by_url(url)
+
+        if len(df) == 0:
+            click.echo("❌ Failed to fetch video metadata")
+            click.echo("\n💡 Check:")
+            click.echo("   - URL is valid and accessible")
+            click.echo("   - Video is public")
+            raise click.Abort()
+
+        # Display video info
+        video = df.iloc[0]
+        click.echo(f"\n✅ Video found:")
+        click.echo(f"   @{video['username']} ({video['follower_count']:,} followers)")
+        click.echo(f"   Views: {video['views']:,} | Likes: {video['likes']:,}")
+        click.echo(f"   Caption: {video['caption'][:100]}...")
+        click.echo()
+
+        # Save to database
+        click.echo("💾 Saving to database...")
+        post_ids = scraper.save_posts_to_db(df, brand_id=brand_id, import_source="direct_url")
+
+        if not post_ids:
+            click.echo("❌ Failed to save post")
+            raise click.Abort()
+
+        post_id = post_ids[0]
+        click.echo(f"✅ Saved post: {post_id}")
+
+        # Download and analyze if requested
+        if download:
+            from ..processing.video_processor import VideoProcessor
+            from ..analysis.video_analyzer import VideoAnalyzer
+
+            click.echo("\n📥 Downloading video...")
+            processor = VideoProcessor(supabase)
+
+            # Download video
+            result = processor.process_post(post_id)
+
+            if result.status != "completed":
+                click.echo(f"❌ Download failed: {result.error_message}")
+                raise click.Abort()
+
+            click.echo(f"✅ Downloaded: {result.file_size_mb:.2f} MB")
+
+            # Analyze with Gemini
+            click.echo("\n🤖 Analyzing with Gemini AI...")
+            analyzer = VideoAnalyzer(supabase)
+
+            # Use first product if available
+            product_id = products[0]['id'] if products else None
+
+            # Get video record
+            video_record = supabase.table("video_processing_log")\
+                .select("post_id, storage_path, file_size_mb, video_duration_sec, posts(id, post_url, caption, views, account_id, accounts(platform_username, platform_id, platforms(slug)))")\
+                .eq("post_id", post_id)\
+                .single()\
+                .execute()
+
+            analysis_result = analyzer.process_video(video_record.data, product_id=product_id)
+
+            if analysis_result.status == "completed":
+                click.echo(f"✅ Analysis complete ({analysis_result.processing_time:.1f}s)")
+                click.echo(f"\n📊 Results:")
+                click.echo(f"   Hook: {analysis_result.hook_transcript[:100]}...")
+                click.echo(f"   Type: {analysis_result.hook_type}")
+                click.echo(f"   Why viral: {analysis_result.viral_explanation[:150]}...")
+            else:
+                click.echo(f"❌ Analysis failed: {analysis_result.error_message}")
+
+        click.echo()
+
+    except Exception as e:
+        click.echo(f"\n❌ URL analysis failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@tiktok_group.command(name="analyze-urls")
+@click.argument('file_path', type=click.Path(exists=True))
+@click.option('--brand', '-b', required=True, help='Brand slug (required for feedback tracking)')
+@click.option('--download/--no-download', default=True, help='Download and analyze videos (default: True)')
+def analyze_urls(file_path: str, brand: str, download: bool):
+    """
+    Analyze multiple TikTok videos from a file of URLs
+
+    Reads URLs from file (one per line), fetches, downloads, and analyzes.
+    Must link to a brand for feedback tracking.
+
+    Examples:
+        vt tiktok analyze-urls urls.txt --brand wonder-paws
+        vt tiktok analyze-urls tiktok_links.txt --brand yakety-pack --no-download
+    """
+    try:
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🎬 TikTok Batch URL Analyzer")
+        click.echo(f"{'='*60}\n")
+
+        # Get brand/product info
+        supabase = get_supabase_client()
+        brand_result = supabase.table("brands").select("id, name, products(id, name)").eq("slug", brand).execute()
+
+        if not brand_result.data:
+            click.echo(f"❌ Brand '{brand}' not found", err=True)
+            click.echo("\n💡 List brands: vt brands list")
+            raise click.Abort()
+
+        brand_data = brand_result.data[0]
+        brand_id = brand_data['id']
+        brand_name = brand_data['name']
+        products = brand_data.get('products', [])
+
+        click.echo(f"Brand: {brand_name}")
+        if products:
+            click.echo(f"Products: {', '.join([p['name'] for p in products])}")
+
+        # Read URLs from file
+        with open(file_path, 'r') as f:
+            urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+
+        click.echo(f"URLs to process: {len(urls)}\n")
+
+        if not urls:
+            click.echo("❌ No URLs found in file")
+            raise click.Abort()
+
+        # Initialize tools
+        scraper = TikTokScraper()
+
+        if download:
+            from ..processing.video_processor import VideoProcessor
+            from ..analysis.video_analyzer import VideoAnalyzer
+            processor = VideoProcessor(supabase)
+            analyzer = VideoAnalyzer(supabase)
+            product_id = products[0]['id'] if products else None
+
+        # Process each URL
+        stats = {"fetched": 0, "downloaded": 0, "analyzed": 0, "failed": 0}
+
+        for idx, url in enumerate(urls, 1):
+            try:
+                click.echo(f"\n[{idx}/{len(urls)}] Processing: {url}")
+
+                # Fetch metadata
+                df = scraper.fetch_video_by_url(url)
+
+                if len(df) == 0:
+                    click.echo("   ❌ Failed to fetch metadata")
+                    stats["failed"] += 1
+                    continue
+
+                # Save to database
+                post_ids = scraper.save_posts_to_db(df, brand_id=brand_id, import_source="direct_url")
+
+                if not post_ids:
+                    click.echo("   ❌ Failed to save")
+                    stats["failed"] += 1
+                    continue
+
+                post_id = post_ids[0]
+                video = df.iloc[0]
+                click.echo(f"   ✅ Saved: @{video['username']} ({video['views']:,} views)")
+                stats["fetched"] += 1
+
+                # Download and analyze if requested
+                if download:
+                    # Download
+                    result = processor.process_post(post_id)
+
+                    if result.status != "completed":
+                        click.echo(f"   ❌ Download failed: {result.error_message}")
+                        stats["failed"] += 1
+                        continue
+
+                    click.echo(f"   ✅ Downloaded: {result.file_size_mb:.2f} MB")
+                    stats["downloaded"] += 1
+
+                    # Analyze
+                    video_record = supabase.table("video_processing_log")\
+                        .select("post_id, storage_path, file_size_mb, video_duration_sec, posts(id, post_url, caption, views, account_id, accounts(platform_username, platform_id, platforms(slug)))")\
+                        .eq("post_id", post_id)\
+                        .single()\
+                        .execute()
+
+                    analysis_result = analyzer.process_video(video_record.data, product_id=product_id)
+
+                    if analysis_result.status == "completed":
+                        click.echo(f"   ✅ Analyzed: {analysis_result.hook_type} hook")
+                        stats["analyzed"] += 1
+                    else:
+                        click.echo(f"   ❌ Analysis failed")
+                        stats["failed"] += 1
+
+            except Exception as e:
+                click.echo(f"   ❌ Error: {e}")
+                stats["failed"] += 1
+                continue
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Fetched: {stats['fetched']}/{len(urls)}")
+        if download:
+            click.echo(f"   Downloaded: {stats['downloaded']}/{len(urls)}")
+            click.echo(f"   Analyzed: {stats['analyzed']}/{len(urls)}")
+        click.echo(f"   Failed: {stats['failed']}/{len(urls)}")
+        click.echo()
+
+    except Exception as e:
+        click.echo(f"\n❌ Batch analysis failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()

@@ -244,6 +244,62 @@ class TikTokScraper:
 
         return df
 
+    def fetch_video_by_url(
+        self,
+        url: str,
+        timeout: int = 300
+    ) -> pd.DataFrame:
+        """
+        Fetch a single TikTok video by URL
+
+        Supports all TikTok URL formats:
+        - https://www.tiktok.com/@username/video/7123456789
+        - https://vt.tiktok.com/ZS12345/
+        - https://vm.tiktok.com/ZS12345/
+
+        Uses ScrapTik's post_awemeId endpoint to fetch single video.
+
+        Args:
+            url: TikTok video URL
+            timeout: Apify timeout in seconds
+
+        Returns:
+            DataFrame with single video metadata
+        """
+        logger.info(f"Fetching TikTok video from URL: {url}")
+
+        # Extract aweme_id from URL
+        import re
+        match = re.search(r'/video/(\d+)', url)
+        if not match:
+            raise ValueError(f"Could not extract video ID from URL: {url}. Expected format: https://www.tiktok.com/@username/video/ID")
+
+        aweme_id = match.group(1)
+        logger.info(f"Extracted aweme_id: {aweme_id}")
+
+        # Start Apify run with post_awemeId
+        run_id = self._start_post_fetch_run(aweme_id)
+
+        # Poll for completion
+        result = self._poll_apify_run(run_id, timeout)
+
+        # Fetch dataset
+        items = self._fetch_dataset(result['datasetId'])
+
+        if not items:
+            logger.warning("No video data returned from URL")
+            return pd.DataFrame()
+
+        # Normalize single post to DataFrame
+        df = self._normalize_single_post(items)
+
+        if len(df) > 0:
+            logger.info(f"Fetched video: @{df.iloc[0]['username']}, {df.iloc[0]['views']:,} views")
+        else:
+            logger.warning("Failed to parse video data")
+
+        return df
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
     def _start_keyword_search_run(
         self,
@@ -341,6 +397,68 @@ class TikTokScraper:
         }
 
         logger.info(f"Starting user scrape: @{username} (count={count})")
+
+        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input, build="latest")
+
+        run_id = run["id"]
+        logger.info(f"Apify run started: {run_id}")
+        return run_id
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
+    def _start_post_fetch_run(self, aweme_id: str) -> str:
+        """
+        Start Apify run for single post fetch
+
+        Uses ScrapTik's post_awemeId endpoint.
+
+        Args:
+            aweme_id: TikTok video ID (aweme_id)
+
+        Returns:
+            Apify run ID
+        """
+        actor_input = {
+            "post_awemeId": aweme_id
+        }
+
+        logger.info(f"Starting post fetch for aweme_id: {aweme_id}")
+
+        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input, build="latest")
+
+        run_id = run["id"]
+        logger.info(f"Apify run started: {run_id}")
+        return run_id
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
+    def _start_url_fetch_run(self, url: str) -> str:
+        """
+        Start Apify run for single video URL fetch
+
+        Uses ScrapTik's videoWithoutWatermark endpoint which accepts URLs.
+        This endpoint fetches video metadata + download URL.
+
+        Args:
+            url: TikTok video URL
+
+        Returns:
+            Apify run ID
+        """
+        # Extract aweme_id from URL for the videoWithoutWatermark endpoint
+        # Format: https://www.tiktok.com/@username/video/7554020104241990943
+        import re
+        match = re.search(r'/video/(\d+)', url)
+        if not match:
+            raise ValueError(f"Could not extract video ID from URL: {url}")
+
+        aweme_id = match.group(1)
+        logger.info(f"Extracted aweme_id: {aweme_id}")
+
+        # Use videoWithoutWatermark which accepts aweme_id
+        actor_input = {
+            "videoWithoutWatermark_aweme_id": aweme_id
+        }
+
+        logger.info(f"Starting URL fetch for aweme_id: {aweme_id}")
 
         run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input, build="latest")
 
@@ -544,6 +662,38 @@ class TikTokScraper:
 
         return df
 
+    def _normalize_single_post(self, items: List[Dict]) -> pd.DataFrame:
+        """
+        Normalize a single TikTok post to DataFrame
+
+        ScrapTik post_awemeId returns: {"aweme_detail": {...}, "status_code": 0, ...}
+
+        Args:
+            items: Raw ScrapTik post data (single item)
+
+        Returns:
+            DataFrame with normalized post
+        """
+        if not items or len(items) == 0:
+            return pd.DataFrame()
+
+        response = items[0]
+
+        # Extract aweme_detail from response
+        if "aweme_detail" in response:
+            post = response["aweme_detail"]
+            # Wrap it like search results for consistent normalization
+            wrapped_items = [{"search_item_list": [{"aweme_info": post}]}]
+            return self._normalize_search_posts(wrapped_items)
+        elif "aweme_id" in response:
+            # Direct post format - wrap it like search results
+            wrapped_items = [{"search_item_list": [{"aweme_info": response}]}]
+            return self._normalize_search_posts(wrapped_items)
+        else:
+            # Try normalizing as-is
+            logger.warning(f"Unexpected post format. Keys: {list(response.keys())}")
+            return pd.DataFrame()
+
     def _apply_viral_filters(
         self,
         df: pd.DataFrame,
@@ -595,14 +745,16 @@ class TikTokScraper:
         self,
         df: pd.DataFrame,
         project_id: Optional[str] = None,
+        brand_id: Optional[str] = None,
         import_source: str = "scrape"
     ) -> List[str]:
         """
-        Save posts to database with platform_id and optional project link
+        Save posts to database with platform_id and optional project/brand link
 
         Args:
             df: DataFrame with posts
             project_id: Optional project UUID to link posts to
+            brand_id: Optional brand UUID to link posts to
             import_source: How posts were imported (scrape, direct_url, csv_import)
 
         Returns:
@@ -664,6 +816,10 @@ class TikTokScraper:
         # Link to project if provided
         if project_id and post_ids:
             self._link_posts_to_project(post_ids, project_id, import_source)
+
+        # Link to brand if provided
+        if brand_id and post_ids:
+            self._link_posts_to_brand(post_ids, brand_id, import_source)
 
         return post_ids
 
@@ -777,3 +933,48 @@ class TikTokScraper:
                 continue
 
         logger.info(f"Linked {linked_count} posts to project")
+
+    def _link_posts_to_brand(
+        self,
+        post_ids: List[str],
+        brand_id: str,
+        import_method: str = "scrape"
+    ):
+        """
+        Link posts to brand via brand_posts table
+
+        Args:
+            post_ids: List of post UUIDs
+            brand_id: Brand UUID
+            import_method: How posts were imported
+        """
+        links_data = []
+
+        for post_id in post_ids:
+            links_data.append({
+                'brand_id': brand_id,
+                'post_id': post_id,
+                'import_method': import_method,
+                'is_own_content': False,
+                'notes': f"TikTok URL import on {datetime.now().strftime('%Y-%m-%d')}"
+            })
+
+        # Process in chunks
+        chunk_size = 1000
+        chunks = [links_data[i:i + chunk_size] for i in range(0, len(links_data), chunk_size)]
+
+        linked_count = 0
+
+        for chunk in tqdm(chunks, desc="Linking posts to brand"):
+            try:
+                result = self.supabase.table("brand_posts").upsert(
+                    chunk,
+                    on_conflict="brand_id,post_id"
+                ).execute()
+                linked_count += len(result.data)
+
+            except Exception as e:
+                logger.error(f"Error linking posts chunk: {e}")
+                continue
+
+        logger.info(f"Linked {linked_count} posts to brand")
