@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "video_id": "123e4567-e89b-12d3-a456-426614174000",
+    "post_time_iso": "2024-01-15T10:00:00Z",
+    "followers": 50000,
+    "length_sec": 35
+  },
+  "measures": {
+    "hook": {
+      "duration_sec": 4.5,
+      "text": "dog parents listen carefully...",
+      "type": "curiosity|authority",
+      "visual_description": "Close-up of dog looking at camera",
+      "effectiveness_score": 8.5
+    },
+    "story": {
+      "storyboard": [
+        {
+          "timestamp": 0,
+          "duration": 10,
+          "description": "Hook: Owner addresses camera with urgent tone"
+        },
+        {
+          "timestamp": 10,
+          "duration": 15,
+          "description": "Build: Shows dog doing unusual behavior"
+        },
+        {
+          "timestamp": 25,
+          "duration": 10,
+          "description": "Payoff: Reveals the surprising reason why"
+        }
+      ],
+      "beats_count": 3,
+      "arc_detected": true
+    },
+    "visuals": {
+      "overlays": [
+        {
+          "timestamp": 2,
+          "text": "Listen up!",
+          "style": "bold"
+        },
+        {
+          "timestamp": 15,
+          "text": "Here's why...",
+          "style": "normal"
+        }
+      ],
+      "edit_rate_per_10s": 2.5,
+      "text_overlay_present": true
+    },
+    "audio": {
+      "trending_sound_used": false,
+      "original_sound_created": true,
+      "beat_sync_score": 7.5
+    },
+    "watchtime": {
+      "length_sec": 35,
+      "avg_watch_pct": 75,
+      "completion_rate": 68
+    },
+    "engagement": {
+      "views": 573009,
+      "likes": 45000,
+      "comments": 1200,
+      "shares": 800,
+      "saves": 300
+    },
+    "shareability": {
+      "caption_length_chars": 125,
+      "has_cta": true,
+      "save_worthy_signals": 8
+    },
+    "algo": {
+      "caption_length_chars": 125,
+      "hashtag_count": 4,
+      "hashtag_niche_mix_ok": true,
+      "post_time_optimal": true
+    }
+  },
+  "raw": {
+    "transcript": [
+      {
+        "timestamp": 0,
+        "speaker": "owner",
+        "text": "Dog parents, listen carefully to this..."
+      },
+      {
+        "timestamp": 5,
+        "speaker": "owner",
+        "text": "If your dog does this, here's what it means"
+      }
+    ],
+    "hook_span": {
+      "t_start": 0,
+      "t_end": 4.5
+    }
+  }
+}

@@ -1,8 +1,71 @@
 # ViralTracker Changelog
 
+## 2025-10-08 - Enhanced Output & Simplified Workflow
+
+### Phase 5d: Output Formatting & Workflow Improvements (COMPLETED ✅)
+
+**BREAKING CHANGE:** URL analysis commands now use `--project` instead of `--brand`
+
+**What Changed:**
+1. **Enhanced Output Formatting**
+   - Added detailed analysis display in terminal (matches export script quality)
+   - Shows hook, transcript, storyboard, viral factors, improvements
+   - Displays product adaptations when requested
+   - No more minimal output - full breakdown on every analysis
+
+2. **Simplified Workflow**
+   - Changed from `--brand` to `--project` flag (breaking change)
+   - Added optional `--product` flag for adaptations
+   - Auto-links posts to both `brand_posts` AND `project_posts` tables
+   - No more manual linking required between brands and projects
+
+**New Commands:**
+```bash
+# Without product adaptations
+vt tiktok analyze-url <URL> --project wonder-paws-tiktok
+
+# With product adaptations
+vt tiktok analyze-url <URL> --project wonder-paws-tiktok --product collagen-3x-drops
+
+# Batch processing
+vt tiktok analyze-urls urls.txt --project wonder-paws-tiktok [--product <slug>]
+```
+
+**Migration from 5c:**
+```bash
+# OLD (Phase 5c - no longer works)
+vt tiktok analyze-url <URL> --brand wonder-paws
+
+# NEW (Phase 5d - required)
+vt tiktok analyze-url <URL> --project wonder-paws-tiktok
+```
+
+**Code Changes:**
+- `viraltracker/cli/tiktok.py` (+341 lines):
+  - Added `display_analysis_results()` helper function (lines 28-168)
+  - Updated `analyze-url` to use `--project` + optional `--product` (lines 527-694)
+  - Updated `analyze-urls` to use `--project` + optional `--product` (lines 726-889)
+  - Auto-links to both `brand_posts` and `project_posts` tables
+
+**New Files:**
+- `PHASE_5D_SUMMARY.md` - Complete phase documentation
+- `UPDATED_WORKFLOW.md` - Usage examples and workflow guide
+- `export_wonder_paws_analysis.py` - Export script for analysis results
+- `test_product_integration.py` - Integration tests (all passing ✅)
+
+**Issues Resolved:**
+- ✅ Output formatting now matches search command quality
+- ✅ Brand/project workflow simplified (no manual linking)
+- ✅ Product adaptations are now optional (only when `--product` specified)
+
+**Commit:** e7a6951
+**Files Changed:** 5 files, +908 lines, -39 lines
+
+---
+
 ## 2025-10-07 - TikTok URL Analysis Feature
 
-### Phase 5c: TikTok URL Import & Analysis
+### Phase 5c: TikTok URL Import & Analysis (COMPLETED ✅)
 
 **New Feature: Direct URL Analysis**
 Added ability to analyze TikTok videos from URLs (complementing existing search/hashtag/user scraping).
@@ -200,3 +263,147 @@ Keywords Searched: "dog collagen", "dog pain", "dog joints"
 - Database schema (Supabase)
 - Core models and services
 - CLI framework
+
+---
+
+## 2025-10-08 - Scoring Engine Integration (UPCOMING)
+
+### Phase 6: Deterministic TikTok Scoring System (IN PROGRESS 🚧)
+
+**Goal:** Replace subjective "viral factors" with deterministic 0-100 scoring using 9 subscores + penalties.
+
+**Architecture:**
+- TypeScript scoring engine in `scorer/` subdirectory
+- Python calls scorer via subprocess (JSON in/out)
+- New `video_scores` database table
+- New CLI command: `vt score videos --project <project>`
+
+**9 Subscores (0-100 each):**
+1. **Hook** (20% weight) - First 3-5 seconds effectiveness
+2. **Story** (15% weight) - Narrative structure, beats, arc
+3. **Relatability** (12% weight) - Audience connection, emotion
+4. **Visuals** (10% weight) - Production quality, editing, overlays
+5. **Audio** (8% weight) - Sound quality, music, trending sounds
+6. **Watchtime** (12% weight) - Retention signals, completion rate
+7. **Engagement** (10% weight) - Likes, comments, shares relative to views
+8. **Shareability** (8% weight) - Caption, CTA, viral mechanics
+9. **Algo** (5% weight) - Platform optimization (hashtags, length, etc.)
+
+**Penalties:** Subtracted from total (clickbait, poor audio, etc.)
+
+**Overall Score:** Weighted average of subscores minus penalties (0-100)
+
+**Implementation Phases:**
+
+**Phase 6.1: Database & TypeScript Scorer**
+- [ ] Create `sql/04_video_scores.sql` migration
+- [ ] Add `video_scores` table (9 subscores + penalties + overall)
+- [ ] Add `overall_score` column to `video_analysis`
+- [ ] Set up TypeScript project in `scorer/`
+- [ ] Implement Zod schemas with our data extensions
+- [ ] Implement 9 scoring formulas + penalties
+- [ ] Create CLI that reads JSON from stdin
+- [ ] Write unit tests
+
+**Phase 6.2: Python Integration**
+- [ ] Create `viraltracker/scoring/data_adapter.py`
+- [ ] Build Python → TypeScript bridge (subprocess)
+- [ ] Create `viraltracker/cli/score.py` command
+- [ ] Test on sample videos
+
+**Phase 6.3: Batch Scoring & Testing**
+- [ ] Score 10 sample videos
+- [ ] Verify scores make intuitive sense
+- [ ] Adjust formulas based on results
+- [ ] Batch-score all 120+ existing analyzed videos
+- [ ] Create visualization/export scripts
+
+**Phase 6.4: Model Upgrade (Optional)**
+- [ ] Update default Gemini model to `models/gemini-2.5-pro`
+- [ ] Add `--gemini-model` option to analyze commands
+- [ ] Test differences between models
+- [ ] Document model selection guidance
+
+**Data Sources:**
+- ScrapTik metadata (views, likes, comments, caption, hashtags)
+- Gemini analysis (hook, transcript, storyboard, overlays, key moments)
+- Derived metrics (engagement rate, hashtag mix, story beats)
+
+**Example Output:**
+```json
+{
+  "version": "1.0.0",
+  "subscores": {
+    "hook": 85.5,
+    "story": 78.2,
+    "relatability": 82.0,
+    "visuals": 75.5,
+    "audio": 70.0,
+    "watchtime": 68.5,
+    "engagement": 88.0,
+    "shareability": 72.0,
+    "algo": 65.0
+  },
+  "penalties": 5.0,
+  "overall": 76.8
+}
+```
+
+**New CLI Commands:**
+```bash
+# Score unscored videos in a project
+vt score videos --project wonder-paws-tiktok
+
+# Re-score all videos (even if already scored)
+vt score videos --project wonder-paws-tiktok --rescore
+
+# Score with limit for testing
+vt score videos --project wonder-paws-tiktok --limit 10
+```
+
+**Database Schema:**
+```sql
+CREATE TABLE video_scores (
+  id UUID PRIMARY KEY,
+  post_id UUID NOT NULL REFERENCES posts(id),
+  scorer_version TEXT NOT NULL,
+  scored_at TIMESTAMP DEFAULT NOW(),
+
+  -- 9 subscores
+  hook_score FLOAT NOT NULL CHECK (0-100),
+  story_score FLOAT NOT NULL CHECK (0-100),
+  relatability_score FLOAT NOT NULL CHECK (0-100),
+  visuals_score FLOAT NOT NULL CHECK (0-100),
+  audio_score FLOAT NOT NULL CHECK (0-100),
+  watchtime_score FLOAT NOT NULL CHECK (0-100),
+  engagement_score FLOAT NOT NULL CHECK (0-100),
+  shareability_score FLOAT NOT NULL CHECK (0-100),
+  algo_score FLOAT NOT NULL CHECK (0-100),
+
+  -- Penalties & Overall
+  penalties_score FLOAT NOT NULL DEFAULT 0,
+  overall_score FLOAT GENERATED (weighted formula),
+
+  score_details JSONB
+);
+```
+
+**Benefits:**
+- Objective, reproducible scores
+- Compare videos across time/creators
+- Identify specific weaknesses (e.g., poor hook but great story)
+- Track score improvements with content iterations
+- Build dashboards and analytics
+- Replace subjective viral factors with metrics
+
+**Documentation:**
+- Full plan: `PHASE_6_SCORING_ENGINE_PLAN.md`
+- TypeScript schemas: `scorer/src/schema.ts`
+- Scoring formulas: `scorer/src/formulas.ts`
+- Data mapping: Phase 6 plan, lines 195-347
+
+**Status:** Planning complete, ready for implementation
+**Estimated Time:** 4-6 hours total
+**Dependencies:** Phase 5d complete ✅
+
+---
