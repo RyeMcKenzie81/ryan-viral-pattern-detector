@@ -7,8 +7,10 @@ Commands for scoring analyzed TikTok videos using the TypeScript scoring engine.
 import json
 import logging
 import subprocess
+import csv
 from pathlib import Path
 from typing import Optional, Dict, List
+from statistics import mean, median, stdev
 
 import click
 from tqdm import tqdm
@@ -284,6 +286,205 @@ def show_score(post_id: str):
         click.echo(f"  Confidence: {diagnostics.get('overall_confidence', 1.0):.0%}")
         if diagnostics.get('missing'):
             click.echo(f"  Missing data: {', '.join(diagnostics['missing'])}")
+
+
+@score_group.command(name="export")
+@click.option("--project", required=True, help="Project slug")
+@click.option("--output", default="scores.csv", help="Output CSV file path")
+def export_scores(project: str, output: str):
+    """
+    Export scores to CSV file.
+
+    Example:
+        vt score export --project wonder-paws-tiktok --output scores.csv
+    """
+    supabase = get_supabase_client()
+
+    # Get project
+    project_result = supabase.table("projects").select("id, name").eq("slug", project).execute()
+
+    if not project_result.data:
+        click.echo(f"❌ Project not found: {project}", err=True)
+        return
+
+    project_data = project_result.data[0]
+    project_id = project_data['id']
+
+    click.echo(f"📊 Exporting scores for: {project_data['name']}")
+
+    # Get all scored videos with post details
+    project_posts = supabase.table("project_posts").select("post_id").eq("project_id", project_id).execute()
+    post_ids = [row['post_id'] for row in project_posts.data]
+
+    # Get scores with post details
+    scores = supabase.table("video_scores").select(
+        "*, posts(post_url, caption, views, likes, comments, accounts(platform_username))"
+    ).in_("post_id", post_ids).execute()
+
+    if not scores.data:
+        click.echo(f"❌ No scores found", err=True)
+        return
+
+    # Write CSV
+    with open(output, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            'post_id', 'username', 'url', 'views', 'likes', 'comments',
+            'caption', 'overall_score', 'hook_score', 'story_score',
+            'relatability_score', 'visuals_score', 'audio_score',
+            'watchtime_score', 'engagement_score', 'shareability_score',
+            'algo_score', 'penalties_score', 'scored_at'
+        ])
+
+        writer.writeheader()
+
+        for score in scores.data:
+            post = score.get('posts', {})
+            account = post.get('accounts', {})
+
+            writer.writerow({
+                'post_id': score['post_id'],
+                'username': account.get('platform_username', 'N/A'),
+                'url': post.get('post_url', 'N/A'),
+                'views': post.get('views', 0),
+                'likes': post.get('likes', 0),
+                'comments': post.get('comments', 0),
+                'caption': (post.get('caption', '') or '')[:200],  # Truncate for CSV
+                'overall_score': score['overall_score'],
+                'hook_score': score['hook_score'],
+                'story_score': score['story_score'],
+                'relatability_score': score['relatability_score'],
+                'visuals_score': score['visuals_score'],
+                'audio_score': score['audio_score'],
+                'watchtime_score': score['watchtime_score'],
+                'engagement_score': score['engagement_score'],
+                'shareability_score': score['shareability_score'],
+                'algo_score': score['algo_score'],
+                'penalties_score': score['penalties_score'],
+                'scored_at': score['scored_at']
+            })
+
+    click.echo(f"✅ Exported {len(scores.data)} scores to {output}")
+
+
+@score_group.command(name="analyze")
+@click.option("--project", required=True, help="Project slug")
+def analyze_scores(project: str):
+    """
+    Analyze score distribution and patterns.
+
+    Example:
+        vt score analyze --project wonder-paws-tiktok
+    """
+    supabase = get_supabase_client()
+
+    # Get project
+    project_result = supabase.table("projects").select("id, name").eq("slug", project).execute()
+
+    if not project_result.data:
+        click.echo(f"❌ Project not found: {project}", err=True)
+        return
+
+    project_data = project_result.data[0]
+    project_id = project_data['id']
+
+    # Get all scored videos with post details
+    project_posts = supabase.table("project_posts").select("post_id").eq("project_id", project_id).execute()
+    post_ids = [row['post_id'] for row in project_posts.data]
+
+    scores = supabase.table("video_scores").select(
+        "*, posts(post_url, caption, views, accounts(platform_username))"
+    ).in_("post_id", post_ids).execute()
+
+    if not scores.data or len(scores.data) == 0:
+        click.echo(f"❌ No scores found", err=True)
+        return
+
+    data = scores.data
+
+    # Calculate statistics
+    overall_scores = [s['overall_score'] for s in data]
+    hook_scores = [s['hook_score'] for s in data]
+    story_scores = [s['story_score'] for s in data]
+    relatability_scores = [s['relatability_score'] for s in data]
+    visuals_scores = [s['visuals_score'] for s in data]
+    audio_scores = [s['audio_score'] for s in data]
+    watchtime_scores = [s['watchtime_score'] for s in data]
+    engagement_scores = [s['engagement_score'] for s in data]
+    shareability_scores = [s['shareability_score'] for s in data]
+    algo_scores = [s['algo_score'] for s in data]
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"📊 SCORE ANALYSIS: {project_data['name']}")
+    click.echo(f"{'='*60}\n")
+
+    click.echo(f"Sample Size: {len(data)} videos\n")
+
+    # Overall statistics
+    click.echo("OVERALL SCORES")
+    click.echo("-" * 60)
+    click.echo(f"  Mean:     {mean(overall_scores):.1f}")
+    click.echo(f"  Median:   {median(overall_scores):.1f}")
+    click.echo(f"  Std Dev:  {stdev(overall_scores):.1f}" if len(overall_scores) > 1 else "  Std Dev:  N/A")
+    click.echo(f"  Min:      {min(overall_scores):.1f}")
+    click.echo(f"  Max:      {max(overall_scores):.1f}")
+    click.echo()
+
+    # Subscore averages
+    click.echo("SUBSCORE AVERAGES")
+    click.echo("-" * 60)
+    click.echo(f"  Hook:         {mean(hook_scores):.1f}")
+    click.echo(f"  Story:        {mean(story_scores):.1f}")
+    click.echo(f"  Relatability: {mean(relatability_scores):.1f}")
+    click.echo(f"  Visuals:      {mean(visuals_scores):.1f}")
+    click.echo(f"  Audio:        {mean(audio_scores):.1f}")
+    click.echo(f"  Watchtime:    {mean(watchtime_scores):.1f}")
+    click.echo(f"  Engagement:   {mean(engagement_scores):.1f}")
+    click.echo(f"  Shareability: {mean(shareability_scores):.1f}")
+    click.echo(f"  Algorithm:    {mean(algo_scores):.1f}")
+    click.echo()
+
+    # Top performers
+    click.echo("TOP 5 HIGHEST SCORING VIDEOS")
+    click.echo("-" * 60)
+    top_5 = sorted(data, key=lambda x: x['overall_score'], reverse=True)[:5]
+    for i, score in enumerate(top_5, 1):
+        post = score.get('posts', {})
+        username = post.get('accounts', {}).get('platform_username', 'N/A')
+        views = post.get('views', 0)
+        click.echo(f"  {i}. {score['overall_score']:.1f} - @{username} ({views:,} views)")
+
+    click.echo()
+
+    # Bottom performers
+    click.echo("LOWEST 5 SCORING VIDEOS")
+    click.echo("-" * 60)
+    bottom_5 = sorted(data, key=lambda x: x['overall_score'])[:5]
+    for i, score in enumerate(bottom_5, 1):
+        post = score.get('posts', {})
+        username = post.get('accounts', {}).get('platform_username', 'N/A')
+        views = post.get('views', 0)
+        click.echo(f"  {i}. {score['overall_score']:.1f} - @{username} ({views:,} views)")
+
+    click.echo()
+
+    # Score distribution
+    click.echo("SCORE DISTRIBUTION")
+    click.echo("-" * 60)
+    ranges = {
+        '90-100': [s for s in overall_scores if s >= 90],
+        '80-89': [s for s in overall_scores if 80 <= s < 90],
+        '70-79': [s for s in overall_scores if 70 <= s < 80],
+        '60-69': [s for s in overall_scores if 60 <= s < 70],
+        '0-59': [s for s in overall_scores if s < 60],
+    }
+
+    for range_label, range_scores in ranges.items():
+        count = len(range_scores)
+        pct = (count / len(overall_scores)) * 100 if overall_scores else 0
+        bar = '█' * int(pct / 5)  # Each █ = 5%
+        click.echo(f"  {range_label}: {count:2d} ({pct:5.1f}%) {bar}")
+
+    click.echo()
 
 
 # Register commands
