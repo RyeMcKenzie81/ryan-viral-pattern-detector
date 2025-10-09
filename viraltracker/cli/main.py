@@ -12,6 +12,7 @@ from .process import process_group
 from .analyze import analyze_group
 from .script import script_group
 from .tiktok import tiktok_group
+from .score import score_group
 
 
 @click.group()
@@ -36,6 +37,7 @@ cli.add_command(process_group)
 cli.add_command(analyze_group)
 cli.add_command(script_group)
 cli.add_command(tiktok_group)
+cli.add_command(score_group)
 
 
 if __name__ == '__main__':
