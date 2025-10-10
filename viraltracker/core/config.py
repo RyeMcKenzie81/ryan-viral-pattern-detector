@@ -22,6 +22,7 @@ class Config:
 
     # Gemini
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
+    GEMINI_VIDEO_MODEL: str = 'models/gemini-2.5-pro'  # Gemini 2.5 Pro for video analysis
 
     # Scraping defaults
     DEFAULT_DAYS_BACK: int = int(os.getenv('DAYS_BACK', '120'))

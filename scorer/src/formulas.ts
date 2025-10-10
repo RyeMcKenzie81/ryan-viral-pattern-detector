@@ -21,84 +21,80 @@ function clamp(val: number, min: number, max: number): number {
 // }
 
 // ============================================================================
-// 1. Hook Score (0-100)
+// 1. Hook Score (0-100) - v1.1.0 Continuous Formula
 // ============================================================================
 
-export function scoreHook(m: Measures['hook']): number {
-  let score = 50; // baseline
+export function scoreHook(m: any): number | null {
+  if (!m) return null;
 
-  // Duration: 3-5 sec ideal
-  if (m.duration_sec >= 3 && m.duration_sec <= 5) {
-    score += 20;
-  } else if (m.duration_sec < 2) {
-    score -= 15; // too short, audience confused
-  } else if (m.duration_sec > 7) {
-    score -= 10; // too long, lost attention
-  } else {
-    score += 10; // acceptable range (2-3 or 5-7)
+  // New v1.1.0 fields
+  const ttv = m.time_to_value_sec;
+  const face = m.first_frame_face_present_pct;
+  const motion = m.first_2s_motion_intensity;
+
+  // If no new fields available, return null (don't impute midpoint)
+  if (ttv == null && face == null && motion == null) return null;
+
+  let s = 0;
+
+  // Time to value: sigmoid curve, peak at <=1s, decays smoothly after
+  if (ttv != null) {
+    const x = Math.max(0, ttv - 1.0);
+    const sig = 1 / (1 + Math.exp(2.2 * x)); // ~1 at <=1s; decays after
+    s += sig * 50;
   }
 
-  // Type quality (from Gemini analysis)
-  const types = m.type?.toLowerCase().split('|') || [];
-  if (types.includes('shock')) score += 12;
-  if (types.includes('curiosity')) score += 12;
-  if (types.includes('authority')) score += 8;
-  if (types.includes('question')) score += 10;
-  if (types.includes('promise')) score += 8;
-
-  // Effectiveness score from Gemini (if available)
-  // Scale 0-10 → contribute -10 to +10 to score
-  if (m.effectiveness_score !== undefined) {
-    score += (m.effectiveness_score - 5) * 2;
+  // Face presence: linear contribution (0-100% → 0-25 points)
+  if (face != null) {
+    s += clamp((face / 100) * 25, 0, 25);
   }
 
-  // Has text (non-empty hook)
-  if (m.text && m.text.length > 5) {
-    score += 5;
+  // Motion intensity: linear contribution (0-1 → 0-25 points)
+  if (motion != null) {
+    s += clamp(motion * 25, 0, 25);
   }
 
-  return clamp(score, 0, 100);
+  return clamp(s, 0, 100);
 }
 
 // ============================================================================
-// 2. Story Score (0-100)
+// 2. Story Score (0-100) - v1.1.0 Continuous Formula
 // ============================================================================
 
-export function scoreStory(m: Measures['story']): number {
-  let score = 50;
+export function scoreStory(m: any): number | null {
+  if (!m) return null;
 
-  // Has storyboard beats
-  if (m.beats_count !== undefined) {
-    if (m.beats_count >= 5) {
-      score += 20; // rich narrative
-    } else if (m.beats_count >= 3) {
-      score += 15; // adequate structure
-    } else if (m.beats_count >= 1) {
-      score += 8; // minimal structure
+  const beats = m.beats_count ?? 0;
+  const avg = m.avg_beat_length_sec;
+
+  // Need both beats and average length to score
+  if (!(beats > 0 && avg != null)) return null;
+
+  let s = 0;
+
+  // Gaussian curve: ideal avg beat length ~ 2.7s
+  const mu = 2.7, sigma = 1.0;
+  const g = Math.exp(-Math.pow(avg - mu, 2) / (2 * sigma * sigma));
+  s += g * 55;
+
+  // Beat count contribution (linear, capped at 10 points)
+  s += clamp(beats * 1.5, 0, 10);
+
+  // Rhythm consistency bonus (if storyboard available)
+  if (Array.isArray(m.storyboard) && m.storyboard.length >= 3) {
+    const lens = m.storyboard
+      .map((b: any) => Math.max(0, (b.t_end ?? 0) - (b.t_start ?? 0)))
+      .filter(Number.isFinite);
+
+    if (lens.length >= 3) {
+      const mean = lens.reduce((a: number, b: number) => a + b, 0) / lens.length;
+      const varc = lens.reduce((a: number, b: number) => a + Math.pow(b - mean, 2), 0) / lens.length;
+      const rhythm = Math.exp(-Math.sqrt(varc) / 3.0); // smoother bonus for consistent pacing
+      s += rhythm * 20;
     }
   }
 
-  // Story arc detected (setup, build, payoff)
-  if (m.arc_detected) {
-    score += 15;
-  }
-
-  // Consistent pacing (using storyboard durations)
-  if (m.storyboard && m.storyboard.length >= 3) {
-    const durations = m.storyboard.map(b => b.duration);
-    const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
-    const variance = durations.reduce((a, b) => a + Math.pow(b - avgDuration, 2), 0) / durations.length;
-    const stdDev = Math.sqrt(variance);
-
-    // Reward consistent pacing (low variance)
-    if (stdDev < 2) {
-      score += 10; // very consistent
-    } else if (stdDev < 4) {
-      score += 5; // moderately consistent
-    }
-  }
-
-  return clamp(score, 0, 100);
+  return clamp(s, 0, 100);
 }
 
 // ============================================================================
@@ -122,7 +118,7 @@ export function scoreRelatability(m: Measures, meta: { followers: number }): num
 
   // Story relatability (if storyboard descriptions mention common experiences)
   if (m.story.storyboard) {
-    const allDescriptions = m.story.storyboard.map(s => s.description.toLowerCase()).join(' ');
+    const allDescriptions = m.story.storyboard.map((s: any) => (s.description || '').toLowerCase()).join(' ');
 
     // Common life scenarios
     const relatableScenarios = ['everyday', 'daily', 'common', 'typical', 'normal', 'usual', 'regular'];
@@ -179,35 +175,48 @@ export function scoreVisuals(m: Measures['visuals']): number {
 }
 
 // ============================================================================
-// 5. Audio Score (0-100)
+// 5. Audio Score (0-100) - v1.1.0 Continuous Formula
 // ============================================================================
 
-export function scoreAudio(m: Measures['audio']): number {
-  let score = 50;
+export function scoreAudio(m: any): number | null {
+  if (!m) return null;
 
-  // Trending sound used (major boost)
-  if (m.trending_sound_used) {
-    score += 25;
+  const hasAny = (
+    m.music_to_voice_db_diff != null ||
+    m.beat_sync_score != null ||
+    m.speech_intelligibility_score != null ||
+    m.trending_sound_used != null ||
+    m.original_sound_created != null
+  );
+
+  if (!hasAny) return null;
+
+  let s = 0;
+
+  // Music-to-voice ratio: Gaussian curve peaked at -10dB
+  if (m.music_to_voice_db_diff != null && Number.isFinite(m.music_to_voice_db_diff)) {
+    const d = m.music_to_voice_db_diff as number;
+    const sigma = 4.0;
+    const gauss = Math.exp(-Math.pow(d - (-10), 2) / (2 * sigma * sigma)); // 0..1 peak at -10
+    s += gauss * 35;
   }
 
-  // Original sound created (authenticity bonus)
-  if (m.original_sound_created) {
-    score += 20;
+  // Beat sync: linear contribution (0-1 → 0-25 points)
+  if (m.beat_sync_score != null) {
+    s += clamp(m.beat_sync_score * 25, 0, 25);
   }
 
-  // Beat sync score (if available from future analysis)
-  if (m.beat_sync_score !== undefined) {
-    // Scale 0-10 → 0-15 points
-    score += (m.beat_sync_score / 10) * 15;
+  // Speech intelligibility: linear contribution (0-1 → 0-25 points)
+  if (m.speech_intelligibility_score != null) {
+    s += clamp(m.speech_intelligibility_score * 25, 0, 25);
   }
 
-  // If neither trending nor original, apply neutral baseline
-  if (!m.trending_sound_used && !m.original_sound_created) {
-    // Assume generic audio, slight penalty
-    score -= 10;
-  }
+  // Trending sound bonus/penalty
+  if (m.trending_sound_used === true) s += 7;
+  if (m.original_sound_created === true) s += 5;
+  if (m.trending_sound_used === false && m.original_sound_created === false) s -= 3;
 
-  return clamp(score, 0, 100);
+  return clamp(s, 0, 100);
 }
 
 // ============================================================================

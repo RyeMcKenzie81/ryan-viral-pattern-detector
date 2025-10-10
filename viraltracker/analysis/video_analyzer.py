@@ -47,7 +47,7 @@ class VideoAnalyzer:
         self,
         supabase_client: Client,
         gemini_api_key: Optional[str] = None,
-        gemini_model: str = "models/gemini-1.5-flash-latest"
+        gemini_model: Optional[str] = None
     ):
         """
         Initialize video analyzer.
@@ -55,7 +55,7 @@ class VideoAnalyzer:
         Args:
             supabase_client: Initialized Supabase client
             gemini_api_key: Gemini API key (defaults to env var)
-            gemini_model: Gemini model to use
+            gemini_model: Gemini model to use (defaults to Config.GEMINI_VIDEO_MODEL)
         """
         self.supabase = supabase_client
 
@@ -65,12 +65,14 @@ class VideoAnalyzer:
             raise ValueError("GEMINI_API_KEY must be set in environment or passed to constructor")
 
         genai.configure(api_key=api_key)
-        self.model_name = gemini_model
-        self.model = genai.GenerativeModel(gemini_model)
+        # Use explicit model for video analysis - Gemini 2.5 Pro
+        self.model_name = gemini_model or Config.GEMINI_VIDEO_MODEL
+        self.model = genai.GenerativeModel(self.model_name)
+        self.analysis_version = "vid-1.1.0"
 
         self.storage_bucket = os.getenv("SUPABASE_STORAGE_BUCKET", "videos")
 
-        logger.info(f"VideoAnalyzer initialized with model: {gemini_model}")
+        logger.info(f"VideoAnalyzer initialized with model: {self.model_name} (version: {self.analysis_version})")
 
     def get_unanalyzed_videos(
         self,
@@ -242,63 +244,100 @@ class VideoAnalyzer:
             'youtube_shorts': 'YouTube Shorts'
         }.get(platform_slug, 'Instagram')
 
-        # Base analysis prompt
-        base_prompt = f"""Analyze this viral {platform_name} video and provide a comprehensive breakdown.
+        # New v1.1.0 analysis prompt with continuous values and nulls
+        base_prompt = f"""SYSTEM: You are a video analysis model. Output strict JSON only. No explanations.
+
+USER: Analyze the attached vertical {platform_name}-style video. Return strict JSON matching this TypeScript type (include every key; use null if unknown; use floating-point values with up to 3 decimals; do not round/bucket):
 
 **Video Context:**
 - Username: @{username}
 - Caption: {caption}
 - Views: {views:,}
 
-**Your Task:**
-Provide a detailed JSON analysis with the following structure:
+{{
+  "hook": {{
+    "time_to_value_sec": number | null,
+    "first_frame_face_present_pct": number | null,
+    "first_2s_motion_intensity": number | null
+  }},
+  "story": {{
+    "beats_count": number | null,
+    "avg_beat_length_sec": number | null,
+    "storyboard": Array<{{ t_start:number, t_end:number, label?:string, description?:string }}> | null
+  }},
+  "relatability": {{
+    "authenticity_signals": number | null,
+    "jargon_density_pct": number | null
+  }},
+  "visuals": {{
+    "avg_scene_duration_sec": number | null,
+    "edit_rate_per_10s": number | null,
+    "brightness_mean": number | null,
+    "contrast_mean": number | null,
+    "camera_motion_pct": number | null,
+    "text_overlay_occlusion_pct": number | null
+  }},
+  "audio": {{
+    "music_to_voice_db_diff": number | null,
+    "beat_sync_score": number | null,
+    "speech_intelligibility_score": number | null,
+    "trending_sound_used": boolean | null,
+    "original_sound_created": boolean | null
+  }},
+  "watchtime": {{
+    "length_sec": number | null
+  }},
+  "engagement": {{
+    "comment_prompt_present": boolean | null
+  }},
+  "shareability": {{
+    "emotion_intensity": number | null,
+    "simplicity_score": number | null
+  }},
+  "algo": {{
+    "caption_length_chars": number | null,
+    "hashtag_count": number | null,
+    "hashtag_niche_mix_ok": boolean | null
+  }},
+  "penalties": {{
+    "slow_intro_flag": boolean | null,
+    "poor_lighting_flag": boolean | null,
+    "audio_mix_poor_flag": boolean | null,
+    "audience_mismatch_flag": boolean | null,
+    "trend_stale_flag": boolean | null
+  }}
+}}
+
+Constraints:
+- Return floating-point values with up to 3 decimals where applicable.
+- time_to_value_sec: seconds until value proposition is clear (0.0-10.0 range)
+- first_frame_face_present_pct: percentage of first frame showing human face (0-100)
+- first_2s_motion_intensity: motion/action level in first 2 seconds (0.0-1.0)
+- authenticity_signals: genuine/relatable feel score (0.0-1.0)
+- jargon_density_pct: percentage of technical/niche terms (0-100)
+- brightness_mean: average brightness level (0.0-1.0)
+- contrast_mean: average contrast level (0.0-1.0)
+- camera_motion_pct: percentage of video with camera movement (0-100)
+- text_overlay_occlusion_pct: percentage of frame covered by text (0-100)
+- music_to_voice_db_diff: dB difference between music and voice (negative = music quieter; aim ~ -10.0)
+- beat_sync_score: how well edits align with audio beats (0.0-1.0)
+- speech_intelligibility_score: clarity of speech (0.0-1.0)
+- emotion_intensity: emotional impact strength (0.0-1.0)
+- simplicity_score: ease of understanding (0.0-1.0, higher = simpler)
+- If unknown, return null (do not omit the key).
+- No qualitative text outside the JSON.
+
+For backwards compatibility, also include these legacy fields:
 
 {{
   "hook_analysis": {{
-    "transcript": "What is said/shown in the first 3-5 seconds",
-    "visual_description": "Detailed description of opening visuals",
-    "hook_type": "question|shock|curiosity|problem|story|trend",
-    "timestamp_end": 5.0,
-    "effectiveness_score": 8.5
+    "transcript": string | null,
+    "visual_description": string | null,
+    "hook_type": string | null,
+    "timestamp_end": number | null,
+    "effectiveness_score": number | null
   }},
-
-  "full_transcript": {{
-    "segments": [
-      {{"timestamp": 0.0, "text": "spoken or on-screen text", "speaker": "narrator|text_overlay"}}
-    ]
-  }},
-
-  "text_overlays": {{
-    "overlays": [
-      {{"timestamp": 0.0, "text": "overlay text", "style": "bold|caption|animated"}}
-    ]
-  }},
-
-  "visual_storyboard": {{
-    "scenes": [
-      {{"timestamp": 0.0, "description": "what's happening visually", "duration": 3.0}}
-    ]
-  }},
-
-  "key_moments": {{
-    "moments": [
-      {{"timestamp": 5.0, "type": "reveal|transition|climax|cta", "description": "what makes this moment significant"}}
-    ]
-  }},
-
-  "viral_factors": {{
-    "hook_strength": 9.0,
-    "emotional_impact": 8.5,
-    "relatability": 9.5,
-    "novelty": 7.0,
-    "production_quality": 8.0,
-    "pacing": 9.0,
-    "overall_score": 8.5
-  }},
-
-  "viral_explanation": "2-3 sentences explaining WHY this video went viral. What specific elements drove engagement?",
-
-  "improvement_suggestions": "3-5 specific, actionable suggestions for similar content creators to replicate this video's success"
+  "viral_explanation": string | null
 }}"""
 
         # Add product adaptation section if product context provided
@@ -435,6 +474,13 @@ Provide ONLY the JSON response, no additional text."""
         factors = analysis.get("viral_factors", {})
         product_adaptation = analysis.get("product_adaptation", {})
 
+        # Extract v1.1.0 structured metrics if available
+        platform_metrics = {}
+        for key in ['hook', 'story', 'relatability', 'visuals', 'audio', 'watchtime',
+                    'engagement', 'shareability', 'algo', 'penalties']:
+            if key in analysis:
+                platform_metrics[key] = analysis[key]
+
         # Prepare record with product columns
         record = {
             "post_id": post_id,
@@ -451,7 +497,9 @@ Provide ONLY the JSON response, no additional text."""
             "viral_explanation": analysis.get("viral_explanation"),
             "improvement_suggestions": analysis.get("improvement_suggestions"),
             "product_adaptation": json.dumps(product_adaptation) if product_adaptation else None,
+            "platform_specific_metrics": json.dumps(platform_metrics) if platform_metrics else None,
             "analysis_model": self.model_name,
+            "analysis_version": self.analysis_version,
             "analysis_tokens_used": tokens_used,
             "processing_time_sec": processing_time
         }

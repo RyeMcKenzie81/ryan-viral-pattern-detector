@@ -10,6 +10,7 @@ from typing import Optional
 import click
 
 from ..core.database import get_supabase_client
+from ..core.config import Config
 from ..analysis.video_analyzer import VideoAnalyzer
 
 
@@ -26,7 +27,7 @@ def analyze_group():
 @click.option('--project', required=True, help='Project slug or ID')
 @click.option('--product', help='Product slug or ID for adaptations (optional)')
 @click.option('--limit', type=int, help='Maximum number of videos to analyze')
-@click.option('--gemini-model', default='models/gemini-1.5-flash-latest', help='Gemini model to use')
+@click.option('--gemini-model', default=Config.GEMINI_VIDEO_MODEL, help='Gemini model to use (default: Gemini 2.5 Pro)')
 def analyze_videos(project: str, product: Optional[str], limit: Optional[int], gemini_model: str):
     """
     Analyze videos using Gemini AI.

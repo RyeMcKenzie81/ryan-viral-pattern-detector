@@ -3,7 +3,7 @@
  * Coordinates all subscores and produces final output
  */
 
-import type { ScorerInput, ScorerOutput, Subscores, Diagnostics } from './schema.js';
+import type { ScorerInput, ScorerOutput } from './schema.js';
 import { ScorerInputSchema } from './schema.js';
 import {
   scoreHook,
@@ -22,27 +22,39 @@ import { DEFAULT_WEIGHTS, DEFAULT_NORMALIZATION, SCORER_VERSION } from './types.
 import type { WeightConfig } from './types.js';
 
 // ============================================================================
-// Diagnostics: Track missing data
+// Helper: Count non-null fields in an object
 // ============================================================================
 
-function generateDiagnostics(input: ScorerInput): Diagnostics {
+function coverageCount(obj: any, keys: string[]): number {
+  return keys.reduce((acc, k) => acc + (obj && obj[k] != null ? 1 : 0), 0);
+}
+
+// ============================================================================
+// Diagnostics: Track missing data and coverage
+// ============================================================================
+
+function generateDiagnostics(input: ScorerInput): any {
+  const m = input.measures;
+
+  const coverage = {
+    hook: coverageCount(m.hook, ['time_to_value_sec', 'first_frame_face_present_pct', 'first_2s_motion_intensity']),
+    story: coverageCount(m.story, ['beats_count', 'avg_beat_length_sec', 'storyboard']),
+    audio: coverageCount(m.audio, ['music_to_voice_db_diff', 'beat_sync_score', 'speech_intelligibility_score', 'trending_sound_used', 'original_sound_created']),
+    shareability: coverageCount(m.shareability, ['emotion_intensity', 'simplicity_score']),
+    visuals: coverageCount(m.visuals, ['avg_scene_duration_sec', 'edit_rate_per_10s', 'text_overlay_occlusion_pct']),
+    algo: coverageCount(m.algo, ['caption_length_chars', 'hashtag_count', 'hashtag_niche_mix_ok']),
+  };
+
+  // Legacy missing array (for backwards compatibility)
   const missing: string[] = [];
+  const checks = [
+    { path: 'hook.time_to_value_sec', value: m.hook?.time_to_value_sec },
+    { path: 'story.beats_count', value: m.story?.beats_count },
+    { path: 'audio.beat_sync_score', value: m.audio?.beat_sync_score },
+  ];
+
   let totalFields = 0;
   let presentFields = 0;
-
-  // Check critical fields in measures
-  const checks = [
-    { path: 'hook.effectiveness_score', value: input.measures.hook.effectiveness_score },
-    { path: 'story.storyboard', value: input.measures.story.storyboard },
-    { path: 'story.arc_detected', value: input.measures.story.arc_detected },
-    { path: 'visuals.overlays', value: input.measures.visuals.overlays },
-    { path: 'visuals.edit_rate_per_10s', value: input.measures.visuals.edit_rate_per_10s },
-    { path: 'audio.trending_sound_used', value: input.measures.audio.trending_sound_used },
-    { path: 'audio.beat_sync_score', value: input.measures.audio.beat_sync_score },
-    { path: 'watchtime.avg_watch_pct', value: input.measures.watchtime.avg_watch_pct },
-    { path: 'watchtime.completion_rate', value: input.measures.watchtime.completion_rate },
-    { path: 'shareability.has_cta', value: input.measures.shareability.has_cta },
-  ];
 
   for (const check of checks) {
     totalFields++;
@@ -58,7 +70,28 @@ function generateDiagnostics(input: ScorerInput): Diagnostics {
   return {
     missing,
     overall_confidence,
+    coverage,
   };
+}
+
+// ============================================================================
+// Weight Re-normalization (v1.1.0)
+// ============================================================================
+
+function renormalizeWeights(
+  subscores: Record<string, number | null>,
+  weights: WeightConfig
+): WeightConfig {
+  const keys = ['hook', 'story', 'relatability', 'visuals', 'audio', 'watchtime', 'engagement', 'shareability', 'algo'];
+  const active = keys.filter(k => subscores[k] != null);
+  const sum = active.reduce((a, k) => a + Math.max(0, weights[k as keyof WeightConfig] ?? 0), 0);
+
+  const scaled: any = { ...weights };
+  for (const k of keys) {
+    scaled[k] = active.includes(k) ? (weights[k as keyof WeightConfig] / (sum || 1)) : 0;
+  }
+
+  return scaled as WeightConfig;
 }
 
 // ============================================================================
@@ -104,8 +137,8 @@ export function scoreVideo(
   // Generate diagnostics
   const diagnostics = generateDiagnostics(validated);
 
-  // Calculate all subscores
-  const subscores: Subscores = {
+  // Calculate all subscores (now returns null when missing)
+  const subscores: any = {
     hook: scoreHook(validated.measures.hook),
     story: scoreStory(validated.measures.story),
     relatability: scoreRelatability(validated.measures, {
@@ -119,24 +152,26 @@ export function scoreVideo(
     algo: scoreAlgo(validated.measures.algo),
   };
 
+  // Re-normalize weights over present subscores
+  const normalizedWeights = renormalizeWeights(subscores, weights);
+
   // Calculate penalties
   const penaltyFactors = scorePenalties(validated.measures, {
     length_sec: validated.meta.length_sec,
   });
   const penalties = calculateTotalPenalty(penaltyFactors);
 
-  // Calculate weighted overall score
-  let rawOverall =
-    subscores.hook * weights.hook +
-    subscores.story * weights.story +
-    subscores.relatability * weights.relatability +
-    subscores.visuals * weights.visuals +
-    subscores.audio * weights.audio +
-    subscores.watchtime * weights.watchtime +
-    subscores.engagement * weights.engagement +
-    subscores.shareability * weights.shareability +
-    subscores.algo * weights.algo -
-    penalties;
+  // Calculate weighted overall score (only for present subscores)
+  let rawOverall = 0;
+  const keys = ['hook', 'story', 'relatability', 'visuals', 'audio', 'watchtime', 'engagement', 'shareability', 'algo'] as const;
+  for (const k of keys) {
+    if (subscores[k] != null) {
+      rawOverall += (subscores[k] as number) * normalizedWeights[k];
+    }
+  }
+
+  // Apply penalties
+  rawOverall -= penalties;
 
   // Clamp to [0, 100]
   rawOverall = Math.max(0, Math.min(100, rawOverall));
@@ -151,12 +186,12 @@ export function scoreVideo(
   const low_confidence = diagnostics.overall_confidence < 0.6;
 
   // Build output
-  const output: ScorerOutput = {
+  const output: any = {
     version: SCORER_VERSION,
     subscores,
     penalties,
     overall: Math.round(overall * 10) / 10, // Round to 1 decimal
-    weights,
+    weights: normalizedWeights,
     diagnostics,
     flags: {
       incomplete,

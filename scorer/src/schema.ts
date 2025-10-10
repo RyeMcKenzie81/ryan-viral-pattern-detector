@@ -9,20 +9,33 @@ import { z } from 'zod';
 // ============================================================================
 
 export const HookMeasuresSchema = z.object({
-  duration_sec: z.number(),
-  text: z.string(),
-  type: z.string().optional(), // e.g., "shock|curiosity|authority"
+  // v1.1.0 continuous fields
+  time_to_value_sec: z.number().nullable().optional(),
+  first_frame_face_present_pct: z.number().nullable().optional(),
+  first_2s_motion_intensity: z.number().nullable().optional(),
+  // Legacy v1.0.0 fields
+  duration_sec: z.number().optional(),
+  text: z.string().optional(),
+  type: z.string().optional(),
   visual_description: z.string().optional(),
   effectiveness_score: z.number().min(0).max(10).optional(),
 });
 
 export const StoryMeasuresSchema = z.object({
+  // v1.1.0 continuous fields
+  beats_count: z.number().nullable().optional(),
+  avg_beat_length_sec: z.number().nullable().optional(),
   storyboard: z.array(z.object({
-    timestamp: z.number(),
-    duration: z.number(),
-    description: z.string(),
-  })).optional(),
-  beats_count: z.number().optional(),
+    // v1.1.0 fields
+    t_start: z.number().optional(),
+    t_end: z.number().optional(),
+    label: z.string().optional(),
+    // Legacy v1.0.0 fields
+    timestamp: z.number().optional(),
+    duration: z.number().optional(),
+    description: z.string().optional(),
+  })).nullable().optional(),
+  // Legacy v1.0.0 fields
   arc_detected: z.boolean().optional(),
 });
 
@@ -37,9 +50,12 @@ export const VisualsMeasuresSchema = z.object({
 });
 
 export const AudioMeasuresSchema = z.object({
-  trending_sound_used: z.boolean().optional(),
-  original_sound_created: z.boolean().optional(),
-  beat_sync_score: z.number().min(0).max(10).optional(),
+  // v1.1.0 continuous fields
+  music_to_voice_db_diff: z.number().nullable().optional(),
+  beat_sync_score: z.number().nullable().optional(),
+  speech_intelligibility_score: z.number().nullable().optional(),
+  trending_sound_used: z.boolean().nullable().optional(),
+  original_sound_created: z.boolean().nullable().optional(),
 });
 
 export const WatchtimeMeasuresSchema = z.object({
@@ -115,15 +131,15 @@ export const ScorerInputSchema = z.object({
 // ============================================================================
 
 export const SubscoresSchema = z.object({
-  hook: z.number().min(0).max(100),
-  story: z.number().min(0).max(100),
-  relatability: z.number().min(0).max(100),
-  visuals: z.number().min(0).max(100),
-  audio: z.number().min(0).max(100),
-  watchtime: z.number().min(0).max(100),
-  engagement: z.number().min(0).max(100),
-  shareability: z.number().min(0).max(100),
-  algo: z.number().min(0).max(100),
+  hook: z.number().min(0).max(100).nullable(),
+  story: z.number().min(0).max(100).nullable(),
+  relatability: z.number().min(0).max(100).nullable(),
+  visuals: z.number().min(0).max(100).nullable(),
+  audio: z.number().min(0).max(100).nullable(),
+  watchtime: z.number().min(0).max(100).nullable(),
+  engagement: z.number().min(0).max(100).nullable(),
+  shareability: z.number().min(0).max(100).nullable(),
+  algo: z.number().min(0).max(100).nullable(),
 });
 
 export const WeightsSchema = z.object({

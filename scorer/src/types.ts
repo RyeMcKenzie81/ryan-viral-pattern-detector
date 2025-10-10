@@ -71,4 +71,4 @@ export const DEFAULT_NORMALIZATION: NormalizationConfig = {
   targetStd: 10,
 };
 
-export const SCORER_VERSION = '1.0.0';
+export const SCORER_VERSION = '1.1.0';
