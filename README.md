@@ -1,138 +1,196 @@
-# ViralTracker Toolkit
+# ViralTracker
 
-A comprehensive toolkit for analyzing viral Instagram content and adapting strategies for content creators.
+**Multi-platform viral content analysis system for TikTok, Instagram Reels, and YouTube Shorts**
 
-## Tools
+Scrape, process, and analyze short-form video content to identify viral patterns using AI-powered Hook Intelligence analysis.
 
-### 1. Ryan's Viral Pattern Detector (`ryan-viral-pattern-detector/`)
-
-**Purpose:** Scrape Instagram posts, analyze viral patterns, and export data for review
-
-**Key Features:**
-- Instagram scraping via Apify API
-- Statistical outlier detection (trimmed mean/SD methodology)
-- Multiple export formats (CSV for downloads, VA review, JSONL for AI)
-- Review workflow for manual content decisions
-- Supabase database integration
-- Railway deployment ready
-
-**Main Commands:**
-```bash
-python ryan_vpd.py scrape      # Scrape Instagram data
-python ryan_vpd.py analyze     # Flag outliers using statistical analysis
-python ryan_vpd.py export      # Export data in multiple formats
-python ryan_vpd.py import-review   # Import VA review decisions
-```
-
-**Status:** ✅ Production Ready
-
----
-
-### 2. Video Processor (`video-processor/`)
-
-**Purpose:** Download viral videos, analyze with AI, and generate content adaptations
-
-**Key Features:**
-
-**Phase 1 - Video Processing (✅ Completed):**
-- Downloads Instagram videos using yt-dlp
-- Uploads to Supabase Storage
-- Database tracking with processing logs
-- 100% success rate (104 videos processed)
-
-**Phase 2 - AI Analysis (✅ Completed):**
-- Gemini AI-powered video analysis
-- Hook analysis (first 3-5 seconds)
-- Full transcription with timestamps
-- Visual storyboard extraction
-- Viral factors scoring
-- Pattern matching
-
-**Phase 3 - Yakety Pack Adaptation (✅ Completed):**
-- Evaluates viral videos for product adaptation potential
-- Generates production-ready video scripts
-- Creates shot-by-shot storyboards with timestamps
-- Scores videos on 4 criteria (hook relevance, audience match, transition ease, viral replicability)
-- Outputs: `yakety_pack_evaluations.json` and `YAKETY_PACK_RECOMMENDATIONS.md`
-
-**Main Commands:**
-```bash
-# Video Processing
-python video_processor.py process --unprocessed-outliers
-python video_processor.py status
-
-# AI Analysis
-python video_analyzer.py analyze
-
-# Yakety Pack Adaptation
-python yakety_pack_evaluator.py
-python aggregate_analyzer.py
-```
-
-**Status:** ✅ Production Ready
-
----
-
-## Workflow
-
-1. **Scrape Instagram Data** → `ryan-viral-pattern-detector`
-2. **Analyze & Flag Outliers** → `ryan-viral-pattern-detector`
-3. **Download Videos** → `video-processor`
-4. **AI Video Analysis** → `video-processor`
-5. **Generate Adaptations** → `video-processor`
-6. **Review & Select** → Manual review of recommendations
-7. **Produce Content** → Film following generated scripts/storyboards
-
-See `video-processor/WORKFLOW.md` for detailed workflow documentation.
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
 ## Quick Start
 
+```bash
+# 1. Scrape TikTok videos
+./vt tiktok search "dog training" --count 100 --project my-project --save
+
+# 2. Process videos (download + extract metrics)
+./vt process videos --project my-project
+
+# 3. Analyze with AI (Hook Intelligence v1.2.0)
+./vt analyze videos --project my-project --gemini-model models/gemini-2.5-pro
+
+# 4. Export and analyze data
+python export_hook_analysis_csv.py
+python -m analysis.run_hook_analysis --csv data/hook_intelligence_export.csv --outdir results
+
+# 5. Review insights
+cat results/playbook.md
+```
+
+---
+
+## Features
+
+### 🎬 Multi-Platform Scraping
+- **TikTok** - Search by keywords, hashtags, trending (Clockworks API)
+- **Instagram Reels** - Account-based scraping (Apify)
+- **YouTube Shorts** - Search and channel scraping
+
+### 📊 Video Processing
+- Automatic download via `yt-dlp`
+- Scene detection and cut analysis
+- Audio transcription with timestamps
+- Visual metrics (face detection, motion, overlay text)
+
+### 🤖 AI-Powered Hook Intelligence v1.2.0
+- **14 Hook Type Classifications** - relatable_slice, humor_gag, shock_violation, etc.
+- **Temporal Analysis** - Hook span detection, payoff timing
+- **Modality Attribution** - Audio vs Visual vs Overlay contribution
+- **Windowed Metrics** - Face %, cuts, text density per second
+- **Risk Flags** - Brand safety and content suitability
+
+### 📈 Statistical Analysis
+- Univariate correlation analysis (Spearman rank)
+- Pairwise ranking models (within-account matchups)
+- Interaction effect testing
+- Editor-friendly playbook generation with lift metrics
+
+---
+
+## Documentation
+
+- **[CLI Guide](docs/CLI_GUIDE.md)** - Complete command-line reference
+- **[Hook Analysis Guide](docs/HOOK_ANALYSIS_GUIDE.md)** - Statistical analysis methods
+- **[Installation](#installation)** - Setup instructions below
+
+---
+
+## Installation
+
 ### Prerequisites
-- Python 3.11+
+- Python 3.13+
+- FFmpeg (for video processing)
+- Node.js 18+ (for scorer module)
 - Supabase account
-- Apify account with API token
-- Gemini API key
+- API keys: Google Gemini, Apify, Clockworks
 
 ### Setup
 
-1. **Clone and setup Ryan's Viral Pattern Detector:**
 ```bash
-cd ryan-viral-pattern-detector
-cp .env.example .env
-# Edit .env with your credentials
+# Clone repository
+git clone https://github.com/RyeMcKenzie81/ryan-viral-pattern-detector.git
+cd viraltracker
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-2. **Setup Video Processor:**
-```bash
-cd video-processor
+# Setup environment variables
 cp .env.example .env
-# Edit .env with your credentials
-pip install -r requirements.txt
+# Edit .env with your API keys
 ```
 
-3. **Run the complete pipeline:**
+### Environment Variables
+
+Create `.env` with:
+
 ```bash
-# 1. Scrape data
-cd ryan-viral-pattern-detector
-python ryan_vpd.py scrape --usernames usernames.csv --days 120
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-key
 
-# 2. Analyze and export
-python ryan_vpd.py analyze --sd-threshold 3.0
-python ryan_vpd.py export
+# Google Gemini
+GOOGLE_GEMINI_API_KEY=your-gemini-api-key
 
-# 3. Process videos
-cd ../video-processor
-python video_processor.py process --unprocessed-outliers
-
-# 4. Analyze with AI
-python video_analyzer.py analyze
-
-# 5. Generate adaptations
-python yakety_pack_evaluator.py
+# Scraping APIs
+APIFY_API_TOKEN=your-apify-token
+CLOCKWORKS_API_KEY=your-clockworks-key
 ```
+
+---
+
+## Architecture
+
+### Data Flow
+
+```
+1. Scraping → posts table (metadata)
+2. Processing → video_processing table + Supabase Storage
+3. AI Analysis → video_analysis table (hook_features JSONB)
+4. Export → CSV for statistical analysis
+5. Advanced Analysis → Playbook generation
+```
+
+### Core Tables
+
+- **brands, products, projects** - Multi-tenant organization
+- **platforms, accounts, posts** - Social media data
+- **video_processing** - Processing status and metrics
+- **video_analysis** - AI analysis results (Hook Intelligence)
+
+---
+
+## Hook Intelligence v1.2.0
+
+### What It Analyzes
+
+**14 Hook Types:**
+- `result_first` - Shows outcome immediately
+- `shock_violation` - Unexpected content
+- `reveal_transform` - Before/after
+- `relatable_slice` - Everyday moment
+- `humor_gag` - Comedy setup
+- `tension_wait` - Build suspense
+- `direct_callout` - Addresses viewer
+- `challenge_stakes` - Competition
+- `authority_flex` - Credibility
+- And 5 more...
+
+**Temporal Features:**
+- Hook span (start/end time)
+- Payoff timing (seconds until payoff)
+- Windowed metrics (1s, 2s, 3s, 5s windows)
+
+**Modality Attribution:**
+- Audio contribution (0-1)
+- Visual contribution (0-1)
+- Overlay text contribution (0-1)
+
+**Continuous Metrics:**
+- Face presence percentage
+- Cut frequency
+- Motion intensity
+- Text overlay density
+
+---
+
+## Example Analysis Results
+
+### Wonder Paws TikTok Research (n=297 videos)
+
+**Top Insights:**
+
+1. **Best Combination: Relatable + Humor**
+   - Videos with relatable_slice ≥ 0.6 AND humor_gag ≥ 0.4
+   - **+71% normalized views** (Δmedian = 0.711)
+   - Sample: 71 videos
+
+2. **Quick Payoff Matters**
+   - Videos with payoff ≤ 1.0 second
+   - **+25% normalized views** (Δmedian = 0.247)
+   - Sample: 57 videos
+
+3. **Individual Effects:**
+   - shock_violation: +28.6% (p < 0.001)
+   - humor_gag: +25.5% (p < 0.001)
+   - overlay_text: -20.0% (p < 0.001)
+
+**Key Finding:** Relatable content needs humor to work - negative individually (-12%), positive when combined (+15%).
 
 ---
 
@@ -140,66 +198,95 @@ python yakety_pack_evaluator.py
 
 ```
 viraltracker/
-├── ryan-viral-pattern-detector/    # Instagram scraping & outlier detection
-│   ├── ryan_vpd.py                 # Main CLI tool
-│   ├── sql/schema.sql              # Database schema
-│   └── README.md                   # Full documentation
+├── viraltracker/              # Core Python package
+│   ├── scrapers/              # Platform scrapers
+│   │   ├── tiktok.py          # TikTok (Clockworks API)
+│   │   ├── instagram.py       # Instagram Reels (Apify)
+│   │   └── youtube.py         # YouTube Shorts
+│   ├── processing/            # Video processing
+│   ├── analysis/              # AI analysis (Gemini)
+│   └── core/                  # Database, config
 │
-└── video-processor/                # Video download & AI analysis
-    ├── video_processor.py          # Video download & upload
-    ├── video_analyzer.py           # Gemini AI analysis
-    ├── yakety_pack_evaluator.py    # Product adaptation evaluator
-    ├── aggregate_analyzer.py       # Cross-video insights
-    ├── WORKFLOW.md                 # Complete workflow guide
-    └── README.md                   # Full documentation
+├── analysis/                  # Statistical analysis module
+│   ├── run_hook_analysis.py   # Main analysis script
+│   ├── config.py              # Analysis configuration
+│   └── column_map.py          # CSV column mapping
+│
+├── docs/                      # Documentation
+│   ├── CLI_GUIDE.md           # Command-line reference
+│   └── HOOK_ANALYSIS_GUIDE.md # Analysis methods
+│
+├── scorer/                    # Node.js scoring module
+├── sql/                       # Database migrations
+├── export_hook_analysis_csv.py  # Data export script
+└── vt                         # Unified CLI tool
 ```
 
 ---
 
-## Success Metrics
+## Legacy Tools
 
-### Ryan's Viral Pattern Detector
-- 120 days of Instagram data scraped
-- Account-level statistical analysis
-- Outlier detection with configurable thresholds
-- Multi-format export system
+The repository also includes older tools (retained for compatibility):
 
-### Video Processor
-- 104/104 videos successfully processed (100%)
-- 103/104 AI analyses completed (99%)
-- 64 high-potential adaptations identified (score ≥ 7.0)
-- Complete production-ready scripts generated
+- **ryan-viral-pattern-detector/** - Original Instagram scraping tool
+- **video-processor/** - Original video processing tool
+
+These have been superseded by the unified `./vt` CLI but remain functional.
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ---
 
 ## Changelog
 
+### 2025-10-16
+- ✅ **Added:** Hook Analysis Module (n=297 analysis complete)
+- ✅ **Added:** Comprehensive CLI and analysis documentation
+- ✅ **Added:** Export script for statistical analysis
+
+### 2025-10-15
+- ✅ **Completed:** Hook Intelligence v1.2.0 (n=289 dataset)
+- ✅ **Completed:** Dataset expansion (128 → 289 videos)
+
+### 2025-10-14
+- ✅ **Migrated:** Gemini SDK to 2.5 Pro
+- ✅ **Implemented:** Scorer v1.1.0 with continuous formulas
+
+### 2025-10-11
+- ✅ **Completed:** YouTube Shorts integration
+- ✅ **Implemented:** Multi-platform unified CLI
+
 ### 2025-10-03
-- **Removed:** viral-dashboard (non-functional)
-- **Added:** This README documenting available tools
-
-### 2025-10-01
-- **Completed:** Yakety Pack adaptation evaluation system
-- **Added:** Complete workflow documentation
-
-### 2025-09-30
-- **Completed:** Phase 1 & 2 of video processor
-- **Added:** Gemini AI video analysis
-
-### 2025-09-26
-- **Initial Release:** Ryan's Viral Pattern Detector
-
----
-
-## Documentation
-
-- `ryan-viral-pattern-detector/README.md` - Complete VPD documentation
-- `video-processor/README.md` - Complete video processor documentation
-- `video-processor/WORKFLOW.md` - End-to-end workflow guide
-- `video-processor/YAKETY_PACK_RECOMMENDATIONS.md` - Top 20 production-ready adaptations
+- **Added:** Core ViralTracker multi-platform system
 
 ---
 
 ## License
 
-Internal use only. Ensure compliance with Instagram's Terms of Service and applicable data protection regulations.
+MIT License - See LICENSE file for details
+
+---
+
+## Acknowledgments
+
+- **Apify** - Web scraping infrastructure
+- **Clockworks** - TikTok API access
+- **Google Gemini** - AI-powered video analysis
+- **yt-dlp** - Video download utility
+- **Supabase** - PostgreSQL and storage
+
+---
+
+## Support
+
+For questions or issues, please open a GitHub issue or refer to:
+- [CLI Guide](docs/CLI_GUIDE.md)
+- [Hook Analysis Guide](docs/HOOK_ANALYSIS_GUIDE.md)
