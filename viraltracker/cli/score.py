@@ -184,6 +184,9 @@ def save_scores(supabase, post_id: str, scores: Dict) -> None:
     """
     Save scores to video_scores table.
 
+    Note: Scorer v1.2.0 uses continuous formulas and returns null for subscores.
+    Only overall_score and penalties_score are guaranteed to be present.
+
     Args:
         supabase: Supabase client
         post_id: Post UUID
@@ -192,15 +195,17 @@ def save_scores(supabase, post_id: str, scores: Dict) -> None:
     record = {
         "post_id": post_id,
         "scorer_version": scores["version"],
-        "hook_score": scores["subscores"]["hook"],
-        "story_score": scores["subscores"]["story"],
-        "relatability_score": scores["subscores"]["relatability"],
-        "visuals_score": scores["subscores"]["visuals"],
-        "audio_score": scores["subscores"]["audio"],
-        "watchtime_score": scores["subscores"]["watchtime"],
-        "engagement_score": scores["subscores"]["engagement"],
-        "shareability_score": scores["subscores"]["shareability"],
-        "algo_score": scores["subscores"]["algo"],
+        # Subscores may be null in v1.2.0 (continuous formula scoring)
+        "hook_score": scores["subscores"].get("hook"),
+        "story_score": scores["subscores"].get("story"),
+        "relatability_score": scores["subscores"].get("relatability"),
+        "visuals_score": scores["subscores"].get("visuals"),
+        "audio_score": scores["subscores"].get("audio"),
+        "watchtime_score": scores["subscores"].get("watchtime"),
+        "engagement_score": scores["subscores"].get("engagement"),
+        "shareability_score": scores["subscores"].get("shareability"),
+        "algo_score": scores["subscores"].get("algo"),
+        # These are always present
         "penalties_score": scores["penalties"],
         "overall_score": scores["overall"],
         "score_details": scores  # Full JSON for reference
@@ -260,18 +265,32 @@ def show_score(post_id: str):
     click.echo(f"Scored: {score['scored_at']}")
     click.echo()
 
-    click.echo("SUBSCORES:")
-    click.echo("-" * 60)
-    click.echo(f"  Hook:         {score['hook_score']:.1f}/100")
-    click.echo(f"  Story:        {score['story_score']:.1f}/100")
-    click.echo(f"  Relatability: {score['relatability_score']:.1f}/100")
-    click.echo(f"  Visuals:      {score['visuals_score']:.1f}/100")
-    click.echo(f"  Audio:        {score['audio_score']:.1f}/100")
-    click.echo(f"  Watchtime:    {score['watchtime_score']:.1f}/100")
-    click.echo(f"  Engagement:   {score['engagement_score']:.1f}/100")
-    click.echo(f"  Shareability: {score['shareability_score']:.1f}/100")
-    click.echo(f"  Algorithm:    {score['algo_score']:.1f}/100")
-    click.echo()
+    # Subscores (may be null in v1.2.0 continuous formula scoring)
+    subscores = [
+        ("Hook", score.get('hook_score')),
+        ("Story", score.get('story_score')),
+        ("Relatability", score.get('relatability_score')),
+        ("Visuals", score.get('visuals_score')),
+        ("Audio", score.get('audio_score')),
+        ("Watchtime", score.get('watchtime_score')),
+        ("Engagement", score.get('engagement_score')),
+        ("Shareability", score.get('shareability_score')),
+        ("Algorithm", score.get('algo_score'))
+    ]
+
+    # Check if any subscores exist
+    has_subscores = any(s[1] is not None for s in subscores)
+
+    if has_subscores:
+        click.echo("SUBSCORES:")
+        click.echo("-" * 60)
+        for label, value in subscores:
+            if value is not None:
+                click.echo(f"  {label:13s} {value:.1f}/100")
+        click.echo()
+    else:
+        click.echo("ℹ️  No subscores (v1.2.0 uses continuous formula scoring)")
+        click.echo()
 
     if score.get('penalties_score', 0) > 0:
         click.echo(f"⚠️  PENALTIES: -{score['penalties_score']:.1f}")
@@ -341,6 +360,7 @@ def export_scores(project: str, output: str):
             post = score.get('posts', {})
             account = post.get('accounts', {})
 
+            # Handle nullable subscores (v1.2.0 continuous formula scoring)
             writer.writerow({
                 'post_id': score['post_id'],
                 'username': account.get('platform_username', 'N/A'),
@@ -350,15 +370,15 @@ def export_scores(project: str, output: str):
                 'comments': post.get('comments', 0),
                 'caption': (post.get('caption', '') or '')[:200],  # Truncate for CSV
                 'overall_score': score['overall_score'],
-                'hook_score': score['hook_score'],
-                'story_score': score['story_score'],
-                'relatability_score': score['relatability_score'],
-                'visuals_score': score['visuals_score'],
-                'audio_score': score['audio_score'],
-                'watchtime_score': score['watchtime_score'],
-                'engagement_score': score['engagement_score'],
-                'shareability_score': score['shareability_score'],
-                'algo_score': score['algo_score'],
+                'hook_score': score.get('hook_score', ''),  # Empty string for null
+                'story_score': score.get('story_score', ''),
+                'relatability_score': score.get('relatability_score', ''),
+                'visuals_score': score.get('visuals_score', ''),
+                'audio_score': score.get('audio_score', ''),
+                'watchtime_score': score.get('watchtime_score', ''),
+                'engagement_score': score.get('engagement_score', ''),
+                'shareability_score': score.get('shareability_score', ''),
+                'algo_score': score.get('algo_score', ''),
                 'penalties_score': score['penalties_score'],
                 'scored_at': score['scored_at']
             })
@@ -402,16 +422,17 @@ def analyze_scores(project: str):
     data = scores.data
 
     # Calculate statistics
+    # Note: Filter out null subscores (v1.2.0 continuous formula scoring)
     overall_scores = [s['overall_score'] for s in data]
-    hook_scores = [s['hook_score'] for s in data]
-    story_scores = [s['story_score'] for s in data]
-    relatability_scores = [s['relatability_score'] for s in data]
-    visuals_scores = [s['visuals_score'] for s in data]
-    audio_scores = [s['audio_score'] for s in data]
-    watchtime_scores = [s['watchtime_score'] for s in data]
-    engagement_scores = [s['engagement_score'] for s in data]
-    shareability_scores = [s['shareability_score'] for s in data]
-    algo_scores = [s['algo_score'] for s in data]
+    hook_scores = [s['hook_score'] for s in data if s.get('hook_score') is not None]
+    story_scores = [s['story_score'] for s in data if s.get('story_score') is not None]
+    relatability_scores = [s['relatability_score'] for s in data if s.get('relatability_score') is not None]
+    visuals_scores = [s['visuals_score'] for s in data if s.get('visuals_score') is not None]
+    audio_scores = [s['audio_score'] for s in data if s.get('audio_score') is not None]
+    watchtime_scores = [s['watchtime_score'] for s in data if s.get('watchtime_score') is not None]
+    engagement_scores = [s['engagement_score'] for s in data if s.get('engagement_score') is not None]
+    shareability_scores = [s['shareability_score'] for s in data if s.get('shareability_score') is not None]
+    algo_scores = [s['algo_score'] for s in data if s.get('algo_score') is not None]
 
     click.echo(f"\n{'='*60}")
     click.echo(f"📊 SCORE ANALYSIS: {project_data['name']}")
@@ -429,19 +450,35 @@ def analyze_scores(project: str):
     click.echo(f"  Max:      {max(overall_scores):.1f}")
     click.echo()
 
-    # Subscore averages
-    click.echo("SUBSCORE AVERAGES")
-    click.echo("-" * 60)
-    click.echo(f"  Hook:         {mean(hook_scores):.1f}")
-    click.echo(f"  Story:        {mean(story_scores):.1f}")
-    click.echo(f"  Relatability: {mean(relatability_scores):.1f}")
-    click.echo(f"  Visuals:      {mean(visuals_scores):.1f}")
-    click.echo(f"  Audio:        {mean(audio_scores):.1f}")
-    click.echo(f"  Watchtime:    {mean(watchtime_scores):.1f}")
-    click.echo(f"  Engagement:   {mean(engagement_scores):.1f}")
-    click.echo(f"  Shareability: {mean(shareability_scores):.1f}")
-    click.echo(f"  Algorithm:    {mean(algo_scores):.1f}")
-    click.echo()
+    # Subscore averages (only if available)
+    # Note: v1.2.0 continuous formula scoring doesn't provide subscores
+    if any([hook_scores, story_scores, relatability_scores, visuals_scores,
+            audio_scores, watchtime_scores, engagement_scores,
+            shareability_scores, algo_scores]):
+        click.echo("SUBSCORE AVERAGES")
+        click.echo("-" * 60)
+        if hook_scores:
+            click.echo(f"  Hook:         {mean(hook_scores):.1f}")
+        if story_scores:
+            click.echo(f"  Story:        {mean(story_scores):.1f}")
+        if relatability_scores:
+            click.echo(f"  Relatability: {mean(relatability_scores):.1f}")
+        if visuals_scores:
+            click.echo(f"  Visuals:      {mean(visuals_scores):.1f}")
+        if audio_scores:
+            click.echo(f"  Audio:        {mean(audio_scores):.1f}")
+        if watchtime_scores:
+            click.echo(f"  Watchtime:    {mean(watchtime_scores):.1f}")
+        if engagement_scores:
+            click.echo(f"  Engagement:   {mean(engagement_scores):.1f}")
+        if shareability_scores:
+            click.echo(f"  Shareability: {mean(shareability_scores):.1f}")
+        if algo_scores:
+            click.echo(f"  Algorithm:    {mean(algo_scores):.1f}")
+        click.echo()
+    else:
+        click.echo("ℹ️  No subscores available (v1.2.0 uses continuous formula scoring)")
+        click.echo()
 
     # Top performers
     click.echo("TOP 5 HIGHEST SCORING VIDEOS")
