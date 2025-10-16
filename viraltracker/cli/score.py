@@ -81,18 +81,26 @@ def score_videos(project: str, limit: Optional[int], rescore: bool, verbose: boo
         click.echo(f"❌ No posts found in project", err=True)
         return
 
-    # Get video analyses for these posts
-    analyses = supabase.table("video_analysis").select("post_id").in_("post_id", post_ids).execute()
-    analyzed_post_ids = [row['post_id'] for row in analyses.data]
+    # Get video analyses for these posts (batched to avoid URL length limits)
+    BATCH_SIZE = 100
+    analyzed_post_ids = []
+
+    for i in range(0, len(post_ids), BATCH_SIZE):
+        batch = post_ids[i:i+BATCH_SIZE]
+        analyses = supabase.table("video_analysis").select("post_id").in_("post_id", batch).execute()
+        analyzed_post_ids.extend([row['post_id'] for row in analyses.data])
 
     if not analyzed_post_ids:
         click.echo(f"❌ No analyzed videos found in project", err=True)
         return
 
-    # Filter out already-scored unless --rescore
+    # Filter out already-scored unless --rescore (batched to avoid URL length limits)
     if not rescore:
-        scored = supabase.table("video_scores").select("post_id").in_("post_id", analyzed_post_ids).execute()
-        scored_post_ids = {row['post_id'] for row in scored.data}
+        scored_post_ids = set()
+        for i in range(0, len(analyzed_post_ids), BATCH_SIZE):
+            batch = analyzed_post_ids[i:i+BATCH_SIZE]
+            scored = supabase.table("video_scores").select("post_id").in_("post_id", batch).execute()
+            scored_post_ids.update(row['post_id'] for row in scored.data)
         to_score = [pid for pid in analyzed_post_ids if pid not in scored_post_ids]
     else:
         to_score = analyzed_post_ids
@@ -331,16 +339,22 @@ def export_scores(project: str, output: str):
 
     click.echo(f"📊 Exporting scores for: {project_data['name']}")
 
-    # Get all scored videos with post details
+    # Get all scored videos with post details (batched to avoid URL length limits)
     project_posts = supabase.table("project_posts").select("post_id").eq("project_id", project_id).execute()
     post_ids = [row['post_id'] for row in project_posts.data]
 
-    # Get scores with post details
-    scores = supabase.table("video_scores").select(
-        "*, posts(post_url, caption, views, likes, comments, accounts(platform_username))"
-    ).in_("post_id", post_ids).execute()
+    # Get scores with post details (batched)
+    BATCH_SIZE = 100
+    all_scores = []
 
-    if not scores.data:
+    for i in range(0, len(post_ids), BATCH_SIZE):
+        batch = post_ids[i:i+BATCH_SIZE]
+        scores = supabase.table("video_scores").select(
+            "*, posts(post_url, caption, views, likes, comments, accounts(platform_username))"
+        ).in_("post_id", batch).execute()
+        all_scores.extend(scores.data)
+
+    if not all_scores:
         click.echo(f"❌ No scores found", err=True)
         return
 
@@ -356,7 +370,7 @@ def export_scores(project: str, output: str):
 
         writer.writeheader()
 
-        for score in scores.data:
+        for score in all_scores:
             post = score.get('posts', {})
             account = post.get('accounts', {})
 
@@ -383,7 +397,7 @@ def export_scores(project: str, output: str):
                 'scored_at': score['scored_at']
             })
 
-    click.echo(f"✅ Exported {len(scores.data)} scores to {output}")
+    click.echo(f"✅ Exported {len(all_scores)} scores to {output}")
 
 
 @score_group.command(name="analyze")
@@ -407,19 +421,26 @@ def analyze_scores(project: str):
     project_data = project_result.data[0]
     project_id = project_data['id']
 
-    # Get all scored videos with post details
+    # Get all scored videos with post details (batched to avoid URL length limits)
     project_posts = supabase.table("project_posts").select("post_id").eq("project_id", project_id).execute()
     post_ids = [row['post_id'] for row in project_posts.data]
 
-    scores = supabase.table("video_scores").select(
-        "*, posts(post_url, caption, views, accounts(platform_username))"
-    ).in_("post_id", post_ids).execute()
+    # Get scores with post details (batched)
+    BATCH_SIZE = 100
+    all_scores = []
 
-    if not scores.data or len(scores.data) == 0:
+    for i in range(0, len(post_ids), BATCH_SIZE):
+        batch = post_ids[i:i+BATCH_SIZE]
+        scores = supabase.table("video_scores").select(
+            "*, posts(post_url, caption, views, accounts(platform_username))"
+        ).in_("post_id", batch).execute()
+        all_scores.extend(scores.data)
+
+    if not all_scores or len(all_scores) == 0:
         click.echo(f"❌ No scores found", err=True)
         return
 
-    data = scores.data
+    data = all_scores
 
     # Calculate statistics
     # Note: Filter out null subscores (v1.2.0 continuous formula scoring)
