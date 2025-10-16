@@ -201,12 +201,13 @@ class YouTubeScraper:
         }
 
         if days_back:
-            actor_input["oldestPostDate"] = str(days_back)
+            # Format days_back as a relative time string (e.g., "90 days")
+            actor_input["oldestPostDate"] = f"{days_back} days"
 
         logger.info(f"Starting Apify run for {len(channel_names)} channels (max_results={max_results}, sort={sort_by})")
 
-        # Use Apify client to start the run
-        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input)
+        # Use Apify client to start the run (use .start() not .call() to avoid SDK timeout)
+        run = self.apify_client.actor(self.apify_actor_id).start(run_input=actor_input)
 
         run_id = run["id"]
         logger.info(f"Apify run started: {run_id}")
