@@ -269,8 +269,8 @@ def search_keyword(
                 else:
                     click.echo(f"⚠️  Warning: Project '{project}' not found. Posts will be saved without project link.")
 
-            # Save posts
-            post_ids = scraper.save_posts_to_db(df, project_id=project_id, import_source="scrape")
+            # Save posts (keyword search uses 'search' import source)
+            post_ids = scraper.save_posts_to_db(df, project_id=project_id, import_source="search")
 
             click.echo(f"✅ Saved {len(post_ids)} posts to database")
 
@@ -382,8 +382,8 @@ def search_hashtag(
                 else:
                     click.echo(f"⚠️  Warning: Project '{project}' not found. Posts will be saved without project link.")
 
-            # Save posts
-            post_ids = scraper.save_posts_to_db(df, project_id=project_id, import_source="scrape")
+            # Save posts (hashtag search uses 'search' import source)
+            post_ids = scraper.save_posts_to_db(df, project_id=project_id, import_source="search")
 
             click.echo(f"✅ Saved {len(post_ids)} posts to database")
 
