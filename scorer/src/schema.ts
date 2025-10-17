@@ -85,6 +85,61 @@ export const AlgoMeasuresSchema = z.object({
   post_time_optimal: z.boolean().optional(),
 });
 
+export const HookContentSchema = z.object({
+  hook_type_probs: z.record(z.string(), z.number().min(0).max(1)).optional(),
+  hook_modality_attribution: z.object({
+    audio: z.number().min(0).max(1).nullable().optional(),
+    visual: z.number().min(0).max(1).nullable().optional(),
+    overlay: z.number().min(0).max(1).nullable().optional()
+  }).optional(),
+  hook_visual_catalysts: z.object({
+    face_closeup: z.number().min(0).max(1).nullable().optional(),
+    hands_object: z.number().min(0).max(1).nullable().optional(),
+    large_motion_burst: z.number().min(0).max(1).nullable().optional(),
+    color_pop: z.number().min(0).max(1).nullable().optional(),
+    visual_evidence_present: z.boolean().nullable().optional(),
+    first_frame_shot_type: z.enum([
+      "face_closeup","hands_object","full_body_motion","product_macro","screen_recording","establishing","null"
+    ]).nullable().optional(),
+    skin_exposure_suggestive: z.boolean().nullable().optional()
+  }).optional(),
+  hook_audio_catalysts: z.object({
+    spoken_question_present: z.boolean().nullable().optional(),
+    spoken_callout_niche: z.boolean().nullable().optional(),
+    spoken_numbers_present: z.boolean().nullable().optional(),
+    prosody_energy: z.number().min(0).max(1).nullable().optional(),
+    beat_drop_sync: z.number().min(0).max(1).nullable().optional()
+  }).optional(),
+  hook_overlay_catalysts: z.object({
+    overlay_words_in_2s: z.number().min(0).nullable().optional(),
+    overlay_chars_per_sec_2s: z.number().min(0).nullable().optional(),
+    overlay_contrast_score: z.number().min(0).max(1).nullable().optional(),
+    overlay_safe_area_pct: z.number().min(0).max(1).nullable().optional(),
+    overlay_alignment_delay_ms: z.number().nullable().optional(),
+    overlay_dup_spoken_pct: z.number().min(0).max(1).nullable().optional()
+  }).optional(),
+  hook_risk_flags: z.object({
+    suggestive_visual_risk: z.boolean().nullable().optional(),
+    violence_risk: z.boolean().nullable().optional(),
+    minors_present_risk: z.boolean().nullable().optional(),
+    medical_sensitive_risk: z.boolean().nullable().optional(),
+    brand_logo_risk: z.boolean().nullable().optional()
+  }).optional(),
+  modifiers: z.object({
+    stakes_clarity: z.number().min(0).max(1).nullable().optional(),
+    curiosity_gap: z.number().min(0).max(1).nullable().optional(),
+    specificity: z.number().min(0).max(1).nullable().optional()
+  }).optional(),
+  hook_span: z.object({ t_start: z.number().min(0), t_end: z.number().min(0) }).optional(),
+  payoff_time_sec: z.number().min(0).optional(),
+  hook_windows: z.object({
+    w1_0_1s: z.any().optional(),
+    w2_0_2s: z.any().optional(),
+    w3_0_3s: z.any().optional(),
+    w4_0_5s_or_hook_end: z.any().optional()
+  }).optional()
+}).optional();
+
 export const MeasuresSchema = z.object({
   hook: HookMeasuresSchema,
   story: StoryMeasuresSchema,
@@ -94,6 +149,7 @@ export const MeasuresSchema = z.object({
   engagement: EngagementMeasuresSchema,
   shareability: ShareabilityMeasuresSchema,
   algo: AlgoMeasuresSchema,
+  hook_content: HookContentSchema,
 });
 
 export const MetaSchema = z.object({

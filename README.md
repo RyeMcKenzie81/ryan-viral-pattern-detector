@@ -12,8 +12,12 @@ Scrape, process, and analyze short-form video content to identify viral patterns
 ## Quick Start
 
 ```bash
-# 1. Scrape TikTok videos
+# 1. Scrape videos (multiple platforms supported)
+# TikTok
 ./vt tiktok search "dog training" --count 100 --project my-project --save
+
+# YouTube Shorts
+./vt youtube search --terms "dog training" --max-shorts 100 --project my-project
 
 # 2. Process videos (download + extract metrics)
 ./vt process videos --project my-project
@@ -36,7 +40,7 @@ cat results/playbook.md
 ### 🎬 Multi-Platform Scraping
 - **TikTok** - Search by keywords, hashtags, trending (Clockworks API)
 - **Instagram Reels** - Account-based scraping (Apify)
-- **YouTube Shorts** - Search and channel scraping
+- **YouTube Shorts** - Keyword search and channel scraping with video type classification
 
 ### 📊 Video Processing
 - Automatic download via `yt-dlp`
@@ -56,6 +60,49 @@ cat results/playbook.md
 - Pairwise ranking models (within-account matchups)
 - Interaction effect testing
 - Editor-friendly playbook generation with lift metrics
+
+---
+
+## Platform-Specific Features
+
+### YouTube Search
+
+Keyword/hashtag discovery for YouTube Shorts and videos with advanced filtering:
+
+```bash
+# Basic search (Shorts only)
+./vt youtube search --terms "dog training" --max-shorts 50
+
+# Multiple search terms
+./vt youtube search --terms "dog training,puppy tricks,pet care" --max-shorts 100
+
+# With view and date filters
+./vt youtube search --terms "viral dogs" --max-shorts 100 --days-back 7 --min-views 100000
+
+# Find viral content from micro-influencers
+./vt youtube search --terms "dog training tips" --max-shorts 100 --min-views 100000 --max-subscribers 50000
+
+# Mixed content (Shorts + regular videos)
+./vt youtube search --terms "puppy guide" --max-shorts 20 --max-videos 30
+
+# Link to project for analysis
+./vt youtube search --terms "golden retriever" --max-shorts 50 --project my-project
+```
+
+**Features:**
+- Separate limits for Shorts, videos, and live streams
+- Video type classification (short/video/stream) for data science analysis
+- Subscriber filtering (min/max) for micro-influencer discovery
+- View count and date range filtering
+- Sort by views, date, relevance, or rating
+- Automatic classification based on URL patterns
+- Project linking for organizing results
+
+**Use Cases:**
+- Discover viral Shorts by keyword/hashtag
+- Find breakout content from small creators (<50K subscribers)
+- Compare Shorts performance vs long-form videos
+- Track trending topics across different time ranges
 
 ---
 
@@ -224,14 +271,13 @@ viraltracker/
 
 ---
 
-## Legacy Tools
+## Archive
 
-The repository also includes older tools (retained for compatibility):
+Legacy tools have been moved to `archive/legacy-code/`:
+- **ryan-viral-pattern-detector/** - Original Instagram scraping tool (superseded by `viraltracker/scrapers/instagram.py`)
+- **video-processor/** - Original video processing tool (superseded by `viraltracker/processing/` and `viraltracker/analysis/`)
 
-- **ryan-viral-pattern-detector/** - Original Instagram scraping tool
-- **video-processor/** - Original video processing tool
-
-These have been superseded by the unified `./vt` CLI but remain functional.
+Historical documentation is available in `docs/archive/`.
 
 ---
 
@@ -248,6 +294,9 @@ These have been superseded by the unified `./vt` CLI but remain functional.
 ## Changelog
 
 ### 2025-10-16
+- ✅ **Added:** YouTube keyword/hashtag search with video type classification
+- ✅ **Added:** Subscriber filtering (min/max) for micro-influencer discovery
+- ✅ **Added:** Explicit video_type tracking (short/video/stream) for data science
 - ✅ **Added:** Hook Analysis Module (n=297 analysis complete)
 - ✅ **Added:** Comprehensive CLI and analysis documentation
 - ✅ **Added:** Export script for statistical analysis

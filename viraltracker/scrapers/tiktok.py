@@ -1,8 +1,8 @@
 """
-TikTok scraper using ScrapTik (Apify actor)
+TikTok scraper using Clockworks TikTok Scraper (Apify actor)
 
 Supports 3 discovery modes:
-1. Keyword search - Find viral content by keyword
+1. Keyword search - Find viral content by keyword or hashtag
 2. Hashtag tracking - Monitor specific hashtags
 3. User/creator tracking - Scrape specific accounts
 
@@ -36,7 +36,7 @@ SearchMode = Literal["keyword", "hashtag", "user"]
 
 class TikTokScraper:
     """
-    TikTok scraper for ViralTracker using ScrapTik (Apify)
+    TikTok scraper for ViralTracker using Clockworks TikTok Scraper (Apify)
 
     Features:
     - Keyword search with filters (views, recency, creator size)
@@ -57,11 +57,11 @@ class TikTokScraper:
 
         Args:
             apify_token: Apify API token (defaults to APIFY_TOKEN env var)
-            apify_actor_id: Apify actor ID (defaults to scraptik~tiktok-api)
+            apify_actor_id: Apify actor ID (defaults to clockworks/tiktok-scraper)
             supabase_client: Supabase client (will create one if not provided)
         """
         self.apify_token = apify_token or Config.APIFY_TOKEN
-        self.apify_actor_id = apify_actor_id or "scraptik~tiktok-api"
+        self.apify_actor_id = apify_actor_id or "clockworks/tiktok-scraper"
         self.supabase = supabase_client or get_supabase_client()
 
         if not self.apify_token:
@@ -309,29 +309,40 @@ class TikTokScraper:
         publish_time: int = 0
     ) -> str:
         """
-        Start Apify run for keyword search
+        Start Apify run for keyword search using Clockworks actor
+
+        Clockworks supports both hashtags and search queries:
+        - Hashtags use "hashtags" parameter (without # prefix)
+        - Search queries use "searchQueries" parameter
 
         Args:
-            keyword: Search keyword
+            keyword: Search keyword/phrase or hashtag (with or without #)
             count: Number of posts to retrieve
-            sort_type: 0=Relevance, 1=Most Liked, 3=Date
-            publish_time: 0=All, 1=Yesterday, 7=Week, 30=Month, 90=3mo, 180=6mo
+            sort_type: Sort type (ignored by Clockworks - always relevance)
+            publish_time: Time filter (ignored by Clockworks)
 
         Returns:
             Apify run ID
         """
+        # Determine if this is a hashtag or search query
+        is_hashtag = keyword.startswith('#')
+        clean_keyword = keyword[1:] if is_hashtag else keyword
+
         actor_input = {
-            "searchPosts_keyword": keyword,
-            "searchPosts_count": count,
-            "searchPosts_sortType": sort_type,
-            "searchPosts_publishTime": publish_time,
-            "searchPosts_useFilters": True if publish_time > 0 or sort_type > 0 else False,
-            "searchPosts_offset": 0
+            "resultsPerPage": count,
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+            "shouldDownloadSubtitles": False,
         }
 
-        logger.info(f"Starting keyword search: '{keyword}' (count={count}, sort={sort_type})")
+        if is_hashtag:
+            actor_input["hashtags"] = [clean_keyword]
+            logger.info(f"Starting hashtag search: #{clean_keyword} (count={count})")
+        else:
+            actor_input["searchQueries"] = [clean_keyword]
+            logger.info(f"Starting search query: '{clean_keyword}' (count={count})")
 
-        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input, build="latest")
+        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input)
 
         run_id = run["id"]
         logger.info(f"Apify run started: {run_id}")
@@ -340,10 +351,7 @@ class TikTokScraper:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
     def _start_hashtag_search_run(self, hashtag: str, count: int = 50) -> str:
         """
-        Start Apify run for hashtag search
-
-        Note: We need to get the challenge ID (cid) first, then fetch posts.
-        For simplicity, we'll use searchHashtags to find the hashtag, then use challengePosts.
+        Start Apify run for hashtag search using Clockworks actor
 
         Args:
             hashtag: Hashtag name (without #)
@@ -352,17 +360,20 @@ class TikTokScraper:
         Returns:
             Apify run ID
         """
-        # For now, use searchPosts with hashtag query
-        # TODO: Implement proper challengePosts endpoint after getting cid
+        # Remove # prefix if present
+        clean_hashtag = hashtag[1:] if hashtag.startswith('#') else hashtag
+
         actor_input = {
-            "searchPosts_keyword": f"#{hashtag}",
-            "searchPosts_count": count,
-            "searchPosts_offset": 0
+            "hashtags": [clean_hashtag],
+            "resultsPerPage": count,
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+            "shouldDownloadSubtitles": False,
         }
 
-        logger.info(f"Starting hashtag search: #{hashtag} (count={count})")
+        logger.info(f"Starting hashtag search: #{clean_hashtag} (count={count})")
 
-        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input, build="latest")
+        run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input)
 
         run_id = run["id"]
         logger.info(f"Apify run started: {run_id}")
@@ -540,75 +551,62 @@ class TikTokScraper:
         """
         Normalize TikTok search results to DataFrame
 
-        ScrapTik searchPosts returns a wrapper object with search_item_list:
+        Clockworks TikTok Scraper returns flat structure with nested objects:
         {
-          "search_item_list": [
-            {"aweme_info": {...}},
-            ...
-          ]
-        }
-
-        Each aweme_info contains:
-        {
-          "aweme_id": "video_id",
-          "author": {"unique_id": "username", "follower_count": 123, ...},
-          "statistics": {"play_count": 1000, "digg_count": 50, "comment_count": 10, "share_count": 5},
-          "video": {"duration": 15, "download_addr": "..."},
-          "desc": "caption text",
-          "create_time": 1234567890,
+          "id": "7559660839335202079",
+          "text": "caption text",
+          "createTimeISO": "2025-10-10T18:25:28.000Z",
+          "authorMeta": {"name": "username", "fans": 44500, ...},
+          "videoMeta": {"duration": 68, ...},
+          "playCount": 4592,
+          "diggCount": 113,
+          "shareCount": 7,
+          "commentCount": 16,
+          "webVideoUrl": "https://www.tiktok.com/@user/video/123",
           ...
         }
 
         Args:
-            items: Raw ScrapTik search response (list with wrapper object)
+            items: Raw Clockworks search response (list of flat dicts)
 
         Returns:
             DataFrame with normalized posts
         """
         normalized_data = []
 
-        # Extract posts from wrapper
-        posts = []
-        for item in items:
-            if "search_item_list" in item:
-                for search_item in item["search_item_list"]:
-                    if "aweme_info" in search_item:
-                        posts.append(search_item["aweme_info"])
+        logger.info(f"Normalizing {len(items)} posts from Clockworks")
 
-        logger.info(f"Extracted {len(posts)} posts from search results")
-
-        for post in posts:
+        for post in items:
             try:
-                # Extract core fields (note: TikTok API uses snake_case)
-                author = post.get("author", {})
-                stats = post.get("statistics", {})
-                video = post.get("video", {})
+                # Extract nested objects
+                author_meta = post.get("authorMeta", {})
+                video_meta = post.get("videoMeta", {})
 
                 # Build post data
-                aweme_id = post.get("aweme_id", "")
-                username = author.get("unique_id", "")
+                post_id = str(post.get("id", ""))
+                username = author_meta.get("name", "")
 
                 post_data = {
-                    "post_id": aweme_id,
-                    "post_url": f"https://www.tiktok.com/@{username}/video/{aweme_id}",
+                    "post_id": post_id,
+                    "post_url": post.get("webVideoUrl", f"https://www.tiktok.com/@{username}/video/{post_id}"),
                     "username": username,
-                    "display_name": author.get("nickname", ""),
-                    "follower_count": author.get("follower_count", 0),
-                    "is_verified": author.get("custom_verify", "") != "",
+                    "display_name": author_meta.get("nickName", ""),
+                    "follower_count": author_meta.get("fans", 0),
+                    "is_verified": author_meta.get("verified", False),
 
                     # Engagement metrics
-                    "views": stats.get("play_count", 0),
-                    "likes": stats.get("digg_count", 0),
-                    "comments": stats.get("comment_count", 0),
-                    "shares": stats.get("share_count", 0),
+                    "views": post.get("playCount", 0),
+                    "likes": post.get("diggCount", 0),
+                    "comments": post.get("commentCount", 0),
+                    "shares": post.get("shareCount", 0),
 
                     # Video metadata
-                    "caption": post.get("desc", "")[:2200] if post.get("desc") else "",
-                    "length_sec": video.get("duration", 0),
-                    "download_url": video.get("download_addr", ""),
+                    "caption": post.get("text", "")[:2200],
+                    "length_sec": video_meta.get("duration", 0),
+                    "download_url": "",  # Clockworks doesn't provide download URL in basic output
 
-                    # Timestamp
-                    "posted_at": datetime.fromtimestamp(post.get("create_time", 0)).isoformat() if post.get("create_time") else None,
+                    # Timestamp (ISO format from Clockworks)
+                    "posted_at": post.get("createTimeISO"),
 
                     # Platform
                     "platform_id": self.platform_id
@@ -729,8 +727,9 @@ class TikTokScraper:
 
         # Filter 2: Recency
         if 'posted_at' in df.columns:
-            cutoff_date = datetime.now() - timedelta(days=max_days_old)
-            df['posted_at_dt'] = pd.to_datetime(df['posted_at'])
+            from datetime import timezone
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_days_old)
+            df['posted_at_dt'] = pd.to_datetime(df['posted_at'], utc=True)
             df = df[df['posted_at_dt'] >= cutoff_date]
             df = df.drop(columns=['posted_at_dt'])
             logger.info(f"After recency filter (<{max_days_old} days): {len(df)}/{original_count} posts")

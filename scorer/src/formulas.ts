@@ -58,6 +58,108 @@ export function scoreHook(m: any): number | null {
 }
 
 // ============================================================================
+// Hook Content Score (0-100) - v1.2.0 Hook Intelligence
+// ============================================================================
+
+export function scoreHookContent(hc: any): number | null {
+  if (!hc || !hc.hook_type_probs) return null;
+  const p = (k: string, w = 1) => clamp((hc.hook_type_probs?.[k] ?? 0) * w, 0, 1);
+
+  // Motifs (weights sum ≈ 0.7)
+  const motifs =
+      0.12*p("result_first")     + 0.10*p("reveal_transform")
+    + 0.10*p("open_question")    + 0.08*p("direct_callout")
+    + 0.08*p("challenge_stakes") + 0.07*p("contradiction_mythbust")
+    + 0.06*p("humor_gag")        + 0.05*p("demo_novelty")
+    + 0.05*p("relatable_slice")  + 0.05*p("tension_wait")
+    + 0.05*p("social_proof")     + 0.04*p("authority_flex")
+    + 0.05*p("shock_violation");
+
+  // Modifiers (~0.2)
+  const m = hc.modifiers ?? {};
+  const mods = 0.08*clamp(m.stakes_clarity ?? 0,0,1)
+             + 0.07*clamp(m.curiosity_gap ?? 0,0,1)
+             + 0.05*clamp(m.specificity ?? 0,0,1);
+
+  // Modality (~0.1)
+  const att = hc.hook_modality_attribution ?? {};
+  const modality = 0.04*clamp(att.audio ?? 0,0,1)
+                 + 0.05*clamp(att.visual ?? 0,0,1)
+                 + 0.01*clamp(att.overlay ?? 0,0,1);
+
+  let s = 100 * (motifs + mods + modality);
+
+  // Overlay readability & risk nudges
+  const ov = hc.hook_overlay_catalysts ?? {};
+  if ((ov.overlay_chars_per_sec_2s ?? 0) > 140) s -= 5;
+  if ((ov.overlay_contrast_score ?? 1) < 0.6)   s -= 4;
+  const risk = hc.hook_risk_flags ?? {};
+  if (risk.suggestive_visual_risk === true) s -= 3;
+
+  return clamp(s, 0, 100);
+}
+
+// ============================================================================
+// Hook Adaptive Score (0-100) - v1.2.0 Windowed Metrics
+// ============================================================================
+
+function windowScore(w:any): number {
+  if (!w) return 0;
+  const face   = clamp((w.face_pct ?? 0), 0, 1);
+  const cuts   = clamp((w.cuts ?? 0)/3, 0, 1);
+  const motion = clamp((w.motion_intensity ?? 0), 0, 1);
+  const words  = clamp((w.words_per_sec ?? 0)/5, 0, 1);
+  const ovChar = w.overlay_chars_per_sec ?? 0;
+  const overlayOK = ovChar <= 140 ? 1 : clamp(1 - (ovChar-140)/120, 0, 1);
+  const ma = w.modality_attribution ?? {};
+  const modality = clamp(0.5*(ma.visual ?? 0) + 0.4*(ma.audio ?? 0) + 0.1*(ma.overlay ?? 0), 0, 1);
+  const s = 0.30*face + 0.22*cuts + 0.18*motion + 0.18*words + 0.07*overlayOK + 0.05*modality;
+  return clamp(s*100, 0, 100);
+}
+
+export function scoreHookAdaptive(h:any, hc:any): number | null {
+  if (!h && !hc) return null;
+  const hw = hc?.hook_windows ?? {};
+  const s1 = windowScore(hw.w1_0_1s);
+  const s2 = windowScore(hw.w2_0_2s);
+  const s3 = windowScore(hw.w3_0_3s);
+  const s4 = windowScore(hw.w4_0_5s_or_hook_end);
+
+  let w1 = 0.55, w2 = 0.30, w3 = 0.10, w4 = 0.05;
+  const hookEnd = hc?.hook_span?.t_end ?? 2.0;
+  if (hookEnd <= 2.2) { const sum = w1+w2; w1/=sum; w2/=sum; w3=0; w4=0; }
+
+  const payoff = hc?.payoff_time_sec ?? h?.time_to_value_sec ?? null;
+  if (payoff != null && payoff <= 0.8) { w1 += 0.05; w2 -= 0.05; }
+
+  const stakes = hc?.modifiers?.stakes_clarity ?? 0;
+  let ttvPenalty = 0;
+  if (payoff != null) {
+    const x = Math.max(0, payoff - 1.0);
+    const sig = 1/(1+Math.exp(2.2*x));
+    const base = (1 - sig)*25;
+    ttvPenalty = - base * (1 - 0.5*stakes);
+  }
+
+  const anyWin = (hw.w1_0_1s || hw.w2_0_2s || hw.w3_0_3s || hw.w4_0_5s_or_hook_end);
+  if (!anyWin) {
+    // Legacy fallback
+    const ttv = h?.time_to_value_sec;
+    const face = h?.first_frame_face_present_pct != null ? h.first_frame_face_present_pct/100 : null;
+    const motion = h?.first_2s_motion_intensity ?? null;
+    if (ttv==null && face==null && motion==null) return null;
+    let s = 0;
+    if (ttv!=null){ const x=Math.max(0, ttv-1.0); const sig=1/(1+Math.exp(2.2*x)); s += sig*50; }
+    if (face!=null)   s += clamp(face*25, 0, 25);
+    if (motion!=null) s += clamp(motion*25, 0, 25);
+    return clamp(s, 0, 100);
+  }
+
+  const sBlend = w1*s1 + w2*s2 + w3*s3 + w4*s4;
+  return clamp(sBlend + ttvPenalty, 0, 100);
+}
+
+// ============================================================================
 // 2. Story Score (0-100) - v1.1.0 Continuous Formula
 // ============================================================================
 

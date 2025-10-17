@@ -14,8 +14,7 @@ from typing import Dict, Optional, List
 from dataclasses import dataclass
 import tempfile
 
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from supabase import Client
 from tqdm import tqdm
 
@@ -65,10 +64,11 @@ class VideoAnalyzer:
         if not api_key:
             raise ValueError("GEMINI_API_KEY must be set in environment or passed to constructor")
 
-        self.client = genai.Client(api_key=api_key)
+        genai.configure(api_key=api_key)
         # Use explicit model for video analysis - Gemini 2.5 Pro
         self.model_name = gemini_model or Config.GEMINI_VIDEO_MODEL
-        self.analysis_version = "vid-1.2.0"  # Hook Intelligence upgrade
+        self.model = genai.GenerativeModel(self.model_name)
+        self.analysis_version = "vid-1.1.0"  # Temporarily reverted for testing
 
         self.storage_bucket = os.getenv("SUPABASE_STORAGE_BUCKET", "videos")
 
@@ -185,29 +185,29 @@ class VideoAnalyzer:
         # Create analysis prompt
         prompt = self._create_analysis_prompt(post_data, product_context)
 
-        # Upload video file to Gemini
-        video_file = self.client.files.upload(file=str(video_path))
+        # Upload and analyze video directly (workaround for ragStoreName error)
+        # Using the file path directly instead of pre-uploading
+        import google.generativeai as genai_types
+
+        video_file = genai.upload_file(path=str(video_path))
         logger.info(f"Uploaded file to Gemini: {video_file.uri}")
 
         # Wait for file to be processed
         while video_file.state.name == "PROCESSING":
             time.sleep(2)
-            video_file = self.client.files.get(name=video_file.name)
+            video_file = genai.get_file(video_file.name)
 
         if video_file.state.name == "FAILED":
             raise ValueError(f"Video processing failed: {video_file.state}")
 
-        # Generate analysis using new SDK syntax
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=[video_file, prompt]
-        )
+        # Generate analysis
+        response = self.model.generate_content([video_file, prompt])
 
         # Parse the response
         analysis = self._parse_analysis_response(response.text)
 
         # Clean up uploaded file
-        self.client.files.delete(name=video_file.name)
+        genai.delete_file(video_file.name)
         logger.info("Deleted temporary Gemini file")
 
         return analysis
@@ -574,7 +574,7 @@ Provide ONLY the JSON response, no additional text."""
             "improvement_suggestions": analysis.get("improvement_suggestions"),
             "product_adaptation": json.dumps(product_adaptation) if product_adaptation else None,
             "platform_specific_metrics": json.dumps(platform_metrics) if platform_metrics else None,
-            "hook_features": hook_features if hook_features else None,  # Store as dict for JSONB column
+            "hook_features": json.dumps(hook_features) if hook_features else None,
             "analysis_model": self.model_name,
             "analysis_version": self.analysis_version,
             "analysis_tokens_used": tokens_used,

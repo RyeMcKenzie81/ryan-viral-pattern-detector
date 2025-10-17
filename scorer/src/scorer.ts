@@ -6,7 +6,8 @@
 import type { ScorerInput, ScorerOutput } from './schema.js';
 import { ScorerInputSchema } from './schema.js';
 import {
-  scoreHook,
+  scoreHookAdaptive,
+  scoreHookContent,
   scoreStory,
   scoreRelatability,
   scoreVisuals,
@@ -22,8 +23,12 @@ import { DEFAULT_WEIGHTS, DEFAULT_NORMALIZATION, SCORER_VERSION } from './types.
 import type { WeightConfig } from './types.js';
 
 // ============================================================================
-// Helper: Count non-null fields in an object
+// Helper Functions
 // ============================================================================
+
+function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
+}
 
 function coverageCount(obj: any, keys: string[]): number {
   return keys.reduce((acc, k) => acc + (obj && obj[k] != null ? 1 : 0), 0);
@@ -137,9 +142,19 @@ export function scoreVideo(
   // Generate diagnostics
   const diagnostics = generateDiagnostics(validated);
 
+  // Calculate hook score with v1.2.0 blending (70% pace + 30% content)
+  const hookPace = scoreHookAdaptive(validated.measures.hook, validated.measures.hook_content);
+  const hookContent = scoreHookContent(validated.measures.hook_content);
+  let hookFinal: number | null = null;
+  if (hookPace != null && hookContent != null) {
+    hookFinal = clamp(0.7 * hookPace + 0.3 * hookContent, 0, 100);
+  } else {
+    hookFinal = hookPace ?? hookContent;
+  }
+
   // Calculate all subscores (now returns null when missing)
   const subscores: any = {
-    hook: scoreHook(validated.measures.hook),
+    hook: hookFinal,
     story: scoreStory(validated.measures.story),
     relatability: scoreRelatability(validated.measures, {
       followers: validated.meta.followers,
@@ -196,6 +211,19 @@ export function scoreVideo(
     flags: {
       incomplete,
       low_confidence,
+    },
+    score_details: {
+      hook_attribution: {
+        modality: validated.measures.hook_content?.hook_modality_attribution ?? null,
+        top_motifs: validated.measures.hook_content?.hook_type_probs
+          ? Object.entries(validated.measures.hook_content.hook_type_probs)
+              .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+              .slice(0, 3)
+              .map(([type, prob]) => ({ type, probability: prob }))
+          : null,
+      },
+      hook_span: validated.measures.hook_content?.hook_span ?? null,
+      payoff_time_sec: validated.measures.hook_content?.payoff_time_sec ?? null,
     },
   };
 
