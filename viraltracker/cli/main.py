@@ -13,6 +13,7 @@ from .analyze import analyze_group
 from .script import script_group
 from .tiktok import tiktok_group
 from .youtube import youtube_group
+from .twitter import twitter_group
 from .score import score_group
 
 
@@ -22,7 +23,7 @@ def cli():
     """
     ViralTracker - Multi-brand viral content analysis system
 
-    Analyze viral content across Instagram, TikTok, and YouTube Shorts.
+    Analyze viral content across Instagram, TikTok, YouTube Shorts, and Twitter.
     Compare your content against competitors and track patterns.
     """
     pass
@@ -39,6 +40,7 @@ cli.add_command(analyze_group)
 cli.add_command(script_group)
 cli.add_command(tiktok_group)
 cli.add_command(youtube_group)
+cli.add_command(twitter_group)
 cli.add_command(score_group)
 
 
