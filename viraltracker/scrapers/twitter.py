@@ -199,7 +199,7 @@ class TwitterScraper:
         Calculates 3SD outliers per account.
 
         Args:
-            project_id: Project UUID
+            project_id: Project UUID or slug (will be converted to UUID)
             max_tweets_per_account: Max tweets to fetch per account
             days_back: Only tweets from last N days (None = all time)
             chunk_by: "monthly", "weekly", or "daily"
@@ -210,6 +210,15 @@ class TwitterScraper:
         """
         logger.info(f"Scraping Twitter accounts for project {project_id}")
         logger.info(f"Chunk strategy: {chunk_by}")
+
+        # Convert slug to UUID if needed
+        try:
+            from uuid import UUID
+            UUID(project_id)
+            # It's already a UUID
+        except ValueError:
+            # It's a slug, convert to UUID
+            project_id = self._get_project_id(project_id)
 
         # Get accounts linked to project
         accounts = self._get_project_accounts(project_id)
@@ -232,7 +241,7 @@ class TwitterScraper:
         date_chunks = self._chunk_date_ranges(start_date, end_date, chunk_by)
         logger.info(f"Split into {len(date_chunks)} date chunks")
 
-        stats = {"accounts": len(accounts), "tweets": 0, "outliers": 0}
+        stats = {"accounts_processed": len(accounts), "total_tweets": 0, "outliers": 0}
 
         # Scrape each account with date chunking
         for account in accounts:
@@ -281,7 +290,7 @@ class TwitterScraper:
             # Save to database
             post_ids = self.save_posts_to_db(df, project_id=project_id, import_source="scrape")
 
-            stats["tweets"] += len(post_ids)
+            stats["total_tweets"] += len(post_ids)
 
             # Calculate outliers for this account
             outliers = self._calculate_outliers(account['id'], threshold_sd=3.0)

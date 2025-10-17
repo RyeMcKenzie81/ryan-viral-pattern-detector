@@ -9,6 +9,7 @@ from typing import Optional
 
 from ..core.database import get_supabase_client
 from ..importers import InstagramURLImporter
+from ..importers.twitter import TwitterURLImporter
 
 
 @click.group('import')
@@ -20,7 +21,7 @@ def import_url_group():
 @import_url_group.command('url')
 @click.argument('url')
 @click.option('--project', '-p', required=True, help='Project slug (e.g., yakety-pack-instagram)')
-@click.option('--platform', default='instagram', help='Platform (instagram, tiktok, youtube_shorts)')
+@click.option('--platform', default='instagram', help='Platform (instagram, twitter, tiktok, youtube_shorts)')
 @click.option('--own/--competitor', default=False, help='Mark as own content vs competitor')
 @click.option('--notes', '-n', help='Optional notes about this import')
 def import_single_url(url: str, project: str, platform: str, own: bool, notes: Optional[str]):
@@ -33,6 +34,7 @@ def import_single_url(url: str, project: str, platform: str, own: bool, notes: O
     Examples:
         vt import url https://www.instagram.com/reel/ABC123/ --project yakety-pack-instagram
         vt import url https://www.instagram.com/p/XYZ789/ --project my-project --own --notes "Our best video"
+        vt import url https://twitter.com/username/status/1234567890 --project my-twitter --platform twitter
     """
     asyncio.run(_import_url(url, project, platform, own, notes))
 
@@ -68,9 +70,11 @@ async def _import_url(url: str, project_slug: str, platform_slug: str, is_own: b
         # Initialize importer
         if platform_slug == 'instagram':
             importer = InstagramURLImporter(platform_id)
+        elif platform_slug == 'twitter':
+            importer = TwitterURLImporter(platform_id)
         else:
             click.echo(f"❌ Error: Platform '{platform_slug}' not yet supported", err=True)
-            click.echo(f"Supported platforms: instagram", err=True)
+            click.echo(f"Supported platforms: instagram, twitter", err=True)
             return
 
         # Import URL
@@ -102,7 +106,7 @@ async def _import_url(url: str, project_slug: str, platform_slug: str, is_own: b
 @import_url_group.command('urls')
 @click.argument('file', type=click.Path(exists=True, path_type=Path))
 @click.option('--project', '-p', required=True, help='Project slug')
-@click.option('--platform', default='instagram', help='Platform (instagram, tiktok, youtube_shorts)')
+@click.option('--platform', default='instagram', help='Platform (instagram, twitter, tiktok, youtube_shorts)')
 @click.option('--own/--competitor', default=False, help='Mark all as own content vs competitor')
 def import_urls_from_file(file: Path, project: str, platform: str, own: bool):
     """
@@ -156,8 +160,11 @@ async def _import_urls_from_file(file: Path, project_slug: str, platform_slug: s
         # Initialize importer
         if platform_slug == 'instagram':
             importer = InstagramURLImporter(platform_id)
+        elif platform_slug == 'twitter':
+            importer = TwitterURLImporter(platform_id)
         else:
             click.echo(f"❌ Error: Platform '{platform_slug}' not yet supported", err=True)
+            click.echo(f"Supported platforms: instagram, twitter", err=True)
             return
 
         # Import each URL
