@@ -1,8 +1,8 @@
 # ViralTracker
 
-**Multi-platform viral content analysis system for TikTok, Instagram Reels, and YouTube Shorts**
+**Multi-platform viral content analysis system for TikTok, Instagram Reels, YouTube Shorts, and Twitter**
 
-Scrape, process, and analyze short-form video content to identify viral patterns using AI-powered Hook Intelligence analysis.
+Scrape, process, and analyze short-form video content and tweets to identify viral patterns using AI-powered Hook Intelligence analysis.
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -18,6 +18,9 @@ Scrape, process, and analyze short-form video content to identify viral patterns
 
 # YouTube Shorts
 ./vt youtube search --terms "dog training" --max-shorts 100 --project my-project
+
+# Twitter
+./vt twitter search --terms "dog training" --count 100 --project my-project
 
 # 2. Process videos (download + extract metrics)
 ./vt process videos --project my-project
@@ -41,6 +44,7 @@ cat results/playbook.md
 - **TikTok** - Search by keywords, hashtags, trending (Clockworks API)
 - **Instagram Reels** - Account-based scraping (Apify)
 - **YouTube Shorts** - Keyword search and channel scraping with video type classification
+- **Twitter** - Keyword search with engagement filters and batch querying (Apify)
 
 ### 📊 Video Processing
 - Automatic download via `yt-dlp`
@@ -103,6 +107,50 @@ Keyword/hashtag discovery for YouTube Shorts and videos with advanced filtering:
 - Find breakout content from small creators (<50K subscribers)
 - Compare Shorts performance vs long-form videos
 - Track trending topics across different time ranges
+
+### Twitter Search
+
+Keyword/hashtag discovery for Twitter with advanced engagement filtering:
+
+```bash
+# Basic search (minimum 50 tweets required by Apify)
+./vt twitter search --terms "dog training" --count 100
+
+# With engagement filters
+./vt twitter search --terms "viral dogs" --count 200 --min-likes 1000 --days-back 7
+
+# Content type filter (Phase 1: one filter at a time)
+./vt twitter search --terms "puppy" --count 100 --only-video
+
+# Batch search (max 5 terms)
+./vt twitter search --terms "puppy,kitten,bunny" --count 100
+
+# Link to project for analysis
+./vt twitter search --terms "golden retriever" --count 100 --project my-twitter-project
+
+# Raw Twitter query syntax (advanced)
+./vt twitter search --terms "from:NASA filter:video" --count 500 --raw-query
+```
+
+**Features:**
+- Minimum 50 tweets per search (Apify actor requirement)
+- Batch querying (up to 5 search terms in one actor run)
+- Engagement filters (min likes, min retweets, date range)
+- Content type filters: video, image, quote tweets, verified accounts, Twitter Blue
+- Phase 1: Single filter support (multi-filter coming in Phase 2)
+- Raw query support for advanced Twitter search syntax
+- Automatic outlier detection and data quality checks
+
+**Limitations (Apify Actor):**
+- Wait 2+ minutes between searches
+- Only one Twitter search can run at a time
+- Minimum 50 tweets per search
+
+**Use Cases:**
+- Track trending topics and viral tweets
+- Find high-engagement content in your niche
+- Discover video-first Twitter content
+- Monitor brand mentions and competitor activity
 
 ---
 
@@ -292,6 +340,12 @@ Historical documentation is available in `docs/archive/`.
 ---
 
 ## Changelog
+
+### 2025-10-17
+- ✅ **Added:** Twitter integration with keyword search and batch querying
+- ✅ **Added:** Twitter engagement filters (likes, retweets, date range)
+- ✅ **Added:** Twitter content type filters (video, image, quotes, verified, Blue)
+- ✅ **Added:** URL importer for Twitter posts
 
 ### 2025-10-16
 - ✅ **Added:** YouTube keyword/hashtag search with video type classification

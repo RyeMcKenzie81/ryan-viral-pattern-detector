@@ -6,6 +6,7 @@ import click
 import logging
 from ..scrapers.instagram import InstagramScraper
 from ..scrapers.youtube import YouTubeScraper
+from ..scrapers.twitter import TwitterScraper
 
 
 # Configure logging
@@ -19,10 +20,14 @@ logging.basicConfig(
 @click.command('scrape')
 @click.option('--project', '-p', required=True, help='Project slug (required)')
 @click.option('--platform', default='instagram',
-              type=click.Choice(['instagram', 'youtube_shorts']),
+              type=click.Choice(['instagram', 'youtube_shorts', 'twitter']),
               help='Platform to scrape (default: instagram)')
-@click.option('--days-back', '-d', default=120, type=int, help='Days to scrape back (Instagram: default 120, YouTube: optional)')
+@click.option('--days-back', '-d', default=120, type=int, help='Days to scrape back (Instagram: default 120, YouTube/Twitter: optional)')
 @click.option('--max-results', '-m', default=50, type=int, help='Max Shorts per channel (YouTube only, default: 50)')
+@click.option('--max-tweets', default=500, type=int, help='Max tweets per account (Twitter only, default: 500)')
+@click.option('--chunk-by', default='monthly',
+              type=click.Choice(['weekly', 'monthly', 'daily']),
+              help='Date chunking for Twitter (default: monthly)')
 @click.option('--sort-by', default='NEWEST',
               type=click.Choice(['NEWEST', 'POPULAR', 'OLDEST']),
               help='Sort order for YouTube Shorts (default: NEWEST)')
@@ -30,13 +35,13 @@ logging.basicConfig(
               type=click.Choice(['reels', 'posts', 'tagged']),
               help='Post type to scrape (Instagram only, default: reels)')
 @click.option('--timeout', default=300, type=int, help='Apify timeout in seconds (default: 300)')
-def scrape_command(project: str, platform: str, days_back: int, max_results: int, sort_by: str, post_type: str, timeout: int):
+def scrape_command(project: str, platform: str, days_back: int, max_results: int, max_tweets: int, chunk_by: str, sort_by: str, post_type: str, timeout: int):
     """
-    Scrape Instagram or YouTube accounts linked to a project
+    Scrape Instagram, YouTube, or Twitter accounts linked to a project
 
     This command:
     1. Queries accounts linked to the project
-    2. Scrapes their posts/Shorts using Apify
+    2. Scrapes their posts/Shorts/tweets using Apify
     3. Saves posts with metadata and links them to the project
     4. Populates metadata for previously imported URLs
 
@@ -45,6 +50,7 @@ def scrape_command(project: str, platform: str, days_back: int, max_results: int
         vt scrape --project my-yt-project --platform youtube_shorts
         vt scrape --project my-project --days-back 30
         vt scrape --project my-yt-project --platform youtube_shorts --max-results 100
+        vt scrape --project my-twitter --platform twitter --chunk-by weekly
     """
     try:
         if platform == 'instagram':
@@ -114,6 +120,42 @@ def scrape_command(project: str, platform: str, days_back: int, max_results: int
             click.echo(f"\n💡 Next steps:")
             click.echo(f"   - View posts: vt project show {project}")
             click.echo(f"   - Import more URLs: vt import url <url> --project {project}")
+            click.echo()
+
+        elif platform == 'twitter':
+            click.echo(f"\n{'='*60}")
+            click.echo(f"🐦 Twitter Scraper")
+            click.echo(f"{'='*60}\n")
+
+            click.echo(f"Project: {project}")
+            click.echo(f"Max tweets per account: {max_tweets}")
+            click.echo(f"Chunk by: {chunk_by}")
+            if days_back and days_back != 120:  # Only show if non-default
+                click.echo(f"Days back: {days_back}")
+            click.echo(f"Timeout: {timeout}s\n")
+
+            # Initialize scraper
+            scraper = TwitterScraper()
+
+            # Scrape project
+            accounts_result = scraper.scrape_accounts(
+                project_id=project,
+                max_tweets_per_account=max_tweets,
+                days_back=days_back if days_back != 120 else None,
+                chunk_by=chunk_by,
+                timeout=timeout
+            )
+
+            # Display summary
+            click.echo(f"\n{'='*60}")
+            click.echo(f"✅ Scraping Complete!")
+            click.echo(f"{'='*60}\n")
+            click.echo(f"📊 Summary:")
+            click.echo(f"   Accounts scraped: {accounts_result['accounts_processed']}")
+            click.echo(f"   Tweets scraped: {accounts_result['total_tweets']}")
+            click.echo(f"\n💡 Next steps:")
+            click.echo(f"   - Score tweets: vt score --project {project}")
+            click.echo(f"   - Analyze hooks: vt analyze hooks --project {project}")
             click.echo()
 
     except ValueError as e:
