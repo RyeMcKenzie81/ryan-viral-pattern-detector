@@ -246,20 +246,30 @@ class TwitterScraper:
         # Scrape each account with date chunking
         for account in accounts:
             username = account['platform_username']
-            logger.info(f"\nScraping @{username} ({len(date_chunks)} date chunks)")
+
+            # Batch date chunks (max 5 per Apify run to respect actor limits)
+            batch_size = 5
+            date_chunk_batches = [date_chunks[i:i + batch_size] for i in range(0, len(date_chunks), batch_size)]
+
+            logger.info(f"\nScraping @{username} ({len(date_chunks)} date chunks → {len(date_chunk_batches)} batched runs)")
 
             account_tweets = []
 
-            # Scrape each date chunk
-            for chunk_start, chunk_end in date_chunks:
-                # Build query: from:username since:YYYY-MM-DD until:YYYY-MM-DD
-                query = f"from:{username} since:{chunk_start.strftime('%Y-%m-%d')} until:{chunk_end.strftime('%Y-%m-%d')}"
+            # Process batches of date chunks
+            for batch_idx, chunk_batch in enumerate(date_chunk_batches, 1):
+                # Build OR query for multiple date ranges in one Apify run
+                queries = []
+                for chunk_start, chunk_end in chunk_batch:
+                    query = f"from:{username} since:{chunk_start.strftime('%Y-%m-%d')} until:{chunk_end.strftime('%Y-%m-%d')}"
+                    queries.append(query)
 
                 try:
-                    # Start Apify run
+                    logger.info(f"  Batch {batch_idx}/{len(date_chunk_batches)}: {len(queries)} date ranges")
+
+                    # Start Apify run with batched queries
                     run_id = self._start_search_run(
-                        [query],
-                        max_items=800,  # Max per chunk
+                        queries,
+                        max_items=800,  # Max per query
                         sort="Latest"
                     )
 
@@ -271,13 +281,15 @@ class TwitterScraper:
 
                     account_tweets.extend(items)
 
-                    logger.info(f"  {chunk_start.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}: {len(items)} tweets")
+                    logger.info(f"  Batch {batch_idx}: Retrieved {len(items)} tweets")
 
-                    # Respect rate limits
-                    time.sleep(2)
+                    # Respect rate limits between batches (2 minutes)
+                    if batch_idx < len(date_chunk_batches):
+                        logger.info(f"  Waiting 120s before next batch (rate limit compliance)...")
+                        time.sleep(120)
 
                 except Exception as e:
-                    logger.error(f"Error scraping chunk for @{username}: {e}")
+                    logger.error(f"Error scraping batch {batch_idx} for @{username}: {e}")
                     continue
 
             if not account_tweets:
