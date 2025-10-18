@@ -110,17 +110,18 @@ Keyword/hashtag discovery for YouTube Shorts and videos with advanced filtering:
 
 ### Twitter Search
 
-Keyword/hashtag discovery for Twitter with advanced engagement filtering:
+Keyword/hashtag discovery for Twitter with Phase 2 features:
 
 ```bash
 # Basic search (minimum 50 tweets required by Apify)
 ./vt twitter search --terms "dog training" --count 100
 
-# With engagement filters
-./vt twitter search --terms "viral dogs" --count 200 --min-likes 1000 --days-back 7
+# Advanced engagement filters (Phase 2)
+./vt twitter search --terms "viral dogs" --count 200 --min-likes 1000 --min-replies 100 --days-back 7
 
-# Content type filter (Phase 1: one filter at a time)
-./vt twitter search --terms "puppy" --count 100 --only-video
+# Multi-filter support (Phase 2)
+./vt twitter search --terms "pets" --only-video --only-image --count 200
+./vt twitter search --terms "dogs" --only-video --only-verified --min-likes 500
 
 # Batch search (max 5 terms)
 ./vt twitter search --terms "puppy,kitten,bunny" --count 100
@@ -130,27 +131,39 @@ Keyword/hashtag discovery for Twitter with advanced engagement filtering:
 
 # Raw Twitter query syntax (advanced)
 ./vt twitter search --terms "from:NASA filter:video" --count 500 --raw-query
+
+# Account scraping with outlier detection
+./vt project add-accounts my-project twitter-handles.txt --platform twitter
+./vt scrape --project my-project --platform twitter
 ```
 
-**Features:**
-- Minimum 50 tweets per search (Apify actor requirement)
+**Phase 2 Features:**
+- **Multi-filter support** - Combine video, image, quote filters with OR logic
+- **Advanced engagement** - Filter by likes, retweets, replies, quotes
+- **Rate limit tracking** - Automatic 2-minute cooldown with smart warnings
+- **Account management** - Add Twitter accounts to projects for scraping
 - Batch querying (up to 5 search terms in one actor run)
-- Engagement filters (min likes, min retweets, date range)
 - Content type filters: video, image, quote tweets, verified accounts, Twitter Blue
-- Phase 1: Single filter support (multi-filter coming in Phase 2)
 - Raw query support for advanced Twitter search syntax
-- Automatic outlier detection and data quality checks
+- Automatic outlier detection (3SD from trimmed mean)
+
+**Rate Limiting (Automatic):**
+- 2-minute minimum between searches (tracked automatically)
+- Warning displayed if attempting to search too soon
+- Interactive prompt to continue or wait
+- Tracking file: `~/.viraltracker/twitter_last_run.txt`
 
 **Limitations (Apify Actor):**
-- Wait 2+ minutes between searches
 - Only one Twitter search can run at a time
 - Minimum 50 tweets per search
+- Max 5 queries per batch
 
 **Use Cases:**
 - Track trending topics and viral tweets
 - Find high-engagement content in your niche
 - Discover video-first Twitter content
 - Monitor brand mentions and competitor activity
+- Identify viral tweets per account with outlier detection
 
 ---
 
@@ -342,10 +355,15 @@ Historical documentation is available in `docs/archive/`.
 ## Changelog
 
 ### 2025-10-17
+- ✅ **Added:** Twitter Phase 2 - Multi-filter support (combine video + image + verified)
+- ✅ **Added:** Twitter Phase 2 - Advanced engagement filters (min-replies, min-quotes)
+- ✅ **Added:** Twitter Phase 2 - Rate limit tracking with automatic warnings
+- ✅ **Added:** Twitter Phase 2 - Account management (add Twitter accounts to projects)
 - ✅ **Added:** Twitter integration with keyword search and batch querying
 - ✅ **Added:** Twitter engagement filters (likes, retweets, date range)
 - ✅ **Added:** Twitter content type filters (video, image, quotes, verified, Blue)
 - ✅ **Added:** URL importer for Twitter posts
+- ✅ **Fixed:** Rate limit batching (53 runs → ~11 batched runs for account scraping)
 
 ### 2025-10-16
 - ✅ **Added:** YouTube keyword/hashtag search with video type classification
