@@ -230,7 +230,7 @@ def create_project(name: str, brand: str, product: Optional[str], slug: Optional
 @project_group.command('add-accounts')
 @click.argument('project_slug')
 @click.argument('file', type=click.Path(exists=True, path_type=Path))
-@click.option('--platform', '-p', default='instagram', help='Platform (instagram, tiktok, youtube_shorts)')
+@click.option('--platform', '-p', default='instagram', help='Platform (instagram, tiktok, youtube_shorts, twitter)')
 @click.option('--priority', type=int, default=1, help='Account priority (1-10)')
 def add_accounts(project_slug: str, file: Path, platform: str, priority: int):
     """
@@ -244,6 +244,7 @@ def add_accounts(project_slug: str, file: Path, platform: str, priority: int):
     Examples:
         vt project add-accounts yakety-pack-instagram accounts.txt
         vt project add-accounts my-project usernames.txt --platform tiktok --priority 5
+        vt project add-accounts twitter-project twitter-handles.txt --platform twitter
     """
     try:
         supabase = get_supabase_client()

@@ -5,6 +5,9 @@ Commands for scraping and analyzing Twitter content.
 """
 
 import logging
+import os
+import time
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -21,6 +24,48 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Rate limit tracking
+RATE_LIMIT_FILE = Path.home() / ".viraltracker" / "twitter_last_run.txt"
+RATE_LIMIT_SECONDS = 120  # 2 minutes between searches
+
+
+def check_rate_limit():
+    """
+    Check if user is exceeding Twitter search rate limits
+
+    Returns:
+        (can_proceed, seconds_to_wait, last_run_time)
+    """
+    if not RATE_LIMIT_FILE.parent.exists():
+        RATE_LIMIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    if not RATE_LIMIT_FILE.exists():
+        return (True, 0, None)
+
+    try:
+        with open(RATE_LIMIT_FILE, 'r') as f:
+            last_run = float(f.read().strip())
+
+        elapsed = time.time() - last_run
+
+        if elapsed < RATE_LIMIT_SECONDS:
+            seconds_to_wait = int(RATE_LIMIT_SECONDS - elapsed)
+            return (False, seconds_to_wait, last_run)
+        else:
+            return (True, 0, last_run)
+    except:
+        return (True, 0, None)
+
+
+def update_rate_limit():
+    """Update last run timestamp"""
+    if not RATE_LIMIT_FILE.parent.exists():
+        RATE_LIMIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(RATE_LIMIT_FILE, 'w') as f:
+        f.write(str(time.time()))
 
 
 @click.group(name="twitter")
@@ -101,6 +146,24 @@ def twitter_search(
             click.echo("   This is an Apify actor limitation", err=True)
             click.echo("\n💡 Try: --count 50 or higher\n", err=True)
             raise click.Abort()
+
+        # Check rate limit
+        can_proceed, seconds_to_wait, last_run = check_rate_limit()
+
+        if not can_proceed:
+            click.echo(f"\n⚠️  Rate Limit Warning", err=True)
+            click.echo(f"   Last Twitter search was {RATE_LIMIT_SECONDS - seconds_to_wait}s ago", err=True)
+            click.echo(f"   Recommended wait: {seconds_to_wait}s", err=True)
+            click.echo(f"\n💡 Why? Apify actor limits:", err=True)
+            click.echo(f"   - Only 1 concurrent run allowed", err=True)
+            click.echo(f"   - Wait 2+ minutes between searches", err=True)
+            click.echo(f"   - Prevents actor auto-ban\n", err=True)
+
+            if click.confirm("Continue anyway?", default=False):
+                click.echo("⚠️  Proceeding at your own risk...\n")
+            else:
+                click.echo(f"⏰ Please wait {seconds_to_wait}s and try again")
+                raise click.Abort()
 
         # Parse search terms (for batching)
         search_terms = [t.strip() for t in terms.split(',')]
@@ -189,6 +252,9 @@ def twitter_search(
             project_slug=project
         )
 
+        # Update rate limit tracker
+        update_rate_limit()
+
         # Display results
         click.echo(f"\n{'='*60}")
         click.echo(f"✅ Search Complete")
@@ -217,10 +283,10 @@ def twitter_search(
                 click.echo(f"   - Or create project: vt project create")
 
         # Important notes
-        click.echo(f"\n⚠️  Actor Usage Notes:")
-        click.echo(f"   - Wait a couple minutes before next Twitter search")
+        click.echo(f"\n⚠️  Rate Limit Reminder:")
+        click.echo(f"   - Wait 2 minutes before next search (automatically tracked)")
         click.echo(f"   - Only one Twitter search can run at a time")
-        click.echo(f"   - These are Apify actor limitations")
+        click.echo(f"   - Rate limit tracking: ~/.viraltracker/twitter_last_run.txt")
 
         click.echo(f"\n{'='*60}\n")
 
