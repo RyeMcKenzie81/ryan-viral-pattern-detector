@@ -34,6 +34,8 @@ def twitter_group():
 @click.option('--count', default=100, type=int, help='Max tweets to scrape (min 50, default: 100)')
 @click.option('--min-likes', type=int, help='Minimum like count filter (optional)')
 @click.option('--min-retweets', type=int, help='Minimum retweet count filter (optional)')
+@click.option('--min-replies', type=int, help='Minimum reply count filter (optional)')
+@click.option('--min-quotes', type=int, help='Minimum quote tweet count filter (optional)')
 @click.option('--days-back', type=int, help='Only tweets from last N days (optional)')
 @click.option('--only-video', is_flag=True, help='Only tweets with videos')
 @click.option('--only-image', is_flag=True, help='Only tweets with images')
@@ -49,6 +51,8 @@ def twitter_search(
     count: int,
     min_likes: Optional[int],
     min_retweets: Optional[int],
+    min_replies: Optional[int],
+    min_quotes: Optional[int],
     days_back: Optional[int],
     only_video: bool,
     only_image: bool,
@@ -66,10 +70,9 @@ def twitter_search(
     Enables keyword/hashtag discovery for Twitter content. Supports various
     filters including engagement metrics, content types, and account verification.
 
-    Phase 1 Constraints:
+    Constraints:
         - Minimum 50 tweets per search (Apify actor requirement)
-        - Only ONE filter can be active at a time (--only-* flags)
-        - Multi-filter support coming in Phase 2
+        - Max 5 search terms per batch (Apify actor limitation)
 
     Examples:
         # Basic search
@@ -78,8 +81,9 @@ def twitter_search(
         # With engagement filters
         vt twitter search --terms "viral dogs" --count 200 --min-likes 1000 --days-back 7
 
-        # Single content filter (Phase 1)
+        # Content filters (single or combined)
         vt twitter search --terms "puppy" --count 100 --only-video
+        vt twitter search --terms "pets" --count 200 --only-video --only-image
 
         # Raw Twitter query syntax (advanced)
         vt twitter search --terms "from:NASA filter:video" --count 500 --raw-query
@@ -96,32 +100,6 @@ def twitter_search(
             click.echo("\n❌ Error: Twitter search requires minimum 50 tweets", err=True)
             click.echo("   This is an Apify actor limitation", err=True)
             click.echo("\n💡 Try: --count 50 or higher\n", err=True)
-            raise click.Abort()
-
-        # Phase 1: Validate single filter only
-        active_filters = sum([
-            only_video,
-            only_image,
-            only_quote,
-            only_verified,
-            only_blue
-        ])
-
-        if active_filters > 1:
-            click.echo("\n❌ Error: Phase 1 supports only ONE filter at a time", err=True)
-            click.echo("   You specified multiple --only-* flags", err=True)
-            click.echo("\n💡 Active filters:")
-            if only_video:
-                click.echo("   - --only-video")
-            if only_image:
-                click.echo("   - --only-image")
-            if only_quote:
-                click.echo("   - --only-quote")
-            if only_verified:
-                click.echo("   - --only-verified")
-            if only_blue:
-                click.echo("   - --only-blue")
-            click.echo("\n💡 Choose only ONE filter, or wait for Phase 2 multi-filter support\n", err=True)
             raise click.Abort()
 
         # Parse search terms (for batching)
@@ -151,6 +129,10 @@ def twitter_search(
             filters.append(f"{min_likes:,}+ likes")
         if min_retweets:
             filters.append(f"{min_retweets:,}+ retweets")
+        if min_replies:
+            filters.append(f"{min_replies:,}+ replies")
+        if min_quotes:
+            filters.append(f"{min_quotes:,}+ quotes")
         if days_back:
             filters.append(f"Last {days_back} days")
         if only_video:
@@ -193,6 +175,8 @@ def twitter_search(
             max_tweets=count,
             min_likes=min_likes,
             min_retweets=min_retweets,
+            min_replies=min_replies,
+            min_quotes=min_quotes,
             days_back=days_back,
             only_video=only_video,
             only_image=only_image,

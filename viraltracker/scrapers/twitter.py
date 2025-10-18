@@ -89,6 +89,8 @@ class TwitterScraper:
         max_tweets: int = 100,
         min_likes: Optional[int] = None,
         min_retweets: Optional[int] = None,
+        min_replies: Optional[int] = None,
+        min_quotes: Optional[int] = None,
         days_back: Optional[int] = None,
         only_video: bool = False,
         only_image: bool = False,
@@ -109,6 +111,8 @@ class TwitterScraper:
             max_tweets: Tweets per term (minimum 50, enforced)
             min_likes: Minimum like count filter
             min_retweets: Minimum retweet count filter
+            min_replies: Minimum reply count filter
+            min_quotes: Minimum quote tweet count filter
             days_back: Only tweets from last N days
             only_video: Only tweets with video
             only_image: Only tweets with images
@@ -134,7 +138,7 @@ class TwitterScraper:
         if not raw_query:
             queries = [
                 self._build_twitter_query(
-                    term, min_likes, min_retweets, days_back,
+                    term, min_likes, min_retweets, min_replies, min_quotes, days_back,
                     only_video, only_image, only_quote
                 )
                 for term in search_terms
@@ -317,13 +321,15 @@ class TwitterScraper:
         search_term: str,
         min_likes: Optional[int],
         min_retweets: Optional[int],
+        min_replies: Optional[int],
+        min_quotes: Optional[int],
         days_back: Optional[int],
         only_video: bool,
         only_image: bool,
         only_quote: bool
     ) -> str:
         """
-        Build Twitter query from parameters
+        Build Twitter query from parameters with multi-filter OR logic
 
         Examples:
           "dog training" + days_back=7 + min_likes=1000
@@ -331,6 +337,12 @@ class TwitterScraper:
 
           "puppy" + only_video=True
           → "puppy filter:video"
+
+          "pets" + only_video=True + only_image=True
+          → "pets (filter:video OR filter:images)"
+
+          "viral" + min_likes=1000 + min_replies=100
+          → "viral min_faves:1000 min_replies:100"
         """
         query_parts = [search_term]
 
@@ -344,14 +356,31 @@ class TwitterScraper:
             query_parts.append(f"min_faves:{min_likes}")
         if min_retweets:
             query_parts.append(f"min_retweets:{min_retweets}")
+        if min_replies:
+            query_parts.append(f"min_replies:{min_replies}")
+        if min_quotes:
+            # Note: Twitter doesn't have native min_quotes filter in query language
+            # This would need to be filtered post-scrape or we rely on actor support
+            # For now, logging a warning
+            logger.warning("min_quotes filter not supported in Twitter query language (will be applied post-scrape if actor supports it)")
 
-        # Content type filters
+        # Content type filters (with OR logic for multi-filter)
+        content_filters = []
         if only_video:
-            query_parts.append("filter:video")
+            content_filters.append("filter:video")
         if only_image:
-            query_parts.append("filter:images")
+            content_filters.append("filter:images")
         if only_quote:
-            query_parts.append("filter:quote")
+            content_filters.append("filter:quote")
+
+        if content_filters:
+            if len(content_filters) == 1:
+                # Single filter: append as-is
+                query_parts.append(content_filters[0])
+            else:
+                # Multiple filters: wrap in parentheses with OR
+                filter_group = "(" + " OR ".join(content_filters) + ")"
+                query_parts.append(filter_group)
 
         # Exclude retweets by default (focus on original content)
         query_parts.append("-filter:retweets")
