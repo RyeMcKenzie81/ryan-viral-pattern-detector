@@ -108,9 +108,9 @@ Keyword/hashtag discovery for YouTube Shorts and videos with advanced filtering:
 - Compare Shorts performance vs long-form videos
 - Track trending topics across different time ranges
 
-### Twitter Search
+### Twitter Search & Analysis
 
-Keyword/hashtag discovery for Twitter with Phase 2 features:
+Complete Twitter integration with keyword search, engagement filtering, and account-based outlier detection:
 
 ```bash
 # Basic search (minimum 50 tweets required by Apify)
@@ -119,51 +119,141 @@ Keyword/hashtag discovery for Twitter with Phase 2 features:
 # Advanced engagement filters (Phase 2)
 ./vt twitter search --terms "viral dogs" --count 200 --min-likes 1000 --min-replies 100 --days-back 7
 
-# Multi-filter support (Phase 2)
+# Multi-filter support (Phase 2) - Combine any filters
 ./vt twitter search --terms "pets" --only-video --only-image --count 200
 ./vt twitter search --terms "dogs" --only-video --only-verified --min-likes 500
 
-# Batch search (max 5 terms)
+# Batch search (max 5 terms in one Apify run)
 ./vt twitter search --terms "puppy,kitten,bunny" --count 100
 
 # Link to project for analysis
 ./vt twitter search --terms "golden retriever" --count 100 --project my-twitter-project
 
-# Raw Twitter query syntax (advanced)
+# Raw Twitter query syntax (advanced users)
 ./vt twitter search --terms "from:NASA filter:video" --count 500 --raw-query
+./vt twitter search --terms "(cat OR dog) min_faves:1000 -filter:retweets" --count 200 --raw-query
 
-# Account scraping with outlier detection
+# Account scraping with outlier detection (3SD from trimmed mean)
 ./vt project add-accounts my-project twitter-handles.txt --platform twitter
-./vt scrape --project my-project --platform twitter
+./vt scrape --project my-project --platform twitter --chunk-by monthly
 ```
 
-**Phase 2 Features:**
-- **Multi-filter support** - Combine video, image, quote filters with OR logic
-- **Advanced engagement** - Filter by likes, retweets, replies, quotes
-- **Rate limit tracking** - Automatic 2-minute cooldown with smart warnings
-- **Account management** - Add Twitter accounts to projects for scraping
-- Batch querying (up to 5 search terms in one actor run)
-- Content type filters: video, image, quote tweets, verified accounts, Twitter Blue
-- Raw query support for advanced Twitter search syntax
-- Automatic outlier detection (3SD from trimmed mean)
+#### Phase 2 Features
 
-**Rate Limiting (Automatic):**
-- 2-minute minimum between searches (tracked automatically)
-- Warning displayed if attempting to search too soon
+**🎯 Multi-Filter Support (OR Logic)**
+- Combine multiple content filters: `--only-video --only-image --only-quote`
+- Query generation: `(filter:video OR filter:images OR filter:quote)`
+- Mix content + account filters: `--only-video --only-verified`
+- All filters work together seamlessly
+
+**📊 Advanced Engagement Filters**
+| Filter | Description | Example |
+|--------|-------------|---------|
+| `--min-likes` | Minimum like count | `--min-likes 1000` |
+| `--min-retweets` | Minimum retweet count | `--min-retweets 500` |
+| `--min-replies` | Minimum reply count | `--min-replies 100` |
+| `--min-quotes` | Minimum quote count | `--min-quotes 50` |
+| `--days-back` | Only recent tweets | `--days-back 7` |
+
+**⏱️ Rate Limit Tracking (Automatic)**
+- 2-minute minimum between searches
+- Smart warnings: "Last search was 45s ago, wait 75s more"
 - Interactive prompt to continue or wait
 - Tracking file: `~/.viraltracker/twitter_last_run.txt`
+- Prevents Apify actor auto-ban
 
-**Limitations (Apify Actor):**
-- Only one Twitter search can run at a time
-- Minimum 50 tweets per search
-- Max 5 queries per batch
+**👥 Account Management**
+```bash
+# Add Twitter accounts to project
+./vt project add-accounts my-project twitter-handles.txt --platform twitter
 
-**Use Cases:**
-- Track trending topics and viral tweets
-- Find high-engagement content in your niche
-- Discover video-first Twitter content
-- Monitor brand mentions and competitor activity
-- Identify viral tweets per account with outlier detection
+# File format (one username per line):
+# elonmusk
+# NASA
+# OpenAI
+```
+
+**🔍 Content Type Filters**
+| Filter | Finds | Query Syntax |
+|--------|-------|--------------|
+| `--only-video` | Tweets with video | `filter:video` |
+| `--only-image` | Tweets with images | `filter:images` |
+| `--only-quote` | Quote tweets | `filter:quote` |
+| `--only-verified` | Verified accounts | Actor param |
+| `--only-blue` | Twitter Blue users | Actor param |
+
+**📈 Outlier Detection**
+- Automatic 3SD from trimmed mean calculation
+- Per-account viral tweet identification
+- Marks outliers in `post_review` table
+- Excludes top/bottom 10% before calculating threshold
+
+#### Rate Limiting (Automatic Protection)
+
+The system automatically prevents rate limit violations:
+
+```bash
+# First search - proceeds normally
+$ vt twitter search --terms "dogs" --count 100
+✅ Search Complete
+
+# Second search 30s later - warning displayed
+$ vt twitter search --terms "cats" --count 100
+⚠️  Rate Limit Warning
+   Last Twitter search was 30s ago
+   Recommended wait: 90s
+
+💡 Why? Apify actor limits:
+   - Only 1 concurrent run allowed
+   - Wait 2+ minutes between searches
+   - Prevents actor auto-ban
+
+Continue anyway? [y/N]: n
+⏰ Please wait 90s and try again
+```
+
+#### Query Building Examples
+
+**Simple Queries** (auto-generated):
+```bash
+--terms "dogs"
+→ "dogs -filter:retweets"
+
+--terms "viral" --min-likes 1000 --days-back 7
+→ "viral since:2025-10-11 min_faves:1000 -filter:retweets"
+
+--terms "pets" --only-video
+→ "pets filter:video -filter:retweets"
+```
+
+**Multi-Filter Queries** (OR logic):
+```bash
+--terms "content" --only-video --only-image
+→ "content (filter:video OR filter:images) -filter:retweets"
+
+--terms "trending" --only-video --only-quote --min-likes 500
+→ "trending min_faves:500 (filter:video OR filter:quote) -filter:retweets"
+```
+
+#### Apify Actor Limitations
+
+| Limitation | Value | Impact |
+|------------|-------|--------|
+| Min tweets per search | 50 | Hard requirement, enforced by CLI |
+| Max queries per batch | 5 | Batch large searches |
+| Concurrent runs | 1 | Only one search at a time |
+| Cooldown between runs | 2 minutes | Automatically tracked |
+| Max items per query | ~800 | Date chunking for accounts |
+
+#### Use Cases
+
+- **Trend Discovery** - Track viral topics and hashtags in real-time
+- **Content Research** - Find high-engagement tweets in your niche
+- **Video-First Strategy** - Discover video-heavy Twitter content
+- **Competitor Analysis** - Monitor brand mentions and competitor activity
+- **Influencer Discovery** - Find verified accounts with viral content
+- **Outlier Identification** - Detect per-account viral tweets (3SD method)
+- **Engagement Targeting** - Filter by specific engagement thresholds
 
 ---
 
@@ -310,7 +400,16 @@ viraltracker/
 │   ├── scrapers/              # Platform scrapers
 │   │   ├── tiktok.py          # TikTok (Clockworks API)
 │   │   ├── instagram.py       # Instagram Reels (Apify)
-│   │   └── youtube.py         # YouTube Shorts
+│   │   ├── youtube.py         # YouTube Shorts (YouTube Data API)
+│   │   └── twitter.py         # Twitter (Apify apidojo/tweet-scraper)
+│   ├── importers/             # URL importers
+│   │   ├── instagram.py       # Instagram URL importer
+│   │   ├── youtube.py         # YouTube URL importer
+│   │   └── twitter.py         # Twitter URL importer
+│   ├── cli/                   # Command-line interface
+│   │   ├── twitter.py         # Twitter CLI commands
+│   │   ├── project.py         # Project management
+│   │   └── scrape.py          # Cross-platform scraping
 │   ├── processing/            # Video processing
 │   ├── analysis/              # AI analysis (Gemini)
 │   └── core/                  # Database, config
@@ -324,8 +423,9 @@ viraltracker/
 │   ├── CLI_GUIDE.md           # Command-line reference
 │   └── HOOK_ANALYSIS_GUIDE.md # Analysis methods
 │
+├── migrations/                # Database migrations
+│   └── 2025-10-16_add_twitter_platform.sql
 ├── scorer/                    # Node.js scoring module
-├── sql/                       # Database migrations
 ├── export_hook_analysis_csv.py  # Data export script
 └── vt                         # Unified CLI tool
 ```
