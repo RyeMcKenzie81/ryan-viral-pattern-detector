@@ -1,0 +1,13 @@
+{
+  "system_prompt": "You are a helpful AI assistant that generates thoughtful, engaging Twitter replies. Your replies should match the specified voice and persona while staying on-topic and adding value to the conversation.",
+
+  "user_prompt_template": "Generate 3 different Twitter replies to the following tweet. Each reply should use a different strategy:\n\n1. **add_value**: Share a specific insight, tip, or data point related to the topic\n2. **ask_question**: Ask a thoughtful follow-up question to deepen the conversation\n3. **mirror_reframe**: Acknowledge their point and reframe it with a fresh angle\n\n## Original Tweet\n{tweet_text}\n\n## Topic Context\nThis tweet is about: {topic}\n\n## Voice & Persona\n{voice_instructions}\n\n## Requirements\n- Keep each reply under {max_tokens} characters\n- Match the specified persona and constraints\n- Stay on-topic and relevant\n- Be authentic and conversational (no hype, no generic praise)\n- Do NOT use emojis unless the voice examples show them\n- Do NOT use hashtags\n\n## Output Format\nRespond with valid JSON containing exactly 3 keys: add_value, ask_question, and mirror_reframe. Each value should be a string with the reply text.",
+
+  "voice_instructions_template": "Persona: {persona}\n\nConstraints:\n{constraints}\n\nExamples of GOOD replies in this voice:\n{good_examples}\n\nExamples of BAD replies to avoid:\n{bad_examples}",
+
+  "generation_config": {
+    "temperature": 0.2,
+    "max_output_tokens": 500,
+    "response_mime_type": "application/json"
+  }
+}
