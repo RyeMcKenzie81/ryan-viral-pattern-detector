@@ -255,6 +255,202 @@ Continue anyway? [y/N]: n
 - **Outlier Identification** - Detect per-account viral tweets (3SD method)
 - **Engagement Targeting** - Filter by specific engagement thresholds
 
+### Comment Opportunity Finder (NEW!)
+
+AI-powered system to identify high-value comment opportunities on Twitter and generate contextual reply suggestions.
+
+**The Three-Layer Architecture:**
+1. **Ingest** - Collect and normalize raw data (Twitter scraping) ✅
+2. **Generate** - Create AI-powered comment suggestions ✅
+3. **Gate/Filter** - Score and route based on quality/relevance ✅
+
+#### Quick Start
+
+```bash
+# 1. Collect tweets for your project
+./vt twitter search --terms "your niche" --count 100 --project my-project
+
+# 2. Create finder config (projects/my-project/finder.yml)
+# See configuration example below
+
+# 3. Generate comment suggestions
+./vt twitter generate-comments --project my-project
+
+# 4. Export to CSV for manual posting
+./vt twitter export-comments --project my-project --out comments.csv
+```
+
+#### Configuration (finder.yml)
+
+Create `projects/{project_slug}/finder.yml`:
+
+```yaml
+taxonomy:
+  - label: "facebook ads"
+    description: "Paid acquisition on Meta: account structure, creatives, MER/CPA/ROAS"
+    exemplars:  # Optional - auto-generates if empty
+      - "ASC is great until it isn't—split by audience freshness"
+      - "Angles beat formats. Test 3 angles this week"
+
+voice:
+  persona: "direct, practical, contrarian-positive"
+  constraints:
+    - "no profanity"
+    - "avoid hype words"
+  examples:
+    good:
+      - "CPM isn't your bottleneck—creative fatigue is"
+    bad:
+      - "Wow amazing insight! 🔥🔥"
+
+sources:
+  whitelist_handles: ["mosseri", "shopify"]
+  blacklist_keywords: ["giveaway", "airdrop"]
+
+weights:
+  velocity: 0.35       # Engagement rate
+  relevance: 0.35      # Taxonomy matching
+  openness: 0.20       # Question/hedge detection
+  author_quality: 0.10 # Whitelist/blacklist
+
+thresholds:
+  green_min: 0.72      # High quality
+  yellow_min: 0.55     # Medium quality
+
+generation:
+  temperature: 0.2
+  max_tokens: 80
+  model: "gemini-2.5-flash"
+```
+
+#### Scoring System
+
+**Four-Component Scoring:**
+
+1. **Velocity (0..1)** - Engagement rate normalized by audience size
+   - Formula: `sigmoid(6.0 * (eng_per_min / log10(followers)))`
+   - Identifies rapidly-engaging content
+
+2. **Relevance (0..1)** - Taxonomy matching via embeddings
+   - Formula: `0.8 * best_similarity + 0.2 * margin`
+   - Uses Gemini text-embedding-004 (768 dims)
+
+3. **Openness (0..1)** - Question/hedge detection
+   - Regex patterns: WH-questions, question marks, hedge words
+   - Identifies tweets inviting replies
+
+4. **Author Quality (0..1)** - Whitelist/blacklist lookup
+   - Whitelist: 0.9, Unknown: 0.6, Blacklist: 0.0
+
+**Total Score:** Weighted sum → **Label:**
+- 🟢 **Green** (≥0.72) - High quality, generate immediately
+- 🟡 **Yellow** (≥0.55) - Medium quality, consider
+- 🔴 **Red** (<0.55) - Low quality, skip
+
+#### AI Generation
+
+**Three Reply Types (Single API Call):**
+
+1. **add_value** - Share specific insight, tip, or data point
+2. **ask_question** - Ask thoughtful follow-up question
+3. **mirror_reframe** - Acknowledge and reframe with fresh angle
+
+**Model:** Gemini 2.5 Flash (cost-optimized, fast)
+**Output:** JSON with all 3 suggestions in one call
+
+#### CSV Export Format
+
+15 columns for manual review and posting:
+
+```
+project, tweet_id, url, author, followers, tweeted_at, likes,
+replies, rts, score_total, label, topic, suggestion_type,
+comment, why
+```
+
+#### CLI Commands
+
+**Generate Suggestions:**
+```bash
+# Basic - last 6 hours
+./vt twitter generate-comments --project my-project
+
+# Advanced - 12 hours, 5K+ followers
+./vt twitter generate-comments -p my-project \
+  --hours-back 12 --min-followers 5000
+
+# All tweets (no filters)
+./vt twitter generate-comments -p my-project \
+  --no-use-gate --no-skip-low-scores
+```
+
+**Export to CSV:**
+```bash
+# All pending suggestions
+./vt twitter export-comments -p my-project -o comments.csv
+
+# Top 50 green only
+./vt twitter export-comments -p my-project -o top50.csv \
+  --limit 50 --label green
+
+# Already exported (for review)
+./vt twitter export-comments -p my-project -o review.csv \
+  --status exported
+```
+
+#### Database Tables
+
+**Four New Tables:**
+
+1. **generated_comments** - AI suggestions with lifecycle
+   - Status: pending → exported → posted/skipped
+   - Stores all 3 suggestion types per tweet
+
+2. **tweet_snapshot** - Historical metrics for scoring
+   - Captures engagement at processing time
+   - Used for velocity calculation
+
+3. **author_stats** - Author engagement patterns (V1.1)
+   - Reply rate tracking for future enhancements
+
+4. **acceptance_log** - Duplicate prevention
+   - 7-day lookback to avoid re-processing
+   - pgvector support for semantic dedup (V1.1)
+
+#### Cost Control
+
+**V1 is highly cost-effective:**
+- One LLM call per tweet (not 3 separate calls)
+- Aggressive embedding caching (taxonomy + tweets)
+- Batch processing (100 embeddings at once)
+- Process only green/yellow candidates by default
+- Configurable `--max-candidates` cap
+
+**Estimated Cost:** ~$0.40/day for 200 candidates
+
+#### Use Cases
+
+- **Thought Leadership** - Reply to high-value discussions in your niche
+- **Network Building** - Engage with relevant influencers
+- **Lead Generation** - Provide value in target audience conversations
+- **Brand Awareness** - Strategic replies on trending topics
+
+#### V1 Scope
+
+**Included:**
+- ✅ Velocity, relevance, openness, author quality scoring
+- ✅ Taxonomy-based relevance (embeddings)
+- ✅ Gate filtering (language, blacklist)
+- ✅ 3 AI-generated reply types
+- ✅ CSV export with metadata
+- ✅ Supabase persistence
+
+**Deferred to V1.1:**
+- ⏳ Author reply rate analysis (need more history)
+- ⏳ LLM-based openness check (V1 uses regex)
+- ⏳ Quality validation + regeneration
+- ⏳ Semantic duplicate detection (exact match only in V1)
+
 ---
 
 ## Documentation
@@ -453,6 +649,17 @@ Historical documentation is available in `docs/archive/`.
 ---
 
 ## Changelog
+
+### 2025-10-21
+- ✅ **Added:** Comment Opportunity Finder V1 - Complete AI-powered comment suggestion system
+- ✅ **Added:** Four-component scoring (velocity, relevance, openness, author quality)
+- ✅ **Added:** Gemini-powered comment generation (3 reply types in single API call)
+- ✅ **Added:** CSV export with full metadata (15 columns)
+- ✅ **Added:** CLI commands: `vt twitter generate-comments` and `vt twitter export-comments`
+- ✅ **Added:** Four new database tables (generated_comments, tweet_snapshot, author_stats, acceptance_log)
+- ✅ **Added:** Taxonomy-based relevance matching with embeddings (Gemini text-embedding-004)
+- ✅ **Added:** Gate filtering system (language, blacklist, safety)
+- ✅ **Added:** Per-project finder.yml configuration with voice/persona matching
 
 ### 2025-10-17
 - ✅ **Added:** Twitter Phase 2 - Multi-filter support (combine video + image + verified)
