@@ -778,16 +778,12 @@ class TikTokScraper:
                 "views": int(row.get('views', 0)) if pd.notna(row.get('views')) else None,
                 "likes": int(row.get('likes', 0)) if pd.notna(row.get('likes')) else None,
                 "comments": int(row.get('comments', 0)) if pd.notna(row.get('comments')) else None,
+                "shares": int(row.get('shares', 0)) if pd.notna(row.get('shares')) else None,
                 "caption": row.get('caption'),
                 "length_sec": int(row.get('length_sec', 0)) if pd.notna(row.get('length_sec')) else None,
                 "import_source": import_source,
                 "is_own_content": False
             }
-
-            # Add TikTok-specific fields to caption or metadata
-            # For now, store shares in caption metadata
-            if pd.notna(row.get('shares')):
-                post_dict['caption'] = f"{post_dict.get('caption', '')}\n[TikTok shares: {int(row['shares'])}]".strip()
 
             posts_data.append(post_dict)
 

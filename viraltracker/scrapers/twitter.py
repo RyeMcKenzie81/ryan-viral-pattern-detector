@@ -552,6 +552,7 @@ class TwitterScraper:
           "id": "1728108619189874825",
           "url": "https://x.com/elonmusk/status/...",
           "text": "Tweet content...",
+          "viewCount": 123456,
           "retweetCount": 11311,
           "replyCount": 6526,
           "likeCount": 104121,
@@ -610,6 +611,7 @@ class TwitterScraper:
                     "replies": tweet.get("replyCount", 0),
                     "quotes": tweet.get("quoteCount", 0),
                     "bookmarks": tweet.get("bookmarkCount", 0),
+                    "views": tweet.get("viewCount", 0),  # Twitter impressions/views
 
                     # Content
                     "caption": tweet.get("text", "")[:2200],
@@ -679,16 +681,12 @@ class TwitterScraper:
         # Prepare posts data
         posts_data = []
         for _, row in df.iterrows():
-            # Store Twitter-specific metrics in platform_specific_data
-            platform_specific = {
-                "retweetCount": int(row.get('retweets', 0)) if pd.notna(row.get('retweets')) else 0,
-                "quoteCount": int(row.get('quotes', 0)) if pd.notna(row.get('quotes')) else 0,
-                "bookmarkCount": int(row.get('bookmarks', 0)) if pd.notna(row.get('bookmarks')) else 0,
-                "isReply": row.get('is_reply', False),
-                "isRetweet": row.get('is_retweet', False),
-                "isQuote": row.get('is_quote', False),
-                "lang": row.get('lang', "")
-            }
+            # Twitter metrics mapping:
+            # - viewCount → views (impressions)
+            # - likes → likes
+            # - replies → comments
+            # - retweets → shares
+            # - quotes, bookmarks → currently not stored (could add to platform_specific_data in future)
 
             post_dict = {
                 "account_id": account_ids.get(row['username']),
@@ -696,14 +694,14 @@ class TwitterScraper:
                 "post_url": row['post_url'],
                 "post_id": row['post_id'],
                 "posted_at": row.get('posted_at'),
+                "views": int(row.get('views', 0)) if pd.notna(row.get('views')) else None,
                 "likes": int(row.get('likes', 0)) if pd.notna(row.get('likes')) else None,
                 "comments": int(row.get('replies', 0)) if pd.notna(row.get('replies')) else None,
                 "shares": int(row.get('retweets', 0)) if pd.notna(row.get('retweets')) else None,
                 "caption": row.get('caption'),
                 "video_type": "post",
                 "import_source": import_source,
-                "is_own_content": False,
-                "platform_specific_data": platform_specific
+                "is_own_content": False
             }
 
             posts_data.append(post_dict)
@@ -715,16 +713,26 @@ class TwitterScraper:
 
         for chunk in tqdm(chunks, desc="Saving tweets to database"):
             try:
+                # Debug: Log first post_url to verify format
+                if chunk:
+                    logger.debug(f"Sample post_url: {chunk[0].get('post_url')}")
+                    logger.debug(f"Sample post data: account_id={chunk[0].get('account_id')}, platform_id={chunk[0].get('platform_id')}")
+
                 result = self.supabase.table("posts").upsert(
                     chunk,
                     on_conflict="post_url"
                 ).execute()
 
-                for post in result.data:
-                    post_ids.append(post['id'])
+                if result.data:
+                    for post in result.data:
+                        post_ids.append(post['id'])
+                else:
+                    logger.warning(f"Upsert returned no data for chunk of {len(chunk)} tweets")
+                    logger.warning(f"This usually means all tweets already exist or there was a silent failure")
 
             except Exception as e:
                 logger.error(f"Error upserting tweets chunk: {e}")
+                logger.error(f"First post in failed chunk: {chunk[0] if chunk else 'empty'}")
                 continue
 
         logger.info(f"Saved {len(post_ids)} tweets to database")
