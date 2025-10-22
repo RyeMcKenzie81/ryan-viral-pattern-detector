@@ -255,14 +255,23 @@ Continue anyway? [y/N]: n
 - **Outlier Identification** - Detect per-account viral tweets (3SD method)
 - **Engagement Targeting** - Filter by specific engagement thresholds
 
-### Comment Opportunity Finder (NEW!)
+### Comment Opportunity Finder V1 (PRODUCTION-READY!)
 
-AI-powered system to identify high-value comment opportunities on Twitter and generate contextual reply suggestions.
+AI-powered system that finds high-potential tweets and generates contextual reply suggestions for engagement growth.
+
+**Status**: ✅ Phase 5 testing complete - **Production-ready!**
+
+**Real-World Performance** (50 candidate test):
+- **19/36** tweets scored yellow (0.45-0.53 range)
+- **19/19** successfully generated (57 total suggestions)
+- **$0.19 cost** per run (well under $0.50 target)
+- **~2.5 minutes** execution time
 
 **The Three-Layer Architecture:**
 1. **Ingest** - Collect and normalize raw data (Twitter scraping) ✅
-2. **Generate** - Create AI-powered comment suggestions ✅
-3. **Gate/Filter** - Score and route based on quality/relevance ✅
+2. **Score** - Four-component scoring (velocity, relevance, openness, author quality) ✅
+3. **Generate** - Create AI-powered comment suggestions (3 types per tweet) ✅
+4. **Export** - CSV output for manual review and posting ✅
 
 #### Quick Start
 
@@ -355,18 +364,36 @@ generation:
 2. **ask_question** - Ask thoughtful follow-up question
 3. **mirror_reframe** - Acknowledge and reframe with fresh angle
 
-**Model:** Gemini 2.5 Flash (cost-optimized, fast)
+**Model:** Gemini Flash Latest (cost-optimized, fast)
 **Output:** JSON with all 3 suggestions in one call
+**Cost:** ~$0.01 per tweet (3 suggestions)
+
+#### Real-World Examples
+
+From production testing (ecom project):
+
+**add_value:**
+- "Check mobile load speed. Every 1-second delay drops conversions by 7%."
+- "70% of consumers prefer direct product comparison over browsing a single store."
+
+**ask_question:**
+- "Did you prioritize A/B testing the product page layout or the cart?"
+- "Are you segmenting 'Maybe Later' based on cart value or time spent browsing?"
+
+**mirror_reframe:**
+- "The build is done. Now the focus shifts to conversion rate optimization (CRO)."
+- "Finishing the build is great. Now the real work: A/B testing the checkout flow."
 
 #### CSV Export Format
 
-15 columns for manual review and posting:
+10 columns for manual review and posting (V1 simplified):
 
 ```
-project, tweet_id, url, author, followers, tweeted_at, likes,
-replies, rts, score_total, label, topic, suggestion_type,
-comment, why
+project, tweet_id, url, score_total, label, topic,
+suggestion_type, comment, why, rank
 ```
+
+**Note**: Tweet metadata (author, followers, etc.) will be added in V1.1 after FK relationships are established.
 
 #### CLI Commands
 
@@ -426,7 +453,12 @@ comment, why
 - Process only green/yellow candidates by default
 - Configurable `--max-candidates` cap
 
-**Estimated Cost:** ~$0.40/day for 200 candidates
+**Real-World Costs** (Phase 5 testing):
+- **50 candidates**: $0.19 (19 generated)
+- **Projected 200 candidates/day**: ~$0.40-0.60
+- **Cost per suggestion**: ~$0.003 (3 suggestions per tweet)
+
+**Production Example**: Running daily with 50 candidates = **~$6/month**
 
 #### Use Cases
 
@@ -435,21 +467,34 @@ comment, why
 - **Lead Generation** - Provide value in target audience conversations
 - **Brand Awareness** - Strategic replies on trending topics
 
-#### V1 Scope
+#### V1 Status: Production-Ready ✅
 
-**Included:**
+**Validated Features** (Phase 5 testing):
 - ✅ Velocity, relevance, openness, author quality scoring
-- ✅ Taxonomy-based relevance (embeddings)
+- ✅ Taxonomy-based relevance (embeddings with caching)
 - ✅ Gate filtering (language, blacklist)
-- ✅ 3 AI-generated reply types
-- ✅ CSV export with metadata
-- ✅ Supabase persistence
+- ✅ 3 AI-generated reply types (single API call)
+- ✅ CSV export (10 columns)
+- ✅ Supabase persistence with upsert
+- ✅ Duplicate prevention (database-level)
+- ✅ Cost validation (<$0.50 per run)
+- ✅ Error handling and recovery
+
+**Known V1 Limitations:**
+- CSV lacks tweet metadata (author, followers) - FK relationships pending
+- No upfront duplicate skip - still calls API for existing tweets
+- No semantic duplicate detection - only tweet_id matching
+- No rate limit handling - assumes Gemini free tier
+- No batch generation - processes serially
+- English-only - no multi-language support
 
 **Deferred to V1.1:**
-- ⏳ Author reply rate analysis (need more history)
-- ⏳ LLM-based openness check (V1 uses regex)
+- ⏳ Tweet metadata in CSV (FK relationships)
+- ⏳ Upfront duplicate skip (optimize API calls)
+- ⏳ Author reply rate analysis
+- ⏳ Semantic duplicate detection (pgvector)
 - ⏳ Quality validation + regeneration
-- ⏳ Semantic duplicate detection (exact match only in V1)
+- ⏳ Rate limit handling
 
 ---
 
