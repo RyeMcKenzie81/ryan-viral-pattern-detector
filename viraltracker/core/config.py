@@ -128,7 +128,7 @@ Requirements:
 - Return only the exemplars, one per line"""
 
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('models/gemini-flash-latest')
         response = model.generate_content(
             prompt,
             generation_config={
@@ -240,7 +240,7 @@ def load_finder_config(project_slug: str) -> FinderConfig:
     generation = raw_config.get('generation', {
         'temperature': 0.2,
         'max_tokens': 80,
-        'model': 'gemini-2.5-flash'
+        'model': 'models/gemini-flash-latest'
     })
 
     return FinderConfig(

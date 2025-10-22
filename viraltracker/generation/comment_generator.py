@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from viraltracker.core.config import FinderConfig
 from viraltracker.core.database import get_supabase_client
@@ -100,11 +101,19 @@ class CommentGenerator:
             prompt = self._build_prompt(tweet.text, topic, config)
 
             # Call Gemini
-            model_name = config.generation.get('model', 'gemini-2.5-flash')
+            model_name = config.generation.get('model', 'models/gemini-flash-latest')
             temperature = config.generation.get('temperature', 0.2)
             max_tokens = config.generation.get('max_tokens', 80)
 
             model = genai.GenerativeModel(model_name)
+
+            # Configure safety settings to be less restrictive for business discussions
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            }
 
             response = model.generate_content(
                 prompt,
@@ -112,17 +121,29 @@ class CommentGenerator:
                     'temperature': temperature,
                     'max_output_tokens': 500,  # For JSON response
                     'response_mime_type': 'application/json'
-                }
+                },
+                safety_settings=safety_settings
             )
 
             # Check safety ratings - multiple ways to detect blocking
             if not response.candidates or not hasattr(response, 'text') or not response.text:
+                # Log safety ratings for debugging
+                safety_info = "unknown"
+                if response.candidates:
+                    try:
+                        safety_info = str(response.candidates[0].safety_ratings)
+                        finish_reason = response.candidates[0].finish_reason
+                        logger.warning(f"Tweet {tweet.tweet_id} blocked - Finish reason: {finish_reason}")
+                        logger.warning(f"Safety ratings: {safety_info}")
+                    except Exception as e:
+                        logger.warning(f"Could not access safety ratings: {e}")
+
                 logger.warning(f"No valid response for tweet {tweet.tweet_id} - likely blocked by safety")
                 return GenerationResult(
                     tweet_id=tweet.tweet_id,
                     suggestions=[],
                     success=False,
-                    error="Response blocked by safety filters",
+                    error=f"Response blocked by safety filters. Ratings: {safety_info}",
                     safety_blocked=True
                 )
 
