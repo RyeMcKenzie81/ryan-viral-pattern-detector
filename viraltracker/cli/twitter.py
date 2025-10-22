@@ -546,13 +546,15 @@ def export_comments(
     """
     Export comment suggestions to CSV
 
-    Exports generated comment suggestions with all scoring metadata
+    Exports generated comment suggestions with scoring metadata
     to a CSV file for manual review and posting.
 
     CSV Columns:
-      project, tweet_id, url, author, followers, tweeted_at, likes,
-      replies, rts, score_total, label, topic, suggestion_type,
-      comment, why
+      project, tweet_id, url, score_total, label, topic,
+      suggestion_type, comment, why, rank
+
+    Note: V1 exports core suggestion data. Tweet metadata (author, followers, etc.)
+          will be added in V1.1 after FK relationships are established.
 
     Examples:
         # Export all pending suggestions
@@ -589,11 +591,11 @@ def export_comments(
 
         project_id = project_result.data['id']
 
-        # Query generated_comments with tweet_snapshot join
+        # Query generated_comments (without tweet_snapshot for now - V1 limitation)
         click.echo("🔍 Querying database...")
 
         query = db.table('generated_comments')\
-            .select('*, tweet_snapshot(author_handle, author_followers, tweeted_at, likes, replies, rts)')\
+            .select('*')\
             .eq('project_id', project_id)\
             .eq('status', status)\
             .order('score_total', desc=True)\
@@ -609,14 +611,15 @@ def export_comments(
             return
 
         click.echo(f"   ✓ Found {len(result.data)} suggestions")
+        click.echo(f"   ℹ️  Note: Tweet metadata not included (FK relationship pending)")
 
         # Write CSV
         click.echo(f"\n📝 Writing CSV...")
 
+        # Simplified fieldnames (without tweet metadata for V1)
         fieldnames = [
-            'project', 'tweet_id', 'url', 'author', 'followers', 'tweeted_at',
-            'likes', 'replies', 'rts', 'score_total', 'label', 'topic',
-            'suggestion_type', 'comment', 'why'
+            'project', 'tweet_id', 'url', 'score_total', 'label', 'topic',
+            'suggestion_type', 'comment', 'why', 'rank'
         ]
 
         rows_written = 0
@@ -626,28 +629,17 @@ def export_comments(
             writer.writeheader()
 
             for suggestion in result.data:
-                tweet_snap = suggestion.get('tweet_snapshot')
-
-                if not tweet_snap:
-                    click.echo(f"   ⚠ Skipping suggestion {suggestion['id']} - no tweet snapshot")
-                    continue
-
                 row = {
                     'project': project,
                     'tweet_id': suggestion['tweet_id'],
                     'url': f"https://twitter.com/i/status/{suggestion['tweet_id']}",
-                    'author': tweet_snap.get('author_handle', ''),
-                    'followers': tweet_snap.get('author_followers', 0),
-                    'tweeted_at': tweet_snap.get('tweeted_at', ''),
-                    'likes': tweet_snap.get('likes', 0),
-                    'replies': tweet_snap.get('replies', 0),
-                    'rts': tweet_snap.get('rts', 0),
                     'score_total': round(suggestion['score_total'], 3),
                     'label': suggestion['label'],
                     'topic': suggestion.get('topic', ''),
                     'suggestion_type': suggestion['suggestion_type'],
                     'comment': suggestion['comment_text'],
-                    'why': suggestion.get('why', '')
+                    'why': suggestion.get('why', ''),
+                    'rank': suggestion.get('rank', 1)
                 }
 
                 writer.writerow(row)
