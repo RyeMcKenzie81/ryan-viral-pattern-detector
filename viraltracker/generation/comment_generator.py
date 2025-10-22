@@ -119,20 +119,29 @@ class CommentGenerator:
                 prompt,
                 generation_config={
                     'temperature': temperature,
-                    'max_output_tokens': 500,  # For JSON response
+                    'max_output_tokens': 8192,  # Large buffer for JSON response with 3 suggestions
                     'response_mime_type': 'application/json'
                 },
                 safety_settings=safety_settings
             )
 
-            # Check safety ratings - multiple ways to detect blocking
-            if not response.candidates or not hasattr(response, 'text') or not response.text:
+            # Check safety ratings - accessing response.text can raise exception if blocked
+            response_text = None
+            try:
+                if response.candidates and hasattr(response, 'text'):
+                    response_text = response.text
+            except Exception as e:
+                # response.text access failed - likely safety blocked
+                logger.warning(f"Failed to access response.text: {e}")
+
+            if not response_text:
                 # Log safety ratings for debugging
                 safety_info = "unknown"
+                finish_reason = "unknown"
                 if response.candidates:
                     try:
                         safety_info = str(response.candidates[0].safety_ratings)
-                        finish_reason = response.candidates[0].finish_reason
+                        finish_reason = str(response.candidates[0].finish_reason)
                         logger.warning(f"Tweet {tweet.tweet_id} blocked - Finish reason: {finish_reason}")
                         logger.warning(f"Safety ratings: {safety_info}")
                     except Exception as e:
@@ -143,16 +152,16 @@ class CommentGenerator:
                     tweet_id=tweet.tweet_id,
                     suggestions=[],
                     success=False,
-                    error=f"Response blocked by safety filters. Ratings: {safety_info}",
+                    error=f"Response blocked by safety filters. Finish reason: {finish_reason}. Ratings: {safety_info}",
                     safety_blocked=True
                 )
 
             # Parse JSON response
             try:
-                suggestions_data = json.loads(response.text)
+                suggestions_data = json.loads(response_text)
             except (json.JSONDecodeError, AttributeError) as e:
                 logger.error(f"Failed to parse JSON response: {e}")
-                logger.error(f"Response text: {response.text}")
+                logger.error(f"Response text: {response_text}")
                 return GenerationResult(
                     tweet_id=tweet.tweet_id,
                     suggestions=[],
