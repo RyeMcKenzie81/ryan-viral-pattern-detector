@@ -237,17 +237,40 @@ def load_tweet_embeddings(date_str: str, cache_dir: str = "cache") -> Optional[D
 
 # Taxonomy embedding cache
 
-def cache_taxonomy_embeddings(project_id: str, taxonomy_vectors: Dict, cache_dir: str = "cache"):
+def _hash_taxonomy_node(label: str, description: str, exemplars: List[str]) -> str:
     """
-    Cache taxonomy node embeddings for a project.
+    Compute hash of a taxonomy node for cache invalidation (V1.1).
+
+    Args:
+        label: Node label
+        description: Node description
+        exemplars: List of example strings
+
+    Returns:
+        SHA256 hash (first 16 chars)
+    """
+    # Combine all node data into a single string
+    node_data = f"{label}|{description}|{','.join(exemplars)}"
+    return hashlib.sha256(node_data.encode('utf-8')).hexdigest()[:16]
+
+
+def cache_taxonomy_embeddings(project_id: str, taxonomy_vectors: Dict, node_hashes: Optional[Dict[str, str]] = None, cache_dir: str = "cache"):
+    """
+    Cache taxonomy node embeddings for a project (V1.1: with hash metadata).
 
     Args:
         project_id: Project identifier
-        taxonomy_vectors: Dict with taxonomy node data
+        taxonomy_vectors: Dict with taxonomy node data (label -> embedding)
+        node_hashes: Dict of label -> hash (for cache invalidation)
         cache_dir: Cache directory path
     """
+    cache_data = {
+        'embeddings': taxonomy_vectors,
+        'hashes': node_hashes or {},
+        'cached_at': time.time()
+    }
     path = os.path.join(cache_dir, f"taxonomy_{project_id}.json")
-    cache_set(path, taxonomy_vectors)
+    cache_set(path, cache_data)
 
 
 def load_taxonomy_embeddings(project_id: str, cache_dir: str = "cache") -> Optional[Dict]:
@@ -259,7 +282,103 @@ def load_taxonomy_embeddings(project_id: str, cache_dir: str = "cache") -> Optio
         cache_dir: Cache directory path
 
     Returns:
-        Taxonomy vectors dict or None
+        Taxonomy vectors dict or None (V1.1: returns embeddings only, not metadata)
     """
     path = os.path.join(cache_dir, f"taxonomy_{project_id}.json")
-    return cache_get(path)
+    cache_data = cache_get(path)
+
+    if not cache_data:
+        return None
+
+    # Handle both old format (dict of embeddings) and new format (with metadata)
+    if isinstance(cache_data, dict) and 'embeddings' in cache_data:
+        return cache_data['embeddings']
+    else:
+        # Old format - just embeddings dict
+        return cache_data
+
+
+def load_taxonomy_embeddings_incremental(
+    project_id: str,
+    taxonomy_nodes: List,  # List of TaxonomyNode objects
+    embedder: 'Embedder',
+    cache_dir: str = "cache"
+) -> Dict:
+    """
+    Load or compute taxonomy embeddings incrementally (V1.1).
+
+    Only recomputes embeddings for nodes whose hash has changed.
+
+    Args:
+        project_id: Project identifier
+        taxonomy_nodes: List of TaxonomyNode objects
+        embedder: Embedder instance
+        cache_dir: Cache directory path
+
+    Returns:
+        Dict of label -> embedding (all nodes, with cached + newly computed)
+    """
+    path = os.path.join(cache_dir, f"taxonomy_{project_id}.json")
+    cache_data = cache_get(path)
+
+    # Compute current hashes for all nodes
+    current_hashes = {}
+    for node in taxonomy_nodes:
+        current_hashes[node.label] = _hash_taxonomy_node(
+            node.label,
+            node.description,
+            node.exemplars
+        )
+
+    # Check if we have valid cache
+    if cache_data and 'embeddings' in cache_data and 'hashes' in cache_data:
+        cached_embeddings = cache_data['embeddings']
+        cached_hashes = cache_data['hashes']
+
+        # Determine which nodes need recomputation
+        nodes_to_compute = []
+        final_embeddings = {}
+
+        for node in taxonomy_nodes:
+            current_hash = current_hashes[node.label]
+            cached_hash = cached_hashes.get(node.label)
+
+            if cached_hash == current_hash and node.label in cached_embeddings:
+                # Hash matches - reuse cached embedding
+                final_embeddings[node.label] = cached_embeddings[node.label]
+            else:
+                # Hash mismatch or missing - need to recompute
+                nodes_to_compute.append(node)
+
+        if nodes_to_compute:
+            logger.info(f"Recomputing {len(nodes_to_compute)}/{len(taxonomy_nodes)} taxonomy embeddings (cache invalidated)")
+
+            # Compute embeddings for changed nodes
+            for node in nodes_to_compute:
+                texts_to_embed = [node.description] + node.exemplars[:3]
+                combined_text = " ".join(texts_to_embed)
+                embedding = embedder.embed_text(combined_text, task_type="RETRIEVAL_DOCUMENT")
+                final_embeddings[node.label] = embedding
+
+            # Save updated cache
+            cache_taxonomy_embeddings(project_id, final_embeddings, current_hashes, cache_dir)
+        else:
+            logger.info(f"Using cached embeddings for all {len(taxonomy_nodes)} taxonomy nodes")
+
+        return final_embeddings
+
+    else:
+        # No valid cache - compute all embeddings
+        logger.info(f"Computing embeddings for {len(taxonomy_nodes)} taxonomy nodes (no cache)")
+        embeddings = {}
+
+        for node in taxonomy_nodes:
+            texts_to_embed = [node.description] + node.exemplars[:3]
+            combined_text = " ".join(texts_to_embed)
+            embedding = embedder.embed_text(combined_text, task_type="RETRIEVAL_DOCUMENT")
+            embeddings[node.label] = embedding
+
+        # Save to cache
+        cache_taxonomy_embeddings(project_id, embeddings, current_hashes, cache_dir)
+
+        return embeddings

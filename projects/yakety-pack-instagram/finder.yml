@@ -1,0 +1,53 @@
+taxonomy:
+- label: screen time management
+  description: Managing kids screen time, setting boundaries, device rules, digital balance
+  exemplars:
+    - "Most successful screen time rules focus on when devices are off, not total hours"
+    - "Device-free mealtimes create more conversation opportunities than limiting total hours"
+- label: parenting tips
+  description: Practical parenting advice, behavior management, family routines
+  exemplars:
+    - "Consistency matters more than perfection when building family routines"
+    - "Kids respond better to clear expectations than repeated warnings"
+- label: digital wellness
+  description: Healthy technology habits, social media impact, mental health, online safety
+  exemplars:
+    - "Social media breaks for teens work better when the whole family participates"
+    - "Teaching kids to evaluate online content beats blocking everything"
+
+voice:
+  persona: warm, practical, experience-based but evidence-informed
+  constraints:
+  - no judgment of other parents
+  - avoid prescriptive one-size-fits-all advice
+  - no fear-mongering about technology
+  examples:
+    good:
+    - "We found device-free dinners worked better than strict time limits"
+    - "What's worked for your family with screen time boundaries?"
+    bad:
+    - "You MUST do this or you're failing your kids!"
+    - "Screen time is destroying this generation! 😱"
+
+sources:
+  whitelist_handles: []
+  blacklist_keywords:
+  - giveaway
+  - sponsored
+  - affiliate
+  - crypto
+
+weights:
+  velocity: 0.3
+  relevance: 0.4
+  openness: 0.2
+  author_quality: 0.1
+
+thresholds:
+  green_min: 0.55
+  yellow_min: 0.4
+
+generation:
+  temperature: 0.3
+  max_tokens: 100
+  model: models/gemini-flash-latest

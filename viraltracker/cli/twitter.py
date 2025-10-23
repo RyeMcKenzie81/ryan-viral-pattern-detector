@@ -19,6 +19,8 @@ from ..core.embeddings import Embedder
 from ..generation.tweet_fetcher import fetch_recent_tweets
 from ..generation.comment_finder import score_tweet
 from ..generation.comment_generator import CommentGenerator, save_suggestions_to_db
+from ..generation.async_comment_generator import generate_comments_async
+from ..generation.cost_tracking import format_cost_summary
 
 
 # Configure logging
@@ -34,6 +36,9 @@ logger = logging.getLogger(__name__)
 # Rate limit tracking
 RATE_LIMIT_FILE = Path.home() / ".viraltracker" / "twitter_last_run.txt"
 RATE_LIMIT_SECONDS = 120  # 2 minutes between searches
+
+# Semantic deduplication threshold (V1.1)
+SIMILARITY_THRESHOLD = 0.95  # Cosine similarity threshold for duplicate detection
 
 
 def check_rate_limit():
@@ -71,6 +76,89 @@ def update_rate_limit():
 
     with open(RATE_LIMIT_FILE, 'w') as f:
         f.write(str(time.time()))
+
+
+def check_semantic_duplicates(project_id: str, tweet_embeddings: list, threshold: float = SIMILARITY_THRESHOLD):
+    """
+    Check for semantic duplicates using pgvector cosine similarity.
+
+    Args:
+        project_id: Project UUID
+        tweet_embeddings: List of tweet embedding vectors
+        threshold: Cosine similarity threshold (default: 0.95)
+
+    Returns:
+        List of booleans indicating if each tweet is a duplicate
+    """
+    import numpy as np
+
+    db = get_supabase_client()
+
+    # Fetch existing embeddings for this project
+    result = db.table('acceptance_log')\
+        .select('foreign_id, embedding')\
+        .eq('project_id', project_id)\
+        .eq('source', 'twitter')\
+        .execute()
+
+    if not result.data:
+        # No existing embeddings, all tweets are new
+        return [False] * len(tweet_embeddings)
+
+    # Extract existing embeddings
+    existing_embeddings = []
+    for row in result.data:
+        if row.get('embedding'):
+            # pgvector stores embeddings as strings like "[0.1, 0.2, ...]"
+            embedding_str = row['embedding']
+            # Parse the embedding string to a numpy array
+            if isinstance(embedding_str, str):
+                # Remove brackets and parse
+                embedding_list = [float(x) for x in embedding_str.strip('[]').split(',')]
+                existing_embeddings.append(np.array(embedding_list))
+            elif isinstance(embedding_str, list):
+                existing_embeddings.append(np.array(embedding_str))
+
+    if not existing_embeddings:
+        return [False] * len(tweet_embeddings)
+
+    # Check each candidate tweet against all existing embeddings
+    is_duplicate = []
+
+    for tweet_emb in tweet_embeddings:
+        tweet_vec = np.array(tweet_emb)
+        max_similarity = 0.0
+
+        for existing_emb in existing_embeddings:
+            # Compute cosine similarity
+            similarity = np.dot(tweet_vec, existing_emb) / (
+                np.linalg.norm(tweet_vec) * np.linalg.norm(existing_emb)
+            )
+            max_similarity = max(max_similarity, similarity)
+
+        is_duplicate.append(max_similarity >= threshold)
+
+    return is_duplicate
+
+
+def store_tweet_embedding(project_id: str, tweet_id: str, embedding: list):
+    """
+    Store tweet embedding in acceptance_log for future deduplication.
+
+    Args:
+        project_id: Project UUID
+        tweet_id: Tweet ID
+        embedding: Tweet embedding vector (768-dim)
+    """
+    db = get_supabase_client()
+
+    # Upsert to acceptance_log
+    db.table('acceptance_log').upsert({
+        'project_id': project_id,
+        'source': 'twitter',
+        'foreign_id': tweet_id,
+        'embedding': embedding  # pgvector will handle the conversion
+    }, on_conflict='project_id,source,foreign_id').execute()
 
 
 @click.group(name="twitter")
@@ -309,8 +397,10 @@ def twitter_search(
 @click.option('--min-followers', default=1000, type=int, help='Minimum author followers (default: 1000)')
 @click.option('--min-likes', default=0, type=int, help='Minimum tweet likes (default: 0)')
 @click.option('--max-candidates', default=150, type=int, help='Max tweets to process (default: 150)')
-@click.option('--use-gate', is_flag=True, default=True, help='Apply gate filtering (default: True)')
-@click.option('--skip-low-scores', is_flag=True, default=True, help='Only generate for green/yellow (default: True)')
+@click.option('--use-gate/--no-use-gate', default=True, help='Apply gate filtering (default: True)')
+@click.option('--skip-low-scores/--no-skip-low-scores', default=True, help='Only generate for green/yellow (default: True)')
+@click.option('--batch-size', default=5, type=int, help='Number of concurrent requests (default: 5, V1.2)')
+@click.option('--no-batch', is_flag=True, help='Disable batch processing (use sequential, V1.2)')
 def generate_comments(
     project: str,
     hours_back: int,
@@ -318,7 +408,9 @@ def generate_comments(
     min_likes: int,
     max_candidates: int,
     use_gate: bool,
-    skip_low_scores: bool
+    skip_low_scores: bool,
+    batch_size: int,
+    no_batch: bool
 ):
     """
     Generate AI comment suggestions for recent tweets
@@ -368,30 +460,18 @@ def generate_comments(
         embedder = Embedder()
         click.echo("   ✓ Embedder ready")
 
-        # Compute taxonomy embeddings (with caching)
+        # Compute taxonomy embeddings (V1.1: with incremental caching)
         click.echo(f"\n🏷️  Computing taxonomy embeddings...")
-        from viraltracker.core.embeddings import load_taxonomy_embeddings, cache_taxonomy_embeddings
+        from viraltracker.core.embeddings import load_taxonomy_embeddings_incremental
 
-        # Try to load from cache
-        taxonomy_embeddings = load_taxonomy_embeddings(project)
+        # Use incremental loading - only recomputes changed nodes
+        taxonomy_embeddings = load_taxonomy_embeddings_incremental(
+            project,
+            config.taxonomy,
+            embedder
+        )
 
-        if taxonomy_embeddings:
-            click.echo(f"   ✓ Loaded {len(taxonomy_embeddings)} taxonomy embeddings from cache")
-        else:
-            click.echo(f"   Computing embeddings for {len(config.taxonomy)} taxonomy nodes...")
-            taxonomy_embeddings = {}
-
-            for node in config.taxonomy:
-                # Embed description + exemplars
-                texts_to_embed = [node.description] + node.exemplars[:3]
-                combined_text = " ".join(texts_to_embed)
-
-                embedding = embedder.embed_text(combined_text, task_type="RETRIEVAL_DOCUMENT")
-                taxonomy_embeddings[node.label] = embedding
-
-            # Cache for future runs
-            cache_taxonomy_embeddings(project, taxonomy_embeddings)
-            click.echo(f"   ✓ Computed and cached {len(taxonomy_embeddings)} embeddings")
+        click.echo(f"   ✓ Ready with {len(taxonomy_embeddings)} taxonomy embeddings")
 
         # Fetch recent tweets
         click.echo(f"\n🔍 Fetching recent tweets...")
@@ -414,11 +494,45 @@ def generate_comments(
 
         click.echo(f"   ✓ Found {len(tweets)} candidate tweets")
 
+        # Get project ID (needed for semantic dedup - V1.1)
+        db = get_supabase_client()
+        project_result = db.table('projects').select('id').eq('slug', project).single().execute()
+        if not project_result.data:
+            click.echo(f"\n❌ Error: Project '{project}' not found in database", err=True)
+            raise click.Abort()
+
+        project_id = project_result.data['id']
+
         # Embed tweets
         click.echo(f"\n🔢 Embedding tweets...")
         tweet_texts = [t.text for t in tweets]
         tweet_embeddings = embedder.embed_texts(tweet_texts, task_type="RETRIEVAL_DOCUMENT")
         click.echo(f"   ✓ Embedded {len(tweet_embeddings)} tweets")
+
+        # V1.1: Check for semantic duplicates
+        click.echo(f"\n🔍 Checking for semantic duplicates...")
+        is_duplicate = check_semantic_duplicates(project_id, tweet_embeddings)
+        duplicate_count = sum(is_duplicate)
+
+        if duplicate_count > 0:
+            click.echo(f"   ✓ Found {duplicate_count} duplicates (similarity > {SIMILARITY_THRESHOLD})")
+            click.echo(f"   - Will skip {duplicate_count} tweets to save API costs")
+        else:
+            click.echo(f"   ✓ No duplicates found")
+
+        # Filter out duplicates
+        tweets_filtered = [(tweet, emb) for tweet, emb, is_dup in zip(tweets, tweet_embeddings, is_duplicate) if not is_dup]
+
+        if not tweets_filtered:
+            click.echo(f"\n⚠️  All tweets are duplicates - nothing to process")
+            return
+
+        if duplicate_count > 0:
+            click.echo(f"   - Processing {len(tweets_filtered)} unique tweets")
+
+        # Unpack filtered tweets and embeddings
+        tweets = [t for t, _ in tweets_filtered]
+        tweet_embeddings = [e for _, e in tweets_filtered]
 
         # Score tweets
         click.echo(f"\n📊 Scoring tweets...")
@@ -467,41 +581,86 @@ def generate_comments(
 
         # Generate suggestions
         click.echo(f"\n🤖 Generating comment suggestions...")
-        click.echo(f"   Processing {len(scored_tweets)} tweets with Gemini...")
+
+        # V1.2: Check if batch processing should be used
+        use_batch = not no_batch and len(scored_tweets) > 1
+
+        if use_batch:
+            click.echo(f"   ⚡ Batch mode: Processing {len(scored_tweets)} tweets with {batch_size} concurrent requests")
+        else:
+            click.echo(f"   Processing {len(scored_tweets)} tweets sequentially...")
+
         click.echo()
 
-        generator = CommentGenerator()
-
-        # Get project ID for DB save
-        db = get_supabase_client()
-        project_result = db.table('projects').select('id').eq('slug', project).single().execute()
-        if not project_result.data:
-            click.echo(f"\n❌ Error: Project '{project}' not found in database", err=True)
-            raise click.Abort()
-
-        project_id = project_result.data['id']
+        # Create a map of tweet to embedding for storage after generation
+        tweet_embedding_map = {tweet.tweet_id: emb for tweet, emb in zip(tweets, tweet_embeddings)}
 
         success_count = 0
         safety_blocked_count = 0
         error_count = 0
+        total_cost_usd = 0.0  # V1.2: Track API costs
 
-        for i, (tweet, scoring_result) in enumerate(scored_tweets, 1):
-            click.echo(f"   [{i}/{len(scored_tweets)}] Tweet {tweet.tweet_id[:12]}... ({scoring_result.label}, score={scoring_result.total_score:.2f})")
+        if use_batch:
+            # V1.2: Use async batch processing
+            import asyncio
 
-            # Generate suggestions
-            gen_result = generator.generate_suggestions(tweet, scoring_result.best_topic, config)
+            # Progress callback for async generation
+            def progress_callback(current, total):
+                progress_pct = int((current / total) * 100)
+                click.echo(f"   [{current}/{total}] Progress: {progress_pct}%")
 
-            if gen_result.success:
-                # Save to database
-                comment_ids = save_suggestions_to_db(project_id, tweet.tweet_id, gen_result.suggestions, scoring_result)
-                click.echo(f"      ✓ Generated 3 suggestions, saved to DB")
-                success_count += 1
-            elif gen_result.safety_blocked:
-                click.echo(f"      ⚠ Blocked by safety filters (skipped)")
-                safety_blocked_count += 1
-            else:
-                click.echo(f"      ✗ Generation failed: {gen_result.error[:50]}...")
-                error_count += 1
+            # Run async batch generation
+            stats = asyncio.run(generate_comments_async(
+                project_id=project_id,
+                tweets_with_scores=scored_tweets,
+                config=config,
+                batch_size=batch_size,
+                max_requests_per_minute=15,
+                progress_callback=progress_callback
+            ))
+
+            # Store embeddings for all successful tweets (V1.1: semantic dedup)
+            for tweet, _ in scored_tweets:
+                tweet_emb = tweet_embedding_map.get(tweet.tweet_id)
+                if tweet_emb:
+                    store_tweet_embedding(project_id, tweet.tweet_id, tweet_emb)
+
+            success_count = stats['generated'] // 3  # 3 suggestions per tweet
+            error_count = stats['failed']
+            safety_blocked_count = 0  # Not tracked separately in async mode
+            total_cost_usd = stats.get('total_cost_usd', 0.0)  # V1.2: Extract cost
+
+        else:
+            # V1/V1.1: Sequential processing
+            generator = CommentGenerator()
+
+            for i, (tweet, scoring_result) in enumerate(scored_tweets, 1):
+                click.echo(f"   [{i}/{len(scored_tweets)}] Tweet {tweet.tweet_id[:12]}... ({scoring_result.label}, score={scoring_result.total_score:.2f})")
+
+                # Generate suggestions
+                gen_result = generator.generate_suggestions(tweet, scoring_result.best_topic, config)
+
+                if gen_result.success:
+                    # Save to database (V1.1: pass tweet for enhanced rationale, V1.2: pass cost)
+                    comment_ids = save_suggestions_to_db(project_id, tweet.tweet_id, gen_result.suggestions, scoring_result, tweet, gen_result.api_cost_usd)
+
+                    # V1.1: Store embedding in acceptance_log for future deduplication
+                    tweet_emb = tweet_embedding_map.get(tweet.tweet_id)
+                    if tweet_emb:
+                        store_tweet_embedding(project_id, tweet.tweet_id, tweet_emb)
+
+                    click.echo(f"      ✓ Generated {len(gen_result.suggestions)} suggestions, saved to DB")
+                    success_count += 1
+
+                    # V1.2: Track cost
+                    if gen_result.api_cost_usd is not None:
+                        total_cost_usd += gen_result.api_cost_usd
+                elif gen_result.safety_blocked:
+                    click.echo(f"      ⚠ Blocked by safety filters (skipped)")
+                    safety_blocked_count += 1
+                else:
+                    click.echo(f"      ✗ Generation failed: {gen_result.error[:50]}...")
+                    error_count += 1
 
         # Summary
         click.echo(f"\n{'='*60}")
@@ -515,6 +674,11 @@ def generate_comments(
             click.echo(f"   Safety blocked: {safety_blocked_count}")
         if error_count > 0:
             click.echo(f"   Errors: {error_count}")
+
+        # V1.2: Display API cost
+        if total_cost_usd > 0 and success_count > 0:
+            cost_summary = format_cost_summary(total_cost_usd, success_count)
+            click.echo(f"\n{cost_summary}")
 
         click.echo(f"\n💡 Next steps:")
         click.echo(f"   - Export to CSV: vt twitter export-comments --project {project}")
@@ -546,15 +710,16 @@ def export_comments(
     """
     Export comment suggestions to CSV
 
-    Exports generated comment suggestions with scoring metadata
+    Exports generated comment suggestions with full tweet metadata and scoring data
     to a CSV file for manual review and posting.
 
-    CSV Columns:
-      project, tweet_id, url, score_total, label, topic,
-      suggestion_type, comment, why, rank
-
-    Note: V1 exports core suggestion data. Tweet metadata (author, followers, etc.)
-          will be added in V1.1 after FK relationships are established.
+    CSV Format (one row per tweet):
+      - project, tweet_id, url
+      - author, followers, views, tweet_text, posted_at (V1.1: tweet metadata)
+      - score_total, label, topic, why
+      - suggested_response, suggested_type (primary suggestion, rank=1)
+      - alternative_1, alt_1_type (2nd option)
+      - alternative_2, alt_2_type (3rd option)
 
     Examples:
         # Export all pending suggestions
@@ -591,15 +756,15 @@ def export_comments(
 
         project_id = project_result.data['id']
 
-        # Query generated_comments (without tweet_snapshot for now - V1 limitation)
+        # Query generated_comments with tweet metadata (V1.1)
         click.echo("🔍 Querying database...")
 
+        # Get all suggestions with JOIN to posts and accounts for metadata
         query = db.table('generated_comments')\
-            .select('*')\
+            .select('*, posts(post_id, caption, posted_at, views, accounts(platform_username, follower_count))')\
             .eq('project_id', project_id)\
             .eq('status', status)\
-            .order('score_total', desc=True)\
-            .limit(limit)
+            .order('score_total', desc=True)
 
         if label:
             query = query.eq('label', label)
@@ -611,15 +776,31 @@ def export_comments(
             return
 
         click.echo(f"   ✓ Found {len(result.data)} suggestions")
-        click.echo(f"   ℹ️  Note: Tweet metadata not included (FK relationship pending)")
+
+        # Group by tweet_id (each tweet has 3 suggestions)
+        from collections import defaultdict
+        tweets_map = defaultdict(list)
+
+        for suggestion in result.data:
+            tweets_map[suggestion['tweet_id']].append(suggestion)
+
+        # Sort tweets by highest score and limit
+        sorted_tweets = sorted(tweets_map.items(),
+                              key=lambda x: max(s['score_total'] for s in x[1]),
+                              reverse=True)[:limit]
+
+        click.echo(f"   ✓ Grouped into {len(sorted_tweets)} tweets with metadata")
 
         # Write CSV
         click.echo(f"\n📝 Writing CSV...")
 
-        # Simplified fieldnames (without tweet metadata for V1)
+        # One row per tweet with tweet metadata + suggested response + alternatives (V1.1)
         fieldnames = [
-            'project', 'tweet_id', 'url', 'score_total', 'label', 'topic',
-            'suggestion_type', 'comment', 'why', 'rank'
+            'project', 'tweet_id', 'url', 'author', 'followers', 'views', 'tweet_text', 'posted_at',
+            'score_total', 'label', 'topic', 'why',
+            'suggested_response', 'suggested_type',
+            'alternative_1', 'alt_1_type',
+            'alternative_2', 'alt_2_type'
         ]
 
         rows_written = 0
@@ -628,36 +809,72 @@ def export_comments(
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
-            for suggestion in result.data:
+            for tweet_id, suggestions in sorted_tweets:
+                # Sort by rank (1=primary, 2-3=alternatives)
+                suggestions_sorted = sorted(suggestions, key=lambda s: s.get('rank', 1))
+
+                # Primary suggestion (rank=1)
+                primary = suggestions_sorted[0]
+                alts = suggestions_sorted[1:3]
+
+                # Extract tweet metadata from joined posts/accounts data
+                post_data = primary.get('posts')
+                tweet_text = ''
+                author = ''
+                followers = 0
+                views = 0
+                posted_at = ''
+
+                if post_data:
+                    tweet_text = post_data.get('caption', '')
+                    posted_at = post_data.get('posted_at', '')
+                    views = post_data.get('views', 0) or 0
+                    account_data = post_data.get('accounts')
+                    if account_data:
+                        author = account_data.get('platform_username', '')
+                        followers = account_data.get('follower_count', 0) or 0
+
                 row = {
                     'project': project,
-                    'tweet_id': suggestion['tweet_id'],
-                    'url': f"https://twitter.com/i/status/{suggestion['tweet_id']}",
-                    'score_total': round(suggestion['score_total'], 3),
-                    'label': suggestion['label'],
-                    'topic': suggestion.get('topic', ''),
-                    'suggestion_type': suggestion['suggestion_type'],
-                    'comment': suggestion['comment_text'],
-                    'why': suggestion.get('why', ''),
-                    'rank': suggestion.get('rank', 1)
+                    'tweet_id': tweet_id,
+                    'url': f"https://twitter.com/i/status/{tweet_id}",
+                    'author': author,
+                    'followers': followers,
+                    'views': views,
+                    'tweet_text': tweet_text,
+                    'posted_at': posted_at,
+                    'score_total': round(primary['score_total'], 3),
+                    'label': primary['label'],
+                    'topic': primary.get('topic', ''),
+                    'why': primary.get('why', ''),
+                    'suggested_response': primary['comment_text'],
+                    'suggested_type': primary['suggestion_type'],
+                    'alternative_1': alts[0]['comment_text'] if len(alts) > 0 else '',
+                    'alt_1_type': alts[0]['suggestion_type'] if len(alts) > 0 else '',
+                    'alternative_2': alts[1]['comment_text'] if len(alts) > 1 else '',
+                    'alt_2_type': alts[1]['suggestion_type'] if len(alts) > 1 else '',
                 }
 
                 writer.writerow(row)
                 rows_written += 1
 
-        click.echo(f"   ✓ Wrote {rows_written} rows to {out}")
+        click.echo(f"   ✓ Wrote {rows_written} tweets to {out}")
 
         # Update status to 'exported'
         if status == 'pending':
             click.echo(f"\n🔄 Updating status to 'exported'...")
-            comment_ids = [s['id'] for s in result.data]
+
+            # Get all comment IDs from the exported tweets
+            comment_ids = []
+            for tweet_id, suggestions in sorted_tweets:
+                comment_ids.extend([s['id'] for s in suggestions])
 
             db.table('generated_comments')\
                 .update({'status': 'exported'})\
                 .in_('id', comment_ids)\
                 .execute()
 
-            click.echo(f"   ✓ Updated {len(comment_ids)} suggestions")
+            click.echo(f"   ✓ Updated {len(comment_ids)} suggestions ({rows_written} tweets)")
 
         # Summary
         click.echo(f"\n{'='*60}")
@@ -665,28 +882,22 @@ def export_comments(
         click.echo(f"{'='*60}\n")
 
         click.echo(f"📊 Summary:")
-        click.echo(f"   Exported: {rows_written} suggestions")
+        click.echo(f"   Exported: {rows_written} tweets ({rows_written * 3} total suggestions)")
         click.echo(f"   File: {out}")
 
-        # Show distribution
+        # Show distribution by label
         if rows_written > 0:
-            types_count = {}
             labels_count = {}
 
-            for s in result.data[:rows_written]:
-                t = s['suggestion_type']
-                l = s['label']
-                types_count[t] = types_count.get(t, 0) + 1
+            for tweet_id, suggestions in sorted_tweets:
+                # Use label from first suggestion (they all have same label)
+                l = suggestions[0]['label']
                 labels_count[l] = labels_count.get(l, 0) + 1
-
-            click.echo(f"\n   By type:")
-            for t, count in sorted(types_count.items()):
-                click.echo(f"   - {t}: {count}")
 
             click.echo(f"\n   By label:")
             for l, count in sorted(labels_count.items()):
                 emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴'}.get(l, '')
-                click.echo(f"   - {emoji} {l}: {count}")
+                click.echo(f"   - {emoji} {l}: {count} tweets")
 
         click.echo(f"\n💡 Next steps:")
         click.echo(f"   - Review CSV and select comments to post")
