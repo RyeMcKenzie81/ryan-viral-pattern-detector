@@ -720,6 +720,8 @@ def export_comments(
       - suggested_response, suggested_type (primary suggestion, rank=1)
       - alternative_1, alt_1_type (2nd option)
       - alternative_2, alt_2_type (3rd option)
+      - alternative_3, alt_3_type (4th option - V1.3)
+      - alternative_4, alt_4_type (5th option - V1.3)
 
     Examples:
         # Export all pending suggestions
@@ -777,7 +779,7 @@ def export_comments(
 
         click.echo(f"   ✓ Found {len(result.data)} suggestions")
 
-        # Group by tweet_id (each tweet has 3 suggestions)
+        # Group by tweet_id (each tweet has 5 suggestions in V1.3)
         from collections import defaultdict
         tweets_map = defaultdict(list)
 
@@ -794,13 +796,15 @@ def export_comments(
         # Write CSV
         click.echo(f"\n📝 Writing CSV...")
 
-        # One row per tweet with tweet metadata + suggested response + alternatives (V1.1)
+        # One row per tweet with tweet metadata + suggested response + alternatives (V1.3: 5 types)
         fieldnames = [
             'project', 'tweet_id', 'url', 'author', 'followers', 'views', 'tweet_text', 'posted_at',
             'score_total', 'label', 'topic', 'why',
             'suggested_response', 'suggested_type',
             'alternative_1', 'alt_1_type',
-            'alternative_2', 'alt_2_type'
+            'alternative_2', 'alt_2_type',
+            'alternative_3', 'alt_3_type',
+            'alternative_4', 'alt_4_type'
         ]
 
         rows_written = 0
@@ -810,12 +814,12 @@ def export_comments(
             writer.writeheader()
 
             for tweet_id, suggestions in sorted_tweets:
-                # Sort by rank (1=primary, 2-3=alternatives)
+                # Sort by rank (1=primary, 2-5=alternatives)
                 suggestions_sorted = sorted(suggestions, key=lambda s: s.get('rank', 1))
 
                 # Primary suggestion (rank=1)
                 primary = suggestions_sorted[0]
-                alts = suggestions_sorted[1:3]
+                alts = suggestions_sorted[1:5]  # V1.3: Get all 4 alternatives
 
                 # Extract tweet metadata from joined posts/accounts data
                 post_data = primary.get('posts')
@@ -853,6 +857,10 @@ def export_comments(
                     'alt_1_type': alts[0]['suggestion_type'] if len(alts) > 0 else '',
                     'alternative_2': alts[1]['comment_text'] if len(alts) > 1 else '',
                     'alt_2_type': alts[1]['suggestion_type'] if len(alts) > 1 else '',
+                    'alternative_3': alts[2]['comment_text'] if len(alts) > 2 else '',
+                    'alt_3_type': alts[2]['suggestion_type'] if len(alts) > 2 else '',
+                    'alternative_4': alts[3]['comment_text'] if len(alts) > 3 else '',
+                    'alt_4_type': alts[3]['suggestion_type'] if len(alts) > 3 else '',
                 }
 
                 writer.writerow(row)
@@ -882,7 +890,7 @@ def export_comments(
         click.echo(f"{'='*60}\n")
 
         click.echo(f"📊 Summary:")
-        click.echo(f"   Exported: {rows_written} tweets ({rows_written * 3} total suggestions)")
+        click.echo(f"   Exported: {rows_written} tweets ({rows_written * 5} total suggestions)")
         click.echo(f"   File: {out}")
 
         # Show distribution by label

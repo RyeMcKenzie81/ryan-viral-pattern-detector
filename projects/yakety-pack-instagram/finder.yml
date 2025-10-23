@@ -49,5 +49,5 @@ thresholds:
 
 generation:
   temperature: 0.3
-  max_tokens: 100
+  max_tokens: 1100
   model: models/gemini-flash-latest

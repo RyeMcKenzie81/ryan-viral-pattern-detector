@@ -1,13 +1,16 @@
 """
 Comment Generator - AI-Powered Reply Suggestions
 
-Generates 3 types of Twitter reply suggestions using Gemini:
+Generates 5 types of Twitter reply suggestions using Gemini:
 - add_value: Share insights, tips, or data
 - ask_question: Ask thoughtful follow-ups
-- mirror_reframe: Acknowledge and reframe with fresh angle
+- funny: Witty jokes or clever observations
+- debate: Respectful contrarian viewpoints
+- relate: Personal connections or stories
 
-V1: Single LLM call per tweet returning JSON with all 3 suggestions
+V1: Single LLM call per tweet returning JSON with all suggestions
 V1.2: Cost tracking for API usage transparency
+V1.3: Expanded to 5 comment types, removed forced product tie-ins
 """
 
 import os
@@ -144,7 +147,7 @@ class CommentGenerator:
         config: FinderConfig
     ) -> GenerationResult:
         """
-        Generate 3 comment suggestions for a tweet.
+        Generate 5 comment suggestions for a tweet.
 
         Args:
             tweet: Tweet to generate comments for
@@ -152,7 +155,7 @@ class CommentGenerator:
             config: Finder configuration with voice/persona
 
         Returns:
-            GenerationResult with 3 suggestions or error
+            GenerationResult with 5 suggestions or error
         """
         try:
             # Build prompt
@@ -188,7 +191,7 @@ class CommentGenerator:
                         prompt,
                         generation_config={
                             'temperature': temperature,
-                            'max_output_tokens': 8192,  # Large buffer for JSON response with 3 suggestions
+                            'max_output_tokens': 8192,  # Large buffer for JSON response with 5 suggestions
                             'response_mime_type': 'application/json'
                         },
                         safety_settings=safety_settings
@@ -270,7 +273,7 @@ class CommentGenerator:
                 )
 
             # Validate response structure
-            required_keys = ['add_value', 'ask_question', 'mirror_reframe']
+            required_keys = ['add_value', 'ask_question', 'funny', 'debate', 'relate']
             if not all(k in suggestions_data for k in required_keys):
                 logger.error(f"Response missing required keys. Got: {suggestions_data.keys()}")
                 return GenerationResult(
@@ -284,7 +287,9 @@ class CommentGenerator:
             suggestions = [
                 CommentSuggestion('add_value', suggestions_data['add_value'], rank=1),
                 CommentSuggestion('ask_question', suggestions_data['ask_question'], rank=2),
-                CommentSuggestion('mirror_reframe', suggestions_data['mirror_reframe'], rank=3)
+                CommentSuggestion('funny', suggestions_data['funny'], rank=3),
+                CommentSuggestion('debate', suggestions_data['debate'], rank=4),
+                CommentSuggestion('relate', suggestions_data['relate'], rank=5)
             ]
 
             # V1.1: Apply quality filter to each suggestion
@@ -473,10 +478,10 @@ def _quality_filter_suggestion(suggestion_text: str, tweet_text: str) -> tuple[b
         - True if suggestion passes quality checks
         - False with reason string if suggestion should be filtered out
     """
-    # 1. Length check (30-120 chars)
-    if len(suggestion_text) < 30:
+    # 1. Length check (40-200 chars)
+    if len(suggestion_text) < 40:
         return False, "too_short"
-    if len(suggestion_text) > 120:
+    if len(suggestion_text) > 200:
         return False, "too_long"
 
     # 2. Generic phrase detection
