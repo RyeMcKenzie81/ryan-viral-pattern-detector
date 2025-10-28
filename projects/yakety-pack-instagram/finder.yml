@@ -44,7 +44,7 @@ weights:
   author_quality: 0.1
 
 thresholds:
-  green_min: 0.55
+  green_min: 0.50
   yellow_min: 0.4
 
 generation:

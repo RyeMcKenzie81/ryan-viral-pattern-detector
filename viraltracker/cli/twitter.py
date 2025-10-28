@@ -399,6 +399,7 @@ def twitter_search(
 @click.option('--max-candidates', default=150, type=int, help='Max tweets to process (default: 150)')
 @click.option('--use-gate/--no-use-gate', default=True, help='Apply gate filtering (default: True)')
 @click.option('--skip-low-scores/--no-skip-low-scores', default=True, help='Only generate for green/yellow (default: True)')
+@click.option('--greens-only', is_flag=True, help='Only generate for greens (overrides --skip-low-scores)')
 @click.option('--batch-size', default=5, type=int, help='Number of concurrent requests (default: 5, V1.2)')
 @click.option('--no-batch', is_flag=True, help='Disable batch processing (use sequential, V1.2)')
 def generate_comments(
@@ -409,6 +410,7 @@ def generate_comments(
     max_candidates: int,
     use_gate: bool,
     skip_low_scores: bool,
+    greens_only: bool,
     batch_size: int,
     no_batch: bool
 ):
@@ -440,7 +442,14 @@ def generate_comments(
         click.echo(f"Filters: {min_followers:,}+ followers, {min_likes:,}+ likes")
         click.echo(f"Max candidates: {max_candidates}")
         click.echo(f"Gate filtering: {'enabled' if use_gate else 'disabled'}")
-        click.echo(f"Skip low scores: {'yes (green/yellow only)' if skip_low_scores else 'no (all)'}")
+
+        if greens_only:
+            click.echo(f"Skip low scores: yes (greens only)")
+        elif skip_low_scores:
+            click.echo(f"Skip low scores: yes (green/yellow only)")
+        else:
+            click.echo(f"Skip low scores: no (all)")
+
         click.echo()
 
         # Load config
@@ -557,7 +566,12 @@ def generate_comments(
             return
 
         # Filter by score if requested
-        if skip_low_scores:
+        if greens_only:
+            greens = [(t, r) for t, r in scored_tweets if r.label == 'green']
+            click.echo(f"   - Greens: {len(greens)}")
+            click.echo(f"   - Yellow/Red (skipped): {len(scored_tweets) - len(greens)}")
+            scored_tweets = greens
+        elif skip_low_scores:
             high_quality = [(t, r) for t, r in scored_tweets if r.label in ['green', 'yellow']]
             click.echo(f"   - Green/Yellow: {len(high_quality)}")
             click.echo(f"   - Red (skipped): {len(scored_tweets) - len(high_quality)}")
@@ -877,12 +891,18 @@ def export_comments(
             for tweet_id, suggestions in sorted_tweets:
                 comment_ids.extend([s['id'] for s in suggestions])
 
-            db.table('generated_comments')\
-                .update({'status': 'exported'})\
-                .in_('id', comment_ids)\
-                .execute()
+            # Batch update to avoid URL length limits (100 IDs per batch)
+            batch_size = 100
+            total_updated = 0
+            for i in range(0, len(comment_ids), batch_size):
+                batch = comment_ids[i:i + batch_size]
+                db.table('generated_comments')\
+                    .update({'status': 'exported'})\
+                    .in_('id', batch)\
+                    .execute()
+                total_updated += len(batch)
 
-            click.echo(f"   ✓ Updated {len(comment_ids)} suggestions ({rows_written} tweets)")
+            click.echo(f"   ✓ Updated {total_updated} suggestions ({rows_written} tweets)")
 
         # Summary
         click.echo(f"\n{'='*60}")
@@ -918,6 +938,166 @@ def export_comments(
         raise
     except Exception as e:
         click.echo(f"\n❌ Export failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="analyze-search-term")
+@click.option('--project', '-p', required=True, help='Project slug')
+@click.option('--term', required=True, help='Search term to analyze')
+@click.option('--count', default=1000, type=int, help='Tweets to analyze (default: 1000)')
+@click.option('--min-likes', default=0, type=int, help='Minimum likes (default: 0)')
+@click.option('--days-back', default=7, type=int, help='Days to look back (default: 7)')
+@click.option('--batch-size', default=10, type=int, help='Comment generation batch size (default: 10)')
+@click.option('--skip-comments', is_flag=True, help='Skip comment generation (faster, cheaper)')
+@click.option('--report-file', help='Output JSON report path (optional)')
+def analyze_search_term(
+    project: str,
+    term: str,
+    count: int,
+    min_likes: int,
+    days_back: int,
+    batch_size: int,
+    skip_comments: bool,
+    report_file: Optional[str]
+):
+    """
+    Analyze a search term to find engagement opportunities
+
+    Tests a search term by scraping tweets, scoring them against the project's
+    taxonomy, and analyzing multiple dimensions: quality (green ratio), volume
+    (freshness), virality (views), and cost efficiency.
+
+    Use this to find the best search terms for your project before committing
+    to regular scraping.
+
+    Examples:
+        # Quick test
+        vt twitter analyze-search-term -p my-project --term "screen time kids"
+
+        # Full analysis with 1000 tweets
+        vt twitter analyze-search-term -p my-project --term "parenting tips" \\
+          --count 1000 --min-likes 20 --report-file ~/Downloads/report.json
+    """
+    try:
+        from ..analysis.search_term_analyzer import SearchTermAnalyzer
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🔍 Search Term Analysis")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Project: {project}")
+        click.echo(f"Search term: \"{term}\"")
+        click.echo(f"Analyzing {count} tweets...")
+        click.echo()
+
+        # Initialize analyzer
+        try:
+            analyzer = SearchTermAnalyzer(project)
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            raise click.Abort()
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: No finder.yml found for project '{project}'", err=True)
+            click.echo(f"   Create: projects/{project}/finder.yml", err=True)
+            raise click.Abort()
+
+        # Progress tracking
+        current_phase = [""]
+        phase_emoji = {
+            "scraping": "🔍",
+            "embedding": "🔢",
+            "scoring": "📊",
+            "generating": "🤖",
+            "analyzing": "📈"
+        }
+
+        def progress_callback(phase, current, total):
+            if phase != current_phase[0]:
+                current_phase[0] = phase
+                emoji = phase_emoji.get(phase, "⏳")
+                click.echo(f"{emoji} {phase.title()}...")
+
+        # Run analysis
+        click.echo("Starting analysis...\n")
+
+        try:
+            metrics = analyzer.analyze(
+                term,
+                count,
+                min_likes,
+                days_back,
+                batch_size,
+                skip_comments=skip_comments,
+                progress_callback=progress_callback
+            )
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            click.echo("\n💡 Try:")
+            click.echo("   - Different search term")
+            click.echo("   - Lowering --min-likes")
+            click.echo("   - Increasing --days-back")
+            raise click.Abort()
+
+        # Display results
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📊 Analysis Results")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Tweets analyzed: {metrics.tweets_analyzed}")
+        click.echo()
+
+        click.echo(f"Score Distribution:")
+        click.echo(f"  🟢 Green:  {metrics.green_count:4d} ({metrics.green_percentage:5.1f}%) - avg score: {metrics.green_avg_score:.3f}")
+        click.echo(f"  🟡 Yellow: {metrics.yellow_count:4d} ({metrics.yellow_percentage:5.1f}%) - avg score: {metrics.yellow_avg_score:.3f}")
+        click.echo(f"  🔴 Red:    {metrics.red_count:4d} ({metrics.red_percentage:5.1f}%) - avg score: {metrics.red_avg_score:.3f}")
+        click.echo()
+
+        click.echo(f"Freshness:")
+        click.echo(f"  Last 48h: {metrics.last_48h_count} tweets ({metrics.last_48h_percentage:.1f}%)")
+        click.echo(f"  ~{metrics.conversations_per_day:.0f} tweets/day")
+        click.echo()
+
+        click.echo(f"Virality:")
+        if metrics.avg_views > 0:
+            click.echo(f"  Avg views:    {metrics.avg_views:,.0f}")
+            click.echo(f"  Median views: {metrics.median_views:,.0f}")
+            click.echo(f"  Top 10% avg:  {metrics.top_10_percent_avg_views:,.0f}")
+            click.echo(f"  10k+ views:   {metrics.tweets_with_10k_plus_views} tweets")
+        else:
+            click.echo(f"  (View data not available)")
+        click.echo()
+
+        click.echo(f"Topic Distribution:")
+        for topic, count in sorted(metrics.topic_distribution.items(), key=lambda x: x[1], reverse=True):
+            pct = (count / metrics.tweets_analyzed * 100) if metrics.tweets_analyzed > 0 else 0
+            click.echo(f"  - {topic}: {count} ({pct:.1f}%)")
+        click.echo()
+
+        click.echo(f"Cost Efficiency:")
+        click.echo(f"  Total cost:        ${metrics.total_cost_usd:.3f}")
+        if metrics.cost_per_green > 0:
+            click.echo(f"  Cost per green:    ${metrics.cost_per_green:.5f}")
+            click.echo(f"  Greens per dollar: {metrics.greens_per_dollar:.0f}")
+        click.echo()
+
+        click.echo(f"{'='*60}")
+        click.echo(f"💡 Recommendation: {metrics.recommendation} ({metrics.confidence} confidence)")
+        click.echo(f"{'='*60}")
+        click.echo(f"{metrics.reasoning}")
+        click.echo()
+
+        # Export if requested
+        if report_file:
+            analyzer.export_json(metrics, report_file)
+            click.echo(f"✅ Report saved to: {report_file}\n")
+
+        click.echo(f"{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Analysis failed: {e}", err=True)
         logger.exception(e)
         raise click.Abort()
 
