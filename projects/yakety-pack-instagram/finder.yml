@@ -32,10 +32,34 @@ voice:
 sources:
   whitelist_handles: []
   blacklist_keywords:
+  # Promotional/spam content
   - giveaway
   - sponsored
   - affiliate
   - crypto
+
+  # Political content
+  - trump
+  - donald trump
+  - maga
+  - make america great
+
+  # Racism and hate speech
+  - racist
+  - racism
+  - white supremacy
+  - hate crime
+  - racial slur
+  - bigot
+  - xenophob
+
+  # Low-quality link spam (common patterns)
+  - click here
+  - link in bio
+  - check out my
+  - visit my website
+  - read more here
+  - swipe up
 
 weights:
   velocity: 0.3

@@ -714,12 +714,14 @@ def generate_comments(
 @click.option('--limit', default=200, type=int, help='Max suggestions to export (default: 200)')
 @click.option('--label', type=click.Choice(['green', 'yellow', 'red']), help='Filter by label (optional)')
 @click.option('--status', default='pending', help='Filter by status (default: pending)')
+@click.option('--sort-by', type=click.Choice(['score', 'views', 'balanced']), default='balanced', help='Sort method: score (quality), views (reach), balanced (score×√views) [default: balanced]')
 def export_comments(
     project: str,
     out: str,
     limit: int,
     label: Optional[str],
-    status: str
+    status: str,
+    sort_by: str
 ):
     """
     Export comment suggestions to CSV
@@ -761,6 +763,7 @@ def export_comments(
         if label:
             click.echo(f"Label filter: {label}")
         click.echo(f"Status filter: {status}")
+        click.echo(f"Sort by: {sort_by}")
         click.echo()
 
         # Get project ID
@@ -795,15 +798,44 @@ def export_comments(
 
         # Group by tweet_id (each tweet has 5 suggestions in V1.3)
         from collections import defaultdict
+        import math
         tweets_map = defaultdict(list)
 
         for suggestion in result.data:
             tweets_map[suggestion['tweet_id']].append(suggestion)
 
-        # Sort tweets by highest score and limit
-        sorted_tweets = sorted(tweets_map.items(),
-                              key=lambda x: max(s['score_total'] for s in x[1]),
-                              reverse=True)[:limit]
+        # Sort tweets based on sort_by parameter
+        if sort_by == 'score':
+            # Sort by score only (quality)
+            sorted_tweets = sorted(tweets_map.items(),
+                                  key=lambda x: max(s['score_total'] for s in x[1]),
+                                  reverse=True)[:limit]
+        elif sort_by == 'views':
+            # Sort by views only (reach)
+            def get_views(item):
+                suggestions = item[1]
+                for s in suggestions:
+                    post_data = s.get('posts')
+                    if post_data:
+                        return post_data.get('views', 0) or 0
+                return 0
+            sorted_tweets = sorted(tweets_map.items(),
+                                  key=get_views,
+                                  reverse=True)[:limit]
+        else:  # balanced (default)
+            # Sort by score × √views (balanced quality + reach)
+            def get_priority(item):
+                suggestions = item[1]
+                score = max(s['score_total'] for s in suggestions)
+                for s in suggestions:
+                    post_data = s.get('posts')
+                    if post_data:
+                        views = post_data.get('views', 0) or 0
+                        return score * math.sqrt(views)
+                return score  # Fallback if no views data
+            sorted_tweets = sorted(tweets_map.items(),
+                                  key=get_priority,
+                                  reverse=True)[:limit]
 
         click.echo(f"   ✓ Grouped into {len(sorted_tweets)} tweets with metadata")
 
@@ -812,6 +844,7 @@ def export_comments(
 
         # One row per tweet with tweet metadata + suggested response + alternatives (V1.3: 5 types)
         fieldnames = [
+            'rank', 'priority_score',  # Prioritization columns (V1.4)
             'project', 'tweet_id', 'url', 'author', 'followers', 'views', 'tweet_text', 'posted_at',
             'score_total', 'label', 'topic', 'why',
             'suggested_response', 'suggested_type',
@@ -827,7 +860,7 @@ def export_comments(
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
-            for tweet_id, suggestions in sorted_tweets:
+            for rank_num, (tweet_id, suggestions) in enumerate(sorted_tweets, 1):
                 # Sort by rank (1=primary, 2-5=alternatives)
                 suggestions_sorted = sorted(suggestions, key=lambda s: s.get('rank', 1))
 
@@ -852,7 +885,18 @@ def export_comments(
                         author = account_data.get('platform_username', '')
                         followers = account_data.get('follower_count', 0) or 0
 
+                # Calculate priority_score based on sort method
+                score = primary['score_total']
+                if sort_by == 'views':
+                    priority_score = views
+                elif sort_by == 'balanced':
+                    priority_score = score * math.sqrt(views)
+                else:  # score
+                    priority_score = score
+
                 row = {
+                    'rank': rank_num,
+                    'priority_score': round(priority_score, 2),
                     'project': project,
                     'tweet_id': tweet_id,
                     'url': f"https://twitter.com/i/status/{tweet_id}",

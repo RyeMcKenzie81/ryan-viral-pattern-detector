@@ -33,6 +33,7 @@ class TweetMetrics:
     likes: int
     replies: int
     retweets: int
+    views: int = 0  # Twitter impressions/views
     lang: str = 'en'
 
 
@@ -302,7 +303,8 @@ def gate_tweet(
     lang: str,
     blacklist_keywords: List[str],
     blacklist_handles: List[str],
-    require_english: bool = True
+    require_english: bool = True,
+    replies: int = 0
 ) -> Tuple[bool, Optional[str]]:
     """
     Gate filtering for tweet acceptance.
@@ -311,7 +313,7 @@ def gate_tweet(
     - Language (default: English only)
     - Blacklist keywords in text
     - Blacklist handles
-    - (Future: Safety ratings)
+    - Link spam detection (short text + link + no engagement)
 
     Args:
         tweet_text: Tweet text
@@ -320,6 +322,7 @@ def gate_tweet(
         blacklist_keywords: List of blacklist keywords
         blacklist_handles: List of blacklist handles
         require_english: Require English language
+        replies: Number of replies/comments on tweet
 
     Returns:
         Tuple of (passed, reason_if_failed)
@@ -339,6 +342,24 @@ def gate_tweet(
     for handle in blacklist_handles:
         if handle_lower == handle.lower().lstrip('@'):
             return False, f"blacklist author: {author_handle}"
+
+    # Link spam detection: short text + URL + no comments = likely spam
+    # Check if tweet contains a URL
+    has_link = 'http://' in tweet_text or 'https://' in tweet_text or 't.co/' in tweet_text
+
+    if has_link:
+        # Remove URLs to get actual text content
+        import re
+        text_without_urls = re.sub(r'https?://\S+|t\.co/\S+', '', tweet_text)
+        # Remove mentions and hashtags for better length assessment
+        text_without_urls = re.sub(r'@\S+|#\S+', '', text_without_urls)
+        # Count meaningful characters (letters, numbers)
+        meaningful_text = re.sub(r'[^a-zA-Z0-9\s]', '', text_without_urls)
+        text_length = len(meaningful_text.strip())
+
+        # If less than 50 characters of actual text AND no replies, likely spam
+        if text_length < 50 and replies == 0:
+            return False, f"link spam: short text ({text_length} chars) + link + no engagement"
 
     return True, None
 
@@ -384,7 +405,8 @@ def score_tweet(
             lang=tweet.lang,
             blacklist_keywords=config.sources.blacklist_keywords,
             blacklist_handles=config.sources.whitelist_handles,  # Note: using as blacklist for gate
-            require_english=True
+            require_english=True,
+            replies=tweet.replies
         )
 
     # Velocity
