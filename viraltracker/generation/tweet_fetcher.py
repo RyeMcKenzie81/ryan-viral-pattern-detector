@@ -67,29 +67,47 @@ def fetch_recent_tweets(
     logger.info(f"Fetching tweets for project '{project_slug}' from last {hours_back} hours")
     logger.info(f"Filters: min_followers={min_followers}, min_likes={min_likes}, max={max_candidates}")
 
-    # Query tweets with joins to get account data
-    # Note: Supabase uses foreign key relationships for joins
-    query = db.table('posts')\
-        .select('id, post_id, caption, posted_at, likes, comments, shares, accounts(platform_username, follower_count), project_posts!inner(project_id)')\
-        .eq('platform_id', platform_id)\
-        .eq('project_posts.project_id', project_id)\
-        .gte('posted_at', cutoff_time.isoformat())\
-        .gte('likes', min_likes)\
-        .order('posted_at', desc=True)\
-        .limit(max_candidates)
+    # Paginate if max_candidates > 1000 (Supabase limit)
+    all_tweets = []
+    page_size = 1000
+    offset = 0
 
-    result = query.execute()
+    while len(all_tweets) < max_candidates:
+        # Query tweets with joins to get account data
+        # Note: Supabase uses foreign key relationships for joins
+        query = db.table('posts')\
+            .select('id, post_id, caption, posted_at, likes, comments, shares, views, accounts(platform_username, follower_count), project_posts!inner(project_id)')\
+            .eq('platform_id', platform_id)\
+            .eq('project_posts.project_id', project_id)\
+            .gte('posted_at', cutoff_time.isoformat())\
+            .gte('likes', min_likes)\
+            .order('posted_at', desc=True)\
+            .range(offset, offset + page_size - 1)
 
-    if not result.data:
+        result = query.execute()
+
+        if not result.data:
+            break
+
+        all_tweets.extend(result.data)
+        logger.info(f"Fetched {len(result.data)} tweets (total: {len(all_tweets)})")
+
+        # If we got fewer than page_size, we've reached the end
+        if len(result.data) < page_size:
+            break
+
+        offset += page_size
+
+    if not all_tweets:
         logger.warning("No tweets found matching criteria")
         return []
 
-    logger.info(f"Found {len(result.data)} candidate tweets")
+    logger.info(f"Found {len(all_tweets)} candidate tweets")
 
     # Convert to TweetMetrics objects
     tweet_metrics = []
 
-    for row in result.data:
+    for row in all_tweets:
         try:
             # Extract account data
             account = row.get('accounts')
@@ -116,6 +134,7 @@ def fetch_recent_tweets(
                 likes=row.get('likes', 0) or 0,
                 replies=row.get('comments', 0) or 0,
                 retweets=row.get('shares', 0) or 0,
+                views=row.get('views', 0) or 0,
                 lang='en'  # Default to English (we don't store lang in posts table yet)
             )
 
@@ -162,7 +181,7 @@ def fetch_tweets_by_ids(
 
     # Query by post_id list
     query = db.table('posts')\
-        .select('id, post_id, caption, posted_at, likes, comments, shares, accounts(platform_username, follower_count)')\
+        .select('id, post_id, caption, posted_at, likes, comments, shares, views, accounts(platform_username, follower_count)')\
         .eq('platform_id', platform_id)\
         .in_('post_id', tweet_ids)
 
@@ -195,6 +214,7 @@ def fetch_tweets_by_ids(
                 likes=row.get('likes', 0) or 0,
                 replies=row.get('comments', 0) or 0,
                 retweets=row.get('shares', 0) or 0,
+                views=row.get('views', 0) or 0,
                 lang='en'
             )
 

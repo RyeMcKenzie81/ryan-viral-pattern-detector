@@ -14,6 +14,16 @@ taxonomy:
   exemplars:
     - "Social media breaks for teens work better when the whole family participates"
     - "Teaching kids to evaluate online content beats blocking everything"
+- label: family gaming
+  description: Playing video games together as a family, co-op gaming, game recommendations, shared gaming experiences
+  exemplars:
+    - "Co-op games like It Takes Two turned screen time into quality family bonding time"
+    - "We found that playing together helped us understand what our kids actually enjoy about gaming"
+- label: parent-child connection
+  description: Building deeper relationships with kids, quality time, emotional bonding, communication, understanding your children
+  exemplars:
+    - "The best conversations happen when we're doing something together, not sitting face-to-face"
+    - "Following their interests, even when they seem silly to us, opens up real connection"
 
 voice:
   persona: warm, practical, experience-based but evidence-informed

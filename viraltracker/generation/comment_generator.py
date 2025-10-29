@@ -588,3 +588,60 @@ def _build_why_rationale(scoring_result: ScoringResult, tweet: Optional[TweetMet
         return result
     else:
         return f"score {scoring_result.total_score:.2f}"
+
+
+def save_scores_only_to_db(
+    project_id: str,
+    tweet_id: str,
+    scoring_result: ScoringResult,
+    tweet: Optional[TweetMetrics] = None
+) -> str:
+    """
+    Save tweet scores to database without generating comments.
+
+    This is used when --skip-comments flag is set during scraping.
+    It allows scores to be saved for later comment generation using
+    the generate-comments command with --greens-only filter.
+
+    Args:
+        project_id: Project UUID
+        tweet_id: Tweet ID
+        scoring_result: Scoring result with scores and label
+        tweet: Optional tweet metrics for enhanced rationale
+
+    Returns:
+        Generated comment ID (placeholder record)
+    """
+    db = get_supabase_client()
+
+    # Build "why" rationale
+    why = _build_why_rationale(scoring_result, tweet)
+
+    # Create a placeholder record with scores but no comment text
+    # Use 'add_value' type as placeholder (empty comment_text marks it as score-only)
+    record = {
+        'project_id': project_id,
+        'tweet_id': tweet_id,
+        'suggestion_type': 'add_value',  # Use existing type (empty comment_text marks as score-only)
+        'comment_text': '',  # Empty string marks this as a score-only record
+        'score_total': scoring_result.total_score,
+        'label': scoring_result.label,
+        'topic': scoring_result.best_topic,
+        'why': why,
+        'rank': 1,
+        'review_status': 'pending',
+        'status': 'pending',
+        'api_cost_usd': 0.0  # No API cost for score-only records
+    }
+
+    # Upsert to generated_comments table
+    result = db.table('generated_comments').upsert(
+        [record],
+        on_conflict='project_id,tweet_id,suggestion_type'
+    ).execute()
+
+    comment_id = result.data[0]['id'] if result.data else None
+
+    logger.info(f"Saved scores for tweet {tweet_id} (label: {scoring_result.label}, score: {scoring_result.total_score:.3f})")
+
+    return comment_id

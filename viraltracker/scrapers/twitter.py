@@ -102,7 +102,7 @@ class TwitterScraper:
         language: str = "en",
         project_slug: Optional[str] = None,
         timeout: int = 300
-    ) -> Tuple[int, int]:
+    ) -> Dict:
         """
         Search Twitter by keywords/hashtags
 
@@ -126,7 +126,11 @@ class TwitterScraper:
             timeout: Apify timeout in seconds
 
         Returns:
-            Tuple of (terms_count, tweets_count)
+            Dict with keys:
+                - terms_count: Number of search terms
+                - tweets_count: Number of tweets scraped
+                - apify_run_id: Apify actor run ID (single batch only)
+                - apify_dataset_id: Apify dataset ID (single batch only)
         """
         if max_tweets < 50:
             raise ValueError("Minimum 50 tweets required per query (actor limitation)")
@@ -151,6 +155,8 @@ class TwitterScraper:
         # Batch queries (max 5 per run)
         all_tweets = []
         batch_size = 5
+        last_run_id = None
+        last_dataset_id = None
 
         for i in range(0, len(queries), batch_size):
             batch = queries[i:i + batch_size]
@@ -170,9 +176,18 @@ class TwitterScraper:
 
             all_tweets.extend(items)
 
+            # Store IDs (for single batch scenarios)
+            last_run_id = run_id
+            last_dataset_id = result['datasetId']
+
         if not all_tweets:
             logger.warning("No tweets found")
-            return (len(search_terms), 0)
+            return {
+                'terms_count': len(search_terms),
+                'tweets_count': 0,
+                'apify_run_id': last_run_id,
+                'apify_dataset_id': last_dataset_id
+            }
 
         # Normalize to DataFrame
         df = self._normalize_tweets(all_tweets)
@@ -186,7 +201,12 @@ class TwitterScraper:
 
         post_ids = self.save_posts_to_db(df, project_id=project_id, import_source="search")
 
-        return (len(search_terms), len(post_ids))
+        return {
+            'terms_count': len(search_terms),
+            'tweets_count': len(post_ids),
+            'apify_run_id': last_run_id,
+            'apify_dataset_id': last_dataset_id
+        }
 
     def scrape_accounts(
         self,
