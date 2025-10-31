@@ -1253,5 +1253,168 @@ def analyze_search_term(
         raise click.Abort()
 
 
+@twitter_group.command(name="find-outliers")
+@click.option('--project', '-p', required=True, help='Project slug')
+@click.option('--days-back', default=30, type=int, help='Look back N days (default: 30)')
+@click.option('--min-views', default=100, type=int, help='Minimum view count (default: 100)')
+@click.option('--min-likes', default=0, type=int, help='Minimum like count (default: 0)')
+@click.option('--method', type=click.Choice(['zscore', 'percentile']), default='zscore', help='Detection method (default: zscore)')
+@click.option('--threshold', default=2.0, type=float, help='Z-score threshold (e.g., 2.0) or percentile (e.g., 5.0 for top 5%)')
+@click.option('--trim-percent', default=10.0, type=float, help='Trim percent for z-score method (default: 10%)')
+@click.option('--time-decay/--no-time-decay', default=False, help='Apply time decay weighting (recent tweets weighted higher)')
+@click.option('--decay-halflife', default=7, type=int, help='Half-life for time decay in days (default: 7)')
+@click.option('--export-json', help='Export outlier report to JSON file (optional)')
+def find_outliers(
+    project: str,
+    days_back: int,
+    min_views: int,
+    min_likes: int,
+    method: str,
+    threshold: float,
+    trim_percent: float,
+    time_decay: bool,
+    decay_halflife: int,
+    export_json: Optional[str]
+):
+    """
+    Find outlier tweets using statistical analysis
+
+    Identifies high-performing tweets that stand out from the baseline using either:
+    - Z-score: Tweets N standard deviations above the trimmed mean
+    - Percentile: Top N% of tweets by engagement
+
+    These outliers can be analyzed to understand what makes them viral and adapted
+    for long-form content generation.
+
+    Examples:
+        # Find outliers using z-score (2 SD above mean)
+        vt twitter find-outliers --project my-project --days-back 30
+
+        # Find top 5% by engagement
+        vt twitter find-outliers -p my-project --method percentile --threshold 5.0
+
+        # With time decay (recent tweets weighted higher)
+        vt twitter find-outliers -p my-project --time-decay --decay-halflife 7
+
+        # Export to JSON
+        vt twitter find-outliers -p my-project --export-json outliers.json
+    """
+    try:
+        from ..generation.outlier_detector import OutlierDetector
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🔍 Outlier Detection")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Project: {project}")
+        click.echo(f"Time window: last {days_back} days")
+        click.echo(f"Filters: {min_views:,}+ views, {min_likes:,}+ likes")
+        click.echo(f"Method: {method}")
+
+        if method == 'zscore':
+            click.echo(f"Threshold: {threshold} standard deviations")
+            click.echo(f"Trim percent: {trim_percent}%")
+        else:
+            click.echo(f"Threshold: top {threshold}%")
+
+        if time_decay:
+            click.echo(f"Time decay: enabled (half-life: {decay_halflife} days)")
+
+        click.echo()
+
+        # Initialize detector
+        try:
+            detector = OutlierDetector(project_slug=project)
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            raise click.Abort()
+
+        # Find outliers
+        click.echo("🔍 Analyzing tweets...")
+        outliers = detector.find_outliers(
+            days_back=days_back,
+            min_views=min_views,
+            min_likes=min_likes,
+            method=method,
+            threshold=threshold,
+            trim_percent=trim_percent,
+            time_decay=time_decay,
+            decay_halflife_days=decay_halflife
+        )
+
+        if not outliers:
+            click.echo(f"\n⚠️  No outliers found")
+            click.echo(f"\n💡 Try:")
+            click.echo(f"   - Lowering threshold (--threshold)")
+            click.echo(f"   - Increasing time window (--days-back)")
+            click.echo(f"   - Lowering filters (--min-views, --min-likes)")
+            return
+
+        # Display results
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📊 Outlier Results")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Found {len(outliers)} outliers:\n")
+
+        # Show top 10
+        for i, result in enumerate(outliers[:10], 1):
+            tweet = result.tweet
+            click.echo(f"[{i}] Rank {result.rank} (Top {result.rank_percentile:.1f}%)")
+            click.echo(f"    Tweet: {tweet.tweet_id}")
+            click.echo(f"    URL: https://twitter.com/i/status/{tweet.tweet_id}")
+            click.echo(f"    Author: @{tweet.author_handle} ({tweet.author_followers:,} followers)")
+            click.echo(f"    Posted: {tweet.posted_at.strftime('%Y-%m-%d %H:%M')}")
+            click.echo(f"    Metrics: {tweet.views:,} views, {tweet.likes:,} likes, {tweet.retweets:,} retweets")
+            click.echo(f"    Engagement rate: {tweet.engagement_rate:.4f}")
+            click.echo(f"    Z-score: {result.z_score:.2f}, Percentile: {result.percentile:.1f}%")
+
+            # Show tweet text (truncated)
+            text_preview = tweet.text[:100] + "..." if len(tweet.text) > 100 else tweet.text
+            click.echo(f"    Text: \"{text_preview}\"")
+            click.echo()
+
+        if len(outliers) > 10:
+            click.echo(f"... and {len(outliers) - 10} more outliers\n")
+
+        # Export if requested
+        if export_json:
+            click.echo(f"📄 Exporting report to JSON...")
+            report = detector.export_report(outliers, export_json)
+            click.echo(f"   ✓ Saved to {export_json}")
+            click.echo()
+
+        # Summary
+        click.echo(f"{'='*60}")
+        click.echo(f"✅ Analysis Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Total outliers: {len(outliers)}")
+
+        # Show engagement distribution
+        avg_views = sum(r.tweet.views for r in outliers) / len(outliers)
+        avg_likes = sum(r.tweet.likes for r in outliers) / len(outliers)
+        avg_engagement_rate = sum(r.tweet.engagement_rate for r in outliers) / len(outliers)
+
+        click.echo(f"   Average views: {avg_views:,.0f}")
+        click.echo(f"   Average likes: {avg_likes:,.0f}")
+        click.echo(f"   Average engagement rate: {avg_engagement_rate:.4f}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Analyze hooks: Review what makes these tweets viral")
+        click.echo(f"   - Generate content: vt twitter generate-content --source-tweets {export_json if export_json else 'from-db'}")
+        click.echo(f"   - Export list: Use --export-json to save outliers for later use")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Outlier detection failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
 # Export the command group
 twitter = twitter_group
