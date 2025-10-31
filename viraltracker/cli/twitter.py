@@ -1425,5 +1425,157 @@ def find_outliers(
         raise click.Abort()
 
 
+@twitter_group.command(name="analyze-hooks")
+@click.option('--input-json', required=True, help='Input JSON file from find-outliers command')
+@click.option('--output-json', required=True, help='Output JSON file for hook analysis results')
+@click.option('--limit', type=int, help='Limit analysis to first N tweets (optional)')
+def analyze_hooks(
+    input_json: str,
+    output_json: str,
+    limit: Optional[int]
+):
+    """
+    Analyze hooks from outlier tweets using AI
+
+    Takes the JSON export from find-outliers and analyzes what makes each
+    tweet viral. Classifies hook types, emotional triggers, and content patterns.
+
+    Examples:
+        # Analyze hooks from outliers
+        vt twitter analyze-hooks \\
+          --input-json outliers.json \\
+          --output-json hook_analysis.json
+
+        # Analyze only top 5
+        vt twitter analyze-hooks \\
+          --input-json outliers.json \\
+          --output-json hook_analysis.json \\
+          --limit 5
+    """
+    try:
+        import json
+        from ..generation.hook_analyzer import HookAnalyzer
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🎣 Hook Analysis")
+        click.echo(f"{'='*60}\n")
+
+        # Load outliers
+        click.echo(f"📂 Loading outliers from {input_json}...")
+        try:
+            with open(input_json, 'r', encoding='utf-8') as f:
+                outliers_data = json.load(f)
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: File not found: {input_json}", err=True)
+            raise click.Abort()
+        except json.JSONDecodeError:
+            click.echo(f"\n❌ Error: Invalid JSON file: {input_json}", err=True)
+            raise click.Abort()
+
+        outliers = outliers_data.get('outliers', [])
+        if not outliers:
+            click.echo(f"\n⚠️  No outliers found in input file", err=True)
+            raise click.Abort()
+
+        total_count = len(outliers)
+        click.echo(f"   ✓ Loaded {total_count} outliers")
+
+        # Apply limit if specified
+        if limit:
+            outliers = outliers[:limit]
+            click.echo(f"   ✓ Limited to {len(outliers)} tweets")
+
+        click.echo()
+
+        # Initialize analyzer
+        click.echo("🤖 Initializing AI hook analyzer...")
+        try:
+            analyzer = HookAnalyzer()
+            click.echo("   ✓ Hook analyzer ready (using Gemini 2.0 Flash)")
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            click.echo("   Make sure GOOGLE_API_KEY is set in your environment", err=True)
+            raise click.Abort()
+
+        click.echo()
+
+        # Analyze hooks
+        click.echo(f"🔍 Analyzing {len(outliers)} tweet hooks...")
+        click.echo()
+
+        analyses = []
+        for i, outlier in enumerate(outliers, 1):
+            tweet_text = outlier.get('text', '')
+            tweet_id = outlier.get('tweet_id', '')
+
+            click.echo(f"[{i}/{len(outliers)}] Analyzing tweet {tweet_id[:12]}...")
+
+            try:
+                analysis = analyzer.analyze_hook(tweet_text)
+
+                # Display result
+                click.echo(f"   Hook: {analysis.hook_type} ({analysis.hook_type_confidence:.0%} confidence)")
+                click.echo(f"   Emotion: {analysis.emotional_trigger}")
+                click.echo(f"   Pattern: {analysis.content_pattern}")
+                click.echo(f"   Why it works: {analysis.hook_explanation[:80]}...")
+                click.echo()
+
+                analyses.append(analysis)
+
+            except Exception as e:
+                click.echo(f"   ✗ Analysis failed: {e}")
+                click.echo()
+                continue
+
+        if not analyses:
+            click.echo(f"\n⚠️  No successful analyses", err=True)
+            raise click.Abort()
+
+        # Export results
+        click.echo(f"\n📄 Exporting hook analysis...")
+        analyzer.export_analysis(analyses, output_json)
+        click.echo(f"   ✓ Saved to {output_json}")
+
+        # Summary statistics
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Analysis Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Total analyzed: {len(analyses)}")
+
+        # Count hook types
+        from collections import Counter
+        hook_types = Counter(a.hook_type for a in analyses)
+        emotional_triggers = Counter(a.emotional_trigger for a in analyses)
+        content_patterns = Counter(a.content_pattern for a in analyses)
+
+        click.echo(f"\n   Top hook types:")
+        for hook_type, count in hook_types.most_common(3):
+            click.echo(f"   - {hook_type}: {count}")
+
+        click.echo(f"\n   Top emotional triggers:")
+        for trigger, count in emotional_triggers.most_common(3):
+            click.echo(f"   - {trigger}: {count}")
+
+        click.echo(f"\n   Top content patterns:")
+        for pattern, count in content_patterns.most_common(3):
+            click.echo(f"   - {pattern}: {count}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review analysis: {output_json}")
+        click.echo(f"   - Adapt hooks: Use insights for content generation")
+        click.echo(f"   - Generate content: vt twitter generate-content (Phase 3)")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Hook analysis failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
 # Export the command group
 twitter = twitter_group
