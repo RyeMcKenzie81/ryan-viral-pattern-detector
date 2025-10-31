@@ -115,7 +115,8 @@ class OutlierDetector:
         threshold: float = 2.0,
         trim_percent: float = 10.0,
         time_decay: bool = False,
-        decay_halflife_days: int = 7
+        decay_halflife_days: int = 7,
+        text_only: bool = False
     ) -> List[OutlierResult]:
         """
         Find outlier tweets using statistical methods
@@ -129,13 +130,14 @@ class OutlierDetector:
             trim_percent: Percent to trim from each end before computing mean/std (default: 10%)
             time_decay: Apply time decay weighting (recent tweets weighted higher)
             decay_halflife_days: Half-life for time decay in days
+            text_only: Exclude video and image posts (text-only tweets)
 
         Returns:
             List of OutlierResult objects, sorted by engagement score
         """
         # Fetch tweets
         logger.info(f"Fetching tweets for project '{self.project_slug}' (last {days_back} days)")
-        tweets = self._fetch_tweets(days_back, min_views, min_likes)
+        tweets = self._fetch_tweets(days_back, min_views, min_likes, text_only)
 
         if not tweets:
             logger.warning("No tweets found matching criteria")
@@ -178,7 +180,8 @@ class OutlierDetector:
         self,
         days_back: int,
         min_views: int,
-        min_likes: int
+        min_likes: int,
+        text_only: bool = False
     ) -> List[TweetMetrics]:
         """
         Fetch tweets from database
@@ -187,6 +190,7 @@ class OutlierDetector:
             days_back: Look back N days
             min_views: Minimum view count
             min_likes: Minimum like count
+            text_only: Exclude video and image posts
 
         Returns:
             List of TweetMetrics
@@ -194,14 +198,18 @@ class OutlierDetector:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
 
         # Query posts linked to this project
-        result = self.db.table('posts') \
+        query = self.db.table('posts') \
             .select('*, accounts!inner(platform_username, follower_count), project_posts!inner(project_id)') \
             .eq('project_posts.project_id', self.project_id) \
             .gte('posted_at', cutoff.isoformat()) \
             .gte('views', min_views) \
-            .gte('likes', min_likes) \
-            .order('posted_at', desc=True) \
-            .execute()
+            .gte('likes', min_likes)
+
+        # Filter for text-only if requested
+        if text_only:
+            query = query.eq('media_type', 'text')
+
+        result = query.order('posted_at', desc=True).execute()
 
         if not result.data:
             return []

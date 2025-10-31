@@ -1263,6 +1263,7 @@ def analyze_search_term(
 @click.option('--trim-percent', default=10.0, type=float, help='Trim percent for z-score method (default: 10%)')
 @click.option('--time-decay/--no-time-decay', default=False, help='Apply time decay weighting (recent tweets weighted higher)')
 @click.option('--decay-halflife', default=7, type=int, help='Half-life for time decay in days (default: 7)')
+@click.option('--text-only', is_flag=True, help='Exclude video/image posts (text-only tweets for content adaptation)')
 @click.option('--export-json', help='Export outlier report to JSON file (optional)')
 def find_outliers(
     project: str,
@@ -1274,6 +1275,7 @@ def find_outliers(
     trim_percent: float,
     time_decay: bool,
     decay_halflife: int,
+    text_only: bool,
     export_json: Optional[str]
 ):
     """
@@ -1292,6 +1294,9 @@ def find_outliers(
 
         # Find top 5% by engagement
         vt twitter find-outliers -p my-project --method percentile --threshold 5.0
+
+        # Text-only tweets (exclude video/images for content adaptation)
+        vt twitter find-outliers -p my-project --text-only
 
         # With time decay (recent tweets weighted higher)
         vt twitter find-outliers -p my-project --time-decay --decay-halflife 7
@@ -1320,6 +1325,9 @@ def find_outliers(
         if time_decay:
             click.echo(f"Time decay: enabled (half-life: {decay_halflife} days)")
 
+        if text_only:
+            click.echo(f"Media filter: text-only (excluding video/image posts)")
+
         click.echo()
 
         # Initialize detector
@@ -1339,7 +1347,8 @@ def find_outliers(
             threshold=threshold,
             trim_percent=trim_percent,
             time_decay=time_decay,
-            decay_halflife_days=decay_halflife
+            decay_halflife_days=decay_halflife,
+            text_only=text_only
         )
 
         if not outliers:
