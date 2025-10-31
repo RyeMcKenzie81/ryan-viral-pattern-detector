@@ -600,6 +600,101 @@ Time savings: ~5 seconds per run
 - Manual posting (no Twitter API integration)
 - No learning from user feedback
 
+### Comment Opportunity Finder V1.7 (SHIPPED!)
+
+**Status**: ✅ V1.7.1 complete - **Two-Pass Workflow with Min-Views Filtering**
+
+**Release Date**: 2025-10-30
+
+**Big Win**: Two-pass workflow separates scoring from comment generation, enabling cost-effective batch processing at scale!
+
+**📖 Complete Documentation**: See [TWITTER_WORKFLOW_V17_UPDATED.md](TWITTER_WORKFLOW_V17_UPDATED.md) for full workflow details.
+
+#### V1.7 Two-Pass Workflow
+
+**Problem Solved**: Previous versions re-scored all tweets when generating comments, wasting time and potentially producing inconsistent results.
+
+**V1.7 Solution**: Separate scoring from comment generation in a two-pass approach.
+
+**Three-Step Workflow:**
+
+```bash
+# Step 1: Scrape & Score (45-60 min, $0)
+# - Scrape 19 keywords × 500 tweets = 9,500 tweets
+# - Score ALL tweets with 5-topic taxonomy
+# - Save scores to database (comment_text = '')
+# - NO comment generation yet
+./scrape_all_keywords_24h.sh  # First part of script
+
+# Step 2: Generate Comments (10-15 min, ~$0.50-1.00)
+# - Query saved greens from database
+# - NO re-scoring (uses saved labels)
+# - Filter by min-views (default: 50)
+# - Generate 3-5 comment suggestions per green
+# - Batch mode: 5 concurrent API requests
+python -m viraltracker.cli.main twitter generate-comments \
+  --project yakety-pack-instagram \
+  --hours-back 24 \
+  --use-saved-scores \
+  --max-candidates 10000 \
+  --min-views 50 \
+  --batch-size 5
+
+# Step 3: Export to CSV (<1 min, $0)
+# - Export greens with comments to timestamped CSV
+# - Auto-update status to 'exported'
+export_date=$(date +%Y-%m-%d)
+python -m viraltracker.cli.main twitter export-comments \
+  --project yakety-pack-instagram \
+  --out ~/Downloads/yakety-pack-instagram-24h-${export_date}.csv \
+  --hours-back 24 \
+  --status pending \
+  --label green \
+  --sort-by balanced
+```
+
+#### V1.7.1 New Features (October 30, 2025)
+
+**1. Min-Views Filtering** ✅
+- `--min-views` parameter filters low-reach tweets
+- Default: 0 (no filtering), Recommended: 50 views
+- Prevents wasting resources on tweets that won't generate impressions
+- Example: 66 greens → 54 remaining after filtering <50 views
+
+**2. Timestamped Export Filenames** ✅
+- Old format: `keyword_greens_24h.csv` (gets overwritten)
+- New format: `{project}-{timeframe}-{date}.csv`
+- Example: `yakety-pack-instagram-24h-2025-10-30.csv`
+- Better organization and prevents overwriting previous exports
+
+**3. Status Lifecycle Management** ✅
+- Status progression: `pending` → `exported` → `posted`
+- Auto-updates status after export to prevent duplicate exports
+- Query by status: `--status pending`, `--status exported`, `--status posted`
+
+**4. Score-Only Records** ✅
+- Database marker: `comment_text = ''` for scores without comments
+- Enables two-pass workflow
+- Query saved scores: `WHERE label = 'green' AND comment_text = ''`
+
+#### V1.7 Key Benefits
+
+- ✅ **Faster**: No re-scoring when generating comments
+- ✅ **Consistent**: Same scores used throughout workflow
+- ✅ **Cost-effective**: Score 10,000 tweets for $0, only pay for comment generation
+- ✅ **Flexible**: Generate comments on-demand for saved greens
+- ✅ **Scalable**: Process 150-250 greens with comments in 10-15 minutes
+- ✅ **Production-ready**: Complete end-to-end workflow tested
+
+#### V1.7 Real-World Performance
+
+**Test Run (Oct 30, 2025)**:
+- **Step 1**: 19 keywords × 500 tweets = 9,500 tweets scored → 66 greens found
+- **Step 2**: 66 greens → 54 after min-views filter → 243 suggestions generated
+- **Step 3**: Exported to `yakety-pack-instagram-24h-2025-10-30.csv`
+- **Total cost**: ~$0.50-1.00 (Step 2 only, Steps 1 & 3 are free)
+- **Total time**: ~60-75 minutes (fully automated)
+
 ### Comment Opportunity Finder V1.2 (SHIPPED!)
 
 **Status**: ✅ V1.2 Feature 3.1 complete - **Async Batch Generation (5x Speed Improvement)**
@@ -1006,6 +1101,46 @@ Historical documentation is available in `docs/archive/`.
 ---
 
 ## Changelog
+
+### 2025-10-30 - Comment Finder V1.7 SHIPPED! 🚀
+- ✅ **Added:** Two-Pass Workflow - Separate scoring from comment generation
+  - `--use-saved-scores` flag queries pre-scored greens from database
+  - `--skip-comments` flag in analyze-search-term saves scores without comments
+  - Score-only records marked with `comment_text = ''`
+  - Enables cost-effective batch processing at scale
+- ✅ **Added:** Min-Views Filtering (V1.7.1)
+  - `--min-views` parameter filters low-reach tweets (default: 0, recommended: 50)
+  - Multi-level filtering (database query + post-query)
+  - Example: 66 greens → 54 after filtering <50 views
+  - Prevents wasting resources on low-impression tweets
+- ✅ **Added:** Timestamped Export Filenames (V1.7.1)
+  - New format: `{project}-{timeframe}-{date}.csv`
+  - Example: `yakety-pack-instagram-24h-2025-10-30.csv`
+  - Prevents overwriting previous exports
+  - Better file organization
+- ✅ **Added:** Status Lifecycle Management (V1.7.1)
+  - Status progression: `pending` → `exported` → `posted`
+  - Auto-update status after export
+  - Query by status: `--status pending/exported/posted`
+  - Prevents duplicate exports
+- ✅ **Added:** Time-Based Filtering for Exports
+  - `--hours-back` parameter for export-comments command
+  - Filter exported greens by time range
+  - Removed 200 limit on exports (export all by default)
+- ✅ **Enhanced:** Production Script (`scrape_all_keywords_24h.sh`)
+  - Complete 3-step workflow automation
+  - Step 1: Scrape & score 19 keywords (45-60 min, $0)
+  - Step 2: Generate comments with saved scores (10-15 min, ~$0.50-1.00)
+  - Step 3: Export to timestamped CSV (<1 min, $0)
+- ✅ **Files Modified:**
+  - `viraltracker/cli/twitter.py` (added --min-views, --use-saved-scores, --hours-back)
+  - `viraltracker/generation/tweet_fetcher.py` (added min_views filtering)
+  - `scrape_all_keywords_24h.sh` (updated for V1.7 workflow)
+- ✅ **Documentation:**
+  - `TWITTER_WORKFLOW_V17_UPDATED.md` - Complete V1.7 workflow documentation
+  - `WORKFLOW_SAVED_SCORES_V17.md` - Original V1.7 technical docs
+  - `CHECKPOINT_V17_COMPLETE_WORKFLOW.md` - Testing checkpoint
+  - Updated README with V1.7 section
 
 ### 2025-10-22 - Comment Finder V1.2 SHIPPED! 🚀
 - ✅ **Added:** Async Batch Generation (Feature 3.1) - **5x Speed Improvement!**

@@ -396,10 +396,12 @@ def twitter_search(
 @click.option('--hours-back', default=6, type=int, help='Look back N hours for tweets (default: 6)')
 @click.option('--min-followers', default=1000, type=int, help='Minimum author followers (default: 1000)')
 @click.option('--min-likes', default=0, type=int, help='Minimum tweet likes (default: 0)')
+@click.option('--min-views', default=0, type=int, help='Minimum tweet views (default: 0)')
 @click.option('--max-candidates', default=150, type=int, help='Max tweets to process (default: 150)')
 @click.option('--use-gate/--no-use-gate', default=True, help='Apply gate filtering (default: True)')
 @click.option('--skip-low-scores/--no-skip-low-scores', default=True, help='Only generate for green/yellow (default: True)')
 @click.option('--greens-only', is_flag=True, help='Only generate for greens (overrides --skip-low-scores)')
+@click.option('--use-saved-scores', is_flag=True, help='Use scores already saved in database (skips re-scoring)')
 @click.option('--batch-size', default=5, type=int, help='Number of concurrent requests (default: 5, V1.2)')
 @click.option('--no-batch', is_flag=True, help='Disable batch processing (use sequential, V1.2)')
 def generate_comments(
@@ -407,10 +409,12 @@ def generate_comments(
     hours_back: int,
     min_followers: int,
     min_likes: int,
+    min_views: int,
     max_candidates: int,
     use_gate: bool,
     skip_low_scores: bool,
     greens_only: bool,
+    use_saved_scores: bool,
     batch_size: int,
     no_batch: bool
 ):
@@ -439,7 +443,7 @@ def generate_comments(
 
         click.echo(f"Project: {project}")
         click.echo(f"Time window: last {hours_back} hours")
-        click.echo(f"Filters: {min_followers:,}+ followers, {min_likes:,}+ likes")
+        click.echo(f"Filters: {min_followers:,}+ followers, {min_likes:,}+ likes, {min_views:,}+ views")
         click.echo(f"Max candidates: {max_candidates}")
         click.echo(f"Gate filtering: {'enabled' if use_gate else 'disabled'}")
 
@@ -482,28 +486,7 @@ def generate_comments(
 
         click.echo(f"   ✓ Ready with {len(taxonomy_embeddings)} taxonomy embeddings")
 
-        # Fetch recent tweets
-        click.echo(f"\n🔍 Fetching recent tweets...")
-        tweets = fetch_recent_tweets(
-            project_slug=project,
-            hours_back=hours_back,
-            min_followers=min_followers,
-            min_likes=min_likes,
-            max_candidates=max_candidates,
-            require_english=True
-        )
-
-        if not tweets:
-            click.echo(f"\n⚠️  No tweets found matching criteria")
-            click.echo(f"\n💡 Try:")
-            click.echo(f"   - Increasing --hours-back")
-            click.echo(f"   - Lowering --min-followers or --min-likes")
-            click.echo(f"   - Running: vt twitter search to collect more data")
-            return
-
-        click.echo(f"   ✓ Found {len(tweets)} candidate tweets")
-
-        # Get project ID (needed for semantic dedup - V1.1)
+        # Get project ID first (needed for both workflows)
         db = get_supabase_client()
         project_result = db.table('projects').select('id').eq('slug', project).single().execute()
         if not project_result.data:
@@ -512,75 +495,181 @@ def generate_comments(
 
         project_id = project_result.data['id']
 
-        # Embed tweets
-        click.echo(f"\n🔢 Embedding tweets...")
-        tweet_texts = [t.text for t in tweets]
-        tweet_embeddings = embedder.embed_texts(tweet_texts, task_type="RETRIEVAL_DOCUMENT")
-        click.echo(f"   ✓ Embedded {len(tweet_embeddings)} tweets")
+        # V1.7: Use saved scores workflow
+        if use_saved_scores:
+            click.echo(f"\n💾 Using saved scores from database (skipping re-scoring)...")
 
-        # V1.1: Check for semantic duplicates
-        click.echo(f"\n🔍 Checking for semantic duplicates...")
-        is_duplicate = check_semantic_duplicates(project_id, tweet_embeddings)
-        duplicate_count = sum(is_duplicate)
+            # Query for score-only green records from generated_comments table
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
-        if duplicate_count > 0:
-            click.echo(f"   ✓ Found {duplicate_count} duplicates (similarity > {SIMILARITY_THRESHOLD})")
-            click.echo(f"   - Will skip {duplicate_count} tweets to save API costs")
+            click.echo(f"   Querying greens from last {hours_back} hours...")
+            result = db.table('generated_comments') \
+                .select('*, posts!inner(*)') \
+                .eq('project_id', project_id) \
+                .eq('label', 'green') \
+                .eq('comment_text', '') \
+                .gte('created_at', cutoff.isoformat()) \
+                .limit(max_candidates) \
+                .execute()
+
+            if not result.data:
+                click.echo(f"\n⚠️  No saved green scores found in last {hours_back} hours")
+                click.echo(f"\n💡 Try:")
+                click.echo(f"   - Running without --use-saved-scores to score fresh tweets")
+                click.echo(f"   - Increasing --hours-back")
+                return
+
+            click.echo(f"   ✓ Found {len(result.data)} saved green scores")
+
+            # Convert database records to TweetMetrics objects and ScoringResult objects
+            from viraltracker.generation.comment_finder import TweetMetrics, ScoringResult
+            from datetime import datetime
+
+            scored_tweets = []
+            for record in result.data:
+                post_data = record['posts']
+
+                # Parse posted_at string to datetime object
+                posted_at = post_data['posted_at']
+                if isinstance(posted_at, str):
+                    # Remove 'Z' suffix and parse as ISO format
+                    posted_at = datetime.fromisoformat(posted_at.replace('Z', '+00:00'))
+
+                # Create TweetMetrics object
+                tweet = TweetMetrics(
+                    tweet_id=post_data['post_id'],
+                    text=post_data['caption'],
+                    author_handle=post_data.get('author_username', 'unknown'),
+                    author_followers=post_data.get('follower_count', 0),
+                    tweeted_at=posted_at,
+                    likes=post_data.get('likes', 0),
+                    replies=post_data.get('replies', 0),
+                    retweets=post_data.get('retweets', 0),
+                    views=post_data.get('views', 0)
+                )
+
+                # Create ScoringResult from saved data
+                scoring_result = ScoringResult(
+                    tweet_id=tweet.tweet_id,
+                    velocity=record.get('velocity_score', 0.0),
+                    relevance=record.get('relevance_score', 0.0),
+                    openness=record.get('openness_score', 0.0),
+                    author_quality=record.get('author_quality_score', 0.0),
+                    total_score=record.get('tweet_score', 0.5),
+                    label=record['label'],
+                    best_topic=record.get('best_topic_name', 'Unknown'),
+                    best_topic_similarity=record.get('best_topic_similarity', 0.0),
+                    passed_gate=True,
+                    gate_reason=None
+                )
+
+                scored_tweets.append((tweet, scoring_result))
+
+            # Filter by min_views if specified
+            if min_views > 0:
+                before_count = len(scored_tweets)
+                scored_tweets = [(t, s) for t, s in scored_tweets if t.views >= min_views]
+                filtered_count = before_count - len(scored_tweets)
+                if filtered_count > 0:
+                    click.echo(f"\n   ⚠️  Filtered out {filtered_count} tweets with <{min_views} views")
+
+            click.echo(f"\n   Score distribution:")
+            click.echo(f"   - 🟢 Green ({len(scored_tweets)})")
+
         else:
-            click.echo(f"   ✓ No duplicates found")
+            # Original workflow: fetch and score tweets
+            # Fetch recent tweets
+            click.echo(f"\n🔍 Fetching recent tweets...")
+            tweets = fetch_recent_tweets(
+                project_slug=project,
+                hours_back=hours_back,
+                min_followers=min_followers,
+                min_likes=min_likes,
+                min_views=min_views,
+                max_candidates=max_candidates,
+                require_english=True
+            )
 
-        # Filter out duplicates
-        tweets_filtered = [(tweet, emb) for tweet, emb, is_dup in zip(tweets, tweet_embeddings, is_duplicate) if not is_dup]
+            if not tweets:
+                click.echo(f"\n⚠️  No tweets found matching criteria")
+                click.echo(f"\n💡 Try:")
+                click.echo(f"   - Increasing --hours-back")
+                click.echo(f"   - Lowering --min-followers, --min-likes, or --min-views")
+                click.echo(f"   - Running: vt twitter search to collect more data")
+                return
 
-        if not tweets_filtered:
-            click.echo(f"\n⚠️  All tweets are duplicates - nothing to process")
-            return
+            click.echo(f"   ✓ Found {len(tweets)} candidate tweets")
 
-        if duplicate_count > 0:
-            click.echo(f"   - Processing {len(tweets_filtered)} unique tweets")
+            # Embed tweets
+            click.echo(f"\n🔢 Embedding tweets...")
+            tweet_texts = [t.text for t in tweets]
+            tweet_embeddings = embedder.embed_texts(tweet_texts, task_type="RETRIEVAL_DOCUMENT")
+            click.echo(f"   ✓ Embedded {len(tweet_embeddings)} tweets")
 
-        # Unpack filtered tweets and embeddings
-        tweets = [t for t, _ in tweets_filtered]
-        tweet_embeddings = [e for _, e in tweets_filtered]
+            # V1.1: Check for semantic duplicates
+            click.echo(f"\n🔍 Checking for semantic duplicates...")
+            is_duplicate = check_semantic_duplicates(project_id, tweet_embeddings)
+            duplicate_count = sum(is_duplicate)
 
-        # Score tweets
-        click.echo(f"\n📊 Scoring tweets...")
-        scored_tweets = []
+            if duplicate_count > 0:
+                click.echo(f"   ✓ Found {duplicate_count} duplicates (similarity > {SIMILARITY_THRESHOLD})")
+                click.echo(f"   - Will skip {duplicate_count} tweets to save API costs")
+            else:
+                click.echo(f"   ✓ No duplicates found")
 
-        for tweet, embedding in zip(tweets, tweet_embeddings):
-            result = score_tweet(tweet, embedding, taxonomy_embeddings, config, use_gate=use_gate)
-            scored_tweets.append((tweet, result))
+            # Filter out duplicates
+            tweets_filtered = [(tweet, emb) for tweet, emb, is_dup in zip(tweets, tweet_embeddings, is_duplicate) if not is_dup]
 
-        # Filter by gate
-        if use_gate:
-            passed_gate = [(t, r) for t, r in scored_tweets if r.passed_gate]
-            click.echo(f"   ✓ Scored {len(scored_tweets)} tweets")
-            click.echo(f"   - Passed gate: {len(passed_gate)}")
-            click.echo(f"   - Blocked: {len(scored_tweets) - len(passed_gate)}")
-            scored_tweets = passed_gate
-        else:
-            click.echo(f"   ✓ Scored {len(scored_tweets)} tweets (gate disabled)")
+            if not tweets_filtered:
+                click.echo(f"\n⚠️  All tweets are duplicates - nothing to process")
+                return
 
-        if not scored_tweets:
-            click.echo(f"\n⚠️  No tweets passed gate filtering")
-            return
+            if duplicate_count > 0:
+                click.echo(f"   - Processing {len(tweets_filtered)} unique tweets")
 
-        # Filter by score if requested
-        if greens_only:
-            greens = [(t, r) for t, r in scored_tweets if r.label == 'green']
-            click.echo(f"   - Greens: {len(greens)}")
-            click.echo(f"   - Yellow/Red (skipped): {len(scored_tweets) - len(greens)}")
-            scored_tweets = greens
-        elif skip_low_scores:
-            high_quality = [(t, r) for t, r in scored_tweets if r.label in ['green', 'yellow']]
-            click.echo(f"   - Green/Yellow: {len(high_quality)}")
-            click.echo(f"   - Red (skipped): {len(scored_tweets) - len(high_quality)}")
-            scored_tweets = high_quality
+            # Unpack filtered tweets and embeddings
+            tweets = [t for t, _ in tweets_filtered]
+            tweet_embeddings = [e for _, e in tweets_filtered]
 
-        if not scored_tweets:
-            click.echo(f"\n⚠️  No high-quality tweets found")
-            click.echo(f"\n💡 Try: --no-skip-low-scores to generate for all scores")
-            return
+            # Score tweets
+            click.echo(f"\n📊 Scoring tweets...")
+            scored_tweets = []
+
+            for tweet, embedding in zip(tweets, tweet_embeddings):
+                result = score_tweet(tweet, embedding, taxonomy_embeddings, config, use_gate=use_gate)
+                scored_tweets.append((tweet, result))
+
+            # Filter by gate
+            if use_gate:
+                passed_gate = [(t, r) for t, r in scored_tweets if r.passed_gate]
+                click.echo(f"   ✓ Scored {len(scored_tweets)} tweets")
+                click.echo(f"   - Passed gate: {len(passed_gate)}")
+                click.echo(f"   - Blocked: {len(scored_tweets) - len(passed_gate)}")
+                scored_tweets = passed_gate
+            else:
+                click.echo(f"   ✓ Scored {len(scored_tweets)} tweets (gate disabled)")
+
+            if not scored_tweets:
+                click.echo(f"\n⚠️  No tweets passed gate filtering")
+                return
+
+            # Filter by score if requested
+            if greens_only:
+                greens = [(t, r) for t, r in scored_tweets if r.label == 'green']
+                click.echo(f"   - Greens: {len(greens)}")
+                click.echo(f"   - Yellow/Red (skipped): {len(scored_tweets) - len(greens)}")
+                scored_tweets = greens
+            elif skip_low_scores:
+                high_quality = [(t, r) for t, r in scored_tweets if r.label in ['green', 'yellow']]
+                click.echo(f"   - Green/Yellow: {len(high_quality)}")
+                click.echo(f"   - Red (skipped): {len(scored_tweets) - len(high_quality)}")
+                scored_tweets = high_quality
+
+            if not scored_tweets:
+                click.echo(f"\n⚠️  No high-quality tweets found")
+                click.echo(f"\n💡 Try: --no-skip-low-scores to generate for all scores")
+                return
 
         # Show score distribution
         green_count = sum(1 for _, r in scored_tweets if r.label == 'green')
@@ -607,7 +696,11 @@ def generate_comments(
         click.echo()
 
         # Create a map of tweet to embedding for storage after generation
-        tweet_embedding_map = {tweet.tweet_id: emb for tweet, emb in zip(tweets, tweet_embeddings)}
+        # V1.7: For saved-scores workflow, we don't have embeddings (skipped scoring)
+        if use_saved_scores:
+            tweet_embedding_map = {}  # Empty map - no embeddings available
+        else:
+            tweet_embedding_map = {tweet.tweet_id: emb for tweet, emb in zip(tweets, tweet_embeddings)}
 
         success_count = 0
         safety_blocked_count = 0
@@ -711,14 +804,16 @@ def generate_comments(
 @twitter_group.command(name="export-comments")
 @click.option('--project', '-p', required=True, help='Project slug')
 @click.option('--out', '-o', required=True, help='Output CSV file path')
-@click.option('--limit', default=200, type=int, help='Max suggestions to export (default: 200)')
+@click.option('--limit', default=None, type=int, help='Max suggestions to export (default: all)')
+@click.option('--hours-back', default=None, type=int, help='Only export from last N hours (optional)')
 @click.option('--label', type=click.Choice(['green', 'yellow', 'red']), help='Filter by label (optional)')
 @click.option('--status', default='pending', help='Filter by status (default: pending)')
 @click.option('--sort-by', type=click.Choice(['score', 'views', 'balanced']), default='balanced', help='Sort method: score (quality), views (reach), balanced (score×√views) [default: balanced]')
 def export_comments(
     project: str,
     out: str,
-    limit: int,
+    limit: Optional[int],
+    hours_back: Optional[int],
     label: Optional[str],
     status: str,
     sort_by: str
@@ -759,7 +854,9 @@ def export_comments(
 
         click.echo(f"Project: {project}")
         click.echo(f"Output: {out}")
-        click.echo(f"Limit: {limit}")
+        click.echo(f"Limit: {'all' if limit is None else limit}")
+        if hours_back:
+            click.echo(f"Time range: last {hours_back} hours")
         if label:
             click.echo(f"Label filter: {label}")
         click.echo(f"Status filter: {status}")
@@ -788,6 +885,12 @@ def export_comments(
         if label:
             query = query.eq('label', label)
 
+        # Filter by time range if specified
+        if hours_back:
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+            query = query.gte('created_at', cutoff.isoformat())
+
         result = query.execute()
 
         if not result.data:
@@ -809,7 +912,7 @@ def export_comments(
             # Sort by score only (quality)
             sorted_tweets = sorted(tweets_map.items(),
                                   key=lambda x: max(s['score_total'] for s in x[1]),
-                                  reverse=True)[:limit]
+                                  reverse=True)
         elif sort_by == 'views':
             # Sort by views only (reach)
             def get_views(item):
@@ -821,7 +924,7 @@ def export_comments(
                 return 0
             sorted_tweets = sorted(tweets_map.items(),
                                   key=get_views,
-                                  reverse=True)[:limit]
+                                  reverse=True)
         else:  # balanced (default)
             # Sort by score × √views (balanced quality + reach)
             def get_priority(item):
@@ -835,7 +938,11 @@ def export_comments(
                 return score  # Fallback if no views data
             sorted_tweets = sorted(tweets_map.items(),
                                   key=get_priority,
-                                  reverse=True)[:limit]
+                                  reverse=True)
+
+        # Apply limit if specified
+        if limit is not None:
+            sorted_tweets = sorted_tweets[:limit]
 
         click.echo(f"   ✓ Grouped into {len(sorted_tweets)} tweets with metadata")
 

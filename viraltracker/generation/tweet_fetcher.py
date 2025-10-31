@@ -21,6 +21,7 @@ def fetch_recent_tweets(
     hours_back: int = 6,
     min_followers: int = 0,
     min_likes: int = 0,
+    min_views: int = 0,
     max_candidates: int = 500,
     require_english: bool = True
 ) -> List[TweetMetrics]:
@@ -32,6 +33,7 @@ def fetch_recent_tweets(
     - Time window
     - Minimum follower count
     - Minimum likes
+    - Minimum views
     - Language (English by default)
 
     Args:
@@ -39,6 +41,7 @@ def fetch_recent_tweets(
         hours_back: Only fetch tweets from last N hours
         min_followers: Minimum author follower count
         min_likes: Minimum like count
+        min_views: Minimum view count
         max_candidates: Maximum tweets to return
         require_english: Only return English tweets
 
@@ -65,7 +68,7 @@ def fetch_recent_tweets(
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
     logger.info(f"Fetching tweets for project '{project_slug}' from last {hours_back} hours")
-    logger.info(f"Filters: min_followers={min_followers}, min_likes={min_likes}, max={max_candidates}")
+    logger.info(f"Filters: min_followers={min_followers}, min_likes={min_likes}, min_views={min_views}, max={max_candidates}")
 
     # Paginate if max_candidates > 1000 (Supabase limit)
     all_tweets = []
@@ -81,6 +84,7 @@ def fetch_recent_tweets(
             .eq('project_posts.project_id', project_id)\
             .gte('posted_at', cutoff_time.isoformat())\
             .gte('likes', min_likes)\
+            .gte('views', min_views)\
             .order('posted_at', desc=True)\
             .range(offset, offset + page_size - 1)
 

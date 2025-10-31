@@ -159,27 +159,32 @@ fi
 
 echo "========================================"
 echo ""
-echo "Step 2: Generate comments for all greens from last 24 hours"
+echo "Step 2: Generate comments for all greens from last 24 hours (V1.7: using saved scores)"
 echo "========================================"
 
 source venv/bin/activate && python -m viraltracker.cli.main twitter generate-comments \
   --project yakety-pack-instagram \
   --hours-back 24 \
+  --use-saved-scores \
   --max-candidates 10000 \
-  --min-followers 10 \
-  --min-likes 0 \
-  --greens-only
+  --min-views 50 \
+  --batch-size 5
 
 echo ""
 echo "Step 3: Export greens to CSV"
 echo "========================================"
 
+# Generate filename with project-timeframe-date format
+export_date=$(date +%Y-%m-%d)
+export_file=~/Downloads/yakety-pack-instagram-24h-${export_date}.csv
+
 source venv/bin/activate && python -m viraltracker.cli.main twitter export-comments \
   --project yakety-pack-instagram \
-  --out ~/Downloads/keyword_greens_24h.csv \
+  --out $export_file \
+  --hours-back 24 \
   --status pending \
-  --greens-only \
+  --label green \
   --sort-by balanced
 
 echo ""
-echo "✅ Complete! Greens exported to: ~/Downloads/keyword_greens_24h.csv"
+echo "✅ Complete! Greens exported to: $export_file"
