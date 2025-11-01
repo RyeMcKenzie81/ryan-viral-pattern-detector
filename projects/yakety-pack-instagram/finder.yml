@@ -85,3 +85,13 @@ generation:
   temperature: 0.3
   max_tokens: 1100
   model: models/gemini-flash-latest
+
+# Content Generation (Phase 3)
+name: Yakety Pack Instagram
+description: A parenting app that helps families manage screen time and build healthier digital habits through family gaming and quality connection time
+target_audience: Parents of kids ages 6-14 who want to balance screen time with quality family connection
+key_benefits:
+  - Turn screen time into quality family bonding through co-op gaming
+  - Set healthy boundaries without constant battles
+  - Understand what your kids love about gaming
+  - Create device-free moments that actually work

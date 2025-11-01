@@ -1577,5 +1577,471 @@ def analyze_hooks(
         raise click.Abort()
 
 
+@twitter_group.command(name="generate-content")
+@click.option('--input-json', required=True, help='Input JSON file from analyze-hooks command')
+@click.option('--project', '-p', required=True, help='Project name (from finder.yml)')
+@click.option('--content-types', multiple=True, default=['thread', 'blog'],
+              help='Content types to generate: thread, blog (default: both)')
+@click.option('--max-content', type=int, default=5, help='Maximum content pieces to generate (default: 5)')
+@click.option('--output-dir', help='Directory to save generated content (optional)')
+def generate_content(
+    input_json: str,
+    project: str,
+    content_types: tuple,
+    max_content: int,
+    output_dir: Optional[str]
+):
+    """
+    Generate long-form content from analyzed hooks (Phase 3)
+
+    Takes hook analysis from analyze-hooks and generates Twitter threads
+    and blog posts (both by default).
+
+    Examples:
+        # Generate both threads and blogs (default)
+        vt twitter generate-content \\
+          --input-json hook_analysis.json \\
+          --project yakety-pack-instagram
+
+        # Generate only threads
+        vt twitter generate-content \\
+          --input-json hook_analysis.json \\
+          --project my-project \\
+          --content-types thread \\
+          --max-content 3
+
+        # Generate only blogs
+        vt twitter generate-content \\
+          --input-json hook_analysis.json \\
+          --project my-project \\
+          --content-types blog
+    """
+    try:
+        import json
+        from pathlib import Path
+        from ..generation.thread_generator import ThreadGenerator
+        from ..generation.blog_generator import BlogGenerator
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✨ Content Generation (Phase 3)")
+        click.echo(f"{'='*60}\n")
+
+        # Load hook analysis
+        click.echo(f"📂 Loading hook analysis from {input_json}...")
+        try:
+            with open(input_json, 'r', encoding='utf-8') as f:
+                hooks_data = json.load(f)
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: File not found: {input_json}", err=True)
+            raise click.Abort()
+        except json.JSONDecodeError:
+            click.echo(f"\n❌ Error: Invalid JSON file: {input_json}", err=True)
+            raise click.Abort()
+
+        analyses = hooks_data.get('analyses', [])
+        if not analyses:
+            click.echo(f"\n⚠️  No hook analyses found in input file", err=True)
+            raise click.Abort()
+
+        total_hooks = len(analyses)
+        click.echo(f"   ✓ Loaded {total_hooks} hook analyses")
+
+        # Limit to max_content
+        if max_content and max_content < len(analyses):
+            analyses = analyses[:max_content]
+            click.echo(f"   ✓ Limited to {len(analyses)} hooks")
+
+        # Load project config
+        click.echo(f"\n📋 Loading project config: {project}")
+        try:
+            import yaml
+            from pathlib import Path
+
+            # Load finder.yml for the project
+            finder_path = Path(f"projects/{project}/finder.yml")
+            if not finder_path.exists():
+                click.echo(f"\n❌ Error: finder.yml not found at {finder_path}", err=True)
+                raise click.Abort()
+
+            with open(finder_path, 'r') as f:
+                project_config = yaml.safe_load(f)
+
+            click.echo(f"   ✓ Project loaded: {project_config.get('name', project)}")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error loading project config: {e}", err=True)
+            raise click.Abort()
+
+        # Get database connection
+        click.echo(f"\n🗄️  Connecting to database...")
+        try:
+            db = get_supabase_client()
+
+            # Get project ID from database using the name from config
+            db_project_name = project_config.get('name', project)
+            result = db.table('projects').select('id, name').eq('name', db_project_name).execute()
+
+            # If not found, try with the slug directly
+            if not result.data:
+                result = db.table('projects').select('id, name').eq('name', project).execute()
+
+            if not result.data:
+                click.echo(f"\n❌ Error: Project '{project}' / '{db_project_name}' not found in database", err=True)
+                click.echo(f"   Tip: Run 'vt twitter scrape -p {project}' first to create project", err=True)
+                raise click.Abort()
+
+            project_id = result.data[0]['id']
+            db_project_name = result.data[0]['name']
+            click.echo(f"   ✓ Connected: {db_project_name} (id: {project_id[:8]}...)")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error connecting to database: {e}", err=True)
+            raise click.Abort()
+
+        # Prepare project context
+        project_context = {
+            'project_id': project_id,
+            'product_name': project_config.get('name'),
+            'product_description': project_config.get('description', ''),
+            'target_audience': project_config.get('target_audience', 'users'),
+            'key_benefits': project_config.get('key_benefits', [])
+        }
+
+        # Initialize generators
+        generators = {}
+        if 'thread' in content_types:
+            click.echo(f"\n🧵 Initializing Thread Generator...")
+            generators['thread'] = ThreadGenerator(db_connection=db)
+            click.echo(f"   ✓ Thread generator ready")
+
+        if 'blog' in content_types:
+            click.echo(f"\n📝 Initializing Blog Generator...")
+            generators['blog'] = BlogGenerator(db_connection=db)
+            click.echo(f"   ✓ Blog generator ready")
+
+        if not generators:
+            click.echo(f"\n⚠️  No valid content types specified", err=True)
+            click.echo(f"   Valid types: thread, blog", err=True)
+            raise click.Abort()
+
+        # Generate content
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🚀 Generating Content")
+        click.echo(f"{'='*60}\n")
+
+        total_cost = 0.0
+        generated_content = []
+
+        for i, hook_analysis in enumerate(analyses, 1):
+            click.echo(f"[{i}/{len(analyses)}] Processing hook: {hook_analysis.get('hook_type')}...")
+            click.echo(f"   Tweet: \"{hook_analysis.get('tweet_text', '')[:60]}...\"")
+            click.echo()
+
+            for content_type, generator in generators.items():
+                try:
+                    click.echo(f"   🎯 Generating {content_type}...")
+
+                    content = generator.generate(hook_analysis, project_context)
+
+                    # Save to database
+                    content_id = generator.save_to_db(content)
+
+                    total_cost += content.api_cost_usd
+                    generated_content.append({
+                        'type': content_type,
+                        'id': content_id,
+                        'title': content.content_title,
+                        'cost': content.api_cost_usd
+                    })
+
+                    click.echo(f"   ✓ {content_type.capitalize()} generated: {content.content_title[:50]}...")
+                    click.echo(f"   💰 Cost: ${content.api_cost_usd:.4f}")
+                    click.echo()
+
+                except Exception as e:
+                    click.echo(f"   ✗ {content_type.capitalize()} generation failed: {e}")
+                    click.echo()
+                    continue
+
+        # Save to files if output_dir specified
+        if output_dir:
+            click.echo(f"\n📄 Exporting to files...")
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+
+            for item in generated_content:
+                filename = f"{item['type']}_{item['id'][:8]}.json"
+                filepath = output_path / filename
+
+                # Re-fetch from database to get full content
+                if item['type'] == 'thread':
+                    content_obj = generators['thread'].load_from_db(item['id'])
+                elif item['type'] == 'blog':
+                    content_obj = generators['blog'].load_from_db(item['id'])
+                else:
+                    continue
+
+                if content_obj:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'id': content_obj.id,
+                            'type': content_obj.content_type,
+                            'title': content_obj.content_title,
+                            'body': content_obj.content_body,
+                            'metadata': content_obj.content_metadata,
+                            'hook_type': content_obj.hook_type,
+                            'created_at': content_obj.created_at.isoformat()
+                        }, f, indent=2, ensure_ascii=False)
+
+                    click.echo(f"   ✓ Saved: {filepath}")
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Content Generation Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Hooks processed: {len(analyses)}")
+        click.echo(f"   Content pieces generated: {len(generated_content)}")
+        click.echo(f"   Total API cost: ${total_cost:.4f}")
+
+        # Count by type
+        from collections import Counter
+        type_counts = Counter(item['type'] for item in generated_content)
+        click.echo(f"\n   By type:")
+        for content_type, count in type_counts.items():
+            click.echo(f"   - {content_type}: {count}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review content in database (status: pending)")
+        click.echo(f"   - Export: vt twitter export-content -p {project}")
+        click.echo(f"   - Update status after review: UPDATE generated_content SET status='reviewed'")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Content generation failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="export-content")
+@click.option('--project', '-p', required=True, help='Project name (from finder.yml)')
+@click.option('--content-type', type=click.Choice(['thread', 'blog', 'all']), default='all',
+              help='Content type to export (default: all)')
+@click.option('--status', type=click.Choice(['pending', 'reviewed', 'published', 'all']), default='all',
+              help='Status filter (default: all)')
+@click.option('--format', '-f', type=click.Choice(['markdown', 'json', 'csv', 'twitter', 'longform', 'medium']),
+              multiple=True, default=['markdown', 'twitter', 'longform'],
+              help='Export formats (default: markdown, twitter, longform)')
+@click.option('--output-dir', '-o', default='./exports', help='Output directory (default: ./exports)')
+@click.option('--limit', type=int, default=100, help='Max items to export (default: 100)')
+def export_content(
+    project: str,
+    content_type: str,
+    status: str,
+    format: tuple,
+    output_dir: str,
+    limit: int
+):
+    """
+    Export generated content in various formats
+
+    By default exports threads in 3 formats:
+    - markdown: Overview with all content
+    - twitter: Thread format (individual tweets)
+    - longform: Single long post for LinkedIn/Instagram
+
+    Examples:
+        # Export with defaults (markdown, twitter, longform)
+        vt twitter export-content -p yakety-pack-instagram
+
+        # Export only long-form versions
+        vt twitter export-content \\
+          -p yakety-pack-instagram \\
+          --content-type thread \\
+          --format longform
+
+        # Export in all formats
+        vt twitter export-content \\
+          -p yakety-pack-instagram \\
+          --format markdown \\
+          --format twitter \\
+          --format longform \\
+          --format json
+    """
+    try:
+        import yaml
+        from pathlib import Path
+        from ..generation.content_generator import ContentGenerator
+        from ..generation.content_exporter import ContentExporter
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📤 Content Export")
+        click.echo(f"{'='*60}\n")
+
+        # Load project config
+        click.echo(f"📋 Loading project: {project}")
+        try:
+            finder_path = Path(f"projects/{project}/finder.yml")
+            if not finder_path.exists():
+                click.echo(f"\n❌ Error: finder.yml not found at {finder_path}", err=True)
+                raise click.Abort()
+
+            with open(finder_path, 'r') as f:
+                project_config = yaml.safe_load(f)
+
+            click.echo(f"   ✓ Project loaded: {project_config.get('name', project)}")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error loading project config: {e}", err=True)
+            raise click.Abort()
+
+        # Get database connection
+        click.echo(f"\n🗄️  Connecting to database...")
+        try:
+            db = get_supabase_client()
+
+            # Get project ID
+            db_project_name = project_config.get('name', project)
+            result = db.table('projects').select('id, name').eq('name', db_project_name).execute()
+
+            if not result.data:
+                result = db.table('projects').select('id, name').eq('name', project).execute()
+
+            if not result.data:
+                click.echo(f"\n❌ Error: Project not found in database", err=True)
+                raise click.Abort()
+
+            project_id = result.data[0]['id']
+            click.echo(f"   ✓ Connected: {result.data[0]['name']}")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error connecting to database: {e}", err=True)
+            raise click.Abort()
+
+        # Load content from database
+        click.echo(f"\n📦 Loading generated content...")
+        generator = ContentGenerator(db_connection=db)
+
+        # Build filters
+        type_filter = None if content_type == 'all' else content_type
+        status_filter = None if status == 'all' else status
+
+        content_list = generator.get_project_content(
+            project_id=project_id,
+            content_type=type_filter,
+            status=status_filter,
+            limit=limit
+        )
+
+        if not content_list:
+            click.echo(f"\n⚠️  No content found matching filters", err=True)
+            click.echo(f"   Content type: {content_type}")
+            click.echo(f"   Status: {status}")
+            raise click.Abort()
+
+        click.echo(f"   ✓ Loaded {len(content_list)} content pieces")
+
+        # Export in requested formats
+        click.echo(f"\n📄 Exporting content...")
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        exporter = ContentExporter()
+        exported_files = []
+
+        for fmt in format:
+            try:
+                if fmt == 'markdown':
+                    filepath = output_path / f"{project}_content.md"
+                    exporter.export_to_markdown(content_list, str(filepath))
+                    exported_files.append(('Markdown', filepath))
+
+                elif fmt == 'json':
+                    filepath = output_path / f"{project}_content.json"
+                    exporter.export_to_json(content_list, str(filepath))
+                    exported_files.append(('JSON', filepath))
+
+                elif fmt == 'csv':
+                    filepath = output_path / f"{project}_content.csv"
+                    exporter.export_to_csv(content_list, str(filepath))
+                    exported_files.append(('CSV', filepath))
+
+                elif fmt == 'twitter':
+                    # Export each thread separately
+                    threads = [c for c in content_list if c.content_type == 'thread']
+                    for i, thread in enumerate(threads, 1):
+                        filepath = output_path / f"{project}_thread_{i}.txt"
+                        exporter.export_thread_for_twitter(thread, str(filepath))
+                        exported_files.append(('Twitter Thread', filepath))
+
+                elif fmt == 'longform':
+                    # Export each thread as long-form post
+                    threads = [c for c in content_list if c.content_type == 'thread']
+                    for i, thread in enumerate(threads, 1):
+                        filepath = output_path / f"{project}_longform_{i}.txt"
+                        exporter.export_thread_as_longform(thread, str(filepath))
+                        exported_files.append(('Long-form Post', filepath))
+
+                elif fmt == 'medium':
+                    # Export each blog separately
+                    blogs = [c for c in content_list if c.content_type == 'blog']
+                    for i, blog in enumerate(blogs, 1):
+                        filepath = output_path / f"{project}_blog_{i}.md"
+                        exporter.export_blog_for_medium(blog, str(filepath))
+                        exported_files.append(('Medium Blog', filepath))
+
+            except Exception as e:
+                click.echo(f"   ✗ {fmt} export failed: {e}")
+                continue
+
+        # Display exported files
+        for fmt, filepath in exported_files:
+            click.echo(f"   ✓ {fmt}: {filepath}")
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Export Complete")
+        click.echo(f"{'='*60}\n")
+
+        # Stats by type
+        from collections import Counter
+        type_counts = Counter(c.content_type for c in content_list)
+        status_counts = Counter(c.status for c in content_list)
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Total pieces exported: {len(content_list)}")
+        click.echo(f"   Output directory: {output_path}")
+
+        click.echo(f"\n   By type:")
+        for ctype, count in type_counts.items():
+            click.echo(f"   - {ctype}: {count}")
+
+        click.echo(f"\n   By status:")
+        for stat, count in status_counts.items():
+            click.echo(f"   - {stat}: {count}")
+
+        # Calculate total cost
+        total_cost = sum(c.api_cost_usd for c in content_list)
+        click.echo(f"\n   Total API cost: ${total_cost:.4f}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review exported content in: {output_path}")
+        click.echo(f"   - Copy threads to Twitter / scheduling tool")
+        click.echo(f"   - Publish blogs to Medium / your blog platform")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Content export failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
 # Export the command group
 twitter = twitter_group
