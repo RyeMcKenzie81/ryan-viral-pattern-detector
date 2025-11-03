@@ -14,6 +14,13 @@ import click
 
 from ..scrapers.twitter import TwitterScraper
 from ..core.database import get_supabase_client
+from ..core.config import load_finder_config
+from ..core.embeddings import Embedder
+from ..generation.tweet_fetcher import fetch_recent_tweets
+from ..generation.comment_finder import score_tweet
+from ..generation.comment_generator import CommentGenerator, save_suggestions_to_db
+from ..generation.async_comment_generator import generate_comments_async
+from ..generation.cost_tracking import format_cost_summary
 
 
 # Configure logging
@@ -29,6 +36,9 @@ logger = logging.getLogger(__name__)
 # Rate limit tracking
 RATE_LIMIT_FILE = Path.home() / ".viraltracker" / "twitter_last_run.txt"
 RATE_LIMIT_SECONDS = 120  # 2 minutes between searches
+
+# Semantic deduplication threshold (V1.1)
+SIMILARITY_THRESHOLD = 0.95  # Cosine similarity threshold for duplicate detection
 
 
 def check_rate_limit():
@@ -66,6 +76,89 @@ def update_rate_limit():
 
     with open(RATE_LIMIT_FILE, 'w') as f:
         f.write(str(time.time()))
+
+
+def check_semantic_duplicates(project_id: str, tweet_embeddings: list, threshold: float = SIMILARITY_THRESHOLD):
+    """
+    Check for semantic duplicates using pgvector cosine similarity.
+
+    Args:
+        project_id: Project UUID
+        tweet_embeddings: List of tweet embedding vectors
+        threshold: Cosine similarity threshold (default: 0.95)
+
+    Returns:
+        List of booleans indicating if each tweet is a duplicate
+    """
+    import numpy as np
+
+    db = get_supabase_client()
+
+    # Fetch existing embeddings for this project
+    result = db.table('acceptance_log')\
+        .select('foreign_id, embedding')\
+        .eq('project_id', project_id)\
+        .eq('source', 'twitter')\
+        .execute()
+
+    if not result.data:
+        # No existing embeddings, all tweets are new
+        return [False] * len(tweet_embeddings)
+
+    # Extract existing embeddings
+    existing_embeddings = []
+    for row in result.data:
+        if row.get('embedding'):
+            # pgvector stores embeddings as strings like "[0.1, 0.2, ...]"
+            embedding_str = row['embedding']
+            # Parse the embedding string to a numpy array
+            if isinstance(embedding_str, str):
+                # Remove brackets and parse
+                embedding_list = [float(x) for x in embedding_str.strip('[]').split(',')]
+                existing_embeddings.append(np.array(embedding_list))
+            elif isinstance(embedding_str, list):
+                existing_embeddings.append(np.array(embedding_str))
+
+    if not existing_embeddings:
+        return [False] * len(tweet_embeddings)
+
+    # Check each candidate tweet against all existing embeddings
+    is_duplicate = []
+
+    for tweet_emb in tweet_embeddings:
+        tweet_vec = np.array(tweet_emb)
+        max_similarity = 0.0
+
+        for existing_emb in existing_embeddings:
+            # Compute cosine similarity
+            similarity = np.dot(tweet_vec, existing_emb) / (
+                np.linalg.norm(tweet_vec) * np.linalg.norm(existing_emb)
+            )
+            max_similarity = max(max_similarity, similarity)
+
+        is_duplicate.append(max_similarity >= threshold)
+
+    return is_duplicate
+
+
+def store_tweet_embedding(project_id: str, tweet_id: str, embedding: list):
+    """
+    Store tweet embedding in acceptance_log for future deduplication.
+
+    Args:
+        project_id: Project UUID
+        tweet_id: Tweet ID
+        embedding: Tweet embedding vector (768-dim)
+    """
+    db = get_supabase_client()
+
+    # Upsert to acceptance_log
+    db.table('acceptance_log').upsert({
+        'project_id': project_id,
+        'source': 'twitter',
+        'foreign_id': tweet_id,
+        'embedding': embedding  # pgvector will handle the conversion
+    }, on_conflict='project_id,source,foreign_id').execute()
 
 
 @click.group(name="twitter")
@@ -294,6 +387,1658 @@ def twitter_search(
         raise
     except Exception as e:
         click.echo(f"\n❌ Search failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="generate-comments")
+@click.option('--project', '-p', required=True, help='Project slug')
+@click.option('--hours-back', default=6, type=int, help='Look back N hours for tweets (default: 6)')
+@click.option('--min-followers', default=1000, type=int, help='Minimum author followers (default: 1000)')
+@click.option('--min-likes', default=0, type=int, help='Minimum tweet likes (default: 0)')
+@click.option('--min-views', default=0, type=int, help='Minimum tweet views (default: 0)')
+@click.option('--max-candidates', default=150, type=int, help='Max tweets to process (default: 150)')
+@click.option('--use-gate/--no-use-gate', default=True, help='Apply gate filtering (default: True)')
+@click.option('--skip-low-scores/--no-skip-low-scores', default=True, help='Only generate for green/yellow (default: True)')
+@click.option('--greens-only', is_flag=True, help='Only generate for greens (overrides --skip-low-scores)')
+@click.option('--use-saved-scores', is_flag=True, help='Use scores already saved in database (skips re-scoring)')
+@click.option('--batch-size', default=5, type=int, help='Number of concurrent requests (default: 5, V1.2)')
+@click.option('--no-batch', is_flag=True, help='Disable batch processing (use sequential, V1.2)')
+def generate_comments(
+    project: str,
+    hours_back: int,
+    min_followers: int,
+    min_likes: int,
+    min_views: int,
+    max_candidates: int,
+    use_gate: bool,
+    skip_low_scores: bool,
+    greens_only: bool,
+    use_saved_scores: bool,
+    batch_size: int,
+    no_batch: bool
+):
+    """
+    Generate AI comment suggestions for recent tweets
+
+    Scores fresh tweets and generates 3 reply suggestions for each:
+    - add_value: Share insights or tips
+    - ask_question: Ask thoughtful follow-ups
+    - mirror_reframe: Acknowledge and reframe
+
+    Examples:
+        # Generate for last 6 hours
+        vt twitter generate-comments --project my-project
+
+        # Last 12 hours, min 5K followers
+        vt twitter generate-comments -p my-project --hours-back 12 --min-followers 5000
+
+        # Process all tweets (no gate)
+        vt twitter generate-comments -p my-project --no-use-gate --no-skip-low-scores
+    """
+    try:
+        click.echo(f"\n{'='*60}")
+        click.echo(f"💬 Comment Opportunity Finder")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Project: {project}")
+        click.echo(f"Time window: last {hours_back} hours")
+        click.echo(f"Filters: {min_followers:,}+ followers, {min_likes:,}+ likes, {min_views:,}+ views")
+        click.echo(f"Max candidates: {max_candidates}")
+        click.echo(f"Gate filtering: {'enabled' if use_gate else 'disabled'}")
+
+        if greens_only:
+            click.echo(f"Skip low scores: yes (greens only)")
+        elif skip_low_scores:
+            click.echo(f"Skip low scores: yes (green/yellow only)")
+        else:
+            click.echo(f"Skip low scores: no (all)")
+
+        click.echo()
+
+        # Load config
+        click.echo("📋 Loading finder config...")
+        try:
+            config = load_finder_config(project)
+            click.echo(f"   ✓ Loaded config for '{project}'")
+            click.echo(f"   - Taxonomy nodes: {len(config.taxonomy)}")
+            click.echo(f"   - Voice: {config.voice.persona}")
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: No finder.yml found for project '{project}'", err=True)
+            click.echo(f"   Create: projects/{project}/finder.yml", err=True)
+            raise click.Abort()
+
+        # Initialize embedder
+        click.echo("\n🔢 Initializing embeddings...")
+        embedder = Embedder()
+        click.echo("   ✓ Embedder ready")
+
+        # Compute taxonomy embeddings (V1.1: with incremental caching)
+        click.echo(f"\n🏷️  Computing taxonomy embeddings...")
+        from viraltracker.core.embeddings import load_taxonomy_embeddings_incremental
+
+        # Use incremental loading - only recomputes changed nodes
+        taxonomy_embeddings = load_taxonomy_embeddings_incremental(
+            project,
+            config.taxonomy,
+            embedder
+        )
+
+        click.echo(f"   ✓ Ready with {len(taxonomy_embeddings)} taxonomy embeddings")
+
+        # Get project ID first (needed for both workflows)
+        db = get_supabase_client()
+        project_result = db.table('projects').select('id').eq('slug', project).single().execute()
+        if not project_result.data:
+            click.echo(f"\n❌ Error: Project '{project}' not found in database", err=True)
+            raise click.Abort()
+
+        project_id = project_result.data['id']
+
+        # V1.7: Use saved scores workflow
+        if use_saved_scores:
+            click.echo(f"\n💾 Using saved scores from database (skipping re-scoring)...")
+
+            # Query for score-only green records from generated_comments table
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+
+            click.echo(f"   Querying greens from last {hours_back} hours...")
+            result = db.table('generated_comments') \
+                .select('*, posts!inner(*)') \
+                .eq('project_id', project_id) \
+                .eq('label', 'green') \
+                .eq('comment_text', '') \
+                .gte('created_at', cutoff.isoformat()) \
+                .limit(max_candidates) \
+                .execute()
+
+            if not result.data:
+                click.echo(f"\n⚠️  No saved green scores found in last {hours_back} hours")
+                click.echo(f"\n💡 Try:")
+                click.echo(f"   - Running without --use-saved-scores to score fresh tweets")
+                click.echo(f"   - Increasing --hours-back")
+                return
+
+            click.echo(f"   ✓ Found {len(result.data)} saved green scores")
+
+            # Convert database records to TweetMetrics objects and ScoringResult objects
+            from viraltracker.generation.comment_finder import TweetMetrics, ScoringResult
+            from datetime import datetime
+
+            scored_tweets = []
+            for record in result.data:
+                post_data = record['posts']
+
+                # Parse posted_at string to datetime object
+                posted_at = post_data['posted_at']
+                if isinstance(posted_at, str):
+                    # Remove 'Z' suffix and parse as ISO format
+                    posted_at = datetime.fromisoformat(posted_at.replace('Z', '+00:00'))
+
+                # Create TweetMetrics object
+                tweet = TweetMetrics(
+                    tweet_id=post_data['post_id'],
+                    text=post_data['caption'],
+                    author_handle=post_data.get('author_username', 'unknown'),
+                    author_followers=post_data.get('follower_count', 0),
+                    tweeted_at=posted_at,
+                    likes=post_data.get('likes', 0),
+                    replies=post_data.get('replies', 0),
+                    retweets=post_data.get('retweets', 0),
+                    views=post_data.get('views', 0)
+                )
+
+                # Create ScoringResult from saved data
+                scoring_result = ScoringResult(
+                    tweet_id=tweet.tweet_id,
+                    velocity=record.get('velocity_score', 0.0),
+                    relevance=record.get('relevance_score', 0.0),
+                    openness=record.get('openness_score', 0.0),
+                    author_quality=record.get('author_quality_score', 0.0),
+                    total_score=record.get('tweet_score', 0.5),
+                    label=record['label'],
+                    best_topic=record.get('best_topic_name', 'Unknown'),
+                    best_topic_similarity=record.get('best_topic_similarity', 0.0),
+                    passed_gate=True,
+                    gate_reason=None
+                )
+
+                scored_tweets.append((tweet, scoring_result))
+
+            # Filter by min_views if specified
+            if min_views > 0:
+                before_count = len(scored_tweets)
+                scored_tweets = [(t, s) for t, s in scored_tweets if t.views >= min_views]
+                filtered_count = before_count - len(scored_tweets)
+                if filtered_count > 0:
+                    click.echo(f"\n   ⚠️  Filtered out {filtered_count} tweets with <{min_views} views")
+
+            click.echo(f"\n   Score distribution:")
+            click.echo(f"   - 🟢 Green ({len(scored_tweets)})")
+
+        else:
+            # Original workflow: fetch and score tweets
+            # Fetch recent tweets
+            click.echo(f"\n🔍 Fetching recent tweets...")
+            tweets = fetch_recent_tweets(
+                project_slug=project,
+                hours_back=hours_back,
+                min_followers=min_followers,
+                min_likes=min_likes,
+                min_views=min_views,
+                max_candidates=max_candidates,
+                require_english=True
+            )
+
+            if not tweets:
+                click.echo(f"\n⚠️  No tweets found matching criteria")
+                click.echo(f"\n💡 Try:")
+                click.echo(f"   - Increasing --hours-back")
+                click.echo(f"   - Lowering --min-followers, --min-likes, or --min-views")
+                click.echo(f"   - Running: vt twitter search to collect more data")
+                return
+
+            click.echo(f"   ✓ Found {len(tweets)} candidate tweets")
+
+            # Embed tweets
+            click.echo(f"\n🔢 Embedding tweets...")
+            tweet_texts = [t.text for t in tweets]
+            tweet_embeddings = embedder.embed_texts(tweet_texts, task_type="RETRIEVAL_DOCUMENT")
+            click.echo(f"   ✓ Embedded {len(tweet_embeddings)} tweets")
+
+            # V1.1: Check for semantic duplicates
+            click.echo(f"\n🔍 Checking for semantic duplicates...")
+            is_duplicate = check_semantic_duplicates(project_id, tweet_embeddings)
+            duplicate_count = sum(is_duplicate)
+
+            if duplicate_count > 0:
+                click.echo(f"   ✓ Found {duplicate_count} duplicates (similarity > {SIMILARITY_THRESHOLD})")
+                click.echo(f"   - Will skip {duplicate_count} tweets to save API costs")
+            else:
+                click.echo(f"   ✓ No duplicates found")
+
+            # Filter out duplicates
+            tweets_filtered = [(tweet, emb) for tweet, emb, is_dup in zip(tweets, tweet_embeddings, is_duplicate) if not is_dup]
+
+            if not tweets_filtered:
+                click.echo(f"\n⚠️  All tweets are duplicates - nothing to process")
+                return
+
+            if duplicate_count > 0:
+                click.echo(f"   - Processing {len(tweets_filtered)} unique tweets")
+
+            # Unpack filtered tweets and embeddings
+            tweets = [t for t, _ in tweets_filtered]
+            tweet_embeddings = [e for _, e in tweets_filtered]
+
+            # Score tweets
+            click.echo(f"\n📊 Scoring tweets...")
+            scored_tweets = []
+
+            for tweet, embedding in zip(tweets, tweet_embeddings):
+                result = score_tweet(tweet, embedding, taxonomy_embeddings, config, use_gate=use_gate)
+                scored_tweets.append((tweet, result))
+
+            # Filter by gate
+            if use_gate:
+                passed_gate = [(t, r) for t, r in scored_tweets if r.passed_gate]
+                click.echo(f"   ✓ Scored {len(scored_tweets)} tweets")
+                click.echo(f"   - Passed gate: {len(passed_gate)}")
+                click.echo(f"   - Blocked: {len(scored_tweets) - len(passed_gate)}")
+                scored_tweets = passed_gate
+            else:
+                click.echo(f"   ✓ Scored {len(scored_tweets)} tweets (gate disabled)")
+
+            if not scored_tweets:
+                click.echo(f"\n⚠️  No tweets passed gate filtering")
+                return
+
+            # Filter by score if requested
+            if greens_only:
+                greens = [(t, r) for t, r in scored_tweets if r.label == 'green']
+                click.echo(f"   - Greens: {len(greens)}")
+                click.echo(f"   - Yellow/Red (skipped): {len(scored_tweets) - len(greens)}")
+                scored_tweets = greens
+            elif skip_low_scores:
+                high_quality = [(t, r) for t, r in scored_tweets if r.label in ['green', 'yellow']]
+                click.echo(f"   - Green/Yellow: {len(high_quality)}")
+                click.echo(f"   - Red (skipped): {len(scored_tweets) - len(high_quality)}")
+                scored_tweets = high_quality
+
+            if not scored_tweets:
+                click.echo(f"\n⚠️  No high-quality tweets found")
+                click.echo(f"\n💡 Try: --no-skip-low-scores to generate for all scores")
+                return
+
+        # Show score distribution
+        green_count = sum(1 for _, r in scored_tweets if r.label == 'green')
+        yellow_count = sum(1 for _, r in scored_tweets if r.label == 'yellow')
+        red_count = sum(1 for _, r in scored_tweets if r.label == 'red')
+
+        click.echo(f"\n   Score distribution:")
+        click.echo(f"   - 🟢 Green ({green_count})")
+        click.echo(f"   - 🟡 Yellow ({yellow_count})")
+        if red_count > 0:
+            click.echo(f"   - 🔴 Red ({red_count})")
+
+        # Generate suggestions
+        click.echo(f"\n🤖 Generating comment suggestions...")
+
+        # V1.2: Check if batch processing should be used
+        use_batch = not no_batch and len(scored_tweets) > 1
+
+        if use_batch:
+            click.echo(f"   ⚡ Batch mode: Processing {len(scored_tweets)} tweets with {batch_size} concurrent requests")
+        else:
+            click.echo(f"   Processing {len(scored_tweets)} tweets sequentially...")
+
+        click.echo()
+
+        # Create a map of tweet to embedding for storage after generation
+        # V1.7: For saved-scores workflow, we don't have embeddings (skipped scoring)
+        if use_saved_scores:
+            tweet_embedding_map = {}  # Empty map - no embeddings available
+        else:
+            tweet_embedding_map = {tweet.tweet_id: emb for tweet, emb in zip(tweets, tweet_embeddings)}
+
+        success_count = 0
+        safety_blocked_count = 0
+        error_count = 0
+        total_cost_usd = 0.0  # V1.2: Track API costs
+
+        if use_batch:
+            # V1.2: Use async batch processing
+            import asyncio
+
+            # Progress callback for async generation
+            def progress_callback(current, total):
+                progress_pct = int((current / total) * 100)
+                click.echo(f"   [{current}/{total}] Progress: {progress_pct}%")
+
+            # Run async batch generation
+            stats = asyncio.run(generate_comments_async(
+                project_id=project_id,
+                tweets_with_scores=scored_tweets,
+                config=config,
+                batch_size=batch_size,
+                max_requests_per_minute=15,
+                progress_callback=progress_callback
+            ))
+
+            # Store embeddings for all successful tweets (V1.1: semantic dedup)
+            for tweet, _ in scored_tweets:
+                tweet_emb = tweet_embedding_map.get(tweet.tweet_id)
+                if tweet_emb:
+                    store_tweet_embedding(project_id, tweet.tweet_id, tweet_emb)
+
+            success_count = stats['generated'] // 3  # 3 suggestions per tweet
+            error_count = stats['failed']
+            safety_blocked_count = 0  # Not tracked separately in async mode
+            total_cost_usd = stats.get('total_cost_usd', 0.0)  # V1.2: Extract cost
+
+        else:
+            # V1/V1.1: Sequential processing
+            generator = CommentGenerator()
+
+            for i, (tweet, scoring_result) in enumerate(scored_tweets, 1):
+                click.echo(f"   [{i}/{len(scored_tweets)}] Tweet {tweet.tweet_id[:12]}... ({scoring_result.label}, score={scoring_result.total_score:.2f})")
+
+                # Generate suggestions
+                gen_result = generator.generate_suggestions(tweet, scoring_result.best_topic, config)
+
+                if gen_result.success:
+                    # Save to database (V1.1: pass tweet for enhanced rationale, V1.2: pass cost)
+                    comment_ids = save_suggestions_to_db(project_id, tweet.tweet_id, gen_result.suggestions, scoring_result, tweet, gen_result.api_cost_usd)
+
+                    # V1.1: Store embedding in acceptance_log for future deduplication
+                    tweet_emb = tweet_embedding_map.get(tweet.tweet_id)
+                    if tweet_emb:
+                        store_tweet_embedding(project_id, tweet.tweet_id, tweet_emb)
+
+                    click.echo(f"      ✓ Generated {len(gen_result.suggestions)} suggestions, saved to DB")
+                    success_count += 1
+
+                    # V1.2: Track cost
+                    if gen_result.api_cost_usd is not None:
+                        total_cost_usd += gen_result.api_cost_usd
+                elif gen_result.safety_blocked:
+                    click.echo(f"      ⚠ Blocked by safety filters (skipped)")
+                    safety_blocked_count += 1
+                else:
+                    click.echo(f"      ✗ Generation failed: {gen_result.error[:50]}...")
+                    error_count += 1
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Generation Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Results:")
+        click.echo(f"   Tweets processed: {len(scored_tweets)}")
+        click.echo(f"   Successful: {success_count} ({success_count * 3} total suggestions)")
+        if safety_blocked_count > 0:
+            click.echo(f"   Safety blocked: {safety_blocked_count}")
+        if error_count > 0:
+            click.echo(f"   Errors: {error_count}")
+
+        # V1.2: Display API cost
+        if total_cost_usd > 0 and success_count > 0:
+            cost_summary = format_cost_summary(total_cost_usd, success_count)
+            click.echo(f"\n{cost_summary}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Export to CSV: vt twitter export-comments --project {project}")
+        click.echo(f"   - Review in DB: Check generated_comments table")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Generation failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="export-comments")
+@click.option('--project', '-p', required=True, help='Project slug')
+@click.option('--out', '-o', required=True, help='Output CSV file path')
+@click.option('--limit', default=None, type=int, help='Max suggestions to export (default: all)')
+@click.option('--hours-back', default=None, type=int, help='Only export from last N hours (optional)')
+@click.option('--label', type=click.Choice(['green', 'yellow', 'red']), help='Filter by label (optional)')
+@click.option('--status', default='pending', help='Filter by status (default: pending)')
+@click.option('--sort-by', type=click.Choice(['score', 'views', 'balanced']), default='balanced', help='Sort method: score (quality), views (reach), balanced (score×√views) [default: balanced]')
+def export_comments(
+    project: str,
+    out: str,
+    limit: Optional[int],
+    hours_back: Optional[int],
+    label: Optional[str],
+    status: str,
+    sort_by: str
+):
+    """
+    Export comment suggestions to CSV
+
+    Exports generated comment suggestions with full tweet metadata and scoring data
+    to a CSV file for manual review and posting.
+
+    CSV Format (one row per tweet):
+      - project, tweet_id, url
+      - author, followers, views, tweet_text, posted_at (V1.1: tweet metadata)
+      - score_total, label, topic, why
+      - suggested_response, suggested_type (primary suggestion, rank=1)
+      - alternative_1, alt_1_type (2nd option)
+      - alternative_2, alt_2_type (3rd option)
+      - alternative_3, alt_3_type (4th option - V1.3)
+      - alternative_4, alt_4_type (5th option - V1.3)
+
+    Examples:
+        # Export all pending suggestions
+        vt twitter export-comments --project my-project --out comments.csv
+
+        # Export top 50 green suggestions only
+        vt twitter export-comments -p my-project -o top50.csv --limit 50 --label green
+
+        # Export already exported (for review)
+        vt twitter export-comments -p my-project -o review.csv --status exported
+    """
+    try:
+        import csv
+        from datetime import datetime
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📤 Export Comment Suggestions")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Project: {project}")
+        click.echo(f"Output: {out}")
+        click.echo(f"Limit: {'all' if limit is None else limit}")
+        if hours_back:
+            click.echo(f"Time range: last {hours_back} hours")
+        if label:
+            click.echo(f"Label filter: {label}")
+        click.echo(f"Status filter: {status}")
+        click.echo(f"Sort by: {sort_by}")
+        click.echo()
+
+        # Get project ID
+        db = get_supabase_client()
+        project_result = db.table('projects').select('id').eq('slug', project).single().execute()
+        if not project_result.data:
+            click.echo(f"\n❌ Error: Project '{project}' not found", err=True)
+            raise click.Abort()
+
+        project_id = project_result.data['id']
+
+        # Query generated_comments with tweet metadata (V1.1)
+        click.echo("🔍 Querying database...")
+
+        # Get all suggestions with JOIN to posts and accounts for metadata
+        query = db.table('generated_comments')\
+            .select('*, posts(post_id, caption, posted_at, views, accounts(platform_username, follower_count))')\
+            .eq('project_id', project_id)\
+            .eq('status', status)\
+            .order('score_total', desc=True)
+
+        if label:
+            query = query.eq('label', label)
+
+        # Filter by time range if specified
+        if hours_back:
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+            query = query.gte('created_at', cutoff.isoformat())
+
+        result = query.execute()
+
+        if not result.data:
+            click.echo(f"\n⚠️  No suggestions found matching criteria")
+            return
+
+        click.echo(f"   ✓ Found {len(result.data)} suggestions")
+
+        # Group by tweet_id (each tweet has 5 suggestions in V1.3)
+        from collections import defaultdict
+        import math
+        tweets_map = defaultdict(list)
+
+        for suggestion in result.data:
+            tweets_map[suggestion['tweet_id']].append(suggestion)
+
+        # Sort tweets based on sort_by parameter
+        if sort_by == 'score':
+            # Sort by score only (quality)
+            sorted_tweets = sorted(tweets_map.items(),
+                                  key=lambda x: max(s['score_total'] for s in x[1]),
+                                  reverse=True)
+        elif sort_by == 'views':
+            # Sort by views only (reach)
+            def get_views(item):
+                suggestions = item[1]
+                for s in suggestions:
+                    post_data = s.get('posts')
+                    if post_data:
+                        return post_data.get('views', 0) or 0
+                return 0
+            sorted_tweets = sorted(tweets_map.items(),
+                                  key=get_views,
+                                  reverse=True)
+        else:  # balanced (default)
+            # Sort by score × √views (balanced quality + reach)
+            def get_priority(item):
+                suggestions = item[1]
+                score = max(s['score_total'] for s in suggestions)
+                for s in suggestions:
+                    post_data = s.get('posts')
+                    if post_data:
+                        views = post_data.get('views', 0) or 0
+                        return score * math.sqrt(views)
+                return score  # Fallback if no views data
+            sorted_tweets = sorted(tweets_map.items(),
+                                  key=get_priority,
+                                  reverse=True)
+
+        # Apply limit if specified
+        if limit is not None:
+            sorted_tweets = sorted_tweets[:limit]
+
+        click.echo(f"   ✓ Grouped into {len(sorted_tweets)} tweets with metadata")
+
+        # Write CSV
+        click.echo(f"\n📝 Writing CSV...")
+
+        # One row per tweet with tweet metadata + suggested response + alternatives (V1.3: 5 types)
+        fieldnames = [
+            'rank', 'priority_score',  # Prioritization columns (V1.4)
+            'project', 'tweet_id', 'url', 'author', 'followers', 'views', 'tweet_text', 'posted_at',
+            'score_total', 'label', 'topic', 'why',
+            'suggested_response', 'suggested_type',
+            'alternative_1', 'alt_1_type',
+            'alternative_2', 'alt_2_type',
+            'alternative_3', 'alt_3_type',
+            'alternative_4', 'alt_4_type'
+        ]
+
+        rows_written = 0
+
+        with open(out, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for rank_num, (tweet_id, suggestions) in enumerate(sorted_tweets, 1):
+                # Sort by rank (1=primary, 2-5=alternatives)
+                suggestions_sorted = sorted(suggestions, key=lambda s: s.get('rank', 1))
+
+                # Primary suggestion (rank=1)
+                primary = suggestions_sorted[0]
+                alts = suggestions_sorted[1:5]  # V1.3: Get all 4 alternatives
+
+                # Extract tweet metadata from joined posts/accounts data
+                post_data = primary.get('posts')
+                tweet_text = ''
+                author = ''
+                followers = 0
+                views = 0
+                posted_at = ''
+
+                if post_data:
+                    tweet_text = post_data.get('caption', '')
+                    posted_at = post_data.get('posted_at', '')
+                    views = post_data.get('views', 0) or 0
+                    account_data = post_data.get('accounts')
+                    if account_data:
+                        author = account_data.get('platform_username', '')
+                        followers = account_data.get('follower_count', 0) or 0
+
+                # Calculate priority_score based on sort method
+                score = primary['score_total']
+                if sort_by == 'views':
+                    priority_score = views
+                elif sort_by == 'balanced':
+                    priority_score = score * math.sqrt(views)
+                else:  # score
+                    priority_score = score
+
+                row = {
+                    'rank': rank_num,
+                    'priority_score': round(priority_score, 2),
+                    'project': project,
+                    'tweet_id': tweet_id,
+                    'url': f"https://twitter.com/i/status/{tweet_id}",
+                    'author': author,
+                    'followers': followers,
+                    'views': views,
+                    'tweet_text': tweet_text,
+                    'posted_at': posted_at,
+                    'score_total': round(primary['score_total'], 3),
+                    'label': primary['label'],
+                    'topic': primary.get('topic', ''),
+                    'why': primary.get('why', ''),
+                    'suggested_response': primary['comment_text'],
+                    'suggested_type': primary['suggestion_type'],
+                    'alternative_1': alts[0]['comment_text'] if len(alts) > 0 else '',
+                    'alt_1_type': alts[0]['suggestion_type'] if len(alts) > 0 else '',
+                    'alternative_2': alts[1]['comment_text'] if len(alts) > 1 else '',
+                    'alt_2_type': alts[1]['suggestion_type'] if len(alts) > 1 else '',
+                    'alternative_3': alts[2]['comment_text'] if len(alts) > 2 else '',
+                    'alt_3_type': alts[2]['suggestion_type'] if len(alts) > 2 else '',
+                    'alternative_4': alts[3]['comment_text'] if len(alts) > 3 else '',
+                    'alt_4_type': alts[3]['suggestion_type'] if len(alts) > 3 else '',
+                }
+
+                writer.writerow(row)
+                rows_written += 1
+
+        click.echo(f"   ✓ Wrote {rows_written} tweets to {out}")
+
+        # Update status to 'exported'
+        if status == 'pending':
+            click.echo(f"\n🔄 Updating status to 'exported'...")
+
+            # Get all comment IDs from the exported tweets
+            comment_ids = []
+            for tweet_id, suggestions in sorted_tweets:
+                comment_ids.extend([s['id'] for s in suggestions])
+
+            # Batch update to avoid URL length limits (100 IDs per batch)
+            batch_size = 100
+            total_updated = 0
+            for i in range(0, len(comment_ids), batch_size):
+                batch = comment_ids[i:i + batch_size]
+                db.table('generated_comments')\
+                    .update({'status': 'exported'})\
+                    .in_('id', batch)\
+                    .execute()
+                total_updated += len(batch)
+
+            click.echo(f"   ✓ Updated {total_updated} suggestions ({rows_written} tweets)")
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Export Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Exported: {rows_written} tweets ({rows_written * 5} total suggestions)")
+        click.echo(f"   File: {out}")
+
+        # Show distribution by label
+        if rows_written > 0:
+            labels_count = {}
+
+            for tweet_id, suggestions in sorted_tweets:
+                # Use label from first suggestion (they all have same label)
+                l = suggestions[0]['label']
+                labels_count[l] = labels_count.get(l, 0) + 1
+
+            click.echo(f"\n   By label:")
+            for l, count in sorted(labels_count.items()):
+                emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴'}.get(l, '')
+                click.echo(f"   - {emoji} {l}: {count} tweets")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review CSV and select comments to post")
+        click.echo(f"   - Post manually or use automation tool")
+        click.echo(f"   - Mark as 'posted' in database when done")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Export failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="analyze-search-term")
+@click.option('--project', '-p', required=True, help='Project slug')
+@click.option('--term', required=True, help='Search term to analyze')
+@click.option('--count', default=1000, type=int, help='Tweets to analyze (default: 1000)')
+@click.option('--min-likes', default=0, type=int, help='Minimum likes (default: 0)')
+@click.option('--days-back', default=7, type=int, help='Days to look back (default: 7)')
+@click.option('--batch-size', default=10, type=int, help='Comment generation batch size (default: 10)')
+@click.option('--skip-comments', is_flag=True, help='Skip comment generation (faster, cheaper)')
+@click.option('--report-file', help='Output JSON report path (optional)')
+def analyze_search_term(
+    project: str,
+    term: str,
+    count: int,
+    min_likes: int,
+    days_back: int,
+    batch_size: int,
+    skip_comments: bool,
+    report_file: Optional[str]
+):
+    """
+    Analyze a search term to find engagement opportunities
+
+    Tests a search term by scraping tweets, scoring them against the project's
+    taxonomy, and analyzing multiple dimensions: quality (green ratio), volume
+    (freshness), virality (views), and cost efficiency.
+
+    Use this to find the best search terms for your project before committing
+    to regular scraping.
+
+    Examples:
+        # Quick test
+        vt twitter analyze-search-term -p my-project --term "screen time kids"
+
+        # Full analysis with 1000 tweets
+        vt twitter analyze-search-term -p my-project --term "parenting tips" \\
+          --count 1000 --min-likes 20 --report-file ~/Downloads/report.json
+    """
+    try:
+        from ..analysis.search_term_analyzer import SearchTermAnalyzer
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🔍 Search Term Analysis")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Project: {project}")
+        click.echo(f"Search term: \"{term}\"")
+        click.echo(f"Analyzing {count} tweets...")
+        click.echo()
+
+        # Initialize analyzer
+        try:
+            analyzer = SearchTermAnalyzer(project)
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            raise click.Abort()
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: No finder.yml found for project '{project}'", err=True)
+            click.echo(f"   Create: projects/{project}/finder.yml", err=True)
+            raise click.Abort()
+
+        # Progress tracking
+        current_phase = [""]
+        phase_emoji = {
+            "scraping": "🔍",
+            "embedding": "🔢",
+            "scoring": "📊",
+            "generating": "🤖",
+            "analyzing": "📈"
+        }
+
+        def progress_callback(phase, current, total):
+            if phase != current_phase[0]:
+                current_phase[0] = phase
+                emoji = phase_emoji.get(phase, "⏳")
+                click.echo(f"{emoji} {phase.title()}...")
+
+        # Run analysis
+        click.echo("Starting analysis...\n")
+
+        try:
+            metrics = analyzer.analyze(
+                term,
+                count,
+                min_likes,
+                days_back,
+                batch_size,
+                skip_comments=skip_comments,
+                progress_callback=progress_callback
+            )
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            click.echo("\n💡 Try:")
+            click.echo("   - Different search term")
+            click.echo("   - Lowering --min-likes")
+            click.echo("   - Increasing --days-back")
+            raise click.Abort()
+
+        # Display results
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📊 Analysis Results")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Tweets analyzed: {metrics.tweets_analyzed}")
+        click.echo()
+
+        click.echo(f"Score Distribution:")
+        click.echo(f"  🟢 Green:  {metrics.green_count:4d} ({metrics.green_percentage:5.1f}%) - avg score: {metrics.green_avg_score:.3f}")
+        click.echo(f"  🟡 Yellow: {metrics.yellow_count:4d} ({metrics.yellow_percentage:5.1f}%) - avg score: {metrics.yellow_avg_score:.3f}")
+        click.echo(f"  🔴 Red:    {metrics.red_count:4d} ({metrics.red_percentage:5.1f}%) - avg score: {metrics.red_avg_score:.3f}")
+        click.echo()
+
+        click.echo(f"Freshness:")
+        click.echo(f"  Last 48h: {metrics.last_48h_count} tweets ({metrics.last_48h_percentage:.1f}%)")
+        click.echo(f"  ~{metrics.conversations_per_day:.0f} tweets/day")
+        click.echo()
+
+        click.echo(f"Virality:")
+        if metrics.avg_views > 0:
+            click.echo(f"  Avg views:    {metrics.avg_views:,.0f}")
+            click.echo(f"  Median views: {metrics.median_views:,.0f}")
+            click.echo(f"  Top 10% avg:  {metrics.top_10_percent_avg_views:,.0f}")
+            click.echo(f"  10k+ views:   {metrics.tweets_with_10k_plus_views} tweets")
+        else:
+            click.echo(f"  (View data not available)")
+        click.echo()
+
+        click.echo(f"Topic Distribution:")
+        for topic, count in sorted(metrics.topic_distribution.items(), key=lambda x: x[1], reverse=True):
+            pct = (count / metrics.tweets_analyzed * 100) if metrics.tweets_analyzed > 0 else 0
+            click.echo(f"  - {topic}: {count} ({pct:.1f}%)")
+        click.echo()
+
+        click.echo(f"Cost Efficiency:")
+        click.echo(f"  Total cost:        ${metrics.total_cost_usd:.3f}")
+        if metrics.cost_per_green > 0:
+            click.echo(f"  Cost per green:    ${metrics.cost_per_green:.5f}")
+            click.echo(f"  Greens per dollar: {metrics.greens_per_dollar:.0f}")
+        click.echo()
+
+        click.echo(f"{'='*60}")
+        click.echo(f"💡 Recommendation: {metrics.recommendation} ({metrics.confidence} confidence)")
+        click.echo(f"{'='*60}")
+        click.echo(f"{metrics.reasoning}")
+        click.echo()
+
+        # Export if requested
+        if report_file:
+            analyzer.export_json(metrics, report_file)
+            click.echo(f"✅ Report saved to: {report_file}\n")
+
+        click.echo(f"{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Analysis failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="find-outliers")
+@click.option('--project', '-p', required=True, help='Project slug')
+@click.option('--days-back', default=30, type=int, help='Look back N days (default: 30)')
+@click.option('--min-views', default=100, type=int, help='Minimum view count (default: 100)')
+@click.option('--min-likes', default=0, type=int, help='Minimum like count (default: 0)')
+@click.option('--method', type=click.Choice(['zscore', 'percentile']), default='zscore', help='Detection method (default: zscore)')
+@click.option('--threshold', default=2.0, type=float, help='Z-score threshold (e.g., 2.0) or percentile (e.g., 5.0 for top 5%)')
+@click.option('--trim-percent', default=10.0, type=float, help='Trim percent for z-score method (default: 10%)')
+@click.option('--time-decay/--no-time-decay', default=False, help='Apply time decay weighting (recent tweets weighted higher)')
+@click.option('--decay-halflife', default=7, type=int, help='Half-life for time decay in days (default: 7)')
+@click.option('--text-only', is_flag=True, help='Exclude video/image posts (text-only tweets for content adaptation)')
+@click.option('--export-json', help='Export outlier report to JSON file (optional)')
+def find_outliers(
+    project: str,
+    days_back: int,
+    min_views: int,
+    min_likes: int,
+    method: str,
+    threshold: float,
+    trim_percent: float,
+    time_decay: bool,
+    decay_halflife: int,
+    text_only: bool,
+    export_json: Optional[str]
+):
+    """
+    Find outlier tweets using statistical analysis
+
+    Identifies high-performing tweets that stand out from the baseline using either:
+    - Z-score: Tweets N standard deviations above the trimmed mean
+    - Percentile: Top N% of tweets by engagement
+
+    These outliers can be analyzed to understand what makes them viral and adapted
+    for long-form content generation.
+
+    Examples:
+        # Find outliers using z-score (2 SD above mean)
+        vt twitter find-outliers --project my-project --days-back 30
+
+        # Find top 5% by engagement
+        vt twitter find-outliers -p my-project --method percentile --threshold 5.0
+
+        # Text-only tweets (exclude video/images for content adaptation)
+        vt twitter find-outliers -p my-project --text-only
+
+        # With time decay (recent tweets weighted higher)
+        vt twitter find-outliers -p my-project --time-decay --decay-halflife 7
+
+        # Export to JSON
+        vt twitter find-outliers -p my-project --export-json outliers.json
+    """
+    try:
+        from ..generation.outlier_detector import OutlierDetector
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🔍 Outlier Detection")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Project: {project}")
+        click.echo(f"Time window: last {days_back} days")
+        click.echo(f"Filters: {min_views:,}+ views, {min_likes:,}+ likes")
+        click.echo(f"Method: {method}")
+
+        if method == 'zscore':
+            click.echo(f"Threshold: {threshold} standard deviations")
+            click.echo(f"Trim percent: {trim_percent}%")
+        else:
+            click.echo(f"Threshold: top {threshold}%")
+
+        if time_decay:
+            click.echo(f"Time decay: enabled (half-life: {decay_halflife} days)")
+
+        if text_only:
+            click.echo(f"Media filter: text-only (excluding video/image posts)")
+
+        click.echo()
+
+        # Initialize detector
+        try:
+            detector = OutlierDetector(project_slug=project)
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            raise click.Abort()
+
+        # Find outliers
+        click.echo("🔍 Analyzing tweets...")
+        outliers = detector.find_outliers(
+            days_back=days_back,
+            min_views=min_views,
+            min_likes=min_likes,
+            method=method,
+            threshold=threshold,
+            trim_percent=trim_percent,
+            time_decay=time_decay,
+            decay_halflife_days=decay_halflife,
+            text_only=text_only
+        )
+
+        if not outliers:
+            click.echo(f"\n⚠️  No outliers found")
+            click.echo(f"\n💡 Try:")
+            click.echo(f"   - Lowering threshold (--threshold)")
+            click.echo(f"   - Increasing time window (--days-back)")
+            click.echo(f"   - Lowering filters (--min-views, --min-likes)")
+            return
+
+        # Display results
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📊 Outlier Results")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"Found {len(outliers)} outliers:\n")
+
+        # Show top 10
+        for i, result in enumerate(outliers[:10], 1):
+            tweet = result.tweet
+            click.echo(f"[{i}] Rank {result.rank} (Top {result.rank_percentile:.1f}%)")
+            click.echo(f"    Tweet: {tweet.tweet_id}")
+            click.echo(f"    URL: https://twitter.com/i/status/{tweet.tweet_id}")
+            click.echo(f"    Author: @{tweet.author_handle} ({tweet.author_followers:,} followers)")
+            click.echo(f"    Posted: {tweet.posted_at.strftime('%Y-%m-%d %H:%M')}")
+            click.echo(f"    Metrics: {tweet.views:,} views, {tweet.likes:,} likes, {tweet.retweets:,} retweets")
+            click.echo(f"    Engagement rate: {tweet.engagement_rate:.4f}")
+            click.echo(f"    Z-score: {result.z_score:.2f}, Percentile: {result.percentile:.1f}%")
+
+            # Show tweet text (truncated)
+            text_preview = tweet.text[:100] + "..." if len(tweet.text) > 100 else tweet.text
+            click.echo(f"    Text: \"{text_preview}\"")
+            click.echo()
+
+        if len(outliers) > 10:
+            click.echo(f"... and {len(outliers) - 10} more outliers\n")
+
+        # Export if requested
+        if export_json:
+            click.echo(f"📄 Exporting report to JSON...")
+            report = detector.export_report(outliers, export_json)
+            click.echo(f"   ✓ Saved to {export_json}")
+            click.echo()
+
+        # Summary
+        click.echo(f"{'='*60}")
+        click.echo(f"✅ Analysis Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Total outliers: {len(outliers)}")
+
+        # Show engagement distribution
+        avg_views = sum(r.tweet.views for r in outliers) / len(outliers)
+        avg_likes = sum(r.tweet.likes for r in outliers) / len(outliers)
+        avg_engagement_rate = sum(r.tweet.engagement_rate for r in outliers) / len(outliers)
+
+        click.echo(f"   Average views: {avg_views:,.0f}")
+        click.echo(f"   Average likes: {avg_likes:,.0f}")
+        click.echo(f"   Average engagement rate: {avg_engagement_rate:.4f}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Analyze hooks: Review what makes these tweets viral")
+        click.echo(f"   - Generate content: vt twitter generate-content --source-tweets {export_json if export_json else 'from-db'}")
+        click.echo(f"   - Export list: Use --export-json to save outliers for later use")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Outlier detection failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="analyze-hooks")
+@click.option('--input-json', required=True, help='Input JSON file from find-outliers command')
+@click.option('--output-json', required=True, help='Output JSON file for hook analysis results')
+@click.option('--limit', type=int, help='Limit analysis to first N tweets (optional)')
+def analyze_hooks(
+    input_json: str,
+    output_json: str,
+    limit: Optional[int]
+):
+    """
+    Analyze hooks from outlier tweets using AI
+
+    Takes the JSON export from find-outliers and analyzes what makes each
+    tweet viral. Classifies hook types, emotional triggers, and content patterns.
+
+    Examples:
+        # Analyze hooks from outliers
+        vt twitter analyze-hooks \\
+          --input-json outliers.json \\
+          --output-json hook_analysis.json
+
+        # Analyze only top 5
+        vt twitter analyze-hooks \\
+          --input-json outliers.json \\
+          --output-json hook_analysis.json \\
+          --limit 5
+    """
+    try:
+        import json
+        from ..generation.hook_analyzer import HookAnalyzer
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🎣 Hook Analysis")
+        click.echo(f"{'='*60}\n")
+
+        # Load outliers
+        click.echo(f"📂 Loading outliers from {input_json}...")
+        try:
+            with open(input_json, 'r', encoding='utf-8') as f:
+                outliers_data = json.load(f)
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: File not found: {input_json}", err=True)
+            raise click.Abort()
+        except json.JSONDecodeError:
+            click.echo(f"\n❌ Error: Invalid JSON file: {input_json}", err=True)
+            raise click.Abort()
+
+        outliers = outliers_data.get('outliers', [])
+        if not outliers:
+            click.echo(f"\n⚠️  No outliers found in input file", err=True)
+            raise click.Abort()
+
+        total_count = len(outliers)
+        click.echo(f"   ✓ Loaded {total_count} outliers")
+
+        # Apply limit if specified
+        if limit:
+            outliers = outliers[:limit]
+            click.echo(f"   ✓ Limited to {len(outliers)} tweets")
+
+        click.echo()
+
+        # Initialize analyzer
+        click.echo("🤖 Initializing AI hook analyzer...")
+        try:
+            analyzer = HookAnalyzer()
+            click.echo("   ✓ Hook analyzer ready (using Gemini 2.0 Flash)")
+        except ValueError as e:
+            click.echo(f"\n❌ Error: {e}", err=True)
+            click.echo("   Make sure GOOGLE_API_KEY is set in your environment", err=True)
+            raise click.Abort()
+
+        click.echo()
+
+        # Analyze hooks
+        click.echo(f"🔍 Analyzing {len(outliers)} tweet hooks...")
+        click.echo()
+
+        analyses = []
+        for i, outlier in enumerate(outliers, 1):
+            tweet_text = outlier.get('text', '')
+            tweet_id = outlier.get('tweet_id', '')
+
+            click.echo(f"[{i}/{len(outliers)}] Analyzing tweet {tweet_id[:12]}...")
+
+            try:
+                analysis = analyzer.analyze_hook(tweet_text, tweet_id)
+
+                # Display result
+                click.echo(f"   Hook: {analysis.hook_type} ({analysis.hook_type_confidence:.0%} confidence)")
+                click.echo(f"   Emotion: {analysis.emotional_trigger}")
+                click.echo(f"   Pattern: {analysis.content_pattern}")
+                click.echo(f"   Why it works: {analysis.hook_explanation[:80]}...")
+                click.echo()
+
+                analyses.append(analysis)
+
+            except Exception as e:
+                click.echo(f"   ✗ Analysis failed: {e}")
+                click.echo()
+                continue
+
+        if not analyses:
+            click.echo(f"\n⚠️  No successful analyses", err=True)
+            raise click.Abort()
+
+        # Export results
+        click.echo(f"\n📄 Exporting hook analysis...")
+        analyzer.export_analysis(analyses, output_json)
+        click.echo(f"   ✓ Saved to {output_json}")
+
+        # Summary statistics
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Analysis Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Total analyzed: {len(analyses)}")
+
+        # Count hook types
+        from collections import Counter
+        hook_types = Counter(a.hook_type for a in analyses)
+        emotional_triggers = Counter(a.emotional_trigger for a in analyses)
+        content_patterns = Counter(a.content_pattern for a in analyses)
+
+        click.echo(f"\n   Top hook types:")
+        for hook_type, count in hook_types.most_common(3):
+            click.echo(f"   - {hook_type}: {count}")
+
+        click.echo(f"\n   Top emotional triggers:")
+        for trigger, count in emotional_triggers.most_common(3):
+            click.echo(f"   - {trigger}: {count}")
+
+        click.echo(f"\n   Top content patterns:")
+        for pattern, count in content_patterns.most_common(3):
+            click.echo(f"   - {pattern}: {count}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review analysis: {output_json}")
+        click.echo(f"   - Adapt hooks: Use insights for content generation")
+        click.echo(f"   - Generate content: vt twitter generate-content (Phase 3)")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Hook analysis failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="generate-content")
+@click.option('--input-json', required=True, help='Input JSON file from analyze-hooks command')
+@click.option('--project', '-p', required=True, help='Project name (from finder.yml)')
+@click.option('--content-types', multiple=True, default=['thread', 'blog'],
+              help='Content types to generate: thread, blog (default: both)')
+@click.option('--max-content', type=int, default=5, help='Maximum content pieces to generate (default: 5)')
+@click.option('--output-dir', help='Directory to save generated content (optional)')
+def generate_content(
+    input_json: str,
+    project: str,
+    content_types: tuple,
+    max_content: int,
+    output_dir: Optional[str]
+):
+    """
+    Generate long-form content from analyzed hooks (Phase 3)
+
+    Takes hook analysis from analyze-hooks and generates Twitter threads
+    and blog posts (both by default).
+
+    Examples:
+        # Generate both threads and blogs (default)
+        vt twitter generate-content \\
+          --input-json hook_analysis.json \\
+          --project yakety-pack-instagram
+
+        # Generate only threads
+        vt twitter generate-content \\
+          --input-json hook_analysis.json \\
+          --project my-project \\
+          --content-types thread \\
+          --max-content 3
+
+        # Generate only blogs
+        vt twitter generate-content \\
+          --input-json hook_analysis.json \\
+          --project my-project \\
+          --content-types blog
+    """
+    try:
+        import json
+        from pathlib import Path
+        from ..generation.thread_generator import ThreadGenerator
+        from ..generation.blog_generator import BlogGenerator
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✨ Content Generation (Phase 3)")
+        click.echo(f"{'='*60}\n")
+
+        # Load hook analysis
+        click.echo(f"📂 Loading hook analysis from {input_json}...")
+        try:
+            with open(input_json, 'r', encoding='utf-8') as f:
+                hooks_data = json.load(f)
+        except FileNotFoundError:
+            click.echo(f"\n❌ Error: File not found: {input_json}", err=True)
+            raise click.Abort()
+        except json.JSONDecodeError:
+            click.echo(f"\n❌ Error: Invalid JSON file: {input_json}", err=True)
+            raise click.Abort()
+
+        analyses = hooks_data.get('analyses', [])
+        if not analyses:
+            click.echo(f"\n⚠️  No hook analyses found in input file", err=True)
+            raise click.Abort()
+
+        total_hooks = len(analyses)
+        click.echo(f"   ✓ Loaded {total_hooks} hook analyses")
+
+        # Limit to max_content
+        if max_content and max_content < len(analyses):
+            analyses = analyses[:max_content]
+            click.echo(f"   ✓ Limited to {len(analyses)} hooks")
+
+        # Load project config
+        click.echo(f"\n📋 Loading project config: {project}")
+        try:
+            import yaml
+            from pathlib import Path
+
+            # Load finder.yml for the project
+            finder_path = Path(f"projects/{project}/finder.yml")
+            if not finder_path.exists():
+                click.echo(f"\n❌ Error: finder.yml not found at {finder_path}", err=True)
+                raise click.Abort()
+
+            with open(finder_path, 'r') as f:
+                project_config = yaml.safe_load(f)
+
+            click.echo(f"   ✓ Project loaded: {project_config.get('name', project)}")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error loading project config: {e}", err=True)
+            raise click.Abort()
+
+        # Get database connection
+        click.echo(f"\n🗄️  Connecting to database...")
+        try:
+            db = get_supabase_client()
+
+            # Get project ID from database using the name from config
+            db_project_name = project_config.get('name', project)
+            result = db.table('projects').select('id, name').eq('name', db_project_name).execute()
+
+            # If not found, try with the slug directly
+            if not result.data:
+                result = db.table('projects').select('id, name').eq('name', project).execute()
+
+            if not result.data:
+                click.echo(f"\n❌ Error: Project '{project}' / '{db_project_name}' not found in database", err=True)
+                click.echo(f"   Tip: Run 'vt twitter scrape -p {project}' first to create project", err=True)
+                raise click.Abort()
+
+            project_id = result.data[0]['id']
+            db_project_name = result.data[0]['name']
+            click.echo(f"   ✓ Connected: {db_project_name} (id: {project_id[:8]}...)")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error connecting to database: {e}", err=True)
+            raise click.Abort()
+
+        # Prepare project context
+        project_context = {
+            'project_id': project_id,
+            'product_name': project_config.get('name'),
+            'product_description': project_config.get('description', ''),
+            'target_audience': project_config.get('target_audience', 'users'),
+            'key_benefits': project_config.get('key_benefits', [])
+        }
+
+        # Initialize generators
+        generators = {}
+        if 'thread' in content_types:
+            click.echo(f"\n🧵 Initializing Thread Generator...")
+            generators['thread'] = ThreadGenerator(db_connection=db)
+            click.echo(f"   ✓ Thread generator ready")
+
+        if 'blog' in content_types:
+            click.echo(f"\n📝 Initializing Blog Generator...")
+            generators['blog'] = BlogGenerator(db_connection=db)
+            click.echo(f"   ✓ Blog generator ready")
+
+        if not generators:
+            click.echo(f"\n⚠️  No valid content types specified", err=True)
+            click.echo(f"   Valid types: thread, blog", err=True)
+            raise click.Abort()
+
+        # Generate content
+        click.echo(f"\n{'='*60}")
+        click.echo(f"🚀 Generating Content")
+        click.echo(f"{'='*60}\n")
+
+        total_cost = 0.0
+        generated_content = []
+
+        for i, hook_analysis in enumerate(analyses, 1):
+            click.echo(f"[{i}/{len(analyses)}] Processing hook: {hook_analysis.get('hook_type')}...")
+            click.echo(f"   Tweet: \"{hook_analysis.get('tweet_text', '')[:60]}...\"")
+            click.echo()
+
+            for content_type, generator in generators.items():
+                try:
+                    click.echo(f"   🎯 Generating {content_type}...")
+
+                    content = generator.generate(hook_analysis, project_context)
+
+                    # Save to database
+                    content_id = generator.save_to_db(content)
+
+                    total_cost += content.api_cost_usd
+                    generated_content.append({
+                        'type': content_type,
+                        'id': content_id,
+                        'title': content.content_title,
+                        'cost': content.api_cost_usd
+                    })
+
+                    click.echo(f"   ✓ {content_type.capitalize()} generated: {content.content_title[:50]}...")
+                    click.echo(f"   💰 Cost: ${content.api_cost_usd:.4f}")
+                    click.echo()
+
+                except Exception as e:
+                    click.echo(f"   ✗ {content_type.capitalize()} generation failed: {e}")
+                    click.echo()
+                    continue
+
+        # Save to files if output_dir specified
+        if output_dir:
+            click.echo(f"\n📄 Exporting to files...")
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+
+            for item in generated_content:
+                filename = f"{item['type']}_{item['id'][:8]}.json"
+                filepath = output_path / filename
+
+                # Re-fetch from database to get full content
+                if item['type'] == 'thread':
+                    content_obj = generators['thread'].load_from_db(item['id'])
+                elif item['type'] == 'blog':
+                    content_obj = generators['blog'].load_from_db(item['id'])
+                else:
+                    continue
+
+                if content_obj:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'id': content_obj.id,
+                            'type': content_obj.content_type,
+                            'title': content_obj.content_title,
+                            'body': content_obj.content_body,
+                            'metadata': content_obj.content_metadata,
+                            'hook_type': content_obj.hook_type,
+                            'created_at': content_obj.created_at.isoformat()
+                        }, f, indent=2, ensure_ascii=False)
+
+                    click.echo(f"   ✓ Saved: {filepath}")
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Content Generation Complete")
+        click.echo(f"{'='*60}\n")
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Hooks processed: {len(analyses)}")
+        click.echo(f"   Content pieces generated: {len(generated_content)}")
+        click.echo(f"   Total API cost: ${total_cost:.4f}")
+
+        # Count by type
+        from collections import Counter
+        type_counts = Counter(item['type'] for item in generated_content)
+        click.echo(f"\n   By type:")
+        for content_type, count in type_counts.items():
+            click.echo(f"   - {content_type}: {count}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review content in database (status: pending)")
+        click.echo(f"   - Export: vt twitter export-content -p {project}")
+        click.echo(f"   - Update status after review: UPDATE generated_content SET status='reviewed'")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Content generation failed: {e}", err=True)
+        logger.exception(e)
+        raise click.Abort()
+
+
+@twitter_group.command(name="export-content")
+@click.option('--project', '-p', required=True, help='Project name (from finder.yml)')
+@click.option('--content-type', type=click.Choice(['thread', 'blog', 'all']), default='all',
+              help='Content type to export (default: all)')
+@click.option('--status', type=click.Choice(['pending', 'reviewed', 'published', 'all']), default='all',
+              help='Status filter (default: all)')
+@click.option('--format', '-f', type=click.Choice(['markdown', 'json', 'csv', 'twitter', 'longform', 'medium']),
+              multiple=True, default=['markdown', 'twitter', 'longform'],
+              help='Export formats (default: markdown, twitter, longform)')
+@click.option('--output-dir', '-o', default='./exports', help='Output directory (default: ./exports)')
+@click.option('--limit', type=int, default=100, help='Max items to export (default: 100)')
+def export_content(
+    project: str,
+    content_type: str,
+    status: str,
+    format: tuple,
+    output_dir: str,
+    limit: int
+):
+    """
+    Export generated content in various formats
+
+    By default exports threads in 3 formats:
+    - markdown: Overview with all content
+    - twitter: Thread format (individual tweets)
+    - longform: Single long post for LinkedIn/Instagram
+
+    Examples:
+        # Export with defaults (markdown, twitter, longform)
+        vt twitter export-content -p yakety-pack-instagram
+
+        # Export only long-form versions
+        vt twitter export-content \\
+          -p yakety-pack-instagram \\
+          --content-type thread \\
+          --format longform
+
+        # Export in all formats
+        vt twitter export-content \\
+          -p yakety-pack-instagram \\
+          --format markdown \\
+          --format twitter \\
+          --format longform \\
+          --format json
+    """
+    try:
+        import yaml
+        from pathlib import Path
+        from ..generation.content_generator import ContentGenerator
+        from ..generation.content_exporter import ContentExporter
+
+        click.echo(f"\n{'='*60}")
+        click.echo(f"📤 Content Export")
+        click.echo(f"{'='*60}\n")
+
+        # Load project config
+        click.echo(f"📋 Loading project: {project}")
+        try:
+            finder_path = Path(f"projects/{project}/finder.yml")
+            if not finder_path.exists():
+                click.echo(f"\n❌ Error: finder.yml not found at {finder_path}", err=True)
+                raise click.Abort()
+
+            with open(finder_path, 'r') as f:
+                project_config = yaml.safe_load(f)
+
+            click.echo(f"   ✓ Project loaded: {project_config.get('name', project)}")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error loading project config: {e}", err=True)
+            raise click.Abort()
+
+        # Get database connection
+        click.echo(f"\n🗄️  Connecting to database...")
+        try:
+            db = get_supabase_client()
+
+            # Get project ID
+            db_project_name = project_config.get('name', project)
+            result = db.table('projects').select('id, name').eq('name', db_project_name).execute()
+
+            if not result.data:
+                result = db.table('projects').select('id, name').eq('name', project).execute()
+
+            if not result.data:
+                click.echo(f"\n❌ Error: Project not found in database", err=True)
+                raise click.Abort()
+
+            project_id = result.data[0]['id']
+            click.echo(f"   ✓ Connected: {result.data[0]['name']}")
+
+        except Exception as e:
+            click.echo(f"\n❌ Error connecting to database: {e}", err=True)
+            raise click.Abort()
+
+        # Load content from database
+        click.echo(f"\n📦 Loading generated content...")
+        generator = ContentGenerator(db_connection=db)
+
+        # Build filters
+        type_filter = None if content_type == 'all' else content_type
+        status_filter = None if status == 'all' else status
+
+        content_list = generator.get_project_content(
+            project_id=project_id,
+            content_type=type_filter,
+            status=status_filter,
+            limit=limit
+        )
+
+        if not content_list:
+            click.echo(f"\n⚠️  No content found matching filters", err=True)
+            click.echo(f"   Content type: {content_type}")
+            click.echo(f"   Status: {status}")
+            raise click.Abort()
+
+        click.echo(f"   ✓ Loaded {len(content_list)} content pieces")
+
+        # Export in requested formats
+        click.echo(f"\n📄 Exporting content...")
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        exporter = ContentExporter()
+        exported_files = []
+
+        for fmt in format:
+            try:
+                if fmt == 'markdown':
+                    filepath = output_path / f"{project}_content.md"
+                    exporter.export_to_markdown(content_list, str(filepath))
+                    exported_files.append(('Markdown', filepath))
+
+                elif fmt == 'json':
+                    filepath = output_path / f"{project}_content.json"
+                    exporter.export_to_json(content_list, str(filepath))
+                    exported_files.append(('JSON', filepath))
+
+                elif fmt == 'csv':
+                    filepath = output_path / f"{project}_content.csv"
+                    exporter.export_to_csv(content_list, str(filepath))
+                    exported_files.append(('CSV', filepath))
+
+                elif fmt == 'twitter':
+                    # Export each thread separately
+                    threads = [c for c in content_list if c.content_type == 'thread']
+                    for i, thread in enumerate(threads, 1):
+                        filepath = output_path / f"{project}_thread_{i}.txt"
+                        exporter.export_thread_for_twitter(thread, str(filepath))
+                        exported_files.append(('Twitter Thread', filepath))
+
+                elif fmt == 'longform':
+                    # Export each thread as long-form post
+                    threads = [c for c in content_list if c.content_type == 'thread']
+                    for i, thread in enumerate(threads, 1):
+                        filepath = output_path / f"{project}_longform_{i}.txt"
+                        exporter.export_thread_as_longform(thread, str(filepath))
+                        exported_files.append(('Long-form Post', filepath))
+
+                elif fmt == 'medium':
+                    # Export each blog separately
+                    blogs = [c for c in content_list if c.content_type == 'blog']
+                    for i, blog in enumerate(blogs, 1):
+                        filepath = output_path / f"{project}_blog_{i}.md"
+                        exporter.export_blog_for_medium(blog, str(filepath))
+                        exported_files.append(('Medium Blog', filepath))
+
+            except Exception as e:
+                click.echo(f"   ✗ {fmt} export failed: {e}")
+                continue
+
+        # Display exported files
+        for fmt, filepath in exported_files:
+            click.echo(f"   ✓ {fmt}: {filepath}")
+
+        # Summary
+        click.echo(f"\n{'='*60}")
+        click.echo(f"✅ Export Complete")
+        click.echo(f"{'='*60}\n")
+
+        # Stats by type
+        from collections import Counter
+        type_counts = Counter(c.content_type for c in content_list)
+        status_counts = Counter(c.status for c in content_list)
+
+        click.echo(f"📊 Summary:")
+        click.echo(f"   Total pieces exported: {len(content_list)}")
+        click.echo(f"   Output directory: {output_path}")
+
+        click.echo(f"\n   By type:")
+        for ctype, count in type_counts.items():
+            click.echo(f"   - {ctype}: {count}")
+
+        click.echo(f"\n   By status:")
+        for stat, count in status_counts.items():
+            click.echo(f"   - {stat}: {count}")
+
+        # Calculate total cost
+        total_cost = sum(c.api_cost_usd for c in content_list)
+        click.echo(f"\n   Total API cost: ${total_cost:.4f}")
+
+        click.echo(f"\n💡 Next steps:")
+        click.echo(f"   - Review exported content in: {output_path}")
+        click.echo(f"   - Copy threads to Twitter / scheduling tool")
+        click.echo(f"   - Publish blogs to Medium / your blog platform")
+
+        click.echo(f"\n{'='*60}\n")
+
+    except click.Abort:
+        raise
+    except Exception as e:
+        click.echo(f"\n❌ Content export failed: {e}", err=True)
         logger.exception(e)
         raise click.Abort()
 

@@ -102,7 +102,7 @@ class TwitterScraper:
         language: str = "en",
         project_slug: Optional[str] = None,
         timeout: int = 300
-    ) -> Tuple[int, int]:
+    ) -> Dict:
         """
         Search Twitter by keywords/hashtags
 
@@ -126,7 +126,11 @@ class TwitterScraper:
             timeout: Apify timeout in seconds
 
         Returns:
-            Tuple of (terms_count, tweets_count)
+            Dict with keys:
+                - terms_count: Number of search terms
+                - tweets_count: Number of tweets scraped
+                - apify_run_id: Apify actor run ID (single batch only)
+                - apify_dataset_id: Apify dataset ID (single batch only)
         """
         if max_tweets < 50:
             raise ValueError("Minimum 50 tweets required per query (actor limitation)")
@@ -151,6 +155,8 @@ class TwitterScraper:
         # Batch queries (max 5 per run)
         all_tweets = []
         batch_size = 5
+        last_run_id = None
+        last_dataset_id = None
 
         for i in range(0, len(queries), batch_size):
             batch = queries[i:i + batch_size]
@@ -170,9 +176,18 @@ class TwitterScraper:
 
             all_tweets.extend(items)
 
+            # Store IDs (for single batch scenarios)
+            last_run_id = run_id
+            last_dataset_id = result['datasetId']
+
         if not all_tweets:
             logger.warning("No tweets found")
-            return (len(search_terms), 0)
+            return {
+                'terms_count': len(search_terms),
+                'tweets_count': 0,
+                'apify_run_id': last_run_id,
+                'apify_dataset_id': last_dataset_id
+            }
 
         # Normalize to DataFrame
         df = self._normalize_tweets(all_tweets)
@@ -186,7 +201,12 @@ class TwitterScraper:
 
         post_ids = self.save_posts_to_db(df, project_id=project_id, import_source="search")
 
-        return (len(search_terms), len(post_ids))
+        return {
+            'terms_count': len(search_terms),
+            'tweets_count': len(post_ids),
+            'apify_run_id': last_run_id,
+            'apify_dataset_id': last_dataset_id
+        }
 
     def scrape_accounts(
         self,
@@ -518,6 +538,62 @@ class TwitterScraper:
 
         raise TimeoutError(f"Apify run timeout after {timeout}s")
 
+    def _detect_media_type(self, tweet: Dict) -> Dict[str, any]:
+        """
+        Detect media type from tweet data
+
+        Args:
+            tweet: Raw tweet data from Apify
+
+        Returns:
+            Dict with has_video, has_image, has_media, media_type
+        """
+        has_video = False
+        has_image = False
+        has_media = False
+        media_type = "text"
+
+        # Check for media fields that Apify might provide
+        media = tweet.get("media", [])
+        photos = tweet.get("photos", [])
+        videos = tweet.get("videos", [])
+
+        # Check for video
+        if videos or (media and any(m.get("type") == "video" for m in media)):
+            has_video = True
+            has_media = True
+            media_type = "video"
+
+        # Check for images/photos
+        if photos or (media and any(m.get("type") in ["photo", "image"] for m in media)):
+            has_image = True
+            has_media = True
+            # If also has video, it's mixed
+            if has_video:
+                media_type = "mixed"
+            else:
+                media_type = "image"
+
+        # Check for quote tweet (has media type of quote)
+        if tweet.get("isQuote") and not has_video and not has_image:
+            media_type = "quote"
+            has_media = True
+
+        # Fallback: Check for t.co links in text (might indicate media)
+        # But we can't determine type, so leave as text
+        text = tweet.get("text", "")
+        if not has_media and "https://t.co/" in text and "pic.twitter.com" not in text:
+            # Might have media, but we can't tell type without fetching
+            # Keep as text for now
+            pass
+
+        return {
+            "has_video": has_video,
+            "has_image": has_image,
+            "has_media": has_media,
+            "media_type": media_type
+        }
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
     def _fetch_dataset(self, dataset_id: str) -> List[Dict]:
         """
@@ -597,6 +673,9 @@ class TwitterScraper:
                     except:
                         logger.warning(f"Could not parse date: {created_at_str}")
 
+                # Detect media type
+                media_info = self._detect_media_type(tweet)
+
                 tweet_data = {
                     "post_id": str(tweet.get("id", "")),
                     "post_url": tweet.get("url", ""),
@@ -622,6 +701,12 @@ class TwitterScraper:
                     "is_reply": tweet.get("isReply", False),
                     "is_retweet": tweet.get("isRetweet", False),
                     "is_quote": tweet.get("isQuote", False),
+
+                    # Media type (Phase 2)
+                    "has_video": media_info["has_video"],
+                    "has_image": media_info["has_image"],
+                    "has_media": media_info["has_media"],
+                    "media_type": media_info["media_type"],
 
                     # Platform
                     "platform_id": self.platform_id,
@@ -701,7 +786,12 @@ class TwitterScraper:
                 "caption": row.get('caption'),
                 "video_type": "post",
                 "import_source": import_source,
-                "is_own_content": False
+                "is_own_content": False,
+                # Media type (Phase 2)
+                "has_video": bool(row.get('has_video', False)),
+                "has_image": bool(row.get('has_image', False)),
+                "has_media": bool(row.get('has_media', False)),
+                "media_type": row.get('media_type', 'text')
             }
 
             posts_data.append(post_dict)
