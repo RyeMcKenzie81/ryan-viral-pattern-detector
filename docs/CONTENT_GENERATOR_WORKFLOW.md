@@ -19,6 +19,24 @@ Find Viral Tweets → Analyze Hooks → Generate Content → Export & Publish
 
 ---
 
+## ⭐ What's New (2025-11-03)
+
+### Source Tweet URLs
+All exports now include clickable links to the original viral tweets:
+```
+Source: https://twitter.com/i/web/status/1983421691721322590
+```
+This makes it easy to reference the inspiration for your content!
+
+### Improved Content Style
+- **Fewer emojis**: 2-3 per thread (instead of 8-10)
+- **No em dashes**: Uses clearer punctuation
+- **More natural**: Content feels authentic, not artificial
+
+See [Tweet URLs & Style session summary](./SESSION_SUMMARY_TWEET_URLS_AND_STYLE.md) for details.
+
+---
+
 ## Prerequisites
 
 ### 1. Environment Setup
@@ -403,7 +421,8 @@ File: `yakety-pack-instagram_thread_1.txt`
 === TWITTER THREAD ===
 Title: Gaming & Family Connection
 Hook: hot_take / anger
-Total tweets: 8
+
+Source: https://twitter.com/i/web/status/1983421691721322590
 
 Copy each tweet individually:
 ============================================================
@@ -428,6 +447,8 @@ File: `yakety-pack-instagram_longform_1.txt`
 === LONG-FORM POST (LinkedIn/Instagram/Single Post) ===
 Title: Gaming & Family Connection
 Hook: hot_take / anger
+
+Source: https://twitter.com/i/web/status/1983421691721322590
 
 Copy and paste below:
 ============================================================
