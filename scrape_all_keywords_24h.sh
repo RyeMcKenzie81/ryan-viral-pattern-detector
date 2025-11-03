@@ -178,14 +178,35 @@ echo "========================================"
 # Generate filename with project-timeframe-date format
 export_date=$(date +%Y-%m-%d)
 export_file=~/Downloads/yakety-pack-instagram-24h-${export_date}.csv
+temp_file=~/Downloads/yakety-pack-instagram-24h-${export_date}.tmp.csv
 
 source venv/bin/activate && python -m viraltracker.cli.main twitter export-comments \
   --project yakety-pack-instagram \
-  --out $export_file \
+  --out $temp_file \
   --hours-back 24 \
   --status pending \
   --label green \
   --sort-by balanced
+
+# Filter out rows without comment suggestions (suggested_response column is empty)
+source venv/bin/activate && python -c "
+import csv
+
+with open('$temp_file', 'r') as infile, open('$export_file', 'w', newline='') as outfile:
+    reader = csv.DictReader(infile)
+    writer = csv.DictWriter(outfile, fieldnames=reader.fieldnames)
+    writer.writeheader()
+
+    for row in reader:
+        # Only export rows that have a suggested_response
+        if row.get('suggested_response', '').strip():
+            writer.writerow(row)
+
+print(f'Filtered export complete')
+"
+
+# Remove temp file
+rm -f $temp_file
 
 echo ""
 echo "✅ Complete! Greens exported to: $export_file"
