@@ -29,6 +29,21 @@ class ContentExporter:
     Export generated content in various formats
     """
 
+    @staticmethod
+    def _get_tweet_url(tweet_id: str) -> str:
+        """
+        Construct Twitter/X URL from tweet ID
+
+        Args:
+            tweet_id: Tweet ID
+
+        Returns:
+            Full URL to tweet
+        """
+        if not tweet_id:
+            return None
+        return f"https://twitter.com/i/web/status/{tweet_id}"
+
     def export_to_markdown(self, content_list: List[GeneratedContent], output_path: str) -> None:
         """
         Export content to markdown file
@@ -51,6 +66,11 @@ class ContentExporter:
             lines.append(f"- **Status**: {content.status}\n")
             lines.append(f"- **Cost**: ${content.api_cost_usd:.6f}\n")
             lines.append(f"- **ID**: `{content.id}`\n")
+
+            # Add source tweet URL
+            tweet_url = self._get_tweet_url(content.source_tweet_id)
+            if tweet_url:
+                lines.append(f"- **Source Tweet**: {tweet_url}\n")
 
             if content.source_tweet_text:
                 lines.append(f"\n### Source Tweet\n")
@@ -109,6 +129,7 @@ class ContentExporter:
                     'adaptation_notes': content.adaptation_notes
                 },
                 'source_tweet_id': content.source_tweet_id,
+                'source_tweet_url': self._get_tweet_url(content.source_tweet_id),
                 'status': content.status,
                 'cost_usd': float(content.api_cost_usd),
                 'model': content.model_used,
@@ -142,7 +163,7 @@ class ContentExporter:
                 'id', 'project_id', 'content_type', 'title',
                 'hook_type', 'emotional_trigger', 'content_pattern',
                 'status', 'cost_usd', 'model', 'created_at',
-                'word_count', 'source_tweet_id'
+                'word_count', 'source_tweet_id', 'source_tweet_url'
             ])
 
             # Rows
@@ -161,7 +182,8 @@ class ContentExporter:
                     content.model_used,
                     content.created_at.isoformat(),
                     word_count,
-                    content.source_tweet_id or ''
+                    content.source_tweet_id or '',
+                    self._get_tweet_url(content.source_tweet_id) or ''
                 ])
 
         logger.info(f"Exported {len(content_list)} items to CSV: {output_path}")
@@ -183,11 +205,20 @@ class ContentExporter:
             "=== TWITTER THREAD ===",
             f"Title: {content.content_title}",
             f"Hook: {content.hook_type} / {content.emotional_trigger}",
-            "",
+            ""
+        ]
+
+        # Add source tweet URL
+        tweet_url = self._get_tweet_url(content.source_tweet_id)
+        if tweet_url:
+            lines.append(f"Source: {tweet_url}")
+            lines.append("")
+
+        lines.extend([
             "Copy and paste each tweet below:",
             "=" * 60,
             ""
-        ]
+        ])
 
         for tweet in tweets:
             text = tweet.get('text', '')
@@ -224,11 +255,20 @@ class ContentExporter:
             "=== LONG-FORM POST (LinkedIn/Instagram/Single Post) ===",
             f"Title: {content.content_title}",
             f"Hook: {content.hook_type} / {content.emotional_trigger}",
-            "",
+            ""
+        ]
+
+        # Add source tweet URL
+        tweet_url = self._get_tweet_url(content.source_tweet_id)
+        if tweet_url:
+            lines.append(f"Source: {tweet_url}")
+            lines.append("")
+
+        lines.extend([
             "Copy and paste below:",
             "=" * 60,
             ""
-        ]
+        ])
 
         # Combine all tweets into paragraphs
         paragraphs = []
@@ -277,6 +317,14 @@ class ContentExporter:
             lines.append("")
 
         lines.append(metadata.get('content', content.content_body))
+
+        # Add source tweet URL as footer
+        tweet_url = self._get_tweet_url(content.source_tweet_id)
+        if tweet_url:
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+            lines.append(f"*Inspired by [this viral tweet]({tweet_url})*")
 
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)

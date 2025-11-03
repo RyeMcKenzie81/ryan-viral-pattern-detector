@@ -78,7 +78,7 @@ class ThreadGenerator(ContentGenerator):
 
         # Create GeneratedContent object
         content = GeneratedContent(
-            source_tweet_id=hook_analysis.get('source_tweet_id'),
+            source_tweet_id=hook_analysis.get('tweet_id'),  # Updated to use tweet_id field
             source_tweet_text=hook_analysis.get('tweet_text', ''),
             hook_type=hook_analysis.get('hook_type', 'unknown'),
             emotional_trigger=hook_analysis.get('emotional_trigger', 'unknown'),

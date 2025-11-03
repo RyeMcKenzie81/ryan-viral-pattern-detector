@@ -96,6 +96,9 @@ class HookAnalysis:
     has_question_mark: bool
     word_count: int
 
+    # Source tweet ID (optional)
+    tweet_id: Optional[str] = None
+
 
 class HookAnalyzer:
     """
@@ -124,12 +127,13 @@ class HookAnalyzer:
 
         logger.info(f"HookAnalyzer initialized with model: {model}")
 
-    def analyze_hook(self, tweet_text: str) -> HookAnalysis:
+    def analyze_hook(self, tweet_text: str, tweet_id: Optional[str] = None) -> HookAnalysis:
         """
         Analyze a tweet's hook using AI
 
         Args:
             tweet_text: Tweet content to analyze
+            tweet_id: Optional tweet ID for reference
 
         Returns:
             HookAnalysis with classifications and explanations
@@ -143,6 +147,10 @@ class HookAnalyzer:
 
         # Parse response
         analysis = self._parse_response(tweet_text, response.text)
+
+        # Add tweet ID if provided
+        if tweet_id:
+            analysis.tweet_id = tweet_id
 
         return analysis
 
@@ -302,6 +310,7 @@ IMPORTANT:
 
         for analysis in analyses:
             data["analyses"].append({
+                "tweet_id": analysis.tweet_id,  # Add tweet ID for reference
                 "tweet_text": analysis.tweet_text,
                 "hook_type": analysis.hook_type,
                 "hook_type_confidence": analysis.hook_type_confidence,

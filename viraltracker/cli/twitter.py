@@ -1511,7 +1511,7 @@ def analyze_hooks(
             click.echo(f"[{i}/{len(outliers)}] Analyzing tweet {tweet_id[:12]}...")
 
             try:
-                analysis = analyzer.analyze_hook(tweet_text)
+                analysis = analyzer.analyze_hook(tweet_text, tweet_id)
 
                 # Display result
                 click.echo(f"   Hook: {analysis.hook_type} ({analysis.hook_type_confidence:.0%} confidence)")
