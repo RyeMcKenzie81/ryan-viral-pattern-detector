@@ -120,7 +120,7 @@ class ThreadGenerator(ContentGenerator):
         key_benefits = project_context.get('key_benefits', [])
 
         benefits_text = "\n".join([f"- {b}" for b in key_benefits]) if key_benefits else "N/A"
-        emoji_instruction = "Include 1-2 relevant emojis per tweet" if include_emoji else "Do not use emojis"
+        emoji_instruction = "Use 2-3 emojis TOTAL across the entire thread (not every tweet)" if include_emoji else "Do not use emojis"
 
         prompt = f"""You are an expert Twitter content creator who adapts viral hooks into engaging threads.
 
@@ -153,6 +153,7 @@ REQUIREMENTS:
 - Use simple, conversational language
 - {emoji_instruction}
 - DO NOT use hashtags
+- DO NOT use em dashes (--) - use commas, periods, or parentheses instead
 - Thread should flow naturally, each tweet connects to the next
 - CTA should be subtle and helpful, not pushy or salesy
 - Stay true to the emotional trigger and hook type

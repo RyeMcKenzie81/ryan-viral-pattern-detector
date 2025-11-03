@@ -167,6 +167,8 @@ STYLE:
 - {examples_instruction}
 - Make it scannable and easy to read
 - Focus on value and insights, not just promotion
+- Use emojis sparingly (2-4 total for entire post, not every paragraph)
+- DO NOT use em dashes (--) - use commas, periods, or parentheses instead
 
 OUTPUT FORMAT (JSON):
 {{
