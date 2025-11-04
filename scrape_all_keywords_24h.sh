@@ -1,32 +1,22 @@
 #!/bin/bash
 
 # Scrape All Keywords (Last 24 Hours)
-# Daily scrape of all 19 keywords with 5-topic taxonomy (V1.6)
+# Daily scrape of all 9 keywords with 5-topic taxonomy (V1.8)
 
 # Create output directory
 mkdir -p ~/Downloads/keyword_analysis_24h
 
-# All 19 keywords
+# All 9 keywords (removed low-volume terms, added 'family')
 terms=(
-  "device limits"
-  "digital parenting"
-  "digital wellness"
-  "family routines"
+  "family"
   "kids"
   "kids gaming"
-  "kids gaming addiction"
-  "kids screen time"
   "kids social media"
   "kids technology"
-  "mindful parenting"
-  "online safety kids"
   "parenting"
   "parenting advice"
   "parenting tips"
-  "screen time kids"
-  "screen time rules"
   "tech boundaries"
-  "toddler behavior"
 )
 
 # Track start time
@@ -36,12 +26,12 @@ echo "========================================"
 echo "Scraping All Keywords (24 Hours)"
 echo "========================================"
 echo "Total keywords: ${#terms[@]}"
-echo "Tweets per keyword: 500"
+echo "Tweets per keyword: 2000"
 echo "Time window: 24 hours (1 day)"
 echo "Green threshold: 0.50"
 echo "Min likes: 0"
 echo "Skip comments: Yes (saves scores for later generation)"
-echo "Taxonomy: 5 topics (V1.6)"
+echo "Taxonomy: 5 topics (V1.8)"
 echo "========================================"
 echo ""
 
@@ -61,7 +51,7 @@ for term in "${terms[@]}"; do
   source venv/bin/activate && python -m viraltracker.cli.main twitter analyze-search-term \
     --project yakety-pack-instagram \
     --term "$term" \
-    --count 500 \
+    --count 2000 \
     --days-back 1 \
     --min-likes 0 \
     --skip-comments \
@@ -198,8 +188,15 @@ with open('$temp_file', 'r') as infile, open('$export_file', 'w', newline='') as
     writer.writeheader()
 
     for row in reader:
-        # Only export rows that have a suggested_response
-        if row.get('suggested_response', '').strip():
+        # Only export rows that have ANY comment suggestions (primary or alternatives)
+        has_suggestions = (
+            row.get('suggested_response', '').strip() or
+            row.get('alternative_1', '').strip() or
+            row.get('alternative_2', '').strip() or
+            row.get('alternative_3', '').strip() or
+            row.get('alternative_4', '').strip()
+        )
+        if has_suggestions:
             writer.writerow(row)
 
 print(f'Filtered export complete')
