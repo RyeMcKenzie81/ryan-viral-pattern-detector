@@ -14,6 +14,7 @@ from .script import script_group
 from .tiktok import tiktok_group
 from .youtube import youtube_group
 from .twitter import twitter_group
+from .facebook import facebook
 from .score import score_group
 
 
@@ -41,6 +42,7 @@ cli.add_command(script_group)
 cli.add_command(tiktok_group)
 cli.add_command(youtube_group)
 cli.add_command(twitter_group)
+cli.add_command(facebook)
 cli.add_command(score_group)
 
 
