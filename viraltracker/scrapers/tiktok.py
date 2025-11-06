@@ -402,9 +402,11 @@ class TikTokScraper:
         # For now, let's use a simpler approach with searchUsers then userPosts
 
         actor_input = {
-            "usernameToId_username": username,
-            "userPosts_count": count,
-            "userPosts_maxCursor": "0"
+            "profiles": [f"https://www.tiktok.com/@{username}"],
+            "resultsPerPage": count,
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+            "shouldDownloadSubtitles": False,
         }
 
         logger.info(f"Starting user scrape: @{username} (count={count})")

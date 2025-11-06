@@ -57,6 +57,11 @@ Thumbs.db
 !products/*.json
 !platforms/*.json
 
+# Workflow output files
+masculinity_accounts.txt
+qualifying_masculinity_accounts.txt
+original_masculinity_accounts.txt
+
 # Node.js (if needed)
 .next/
 node_modules/
