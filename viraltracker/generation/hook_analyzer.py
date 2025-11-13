@@ -19,6 +19,7 @@ import logging
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 import json
+import time
 
 import google.generativeai as genai
 
@@ -154,27 +155,77 @@ class HookAnalyzer:
 
         return analysis
 
-    def analyze_batch(self, tweets: List[str], max_concurrent: int = 5) -> List[HookAnalysis]:
+    def analyze_batch(
+        self,
+        tweets: List[str],
+        max_concurrent: int = 5,
+        requests_per_minute: int = 9,  # Stay under 10 req/min limit
+        max_retries: int = 3
+    ) -> List[HookAnalysis]:
         """
-        Analyze multiple tweets in batch
+        Analyze multiple tweets in batch with rate limiting
 
         Args:
             tweets: List of tweet texts
-            max_concurrent: Max concurrent API calls
+            max_concurrent: Max concurrent API calls (unused, kept for compatibility)
+            requests_per_minute: Maximum requests per minute (default: 9 for safety)
+            max_retries: Maximum retries for rate limit errors (default: 3)
 
         Returns:
             List of HookAnalysis results
         """
         results = []
+        delay_between_requests = 60.0 / requests_per_minute  # Seconds between requests
 
-        for tweet in tweets:
-            try:
-                analysis = self.analyze_hook(tweet)
-                results.append(analysis)
-            except Exception as e:
-                logger.error(f"Error analyzing tweet: {e}")
-                # Return default analysis on error
-                results.append(self._default_analysis(tweet, str(e)))
+        logger.info(f"Analyzing {len(tweets)} tweets with rate limit: {requests_per_minute} req/min")
+        logger.info(f"Delay between requests: {delay_between_requests:.1f}s")
+
+        for i, tweet in enumerate(tweets, 1):
+            retry_count = 0
+            success = False
+
+            while not success and retry_count <= max_retries:
+                try:
+                    analysis = self.analyze_hook(tweet)
+                    results.append(analysis)
+                    success = True
+                    logger.info(f"Analyzed tweet {i}/{len(tweets)}")
+
+                except Exception as e:
+                    error_str = str(e)
+
+                    # Check if it's a rate limit error (429)
+                    if "429" in error_str or "quota" in error_str.lower():
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            # Extract retry delay from error if available
+                            retry_delay = 45  # Default to 45 seconds
+                            if "retry_delay" in error_str:
+                                # Try to parse retry delay from error
+                                try:
+                                    import re
+                                    match = re.search(r'seconds:\s*(\d+)', error_str)
+                                    if match:
+                                        retry_delay = int(match.group(1))
+                                except:
+                                    pass
+
+                            logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            logger.error(f"Max retries exceeded for tweet {i}/{len(tweets)}: {e}")
+                            results.append(self._default_analysis(tweet, f"Rate limit exceeded: {e}"))
+                            success = True  # Stop retrying
+                    else:
+                        # Non-rate-limit error
+                        logger.error(f"Error analyzing tweet {i}/{len(tweets)}: {e}")
+                        results.append(self._default_analysis(tweet, str(e)))
+                        success = True
+
+            # Rate limit: wait between requests (but not after the last one)
+            if i < len(tweets):
+                time.sleep(delay_between_requests)
 
         return results
 

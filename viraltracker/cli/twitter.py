@@ -1429,10 +1429,12 @@ def find_outliers(
 @click.option('--input-json', required=True, help='Input JSON file from find-outliers command')
 @click.option('--output-json', required=True, help='Output JSON file for hook analysis results')
 @click.option('--limit', type=int, help='Limit analysis to first N tweets (optional)')
+@click.option('--rate-limit', type=int, default=9, help='Max requests per minute (default: 9)')
 def analyze_hooks(
     input_json: str,
     output_json: str,
-    limit: Optional[int]
+    limit: Optional[int],
+    rate_limit: int
 ):
     """
     Analyze hooks from outlier tweets using AI
@@ -1499,33 +1501,27 @@ def analyze_hooks(
 
         click.echo()
 
-        # Analyze hooks
+        # Analyze hooks using batch method with rate limiting
         click.echo(f"🔍 Analyzing {len(outliers)} tweet hooks...")
+        click.echo(f"   Rate limit: {rate_limit} requests/minute")
+        click.echo(f"   Estimated time: {len(outliers) / rate_limit:.1f} minutes")
         click.echo()
 
-        analyses = []
-        for i, outlier in enumerate(outliers, 1):
-            tweet_text = outlier.get('text', '')
-            tweet_id = outlier.get('tweet_id', '')
+        # Extract tweet texts and IDs
+        tweet_data = [(o.get('text', ''), o.get('tweet_id', '')) for o in outliers]
+        tweet_texts = [text for text, _ in tweet_data]
+        tweet_ids = [tid for _, tid in tweet_data]
 
-            click.echo(f"[{i}/{len(outliers)}] Analyzing tweet {tweet_id[:12]}...")
+        # Run batch analysis with rate limiting
+        analyses = analyzer.analyze_batch(
+            tweets=tweet_texts,
+            requests_per_minute=rate_limit
+        )
 
-            try:
-                analysis = analyzer.analyze_hook(tweet_text, tweet_id)
-
-                # Display result
-                click.echo(f"   Hook: {analysis.hook_type} ({analysis.hook_type_confidence:.0%} confidence)")
-                click.echo(f"   Emotion: {analysis.emotional_trigger}")
-                click.echo(f"   Pattern: {analysis.content_pattern}")
-                click.echo(f"   Why it works: {analysis.hook_explanation[:80]}...")
-                click.echo()
-
-                analyses.append(analysis)
-
-            except Exception as e:
-                click.echo(f"   ✗ Analysis failed: {e}")
-                click.echo()
-                continue
+        # Add tweet IDs to analyses
+        for analysis, tweet_id in zip(analyses, tweet_ids):
+            if tweet_id:
+                analysis.tweet_id = tweet_id
 
         if not analyses:
             click.echo(f"\n⚠️  No successful analyses", err=True)
