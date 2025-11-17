@@ -31,7 +31,6 @@ agent = Agent(
     'openai:gpt-4o',  # Primary model - can be overridden at runtime
     deps_type=AgentDependencies,
     retries=2,  # Retry failed tool calls up to 2 times
-    result_type=str,  # Agent always returns formatted strings
 )
 
 logger.info("Pydantic AI agent created with model: openai:gpt-4o")
@@ -107,6 +106,13 @@ You help analyze Twitter content to find viral patterns and generate insights.
 - When users ask general questions like "show me viral tweets", use sensible defaults
 - When showing results, highlight key patterns and insights
 - Be conversational and helpful - explain technical concepts simply
+
+**Conversation Context:**
+- You may receive "Recent Context" showing previous queries and results
+- When users refer to "those tweets", "the previous results", "them", "these", etc., look at the Recent Context to understand what they mean
+- Use the same tool parameters from the context to retrieve the same data
+- Example: If context shows find_outliers was just called with hours_back=24, and user says "analyze those hooks", call analyze_hooks_tool with the same time range
+- Multi-turn conversations are supported - maintain awareness of what has been discussed
 
 **Current Project:** {ctx.deps.project_name}
 

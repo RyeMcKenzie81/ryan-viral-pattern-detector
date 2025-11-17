@@ -71,7 +71,14 @@ urllib3==2.5.0
 websockets==15.0.1
 yt-dlp==2025.9.26
 
+# Pydantic AI Agent Dependencies
+pydantic-ai==0.0.14
+rich==13.9.4
+
 # Web Dashboard Dependencies
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 jinja2==3.1.2
+
+# Streamlit UI Dependencies
+streamlit==1.40.0
