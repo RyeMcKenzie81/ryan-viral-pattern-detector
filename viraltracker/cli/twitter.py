@@ -22,6 +22,14 @@ from ..generation.comment_generator import CommentGenerator, save_suggestions_to
 from ..generation.async_comment_generator import generate_comments_async
 from ..generation.cost_tracking import format_cost_summary
 
+# Service layer imports (for refactored commands)
+from ..services.twitter_service import TwitterService
+from ..services.gemini_service import GeminiService
+from ..services.stats_service import StatsService
+from ..services.models import Tweet, HookAnalysis, OutlierTweet
+import asyncio
+import json
+
 
 # Configure logging
 logging.basicConfig(
@@ -1260,9 +1268,9 @@ def analyze_search_term(
 @click.option('--min-likes', default=0, type=int, help='Minimum like count (default: 0)')
 @click.option('--method', type=click.Choice(['zscore', 'percentile']), default='zscore', help='Detection method (default: zscore)')
 @click.option('--threshold', default=2.0, type=float, help='Z-score threshold (e.g., 2.0) or percentile (e.g., 5.0 for top 5%)')
-@click.option('--trim-percent', default=10.0, type=float, help='Trim percent for z-score method (default: 10%)')
-@click.option('--time-decay/--no-time-decay', default=False, help='Apply time decay weighting (recent tweets weighted higher)')
-@click.option('--decay-halflife', default=7, type=int, help='Half-life for time decay in days (default: 7)')
+@click.option('--trim-percent', default=10.0, type=float, help='[DEPRECATED] Trim percent for z-score method (default: 10%)')
+@click.option('--time-decay/--no-time-decay', default=False, help='[DEPRECATED] Apply time decay weighting (recent tweets weighted higher)')
+@click.option('--decay-halflife', default=7, type=int, help='[DEPRECATED] Half-life for time decay in days (default: 7)')
 @click.option('--text-only', is_flag=True, help='Exclude video/image posts (text-only tweets for content adaptation)')
 @click.option('--export-json', help='Export outlier report to JSON file (optional)')
 def find_outliers(
@@ -1288,6 +1296,10 @@ def find_outliers(
     These outliers can be analyzed to understand what makes them viral and adapted
     for long-form content generation.
 
+    NOTE: This command now uses the services layer (TwitterService, StatsService)
+    to ensure consistency with the agent and API. Some advanced options like
+    --trim-percent and --time-decay are deprecated in this version.
+
     Examples:
         # Find outliers using z-score (2 SD above mean)
         vt twitter find-outliers --project my-project --days-back 30
@@ -1298,130 +1310,237 @@ def find_outliers(
         # Text-only tweets (exclude video/images for content adaptation)
         vt twitter find-outliers -p my-project --text-only
 
-        # With time decay (recent tweets weighted higher)
-        vt twitter find-outliers -p my-project --time-decay --decay-halflife 7
-
         # Export to JSON
         vt twitter find-outliers -p my-project --export-json outliers.json
     """
-    try:
-        from ..generation.outlier_detector import OutlierDetector
 
-        click.echo(f"\n{'='*60}")
-        click.echo(f"🔍 Outlier Detection")
-        click.echo(f"{'='*60}\n")
-
-        click.echo(f"Project: {project}")
-        click.echo(f"Time window: last {days_back} days")
-        click.echo(f"Filters: {min_views:,}+ views, {min_likes:,}+ likes")
-        click.echo(f"Method: {method}")
-
-        if method == 'zscore':
-            click.echo(f"Threshold: {threshold} standard deviations")
-            click.echo(f"Trim percent: {trim_percent}%")
-        else:
-            click.echo(f"Threshold: top {threshold}%")
-
-        if time_decay:
-            click.echo(f"Time decay: enabled (half-life: {decay_halflife} days)")
-
-        if text_only:
-            click.echo(f"Media filter: text-only (excluding video/image posts)")
-
-        click.echo()
-
-        # Initialize detector
+    async def run():
         try:
-            detector = OutlierDetector(project_slug=project)
-        except ValueError as e:
-            click.echo(f"\n❌ Error: {e}", err=True)
+            from datetime import datetime
+
+            click.echo(f"\n{'='*60}")
+            click.echo(f"🔍 Outlier Detection (Services Layer)")
+            click.echo(f"{'='*60}\n")
+
+            click.echo(f"Project: {project}")
+            click.echo(f"Time window: last {days_back} days")
+            click.echo(f"Filters: {min_views:,}+ views, {min_likes:,}+ likes")
+            click.echo(f"Method: {method}")
+
+            if method == 'zscore':
+                click.echo(f"Threshold: {threshold} standard deviations")
+            else:
+                click.echo(f"Threshold: top {threshold}%")
+
+            if time_decay or trim_percent != 10.0:
+                click.echo(f"⚠️  Note: --trim-percent and --time-decay are deprecated in services layer")
+
+            if text_only:
+                click.echo(f"Media filter: text-only (excluding video/image posts)")
+
+            click.echo()
+
+            # Initialize services
+            twitter_svc = TwitterService()
+            stats_svc = StatsService()
+
+            # Fetch tweets
+            click.echo("📊 Fetching tweets from database...")
+            hours_back = days_back * 24
+            tweets = await twitter_svc.get_tweets(
+                project=project,
+                hours_back=hours_back,
+                min_views=min_views,
+                text_only=text_only
+            )
+
+            if not tweets:
+                click.echo(f"\n⚠️  No tweets found")
+                click.echo(f"\n💡 Try:")
+                click.echo(f"   - Increasing time window (--days-back)")
+                click.echo(f"   - Lowering filters (--min-views, --min-likes)")
+                return
+
+            click.echo(f"   ✓ Found {len(tweets)} tweets")
+
+            # Filter by min_likes if specified
+            if min_likes > 0:
+                tweets = [t for t in tweets if t.like_count >= min_likes]
+                click.echo(f"   ✓ After likes filter: {len(tweets)} tweets")
+
+            if not tweets:
+                click.echo(f"\n⚠️  No tweets match criteria")
+                return
+
+            # Calculate outliers
+            click.echo("\n🔍 Analyzing statistical outliers...")
+            engagement_scores = [t.engagement_score for t in tweets]
+
+            if method == "zscore":
+                outlier_indices = stats_svc.calculate_zscore_outliers(
+                    engagement_scores,
+                    threshold=threshold
+                )
+            elif method == "percentile":
+                outlier_indices = stats_svc.calculate_percentile_outliers(
+                    engagement_scores,
+                    threshold=threshold
+                )
+            else:
+                click.echo(f"❌ Invalid method '{method}'", err=True)
+                raise click.Abort()
+
+            if not outlier_indices:
+                click.echo(f"\n⚠️  No outliers found")
+                click.echo(f"\n💡 Try:")
+                click.echo(f"   - Lowering threshold (current: {threshold})")
+                click.echo(f"   - Increasing time window (--days-back)")
+                return
+
+            # Build outlier objects
+            outliers = []
+            for idx, *metrics in outlier_indices:
+                tweet = tweets[idx]
+
+                if method == "zscore":
+                    zscore = metrics[0]
+                    percentile = stats_svc.calculate_percentile(tweet.engagement_score, engagement_scores)
+                else:  # percentile method
+                    percentile = metrics[1] if len(metrics) > 1 else metrics[0]
+                    zscore = stats_svc.calculate_zscore(tweet.engagement_score, engagement_scores)
+
+                outliers.append(OutlierTweet(
+                    tweet=tweet,
+                    zscore=zscore,
+                    percentile=percentile,
+                    rank=0  # Will be set after sorting
+                ))
+
+            # Sort by engagement score (descending)
+            outliers.sort(key=lambda o: o.tweet.engagement_score, reverse=True)
+
+            # Assign ranks
+            for i, outlier in enumerate(outliers, 1):
+                outlier.rank = i
+
+            # Mark outliers in database
+            click.echo(f"   ✓ Found {len(outliers)} outliers")
+            click.echo("\n💾 Marking outliers in database...")
+            for outlier in outliers:
+                await twitter_svc.mark_as_outlier(
+                    tweet_id=outlier.tweet.id,
+                    zscore=outlier.zscore,
+                    threshold=threshold
+                )
+            click.echo(f"   ✓ Marked {len(outliers)} tweets")
+
+            # Display results
+            click.echo(f"\n{'='*60}")
+            click.echo(f"📊 Outlier Results")
+            click.echo(f"{'='*60}\n")
+
+            click.echo(f"Found {len(outliers)} viral outliers:\n")
+
+            # Show top 10
+            display_count = min(10, len(outliers))
+            for i, outlier in enumerate(outliers[:display_count], 1):
+                tweet = outlier.tweet
+                click.echo(f"[{i}] Rank {outlier.rank} | Z-score: {outlier.zscore:.2f} | Percentile: {outlier.percentile:.1f}%")
+                click.echo(f"    Tweet ID: {tweet.id}")
+                click.echo(f"    Author: @{tweet.author_username} ({tweet.author_followers:,} followers)")
+                click.echo(f"    Posted: {tweet.created_at.strftime('%Y-%m-%d %H:%M') if tweet.created_at else 'N/A'}")
+                click.echo(f"    Engagement: {tweet.view_count:,} views, {tweet.like_count:,} likes, {tweet.retweet_count:,} RTs")
+                click.echo(f"    Score: {tweet.engagement_score:.2f}")
+                click.echo(f"    URL: {tweet.url}")
+
+                # Show tweet text (truncated)
+                text_preview = tweet.text[:100] + "..." if len(tweet.text) > 100 else tweet.text
+                click.echo(f"    Text: \"{text_preview}\"")
+                click.echo()
+
+            if len(outliers) > 10:
+                click.echo(f"... and {len(outliers) - 10} more outliers\n")
+
+            # Export if requested
+            if export_json:
+                click.echo(f"📄 Exporting to JSON...")
+                export_data = {
+                    'project': project,
+                    'analysis_date': datetime.now().isoformat(),
+                    'parameters': {
+                        'days_back': days_back,
+                        'method': method,
+                        'threshold': threshold,
+                        'min_views': min_views,
+                        'min_likes': min_likes,
+                        'text_only': text_only
+                    },
+                    'total_tweets_analyzed': len(tweets),
+                    'outlier_count': len(outliers),
+                    'outliers': [
+                        {
+                            'rank': o.rank,
+                            'zscore': o.zscore,
+                            'percentile': o.percentile,
+                            'tweet': o.tweet.model_dump()
+                        }
+                        for o in outliers
+                    ]
+                }
+
+                with open(export_json, 'w', encoding='utf-8') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+
+                click.echo(f"   ✓ Saved to {export_json}")
+                click.echo()
+
+            # Summary statistics
+            summary_stats = stats_svc.calculate_summary_stats(engagement_scores)
+
+            click.echo(f"{'='*60}")
+            click.echo(f"✅ Analysis Complete")
+            click.echo(f"{'='*60}\n")
+
+            click.echo(f"📊 Summary:")
+            click.echo(f"   Total tweets analyzed: {len(tweets):,}")
+            click.echo(f"   Total outliers found: {len(outliers)}")
+            click.echo(f"   Success rate: {(len(outliers) / len(tweets) * 100):.1f}%")
+
+            click.echo(f"\n📈 Dataset Statistics:")
+            click.echo(f"   Mean engagement: {summary_stats['mean']:.2f}")
+            click.echo(f"   Median engagement: {summary_stats['median']:.2f}")
+            click.echo(f"   Std deviation: {summary_stats['std']:.2f}")
+
+            if outliers:
+                avg_engagement = sum(o.tweet.engagement_score for o in outliers) / len(outliers)
+                avg_views = sum(o.tweet.view_count for o in outliers) / len(outliers)
+                avg_likes = sum(o.tweet.like_count for o in outliers) / len(outliers)
+
+                click.echo(f"\n🎯 Outlier Averages:")
+                click.echo(f"   Average engagement score: {avg_engagement:.2f}")
+                click.echo(f"   Average views: {avg_views:,.0f}")
+                click.echo(f"   Average likes: {avg_likes:,.0f}")
+
+            click.echo(f"\n💡 Next steps:")
+            click.echo(f"   - Analyze hooks: vt twitter analyze-hooks --input-json {export_json or 'outliers.json'}")
+            click.echo(f"   - Use agent: vt chat --project {project}")
+            if not export_json:
+                click.echo(f"   - Export results: Add --export-json flag")
+
+            click.echo(f"\n{'='*60}\n")
+
+        except Exception as e:
+            click.echo(f"\n❌ Outlier detection failed: {e}", err=True)
+            logger.exception(e)
             raise click.Abort()
 
-        # Find outliers
-        click.echo("🔍 Analyzing tweets...")
-        outliers = detector.find_outliers(
-            days_back=days_back,
-            min_views=min_views,
-            min_likes=min_likes,
-            method=method,
-            threshold=threshold,
-            trim_percent=trim_percent,
-            time_decay=time_decay,
-            decay_halflife_days=decay_halflife,
-            text_only=text_only
-        )
-
-        if not outliers:
-            click.echo(f"\n⚠️  No outliers found")
-            click.echo(f"\n💡 Try:")
-            click.echo(f"   - Lowering threshold (--threshold)")
-            click.echo(f"   - Increasing time window (--days-back)")
-            click.echo(f"   - Lowering filters (--min-views, --min-likes)")
-            return
-
-        # Display results
-        click.echo(f"\n{'='*60}")
-        click.echo(f"📊 Outlier Results")
-        click.echo(f"{'='*60}\n")
-
-        click.echo(f"Found {len(outliers)} outliers:\n")
-
-        # Show top 10
-        for i, result in enumerate(outliers[:10], 1):
-            tweet = result.tweet
-            click.echo(f"[{i}] Rank {result.rank} (Top {result.rank_percentile:.1f}%)")
-            click.echo(f"    Tweet: {tweet.tweet_id}")
-            click.echo(f"    URL: https://twitter.com/i/status/{tweet.tweet_id}")
-            click.echo(f"    Author: @{tweet.author_handle} ({tweet.author_followers:,} followers)")
-            click.echo(f"    Posted: {tweet.posted_at.strftime('%Y-%m-%d %H:%M')}")
-            click.echo(f"    Metrics: {tweet.views:,} views, {tweet.likes:,} likes, {tweet.retweets:,} retweets")
-            click.echo(f"    Engagement rate: {tweet.engagement_rate:.4f}")
-            click.echo(f"    Z-score: {result.z_score:.2f}, Percentile: {result.percentile:.1f}%")
-
-            # Show tweet text (truncated)
-            text_preview = tweet.text[:100] + "..." if len(tweet.text) > 100 else tweet.text
-            click.echo(f"    Text: \"{text_preview}\"")
-            click.echo()
-
-        if len(outliers) > 10:
-            click.echo(f"... and {len(outliers) - 10} more outliers\n")
-
-        # Export if requested
-        if export_json:
-            click.echo(f"📄 Exporting report to JSON...")
-            report = detector.export_report(outliers, export_json)
-            click.echo(f"   ✓ Saved to {export_json}")
-            click.echo()
-
-        # Summary
-        click.echo(f"{'='*60}")
-        click.echo(f"✅ Analysis Complete")
-        click.echo(f"{'='*60}\n")
-
-        click.echo(f"📊 Summary:")
-        click.echo(f"   Total outliers: {len(outliers)}")
-
-        # Show engagement distribution
-        avg_views = sum(r.tweet.views for r in outliers) / len(outliers)
-        avg_likes = sum(r.tweet.likes for r in outliers) / len(outliers)
-        avg_engagement_rate = sum(r.tweet.engagement_rate for r in outliers) / len(outliers)
-
-        click.echo(f"   Average views: {avg_views:,.0f}")
-        click.echo(f"   Average likes: {avg_likes:,.0f}")
-        click.echo(f"   Average engagement rate: {avg_engagement_rate:.4f}")
-
-        click.echo(f"\n💡 Next steps:")
-        click.echo(f"   - Analyze hooks: Review what makes these tweets viral")
-        click.echo(f"   - Generate content: vt twitter generate-content --source-tweets {export_json if export_json else 'from-db'}")
-        click.echo(f"   - Export list: Use --export-json to save outliers for later use")
-
-        click.echo(f"\n{'='*60}\n")
-
+    # Run async function
+    try:
+        asyncio.run(run())
     except click.Abort:
         raise
-    except Exception as e:
-        click.echo(f"\n❌ Outlier detection failed: {e}", err=True)
-        logger.exception(e)
+    except KeyboardInterrupt:
+        click.echo("\n\n⚠️  Interrupted by user")
         raise click.Abort()
 
 
@@ -1429,7 +1548,7 @@ def find_outliers(
 @click.option('--input-json', required=True, help='Input JSON file from find-outliers command')
 @click.option('--output-json', required=True, help='Output JSON file for hook analysis results')
 @click.option('--limit', type=int, help='Limit analysis to first N tweets (optional)')
-@click.option('--rate-limit', type=int, default=9, help='Max requests per minute (default: 9)')
+@click.option('--rate-limit', type=int, default=9, help='[DEPRECATED] Max requests per minute (rate limiting handled by service)')
 def analyze_hooks(
     input_json: str,
     output_json: str,
@@ -1441,6 +1560,10 @@ def analyze_hooks(
 
     Takes the JSON export from find-outliers and analyzes what makes each
     tweet viral. Classifies hook types, emotional triggers, and content patterns.
+
+    NOTE: This command now uses the services layer (GeminiService, TwitterService)
+    to ensure consistency with the agent and API. Rate limiting is handled
+    automatically by GeminiService.
 
     Examples:
         # Analyze hooks from outliers
@@ -1454,122 +1577,174 @@ def analyze_hooks(
           --output-json hook_analysis.json \\
           --limit 5
     """
+
+    async def run():
+        try:
+            import os
+            from datetime import datetime
+            from collections import Counter
+
+            click.echo(f"\n{'='*60}")
+            click.echo(f"🎣 Hook Analysis (Services Layer)")
+            click.echo(f"{'='*60}\n")
+
+            # Load outliers from JSON
+            click.echo(f"📂 Loading outliers from {input_json}...")
+            try:
+                with open(input_json, 'r', encoding='utf-8') as f:
+                    outliers_data = json.load(f)
+            except FileNotFoundError:
+                click.echo(f"\n❌ Error: File not found: {input_json}", err=True)
+                raise click.Abort()
+            except json.JSONDecodeError:
+                click.echo(f"\n❌ Error: Invalid JSON file: {input_json}", err=True)
+                raise click.Abort()
+
+            outliers_list = outliers_data.get('outliers', [])
+            if not outliers_list:
+                click.echo(f"\n⚠️  No outliers found in input file", err=True)
+                raise click.Abort()
+
+            total_count = len(outliers_list)
+            click.echo(f"   ✓ Loaded {total_count} outliers")
+
+            # Apply limit if specified
+            if limit and limit < len(outliers_list):
+                outliers_list = outliers_list[:limit]
+                click.echo(f"   ✓ Limited to {len(outliers_list)} tweets")
+
+            click.echo()
+
+            # Initialize services
+            click.echo("🤖 Initializing services...")
+            gemini_api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+            if not gemini_api_key:
+                click.echo(f"\n❌ Error: GOOGLE_API_KEY not set in environment", err=True)
+                click.echo("   Set GOOGLE_API_KEY or GEMINI_API_KEY environment variable", err=True)
+                raise click.Abort()
+
+            gemini_svc = GeminiService(api_key=gemini_api_key)
+            twitter_svc = TwitterService()
+
+            click.echo(f"   ✓ GeminiService ready (with rate limiting)")
+            click.echo(f"   ✓ TwitterService ready")
+
+            if rate_limit != 9:
+                click.echo(f"   ⚠️  Note: --rate-limit is deprecated, using service defaults")
+
+            click.echo()
+
+            # Analyze hooks
+            click.echo(f"🔍 Analyzing {len(outliers_list)} tweet hooks...")
+            click.echo(f"   This may take a few minutes...")
+            click.echo()
+
+            analyses = []
+            failed_count = 0
+
+            with click.progressbar(outliers_list, label='Analyzing hooks') as bar:
+                for outlier in bar:
+                    # Extract tweet data
+                    tweet_data = outlier.get('tweet', {})
+                    tweet_text = tweet_data.get('text', '')
+                    tweet_id = tweet_data.get('id', '')
+
+                    if not tweet_text:
+                        failed_count += 1
+                        continue
+
+                    try:
+                        # Analyze hook using GeminiService
+                        analysis = await gemini_svc.analyze_hook(
+                            tweet_text=tweet_text,
+                            tweet_id=tweet_id
+                        )
+
+                        # Save to database
+                        await twitter_svc.save_hook_analysis(analysis)
+
+                        analyses.append(analysis)
+
+                    except Exception as e:
+                        click.echo(f"\n⚠️  Failed to analyze tweet {tweet_id}: {e}")
+                        failed_count += 1
+                        continue
+
+            click.echo()
+
+            if not analyses:
+                click.echo(f"\n❌ No hooks successfully analyzed", err=True)
+                click.echo(f"   Failed: {failed_count}/{len(outliers_list)}")
+                raise click.Abort()
+
+            click.echo(f"✅ Successfully analyzed {len(analyses)}/{len(outliers_list)} hooks")
+            if failed_count > 0:
+                click.echo(f"   ⚠️  {failed_count} failed")
+
+            # Export results
+            click.echo(f"\n📄 Exporting to JSON...")
+            export_data = {
+                'analysis_date': datetime.now().isoformat(),
+                'source_file': input_json,
+                'total_analyzed': len(analyses),
+                'total_failed': failed_count,
+                'analyses': [a.model_dump() for a in analyses]
+            }
+
+            with open(output_json, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, default=str)
+
+            click.echo(f"   ✓ Saved to {output_json}")
+
+            # Summary statistics
+            click.echo(f"\n{'='*60}")
+            click.echo(f"✅ Analysis Complete")
+            click.echo(f"{'='*60}\n")
+
+            click.echo(f"📊 Summary:")
+            click.echo(f"   Total analyzed: {len(analyses)}")
+            click.echo(f"   Success rate: {(len(analyses) / len(outliers_list) * 100):.1f}%")
+
+            # Count hook types
+            hook_types = Counter(a.hook_type for a in analyses)
+            emotional_triggers = Counter(a.emotional_trigger for a in analyses)
+
+            # Calculate average confidence
+            avg_conf = sum(a.hook_type_confidence for a in analyses) / len(analyses)
+
+            click.echo(f"\n📈 Hook Type Distribution:")
+            for hook_type, count in hook_types.most_common(5):
+                pct = (count / len(analyses)) * 100
+                click.echo(f"   - {hook_type}: {count} ({pct:.0f}%)")
+
+            click.echo(f"\n🎭 Emotional Trigger Distribution:")
+            for trigger, count in emotional_triggers.most_common(5):
+                pct = (count / len(analyses)) * 100
+                click.echo(f"   - {trigger}: {count} ({pct:.0f}%)")
+
+            click.echo(f"\n📊 Average Confidence: {avg_conf:.1%}")
+
+            click.echo(f"\n💡 Next steps:")
+            click.echo(f"   - Review detailed analysis: {output_json}")
+            click.echo(f"   - Use insights for content generation")
+            click.echo(f"   - Query with agent: vt chat --project <project>")
+
+            click.echo(f"\n{'='*60}\n")
+
+        except click.Abort:
+            raise
+        except Exception as e:
+            click.echo(f"\n❌ Hook analysis failed: {e}", err=True)
+            logger.exception(e)
+            raise click.Abort()
+
+    # Run async function
     try:
-        import json
-        from ..generation.hook_analyzer import HookAnalyzer
-
-        click.echo(f"\n{'='*60}")
-        click.echo(f"🎣 Hook Analysis")
-        click.echo(f"{'='*60}\n")
-
-        # Load outliers
-        click.echo(f"📂 Loading outliers from {input_json}...")
-        try:
-            with open(input_json, 'r', encoding='utf-8') as f:
-                outliers_data = json.load(f)
-        except FileNotFoundError:
-            click.echo(f"\n❌ Error: File not found: {input_json}", err=True)
-            raise click.Abort()
-        except json.JSONDecodeError:
-            click.echo(f"\n❌ Error: Invalid JSON file: {input_json}", err=True)
-            raise click.Abort()
-
-        outliers = outliers_data.get('outliers', [])
-        if not outliers:
-            click.echo(f"\n⚠️  No outliers found in input file", err=True)
-            raise click.Abort()
-
-        total_count = len(outliers)
-        click.echo(f"   ✓ Loaded {total_count} outliers")
-
-        # Apply limit if specified
-        if limit:
-            outliers = outliers[:limit]
-            click.echo(f"   ✓ Limited to {len(outliers)} tweets")
-
-        click.echo()
-
-        # Initialize analyzer
-        click.echo("🤖 Initializing AI hook analyzer...")
-        try:
-            analyzer = HookAnalyzer()
-            click.echo("   ✓ Hook analyzer ready (using Gemini 2.0 Flash)")
-        except ValueError as e:
-            click.echo(f"\n❌ Error: {e}", err=True)
-            click.echo("   Make sure GOOGLE_API_KEY is set in your environment", err=True)
-            raise click.Abort()
-
-        click.echo()
-
-        # Analyze hooks using batch method with rate limiting
-        click.echo(f"🔍 Analyzing {len(outliers)} tweet hooks...")
-        click.echo(f"   Rate limit: {rate_limit} requests/minute")
-        click.echo(f"   Estimated time: {len(outliers) / rate_limit:.1f} minutes")
-        click.echo()
-
-        # Extract tweet texts and IDs
-        tweet_data = [(o.get('text', ''), o.get('tweet_id', '')) for o in outliers]
-        tweet_texts = [text for text, _ in tweet_data]
-        tweet_ids = [tid for _, tid in tweet_data]
-
-        # Run batch analysis with rate limiting
-        analyses = analyzer.analyze_batch(
-            tweets=tweet_texts,
-            requests_per_minute=rate_limit
-        )
-
-        # Add tweet IDs to analyses
-        for analysis, tweet_id in zip(analyses, tweet_ids):
-            if tweet_id:
-                analysis.tweet_id = tweet_id
-
-        if not analyses:
-            click.echo(f"\n⚠️  No successful analyses", err=True)
-            raise click.Abort()
-
-        # Export results
-        click.echo(f"\n📄 Exporting hook analysis...")
-        analyzer.export_analysis(analyses, output_json)
-        click.echo(f"   ✓ Saved to {output_json}")
-
-        # Summary statistics
-        click.echo(f"\n{'='*60}")
-        click.echo(f"✅ Analysis Complete")
-        click.echo(f"{'='*60}\n")
-
-        click.echo(f"📊 Summary:")
-        click.echo(f"   Total analyzed: {len(analyses)}")
-
-        # Count hook types
-        from collections import Counter
-        hook_types = Counter(a.hook_type for a in analyses)
-        emotional_triggers = Counter(a.emotional_trigger for a in analyses)
-        content_patterns = Counter(a.content_pattern for a in analyses)
-
-        click.echo(f"\n   Top hook types:")
-        for hook_type, count in hook_types.most_common(3):
-            click.echo(f"   - {hook_type}: {count}")
-
-        click.echo(f"\n   Top emotional triggers:")
-        for trigger, count in emotional_triggers.most_common(3):
-            click.echo(f"   - {trigger}: {count}")
-
-        click.echo(f"\n   Top content patterns:")
-        for pattern, count in content_patterns.most_common(3):
-            click.echo(f"   - {pattern}: {count}")
-
-        click.echo(f"\n💡 Next steps:")
-        click.echo(f"   - Review analysis: {output_json}")
-        click.echo(f"   - Adapt hooks: Use insights for content generation")
-        click.echo(f"   - Generate content: vt twitter generate-content (Phase 3)")
-
-        click.echo(f"\n{'='*60}\n")
-
+        asyncio.run(run())
     except click.Abort:
         raise
-    except Exception as e:
-        click.echo(f"\n❌ Hook analysis failed: {e}", err=True)
-        logger.exception(e)
+    except KeyboardInterrupt:
+        click.echo("\n\n⚠️  Interrupted by user")
         raise click.Abort()
 
 
