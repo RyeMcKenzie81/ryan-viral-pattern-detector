@@ -14,13 +14,14 @@
 2. [Current State Analysis](#current-state-analysis)
 3. [Target Architecture](#target-architecture)
 4. [Migration Strategy](#migration-strategy)
-5. [Phase 1: MVP (4-5 days)](#phase-1-mvp-4-5-days)
-6. [Phase 2: Polish (3-4 days)](#phase-2-polish-3-4-days)
-7. [Phase 3: Automation (2-3 days)](#phase-3-automation-2-3-days)
-8. [Railway Deployment](#railway-deployment)
-9. [Testing Strategy](#testing-strategy)
-10. [Success Criteria](#success-criteria)
-11. [Rollback Plan](#rollback-plan)
+5. [Phase 1: MVP - Core Tools (4-5 days)](#phase-1-mvp---core-tools-4-5-days)
+6. [Phase 1.5: Complete Tool Coverage (2-3 days)](#phase-15-complete-tool-coverage-2-3-days)
+7. [Phase 2: Polish (3-4 days)](#phase-2-polish-3-4-days)
+8. [Phase 3: Automation (2-3 days)](#phase-3-automation-2-3-days)
+9. [Railway Deployment](#railway-deployment)
+10. [Testing Strategy](#testing-strategy)
+11. [Success Criteria](#success-criteria)
+12. [Rollback Plan](#rollback-plan)
 
 ---
 
@@ -80,6 +81,21 @@ viraltracker twitter generate-comments --project yakety-pack --hours-back 48
 viraltracker twitter export-tweets --project yakety-pack --format csv
 viraltracker twitter export-comments --project yakety-pack --format json
 ```
+
+### Tool Migration Roadmap
+
+| CLI Command | Phase | Agent Tool | Priority |
+|-------------|-------|------------|----------|
+| `find-outliers` | **Phase 1** | `find_outliers_tool` | ⭐⭐⭐ High |
+| `analyze-hooks` | **Phase 1** | `analyze_hooks_tool` | ⭐⭐⭐ High |
+| `export-*` | **Phase 1** | `export_results_tool` | ⭐⭐⭐ High |
+| `scrape` | **Phase 1.5** | `scrape_tweets_tool` | ⭐⭐ Medium |
+| `generate-comments` | **Phase 1.5** | `find_comment_opportunities_tool` | ⭐⭐ Medium |
+
+**Strategy:**
+- **Phase 1** - Prove concept with core analysis tools (find-outliers, analyze-hooks, export)
+- **Phase 1.5** - Add remaining tools once MVP is validated (scrape, generate-comments)
+- **Phase 2+** - Polish all tools with streaming, validation, multi-format output
 
 ### Current Architecture
 
@@ -974,6 +990,23 @@ def test_cli_still_works():
 ✅ **Tests** - Integration tests pass
 
 **Total Time: 4-5 days**
+
+---
+
+## Phase 1.5: Complete Tool Coverage (2-3 days)
+
+**Goal:** Convert remaining CLI tools (scrape, generate-comments) to work in all 3 formats
+
+**When to Start:** After Phase 1 MVP is validated and proven useful
+
+### Overview
+
+Now that the architecture is proven, we add the remaining tools:
+- ✅ **Infrastructure exists** - Services, agent, UI already built
+- ✅ **Pattern established** - Just follow Phase 1 approach
+- ⚡ **Faster** - No new architecture, just 2 more tools
+
+**Note:** Full Phase 1.5 details to be added after Phase 1 MVP is complete.
 
 ---
 
