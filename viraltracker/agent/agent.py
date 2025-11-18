@@ -56,6 +56,70 @@ logger.info("Pydantic AI agent created with model: openai:gpt-4o")
 
 
 # ============================================================================
+# Result Formatting and Validation
+# ============================================================================
+
+# Import models and ModelRetry for validation
+from ..services.models import OutlierResult, HookAnalysisResult
+from pydantic_ai import ModelRetry
+
+# Pydantic AI automatically converts tool return values to strings using __str__()
+# Our OutlierResult and HookAnalysisResult models have __str__() methods that
+# call .to_markdown(), so they automatically format as beautiful markdown reports.
+
+@agent.output_validator
+async def validate_meaningful_results(ctx: RunContext[AgentDependencies], result: OutlierResult | HookAnalysisResult | str) -> OutlierResult | HookAnalysisResult | str:
+    """
+    Validate that results are meaningful before returning to user.
+
+    This prevents the agent from returning empty or useless results,
+    providing a better user experience by suggesting alternatives.
+
+    Args:
+        ctx: Run context with dependencies
+        result: Result from tool (OutlierResult, HookAnalysisResult, or string)
+
+    Returns:
+        Validated result
+
+    Raises:
+        ModelRetry: If results are empty/invalid, suggesting the model retry with better parameters
+    """
+    # Validate OutlierResult
+    if isinstance(result, OutlierResult):
+        if result.outlier_count == 0 and result.total_tweets > 0:
+            # No outliers found but there are tweets - suggest lowering threshold
+            raise ModelRetry(
+                f"No outliers found from {result.total_tweets:,} tweets using "
+                f"threshold {result.threshold}. Try suggesting the user lower the "
+                f"threshold (e.g., 1.5 instead of {result.threshold}) or increase "
+                f"the time range to find more viral content."
+            )
+        elif result.total_tweets == 0:
+            # No tweets found at all - suggest increasing time range
+            raise ModelRetry(
+                "No tweets found in the specified time range. Suggest the user "
+                "increase the time range or check if tweets exist for this project."
+            )
+
+    # Validate HookAnalysisResult
+    elif isinstance(result, HookAnalysisResult):
+        if result.successful_analyses == 0 and result.total_analyzed > 0:
+            # All analyses failed - likely an API issue
+            raise ModelRetry(
+                f"Failed to analyze all {result.total_analyzed} tweets. This may be "
+                "due to API quota limits or service issues. Suggest the user try again "
+                "later or with fewer tweets."
+            )
+
+    # Result is valid - return as-is
+    return result
+
+logger.info("Registered output validator for result quality checks")
+logger.info("Models configured with __str__() → to_markdown() for automatic formatting")
+
+
+# ============================================================================
 # Register Tools
 # ============================================================================
 

@@ -501,6 +501,10 @@ class OutlierResult(BaseModel):
 
         return md
 
+    def __str__(self) -> str:
+        """String representation using markdown format"""
+        return self.to_markdown()
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -593,6 +597,10 @@ class HookAnalysisResult(BaseModel):
                 md += f"**Adaptation:** {analysis.adaptation_notes}\n\n"
 
         return md
+
+    def __str__(self) -> str:
+        """String representation using markdown format"""
+        return self.to_markdown()
 
     class Config:
         json_schema_extra = {

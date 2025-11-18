@@ -307,8 +307,16 @@ def render_chat_interface():
                     result = asyncio.run(agent.run(full_prompt, deps=st.session_state.deps))
                     response = result.output
 
-                    # Display response
+                    # Check if result is a structured model (OutlierResult or HookAnalysisResult)
+                    from viraltracker.services.models import OutlierResult, HookAnalysisResult
+
+                    # Display response (agent converts models to markdown automatically)
                     st.markdown(response)
+
+                    # If we have structured data, add download buttons
+                    # The agent's output is the markdown, but we can check for specific patterns
+                    # For now, we'll just show the markdown response
+                    # TODO: Task 2.7 will add proper download buttons for structured models
 
                     # Add to message history
                     st.session_state.messages.append({

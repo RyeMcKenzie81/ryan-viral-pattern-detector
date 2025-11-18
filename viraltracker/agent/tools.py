@@ -33,7 +33,7 @@ async def find_outliers_tool(
     min_views: int = 100,
     text_only: bool = True,
     limit: int = 10
-) -> str:
+) -> OutlierResult:
     """
     Find viral outlier tweets using statistical analysis.
 
@@ -50,7 +50,7 @@ async def find_outliers_tool(
         limit: Max outliers to return in summary (default: 10)
 
     Returns:
-        Formatted string summary of outlier tweets with statistics
+        OutlierResult model with structured data and markdown export
     """
     try:
         logger.info(f"Finding outliers: hours_back={hours_back}, threshold={threshold}, method={method}")
@@ -64,7 +64,17 @@ async def find_outliers_tool(
         )
 
         if not tweets:
-            return f"No tweets found for project '{ctx.deps.project_name}' in the last {hours_back} hours with minimum {min_views} views."
+            # Return empty result
+            return OutlierResult(
+                total_tweets=0,
+                outlier_count=0,
+                threshold=threshold,
+                method=method,
+                outliers=[],
+                mean_engagement=0.0,
+                median_engagement=0.0,
+                std_engagement=0.0
+            )
 
         logger.info(f"Fetched {len(tweets)} tweets, calculating outliers...")
 
@@ -83,15 +93,31 @@ async def find_outliers_tool(
                 threshold=threshold
             )
         else:
-            return f"Invalid method '{method}'. Use 'zscore' or 'percentile'."
+            # Invalid method - return empty result with error in method field
+            logger.error(f"Invalid method: {method}")
+            return OutlierResult(
+                total_tweets=len(tweets),
+                outlier_count=0,
+                threshold=threshold,
+                method=f"INVALID: {method}",
+                outliers=[],
+                mean_engagement=0.0,
+                median_engagement=0.0,
+                std_engagement=0.0
+            )
 
         if not outlier_indices:
-            return (
-                f"No outliers found from {len(tweets):,} tweets using {method} method with threshold {threshold}.\n\n"
-                f"Suggestions:\n"
-                f"- Try lowering the threshold (current: {threshold})\n"
-                f"- Increase time range (current: {hours_back} hours)\n"
-                f"- Lower min_views (current: {min_views})"
+            # Return result with zero outliers but include statistics
+            summary_stats = ctx.deps.stats.calculate_summary_stats(engagement_scores)
+            return OutlierResult(
+                total_tweets=len(tweets),
+                outlier_count=0,
+                threshold=threshold,
+                method=method,
+                outliers=[],
+                mean_engagement=summary_stats['mean'],
+                median_engagement=summary_stats['median'],
+                std_engagement=summary_stats['std']
             )
 
         # Build OutlierTweet objects
@@ -132,41 +158,25 @@ async def find_outliers_tool(
         # Calculate summary statistics
         summary_stats = ctx.deps.stats.calculate_summary_stats(engagement_scores)
 
-        # Format response
-        success_rate = (len(outliers) / len(tweets)) * 100
-        response = f"Found {len(outliers)} viral outliers from {len(tweets):,} tweets ({success_rate:.1f}% success rate)\n\n"
-        response += f"**Analysis Parameters:**\n"
-        response += f"- Method: {method}\n"
-        response += f"- Threshold: {threshold}\n"
-        response += f"- Time Range: Last {hours_back} hours\n"
-        response += f"- Min Views: {min_views:,}\n\n"
-
-        response += f"**Dataset Statistics:**\n"
-        response += f"- Mean Engagement: {summary_stats['mean']:.1f}\n"
-        response += f"- Median Engagement: {summary_stats['median']:.1f}\n"
-        response += f"- Std Dev: {summary_stats['std']:.1f}\n\n"
-
-        # Show top outliers
-        display_count = min(limit, len(outliers))
-        response += f"**Top {display_count} Viral Tweets:**\n\n"
-
-        for i, outlier in enumerate(outliers[:display_count], 1):
-            t = outlier.tweet
-            response += f"{i}. **[Z={outlier.zscore:.1f}, {outlier.percentile:.0f}th percentile]**\n"
-            response += f"   @{t.author_username} ({t.author_followers:,} followers)\n"
-            response += f"   Views: {t.view_count:,} | Likes: {t.like_count:,} | Replies: {t.reply_count:,}\n"
-            response += f"   \"{t.text[:100]}{'...' if len(t.text) > 100 else ''}\"\n"
-            response += f"   {t.url}\n\n"
-
-        if len(outliers) > display_count:
-            response += f"...and {len(outliers) - display_count} more outliers\n"
-
         logger.info(f"Successfully found {len(outliers)} outliers")
-        return response
+
+        # Return structured result
+        return OutlierResult(
+            total_tweets=len(tweets),
+            outlier_count=len(outliers),
+            threshold=threshold,
+            method=method,
+            outliers=outliers[:limit],  # Limit outliers for display (full list too large)
+            mean_engagement=summary_stats['mean'],
+            median_engagement=summary_stats['median'],
+            std_engagement=summary_stats['std']
+        )
 
     except Exception as e:
         logger.error(f"Error in find_outliers_tool: {e}", exc_info=True)
-        return f"Error finding outliers: {str(e)}"
+        # Return empty result with error logged
+        # Let the exception propagate - agent can handle it better than hiding it
+        raise
 
 
 # ============================================================================
@@ -179,7 +189,7 @@ async def analyze_hooks_tool(
     hours_back: int = 24,
     limit: int = 20,
     min_views: int = 100
-) -> str:
+) -> HookAnalysisResult:
     """
     Analyze tweet hooks using AI classification.
 
@@ -194,7 +204,7 @@ async def analyze_hooks_tool(
         min_views: Minimum views for auto-selected tweets (default: 100)
 
     Returns:
-        Formatted string summary of hook analysis results with patterns
+        HookAnalysisResult model with structured data and markdown export
     """
     try:
         logger.info(f"Analyzing hooks: tweet_ids={tweet_ids}, hours_back={hours_back}, limit={limit}")
@@ -204,7 +214,13 @@ async def analyze_hooks_tool(
             logger.info(f"Fetching {len(tweet_ids)} specific tweets...")
             tweets = await ctx.deps.twitter.get_tweets_by_ids(tweet_ids)
             if not tweets:
-                return f"No tweets found for the provided IDs: {tweet_ids}"
+                # Return empty result - no tweets found for IDs
+                return HookAnalysisResult(
+                    total_analyzed=len(tweet_ids) if tweet_ids else 0,
+                    successful_analyses=0,
+                    failed_analyses=len(tweet_ids) if tweet_ids else 0,
+                    analyses=[]
+                )
         else:
             logger.info(f"Finding outlier tweets from last {hours_back} hours...")
             # Get recent tweets
@@ -216,7 +232,13 @@ async def analyze_hooks_tool(
             )
 
             if not all_tweets:
-                return f"No tweets found for project '{ctx.deps.project_name}' in the last {hours_back} hours."
+                # Return empty result - no tweets in time range
+                return HookAnalysisResult(
+                    total_analyzed=0,
+                    successful_analyses=0,
+                    failed_analyses=0,
+                    analyses=[]
+                )
 
             # Find outliers using z-score
             engagement_scores = [t.engagement_score for t in all_tweets]
@@ -226,9 +248,12 @@ async def analyze_hooks_tool(
             )
 
             if not outlier_indices:
-                return (
-                    f"No outlier tweets found from {len(all_tweets):,} tweets to analyze.\n"
-                    f"Try increasing the time range or lowering the outlier threshold."
+                # Return empty result - no outliers found
+                return HookAnalysisResult(
+                    total_analyzed=len(all_tweets),
+                    successful_analyses=0,
+                    failed_analyses=0,
+                    analyses=[]
                 )
 
             # Select outlier tweets, limited by 'limit' parameter
@@ -263,61 +288,32 @@ async def analyze_hooks_tool(
                 continue
 
         if not analyses:
-            return f"Failed to analyze any tweets. Analyzed 0/{len(tweets)} successfully. Check API quota and credentials."
+            # All analyses failed - return empty result
+            return HookAnalysisResult(
+                total_analyzed=len(tweets),
+                successful_analyses=0,
+                failed_analyses=len(tweets),
+                analyses=[]
+            )
 
-        # Calculate pattern statistics
-        hook_types = Counter(a.hook_type for a in analyses if a.hook_type != "unknown")
-        emotional_triggers = Counter(a.emotional_trigger for a in analyses if a.emotional_trigger != "unknown")
-        content_patterns = Counter(a.content_pattern for a in analyses)
+        # Create result model with successful analyses
+        result = HookAnalysisResult(
+            total_analyzed=len(tweets),
+            successful_analyses=len(analyses),
+            failed_analyses=failed_count,
+            analyses=analyses
+        )
 
-        avg_confidence = sum(a.hook_type_confidence for a in analyses) / len(analyses)
-
-        # Format response
-        success_rate = (len(analyses) / len(tweets)) * 100
-        response = response_header
-        response += f"**Analysis Results:**\n"
-        response += f"- Successfully Analyzed: {len(analyses)}/{len(tweets)} ({success_rate:.0f}%)\n"
-        response += f"- Failed: {failed_count}\n"
-        response += f"- Average Confidence: {avg_confidence:.0%}\n\n"
-
-        # Top hook types
-        if hook_types:
-            response += f"**Top Hook Types:**\n"
-            for hook_type, count in hook_types.most_common(5):
-                pct = (count / len(analyses)) * 100
-                response += f"- {hook_type}: {count} ({pct:.0f}%)\n"
-            response += "\n"
-
-        # Top emotional triggers
-        if emotional_triggers:
-            response += f"**Top Emotional Triggers:**\n"
-            for trigger, count in emotional_triggers.most_common(5):
-                pct = (count / len(analyses)) * 100
-                response += f"- {trigger}: {count} ({pct:.0f}%)\n"
-            response += "\n"
-
-        # Content patterns
-        if content_patterns:
-            response += f"**Content Patterns:**\n"
-            for pattern, count in content_patterns.most_common(5):
-                pct = (count / len(analyses)) * 100
-                response += f"- {pattern}: {count} ({pct:.0f}%)\n"
-            response += "\n"
-
-        # Show example analyses
-        response += f"**Example Analyses:**\n\n"
-        for i, analysis in enumerate(analyses[:3], 1):
-            response += f"{i}. **{analysis.hook_type}** ({analysis.hook_type_confidence:.0%} confidence)\n"
-            response += f"   Trigger: {analysis.emotional_trigger}\n"
-            response += f"   \"{analysis.tweet_text[:80]}{'...' if len(analysis.tweet_text) > 80 else ''}\"\n"
-            response += f"   Why it works: {analysis.hook_explanation[:100]}...\n\n"
+        # Compute patterns (populates top_hook_types, top_emotional_triggers, avg_confidence)
+        result.compute_patterns()
 
         logger.info(f"Successfully analyzed {len(analyses)} hooks")
-        return response
+        return result
 
     except Exception as e:
         logger.error(f"Error in analyze_hooks_tool: {e}", exc_info=True)
-        return f"Error analyzing hooks: {str(e)}"
+        # Let exception propagate - agent can handle it better than hiding it
+        raise
 
 
 # ============================================================================
