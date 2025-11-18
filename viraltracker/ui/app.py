@@ -20,14 +20,149 @@ Environment variables required:
 """
 
 import asyncio
+import json
 import os
 import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
 import streamlit as st
 
 from viraltracker.agent import agent, AgentDependencies
+from viraltracker.services.models import OutlierResult, HookAnalysisResult
+
+
+# ============================================================================
+# Download Format Converters
+# ============================================================================
+
+def result_to_csv(result: OutlierResult | HookAnalysisResult) -> str:
+    """
+    Convert OutlierResult or HookAnalysisResult to CSV format.
+
+    Args:
+        result: The result model to convert
+
+    Returns:
+        CSV string
+    """
+    if isinstance(result, OutlierResult):
+        # Convert outlier tweets to DataFrame
+        data = []
+        for outlier in result.outliers:
+            t = outlier.tweet
+            data.append({
+                'Rank': outlier.rank,
+                'Z-Score': round(outlier.zscore, 2),
+                'Percentile': round(outlier.percentile, 1),
+                'Username': f"@{t.author_username}",
+                'Followers': t.author_followers,
+                'Views': t.view_count,
+                'Likes': t.like_count,
+                'Replies': t.reply_count,
+                'Retweets': t.retweet_count,
+                'Engagement Rate': round(t.engagement_rate * 100, 2),
+                'Created At': t.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'Tweet Text': t.text,
+                'URL': t.url
+            })
+        df = pd.DataFrame(data)
+        return df.to_csv(index=False)
+
+    elif isinstance(result, HookAnalysisResult):
+        # Convert hook analyses to DataFrame
+        data = []
+        for analysis in result.analyses:
+            data.append({
+                'Tweet ID': analysis.tweet_id,
+                'Hook Type': analysis.hook_type,
+                'Hook Confidence': round(analysis.hook_type_confidence, 2),
+                'Emotional Trigger': analysis.emotional_trigger,
+                'Emotion Confidence': round(analysis.emotional_trigger_confidence, 2),
+                'Content Pattern': analysis.content_pattern,
+                'Pattern Confidence': round(analysis.content_pattern_confidence, 2),
+                'Word Count': analysis.word_count,
+                'Has Emoji': analysis.has_emoji,
+                'Has Hashtags': analysis.has_hashtags,
+                'Has Question': analysis.has_question_mark,
+                'Explanation': analysis.hook_explanation,
+                'Adaptation Notes': analysis.adaptation_notes,
+                'Tweet Text': analysis.tweet_text
+            })
+        df = pd.DataFrame(data)
+        return df.to_csv(index=False)
+
+    return ""
+
+
+def result_to_json(result: OutlierResult | HookAnalysisResult) -> str:
+    """
+    Convert OutlierResult or HookAnalysisResult to JSON format.
+
+    Args:
+        result: The result model to convert
+
+    Returns:
+        Pretty-printed JSON string
+    """
+    return result.model_dump_json(indent=2)
+
+
+def render_download_buttons(result: OutlierResult | HookAnalysisResult, message_index: int):
+    """
+    Render download buttons for structured results.
+
+    Args:
+        result: The structured result to export
+        message_index: Index of the message (for unique keys)
+    """
+    # Determine filename prefix based on result type
+    if isinstance(result, OutlierResult):
+        prefix = f"outliers_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
+    elif isinstance(result, HookAnalysisResult):
+        prefix = f"hook_analysis_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
+    else:
+        return
+
+    # Create three columns for download buttons
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # JSON download
+        json_data = result_to_json(result)
+        st.download_button(
+            label="📥 Download JSON",
+            data=json_data,
+            file_name=f"{prefix}.json",
+            mime="application/json",
+            key=f"json_{message_index}",
+            use_container_width=True
+        )
+
+    with col2:
+        # CSV download
+        csv_data = result_to_csv(result)
+        st.download_button(
+            label="📊 Download CSV",
+            data=csv_data,
+            file_name=f"{prefix}.csv",
+            mime="text/csv",
+            key=f"csv_{message_index}",
+            use_container_width=True
+        )
+
+    with col3:
+        # Markdown download
+        md_data = result.to_markdown()
+        st.download_button(
+            label="📝 Download Markdown",
+            data=md_data,
+            file_name=f"{prefix}.md",
+            mime="text/markdown",
+            key=f"md_{message_index}",
+            use_container_width=True
+        )
 
 
 # ============================================================================
@@ -142,6 +277,10 @@ def initialize_session_state():
     if 'tool_results' not in st.session_state:
         st.session_state.tool_results = []
 
+    # Initialize structured results storage for downloads
+    if 'structured_results' not in st.session_state:
+        st.session_state.structured_results = {}
+
 
 def update_project_name(new_project_name: str):
     """Update project name and reinitialize dependencies."""
@@ -240,6 +379,28 @@ def add_quick_action_message(prompt: str):
                 'content': response
             })
 
+            # Extract structured results from tool returns in message history
+            message_idx = len(st.session_state.messages) - 1
+            structured_result = None
+
+            # Look through all messages for ToolReturnPart containing our result models
+            if hasattr(result, 'all_messages'):
+                for msg in result.all_messages():
+                    # Check message parts for ToolReturnPart
+                    if hasattr(msg, 'parts'):
+                        for part in msg.parts:
+                            # ToolReturnPart has a 'content' attribute with the structured result
+                            if part.__class__.__name__ == 'ToolReturnPart' and hasattr(part, 'content'):
+                                if isinstance(part.content, (OutlierResult, HookAnalysisResult)):
+                                    structured_result = part.content
+                                    break
+                    if structured_result:
+                        break
+
+            # Store if we found a structured result
+            if structured_result:
+                st.session_state.structured_results[message_idx] = structured_result
+
             # Store result for future context
             store_tool_result(prompt, response)
 
@@ -277,9 +438,16 @@ def render_chat_interface():
         return
 
     # Display chat messages
-    for message in st.session_state.messages:
+    for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message['role']):
             st.markdown(message['content'])
+
+            # Show download buttons if this message has structured results
+            if message['role'] == 'assistant' and idx in st.session_state.structured_results:
+                result = st.session_state.structured_results[idx]
+                if isinstance(result, (OutlierResult, HookAnalysisResult)):
+                    st.divider()
+                    render_download_buttons(result, idx)
 
     # Chat input
     if prompt := st.chat_input("Ask about viral tweets, hooks, or request a report..."):
@@ -293,62 +461,81 @@ def render_chat_interface():
         with st.chat_message('user'):
             st.markdown(prompt)
 
-        # Get agent response
+        # Get agent response with streaming
         with st.chat_message('assistant'):
-            with st.spinner("Agent is thinking..."):
-                try:
-                    # Build context from recent results
-                    context = build_conversation_context()
+            message_placeholder = st.empty()
+            full_response = ""
 
-                    # Prepend context to user prompt
-                    full_prompt = f"{context}## Current Query:\n{prompt}"
+            try:
+                # Build context from recent results
+                context = build_conversation_context()
 
-                    # Call agent with context
+                # Prepend context to user prompt
+                full_prompt = f"{context}## Current Query:\n{prompt}"
+
+                # Get agent response (non-streaming for now - streaming has Streamlit rendering issues)
+                with st.spinner("Agent is thinking..."):
                     result = asyncio.run(agent.run(full_prompt, deps=st.session_state.deps))
-                    response = result.output
+                    full_response = result.output
 
-                    # Check if result is a structured model (OutlierResult or HookAnalysisResult)
-                    from viraltracker.services.models import OutlierResult, HookAnalysisResult
+                # Display response
+                message_placeholder.markdown(full_response)
 
-                    # Display response (agent converts models to markdown automatically)
-                    st.markdown(response)
+                # Add to message history
+                st.session_state.messages.append({
+                    'role': 'assistant',
+                    'content': full_response
+                })
 
-                    # If we have structured data, add download buttons
-                    # The agent's output is the markdown, but we can check for specific patterns
-                    # For now, we'll just show the markdown response
-                    # TODO: Task 2.7 will add proper download buttons for structured models
+                # Extract structured results from tool returns in message history
+                message_idx = len(st.session_state.messages) - 1
+                structured_result = None
 
-                    # Add to message history
-                    st.session_state.messages.append({
-                        'role': 'assistant',
-                        'content': response
-                    })
+                # Look through all messages for ToolReturnPart containing our result models
+                if hasattr(result, 'all_messages'):
+                    for msg in result.all_messages():
+                        # Check message parts for ToolReturnPart
+                        if hasattr(msg, 'parts'):
+                            for part in msg.parts:
+                                # ToolReturnPart has a 'content' attribute with the structured result
+                                if part.__class__.__name__ == 'ToolReturnPart' and hasattr(part, 'content'):
+                                    if isinstance(part.content, (OutlierResult, HookAnalysisResult)):
+                                        structured_result = part.content
+                                        break
+                        if structured_result:
+                            break
 
-                    # Store result for future context
-                    store_tool_result(prompt, response)
+                # Store and display if we found a structured result
+                if structured_result:
+                    st.session_state.structured_results[message_idx] = structured_result
+                    st.divider()
+                    render_download_buttons(structured_result, message_idx)
 
-                except Exception as e:
-                    # Handle errors gracefully
-                    error_msg = (
-                        f"❌ **Error:** {str(e)}\n\n"
-                        "**Possible causes:**\n"
-                        "- Invalid API keys\n"
-                        "- Network connectivity issues\n"
-                        "- Database connection problems\n\n"
-                        "**Troubleshooting:**\n"
-                        "- Check your environment variables\n"
-                        "- Verify your database is accessible\n"
-                        "- Try rephrasing your question\n\n"
-                        f"**Debug info:**\n```\n{traceback.format_exc()}\n```"
-                    )
+                # Store result for future context
+                store_tool_result(prompt, full_response)
 
-                    st.markdown(error_msg)
+            except Exception as e:
+                # Handle errors gracefully
+                error_msg = (
+                    f"❌ **Error:** {str(e)}\n\n"
+                    "**Possible causes:**\n"
+                    "- Invalid API keys\n"
+                    "- Network connectivity issues\n"
+                    "- Database connection problems\n\n"
+                    "**Troubleshooting:**\n"
+                    "- Check your environment variables\n"
+                    "- Verify your database is accessible\n"
+                    "- Try rephrasing your question\n\n"
+                    f"**Debug info:**\n```\n{traceback.format_exc()}\n```"
+                )
 
-                    # Add error to message history
-                    st.session_state.messages.append({
-                        'role': 'assistant',
-                        'content': error_msg
-                    })
+                st.markdown(error_msg)
+
+                # Add error to message history
+                st.session_state.messages.append({
+                    'role': 'assistant',
+                    'content': error_msg
+                })
 
 
 # ============================================================================

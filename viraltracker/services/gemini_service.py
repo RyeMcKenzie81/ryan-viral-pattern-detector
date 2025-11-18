@@ -271,3 +271,128 @@ IMPORTANT:
         except Exception as e:
             logger.error(f"Error parsing response: {e}")
             raise
+
+    async def generate_content(
+        self,
+        hook_analyses: list,
+        content_type: str = "thread",
+        max_retries: int = 3
+    ) -> str:
+        """
+        Generate long-form content from analyzed hooks.
+
+        Args:
+            hook_analyses: List of HookAnalysis objects to use as inspiration
+            content_type: Type of content to generate ('thread' or 'article')
+            max_retries: Maximum retries on rate limit errors
+
+        Returns:
+            Generated content as string
+
+        Raises:
+            Exception: If all retries fail or non-rate-limit error occurs
+        """
+        # Wait for rate limit
+        await self._rate_limit()
+
+        # Build prompt
+        prompt = self._build_content_prompt(hook_analyses, content_type)
+
+        # Call API with retries
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                logger.debug(f"Generating {content_type} content from {len(hook_analyses)} hooks...")
+                response = self.model.generate_content(prompt)
+                return response.text
+
+            except Exception as e:
+                error_str = str(e)
+                last_error = e
+
+                # Check if it's a rate limit error
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error("Max retries exceeded for content generation")
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                else:
+                    logger.error(f"Error generating content: {e}")
+                    raise
+
+        raise last_error or Exception("Unknown error during content generation")
+
+    def _build_content_prompt(self, hook_analyses: list, content_type: str) -> str:
+        """Build content generation prompt for Gemini"""
+        # Extract key information from hook analyses
+        hooks_summary = []
+        for i, analysis in enumerate(hook_analyses[:5], 1):  # Limit to top 5
+            hooks_summary.append(
+                f"{i}. {analysis.hook_type} - \"{analysis.tweet_text[:100]}...\"\n"
+                f"   Why it works: {analysis.hook_explanation}"
+            )
+
+        hooks_text = "\n\n".join(hooks_summary)
+
+        if content_type == "thread":
+            prompt = f"""You are an expert content strategist. Based on these viral tweet hooks, create a Twitter thread (8-12 tweets) that synthesizes the best elements.
+
+VIRAL HOOKS TO DRAW FROM:
+{hooks_text}
+
+REQUIREMENTS:
+- Start with a strong hook tweet that grabs attention
+- Build a logical narrative flow across tweets
+- Use the emotional triggers and patterns from the hooks above
+- Keep each tweet concise (under 280 characters)
+- Include clear takeaways and insights
+- End with a call-to-action or thought-provoking question
+
+OUTPUT FORMAT:
+Tweet 1/12: [hook tweet]
+Tweet 2/12: [content]
+...
+Tweet 12/12: [conclusion]
+
+Generate the thread now:"""
+
+        else:  # article
+            prompt = f"""You are an expert content writer. Based on these viral tweet hooks, create a long-form article (800-1200 words) that explores the themes in depth.
+
+VIRAL HOOKS TO DRAW FROM:
+{hooks_text}
+
+REQUIREMENTS:
+- Compelling headline
+- Strong opening hook
+- Clear section structure
+- Incorporate insights from the viral patterns
+- Practical takeaways for readers
+- Engaging, conversational tone
+
+OUTPUT FORMAT:
+# [Headline]
+
+[Opening paragraph with hook]
+
+## [Section 1]
+[Content]
+
+## [Section 2]
+[Content]
+
+...
+
+## Conclusion
+[Wrap-up and call-to-action]
+
+Generate the article now:"""
+
+        return prompt

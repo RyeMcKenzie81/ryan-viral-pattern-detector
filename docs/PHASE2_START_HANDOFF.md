@@ -245,10 +245,37 @@ if isinstance(result, (OutlierResult, HookAnalysisResult)):
 
 ---
 
-### Task 2.2: Streaming Support
+### ⏸️ Task 2.2: Streaming Support (DEFERRED TO TASK 2.4)
 
-**Time:** 3 hours
-**Priority:** Medium - UX improvement
+**Status:** ⏸️ DEFERRED - Core functionality working, streaming has Streamlit rendering issues
+**Date Deferred:** 2025-01-17
+**See:** `docs/HANDOFF_PHASE_2_TASK_2.2.md` for full details
+
+**What Was Done:**
+- ✅ Integrated Pydantic AI `agent.run_stream()` API successfully
+- ✅ Created database tables (`public.outliers`, `public.hook_analyses`)
+- ✅ Fixed database persistence for tool results
+- ✅ Implemented clean non-streaming UI with spinner
+- ⏸️ Deferred actual streaming display due to Streamlit rendering issues
+
+**Current Implementation:**
+- Uses `agent.run()` with `st.spinner("Agent is thinking...")`
+- Clean, stable display without repetition
+- All core functionality working correctly
+
+**Why Deferred:**
+- Streamlit's markdown renderer shows cumulative repetition when updated rapidly
+- Multiple approaches attempted (throttling, buffering, async generators)
+- Not blocking core functionality - can revisit at end of Phase 2
+
+**Next:** Move to Task 2.4 at end of Phase 2 for second streaming attempt
+
+---
+
+### Task 2.4: Streaming Support - Second Attempt (END OF PHASE 2)
+
+**Time:** 4-5 hours
+**Priority:** Low - UX polish only
 
 **Current:** Agent uses `agent.run()` - waits for full response
 **Target:** Use `agent.run_stream()` - stream tokens in real-time
@@ -290,7 +317,7 @@ with st.chat_message('assistant'):
 
 ---
 
-### Task 2.4-2.6: Multi-Page Streamlit UI
+### Task 2.5-2.7: Multi-Page Streamlit UI
 
 **Time:** 8 hours total (3 + 3 + 2)
 **Priority:** Low - nice-to-have

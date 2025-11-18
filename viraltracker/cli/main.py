@@ -16,6 +16,7 @@ from .youtube import youtube_group
 from .twitter import twitter_group
 from .facebook import facebook
 from .score import score_group
+from .chat import chat
 
 
 @click.group()
@@ -44,6 +45,7 @@ cli.add_command(youtube_group)
 cli.add_command(twitter_group)
 cli.add_command(facebook)
 cli.add_command(score_group)
+cli.add_command(chat)
 
 
 if __name__ == '__main__':

@@ -158,7 +158,7 @@ source venv/bin/activate && python -m viraltracker.cli.main twitter generate-com
   --use-saved-scores \
   --max-candidates 10000 \
   --min-followers 0 \
-  --min-views 50 \
+  --min-views 100 \
   --batch-size 5
 
 echo ""
