@@ -1,8 +1,8 @@
 """
 Agent Dependencies - Typed dependency injection for Pydantic AI agent.
 
-Provides typed access to all services (Twitter, Gemini, Stats) and configuration
-needed by agent tools.
+Provides typed access to all services (Twitter, Gemini, Stats, Scraping, Comment)
+and configuration needed by agent tools.
 """
 
 import logging
@@ -12,6 +12,11 @@ from typing import Optional
 from ..services.twitter_service import TwitterService
 from ..services.gemini_service import GeminiService
 from ..services.stats_service import StatsService
+from ..services.scraping_service import ScrapingService
+from ..services.comment_service import CommentService
+from ..services.tiktok_service import TikTokService
+from ..services.youtube_service import YouTubeService
+from ..services.facebook_service import FacebookService
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +31,13 @@ class AgentDependencies:
 
     Attributes:
         twitter: TwitterService for database operations
-        gemini: GeminiService for AI hook analysis
+        gemini: GeminiService for AI hook analysis and content generation
         stats: StatsService for statistical calculations
+        scraping: ScrapingService for Twitter scraping operations
+        comment: CommentService for comment opportunity operations
+        tiktok: TikTokService for TikTok scraping and analysis operations
+        youtube: YouTubeService for YouTube video scraping operations
+        facebook: FacebookService for Facebook Ads scraping operations
         project_name: Name of the project being analyzed (e.g., 'yakety-pack-instagram')
 
     Example:
@@ -39,6 +49,11 @@ class AgentDependencies:
     twitter: TwitterService
     gemini: GeminiService
     stats: StatsService
+    scraping: ScrapingService
+    comment: CommentService
+    tiktok: TikTokService
+    youtube: YouTubeService
+    facebook: FacebookService
     project_name: str = "yakety-pack-instagram"
 
     @classmethod
@@ -94,10 +109,35 @@ class AgentDependencies:
         stats = StatsService()
         logger.info("StatsService initialized")
 
+        # Initialize ScrapingService for Twitter scraping
+        scraping = ScrapingService()
+        logger.info("ScrapingService initialized")
+
+        # Initialize CommentService for comment opportunities
+        comment = CommentService()
+        logger.info("CommentService initialized")
+
+        # Initialize TikTokService for TikTok operations
+        tiktok = TikTokService()
+        logger.info("TikTokService initialized")
+
+        # Initialize YouTubeService for YouTube operations
+        youtube = YouTubeService()
+        logger.info("YouTubeService initialized")
+
+        # Initialize FacebookService for Facebook Ads operations
+        facebook = FacebookService()
+        logger.info("FacebookService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
             stats=stats,
+            scraping=scraping,
+            comment=comment,
+            tiktok=tiktok,
+            youtube=youtube,
+            facebook=facebook,
             project_name=project_name
         )
 
@@ -105,7 +145,7 @@ class AgentDependencies:
         """String representation for debugging."""
         return (
             f"AgentDependencies(project_name='{self.project_name}', "
-            f"services=[TwitterService, GeminiService, StatsService])"
+            f"services=[TwitterService, GeminiService, StatsService, ScrapingService, CommentService, TikTokService, YouTubeService, FacebookService])"
         )
 
     def __repr__(self) -> str:

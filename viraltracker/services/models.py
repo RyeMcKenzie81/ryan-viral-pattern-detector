@@ -88,6 +88,208 @@ class Tweet(BaseModel):
         }
 
 
+class TikTokVideo(BaseModel):
+    """
+    TikTok video data model.
+
+    Represents a single TikTok video with engagement metrics and metadata.
+    Compatible with TikTokScraper output and Supabase storage.
+    """
+    id: str = Field(..., description="TikTok video ID (post_id)")
+    url: str = Field(..., description="Full URL to TikTok video")
+    caption: str = Field(default="", description="Video caption/description")
+
+    # Engagement metrics
+    views: int = Field(default=0, ge=0, description="Total views/play count")
+    likes: int = Field(default=0, ge=0, description="Total likes")
+    comments: int = Field(default=0, ge=0, description="Total comments")
+    shares: int = Field(default=0, ge=0, description="Total shares")
+
+    # Video metadata
+    length_sec: int = Field(default=0, ge=0, description="Video duration in seconds")
+    posted_at: Optional[datetime] = Field(None, description="When video was posted")
+
+    # Creator metadata
+    username: str = Field(..., description="Creator username (without @)")
+    display_name: str = Field(default="", description="Creator display name")
+    follower_count: int = Field(default=0, ge=0, description="Creator follower count")
+    is_verified: bool = Field(default=False, description="Is creator verified")
+
+    # Optional fields
+    download_url: Optional[str] = Field(None, description="Video download URL (watermark-free)")
+
+    # Computed properties
+    @property
+    def engagement_rate(self) -> float:
+        """Engagement rate: (likes + comments + shares) / views"""
+        if self.views == 0:
+            return 0.0
+        total_engagement = self.likes + self.comments + self.shares
+        return total_engagement / self.views
+
+    @property
+    def engagement_score(self) -> float:
+        """Weighted engagement score (likes > shares > comments)"""
+        return (
+            self.likes * 1.0 +
+            self.shares * 0.8 +
+            self.comments * 0.5
+        )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "id": "7559660839335202079",
+                "url": "https://www.tiktok.com/@user/video/7559660839335202079",
+                "caption": "How I organize my day with this productivity app",
+                "views": 150000,
+                "likes": 8500,
+                "comments": 320,
+                "shares": 1200,
+                "length_sec": 45,
+                "posted_at": "2024-01-15T14:30:00Z",
+                "username": "productivitypro",
+                "display_name": "Productivity Pro",
+                "follower_count": 35000,
+                "is_verified": False,
+                "download_url": "https://..."
+            }
+        }
+
+
+class YouTubeVideo(BaseModel):
+    """YouTube video data model with engagement metrics."""
+
+    # Identifiers
+    id: str = Field(..., description="YouTube video ID (post_id)")
+    url: str = Field(..., description="Full URL to YouTube video")
+    title: str = Field(default="", description="Video title")
+    caption: str = Field(default="", description="Video description/caption")
+
+    # Engagement metrics
+    views: int = Field(default=0, ge=0, description="Total view count")
+    likes: int = Field(default=0, ge=0, description="Total likes")
+    comments: int = Field(default=0, ge=0, description="Total comments")
+
+    # Video metadata
+    length_sec: int = Field(default=0, ge=0, description="Video duration in seconds")
+    video_type: str = Field(default="video", description="Video type: short, video, or stream")
+    posted_at: Optional[datetime] = Field(None, description="When video was published")
+
+    # Channel metadata
+    channel: str = Field(..., description="YouTube channel name")
+    subscriber_count: int = Field(default=0, ge=0, description="Channel subscriber count")
+    search_query: Optional[str] = Field(None, description="Search query that found this video")
+
+    @property
+    def engagement_rate(self) -> float:
+        """Engagement rate: (likes + comments) / views"""
+        if self.views == 0:
+            return 0.0
+        return (self.likes + self.comments) / self.views
+
+    @property
+    def engagement_score(self) -> float:
+        """Weighted engagement score (likes > comments)"""
+        return self.likes * 1.0 + self.comments * 0.5
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "dQw4w9WgXcQ",
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "title": "10 Productivity Tips That Changed My Life",
+                "caption": "In this video I share my top 10 productivity tips...",
+                "views": 125000,
+                "likes": 8500,
+                "comments": 350,
+                "length_sec": 612,
+                "video_type": "video",
+                "posted_at": "2024-01-10T09:00:00Z",
+                "channel": "ProductivityMaster",
+                "subscriber_count": 45000,
+                "search_query": "productivity tips"
+            }
+        }
+    }
+
+
+class FacebookAd(BaseModel):
+    """Facebook ad data model with spend and reach metrics."""
+
+    # Identifiers
+    id: str = Field(..., description="Facebook ad ID (ad_id)")
+    ad_archive_id: str = Field(..., description="Ad archive ID (used for deduplication)")
+    url: Optional[str] = Field(None, description="Full URL to Facebook ad (if available)")
+
+    # Page metadata
+    page_id: Optional[str] = Field(None, description="Facebook page ID")
+    page_name: str = Field(..., description="Facebook page name running the ad")
+
+    # Ad metadata
+    is_active: bool = Field(default=False, description="Whether ad is currently active")
+    start_date: Optional[datetime] = Field(None, description="When ad started running")
+    end_date: Optional[datetime] = Field(None, description="When ad stopped running (if ended)")
+
+    # Performance metrics
+    currency: Optional[str] = Field(None, description="Currency of spend (e.g., USD)")
+    spend: Optional[float] = Field(None, ge=0, description="Total ad spend amount")
+    impressions: Optional[int] = Field(None, ge=0, description="Number of impressions")
+    reach_estimate: Optional[int] = Field(None, ge=0, description="Estimated reach")
+
+    # Creative data (stored as JSON strings in DB)
+    snapshot: Optional[str] = Field(None, description="Creative/visual snapshot data (JSON)")
+    categories: Optional[str] = Field(None, description="Ad categories (JSON array)")
+    publisher_platform: Optional[str] = Field(None, description="Platforms where ad published (JSON array)")
+
+    # Political/transparency
+    political_countries: Optional[str] = Field(None, description="Countries for political ads (JSON array)")
+    entity_type: Optional[str] = Field(None, description="Type of entity running ad")
+
+    @property
+    def engagement_score(self) -> float:
+        """Simple engagement score based on impressions and reach"""
+        if self.impressions and self.reach_estimate:
+            return (self.impressions + self.reach_estimate) / 2
+        elif self.impressions:
+            return float(self.impressions)
+        elif self.reach_estimate:
+            return float(self.reach_estimate)
+        return 0.0
+
+    @property
+    def days_active(self) -> Optional[int]:
+        """Number of days ad has been/was active"""
+        if not self.start_date:
+            return None
+        end = self.end_date or datetime.now()
+        return (end - self.start_date).days
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "123456789",
+                "ad_archive_id": "987654321",
+                "url": "https://www.facebook.com/ads/library/?id=123456789",
+                "page_id": "456789123",
+                "page_name": "Nike",
+                "is_active": True,
+                "start_date": "2024-01-01T00:00:00Z",
+                "end_date": None,
+                "currency": "USD",
+                "spend": 5000.00,
+                "impressions": 150000,
+                "reach_estimate": 100000,
+                "snapshot": '{"link_url": "https://nike.com", "body": "Just Do It"}',
+                "categories": '["Sportswear", "Athletic Shoes"]',
+                "publisher_platform": '["facebook", "instagram"]',
+                "political_countries": None,
+                "entity_type": "page"
+            }
+        }
+    }
+
+
 class HookAnalysis(BaseModel):
     """
     Hook analysis result from AI classification.

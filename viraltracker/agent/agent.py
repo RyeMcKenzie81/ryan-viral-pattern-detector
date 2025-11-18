@@ -19,6 +19,25 @@ from .tools import (
     analyze_hooks_tool,
     export_results_tool
 )
+from .tools_phase15 import (
+    search_twitter_tool,
+    find_comment_opportunities_tool,
+    export_comments_tool,
+    analyze_search_term_tool,
+    generate_content_tool
+)
+from .tools_phase16 import (
+    search_tiktok_tool,
+    search_tiktok_hashtag_tool,
+    scrape_tiktok_user_tool,
+    analyze_tiktok_video_tool,
+    analyze_tiktok_batch_tool
+)
+from .tools_phase17 import (
+    search_youtube_tool,
+    search_facebook_ads_tool,
+    scrape_facebook_page_ads_tool
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +71,70 @@ logger.info("Registered tool: analyze_hooks_tool")
 agent.tool(export_results_tool)
 logger.info("Registered tool: export_results_tool")
 
+# ============================================================================
+# Phase 1.5 Tools - Complete Twitter Coverage
+# ============================================================================
+
+# Tool 4: Search/scrape Twitter by keyword
+agent.tool(search_twitter_tool)
+logger.info("Registered tool: search_twitter_tool")
+
+# Tool 5: Find comment opportunities
+agent.tool(find_comment_opportunities_tool)
+logger.info("Registered tool: find_comment_opportunities_tool")
+
+# Tool 6: Export comment opportunities
+agent.tool(export_comments_tool)
+logger.info("Registered tool: export_comments_tool")
+
+# Tool 7: Analyze keyword engagement patterns
+agent.tool(analyze_search_term_tool)
+logger.info("Registered tool: analyze_search_term_tool")
+
+# Tool 8: Generate long-form content from hooks
+agent.tool(generate_content_tool)
+logger.info("Registered tool: generate_content_tool")
+
+# ============================================================================
+# Phase 1.6 Tools - TikTok Platform Support
+# ============================================================================
+
+# Tool 9: Search TikTok by keyword
+agent.tool(search_tiktok_tool)
+logger.info("Registered tool: search_tiktok_tool")
+
+# Tool 10: Search TikTok by hashtag
+agent.tool(search_tiktok_hashtag_tool)
+logger.info("Registered tool: search_tiktok_hashtag_tool")
+
+# Tool 11: Scrape TikTok user posts
+agent.tool(scrape_tiktok_user_tool)
+logger.info("Registered tool: scrape_tiktok_user_tool")
+
+# Tool 12: Analyze single TikTok video
+agent.tool(analyze_tiktok_video_tool)
+logger.info("Registered tool: analyze_tiktok_video_tool")
+
+# Tool 13: Batch analyze TikTok videos
+agent.tool(analyze_tiktok_batch_tool)
+logger.info("Registered tool: analyze_tiktok_batch_tool")
+
+# ============================================================================
+# Phase 1.7 Tools - YouTube & Facebook Platform Support
+# ============================================================================
+
+# Tool 14: Search YouTube by keyword
+agent.tool(search_youtube_tool)
+logger.info("Registered tool: search_youtube_tool")
+
+# Tool 15: Search Facebook Ad Library
+agent.tool(search_facebook_ads_tool)
+logger.info("Registered tool: search_facebook_ads_tool")
+
+# Tool 16: Scrape Facebook page ads
+agent.tool(scrape_facebook_page_ads_tool)
+logger.info("Registered tool: scrape_facebook_page_ads_tool")
+
 
 # ============================================================================
 # Dynamic System Prompt
@@ -78,6 +161,8 @@ You help analyze Twitter content to find viral patterns and generate insights.
 
 **Available Tools:**
 
+**Phase 1 - Core Analysis Tools:**
+
 1. **find_outliers_tool**: Find statistically viral tweets using Z-score analysis
    - Use when user wants to see "viral tweets", "outliers", "top performers"
    - Default: last 24 hours, Z-score > 2.0
@@ -96,6 +181,90 @@ You help analyze Twitter content to find viral patterns and generate insights.
    - Combines outlier detection + hook analysis into markdown report
    - Parameters: hours_back, threshold, include_hooks, format (markdown)
    - Returns: Full markdown report with all analysis results
+
+**Phase 1.5 - Complete Twitter Coverage:**
+
+4. **search_twitter_tool**: Search/scrape Twitter by keyword
+   - Use when user wants to "find tweets about", "search for", "scrape keyword"
+   - Scrapes recent tweets matching keyword and saves to database
+   - Parameters: keyword, hours_back (default: 24), max_results (default: 100)
+   - Returns: Summary of scraped tweets with top performers
+
+5. **find_comment_opportunities_tool**: Find high-quality comment opportunities
+   - Use when user wants "comment opportunities", "tweets to comment on"
+   - Finds tweets with high engagement potential for commenting
+   - Parameters: hours_back (default: 48), min_green_flags (default: 3), max_candidates (default: 100)
+   - Returns: Ranked list of comment opportunities with scores and suggestions
+
+6. **export_comments_tool**: Export comment opportunities to file
+   - Use when user wants to "export comments", "download opportunities"
+   - Exports comment candidates to JSON, CSV, or Markdown
+   - Parameters: hours_back (default: 48), format ("json"|"csv"|"markdown"), label_filter (optional)
+   - Returns: Exported data with preview
+
+7. **analyze_search_term_tool**: Analyze keyword engagement patterns
+   - Use when user wants to "analyze keyword", "understand topic performance"
+   - Analyzes engagement metrics for tweets containing a keyword
+   - Parameters: keyword, hours_back (default: 24)
+   - Returns: Engagement statistics and insights for the keyword
+
+8. **generate_content_tool**: Generate long-form content from viral hooks
+   - Use when user wants to "create a thread", "generate article", "turn hooks into content"
+   - Uses analyzed viral hooks to generate Twitter threads or articles
+   - Parameters: hours_back (default: 24), content_type ("thread"|"article"), limit (default: 10)
+   - Returns: Generated long-form content based on viral patterns
+
+**Phase 1.6 - TikTok Platform Support:**
+
+9. **search_tiktok_tool**: Search TikTok by keyword
+   - Use when user wants to "find TikTok videos", "search TikTok for", "discover TikTok content"
+   - Searches recent viral TikTok videos matching keyword
+   - Parameters: keyword, count (default: 50), min_views (default: 100K), max_days (default: 10), max_followers (default: 50K)
+   - Returns: Summary of viral TikTok videos with top performers
+
+10. **search_tiktok_hashtag_tool**: Search TikTok by hashtag
+    - Use when user wants to "track TikTok hashtag", "find videos with #", "monitor hashtag"
+    - Finds viral videos for a specific hashtag
+    - Parameters: hashtag, count (default: 50), min_views (default: 100K), max_days (default: 10), max_followers (default: 50K)
+    - Returns: Hashtag performance analysis with top videos
+
+11. **scrape_tiktok_user_tool**: Scrape TikTok user/creator posts
+    - Use when user wants to "analyze TikTok creator", "study TikTok account", "track competitor on TikTok"
+    - Scrapes all posts from a specific TikTok creator
+    - Parameters: username, count (default: 50)
+    - Returns: Account statistics and top performing videos
+
+12. **analyze_tiktok_video_tool**: Analyze single TikTok video
+    - Use when user wants to "analyze this TikTok", "study viral TikTok video", "get insights on video"
+    - Fetches and analyzes a specific TikTok video by URL
+    - Parameters: url
+    - Returns: Detailed video analysis with engagement metrics
+
+13. **analyze_tiktok_batch_tool**: Batch analyze multiple TikTok videos
+    - Use when user wants to "analyze multiple TikToks", "bulk import TikTok videos", "compare TikTok videos"
+    - Fetches and analyzes multiple TikTok videos from URLs
+    - Parameters: urls (list of URLs)
+    - Returns: Batch analysis summary with aggregate metrics
+
+**Phase 1.7 - YouTube & Facebook Platform Support:**
+
+14. **search_youtube_tool**: Search YouTube for viral videos by keyword
+    - Use when user wants to "find YouTube videos", "search YouTube for", "discover viral Shorts"
+    - Searches viral YouTube content (Shorts and videos) by keyword
+    - Parameters: keywords (comma-separated), max_shorts (default: 100), max_videos (default: 0), days_back, min_views (default: 100K), max_subscribers (default: 50K)
+    - Returns: Summary of viral YouTube videos with top performers by engagement
+
+15. **search_facebook_ads_tool**: Search Facebook Ad Library by URL
+    - Use when user wants to "find Facebook ads", "research competitor ads", "monitor ad spend"
+    - Searches ads by keyword via Facebook Ad Library URL
+    - Parameters: search_url (Ad Library URL), count (default: 50), period (default: "last30d")
+    - Returns: Ad performance summary with spend and reach data
+
+16. **scrape_facebook_page_ads_tool**: Scrape all ads from a Facebook page
+    - Use when user wants to "analyze page ads", "study brand campaigns", "track competitor advertising"
+    - Scrapes all ads run by a specific Facebook page
+    - Parameters: page_url, count (default: 50), active_status (default: "all")
+    - Returns: Page advertising strategy summary with campaign insights
 
 **Guidelines:**
 - Always explain what you're analyzing before calling tools
