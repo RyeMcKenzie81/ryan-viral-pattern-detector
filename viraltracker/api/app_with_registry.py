@@ -1,15 +1,19 @@
 """
-Viraltracker FastAPI Application.
+Viraltracker FastAPI Application - WITH AUTO-GENERATED TOOL ENDPOINTS.
 
-REST API for agent execution, enabling webhook integration with
-automation tools (n8n, Zapier, Make.com).
+This version demonstrates how to use the tool_registry to automatically
+generate API endpoints for all registered tools.
 
-Features:
-- Agent execution endpoint with Pydantic AI
-- API key authentication
-- Rate limiting
-- Health check endpoint
-- Automatic OpenAPI documentation
+Key differences from manual endpoint creation:
+1. Import tools_registered (not tools) to trigger decorator registration
+2. Call tool_registry.create_api_router() to generate all endpoints
+3. Include the router in the main app
+
+Benefits:
+- Add new tool = automatic API endpoint
+- Consistent parameter validation
+- Type-safe requests/responses
+- Single source of truth
 """
 
 import logging
@@ -30,16 +34,17 @@ from .models import (
     AgentRequest,
     AgentResponse,
     HealthResponse,
-    ErrorResponse,
-    FindOutliersRequest,
-    AnalyzeHooksRequest,
-    SearchTwitterRequest,
-    FindCommentOpportunitiesRequest,
-    ToolResponse
+    ErrorResponse
 )
-from .endpoint_generator import generate_tool_endpoints
 from ..agent.agent import agent
 from ..agent.dependencies import AgentDependencies
+
+# IMPORTANT: Import tools_registered to trigger decorator registration
+# This must happen before create_api_router() is called
+from ..agent import tools_registered  # noqa: F401
+
+# Import tool registry
+from ..agent.tool_registry import tool_registry
 
 # ============================================================================
 # Logging Configuration
@@ -57,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Viraltracker API",
-    description="REST API for viral content analysis with Pydantic AI",
+    description="REST API for viral content analysis with Pydantic AI and auto-generated tool endpoints",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -96,12 +101,6 @@ async def verify_api_key(api_key: Optional[str] = Depends(API_KEY_HEADER)):
 
     Checks against environment variable VIRALTRACKER_API_KEY.
     If not set, allows all requests (development mode).
-
-    Args:
-        api_key: API key from X-API-Key header
-
-    Raises:
-        HTTPException: If API key is invalid or missing
     """
     expected_key = os.getenv("VIRALTRACKER_API_KEY")
 
@@ -140,19 +139,13 @@ async def verify_api_key(api_key: Optional[str] = Depends(API_KEY_HEADER)):
     summary="Health check endpoint"
 )
 async def health_check():
-    """
-    Check API health and service status.
-
-    Returns status of the API and its dependent services
-    (database, AI models, etc.).
-    """
+    """Check API health and service status."""
     services = {}
 
     # Check database connection
     try:
         from ..services.twitter_service import TwitterService
         twitter = TwitterService()
-        # Simple check - if initialization doesn't error, we're good
         services["database"] = "connected"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
@@ -167,8 +160,7 @@ async def health_check():
         logger.error(f"Gemini AI health check failed: {e}")
         services["gemini_ai"] = "error"
 
-    # Check OpenAI (via Pydantic AI)
-    # For now, just mark as available if dependencies load
+    # Check Pydantic AI
     services["pydantic_ai"] = "available"
 
     # Determine overall status
@@ -199,7 +191,7 @@ async def health_check():
     tags=["Agent"],
     summary="Execute Pydantic AI agent"
 )
-@limiter.limit("10/minute")  # Rate limit: 10 requests per minute per IP
+@limiter.limit("10/minute")
 async def run_agent(
     request: Request,
     agent_request: AgentRequest,
@@ -209,22 +201,7 @@ async def run_agent(
     Execute Pydantic AI agent with natural language prompt.
 
     This endpoint allows you to interact with the Viraltracker agent
-    using natural language. The agent has access to 16 tools across
-    Twitter, TikTok, YouTube, and Facebook platforms.
-
-    **Example prompts:**
-    - "Find viral tweets from the last 24 hours"
-    - "Analyze hooks for top performing tweets"
-    - "Search TikTok for trending fitness content"
-    - "Find comment opportunities with high engagement"
-
-    **Rate Limits:**
-    - 10 requests per minute per IP address
-    - Configurable via RATE_LIMIT_PER_MINUTE env var
-
-    **Authentication:**
-    - Requires X-API-Key header (set VIRALTRACKER_API_KEY env var)
-    - Development mode: No auth required if VIRALTRACKER_API_KEY not set
+    using natural language. The agent has access to all registered tools.
     """
     start_time = time.time()
 
@@ -281,123 +258,56 @@ async def run_agent(
 
 
 # ============================================================================
-# Direct Tool Endpoints (for specific use cases)
+# AUTO-GENERATED TOOL ENDPOINTS
 # ============================================================================
 
-@app.post(
-    "/tools/find-outliers",
-    response_model=ToolResponse,
-    tags=["Tools"],
-    summary="Find viral outlier tweets"
+# Create router with all tool endpoints
+tool_router = tool_registry.create_api_router(
+    prefix="",  # No prefix, endpoints will be /tools/*
+    tags=["Auto-Generated Tools"],
+    limiter=limiter,
+    auth_dependency=verify_api_key
 )
-@limiter.limit("20/minute")
-async def find_outliers_endpoint(
-    request: Request,
-    tool_request: FindOutliersRequest,
-    authenticated: bool = Depends(verify_api_key)
-):
-    """
-    Direct access to find_outliers tool.
 
-    Bypasses the agent for faster, deterministic execution.
-    Useful for scheduled jobs and workflows that don't need
-    natural language processing.
-    """
-    try:
-        from ..agent.tools import find_outliers_tool
-        from pydantic_ai import RunContext
+# Include the router in the main app
+app.include_router(tool_router)
 
-        deps = AgentDependencies.create(project_name=tool_request.project_name)
-        ctx = RunContext(deps=deps, retry=0, messages=[])
-
-        result = await find_outliers_tool(
-            ctx=ctx,
-            hours_back=tool_request.hours_back,
-            threshold=tool_request.threshold,
-            method=tool_request.method,
-            min_views=tool_request.min_views,
-            text_only=tool_request.text_only,
-            limit=tool_request.limit
-        )
-
-        return ToolResponse(
-            success=True,
-            data={
-                "total_tweets": result.total_tweets,
-                "outlier_count": result.outlier_count,
-                "threshold": result.threshold,
-                "method": result.method,
-                "outliers": [o.model_dump() for o in result.outliers]
-            },
-            error=None,
-            timestamp=datetime.now()
-        )
-
-    except Exception as e:
-        logger.error(f"find_outliers tool failed: {e}", exc_info=True)
-        return ToolResponse(
-            success=False,
-            data={},
-            error=str(e),
-            timestamp=datetime.now()
-        )
+logger.info(f"Registered {len(tool_registry.get_all_tools())} auto-generated tool endpoints")
 
 
-@app.post(
-    "/tools/analyze-hooks",
-    response_model=ToolResponse,
-    tags=["Tools"],
-    summary="Analyze tweet hooks with AI"
+# ============================================================================
+# Tool Registry Info Endpoint
+# ============================================================================
+
+@app.get(
+    "/tools",
+    tags=["System"],
+    summary="List all registered tools"
 )
-@limiter.limit("10/minute")  # Lower limit for AI-heavy operations
-async def analyze_hooks_endpoint(
-    request: Request,
-    tool_request: AnalyzeHooksRequest,
-    authenticated: bool = Depends(verify_api_key)
-):
+async def list_tools():
     """
-    Direct access to analyze_hooks tool.
+    Get information about all registered tools and their endpoints.
 
-    Analyzes tweet hooks using Gemini AI to identify:
-    - Hook types (hot_take, relatable_slice, insider_secret, etc.)
-    - Emotional triggers (anger, validation, humor, curiosity, etc.)
-    - Content patterns
+    Returns:
+        Dictionary of tools with their metadata
     """
-    try:
-        from ..agent.tools import analyze_hooks_tool
-        from pydantic_ai import RunContext
+    tools = tool_registry.get_all_tools()
 
-        deps = AgentDependencies.create(project_name=tool_request.project_name)
-        ctx = RunContext(deps=deps, retry=0, messages=[])
-
-        result = await analyze_hooks_tool(
-            ctx=ctx,
-            tweet_ids=tool_request.tweet_ids,
-            hours_back=tool_request.hours_back,
-            limit=tool_request.limit,
-            min_views=tool_request.min_views
-        )
-
-        return ToolResponse(
-            success=True,
-            data={
-                "total_analyzed": result.total_analyzed,
-                "successful_analyses": result.successful_analyses,
-                "failed_analyses": result.failed_analyses,
-                "analyses": [a.model_dump() for a in result.analyses]
-            },
-            error=None,
-            timestamp=datetime.now()
-        )
-
-    except Exception as e:
-        logger.error(f"analyze_hooks tool failed: {e}", exc_info=True)
-        return ToolResponse(
-            success=False,
-            data={},
-            error=str(e),
-            timestamp=datetime.now()
-        )
+    return {
+        "total_tools": len(tools),
+        "tools": {
+            name: {
+                "name": tool.name,
+                "description": tool.description,
+                "category": tool.category,
+                "api_path": tool.api_path,
+                "rate_limit": tool.rate_limit,
+                "requires_auth": tool.requires_auth
+            }
+            for name, tool in tools.items()
+        },
+        "categories": list(set(tool.category for tool in tools.values()))
+    }
 
 
 # ============================================================================
@@ -443,6 +353,7 @@ async def startup_event():
     logger.info(f"API Version: 1.0.0")
     logger.info(f"Docs available at: /docs")
     logger.info(f"Auth mode: {'Production (API key required)' if os.getenv('VIRALTRACKER_API_KEY') else 'Development (no auth)'}")
+    logger.info(f"Auto-generated tool endpoints: {len(tool_registry.get_all_tools())}")
     logger.info("="*60)
 
 
@@ -450,17 +361,6 @@ async def startup_event():
 async def shutdown_event():
     """Log shutdown information."""
     logger.info("Viraltracker API Shutting down...")
-
-
-# ============================================================================
-# Auto-Generated Tool Endpoints
-# ============================================================================
-
-# Generate and include router for all agent tools
-logger.info("Generating auto-endpoints for all agent tools...")
-tools_router = generate_tool_endpoints(agent, limiter, verify_api_key)
-app.include_router(tools_router)
-logger.info("Auto-generated tool endpoints registered successfully")
 
 
 # ============================================================================
@@ -472,15 +372,18 @@ async def root():
     """
     API root endpoint with basic information.
     """
+    tools = tool_registry.get_all_tools()
+
     return {
         "name": "Viraltracker API",
         "version": "1.0.0",
-        "description": "REST API for viral content analysis with Pydantic AI",
+        "description": "REST API for viral content analysis with auto-generated tool endpoints",
         "docs": "/docs",
         "health": "/health",
         "endpoints": {
             "agent_execution": "/agent/run",
-            "find_outliers": "/tools/find-outliers",
-            "analyze_hooks": "/tools/analyze-hooks"
-        }
+            "list_tools": "/tools"
+        },
+        "auto_generated_tools": len(tools),
+        "tool_categories": list(set(tool.category for tool in tools.values()))
     }
