@@ -73,6 +73,7 @@ yt-dlp==2025.9.26
 
 # Pydantic AI Agent Dependencies
 pydantic-ai==0.0.14
+griffe==1.5.1
 rich==13.9.4
 
 # Web Dashboard Dependencies
