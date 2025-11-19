@@ -67,8 +67,8 @@ async def search_twitter_tool(
         total_engagement = sum(t.like_count + t.reply_count + t.retweet_count for t in tweets)
         avg_engagement_rate = sum(t.engagement_rate for t in tweets) / len(tweets)
 
-        # Format response
-        response = f"Successfully scraped {len(tweets)} tweets for '{keyword}'\n\n"
+        # Format response with clear parameters
+        response = f"I've successfully scraped **{len(tweets)} tweets** containing the keyword \"{keyword}\" in the past **{hours_back} hours**. Here are some key statistics and the top 5 tweets based on engagement:\n\n"
         response += f"**Summary Statistics:**\n"
         response += f"- Total Views: {total_views:,}\n"
         response += f"- Total Likes: {total_likes:,}\n"
@@ -85,7 +85,14 @@ async def search_twitter_tool(
             response += f"   \"{tweet.text[:100]}{'...' if len(tweet.text) > 100 else ''}\"\n"
             response += f"   {tweet.url}\n\n"
 
-        response += f"All {len(tweets)} tweets have been saved to the database for project '{ctx.deps.project_name}'."
+        response += f"All {len(tweets)} tweets have been saved to the database for project '{ctx.deps.project_name}'.\n\n"
+
+        # Add export suggestion
+        response += f"---\n\n"
+        response += f"**Want to download these results?** You can:\n"
+        response += f"- Ask me to \"export these tweets to a file\"\n"
+        response += f"- Request \"get the top 10 tweets by views\" for simple ranking\n"
+        response += f"- Use \"find outliers\" to discover statistically viral tweets"
 
         logger.info(f"Successfully scraped {len(tweets)} tweets for '{keyword}'")
         return response
