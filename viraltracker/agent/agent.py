@@ -67,7 +67,7 @@ from pydantic_ai import ModelRetry
 # Our OutlierResult and HookAnalysisResult models have __str__() methods that
 # call .to_markdown(), so they automatically format as beautiful markdown reports.
 
-@agent.output_validator
+@agent.result_validator
 async def validate_meaningful_results(ctx: RunContext[AgentDependencies], result: OutlierResult | HookAnalysisResult | str) -> OutlierResult | HookAnalysisResult | str:
     """
     Validate that results are meaningful before returning to user.
