@@ -28,7 +28,7 @@ async def search_twitter_tool(
     ctx: RunContext[AgentDependencies],
     keyword: str,
     hours_back: int = 24,
-    max_results: int = 100
+    max_results: int = 5000
 ) -> str:
     """
     Search/scrape Twitter by keyword and save results to database.
@@ -42,7 +42,7 @@ async def search_twitter_tool(
         ctx: Pydantic AI run context with AgentDependencies
         keyword: Search keyword or hashtag (e.g., "parenting tips", "#productivity")
         hours_back: Hours of historical data to search (default: 24)
-        max_results: Maximum tweets to scrape (default: 100)
+        max_results: Maximum tweets to scrape (default: 5000, supports up to 10000)
 
     Returns:
         Formatted string summary of scraping results

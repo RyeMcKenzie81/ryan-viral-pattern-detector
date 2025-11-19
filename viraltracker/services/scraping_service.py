@@ -33,7 +33,7 @@ class ScrapingService:
         keyword: str,
         project: str,
         hours_back: int = 24,
-        max_results: int = 100,
+        max_results: int = 5000,
         min_likes: int = 0,
         min_views: int = 0
     ) -> List[Tweet]:
@@ -44,7 +44,7 @@ class ScrapingService:
             keyword: Search keyword or hashtag
             project: Project slug to associate tweets with
             hours_back: Hours of historical data to search (default: 24)
-            max_results: Maximum tweets to scrape (default: 100)
+            max_results: Maximum tweets to scrape (default: 5000, supports up to 10000)
             min_likes: Minimum like count filter (default: 0)
             min_views: Minimum view count filter (default: 0)
 
