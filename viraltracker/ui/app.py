@@ -31,6 +31,7 @@ import streamlit as st
 
 from viraltracker.agent import agent, AgentDependencies
 from viraltracker.services.models import OutlierResult, HookAnalysisResult
+from viraltracker.core.database import get_supabase_client
 
 
 # ============================================================================
@@ -163,6 +164,31 @@ def render_download_buttons(result: OutlierResult | HookAnalysisResult, message_
             key=f"md_{message_index}",
             use_container_width=True
         )
+
+
+# ============================================================================
+# Project Management Helpers
+# ============================================================================
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_available_projects() -> List[Dict[str, str]]:
+    """
+    Fetch available projects from database.
+
+    Returns:
+        List of dicts with 'slug' and 'name' keys, ordered by name
+
+    Note:
+        Cached for 5 minutes to reduce database queries.
+        Returns empty list if database query fails.
+    """
+    try:
+        client = get_supabase_client()
+        result = client.table('projects').select('slug, name').order('name').execute()
+        return result.data if hasattr(result, 'data') else []
+    except Exception as e:
+        logger.error(f"Failed to fetch projects: {e}")
+        return []
 
 
 # ============================================================================
@@ -308,16 +334,46 @@ def render_sidebar():
 
         # Project configuration
         st.subheader("Project")
-        current_project = st.session_state.get('project_name', 'yakety-pack-instagram')
-        new_project = st.text_input(
-            "Project Name",
-            value=current_project,
-            help="Enter the project name to analyze"
-        )
 
-        # Update project if changed
-        if new_project != current_project:
-            update_project_name(new_project)
+        # Fetch available projects
+        projects = get_available_projects()
+
+        if not projects:
+            st.warning("No projects found. Using default project.")
+            current_project = st.session_state.get('project_name', 'yakety-pack-instagram')
+        else:
+            # Create mapping of display names to slugs
+            project_options = {f"{p['name']}": p['slug'] for p in projects}
+
+            # Get current project and find its display name
+            current_project_slug = st.session_state.get('project_name', 'yakety-pack-instagram')
+
+            # Find display name for current project
+            current_display_name = None
+            for display_name, slug in project_options.items():
+                if slug == current_project_slug:
+                    current_display_name = display_name
+                    break
+
+            # If current project not found in database, use first available
+            if current_display_name is None and project_options:
+                current_display_name = list(project_options.keys())[0]
+                current_project_slug = project_options[current_display_name]
+
+            # Render selectbox
+            selected_display_name = st.selectbox(
+                "Select Project",
+                options=list(project_options.keys()),
+                index=list(project_options.keys()).index(current_display_name) if current_display_name else 0,
+                help="Choose a project to analyze"
+            )
+
+            # Get selected project slug
+            new_project = project_options[selected_display_name]
+
+            # Update project if changed
+            if new_project != current_project_slug:
+                update_project_name(new_project)
 
         st.divider()
 
