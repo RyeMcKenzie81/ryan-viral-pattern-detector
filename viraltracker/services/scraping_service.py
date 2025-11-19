@@ -63,7 +63,7 @@ class ScrapingService:
             # Run the scrape (this saves to database automatically)
             scrape_result = self.scraper.scrape_search(
                 search_terms=[keyword],
-                project=project,
+                project_slug=project,
                 max_tweets=max_results,
                 min_likes=min_likes if min_likes > 0 else None,
                 days_back=hours_back // 24 if hours_back >= 24 else None,
