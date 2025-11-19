@@ -32,7 +32,7 @@ impit==0.7.1
 joblib==1.5.2
 more-itertools==10.8.0
 numpy==2.3.3
-packaging==25.0
+packaging==24.2
 pandas==2.3.3
 postgrest==2.21.1
 proto-plus==1.26.1
