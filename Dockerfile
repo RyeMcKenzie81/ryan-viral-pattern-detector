@@ -17,5 +17,8 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p data/raw_apify data/normalized exports downloads
 
-# Keep container running for manual execution
-CMD ["sleep", "infinity"]
+# Make start script executable
+RUN chmod +x start.sh
+
+# Start API server (Railway will set PORT environment variable)
+CMD ["bash", "start.sh"]
