@@ -126,8 +126,9 @@ curl -X POST https://<your-api-url>/tools/find-outliers \
 2. **Configure Service Settings**
    - Service Name: `viraltracker-ui`
    - Root Directory: `/` (default)
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `bash streamlit_start.sh`
+   - Build Command: Leave empty (Railway auto-detects)
+   - Start Command: `python -m streamlit run viraltracker/ui/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false`
+   - Public Networking Port: `8501`
 
 3. **Set Environment Variables**
    ```bash
@@ -136,6 +137,7 @@ curl -X POST https://<your-api-url>/tools/find-outliers \
    SUPABASE_URL=<your-supabase-url>
    SUPABASE_KEY=<your-supabase-key>
    GEMINI_API_KEY=<your-gemini-api-key>
+   APIFY_TOKEN=<your-apify-token>  # NOTE: Must be APIFY_TOKEN, not APIFY_API_TOKEN
 
    # Optional
    PROJECT_NAME=yakety-pack-instagram  # Default project
@@ -221,7 +223,11 @@ Both services provide real-time logs in the Railway dashboard:
 
 **UI Service**
 
+- **502 Bad Gateway**: Service running wrong application (FastAPI instead of Streamlit) - verify start command is correct
+- **$PORT variable not expanding**: Don't use `$PORT` in Streamlit command - use hardcoded port `8501`
+- **Wrong service starting**: Check Custom Start Command - should NOT be in Build Command
 - **Blank page**: Streamlit failed to start - check logs for errors
+- **"Missing APIFY_TOKEN" error**: Environment variable must be named `APIFY_TOKEN` (not `APIFY_API_TOKEN`)
 - **Initialization Error**: Missing environment variables
 - **Connection Error**: Supabase or database connection failed
 
@@ -255,21 +261,50 @@ Before going to production, ensure:
 - **URL**: https://ryan-viral-pattern-detector-production.up.railway.app
 - **Status**: ✅ Deployed and healthy
 - **Branch**: `phase-3-api-deployment`
+- **Endpoints**:
+  - Swagger Docs: `/docs`
+  - Health: `/health`
+  - Agent: `/agent/run`
+  - Tools: `/tools/*` (16 auto-generated endpoints)
 
 ### UI Service
-- **URL**: (To be deployed)
-- **Status**: ⏳ Pending deployment
+- **URL**: https://viraltracker-ui-production.up.railway.app
+- **Status**: ✅ Deployed and healthy
 - **Branch**: `phase-3-api-deployment`
+- **Features**: Chat interface, quick actions, download exports, project switcher
+
+---
+
+## Deployment Summary
+
+**Phase 3 - API & UI Deployment: COMPLETED** ✅
+
+Both services are now live on Railway:
+- FastAPI backend provides REST endpoints and programmatic access
+- Streamlit UI provides user-friendly chat interface for natural language queries
+- Both services share the same codebase and dependencies
+- Environment variables configured for production use
+- Health checks and monitoring enabled
+
+### Troubleshooting Notes
+
+During deployment, we encountered and resolved:
+1. **Wrong service starting** - Railway was running API instead of UI (fixed start command)
+2. **Port variable expansion** - `$PORT` not working in Streamlit CLI (hardcoded 8501)
+3. **Build vs Start commands** - Confusion between build-time and runtime commands (removed custom build)
+4. **Environment variable naming** - `APIFY_TOKEN` vs `APIFY_API_TOKEN` mismatch (added correct variable)
 
 ---
 
 ## Next Steps
 
-1. **Deploy UI Service** - Follow steps above to deploy Streamlit UI
-2. **Test Both Services** - Verify API and UI are working correctly
+1. ✅ **Deploy UI Service** - Completed
+2. ✅ **Test Both Services** - Both verified working
 3. **Merge to Main** - Create PR to merge `phase-3-api-deployment` → `main`
 4. **Update Production** - Switch Railway to deploy from `main` branch
 5. **Set Up Monitoring** - Configure error tracking and uptime monitoring
+6. **Add Custom Domain** (Optional) - Configure custom domains for both services
+7. **Enable Authentication** - Set `VIRALTRACKER_API_KEY` and restrict `CORS_ORIGINS`
 
 ---
 
