@@ -26,6 +26,7 @@ from ..generation.cost_tracking import format_cost_summary
 from ..services.twitter_service import TwitterService
 from ..services.gemini_service import GeminiService
 from ..services.stats_service import StatsService
+from ..services.comment_service import CommentService
 from ..services.models import Tweet, HookAnalysis, OutlierTweet
 import asyncio
 import json
@@ -464,342 +465,176 @@ def generate_comments(
 
         click.echo()
 
-        # Load config
-        click.echo("📋 Loading finder config...")
-        try:
-            config = load_finder_config(project)
-            click.echo(f"   ✓ Loaded config for '{project}'")
-            click.echo(f"   - Taxonomy nodes: {len(config.taxonomy)}")
-            click.echo(f"   - Voice: {config.voice.persona}")
-        except FileNotFoundError:
-            click.echo(f"\n❌ Error: No finder.yml found for project '{project}'", err=True)
-            click.echo(f"   Create: projects/{project}/finder.yml", err=True)
-            raise click.Abort()
+        # Use async service-based implementation
+        async def run():
+            comment_svc = CommentService()
+            db = get_supabase_client()
 
-        # Initialize embedder
-        click.echo("\n🔢 Initializing embeddings...")
-        embedder = Embedder()
-        click.echo("   ✓ Embedder ready")
+            # Get project ID
+            project_result = db.table('projects').select('id').eq('slug', project).single().execute()
+            if not project_result.data:
+                click.echo(f"\n❌ Error: Project '{project}' not found in database", err=True)
+                raise click.Abort()
 
-        # Compute taxonomy embeddings (V1.1: with incremental caching)
-        click.echo(f"\n🏷️  Computing taxonomy embeddings...")
-        from viraltracker.core.embeddings import load_taxonomy_embeddings_incremental
+            project_id = project_result.data['id']
 
-        # Use incremental loading - only recomputes changed nodes
-        taxonomy_embeddings = load_taxonomy_embeddings_incremental(
-            project,
-            config.taxonomy,
-            embedder
-        )
+            # Choose workflow based on use_saved_scores flag
+            if use_saved_scores:
+                click.echo(f"\n💾 Using saved scores from database (skipping re-scoring)...")
+                try:
+                    opportunities, config = await comment_svc.find_saved_comment_opportunities(
+                        project_slug=project,
+                        hours_back=hours_back,
+                        min_views=min_views,
+                        max_candidates=max_candidates
+                    )
+                except FileNotFoundError:
+                    click.echo(f"\n❌ Error: No finder.yml found for project '{project}'", err=True)
+                    click.echo(f"   Create: projects/{project}/finder.yml", err=True)
+                    raise click.Abort()
 
-        click.echo(f"   ✓ Ready with {len(taxonomy_embeddings)} taxonomy embeddings")
+                if not opportunities:
+                    click.echo(f"\n⚠️  No saved green scores found in last {hours_back} hours")
+                    click.echo(f"\n💡 Try:")
+                    click.echo(f"   - Running without --use-saved-scores to score fresh tweets")
+                    click.echo(f"   - Increasing --hours-back")
+                    return
 
-        # Get project ID first (needed for both workflows)
-        db = get_supabase_client()
-        project_result = db.table('projects').select('id').eq('slug', project).single().execute()
-        if not project_result.data:
-            click.echo(f"\n❌ Error: Project '{project}' not found in database", err=True)
-            raise click.Abort()
+                click.echo(f"   ✓ Found {len(opportunities)} saved green scores")
+            else:
+                click.echo(f"\n🔍 Finding comment opportunities...")
+                try:
+                    opportunities, config = await comment_svc.find_comment_opportunities(
+                        project_slug=project,
+                        hours_back=hours_back,
+                        min_followers=min_followers,
+                        min_likes=min_likes,
+                        min_views=min_views,
+                        max_candidates=max_candidates,
+                        use_gate=use_gate,
+                        skip_low_scores=skip_low_scores,
+                        greens_only=greens_only
+                    )
+                except FileNotFoundError:
+                    click.echo(f"\n❌ Error: No finder.yml found for project '{project}'", err=True)
+                    click.echo(f"   Create: projects/{project}/finder.yml", err=True)
+                    raise click.Abort()
 
-        project_id = project_result.data['id']
+                if not opportunities:
+                    click.echo(f"\n⚠️  No opportunities found")
+                    click.echo(f"\n💡 Try:")
+                    click.echo(f"   - Increasing --hours-back")
+                    click.echo(f"   - Lowering --min-followers, --min-likes, or --min-views")
+                    click.echo(f"   - Running: vt twitter search to collect more data")
+                    return
 
-        # V1.7: Use saved scores workflow
-        if use_saved_scores:
-            click.echo(f"\n💾 Using saved scores from database (skipping re-scoring)...")
-
-            # Query for score-only green records from generated_comments table
-            from datetime import datetime, timedelta, timezone
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
-
-            click.echo(f"   Querying greens from last {hours_back} hours...")
-            result = db.table('generated_comments') \
-                .select('*, posts!inner(*)') \
-                .eq('project_id', project_id) \
-                .eq('label', 'green') \
-                .eq('comment_text', '') \
-                .gte('created_at', cutoff.isoformat()) \
-                .limit(max_candidates) \
-                .execute()
-
-            if not result.data:
-                click.echo(f"\n⚠️  No saved green scores found in last {hours_back} hours")
-                click.echo(f"\n💡 Try:")
-                click.echo(f"   - Running without --use-saved-scores to score fresh tweets")
-                click.echo(f"   - Increasing --hours-back")
-                return
-
-            click.echo(f"   ✓ Found {len(result.data)} saved green scores")
-
-            # Convert database records to TweetMetrics objects and ScoringResult objects
-            from viraltracker.generation.comment_finder import TweetMetrics, ScoringResult
-            from datetime import datetime
-
-            scored_tweets = []
-            for record in result.data:
-                post_data = record['posts']
-
-                # Parse posted_at string to datetime object
-                posted_at = post_data['posted_at']
-                if isinstance(posted_at, str):
-                    # Remove 'Z' suffix and parse as ISO format
-                    posted_at = datetime.fromisoformat(posted_at.replace('Z', '+00:00'))
-
-                # Create TweetMetrics object
-                tweet = TweetMetrics(
-                    tweet_id=post_data['post_id'],
-                    text=post_data['caption'],
-                    author_handle=post_data.get('author_username', 'unknown'),
-                    author_followers=post_data.get('follower_count', 0),
-                    tweeted_at=posted_at,
-                    likes=post_data.get('likes', 0),
-                    replies=post_data.get('replies', 0),
-                    retweets=post_data.get('retweets', 0),
-                    views=post_data.get('views', 0)
-                )
-
-                # Create ScoringResult from saved data
-                scoring_result = ScoringResult(
-                    tweet_id=tweet.tweet_id,
-                    velocity=record.get('velocity_score', 0.0),
-                    relevance=record.get('relevance_score', 0.0),
-                    openness=record.get('openness_score', 0.0),
-                    author_quality=record.get('author_quality_score', 0.0),
-                    total_score=record.get('tweet_score', 0.5),
-                    label=record['label'],
-                    best_topic=record.get('best_topic_name', 'Unknown'),
-                    best_topic_similarity=record.get('best_topic_similarity', 0.0),
-                    passed_gate=True,
-                    gate_reason=None
-                )
-
-                scored_tweets.append((tweet, scoring_result))
-
-            # Filter by min_views if specified
-            if min_views > 0:
-                before_count = len(scored_tweets)
-                scored_tweets = [(t, s) for t, s in scored_tweets if t.views >= min_views]
-                filtered_count = before_count - len(scored_tweets)
-                if filtered_count > 0:
-                    click.echo(f"\n   ⚠️  Filtered out {filtered_count} tweets with <{min_views} views")
+            # Display score distribution
+            green_count = sum(1 for opp in opportunities if opp.score.label == 'green')
+            yellow_count = sum(1 for opp in opportunities if opp.score.label == 'yellow')
+            red_count = sum(1 for opp in opportunities if opp.score.label == 'red')
 
             click.echo(f"\n   Score distribution:")
-            click.echo(f"   - 🟢 Green ({len(scored_tweets)})")
+            click.echo(f"   - 🟢 Green ({green_count})")
+            if yellow_count > 0:
+                click.echo(f"   - 🟡 Yellow ({yellow_count})")
+            if red_count > 0:
+                click.echo(f"   - 🔴 Red ({red_count})")
 
-        else:
-            # Original workflow: fetch and score tweets
-            # Fetch recent tweets
-            click.echo(f"\n🔍 Fetching recent tweets...")
-            tweets = fetch_recent_tweets(
-                project_slug=project,
-                hours_back=hours_back,
-                min_followers=min_followers,
-                min_likes=min_likes,
-                min_views=min_views,
-                max_candidates=max_candidates,
-                require_english=True
-            )
+            # Generate suggestions
+            click.echo(f"\n🤖 Generating comment suggestions...")
 
-            if not tweets:
-                click.echo(f"\n⚠️  No tweets found matching criteria")
-                click.echo(f"\n💡 Try:")
-                click.echo(f"   - Increasing --hours-back")
-                click.echo(f"   - Lowering --min-followers, --min-likes, or --min-views")
-                click.echo(f"   - Running: vt twitter search to collect more data")
-                return
+            # V1.2: Check if batch processing should be used
+            use_batch = not no_batch and len(opportunities) > 1
 
-            click.echo(f"   ✓ Found {len(tweets)} candidate tweets")
+            if use_batch:
+                click.echo(f"   ⚡ Batch mode: Processing {len(opportunities)} tweets with {batch_size} concurrent requests")
+                click.echo()
 
-            # Embed tweets
-            click.echo(f"\n🔢 Embedding tweets...")
-            tweet_texts = [t.text for t in tweets]
-            tweet_embeddings = embedder.embed_texts(tweet_texts, task_type="RETRIEVAL_DOCUMENT")
-            click.echo(f"   ✓ Embedded {len(tweet_embeddings)} tweets")
+                # Progress callback for async generation
+                def progress_callback(current, total):
+                    progress_pct = int((current / total) * 100)
+                    click.echo(f"   [{current}/{total}] Progress: {progress_pct}%")
 
-            # V1.1: Check for semantic duplicates
-            click.echo(f"\n🔍 Checking for semantic duplicates...")
-            is_duplicate = check_semantic_duplicates(project_id, tweet_embeddings)
-            duplicate_count = sum(is_duplicate)
+                # Run async batch generation
+                stats = await comment_svc.generate_comment_suggestions(
+                    project_id=project_id,
+                    opportunities=opportunities,
+                    config=config,
+                    batch_size=batch_size,
+                    max_requests_per_minute=15,
+                    progress_callback=progress_callback
+                )
 
-            if duplicate_count > 0:
-                click.echo(f"   ✓ Found {duplicate_count} duplicates (similarity > {SIMILARITY_THRESHOLD})")
-                click.echo(f"   - Will skip {duplicate_count} tweets to save API costs")
+                success_count = stats['generated'] // 3  # 3 suggestions per tweet
+                error_count = stats['failed']
+                safety_blocked_count = 0  # Not tracked separately in async mode
+                total_cost_usd = stats.get('total_cost_usd', 0.0)
+
             else:
-                click.echo(f"   ✓ No duplicates found")
+                # V1/V1.1: Sequential processing (backwards compatibility for --no-batch)
+                click.echo(f"   Processing {len(opportunities)} tweets sequentially...")
+                click.echo()
 
-            # Filter out duplicates
-            tweets_filtered = [(tweet, emb) for tweet, emb, is_dup in zip(tweets, tweet_embeddings, is_duplicate) if not is_dup]
+                generator = CommentGenerator()
+                success_count = 0
+                safety_blocked_count = 0
+                error_count = 0
+                total_cost_usd = 0.0
 
-            if not tweets_filtered:
-                click.echo(f"\n⚠️  All tweets are duplicates - nothing to process")
-                return
+                for i, opp in enumerate(opportunities, 1):
+                    tweet = opp.tweet
+                    scoring_result = opp.score
 
-            if duplicate_count > 0:
-                click.echo(f"   - Processing {len(tweets_filtered)} unique tweets")
+                    click.echo(f"   [{i}/{len(opportunities)}] Tweet {tweet.tweet_id[:12]}... ({scoring_result.label}, score={scoring_result.total_score:.2f})")
 
-            # Unpack filtered tweets and embeddings
-            tweets = [t for t, _ in tweets_filtered]
-            tweet_embeddings = [e for _, e in tweets_filtered]
+                    # Generate suggestions
+                    gen_result = generator.generate_suggestions(tweet, scoring_result.best_topic, config)
 
-            # Score tweets
-            click.echo(f"\n📊 Scoring tweets...")
-            scored_tweets = []
+                    if gen_result.success:
+                        # Save to database
+                        comment_ids = save_suggestions_to_db(project_id, tweet.tweet_id, gen_result.suggestions, scoring_result, tweet, gen_result.api_cost_usd)
 
-            for tweet, embedding in zip(tweets, tweet_embeddings):
-                result = score_tweet(tweet, embedding, taxonomy_embeddings, config, use_gate=use_gate)
-                scored_tweets.append((tweet, result))
+                        # Store embedding if available (for semantic dedup)
+                        if opp.embedding:
+                            store_tweet_embedding(project_id, tweet.tweet_id, opp.embedding)
 
-            # Filter by gate
-            if use_gate:
-                passed_gate = [(t, r) for t, r in scored_tweets if r.passed_gate]
-                click.echo(f"   ✓ Scored {len(scored_tweets)} tweets")
-                click.echo(f"   - Passed gate: {len(passed_gate)}")
-                click.echo(f"   - Blocked: {len(scored_tweets) - len(passed_gate)}")
-                scored_tweets = passed_gate
-            else:
-                click.echo(f"   ✓ Scored {len(scored_tweets)} tweets (gate disabled)")
+                        click.echo(f"      ✓ Generated {len(gen_result.suggestions)} suggestions, saved to DB")
+                        success_count += 1
 
-            if not scored_tweets:
-                click.echo(f"\n⚠️  No tweets passed gate filtering")
-                return
+                        if gen_result.api_cost_usd is not None:
+                            total_cost_usd += gen_result.api_cost_usd
+                    elif gen_result.safety_blocked:
+                        click.echo(f"      ⚠ Blocked by safety filters (skipped)")
+                        safety_blocked_count += 1
+                    else:
+                        click.echo(f"      ✗ Generation failed: {gen_result.error[:50]}...")
+                        error_count += 1
 
-            # Filter by score if requested
-            if greens_only:
-                greens = [(t, r) for t, r in scored_tweets if r.label == 'green']
-                click.echo(f"   - Greens: {len(greens)}")
-                click.echo(f"   - Yellow/Red (skipped): {len(scored_tweets) - len(greens)}")
-                scored_tweets = greens
-            elif skip_low_scores:
-                high_quality = [(t, r) for t, r in scored_tweets if r.label in ['green', 'yellow']]
-                click.echo(f"   - Green/Yellow: {len(high_quality)}")
-                click.echo(f"   - Red (skipped): {len(scored_tweets) - len(high_quality)}")
-                scored_tweets = high_quality
+            # Summary
+            click.echo(f"\n{'='*60}")
+            click.echo(f"✅ Generation Complete")
+            click.echo(f"{'='*60}\n")
 
-            if not scored_tweets:
-                click.echo(f"\n⚠️  No high-quality tweets found")
-                click.echo(f"\n💡 Try: --no-skip-low-scores to generate for all scores")
-                return
+            click.echo(f"📊 Results:")
+            click.echo(f"   Tweets processed: {len(opportunities)}")
+            click.echo(f"   Successful: {success_count} ({success_count * 3} total suggestions)")
+            if safety_blocked_count > 0:
+                click.echo(f"   Safety blocked: {safety_blocked_count}")
+            if error_count > 0:
+                click.echo(f"   Errors: {error_count}")
 
-        # Show score distribution
-        green_count = sum(1 for _, r in scored_tweets if r.label == 'green')
-        yellow_count = sum(1 for _, r in scored_tweets if r.label == 'yellow')
-        red_count = sum(1 for _, r in scored_tweets if r.label == 'red')
+            # V1.2: Display API cost
+            if total_cost_usd > 0 and success_count > 0:
+                cost_summary = format_cost_summary(total_cost_usd, success_count)
+                click.echo(f"\n{cost_summary}")
 
-        click.echo(f"\n   Score distribution:")
-        click.echo(f"   - 🟢 Green ({green_count})")
-        click.echo(f"   - 🟡 Yellow ({yellow_count})")
-        if red_count > 0:
-            click.echo(f"   - 🔴 Red ({red_count})")
+            click.echo(f"\n💡 Next steps:")
+            click.echo(f"   - Export to CSV: vt twitter export-comments --project {project}")
+            click.echo(f"   - Review in DB: Check generated_comments table")
 
-        # Generate suggestions
-        click.echo(f"\n🤖 Generating comment suggestions...")
+            click.echo(f"\n{'='*60}\n")
 
-        # V1.2: Check if batch processing should be used
-        use_batch = not no_batch and len(scored_tweets) > 1
-
-        if use_batch:
-            click.echo(f"   ⚡ Batch mode: Processing {len(scored_tweets)} tweets with {batch_size} concurrent requests")
-        else:
-            click.echo(f"   Processing {len(scored_tweets)} tweets sequentially...")
-
-        click.echo()
-
-        # Create a map of tweet to embedding for storage after generation
-        # V1.7: For saved-scores workflow, we don't have embeddings (skipped scoring)
-        if use_saved_scores:
-            tweet_embedding_map = {}  # Empty map - no embeddings available
-        else:
-            tweet_embedding_map = {tweet.tweet_id: emb for tweet, emb in zip(tweets, tweet_embeddings)}
-
-        success_count = 0
-        safety_blocked_count = 0
-        error_count = 0
-        total_cost_usd = 0.0  # V1.2: Track API costs
-
-        if use_batch:
-            # V1.2: Use async batch processing
-            import asyncio
-
-            # Progress callback for async generation
-            def progress_callback(current, total):
-                progress_pct = int((current / total) * 100)
-                click.echo(f"   [{current}/{total}] Progress: {progress_pct}%")
-
-            # Run async batch generation
-            stats = asyncio.run(generate_comments_async(
-                project_id=project_id,
-                tweets_with_scores=scored_tweets,
-                config=config,
-                batch_size=batch_size,
-                max_requests_per_minute=15,
-                progress_callback=progress_callback
-            ))
-
-            # Store embeddings for all successful tweets (V1.1: semantic dedup)
-            for tweet, _ in scored_tweets:
-                tweet_emb = tweet_embedding_map.get(tweet.tweet_id)
-                if tweet_emb:
-                    store_tweet_embedding(project_id, tweet.tweet_id, tweet_emb)
-
-            success_count = stats['generated'] // 3  # 3 suggestions per tweet
-            error_count = stats['failed']
-            safety_blocked_count = 0  # Not tracked separately in async mode
-            total_cost_usd = stats.get('total_cost_usd', 0.0)  # V1.2: Extract cost
-
-        else:
-            # V1/V1.1: Sequential processing
-            generator = CommentGenerator()
-
-            for i, (tweet, scoring_result) in enumerate(scored_tweets, 1):
-                click.echo(f"   [{i}/{len(scored_tweets)}] Tweet {tweet.tweet_id[:12]}... ({scoring_result.label}, score={scoring_result.total_score:.2f})")
-
-                # Generate suggestions
-                gen_result = generator.generate_suggestions(tweet, scoring_result.best_topic, config)
-
-                if gen_result.success:
-                    # Save to database (V1.1: pass tweet for enhanced rationale, V1.2: pass cost)
-                    comment_ids = save_suggestions_to_db(project_id, tweet.tweet_id, gen_result.suggestions, scoring_result, tweet, gen_result.api_cost_usd)
-
-                    # V1.1: Store embedding in acceptance_log for future deduplication
-                    tweet_emb = tweet_embedding_map.get(tweet.tweet_id)
-                    if tweet_emb:
-                        store_tweet_embedding(project_id, tweet.tweet_id, tweet_emb)
-
-                    click.echo(f"      ✓ Generated {len(gen_result.suggestions)} suggestions, saved to DB")
-                    success_count += 1
-
-                    # V1.2: Track cost
-                    if gen_result.api_cost_usd is not None:
-                        total_cost_usd += gen_result.api_cost_usd
-                elif gen_result.safety_blocked:
-                    click.echo(f"      ⚠ Blocked by safety filters (skipped)")
-                    safety_blocked_count += 1
-                else:
-                    click.echo(f"      ✗ Generation failed: {gen_result.error[:50]}...")
-                    error_count += 1
-
-        # Summary
-        click.echo(f"\n{'='*60}")
-        click.echo(f"✅ Generation Complete")
-        click.echo(f"{'='*60}\n")
-
-        click.echo(f"📊 Results:")
-        click.echo(f"   Tweets processed: {len(scored_tweets)}")
-        click.echo(f"   Successful: {success_count} ({success_count * 3} total suggestions)")
-        if safety_blocked_count > 0:
-            click.echo(f"   Safety blocked: {safety_blocked_count}")
-        if error_count > 0:
-            click.echo(f"   Errors: {error_count}")
-
-        # V1.2: Display API cost
-        if total_cost_usd > 0 and success_count > 0:
-            cost_summary = format_cost_summary(total_cost_usd, success_count)
-            click.echo(f"\n{cost_summary}")
-
-        click.echo(f"\n💡 Next steps:")
-        click.echo(f"   - Export to CSV: vt twitter export-comments --project {project}")
-        click.echo(f"   - Review in DB: Check generated_comments table")
-
-        click.echo(f"\n{'='*60}\n")
+        asyncio.run(run())
 
     except click.Abort:
         raise
