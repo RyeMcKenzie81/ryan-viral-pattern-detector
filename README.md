@@ -1275,3 +1275,7 @@ MIT License - See LICENSE file for details
 For questions or issues, please open a GitHub issue or refer to:
 - [CLI Guide](docs/CLI_GUIDE.md)
 - [Hook Analysis Guide](docs/HOOK_ANALYSIS_GUIDE.md)
+
+---
+
+**Last updated:** 2025-11-19 - Railway deployment fix
