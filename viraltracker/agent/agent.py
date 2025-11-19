@@ -17,7 +17,8 @@ from .dependencies import AgentDependencies
 from .tools import (
     find_outliers_tool,
     analyze_hooks_tool,
-    export_results_tool
+    export_results_tool,
+    get_top_tweets_tool
 )
 from .tools_phase15 import (
     search_twitter_tool,
@@ -134,6 +135,10 @@ logger.info("Registered tool: analyze_hooks_tool")
 # Tool 3: Export comprehensive analysis reports
 agent.tool(export_results_tool)
 logger.info("Registered tool: export_results_tool")
+
+# Tool 4: Get top N tweets by metric (views, likes, engagement)
+agent.tool(get_top_tweets_tool)
+logger.info("Registered tool: get_top_tweets_tool")
 
 # ============================================================================
 # Phase 1.5 Tools - Complete Twitter Coverage

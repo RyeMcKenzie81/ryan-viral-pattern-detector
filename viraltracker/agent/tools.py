@@ -457,11 +457,105 @@ async def export_results_tool(
 
 
 # ============================================================================
+# Tool 4: Get Top Tweets
+# ============================================================================
+
+async def get_top_tweets_tool(
+    ctx: RunContext[AgentDependencies],
+    hours_back: int = 24,
+    sort_by: str = "views",
+    limit: int = 10,
+    min_views: int = 0,
+    text_only: bool = False
+) -> str:
+    """
+    Get top N tweets sorted by a specific metric (views, likes, engagement).
+
+    Unlike find_outliers_tool which finds statistically viral tweets,
+    this simply returns the top N tweets sorted by the chosen metric.
+
+    Use this when users ask for:
+    - "Top 10 tweets by views"
+    - "Show me the most liked tweets"
+    - "Tweets with highest engagement"
+
+    Args:
+        ctx: Pydantic AI run context with AgentDependencies
+        hours_back: Hours to look back (default: 24)
+        sort_by: Metric to sort by - 'views', 'likes', 'engagement' (default: 'views')
+        limit: Number of tweets to return (default: 10)
+        min_views: Minimum view count filter (default: 0)
+        text_only: Only include text tweets, no media (default: False)
+
+    Returns:
+        Formatted string with top tweets
+    """
+    try:
+        logger.info(f"Getting top {limit} tweets sorted by {sort_by} (last {hours_back} hours)")
+
+        # Fetch tweets from database
+        tweets = await ctx.deps.twitter.get_tweets(
+            project=ctx.deps.project_name,
+            hours_back=hours_back,
+            min_views=min_views,
+            text_only=text_only
+        )
+
+        if not tweets:
+            return f"No tweets found in the last {hours_back} hours."
+
+        # Sort by chosen metric
+        if sort_by == "views":
+            sorted_tweets = sorted(tweets, key=lambda t: t.view_count, reverse=True)
+        elif sort_by == "likes":
+            sorted_tweets = sorted(tweets, key=lambda t: t.like_count, reverse=True)
+        elif sort_by == "engagement":
+            sorted_tweets = sorted(tweets, key=lambda t: t.engagement_score, reverse=True)
+        else:
+            return f"Invalid sort_by parameter: {sort_by}. Use 'views', 'likes', or 'engagement'."
+
+        # Take top N
+        top_tweets = sorted_tweets[:limit]
+
+        # Calculate statistics for all tweets
+        engagement_scores = [t.engagement_score for t in tweets]
+        summary_stats = ctx.deps.stats.calculate_summary_stats(engagement_scores)
+
+        # Format response
+        response = f"Top {len(top_tweets)} tweets by {sort_by} (last {hours_back} hours)\n\n"
+        response += f"**Dataset Statistics:**\n"
+        response += f"- Total Tweets: {len(tweets)}\n"
+        response += f"- Mean Engagement: {summary_stats['mean']:.2f}\n"
+        response += f"- Median Engagement: {summary_stats['median']:.2f}\n\n"
+
+        response += f"**Top {len(top_tweets)} Tweets:**\n\n"
+
+        for i, tweet in enumerate(top_tweets, 1):
+            # Calculate Z-score and percentile for context
+            zscore = ctx.deps.stats.calculate_zscore(tweet.engagement_score, engagement_scores)
+            percentile = ctx.deps.stats.calculate_percentile(tweet.engagement_score, engagement_scores)
+
+            response += f"**{i}. @{tweet.author_username}** ({tweet.author_followers:,} followers)\n"
+            response += f"   Views: {tweet.view_count:,} | Likes: {tweet.like_count:,} | Replies: {tweet.reply_count} | Retweets: {tweet.retweet_count}\n"
+            response += f"   Engagement Rate: {tweet.engagement_rate:.2%} | Z-Score: {zscore:.2f} | Percentile: {percentile:.1f}%\n"
+            response += f"   \"{tweet.text[:150]}{'...' if len(tweet.text) > 150 else ''}\"\n"
+            response += f"   {tweet.url}\n\n"
+
+        logger.info(f"Successfully returned top {len(top_tweets)} tweets by {sort_by}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in get_top_tweets_tool: {e}", exc_info=True)
+        return f"Error getting top tweets: {str(e)}"
+
+
+# ============================================================================
 # Export all tools
 # ============================================================================
 
 __all__ = [
     'find_outliers_tool',
     'analyze_hooks_tool',
-    'export_results_tool'
+    'export_results_tool',
+    'get_top_tweets_tool'
 ]

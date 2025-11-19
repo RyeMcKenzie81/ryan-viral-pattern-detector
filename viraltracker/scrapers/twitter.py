@@ -101,7 +101,7 @@ class TwitterScraper:
         sort: str = "Latest",
         language: str = "en",
         project_slug: Optional[str] = None,
-        timeout: int = 300
+        timeout: int = 900
     ) -> Dict:
         """
         Search Twitter by keywords/hashtags
@@ -123,7 +123,7 @@ class TwitterScraper:
             sort: "Latest" or "Top"
             language: Tweet language ISO code (default: en)
             project_slug: Project slug to link results
-            timeout: Apify timeout in seconds
+            timeout: Apify timeout in seconds (default: 900 = 15 minutes)
 
         Returns:
             Dict with keys:
@@ -214,7 +214,7 @@ class TwitterScraper:
         max_tweets_per_account: int = 500,
         days_back: Optional[int] = None,
         chunk_by: str = "monthly",
-        timeout: int = 300
+        timeout: int = 900
     ) -> Dict[str, int]:
         """
         Scrape accounts linked to project with date chunking
