@@ -30,12 +30,7 @@ from .models import (
     AgentRequest,
     AgentResponse,
     HealthResponse,
-    ErrorResponse,
-    FindOutliersRequest,
-    AnalyzeHooksRequest,
-    SearchTwitterRequest,
-    FindCommentOpportunitiesRequest,
-    ToolResponse
+    ErrorResponse
 )
 from .endpoint_generator import generate_tool_endpoints
 from ..agent.agent import agent
@@ -281,126 +276,6 @@ async def run_agent(
 
 
 # ============================================================================
-# Direct Tool Endpoints (for specific use cases)
-# ============================================================================
-
-@app.post(
-    "/tools/find-outliers",
-    response_model=ToolResponse,
-    tags=["Tools"],
-    summary="Find viral outlier tweets"
-)
-@limiter.limit("20/minute")
-async def find_outliers_endpoint(
-    request: Request,
-    tool_request: FindOutliersRequest,
-    authenticated: bool = Depends(verify_api_key)
-):
-    """
-    Direct access to find_outliers tool.
-
-    Bypasses the agent for faster, deterministic execution.
-    Useful for scheduled jobs and workflows that don't need
-    natural language processing.
-    """
-    try:
-        from ..agent.tools import find_outliers_tool
-        from pydantic_ai import RunContext
-
-        deps = AgentDependencies.create(project_name=tool_request.project_name)
-        ctx = RunContext(deps=deps, retry=0, messages=[])
-
-        result = await find_outliers_tool(
-            ctx=ctx,
-            hours_back=tool_request.hours_back,
-            threshold=tool_request.threshold,
-            method=tool_request.method,
-            min_views=tool_request.min_views,
-            text_only=tool_request.text_only,
-            limit=tool_request.limit
-        )
-
-        return ToolResponse(
-            success=True,
-            data={
-                "total_tweets": result.total_tweets,
-                "outlier_count": result.outlier_count,
-                "threshold": result.threshold,
-                "method": result.method,
-                "outliers": [o.model_dump() for o in result.outliers]
-            },
-            error=None,
-            timestamp=datetime.now()
-        )
-
-    except Exception as e:
-        logger.error(f"find_outliers tool failed: {e}", exc_info=True)
-        return ToolResponse(
-            success=False,
-            data={},
-            error=str(e),
-            timestamp=datetime.now()
-        )
-
-
-@app.post(
-    "/tools/analyze-hooks",
-    response_model=ToolResponse,
-    tags=["Tools"],
-    summary="Analyze tweet hooks with AI"
-)
-@limiter.limit("10/minute")  # Lower limit for AI-heavy operations
-async def analyze_hooks_endpoint(
-    request: Request,
-    tool_request: AnalyzeHooksRequest,
-    authenticated: bool = Depends(verify_api_key)
-):
-    """
-    Direct access to analyze_hooks tool.
-
-    Analyzes tweet hooks using Gemini AI to identify:
-    - Hook types (hot_take, relatable_slice, insider_secret, etc.)
-    - Emotional triggers (anger, validation, humor, curiosity, etc.)
-    - Content patterns
-    """
-    try:
-        from ..agent.tools import analyze_hooks_tool
-        from pydantic_ai import RunContext
-
-        deps = AgentDependencies.create(project_name=tool_request.project_name)
-        ctx = RunContext(deps=deps, retry=0, messages=[])
-
-        result = await analyze_hooks_tool(
-            ctx=ctx,
-            tweet_ids=tool_request.tweet_ids,
-            hours_back=tool_request.hours_back,
-            limit=tool_request.limit,
-            min_views=tool_request.min_views
-        )
-
-        return ToolResponse(
-            success=True,
-            data={
-                "total_analyzed": result.total_analyzed,
-                "successful_analyses": result.successful_analyses,
-                "failed_analyses": result.failed_analyses,
-                "analyses": [a.model_dump() for a in result.analyses]
-            },
-            error=None,
-            timestamp=datetime.now()
-        )
-
-    except Exception as e:
-        logger.error(f"analyze_hooks tool failed: {e}", exc_info=True)
-        return ToolResponse(
-            success=False,
-            data={},
-            error=str(e),
-            timestamp=datetime.now()
-        )
-
-
-# ============================================================================
 # Error Handlers
 # ============================================================================
 
@@ -480,7 +355,6 @@ async def root():
         "health": "/health",
         "endpoints": {
             "agent_execution": "/agent/run",
-            "find_outliers": "/tools/find-outliers",
-            "analyze_hooks": "/tools/analyze-hooks"
+            "auto_generated_tools": "/tools/* (see /docs for all 16 auto-generated endpoints)"
         }
     }
