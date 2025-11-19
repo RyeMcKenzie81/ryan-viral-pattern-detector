@@ -67,9 +67,10 @@ async def search_twitter_tool(
         total_engagement = sum(t.like_count + t.reply_count + t.retweet_count for t in tweets)
         avg_engagement_rate = sum(t.engagement_rate for t in tweets) / len(tweets)
 
-        # Format response with clear parameters
-        response = f"I've successfully scraped **{len(tweets)} tweets** containing the keyword \"{keyword}\" in the past **{hours_back} hours**. Here are some key statistics and the top 5 tweets based on engagement:\n\n"
+        # Format response with clear parameters - put count FIRST to prevent hallucination
+        response = f"**SCRAPED: {len(tweets)} tweets** (keyword: \"{keyword}\", timeframe: {hours_back} hours)\n\n"
         response += f"**Summary Statistics:**\n"
+        response += f"- Total Tweets: {len(tweets)}\n"
         response += f"- Total Views: {total_views:,}\n"
         response += f"- Total Likes: {total_likes:,}\n"
         response += f"- Total Engagement: {total_engagement:,}\n"

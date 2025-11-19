@@ -48,12 +48,12 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 agent = Agent(
-    'openai:gpt-4o',  # Primary model - can be overridden at runtime
+    'openai:gpt-5.1-2025-11-13',  # Primary model - can be overridden at runtime
     deps_type=AgentDependencies,
     retries=2,  # Retry failed tool calls up to 2 times
 )
 
-logger.info("Pydantic AI agent created with model: openai:gpt-4o")
+logger.info("Pydantic AI agent created with model: openai:gpt-5.1-2025-11-13")
 
 
 # ============================================================================
