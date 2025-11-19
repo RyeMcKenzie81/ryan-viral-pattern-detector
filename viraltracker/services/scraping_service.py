@@ -71,27 +71,27 @@ class ScrapingService:
                 language="en"
             )
 
-            # Convert scrape results to Tweet models
-            tweets = []
-            for result in scrape_result.get('results', []):
-                # Extract tweet data from scrape result
-                tweet = Tweet(
-                    id=result.get('tweet_id', ''),
-                    text=result.get('text', ''),
-                    view_count=result.get('views', 0),
-                    like_count=result.get('likes', 0),
-                    reply_count=result.get('replies', 0),
-                    retweet_count=result.get('retweets', 0),
-                    created_at=result.get('created_at', datetime.now()),
-                    author_username=result.get('author_handle', 'unknown'),
-                    author_followers=result.get('author_followers', 0),
-                    url=result.get('url', f"https://twitter.com/i/status/{result.get('tweet_id', '')}"),
-                    media_type=result.get('media_type'),
-                    is_verified=result.get('is_verified', False)
-                )
-                tweets.append(tweet)
+            # scrape_search() returns stats, not tweet data
+            # We need to fetch the tweets from the database
+            logger.info(f"Scrape completed: {scrape_result['tweets_count']} tweets saved to database")
 
-            logger.info(f"Successfully scraped {len(tweets)} tweets for keyword '{keyword}'")
+            if scrape_result['tweets_count'] == 0:
+                logger.warning(f"No tweets found for keyword '{keyword}'")
+                return []
+
+            # Import TwitterService to fetch tweets from database
+            from .twitter_service import TwitterService
+            twitter_service = TwitterService()
+
+            # Fetch the tweets we just scraped from the database
+            tweets = await twitter_service.get_tweets(
+                project=project,
+                hours_back=hours_back,
+                min_views=min_views,
+                min_likes=min_likes
+            )
+
+            logger.info(f"Successfully retrieved {len(tweets)} tweets for keyword '{keyword}'")
             return tweets
 
         except Exception as e:

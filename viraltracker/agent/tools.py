@@ -541,6 +541,13 @@ async def get_top_tweets_tool(
             response += f"   \"{tweet.text[:150]}{'...' if len(tweet.text) > 150 else ''}\"\n"
             response += f"   {tweet.url}\n\n"
 
+        # Add export suggestion
+        response += "---\n\n"
+        response += "**Want to download these results?** Ask me to:\n"
+        response += "- \"Export these top tweets to a file\"\n"
+        response += f"- \"Give me a full report for the last {hours_back} hours\"\n"
+        response += "- \"Download these results as markdown/JSON\"\n"
+
         logger.info(f"Successfully returned top {len(top_tweets)} tweets by {sort_by}")
         return response
 
