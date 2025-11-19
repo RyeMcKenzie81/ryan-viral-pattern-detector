@@ -1,0 +1,102 @@
+================================================================================
+Hook Intelligence v1.2.0 Correlation Analysis
+================================================================================
+
+Fetching video analyses with hook intelligence data...
+Found 289 videos with hook intelligence data
+
+DataFrame created with 289 records and 26 features
+After cleaning: 23 features
+
+================================================================================
+1. HOOK TYPE CORRELATIONS WITH PERFORMANCE
+================================================================================
+
+Analyzing 14 hook types...
+
+Top positive correlations (sorted by engagement_rate):
+  relatable_slice               : +0.357 ***
+  humor_gag                     : +0.217 ***
+  open_question                 : -0.003 
+  social_proof                  : -0.081 
+  reveal_transform              : -0.090 
+  tension_wait                  : -0.120 **
+  demo_novelty                  : -0.147 **
+  result_first                  : -0.149 **
+  confession_secret             : -0.162 ***
+  contradiction_mythbust        : -0.165 ***
+
+Top negative correlations (sorted by engagement_rate):
+  shock_violation               : -0.345 ***
+  direct_callout                : -0.250 ***
+  challenge_stakes              : -0.202 ***
+  authority_flex                : -0.201 ***
+  contradiction_mythbust        : -0.165 ***
+  confession_secret             : -0.162 ***
+  result_first                  : -0.149 **
+  demo_novelty                  : -0.147 **
+  tension_wait                  : -0.120 **
+  reveal_transform              : -0.090 
+
+================================================================================
+2. MODALITY ATTRIBUTION CORRELATIONS
+================================================================================
+
+Analyzing 3 modality features...
+
+modality_audio:
+  views               : +0.032 
+  likes               : -0.010 
+  comments            : +0.002 
+  engagement_rate     : -0.108 *
+
+modality_visual:
+  views               : +0.133 **
+  likes               : +0.130 **
+  comments            : +0.048 
+  engagement_rate     : +0.000 
+
+modality_overlay:
+  views               : -0.202 ***
+  likes               : -0.154 ***
+  comments            : -0.079 
+  engagement_rate     : +0.110 *
+
+================================================================================
+3. TIMING FEATURES CORRELATIONS
+================================================================================
+
+Analyzing 1 timing features...
+
+payoff_time_sec:
+  views               : +0.038 
+  likes               : -0.028 
+  comments            : +0.049 
+  engagement_rate     : -0.205 ***
+
+================================================================================
+4. WINDOWED RETENTION CORRELATIONS
+================================================================================
+
+================================================================================
+5. SUMMARY STATISTICS
+================================================================================
+
+Total videos analyzed: 289
+
+Performance metrics summary:
+  views               : mean=2521563.21, median=74300.00, std=14133656.55
+  likes               : mean=197849.60, median=2086.00, std=1369638.59
+  comments            : mean=1792.16, median=58.00, std=11120.17
+  engagement_rate     : mean=8.10, median=5.91, std=7.63
+
+Top 3 most common hook types (by average probability):
+  relatable_slice               : 0.585
+  shock_violation               : 0.368
+  humor_gag                     : 0.331
+
+================================================================================
+Analysis complete!
+================================================================================
+
+Significance levels: *** p<0.01, ** p<0.05, * p<0.1

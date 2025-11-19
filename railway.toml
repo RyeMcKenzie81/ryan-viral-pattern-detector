@@ -1,0 +1,23 @@
+[build]
+builder = "NIXPACKS"
+
+# Cron service - runs daily scrape Mon-Fri at 6 AM EST
+[[services]]
+name = "cron"
+
+[[services.cron.crons]]
+schedule = "0 11 * * 1-5"  # 6 AM EST = 11:00 UTC
+command = "python run_daily_scrape_with_logging.py"
+
+# Web dashboard service - view cron history and download CSVs
+[[services]]
+name = "web"
+startCommand = "uvicorn viraltracker.web.app:app --host 0.0.0.0 --port $PORT"
+
+[env]
+# Environment variables (set these in Railway dashboard)
+# SUPABASE_URL=your_url_here
+# SUPABASE_KEY=your_key_here
+# APIFY_API_TOKEN=your_token_here
+# GOOGLE_API_KEY=your_key_here
+# GEMINI_API_KEY=your_key_here

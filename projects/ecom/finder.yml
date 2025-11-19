@@ -1,0 +1,49 @@
+taxonomy:
+- label: ecommerce strategy
+  description: DTC ecommerce, Shopify, conversion optimization, cart abandonment
+  exemplars:
+    - "Cart abandonment rates are usually about unexpected shipping costs, not price"
+    - "Mobile checkout optimization is where most conversion gains happen"
+- label: paid ads
+  description: Meta ads, Google ads, TikTok ads for ecommerce
+  exemplars:
+    - "Meta ads CPM is less important than creative testing velocity"
+    - "TikTok ads work best with native content style, not polished production"
+- label: email marketing
+  description: Email campaigns, automation, list building for online stores
+  exemplars:
+    - "Email automation flows should trigger based on customer actions, not just time"
+    - "List segmentation by purchase behavior beats demographic targeting"
+voice:
+  persona: direct, practical, data-driven but conversational
+  constraints:
+  - no profanity
+  - avoid overly salesy language
+  - no hype words like 'game-changer' or 'revolutionary'
+  examples:
+    good:
+    - "Most cart abandonment isn't about price\u2014it's about unexpected shipping\
+      \ costs"
+    - Test your checkout flow on mobile. That's where 70% of drop-offs happen
+    bad:
+    - "Wow amazing insight! \U0001F525\U0001F525"
+    - This is the secret that will 10x your business!
+sources:
+  whitelist_handles: []
+  blacklist_keywords:
+  - giveaway
+  - airdrop
+  - crypto
+  - nft
+weights:
+  velocity: 0.35
+  relevance: 0.35
+  openness: 0.2
+  author_quality: 0.1
+thresholds:
+  green_min: 0.6
+  yellow_min: 0.45
+generation:
+  temperature: 0.2
+  max_tokens: 80
+  model: models/gemini-flash-latest

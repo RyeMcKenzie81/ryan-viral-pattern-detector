@@ -1,0 +1,41 @@
+taxonomy:
+- label: facebook ads
+  description: 'Paid acquisition on Meta: account structure, creatives, MER/CPA/ROAS'
+  exemplars: []
+- label: conversion optimization
+  description: Landing page optimization, A/B testing, funnel improvements
+  exemplars:
+  - Changed CTA color, increased conversions 23%
+  - Split testing headlines beats split testing layouts
+voice:
+  persona: direct, practical, contrarian-positive
+  constraints:
+  - no profanity
+  - avoid hype words
+  examples:
+    good:
+    - "CPM isn't your bottleneck\u2014creative fatigue is"
+    - Test angles, not just formats
+    bad:
+    - Wow amazing insight!
+    - This is fire
+sources:
+  whitelist_handles:
+  - mosseri
+  - shopify
+  blacklist_keywords:
+  - giveaway
+  - airdrop
+  - link in bio
+weights:
+  velocity: 0.35
+  relevance: 0.35
+  openness: 0.2
+  author_quality: 0.1
+thresholds:
+  green_min: 0.72
+  yellow_min: 0.55
+generation:
+  temperature: 0.2
+  max_tokens: 80
+  model: gemini-2.5-flash
