@@ -73,15 +73,15 @@ async def search_twitter_tool(
         avg_engagement_rate = sum(t.engagement_rate for t in tweets) / len(tweets)
 
         # Format response with clear scraping details
-        response = f"**SCRAPED: {tweets_count} tweets** (keyword: \"{keyword}\")\n\n"
+        response = f"**SCRAPED: {tweets_count} tweets** (keyword: \"{keyword}\", timeframe: last {hours_back} hours)\n\n"
 
         # Explain any discrepancy between requested and received tweets
         if skipped_count > 0:
             response += f"**Note:** Requested {requested_count} tweets from Apify, received {requested_count}, but {skipped_count} tweets were skipped due to malformed data from Apify (data quality issues). Saved {tweets_count} valid tweets to database.\n\n"
         elif tweets_count < requested_count:
-            response += f"**Note:** Requested {requested_count} tweets, but only {tweets_count} tweets were available in the specified timeframe.\n\n"
+            response += f"**Note:** Requested {requested_count} tweets, but only {tweets_count} tweets were available in the last {hours_back} hours.\n\n"
         else:
-            response += f"Successfully scraped all {requested_count} requested tweets.\n\n"
+            response += f"Successfully scraped all {requested_count} requested tweets from the last {hours_back} hours.\n\n"
         response += f"**Summary Statistics:**\n"
         response += f"- Total Tweets: {len(tweets)}\n"
         response += f"- Total Views: {total_views:,}\n"
