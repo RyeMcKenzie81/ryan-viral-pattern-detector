@@ -755,7 +755,7 @@ class TwitterScraper:
             import_source: How tweets were imported (search, scrape, direct_url)
 
         Returns:
-            List of post UUIDs
+            List of Twitter post IDs (e.g., "1859234234"), not database UUIDs
         """
         if len(df) == 0:
             logger.warning("No tweets to save")
@@ -816,7 +816,8 @@ class TwitterScraper:
 
                 if result.data:
                     for post in result.data:
-                        post_ids.append(post['id'])
+                        # Return Twitter post_id (e.g., "1859234234"), not database UUID
+                        post_ids.append(post['post_id'])
                 else:
                     logger.warning(f"Upsert returned no data for chunk of {len(chunk)} tweets")
                     logger.warning(f"This usually means all tweets already exist or there was a silent failure")
