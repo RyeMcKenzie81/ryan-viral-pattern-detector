@@ -732,7 +732,9 @@ class TwitterScraper:
                 normalized_data.append(tweet_data)
 
             except Exception as e:
-                logger.warning(f"Error normalizing tweet: {e}")
+                # Log which tweet failed and why (usually malformed data from Apify)
+                tweet_id = tweet.get("id", "unknown") if isinstance(tweet, dict) else "non-dict"
+                logger.warning(f"Skipping malformed tweet {tweet_id}: {type(e).__name__} - {str(e)}")
                 continue
 
         df = pd.DataFrame(normalized_data)
