@@ -36,7 +36,7 @@ class ScrapingService:
         max_results: int = 5000,
         min_likes: int = 0,
         min_views: int = 0
-    ) -> List[Tweet]:
+    ) -> tuple[List[Tweet], dict]:
         """
         Search Twitter by keyword and save results to database.
 
@@ -49,7 +49,8 @@ class ScrapingService:
             min_views: Minimum view count filter (default: 0)
 
         Returns:
-            List of Tweet models that were scraped and saved
+            Tuple of (List of Tweet models, metadata dict with scrape stats)
+            Metadata includes: tweets_count, skipped_count, requested_count
 
         Raises:
             ValueError: If project not found or scraping fails
@@ -106,7 +107,13 @@ class ScrapingService:
                 )
                 tweets = tweets[:scrape_result['tweets_count']]
 
-            return tweets
+            # Return tweets + metadata for agent to communicate results accurately
+            metadata = {
+                'tweets_count': tweets_count,
+                'skipped_count': skipped_count,
+                'requested_count': max_results
+            }
+            return tweets, metadata
 
         except Exception as e:
             logger.error(f"Error scraping Twitter for '{keyword}': {e}", exc_info=True)

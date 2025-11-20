@@ -50,8 +50,8 @@ async def search_twitter_tool(
     try:
         logger.info(f"Searching Twitter for '{keyword}'...")
 
-        # Use scraping service to search Twitter
-        tweets = await ctx.deps.scraping.search_twitter(
+        # Use scraping service to search Twitter - returns (tweets, metadata)
+        tweets, metadata = await ctx.deps.scraping.search_twitter(
             keyword=keyword,
             project=ctx.deps.project_name,
             hours_back=hours_back,
@@ -61,14 +61,27 @@ async def search_twitter_tool(
         if not tweets:
             return f"No tweets found for keyword '{keyword}' in the last {hours_back} hours."
 
+        # Extract metadata
+        tweets_count = metadata.get('tweets_count', len(tweets))
+        skipped_count = metadata.get('skipped_count', 0)
+        requested_count = metadata.get('requested_count', max_results)
+
         # Calculate summary statistics
         total_views = sum(t.view_count for t in tweets)
         total_likes = sum(t.like_count for t in tweets)
         total_engagement = sum(t.like_count + t.reply_count + t.retweet_count for t in tweets)
         avg_engagement_rate = sum(t.engagement_rate for t in tweets) / len(tweets)
 
-        # Format response with clear parameters - put count FIRST to prevent hallucination
-        response = f"**SCRAPED: {len(tweets)} tweets** (keyword: \"{keyword}\", timeframe: {hours_back} hours)\n\n"
+        # Format response with clear scraping details
+        response = f"**SCRAPED: {tweets_count} tweets** (keyword: \"{keyword}\")\n\n"
+
+        # Explain any discrepancy between requested and received tweets
+        if skipped_count > 0:
+            response += f"**Note:** Requested {requested_count} tweets from Apify, received {requested_count}, but {skipped_count} tweets were skipped due to malformed data from Apify (data quality issues). Saved {tweets_count} valid tweets to database.\n\n"
+        elif tweets_count < requested_count:
+            response += f"**Note:** Requested {requested_count} tweets, but only {tweets_count} tweets were available in the specified timeframe.\n\n"
+        else:
+            response += f"Successfully scraped all {requested_count} requested tweets.\n\n"
         response += f"**Summary Statistics:**\n"
         response += f"- Total Tweets: {len(tweets)}\n"
         response += f"- Total Views: {total_views:,}\n"
