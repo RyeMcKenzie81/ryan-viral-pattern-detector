@@ -72,9 +72,14 @@ class ScrapingService:
             )
 
             # scrape_search() returns stats and IDs, not tweet data
-            logger.info(f"Scrape completed: {scrape_result['tweets_count']} tweets saved to database")
+            tweets_count = scrape_result['tweets_count']
+            skipped_count = scrape_result.get('skipped_count', 0)
 
-            if scrape_result['tweets_count'] == 0:
+            logger.info(f"Scrape completed: {tweets_count} tweets saved to database")
+            if skipped_count > 0:
+                logger.warning(f"Skipped {skipped_count} malformed tweets due to data quality issues from Apify")
+
+            if tweets_count == 0:
                 logger.warning(f"No tweets found for keyword '{keyword}'")
                 return []
 

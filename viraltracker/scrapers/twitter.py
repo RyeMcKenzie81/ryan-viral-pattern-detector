@@ -190,7 +190,7 @@ class TwitterScraper:
             }
 
         # Normalize to DataFrame
-        df = self._normalize_tweets(all_tweets)
+        df, skipped_count = self._normalize_tweets(all_tweets)
 
         logger.info(f"Fetched {len(df)} tweets total")
 
@@ -205,6 +205,7 @@ class TwitterScraper:
             'terms_count': len(search_terms),
             'tweets_count': len(post_ids),
             'post_ids': post_ids,  # Return the actual IDs of scraped tweets
+            'skipped_count': skipped_count,  # Number of tweets skipped due to malformed data
             'apify_run_id': last_run_id,
             'apify_dataset_id': last_dataset_id
         }
@@ -322,7 +323,7 @@ class TwitterScraper:
                 continue
 
             # Normalize tweets
-            df = self._normalize_tweets(account_tweets)
+            df, _ = self._normalize_tweets(account_tweets)  # Ignore skipped count for account scraping
 
             # Save to database
             post_ids = self.save_posts_to_db(df, project_id=project_id, import_source="scrape")
@@ -619,7 +620,7 @@ class TwitterScraper:
 
         return items
 
-    def _normalize_tweets(self, items: List[Dict]) -> pd.DataFrame:
+    def _normalize_tweets(self, items: List[Dict]) -> tuple[pd.DataFrame, int]:
         """
         Normalize Twitter search results to DataFrame
 
@@ -654,9 +655,10 @@ class TwitterScraper:
             items: Raw tweet data from actor
 
         Returns:
-            DataFrame with normalized tweets
+            Tuple of (DataFrame with normalized tweets, count of skipped malformed tweets)
         """
         normalized_data = []
+        skipped_count = 0
 
         logger.info(f"Normalizing {len(items)} tweets")
 
@@ -665,6 +667,7 @@ class TwitterScraper:
                 # Skip if tweet is not a dictionary (data corruption from Apify)
                 if not isinstance(tweet, dict):
                     logger.warning(f"Skipping non-dict tweet: {type(tweet).__name__}")
+                    skipped_count += 1
                     continue
 
                 author = tweet.get("author", {})
@@ -672,6 +675,7 @@ class TwitterScraper:
                 # Skip if author is not a dictionary (data corruption from Apify)
                 if not isinstance(author, dict):
                     logger.warning(f"Skipping tweet with non-dict author (ID: {tweet.get('id', 'unknown')}): {type(author).__name__}")
+                    skipped_count += 1
                     continue
 
                 # Parse timestamp
@@ -727,6 +731,7 @@ class TwitterScraper:
                 # Validate essential fields
                 if not tweet_data["post_id"] or not tweet_data["username"]:
                     logger.warning(f"Skipping tweet with missing essential fields")
+                    skipped_count += 1
                     continue
 
                 normalized_data.append(tweet_data)
@@ -735,6 +740,7 @@ class TwitterScraper:
                 # Log which tweet failed and why (usually malformed data from Apify)
                 tweet_id = tweet.get("id", "unknown") if isinstance(tweet, dict) else "non-dict"
                 logger.warning(f"Skipping malformed tweet {tweet_id}: {type(e).__name__} - {str(e)}")
+                skipped_count += 1
                 continue
 
         df = pd.DataFrame(normalized_data)
@@ -750,7 +756,10 @@ class TwitterScraper:
         else:
             logger.warning("No tweets were successfully normalized")
 
-        return df
+        if skipped_count > 0:
+            logger.warning(f"Skipped {skipped_count} malformed tweets due to data quality issues")
+
+        return df, skipped_count
 
     def save_posts_to_db(
         self,
