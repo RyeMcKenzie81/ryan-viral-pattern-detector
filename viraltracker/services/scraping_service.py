@@ -71,8 +71,7 @@ class ScrapingService:
                 language="en"
             )
 
-            # scrape_search() returns stats, not tweet data
-            # We need to fetch the tweets from the database
+            # scrape_search() returns stats and IDs, not tweet data
             logger.info(f"Scrape completed: {scrape_result['tweets_count']} tweets saved to database")
 
             if scrape_result['tweets_count'] == 0:
@@ -83,15 +82,25 @@ class ScrapingService:
             from .twitter_service import TwitterService
             twitter_service = TwitterService()
 
-            # Fetch the tweets we just scraped from the database
-            tweets = await twitter_service.get_tweets(
-                project=project,
-                hours_back=hours_back,
-                min_views=min_views,
-                min_likes=min_likes
-            )
+            # Fetch ONLY the tweets we just scraped by their IDs (not all historical tweets)
+            post_ids = scrape_result.get('post_ids', [])
+            if post_ids:
+                tweets = await twitter_service.get_tweets_by_ids(
+                    tweet_ids=post_ids,
+                    project=project
+                )
+                logger.info(f"Successfully retrieved {len(tweets)} tweets for keyword '{keyword}' by ID")
+            else:
+                # Fallback: if post_ids not available, use short time window
+                logger.warning("No post_ids in scrape_result, falling back to time-based query")
+                tweets = await twitter_service.get_tweets(
+                    project=project,
+                    hours_back=0.1,  # ~6 minutes
+                    min_views=min_views,
+                    min_likes=min_likes
+                )
+                tweets = tweets[:scrape_result['tweets_count']]
 
-            logger.info(f"Successfully retrieved {len(tweets)} tweets for keyword '{keyword}'")
             return tweets
 
         except Exception as e:

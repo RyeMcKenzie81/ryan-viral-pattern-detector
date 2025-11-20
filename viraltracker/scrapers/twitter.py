@@ -204,6 +204,7 @@ class TwitterScraper:
         return {
             'terms_count': len(search_terms),
             'tweets_count': len(post_ids),
+            'post_ids': post_ids,  # Return the actual IDs of scraped tweets
             'apify_run_id': last_run_id,
             'apify_dataset_id': last_dataset_id
         }
