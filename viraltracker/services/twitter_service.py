@@ -129,7 +129,7 @@ class TwitterService:
 
         Args:
             tweet_ids: List of tweet IDs to fetch
-            project: Optional project slug to filter by
+            project: Optional project slug (unused - kept for API compatibility)
 
         Returns:
             List of Tweet models
@@ -137,18 +137,12 @@ class TwitterService:
         if not tweet_ids:
             return []
 
-        # Build query
+        # Build query - fetch tweets by IDs directly
+        # Note: We don't filter by project here since we're fetching by specific IDs
+        # that were already associated with a project during scraping
         query = self.db.table('posts') \
             .select('*, accounts!inner(platform_username, follower_count, is_verified)') \
             .in_('post_id', tweet_ids)
-
-        # Filter by project if specified
-        if project:
-            project_result = self.db.table('projects').select('id').eq('slug', project).single().execute()
-            if not project_result.data:
-                raise ValueError(f"Project '{project}' not found")
-            project_id = project_result.data['id']
-            query = query.eq('project_posts.project_id', project_id)
 
         result = query.execute()
 
