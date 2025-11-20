@@ -798,7 +798,8 @@ class TwitterScraper:
             posts_data.append(post_dict)
 
         # Upsert posts
-        post_ids = []
+        post_ids = []  # Twitter post IDs to return (e.g., "1859234234")
+        db_post_ids = []  # Database UUIDs for linking to project
         chunk_size = 1000
         chunks = [posts_data[i:i + chunk_size] for i in range(0, len(posts_data), chunk_size)]
 
@@ -816,8 +817,10 @@ class TwitterScraper:
 
                 if result.data:
                     for post in result.data:
-                        # Return Twitter post_id (e.g., "1859234234"), not database UUID
+                        # Collect Twitter post_id for return value (e.g., "1859234234")
                         post_ids.append(post['post_id'])
+                        # Collect database UUID for project linking
+                        db_post_ids.append(post['id'])
                 else:
                     logger.warning(f"Upsert returned no data for chunk of {len(chunk)} tweets")
                     logger.warning(f"This usually means all tweets already exist or there was a silent failure")
@@ -829,9 +832,9 @@ class TwitterScraper:
 
         logger.info(f"Saved {len(post_ids)} tweets to database")
 
-        # Link to project if provided
-        if project_id and post_ids:
-            self._link_posts_to_project(post_ids, project_id, import_source)
+        # Link to project if provided (use database UUIDs, not Twitter post IDs)
+        if project_id and db_post_ids:
+            self._link_posts_to_project(db_post_ids, project_id, import_source)
 
         return post_ids
 
