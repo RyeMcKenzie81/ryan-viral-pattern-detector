@@ -662,6 +662,11 @@ class TwitterScraper:
 
         for tweet in items:
             try:
+                # Skip if tweet is not a dictionary (data corruption from Apify)
+                if not isinstance(tweet, dict):
+                    logger.warning(f"Skipping non-dict tweet: {type(tweet).__name__}")
+                    continue
+
                 author = tweet.get("author", {})
 
                 # Parse timestamp
