@@ -283,6 +283,171 @@ python test_services_layer.py
 
 ---
 
+## Service Method Patterns
+
+### Metadata Tuples for Agent Tools
+
+**Pattern:** When service methods will be consumed by Pydantic AI agent tools, return `tuple[Data, dict]` to preserve execution metadata for user-facing messages.
+
+#### When to Use
+
+Use metadata tuple return type when:
+1. Service method will be consumed by agent tools
+2. User-facing messages need context beyond the data itself
+3. Execution metadata is important for understanding results
+4. Users need to distinguish between different failure modes
+
+#### What to Include in Metadata Dict
+
+**Counts:**
+- `requested_count`: What was requested
+- `actual_count`: What was returned
+- `skipped_count`: Items skipped due to validation/quality issues
+- `failed_count`: Items that failed processing
+
+**Quality Metrics:**
+- `success_rate`: Percentage of successful operations
+- `error_rate`: Percentage of failed operations
+- `validation_failures`: Count of validation errors
+
+**Context:**
+- `timeframe`: Time window searched (e.g., "last 24 hours")
+- `filters_applied`: What filters were used
+- `source`: Data source (e.g., "Apify", "Supabase")
+
+**Performance:**
+- `duration_ms`: Execution time in milliseconds
+- `api_calls_made`: Number of external API calls
+- `rate_limit_hits`: Times rate limited
+
+#### Example: ScrapingService.search_twitter()
+
+**Service Layer (returns tuple with metadata):**
+```python
+async def search_twitter(
+    self,
+    keyword: str,
+    project: str,
+    hours_back: int = 24,
+    max_results: int = 5000
+) -> tuple[List[Tweet], dict]:
+    """
+    Search Twitter by keyword and save results to database.
+
+    Returns:
+        Tuple of (List of Tweet models, metadata dict with scrape stats)
+        Metadata includes: tweets_count, skipped_count, requested_count
+    """
+    # Scrape tweets
+    scrape_result = self.scraper.scrape_search(
+        search_terms=[keyword],
+        project_slug=project,
+        max_tweets=max_results
+    )
+
+    # Extract data
+    tweets_count = scrape_result['tweets_count']
+    skipped_count = scrape_result.get('skipped_count', 0)
+
+    # Log for backend visibility
+    if skipped_count > 0:
+        logger.warning(f"Skipped {skipped_count} malformed tweets")
+
+    # Fetch tweets from database
+    tweets = await twitter_service.get_tweets_by_ids(
+        tweet_ids=scrape_result['post_ids'],
+        project=project
+    )
+
+    # Build metadata for agent
+    metadata = {
+        'tweets_count': tweets_count,
+        'skipped_count': skipped_count,
+        'requested_count': max_results
+    }
+
+    return tweets, metadata
+```
+
+**Agent Tool Layer (unpacks and uses metadata):**
+```python
+async def search_twitter_tool(
+    ctx: RunContext,
+    keyword: str,
+    max_results: int = 50,
+    hours_back: int = 24
+) -> str:
+    """Search Twitter by keyword and return results to user"""
+
+    # Unpack tuple
+    tweets, metadata = await ctx.deps.scraping.search_twitter(
+        keyword=keyword,
+        project=ctx.deps.project_name,
+        hours_back=hours_back,
+        max_results=max_results
+    )
+
+    # Extract metadata
+    tweets_count = metadata['tweets_count']
+    skipped_count = metadata.get('skipped_count', 0)
+    requested_count = metadata['requested_count']
+
+    # Build accurate user-facing message
+    response = f"**SCRAPED: {tweets_count} tweets** "
+    response += f"(keyword: \"{keyword}\", timeframe: last {hours_back} hours)\n\n"
+
+    # Distinguish between failure modes
+    if skipped_count > 0:
+        # Data quality issues
+        response += f"**Note:** Requested {requested_count} tweets from Apify, "
+        response += f"received {requested_count}, but {skipped_count} tweets "
+        response += f"were skipped due to malformed data (data quality issues). "
+        response += f"Saved {tweets_count} valid tweets to database.\n\n"
+    elif tweets_count < requested_count:
+        # Timeframe limitation
+        response += f"**Note:** Requested {requested_count} tweets, but only "
+        response += f"{tweets_count} tweets were available in the last {hours_back} hours.\n\n"
+    else:
+        # Success
+        response += f"Successfully scraped all {requested_count} requested tweets.\n\n"
+
+    return response
+```
+
+#### Key Benefits
+
+1. **Accurate User Communication** - Users understand exactly what happened and why
+2. **Distinguish Failure Modes** - Clear difference between data quality issues vs. availability issues
+3. **Transparency** - Users see the full context of operations
+4. **Maintainable** - Metadata in one place, easy to extend
+5. **Type Safe** - Explicit tuple return types
+
+#### Documentation Standards
+
+When using metadata tuples, document return types clearly:
+
+```python
+async def service_method(...) -> tuple[List[Model], dict]:
+    """
+    Brief description of what method does.
+
+    Args:
+        param1: Description
+        param2: Description
+
+    Returns:
+        Tuple of (List of Model objects, metadata dict)
+        Metadata includes: count, skipped_count, requested_count, duration_ms
+
+    Raises:
+        ValueError: If validation fails
+    """
+```
+
+**See Also:** `docs/SESSION_SUMMARY_AGENT_RESPONSE_FIX.md` for full implementation details.
+
+---
+
 ## Usage Examples
 
 ### Example 1: Find Outliers
