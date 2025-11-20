@@ -669,6 +669,11 @@ class TwitterScraper:
 
                 author = tweet.get("author", {})
 
+                # Skip if author is not a dictionary (data corruption from Apify)
+                if not isinstance(author, dict):
+                    logger.warning(f"Skipping tweet with non-dict author (ID: {tweet.get('id', 'unknown')}): {type(author).__name__}")
+                    continue
+
                 # Parse timestamp
                 created_at_str = tweet.get("createdAt")
                 posted_at = None
