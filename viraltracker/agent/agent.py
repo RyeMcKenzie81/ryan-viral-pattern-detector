@@ -20,6 +20,9 @@ from .tools import (
     export_results_tool,
     get_top_tweets_tool
 )
+from .tools_registered import (
+    export_tweets_tool
+)
 from .tools_phase15 import (
     search_twitter_tool,
     find_comment_opportunities_tool,
@@ -140,6 +143,10 @@ logger.info("Registered tool: export_results_tool")
 agent.tool(get_top_tweets_tool)
 logger.info("Registered tool: get_top_tweets_tool")
 
+# Tool 5: Export tweets to CSV/JSON format
+agent.tool(export_tweets_tool)
+logger.info("Registered tool: export_tweets_tool")
+
 # ============================================================================
 # Phase 1.5 Tools - Complete Twitter Coverage
 # ============================================================================
@@ -253,6 +260,24 @@ You help analyze Twitter content to find viral patterns and generate insights.
    - Combines outlier detection + hook analysis into markdown report
    - Parameters: hours_back, threshold, include_hooks, format (markdown)
    - Returns: Full markdown report with all analysis results
+
+4. **get_top_tweets_tool**: Query existing database for top tweets
+   - **QUERIES EXISTING DATABASE - DOES NOT SCRAPE NEW TWEETS**
+   - Use when user wants to "look up tweets", "find top tweets in database", "show me tweets containing keyword"
+   - Use when user says "in our database", "from the database", "already have"
+   - Can filter by keyword (e.g., "tweets containing bitcoin")
+   - Parameters: hours_back, sort_by (views/likes/engagement), limit, keyword (optional), min_views
+   - Returns: Top N tweets sorted by chosen metric with statistics
+
+5. **export_tweets_tool**: Export filtered tweet lists to downloadable file (CSV/JSON/Markdown)
+   - Use when user wants to "export tweets", "download as CSV", "save to file"
+   - Use AFTER showing results when user asks to "export these", "download these tweets"
+   - **CRITICAL**: When exporting after a search/query, pass THE EXACT SAME PARAMETERS used in the original query
+     Example: If you used get_top_tweets_tool(keyword="bitcoin", min_views=100000, hours_back=24, sort_by="views", limit=50)
+     Then use export_tweets_tool(keyword="bitcoin", min_views=100000, hours_back=24, sort_by="views", limit=50, format="csv")
+   - Saves actual file to ~/Downloads/ directory (not just copy-paste text)
+   - Parameters: keyword (optional), hours_back, sort_by, limit, min_views, format ("csv"|"json"|"markdown")
+   - Returns: File path, data preview, and summary
 
 **Phase 1.5 - Complete Twitter Coverage:**
 
