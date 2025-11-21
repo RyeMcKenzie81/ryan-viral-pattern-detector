@@ -65,6 +65,8 @@ async def search_twitter_tool(
         tweets_count = metadata.get('tweets_count', len(tweets))
         skipped_count = metadata.get('skipped_count', 0)
         requested_count = metadata.get('requested_count', max_results)
+        run_id = metadata.get('run_id')
+        dataset_id = metadata.get('dataset_id')
 
         # Calculate summary statistics
         total_views = sum(t.view_count for t in tweets)
@@ -72,16 +74,41 @@ async def search_twitter_tool(
         total_engagement = sum(t.like_count + t.reply_count + t.retweet_count for t in tweets)
         avg_engagement_rate = sum(t.engagement_rate for t in tweets) / len(tweets)
 
-        # Format response with clear scraping details
-        response = f"**SCRAPED: {tweets_count} tweets** (keyword: \"{keyword}\", timeframe: last {hours_back} hours)\n\n"
+        # Calculate actual total found by Apify
+        actual_found = tweets_count + skipped_count
 
-        # Explain any discrepancy between requested and received tweets
+        # Format response with clear scraping details
+        response = f"**✅ SCRAPE COMPLETED: {tweets_count} tweets saved to database**\n\n"
+        response += f"**Keyword:** \"{keyword}\"\n"
+        response += f"**Timeframe:** Last {hours_back} hours\n"
+        response += f"**Apify Run ID:** `{run_id}`\n\n"
+
+        # CRITICAL: Always show the actual vs requested count prominently
+        # This prevents the LLM from misreporting numbers in its summary
+        response += f"**SCRAPE RESULTS:**\n"
+        response += f"- **You requested:** {requested_count:,} tweets\n"
+        response += f"- **Apify actually found:** {actual_found:,} tweets matching '{keyword}' in last {hours_back} hours\n"
+
+        if actual_found < requested_count:
+            response += f"- **Why fewer?** Only {actual_found:,} tweets exist matching your criteria in this timeframe\n"
+
+        response += f"- **Valid tweets saved:** {tweets_count:,} tweets ✓\n"
+
+        # Explain any skipped tweets
         if skipped_count > 0:
-            response += f"**Note:** Requested {requested_count} tweets from Apify, received {requested_count}, but {skipped_count} tweets were skipped due to malformed data from Apify (data quality issues). Saved {tweets_count} valid tweets to database.\n\n"
-        elif tweets_count < requested_count:
-            response += f"**Note:** Requested {requested_count} tweets, but only {tweets_count} tweets were available in the last {hours_back} hours.\n\n"
+            skip_percentage = (skipped_count / actual_found) * 100
+            response += f"- **Skipped (malformed data):** {skipped_count:,} tweets ({skip_percentage:.1f}%)\n\n"
+
+            response += f"⚠️ **DATA QUALITY NOTE:** {skipped_count} tweets were skipped due to Apify returning malformed data (strings instead of dictionaries). This is an Apify data quality issue, not a scraping failure. All valid tweets have been saved successfully.\n\n"
+
+            # Only offer verification if skip rate is high (>15%)
+            if skip_percentage > 15:
+                response += f"---\n\n"
+                response += f"**Would you like me to verify the scrape?**\n"
+                response += f"I can check the database or query Apify directly to confirm all valid tweets were captured. Just ask me to 'verify the scrape for {keyword}' if you'd like.\n\n"
+                response += f"---\n\n"
         else:
-            response += f"Successfully scraped all {requested_count} requested tweets from the last {hours_back} hours.\n\n"
+            response += f"\n"
         response += f"**Summary Statistics:**\n"
         response += f"- Total Tweets: {len(tweets)}\n"
         response += f"- Total Views: {total_views:,}\n"

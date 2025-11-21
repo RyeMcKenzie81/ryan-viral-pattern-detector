@@ -111,7 +111,10 @@ class ScrapingService:
             metadata = {
                 'tweets_count': tweets_count,
                 'skipped_count': skipped_count,
-                'requested_count': max_results
+                'requested_count': max_results,
+                'run_id': scrape_result.get('apify_run_id'),
+                'dataset_id': scrape_result.get('apify_dataset_id'),
+                'keyword': keyword
             }
             return tweets, metadata
 

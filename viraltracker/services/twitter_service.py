@@ -137,49 +137,58 @@ class TwitterService:
         if not tweet_ids:
             return []
 
-        # Build query - fetch tweets by IDs directly
-        # Note: We don't filter by project here since we're fetching by specific IDs
-        # that were already associated with a project during scraping
-        query = self.db.table('posts') \
-            .select('*, accounts!inner(platform_username, follower_count, is_verified)') \
-            .in_('post_id', tweet_ids)
+        # Batch tweet IDs to avoid URL length limits (max ~100 IDs per request)
+        # When fetching thousands of tweets, the URL query becomes too long
+        BATCH_SIZE = 100
+        all_tweets = []
 
-        result = query.execute()
+        logger.info(f"Fetching {len(tweet_ids)} tweets in batches of {BATCH_SIZE}")
 
-        if not result.data:
-            logger.warning(f"No tweets found for IDs: {tweet_ids}")
-            return []
+        for i in range(0, len(tweet_ids), BATCH_SIZE):
+            batch = tweet_ids[i:i + BATCH_SIZE]
 
-        # Convert to Tweet models
-        tweets = []
-        for row in result.data:
-            account_data = row.get('accounts')
-            if not account_data:
+            # Build query - fetch tweets by IDs directly
+            # Note: We don't filter by project here since we're fetching by specific IDs
+            # that were already associated with a project during scraping
+            query = self.db.table('posts') \
+                .select('*, accounts!inner(platform_username, follower_count, is_verified)') \
+                .in_('post_id', batch)
+
+            result = query.execute()
+
+            if not result.data:
+                logger.warning(f"No tweets found for batch {i//BATCH_SIZE + 1}: {batch}")
                 continue
 
-            # Parse posted_at
-            posted_at = row['posted_at']
-            if isinstance(posted_at, str):
-                posted_at = datetime.fromisoformat(posted_at.replace('Z', '+00:00'))
+            # Convert to Tweet models for this batch
+            for row in result.data:
+                account_data = row.get('accounts')
+                if not account_data:
+                    continue
 
-            tweet = Tweet(
-                id=row['post_id'],
-                text=row['caption'] or '',
-                view_count=row.get('views', 0) or 0,
-                like_count=row.get('likes', 0) or 0,
-                reply_count=row.get('comments', 0) or 0,
-                retweet_count=row.get('shares', 0) or 0,
-                created_at=posted_at,
-                author_username=account_data.get('platform_username', 'unknown'),
-                author_followers=account_data.get('follower_count', 0),
-                url=row.get('post_url', f"https://twitter.com/i/status/{row['post_id']}"),
-                media_type=row.get('media_type'),
-                is_verified=account_data.get('is_verified', False)
-            )
-            tweets.append(tweet)
+                # Parse posted_at
+                posted_at = row['posted_at']
+                if isinstance(posted_at, str):
+                    posted_at = datetime.fromisoformat(posted_at.replace('Z', '+00:00'))
 
-        logger.info(f"Fetched {len(tweets)} tweets by IDs")
-        return tweets
+                tweet = Tweet(
+                    id=row['post_id'],
+                    text=row['caption'] or '',
+                    view_count=row.get('views', 0) or 0,
+                    like_count=row.get('likes', 0) or 0,
+                    reply_count=row.get('comments', 0) or 0,
+                    retweet_count=row.get('shares', 0) or 0,
+                    created_at=posted_at,
+                    author_username=account_data.get('platform_username', 'unknown'),
+                    author_followers=account_data.get('follower_count', 0),
+                    url=row.get('post_url', f"https://twitter.com/i/status/{row['post_id']}"),
+                    media_type=row.get('media_type'),
+                    is_verified=account_data.get('is_verified', False)
+                )
+                all_tweets.append(tweet)
+
+        logger.info(f"Fetched {len(all_tweets)} tweets by IDs in {(len(tweet_ids) + BATCH_SIZE - 1) // BATCH_SIZE} batches")
+        return all_tweets
 
     async def save_hook_analysis(
         self,

@@ -317,11 +317,125 @@ async def analyze_hooks_tool(
         )
 
 
+@tool_registry.register(
+    name="verify_scrape_tool",
+    description="Verify a Twitter scrape by checking database for scraped tweets",
+    category="Ingestion",
+    platform="Twitter",
+    rate_limit="20/minute",
+    use_cases=[
+        "Verify scrape completed successfully",
+        "Check if data quality warnings affected results",
+        "Confirm tweet count after malformed data skipped",
+        "Double-check database for recent scrapes"
+    ],
+    examples=[
+        "Verify the scrape for BTC",
+        "Check if the parenting scrape completed",
+        "Did all tweets get saved?",
+        "Verify the last scrape"
+    ]
+)
+async def verify_scrape_tool(
+    ctx: RunContext[AgentDependencies],
+    keyword: str,
+    hours_back: int = 1
+) -> str:
+    """
+    Verify a Twitter scrape by checking the database for recently saved tweets.
+
+    Use this when:
+    - User reports data quality warnings during scraping
+    - User wants to confirm scrape completion
+    - Verifying if tweets were saved successfully to database
+
+    Args:
+        ctx: Pydantic AI run context with AgentDependencies
+        keyword: Search keyword to verify (e.g., "BTC", "parenting")
+        hours_back: Hours to look back for tweets (default: 1 hour for recent scrapes)
+
+    Returns:
+        Verification report with tweet counts and confirmation
+    """
+    try:
+        logger.info(f"Verifying scrape for keyword '{keyword}' (last {hours_back} hours)...")
+
+        # Query database for tweets containing the keyword
+        all_tweets = await ctx.deps.twitter.get_tweets(
+            project=ctx.deps.project_name,
+            hours_back=hours_back,
+            min_views=0,
+            text_only=False  # Include all tweets
+        )
+
+        # Filter tweets that contain the keyword (case-insensitive)
+        keyword_lower = keyword.lower()
+        matching_tweets = [
+            t for t in all_tweets
+            if keyword_lower in t.text.lower()
+        ]
+
+        if not matching_tweets:
+            return (
+                f"**⚠️ VERIFICATION FAILED**\n\n"
+                f"No tweets found containing '{keyword}' in the last {hours_back} hours.\n\n"
+                f"**Possible reasons:**\n"
+                f"- Scrape may have failed completely\n"
+                f"- Keyword not present in tweet text (only searches text, not metadata)\n"
+                f"- Time window too narrow (try increasing hours_back)\n"
+                f"- Tweets not yet indexed in database\n\n"
+                f"**Suggestions:**\n"
+                f"- Try running the scrape again\n"
+                f"- Increase time window: verify_scrape_tool(keyword='{keyword}', hours_back=2)\n"
+                f"- Check if keyword appears in tweet text vs metadata"
+            )
+
+        # Calculate statistics
+        total_views = sum(t.view_count for t in matching_tweets)
+        total_likes = sum(t.like_count for t in matching_tweets)
+        total_engagement = sum(t.like_count + t.reply_count + t.retweet_count for t in matching_tweets)
+        avg_engagement_rate = sum(t.engagement_rate for t in matching_tweets) / len(matching_tweets)
+
+        # Get top tweet
+        top_tweet = max(matching_tweets, key=lambda t: t.engagement_score)
+
+        # Format successful verification
+        response = f"**✅ VERIFICATION SUCCESSFUL**\n\n"
+        response += f"Found **{len(matching_tweets)} tweets** containing '{keyword}' in the database (last {hours_back} hours).\n\n"
+
+        response += f"**Database Verification:**\n"
+        response += f"- Total Tweets: {len(matching_tweets)}\n"
+        response += f"- Total Views: {total_views:,}\n"
+        response += f"- Total Likes: {total_likes:,}\n"
+        response += f"- Total Engagement: {total_engagement:,}\n"
+        response += f"- Avg Engagement Rate: {avg_engagement_rate:.2%}\n\n"
+
+        response += f"**Top Performing Tweet:**\n"
+        response += f"- @{top_tweet.author_username} ({top_tweet.author_followers:,} followers)\n"
+        response += f"- Views: {top_tweet.view_count:,} | Likes: {top_tweet.like_count:,}\n"
+        response += f"- Text: \"{top_tweet.text[:100]}{'...' if len(top_tweet.text) > 100 else ''}\"\n"
+        response += f"- URL: {top_tweet.url}\n\n"
+
+        response += f"**Conclusion:** The scrape completed successfully and tweets are saved in the database. ✓"
+
+        logger.info(f"Verified {len(matching_tweets)} tweets for keyword '{keyword}'")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in verify_scrape_tool: {e}", exc_info=True)
+        return (
+            f"**❌ VERIFICATION ERROR**\n\n"
+            f"Failed to verify scrape for '{keyword}': {str(e)}\n\n"
+            f"This may indicate a database connection issue or internal error."
+        )
+
+
 # ============================================================================
 # Export
 # ============================================================================
 
 __all__ = [
     'find_outliers_tool',
-    'analyze_hooks_tool'
+    'analyze_hooks_tool',
+    'verify_scrape_tool'
 ]
