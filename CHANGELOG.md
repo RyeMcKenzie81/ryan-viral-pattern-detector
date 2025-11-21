@@ -1,5 +1,37 @@
 # ViralTracker Changelog
 
+## 2025-11-20 - Agent Tool Selection Bug Fix
+
+### Fixed: Agent Re-Scraping Instead of Analyzing Existing Data
+
+**Problem:**
+When users scraped tweets and then asked to "find viral outliers from them", the agent incorrectly triggered a second scrape operation instead of analyzing the existing database data.
+
+**Root Cause:**
+- Ambiguous system prompt caused agent to misinterpret "find viral outliers" as "find tweets about [keyword]"
+- Agent selected `search_twitter_tool` (which scrapes new tweets) instead of `find_outliers_tool` (which analyzes existing data)
+
+**Solution:**
+Enhanced agent system prompt with:
+1. **Explicit tool descriptions** - Clear labels indicating which tools scrape vs analyze
+2. **Conversation context awareness** - Better handling of follow-up queries referencing recent scrapes
+3. **Clarification guidance** - Agent now asks for clarification when intent is ambiguous instead of guessing
+4. **Concrete examples** - Added exact scenario (scrape → analyze workflow) to prompt
+
+**Code Changes:**
+- `viraltracker/agent/agent.py` (lines 235-392):
+  - Updated `find_outliers_tool` description with "ANALYZES EXISTING DATABASE DATA - DOES NOT SCRAPE NEW TWEETS"
+  - Updated `search_twitter_tool` description with "SCRAPES NEW TWEETS FROM TWITTER API - USE ONLY FOR NEW KEYWORD SEARCHES"
+  - Enhanced conversation context section with explicit scrape-then-analyze workflow guidance
+  - Added clarification guidelines: "When in doubt, ask for clarification instead of guessing"
+  - Added concrete examples showing correct tool selection for multi-turn conversations
+
+**Impact:**
+- Prevents duplicate Apify scraping operations
+- Reduces API costs and execution time
+- Improves agent reliability for multi-turn conversations
+- Agent now asks clarifying questions when intent is ambiguous
+
 ## 2025-10-08 - Enhanced Output & Simplified Workflow
 
 ### Phase 5d: Output Formatting & Workflow Improvements (COMPLETED ✅)
