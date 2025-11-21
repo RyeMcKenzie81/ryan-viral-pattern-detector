@@ -45,8 +45,21 @@ logger = logging.getLogger(__name__)
 @tool_registry.register(
     name="find_outliers_tool",
     description="Find viral outlier tweets using statistical analysis",
-    category="Twitter",
-    rate_limit="20/minute"
+    category="Discovery",
+    platform="Twitter",
+    rate_limit="20/minute",
+    use_cases=[
+        "Find top performing content",
+        "Identify viral tweets",
+        "Discover engagement patterns",
+        "Track statistical outliers"
+    ],
+    examples=[
+        "Show me viral tweets from today",
+        "Find top performers from last 48 hours",
+        "What tweets are outliers this week?",
+        "Show me statistically viral content"
+    ]
 )
 async def find_outliers_tool(
     ctx: RunContext[AgentDependencies],
@@ -188,8 +201,21 @@ async def find_outliers_tool(
 @tool_registry.register(
     name="analyze_hooks_tool",
     description="Analyze tweet hooks with AI to identify patterns and emotional triggers",
-    category="Twitter",
-    rate_limit="10/minute"  # Lower rate limit for AI-heavy operations
+    category="Analysis",
+    platform="Twitter",
+    rate_limit="10/minute",  # Lower rate limit for AI-heavy operations
+    use_cases=[
+        "Understand viral hook patterns",
+        "Identify emotional triggers",
+        "Analyze content strategies",
+        "Extract viral patterns"
+    ],
+    examples=[
+        "Analyze hooks from top tweets today",
+        "What patterns make these tweets viral?",
+        "Show me emotional triggers in top content",
+        "Analyze viral hooks from this week"
+    ]
 )
 async def analyze_hooks_tool(
     ctx: RunContext[AgentDependencies],

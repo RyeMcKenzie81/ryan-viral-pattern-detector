@@ -39,22 +39,28 @@ class ToolMetadata:
         name: Unique tool name (e.g., "find_outliers")
         function: The async function implementing the tool
         description: Human-readable description
-        category: Tool category (e.g., "Twitter", "TikTok", "YouTube")
+        category: Pipeline category (Ingestion, Filtration, Discovery, Analysis, Generation, Export)
+        platform: Platform category (Twitter, TikTok, YouTube, Facebook, All)
         rate_limit: Requests per minute for API endpoint
         api_path: Auto-generated API path (e.g., "/tools/find-outliers")
         request_model: Pydantic model for API request body
         response_model: Pydantic model for API response
         requires_auth: Whether API endpoint requires authentication
+        use_cases: Example use cases for the tool
+        examples: Example natural language queries
     """
     name: str
     function: Callable
     description: str
-    category: str = "General"
+    category: str = "Discovery"  # Pipeline stage: Ingestion, Filtration, Discovery, Analysis, Generation, Export
+    platform: str = "Twitter"     # Platform: Twitter, TikTok, YouTube, Facebook, All
     rate_limit: str = "20/minute"
     api_path: str = ""
     request_model: Optional[Type[BaseModel]] = None
     response_model: Optional[Type[BaseModel]] = None
     requires_auth: bool = True
+    use_cases: Optional[List[str]] = None
+    examples: Optional[List[str]] = None
 
     def __post_init__(self):
         """Generate API path from tool name."""
@@ -86,11 +92,14 @@ class ToolRegistry:
         self,
         name: str,
         description: str,
-        category: str = "General",
+        category: str = "Discovery",
+        platform: str = "Twitter",
         rate_limit: str = "20/minute",
         requires_auth: bool = True,
         request_model: Optional[Type[BaseModel]] = None,
         response_model: Optional[Type[BaseModel]] = None,
+        use_cases: Optional[List[str]] = None,
+        examples: Optional[List[str]] = None,
     ) -> Callable:
         """
         Decorator to register a tool function.
@@ -99,10 +108,13 @@ class ToolRegistry:
             @tool_registry.register(
                 name="find_outliers_tool",
                 description="Find viral outlier tweets",
-                category="Twitter",
+                category="Discovery",
+                platform="Twitter",
                 rate_limit="20/minute",
                 request_model=FindOutliersRequest,
-                response_model=ToolResponse
+                response_model=ToolResponse,
+                use_cases=["Find viral content", "Identify top performers"],
+                examples=["Show me viral tweets from today"]
             )
             async def find_outliers_tool(ctx: RunContext[AgentDependencies], ...):
                 ...
@@ -110,11 +122,14 @@ class ToolRegistry:
         Args:
             name: Unique tool name
             description: Human-readable description
-            category: Tool category for organization
+            category: Pipeline category (Ingestion, Filtration, Discovery, Analysis, Generation, Export)
+            platform: Platform category (Twitter, TikTok, YouTube, Facebook, All)
             rate_limit: Rate limit string (e.g., "20/minute")
             requires_auth: Whether API endpoint requires authentication
             request_model: Pydantic model for request body (optional, auto-generated if None)
             response_model: Pydantic model for response (optional)
+            use_cases: Example use cases for the tool
+            examples: Example natural language queries
 
         Returns:
             Decorator function
@@ -132,15 +147,18 @@ class ToolRegistry:
                 function=func,
                 description=description,
                 category=category,
+                platform=platform,
                 rate_limit=rate_limit,
                 request_model=req_model,
                 response_model=response_model,
-                requires_auth=requires_auth
+                requires_auth=requires_auth,
+                use_cases=use_cases,
+                examples=examples
             )
 
             # Register tool
             self._tools[name] = metadata
-            logger.info(f"Registered tool: {name} -> {metadata.api_path}")
+            logger.info(f"Registered tool: {name} ({category}/{platform}) -> {metadata.api_path}")
 
             return func
 
