@@ -594,21 +594,21 @@ async def export_results_tool(
 
 @tool_registry.register(
     name="get_top_tweets_tool",
-    description="Get top N tweets sorted by views, likes, or engagement",
+    description="Query EXISTING database for top tweets by views/likes/engagement (does NOT scrape new data from Twitter)",
     category="Discovery",
     platform="Twitter",
     rate_limit="20/minute",
     use_cases=[
-        "Find top tweets by view count",
-        "Sort tweets by likes or engagement",
-        "Get simple ranking without statistical analysis",
-        "Discover most popular content quickly"
+        "Look up top tweets by view count from database",
+        "Find most viewed tweets containing keyword in database",
+        "Query database for tweets sorted by engagement",
+        "Show top tweets already saved in database"
     ],
     examples=[
-        "Show me the top 10 tweets by views",
-        "What are the most liked tweets today?",
-        "Get top tweets by engagement from last 48 hours",
-        "Find the 20 most popular tweets this week"
+        "Show me the top 10 tweets by views from the database",
+        "Look up the most viewed tweets containing 'bitcoin' in our database",
+        "What are the top tweets with 'productivity' in the database?",
+        "Find the 20 most popular tweets about 'AI' from last 48 hours in the database"
     ]
 )
 async def get_top_tweets_tool(
@@ -617,18 +617,19 @@ async def get_top_tweets_tool(
     sort_by: str = "views",
     limit: int = 10,
     min_views: int = 0,
-    text_only: bool = False
+    text_only: bool = False,
+    keyword: Optional[str] = None
 ) -> str:
     """
-    Get top N tweets sorted by a specific metric (views, likes, engagement).
+    Query existing database for top tweets sorted by a specific metric.
 
     Unlike find_outliers_tool which finds statistically viral tweets,
     this simply returns the top N tweets sorted by the chosen metric.
 
-    Use this when users ask for:
-    - "Top 10 tweets by views"
-    - "Show me the most liked tweets"
-    - "Tweets with highest engagement"
+    Use this when users ask to:
+    - Look up tweets in the database
+    - Find top tweets by views/likes/engagement from database
+    - Query database for tweets containing a keyword
 
     Args:
         ctx: Pydantic AI run context with AgentDependencies
@@ -637,12 +638,14 @@ async def get_top_tweets_tool(
         limit: Number of tweets to return (default: 10)
         min_views: Minimum view count filter (default: 0)
         text_only: Only include text tweets, no media (default: False)
+        keyword: Optional keyword to filter tweets (case-insensitive)
 
     Returns:
-        Formatted string with top tweets
+        Formatted string with top tweets from database
     """
     try:
-        logger.info(f"Getting top {limit} tweets sorted by {sort_by} (last {hours_back} hours)")
+        keyword_str = f" containing '{keyword}'" if keyword else ""
+        logger.info(f"Getting top {limit} tweets{keyword_str} sorted by {sort_by} (last {hours_back} hours)")
 
         # Fetch tweets from database
         tweets = await ctx.deps.twitter.get_tweets(
@@ -654,6 +657,14 @@ async def get_top_tweets_tool(
 
         if not tweets:
             return f"No tweets found in the last {hours_back} hours."
+
+        # Filter by keyword if provided
+        if keyword:
+            keyword_lower = keyword.lower()
+            tweets = [t for t in tweets if keyword_lower in t.text.lower()]
+
+            if not tweets:
+                return f"No tweets found containing '{keyword}' in the last {hours_back} hours."
 
         # Sort by chosen metric
         if sort_by == "views":
@@ -673,9 +684,10 @@ async def get_top_tweets_tool(
         summary_stats = ctx.deps.stats.calculate_summary_stats(engagement_scores)
 
         # Format response
-        response = f"Top {len(top_tweets)} tweets by {sort_by} (last {hours_back} hours)\n\n"
+        keyword_str = f" containing '{keyword}'" if keyword else ""
+        response = f"Top {len(top_tweets)} tweets{keyword_str} by {sort_by} from database (last {hours_back} hours)\n\n"
         response += f"**Dataset Statistics:**\n"
-        response += f"- Total Tweets: {len(tweets)}\n"
+        response += f"- Total Tweets{keyword_str}: {len(tweets)}\n"
         response += f"- Mean Engagement: {summary_stats['mean']:.2f}\n"
         response += f"- Median Engagement: {summary_stats['median']:.2f}\n\n"
 
@@ -882,21 +894,21 @@ async def export_tweets_tool(
 
 @tool_registry.register(
     name="search_twitter_tool",
-    description="Search/scrape Twitter by keyword and save results to database",
+    description="Scrape FRESH tweets from Twitter by keyword and save to database (does NOT query existing database)",
     category="Ingestion",
     platform="Twitter",
     rate_limit="10/minute",
     use_cases=[
-        "Scrape tweets by keyword or hashtag",
-        "Build dataset for viral content analysis",
-        "Collect tweets for audience research",
-        "Discover trending discussions"
+        "Scrape NEW tweets from Twitter by keyword",
+        "Build NEW dataset for viral content analysis",
+        "Collect FRESH tweets for audience research",
+        "Ingest NEW tweets about a topic into database"
     ],
     examples=[
-        "Search Twitter for 'productivity tips'",
-        "Scrape tweets about #startups from last 24 hours",
-        "Find 5000 tweets mentioning AI",
-        "Collect recent tweets about parenting"
+        "Scrape fresh tweets about 'productivity tips' from Twitter",
+        "Collect NEW tweets about #startups from Twitter",
+        "Ingest 5000 NEW tweets mentioning AI from Twitter",
+        "Scrape recent tweets about parenting from Twitter and save to database"
     ]
 )
 async def search_twitter_tool(
