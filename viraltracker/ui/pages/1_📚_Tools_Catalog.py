@@ -13,6 +13,7 @@ Benefits:
 
 import streamlit as st
 from viraltracker.agent.tool_registry import tool_registry
+from viraltracker.agent import tools_registered  # Import to trigger tool registration
 
 # Page config
 st.set_page_config(
