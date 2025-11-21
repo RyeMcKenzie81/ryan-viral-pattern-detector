@@ -638,7 +638,8 @@ async def get_top_tweets_tool(
         limit: Number of tweets to return (default: 10)
         min_views: Minimum view count filter (default: 0)
         text_only: Only include text tweets, no media (default: False)
-        keyword: Optional keyword to filter tweets (case-insensitive)
+        keyword: Optional keyword filter - supports multiple keywords with OR logic
+                 Single: "bitcoin" or Multiple: "btc,bitcoin" (comma-separated)
 
     Returns:
         Formatted string with top tweets from database
@@ -658,10 +659,13 @@ async def get_top_tweets_tool(
         if not tweets:
             return f"No tweets found in the last {hours_back} hours."
 
-        # Filter by keyword if provided
+        # Filter by keyword(s) if provided - supports multiple keywords with OR logic
         if keyword:
-            keyword_lower = keyword.lower()
-            tweets = [t for t in tweets if keyword_lower in t.text.lower()]
+            # Split comma-separated keywords and convert to lowercase
+            keywords = [k.strip().lower() for k in keyword.split(',')]
+
+            # Filter tweets that contain ANY of the keywords (OR logic)
+            tweets = [t for t in tweets if any(kw in t.text.lower() for kw in keywords)]
 
             if not tweets:
                 return f"No tweets found containing '{keyword}' in the last {hours_back} hours."
@@ -756,7 +760,8 @@ async def export_tweets_tool(
 
     Args:
         ctx: Pydantic AI run context with AgentDependencies
-        keyword: Optional keyword filter (e.g., "bitcoin")
+        keyword: Optional keyword filter - supports multiple keywords with OR logic
+                 Single: "bitcoin" or Multiple: "btc,bitcoin" (comma-separated)
         hours_back: Hours to look back (default: 24)
         sort_by: Metric to sort by - 'views', 'likes', 'engagement' (default: 'views')
         limit: Number of tweets to export (default: 100)
@@ -785,12 +790,17 @@ async def export_tweets_tool(
         if not tweets:
             return f"No tweets found in the last {hours_back} hours."
 
-        # Filter by keyword if provided
+        # Filter by keyword(s) if provided - supports multiple keywords with OR logic
         if keyword:
-            keyword_lower = keyword.lower()
-            tweets = [t for t in tweets if keyword_lower in t.text.lower()]
+            # Split comma-separated keywords and convert to lowercase
+            keywords = [k.strip().lower() for k in keyword.split(',')]
+
+            # Filter tweets that contain ANY of the keywords (OR logic)
+            tweets = [t for t in tweets if any(kw in t.text.lower() for kw in keywords)]
+
             if not tweets:
-                return f"No tweets found containing '{keyword}' in the last {hours_back} hours."
+                keyword_display = "' OR '".join(keywords)
+                return f"No tweets found containing '{keyword_display}' in the last {hours_back} hours."
 
         # Sort by chosen metric
         if sort_by == "views":
