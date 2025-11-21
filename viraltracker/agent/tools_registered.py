@@ -707,6 +707,175 @@ async def get_top_tweets_tool(
         return f"Error getting top tweets: {str(e)}"
 
 
+@tool_registry.register(
+    name="export_tweets_tool",
+    description="Export filtered tweet lists to CSV or JSON format",
+    category="Export",
+    platform="Twitter",
+    rate_limit="20/minute",
+    use_cases=[
+        "Export tweet search results to CSV for analysis",
+        "Download filtered tweets by keyword or views",
+        "Save tweet lists for external reporting",
+        "Export top performing tweets by metric"
+    ],
+    examples=[
+        "Export these tweets to CSV",
+        "Download the bitcoin tweets as CSV",
+        "Give me these results in JSON format",
+        "Export the top 10 tweets to a file"
+    ]
+)
+async def export_tweets_tool(
+    ctx: RunContext[AgentDependencies],
+    keyword: Optional[str] = None,
+    hours_back: int = 24,
+    sort_by: str = "views",
+    limit: int = 100,
+    min_views: int = 0,
+    format: str = "csv"
+) -> str:
+    """
+    Export filtered tweet lists to CSV or JSON format.
+
+    Use this when users want to download or export tweet results,
+    especially after showing them a list of tweets.
+
+    Args:
+        ctx: Pydantic AI run context with AgentDependencies
+        keyword: Optional keyword filter (e.g., "bitcoin")
+        hours_back: Hours to look back (default: 24)
+        sort_by: Metric to sort by - 'views', 'likes', 'engagement' (default: 'views')
+        limit: Number of tweets to export (default: 100)
+        min_views: Minimum view count filter (default: 0)
+        format: Export format - 'csv' or 'json' (default: 'csv')
+
+    Returns:
+        String with export summary and data preview
+    """
+    try:
+        logger.info(f"Exporting tweets: keyword={keyword}, sort_by={sort_by}, format={format}")
+
+        # Fetch tweets from database
+        tweets = await ctx.deps.twitter.get_tweets(
+            project=ctx.deps.project_name,
+            hours_back=hours_back,
+            min_views=min_views,
+            text_only=False
+        )
+
+        if not tweets:
+            return f"No tweets found in the last {hours_back} hours."
+
+        # Filter by keyword if provided
+        if keyword:
+            keyword_lower = keyword.lower()
+            tweets = [t for t in tweets if keyword_lower in t.text.lower()]
+            if not tweets:
+                return f"No tweets found containing '{keyword}' in the last {hours_back} hours."
+
+        # Sort by chosen metric
+        if sort_by == "views":
+            sorted_tweets = sorted(tweets, key=lambda t: t.view_count, reverse=True)
+        elif sort_by == "likes":
+            sorted_tweets = sorted(tweets, key=lambda t: t.like_count, reverse=True)
+        elif sort_by == "engagement":
+            sorted_tweets = sorted(tweets, key=lambda t: t.engagement_score, reverse=True)
+        else:
+            return f"Invalid sort_by parameter: {sort_by}. Use 'views', 'likes', or 'engagement'."
+
+        # Limit results
+        export_tweets = sorted_tweets[:limit]
+
+        # Generate export data
+        if format == "csv":
+            import csv
+            from io import StringIO
+
+            output = StringIO()
+            writer = csv.writer(output)
+
+            # Write header
+            writer.writerow([
+                'username', 'followers', 'views', 'likes', 'replies', 'retweets',
+                'engagement_rate', 'engagement_score', 'text', 'url', 'created_at'
+            ])
+
+            # Write data rows
+            for tweet in export_tweets:
+                writer.writerow([
+                    tweet.author_username,
+                    tweet.author_followers,
+                    tweet.view_count,
+                    tweet.like_count,
+                    tweet.reply_count,
+                    tweet.retweet_count,
+                    f"{tweet.engagement_rate:.4f}",
+                    f"{tweet.engagement_score:.2f}",
+                    tweet.text.replace('\n', ' ').replace('\r', ' '),  # Clean newlines
+                    tweet.url,
+                    tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else ''
+                ])
+
+            csv_data = output.getvalue()
+
+            # Show preview (first 3 rows)
+            lines = csv_data.split('\n')
+            preview = '\n'.join(lines[:4])  # Header + 3 data rows
+
+            response = f"**✅ CSV Export Ready**\n\n"
+            response += f"Exported {len(export_tweets)} tweets to CSV format"
+            if keyword:
+                response += f" (filtered by '{keyword}')"
+            response += f"\n\n**Preview (first 3 rows):**\n```csv\n{preview}\n```\n\n"
+            response += f"**Full CSV Data ({len(export_tweets)} rows):**\n```csv\n{csv_data}\n```\n\n"
+            response += f"💾 **To save:** Copy the CSV data above and save as a .csv file\n"
+            response += f"📊 **Import into:** Excel, Google Sheets, or any CSV-compatible tool"
+
+        elif format == "json":
+            import json
+
+            # Convert tweets to dict
+            tweet_dicts = []
+            for tweet in export_tweets:
+                tweet_dicts.append({
+                    'username': tweet.author_username,
+                    'followers': tweet.author_followers,
+                    'views': tweet.view_count,
+                    'likes': tweet.like_count,
+                    'replies': tweet.reply_count,
+                    'retweets': tweet.retweet_count,
+                    'engagement_rate': tweet.engagement_rate,
+                    'engagement_score': tweet.engagement_score,
+                    'text': tweet.text,
+                    'url': tweet.url,
+                    'created_at': tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else None
+                })
+
+            json_data = json.dumps(tweet_dicts, indent=2)
+
+            # Show preview (first 2 tweets)
+            preview_data = tweet_dicts[:2]
+            preview_json = json.dumps(preview_data, indent=2)
+
+            response = f"**✅ JSON Export Ready**\n\n"
+            response += f"Exported {len(export_tweets)} tweets to JSON format"
+            if keyword:
+                response += f" (filtered by '{keyword}')"
+            response += f"\n\n**Preview (first 2 tweets):**\n```json\n{preview_json}\n```\n\n"
+            response += f"**Full JSON Data ({len(export_tweets)} tweets):**\n```json\n{json_data}\n```\n\n"
+            response += f"💾 **To save:** Copy the JSON data above and save as a .json file"
+        else:
+            return f"Unsupported format: {format}. Use 'csv' or 'json'."
+
+        logger.info(f"Successfully exported {len(export_tweets)} tweets as {format}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in export_tweets_tool: {e}", exc_info=True)
+        return f"Error exporting tweets: {str(e)}"
+
+
 # ============================================================================
 # Phase 1.5 - Complete Twitter Coverage (Ingestion, Analysis, Generation, Export)
 # ============================================================================
@@ -1580,6 +1749,7 @@ __all__ = [
     'verify_scrape_tool',
     'export_results_tool',
     'get_top_tweets_tool',
+    'export_tweets_tool',
     'search_twitter_tool',
     'find_comment_opportunities_tool',
     'export_comments_tool',
