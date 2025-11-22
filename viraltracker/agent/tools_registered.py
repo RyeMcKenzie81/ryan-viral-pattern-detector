@@ -748,13 +748,12 @@ async def export_tweets_tool(
     hours_back: int = 24,
     sort_by: str = "views",
     limit: int = 100,
-    min_views: int = 0,
-    format: str = "csv"
+    min_views: int = 0
 ) -> str:
     """
-    Export filtered tweet lists to CSV, JSON, or markdown format.
+    Export filtered tweet lists to ALL 3 formats (CSV, JSON, Markdown).
 
-    Saves actual files to ~/Downloads/ directory and returns file path.
+    Saves 3 files to ~/Downloads/ directory and returns paths for all formats.
     Use this when users want to download or export tweet results,
     especially after showing them a list of tweets.
 
@@ -766,10 +765,9 @@ async def export_tweets_tool(
         sort_by: Metric to sort by - 'views', 'likes', 'engagement' (default: 'views')
         limit: Number of tweets to export (default: 100)
         min_views: Minimum view count filter (default: 0)
-        format: Export format - 'csv', 'json', or 'markdown' (default: 'csv')
 
     Returns:
-        String with export summary, file path, and data preview
+        String with export summary and file paths for CSV, JSON, and Markdown
     """
     try:
         from datetime import datetime
@@ -777,7 +775,7 @@ async def export_tweets_tool(
         import csv
         import json
 
-        logger.info(f"Exporting tweets: keyword={keyword}, sort_by={sort_by}, format={format}")
+        logger.info(f"Exporting tweets to ALL formats: keyword={keyword}, sort_by={sort_by}")
 
         # Fetch tweets from database
         tweets = await ctx.deps.twitter.get_tweets(
@@ -815,137 +813,116 @@ async def export_tweets_tool(
         # Limit results
         export_tweets = sorted_tweets[:limit]
 
-        # Generate filename
+        # Generate base filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         keyword_slug = f"_{keyword.replace(' ', '_')}" if keyword else ""
         downloads_dir = Path.home() / "Downloads"
-        file_path = downloads_dir / f"tweets_export{keyword_slug}_{timestamp}.{format}"
+        base_filename = f"tweets_export{keyword_slug}_{timestamp}"
 
-        # Generate export data and save to file
-        if format == "csv":
-            # Write CSV file
-            with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
+        # ==================================================================
+        # GENERATE ALL 3 FORMATS
+        # ==================================================================
 
-                # Write header
+        # ==================================================================
+        # 1. CSV Export
+        # ==================================================================
+        csv_path = downloads_dir / f"{base_filename}.csv"
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'username', 'followers', 'views', 'likes', 'replies', 'retweets',
+                'engagement_rate', 'engagement_score', 'text', 'url', 'created_at'
+            ])
+            for tweet in export_tweets:
                 writer.writerow([
-                    'username', 'followers', 'views', 'likes', 'replies', 'retweets',
-                    'engagement_rate', 'engagement_score', 'text', 'url', 'created_at'
+                    tweet.author_username,
+                    tweet.author_followers,
+                    tweet.view_count,
+                    tweet.like_count,
+                    tweet.reply_count,
+                    tweet.retweet_count,
+                    f"{tweet.engagement_rate:.4f}",
+                    f"{tweet.engagement_score:.2f}",
+                    tweet.text.replace('\n', ' ').replace('\r', ' '),
+                    tweet.url,
+                    tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else ''
                 ])
 
-                # Write data rows
-                for tweet in export_tweets:
-                    writer.writerow([
-                        tweet.author_username,
-                        tweet.author_followers,
-                        tweet.view_count,
-                        tweet.like_count,
-                        tweet.reply_count,
-                        tweet.retweet_count,
-                        f"{tweet.engagement_rate:.4f}",
-                        f"{tweet.engagement_score:.2f}",
-                        tweet.text.replace('\n', ' ').replace('\r', ' '),
-                        tweet.url,
-                        tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else ''
-                    ])
+        # ==================================================================
+        # 2. JSON Export
+        # ==================================================================
+        json_path = downloads_dir / f"{base_filename}.json"
+        tweet_dicts = []
+        for tweet in export_tweets:
+            tweet_dicts.append({
+                'username': tweet.author_username,
+                'followers': tweet.author_followers,
+                'views': tweet.view_count,
+                'likes': tweet.like_count,
+                'replies': tweet.reply_count,
+                'retweets': tweet.retweet_count,
+                'engagement_rate': tweet.engagement_rate,
+                'engagement_score': tweet.engagement_score,
+                'text': tweet.text,
+                'url': tweet.url,
+                'created_at': tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else None
+            })
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(tweet_dicts, f, indent=2)
 
-            # Generate preview
-            preview_tweets = export_tweets[:3]
-            preview = "username,followers,views,likes,replies,retweets,engagement_rate,engagement_score,text,url,created_at\n"
-            for tweet in preview_tweets:
-                preview += f"{tweet.author_username},{tweet.author_followers},{tweet.view_count},{tweet.like_count},"
-                preview += f"{tweet.reply_count},{tweet.retweet_count},{tweet.engagement_rate:.4f},"
-                preview += f"{tweet.engagement_score:.2f},\"{tweet.text[:50]}...\",{tweet.url},...\n"
+        # ==================================================================
+        # 3. Markdown Export
+        # ==================================================================
+        md_path = downloads_dir / f"{base_filename}.md"
+        md = f"# Tweet Export Report\n\n"
+        md += f"**Project:** {ctx.deps.project_name}\n"
+        md += f"**Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        md += f"**Period:** Last {hours_back} hours\n"
+        md += f"**Sort by:** {sort_by}\n"
+        if keyword:
+            md += f"**Keyword filter:** {keyword}\n"
+        md += f"**Total tweets:** {len(export_tweets)}\n\n"
+        md += "---\n\n"
 
-            response = f"**✅ CSV Export Complete**\n\n"
-            response += f"Exported {len(export_tweets)} tweets to CSV format"
-            if keyword:
-                response += f" (filtered by '{keyword}')"
-            response += f"\n\n📁 **File saved to:** `{file_path}`\n\n"
-            response += f"**Preview (first 3 rows):**\n```csv\n{preview}```\n\n"
-            response += f"📊 **Import into:** Excel, Google Sheets, or any CSV-compatible tool"
-
-        elif format == "json":
-            # Convert tweets to dict
-            tweet_dicts = []
-            for tweet in export_tweets:
-                tweet_dicts.append({
-                    'username': tweet.author_username,
-                    'followers': tweet.author_followers,
-                    'views': tweet.view_count,
-                    'likes': tweet.like_count,
-                    'replies': tweet.reply_count,
-                    'retweets': tweet.retweet_count,
-                    'engagement_rate': tweet.engagement_rate,
-                    'engagement_score': tweet.engagement_score,
-                    'text': tweet.text,
-                    'url': tweet.url,
-                    'created_at': tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else None
-                })
-
-            # Write JSON file
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(tweet_dicts, f, indent=2)
-
-            # Show preview (first 2 tweets)
-            preview_data = tweet_dicts[:2]
-            preview_json = json.dumps(preview_data, indent=2)
-
-            response = f"**✅ JSON Export Complete**\n\n"
-            response += f"Exported {len(export_tweets)} tweets to JSON format"
-            if keyword:
-                response += f" (filtered by '{keyword}')"
-            response += f"\n\n📁 **File saved to:** `{file_path}`\n\n"
-            response += f"**Preview (first 2 tweets):**\n```json\n{preview_json}\n```"
-
-        elif format == "markdown":
-            # Generate markdown report
-            md = f"# Tweet Export Report\n\n"
-            md += f"**Project:** {ctx.deps.project_name}\n"
-            md += f"**Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            md += f"**Period:** Last {hours_back} hours\n"
-            md += f"**Sort by:** {sort_by}\n"
-            if keyword:
-                md += f"**Keyword filter:** {keyword}\n"
-            md += f"**Total tweets:** {len(export_tweets)}\n\n"
+        for i, tweet in enumerate(export_tweets, 1):
+            md += f"## {i}. @{tweet.author_username}\n\n"
+            md += f"**Followers:** {tweet.author_followers:,}  \n"
+            md += f"**Views:** {tweet.view_count:,}  \n"
+            md += f"**Likes:** {tweet.like_count:,}  \n"
+            md += f"**Replies:** {tweet.reply_count}  \n"
+            md += f"**Retweets:** {tweet.retweet_count}  \n"
+            md += f"**Engagement Rate:** {tweet.engagement_rate:.2%}  \n"
+            md += f"**Engagement Score:** {tweet.engagement_score:.2f}  \n\n"
+            md += f"**Tweet:**\n> {tweet.text}\n\n"
+            md += f"**URL:** {tweet.url}\n\n"
             md += "---\n\n"
 
-            # Add tweets
-            for i, tweet in enumerate(export_tweets, 1):
-                md += f"## {i}. @{tweet.author_username}\n\n"
-                md += f"**Followers:** {tweet.author_followers:,}  \n"
-                md += f"**Views:** {tweet.view_count:,}  \n"
-                md += f"**Likes:** {tweet.like_count:,}  \n"
-                md += f"**Replies:** {tweet.reply_count}  \n"
-                md += f"**Retweets:** {tweet.retweet_count}  \n"
-                md += f"**Engagement Rate:** {tweet.engagement_rate:.2%}  \n"
-                md += f"**Engagement Score:** {tweet.engagement_score:.2f}  \n\n"
-                md += f"**Tweet:**\n> {tweet.text}\n\n"
-                md += f"**URL:** {tweet.url}\n\n"
-                md += "---\n\n"
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(md)
 
-            # Write markdown file
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(md)
+        # ==================================================================
+        # Build Response with All 3 File Paths
+        # ==================================================================
+        filter_text = f" (filtered by '{keyword}')" if keyword else ""
 
-            # Show preview (first tweet)
-            if export_tweets:
-                preview_tweet = export_tweets[0]
-                preview = f"## 1. @{preview_tweet.author_username}\n\n"
-                preview += f"**Views:** {preview_tweet.view_count:,} | **Likes:** {preview_tweet.like_count:,}\n\n"
-                preview += f"> {preview_tweet.text[:100]}...\n\n"
+        response = f"**✅ Export Complete - All 3 Formats Generated!**\n\n"
+        response += f"Exported {len(export_tweets)} tweets{filter_text}\n\n"
 
-            response = f"**✅ Markdown Export Complete**\n\n"
-            response += f"Exported {len(export_tweets)} tweets to markdown format"
-            if keyword:
-                response += f" (filtered by '{keyword}')"
-            response += f"\n\n📁 **File saved to:** `{file_path}`\n\n"
-            response += f"**Preview:**\n{preview}"
+        response += f"**📁 Files saved to ~/Downloads/:**\n\n"
+        response += f"1. **CSV** (Excel/Sheets): `{csv_path.name}`\n"
+        response += f"2. **JSON** (API/Data): `{json_path.name}`\n"
+        response += f"3. **Markdown** (Reports): `{md_path.name}`\n\n"
 
-        else:
-            return f"Unsupported format: {format}. Use 'csv', 'json', or 'markdown'."
+        # Show CSV preview
+        response += f"**📊 CSV Preview (first 3 rows):**\n```\n"
+        response += "username,followers,views,likes,...\n"
+        for i, tweet in enumerate(export_tweets[:3], 1):
+            response += f"{tweet.author_username},{tweet.author_followers},{tweet.view_count},{tweet.like_count},...\n"
+        response += "```\n\n"
 
-        logger.info(f"Successfully exported {len(export_tweets)} tweets to {file_path}")
+        response += f"All files are ready in your Downloads folder!"
+
+        logger.info(f"Successfully exported {len(export_tweets)} tweets to 3 formats: {base_filename}.*")
         return response
 
     except Exception as e:
