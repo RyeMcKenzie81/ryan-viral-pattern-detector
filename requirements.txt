@@ -72,7 +72,9 @@ websockets==15.0.1
 yt-dlp==2025.9.26
 
 # Pydantic AI Agent Dependencies
-pydantic-ai-slim[openai]==1.18.0
+pydantic-ai-slim==1.18.0
+anthropic==0.73.0
+openai==2.8.0
 griffe==1.5.1
 rich==13.9.4
 

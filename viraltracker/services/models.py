@@ -623,3 +623,93 @@ class HookAnalysisResult(BaseModel):
                 "generated_at": "2024-01-15T12:30:00Z"
             }
         }
+
+
+class TweetExportResult(BaseModel):
+    """
+    Aggregated result from tweet export.
+
+    Contains summary statistics and list of exported tweets.
+    Supports multi-format downloads (CSV, JSON, Markdown).
+    """
+    total_tweets: int = Field(..., ge=0, description="Total tweets exported")
+    keyword_filter: Optional[str] = Field(None, description="Keyword filter applied")
+    hours_back: int = Field(..., ge=0, description="Hours back queried")
+    sort_by: str = Field(..., description="Sort metric used (views, likes, engagement)")
+
+    tweets: List[Tweet] = Field(default_factory=list, description="List of exported tweets")
+
+    # Summary statistics
+    total_views: int = Field(default=0, ge=0, description="Total views across all tweets")
+    total_likes: int = Field(default=0, ge=0, description="Total likes across all tweets")
+    total_engagement: int = Field(default=0, ge=0, description="Total engagement (likes+replies+retweets)")
+    avg_engagement_rate: float = Field(default=0.0, ge=0.0, description="Average engagement rate")
+
+    generated_at: datetime = Field(default_factory=datetime.now, description="When export was generated")
+
+    @property
+    def avg_views(self) -> float:
+        """Average views per tweet"""
+        if self.total_tweets == 0:
+            return 0.0
+        return self.total_views / self.total_tweets
+
+    @property
+    def avg_likes(self) -> float:
+        """Average likes per tweet"""
+        if self.total_tweets == 0:
+            return 0.0
+        return self.total_likes / self.total_tweets
+
+    def to_markdown(self) -> str:
+        """Export results as markdown report"""
+        md = f"# Tweet Export Report\n\n"
+        md += f"**Generated:** {self.generated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        md += f"## Export Parameters\n\n"
+        md += f"- **Time Range:** Last {self.hours_back} hours\n"
+        md += f"- **Sort By:** {self.sort_by}\n"
+        if self.keyword_filter:
+            md += f"- **Keyword Filter:** {self.keyword_filter}\n"
+        md += f"- **Total Tweets:** {self.total_tweets:,}\n\n"
+
+        md += f"## Summary Statistics\n\n"
+        md += f"- **Total Views:** {self.total_views:,}\n"
+        md += f"- **Total Likes:** {self.total_likes:,}\n"
+        md += f"- **Total Engagement:** {self.total_engagement:,}\n"
+        md += f"- **Avg Engagement Rate:** {self.avg_engagement_rate:.2%}\n"
+        md += f"- **Avg Views per Tweet:** {self.avg_views:,.0f}\n"
+        md += f"- **Avg Likes per Tweet:** {self.avg_likes:,.0f}\n\n"
+
+        if self.tweets:
+            md += f"## Tweets\n\n"
+            for i, tweet in enumerate(self.tweets, 1):
+                md += f"### {i}. @{tweet.author_username}\n\n"
+                md += f"**Followers:** {tweet.author_followers:,}  \n"
+                md += f"**Views:** {tweet.view_count:,} | **Likes:** {tweet.like_count:,} | **Replies:** {tweet.reply_count} | **Retweets:** {tweet.retweet_count}  \n"
+                md += f"**Engagement Rate:** {tweet.engagement_rate:.2%}  \n"
+                md += f"**Engagement Score:** {tweet.engagement_score:.2f}  \n\n"
+                md += f"> {tweet.text}\n\n"
+                md += f"[View Tweet]({tweet.url})\n\n"
+                md += "---\n\n"
+
+        return md
+
+    def __str__(self) -> str:
+        """String representation using markdown format"""
+        return self.to_markdown()
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_tweets": 20,
+                "keyword_filter": "bitcoin,btc",
+                "hours_back": 24,
+                "sort_by": "views",
+                "tweets": [],
+                "total_views": 125000,
+                "total_likes": 5500,
+                "total_engagement": 7200,
+                "avg_engagement_rate": 0.0576,
+                "generated_at": "2024-01-15T14:00:00Z"
+            }
+        }

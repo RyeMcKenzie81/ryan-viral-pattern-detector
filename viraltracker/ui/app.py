@@ -30,7 +30,7 @@ import pandas as pd
 import streamlit as st
 
 from viraltracker.agent import agent, AgentDependencies
-from viraltracker.services.models import OutlierResult, HookAnalysisResult
+from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult
 from viraltracker.core.database import get_supabase_client
 
 
@@ -38,9 +38,9 @@ from viraltracker.core.database import get_supabase_client
 # Download Format Converters
 # ============================================================================
 
-def result_to_csv(result: OutlierResult | HookAnalysisResult) -> str:
+def result_to_csv(result: OutlierResult | HookAnalysisResult | TweetExportResult) -> str:
     """
-    Convert OutlierResult or HookAnalysisResult to CSV format.
+    Convert OutlierResult, HookAnalysisResult, or TweetExportResult to CSV format.
 
     Args:
         result: The result model to convert
@@ -94,12 +94,32 @@ def result_to_csv(result: OutlierResult | HookAnalysisResult) -> str:
         df = pd.DataFrame(data)
         return df.to_csv(index=False)
 
+    elif isinstance(result, TweetExportResult):
+        # Convert exported tweets to DataFrame
+        data = []
+        for tweet in result.tweets:
+            data.append({
+                'Username': f"@{tweet.author_username}",
+                'Followers': tweet.author_followers,
+                'Views': tweet.view_count,
+                'Likes': tweet.like_count,
+                'Replies': tweet.reply_count,
+                'Retweets': tweet.retweet_count,
+                'Engagement Rate': round(tweet.engagement_rate * 100, 2),
+                'Engagement Score': round(tweet.engagement_score, 2),
+                'Created At': tweet.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'Tweet Text': tweet.text,
+                'URL': tweet.url
+            })
+        df = pd.DataFrame(data)
+        return df.to_csv(index=False)
+
     return ""
 
 
-def result_to_json(result: OutlierResult | HookAnalysisResult) -> str:
+def result_to_json(result: OutlierResult | HookAnalysisResult | TweetExportResult) -> str:
     """
-    Convert OutlierResult or HookAnalysisResult to JSON format.
+    Convert OutlierResult, HookAnalysisResult, or TweetExportResult to JSON format.
 
     Args:
         result: The result model to convert
@@ -110,7 +130,7 @@ def result_to_json(result: OutlierResult | HookAnalysisResult) -> str:
     return result.model_dump_json(indent=2)
 
 
-def render_download_buttons(result: OutlierResult | HookAnalysisResult, message_index: int):
+def render_download_buttons(result: OutlierResult | HookAnalysisResult | TweetExportResult, message_index: int):
     """
     Render download buttons for structured results.
 
@@ -123,6 +143,8 @@ def render_download_buttons(result: OutlierResult | HookAnalysisResult, message_
         prefix = f"outliers_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
     elif isinstance(result, HookAnalysisResult):
         prefix = f"hook_analysis_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
+    elif isinstance(result, TweetExportResult):
+        prefix = f"tweets_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
     else:
         return
 
@@ -447,7 +469,7 @@ def add_quick_action_message(prompt: str):
                         for part in msg.parts:
                             # ToolReturnPart has a 'content' attribute with the structured result
                             if part.__class__.__name__ == 'ToolReturnPart' and hasattr(part, 'content'):
-                                if isinstance(part.content, (OutlierResult, HookAnalysisResult)):
+                                if isinstance(part.content, (OutlierResult, HookAnalysisResult, TweetExportResult)):
                                     structured_result = part.content
                                     break
                     if structured_result:
@@ -501,7 +523,7 @@ def render_chat_interface():
             # Show download buttons if this message has structured results
             if message['role'] == 'assistant' and idx in st.session_state.structured_results:
                 result = st.session_state.structured_results[idx]
-                if isinstance(result, (OutlierResult, HookAnalysisResult)):
+                if isinstance(result, (OutlierResult, HookAnalysisResult, TweetExportResult)):
                     st.divider()
                     render_download_buttons(result, idx)
 
@@ -555,7 +577,7 @@ def render_chat_interface():
                             for part in msg.parts:
                                 # ToolReturnPart has a 'content' attribute with the structured result
                                 if part.__class__.__name__ == 'ToolReturnPart' and hasattr(part, 'content'):
-                                    if isinstance(part.content, (OutlierResult, HookAnalysisResult)):
+                                    if isinstance(part.content, (OutlierResult, HookAnalysisResult, TweetExportResult)):
                                         structured_result = part.content
                                         break
                         if structured_result:
