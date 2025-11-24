@@ -6,10 +6,13 @@ from ..dependencies import AgentDependencies
 # Import Twitter-specific tools
 from ..tools_registered import (
     search_twitter_tool,
-    scrape_twitter_user_tool,
     get_top_tweets_tool,
-    analyze_tweet_tool,
-    export_tweets_tool
+    export_tweets_tool,
+    find_comment_opportunities_tool,
+    export_comments_tool,
+    analyze_search_term_tool,
+    generate_content_tool,
+    verify_scrape_tool
 )
 
 logger = logging.getLogger(__name__)
@@ -22,25 +25,27 @@ twitter_agent = Agent(
 
 Your ONLY responsibility is Twitter/X data operations:
 - Searching and scraping tweets by keyword
-- Scraping specific user timelines
-- Querying database for top tweets
-- Analyzing individual tweets
-- Exporting tweet results to CSV/JSON/Markdown files
+- Querying database for top tweets by engagement
+- Finding comment opportunities on viral tweets
+- Analyzing search term performance
+- Generating content from viral hooks
+- Verifying scrape results
+- Exporting tweet and comment data to files
 
 **Important:**
 - When you retrieve tweets, ALWAYS save them to result_cache.last_twitter_query
 - When exporting, use the same parameters that were used in the query
 - Support multi-keyword OR logic with comma-separated keywords (e.g., "btc,bitcoin")
-- Always provide clear summaries of results
+- Always provide clear summaries of results with engagement metrics
 
 **Available Services:**
 - TwitterService: For API scraping
 - StatsService: For database queries
-- GeminiService: For AI analysis
+- GeminiService: For AI analysis and content generation
 
 **Result Format:**
 - Provide clear, structured responses with metrics
-- Show top results with engagement stats
+- Show top results with engagement stats (views, likes, retweets)
 - Include URLs for all content
 - Save files to ~/Downloads/ for exports
 """
@@ -48,9 +53,12 @@ Your ONLY responsibility is Twitter/X data operations:
 
 # Register tools
 twitter_agent.tool(search_twitter_tool)
-twitter_agent.tool(scrape_twitter_user_tool)
 twitter_agent.tool(get_top_tweets_tool)
-twitter_agent.tool(analyze_tweet_tool)
 twitter_agent.tool(export_tweets_tool)
+twitter_agent.tool(find_comment_opportunities_tool)
+twitter_agent.tool(export_comments_tool)
+twitter_agent.tool(analyze_search_term_tool)
+twitter_agent.tool(generate_content_tool)
+twitter_agent.tool(verify_scrape_tool)
 
-logger.info("Twitter Agent initialized with 5 tools")
+logger.info("Twitter Agent initialized with 8 tools")
