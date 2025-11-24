@@ -3,7 +3,9 @@ Tools Catalog - Auto-generated documentation for agent tools.
 
 This page automatically extracts all registered tools from the tool_registry
 and displays them organized by the data pipeline taxonomy:
-- Ingestion → Filtration → Discovery → Analysis → Generation → Export
+- Routing → Ingestion → Filtration → Discovery → Analysis → Generation → Export
+
+The Routing category shows orchestrator tools that route queries to specialized agents.
 
 Benefits:
 - Zero-maintenance documentation (auto-updates when tools are registered)
@@ -38,6 +40,7 @@ col1, col2 = st.columns([2, 3])
 with col1:
     st.markdown("""
     **Pipeline Taxonomy:**
+    0. **Routing** - Route queries to specialized agents
     1. **Ingestion** - Collect data from external sources
     2. **Filtration** - Remove unwanted content (spam, off-topic)
     3. **Discovery** - Find interesting patterns (outliers, trends)
@@ -51,10 +54,11 @@ with col2:
 ┌──────────────────────────────────────────────┐
 │          DATA PIPELINE FLOW                  │
 │                                              │
-│  Ingestion → Filtration → Discovery →       │
-│  Analysis → Generation → Export              │
+│  Routing → Ingestion → Filtration →         │
+│  Discovery → Analysis → Generation → Export  │
 │                                              │
 │  Examples:                                   │
+│  • Route to agent (Routing)                 │
 │  • Scrape tweets (Ingestion)                │
 │  • Filter spam/politics (Filtration)        │
 │  • Find outliers (Discovery)                │
@@ -78,8 +82,64 @@ if not all_tools:
     st.stop()
 
 # Organize tools by category
-categories = ["Ingestion", "Filtration", "Discovery", "Analysis", "Generation", "Export"]
+categories = ["Routing", "Ingestion", "Filtration", "Discovery", "Analysis", "Generation", "Export"]
 tools_by_category = {cat: [] for cat in categories}
+
+# Add routing tools manually (orchestrator tools not in registry)
+from viraltracker.agent.tool_registry import ToolMetadata
+routing_tools = [
+    ToolMetadata(
+        name="route_to_twitter_agent",
+        description="Route request to Twitter Agent for Twitter/X operations",
+        category="Routing",
+        platform="Orchestrator",
+        api_path="/agent/run",
+        rate_limit="N/A",
+        use_cases=["Twitter data operations", "Tweet scraping", "Engagement analysis"],
+        examples=["Find 100 tweets about AI", "Get top tweets from this week"]
+    ),
+    ToolMetadata(
+        name="route_to_tiktok_agent",
+        description="Route request to TikTok Agent for TikTok operations",
+        category="Routing",
+        platform="Orchestrator",
+        api_path="/agent/run",
+        rate_limit="N/A",
+        use_cases=["TikTok video discovery", "Hashtag research", "User analysis"],
+        examples=["Find trending TikToks for #fitness", "Analyze TikTok user @username"]
+    ),
+    ToolMetadata(
+        name="route_to_youtube_agent",
+        description="Route request to YouTube Agent for YouTube operations",
+        category="Routing",
+        platform="Orchestrator",
+        api_path="/agent/run",
+        rate_limit="N/A",
+        use_cases=["YouTube video search", "Shorts discovery"],
+        examples=["Search YouTube for viral cooking videos"]
+    ),
+    ToolMetadata(
+        name="route_to_facebook_agent",
+        description="Route request to Facebook Agent for Facebook Ad Library operations",
+        category="Routing",
+        platform="Orchestrator",
+        api_path="/agent/run",
+        rate_limit="N/A",
+        use_cases=["Facebook ad research", "Competitor ad analysis"],
+        examples=["Search Facebook ads for competitor X"]
+    ),
+    ToolMetadata(
+        name="route_to_analysis_agent",
+        description="Route request to Analysis Agent for statistical and AI analysis",
+        category="Routing",
+        platform="Orchestrator",
+        api_path="/agent/run",
+        rate_limit="N/A",
+        use_cases=["Outlier detection", "Hook analysis", "Cross-platform insights"],
+        examples=["Find viral outliers", "Analyze hooks from top tweets"]
+    )
+]
+tools_by_category["Routing"] = routing_tools
 
 for tool_name, tool_meta in all_tools.items():
     category = tool_meta.category
@@ -88,16 +148,20 @@ for tool_name, tool_meta in all_tools.items():
     tools_by_category[category].append(tool_meta)
 
 # Display statistics
-total_tools = len(all_tools)
+routing_tool_count = len(routing_tools)
+underlying_tool_count = len(all_tools)
+total_tools = routing_tool_count + underlying_tool_count
 categories_with_tools = len([cat for cat, tools in tools_by_category.items() if tools])
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Total Tools", total_tools)
+    st.metric("Total Tools", total_tools, help="Routing + Platform tools")
 with col2:
-    st.metric("Pipeline Stages", categories_with_tools)
+    st.metric("Routing Tools", routing_tool_count, help="Orchestrator routing tools")
 with col3:
-    st.metric("Platforms", len(set(tool.platform for tool in all_tools.values())))
+    st.metric("Platform Tools", underlying_tool_count, help="Specialized agent tools")
+with col4:
+    st.metric("Platforms", len(set(tool.platform for tool in all_tools.values())) + 1, help="Including Orchestrator")
 
 st.divider()
 
@@ -123,7 +187,9 @@ for tab, category in zip(tabs, tabs_to_create):
         # Category header
         st.markdown(f"### {category} Tools")
 
-        if category == "Ingestion":
+        if category == "Routing":
+            st.markdown("*Intelligent routing from orchestrator to specialized platform agents*")
+        elif category == "Ingestion":
             st.markdown("*Collect data from external sources (Twitter, TikTok, YouTube, etc.)*")
         elif category == "Filtration":
             st.markdown("*Remove unwanted content (spam, harmful, off-topic)*")

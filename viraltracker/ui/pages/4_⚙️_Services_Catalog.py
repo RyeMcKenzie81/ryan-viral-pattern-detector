@@ -26,29 +26,40 @@ st.set_page_config(
 )
 
 st.title("⚙️ Services Catalog")
-st.markdown("**Clean service layer architecture for viral content analysis**")
+st.markdown("**Layered architecture: Agent Layer → Service Layer**")
 
 # ============================================================================
 # Architecture Overview
 # ============================================================================
 
 st.markdown("""
-The service layer provides reusable business logic accessible from:
-- **CLI commands** - Direct command-line usage
-- **Pydantic AI agent** - Chat interface with natural language
-- **FastAPI endpoints** - Webhooks and automation
-- **Streamlit UI** - Interactive web interface
+The architecture is organized in two layers:
+
+**Agent Layer (PydanticAI):**
+- 1 Orchestrator Agent routes queries to specialized agents
+- 5 Specialized Agents (Twitter, TikTok, YouTube, Facebook, Analysis)
+- Natural language interface with Claude Sonnet 4.5
+- Intelligent routing and context management
+
+**Service Layer (Core):**
+- Reusable business logic accessible from all interfaces
+- Database operations, AI analysis, statistics, scraping
+- Called by agents, CLI, API, and UI
 """)
 
 st.divider()
 
 # Architecture diagram
-st.subheader("Architecture")
+st.subheader("Layered Architecture")
 
 col1, col2 = st.columns([2, 3])
 
 with col1:
     st.markdown("""
+    **Agent Layer (PydanticAI)**
+    - Orchestrator (routing)
+    - 5 Specialized Agents
+
     **Service Layer (Core)**
     - `TwitterService` - Database operations
     - `GeminiService` - AI analysis
@@ -58,13 +69,25 @@ with col1:
 
 with col2:
     st.code("""
-┌─────────────────────────────────────────────┐
-│           SERVICE LAYER (Core)              │
-│  - TwitterService (DB access)               │
-│  - GeminiService (AI analysis)              │
-│  - StatsService (calculations)              │
-│  - ScrapingService (Apify integration)      │
-└──────────────┬──────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│          AGENT LAYER (PydanticAI)               │
+│  ┌──────────────────────────────────────┐       │
+│  │ Orchestrator (Routing)               │       │
+│  └──────────────┬───────────────────────┘       │
+│                 │                               │
+│     ┌───────────┼───────────┬─────────┬────┐    │
+│     ▼           ▼           ▼         ▼    ▼    │
+│  Twitter    TikTok      YouTube    FB   Analysis│
+│  (8 tools)  (5 tools)   (1 tool)  (2) (3 tools) │
+└──────────────────┬──────────────────────────────┘
+                   │
+┌──────────────────┴──────────────────────────────┐
+│          SERVICE LAYER (Core)                   │
+│  - TwitterService (DB access)                   │
+│  - GeminiService (AI analysis)                  │
+│  - StatsService (calculations)                  │
+│  - ScrapingService (Apify integration)          │
+└──────────────┬──────────────────────────────────┘
                │
    ┌───────────┼───────────┬──────────────┐
    │           │           │              │
@@ -326,9 +349,19 @@ with tab4:
 
 st.markdown("---")
 st.caption("""
-**Service Layer Benefits:**
+**Layered Architecture Benefits:**
+
+**Agent Layer:**
+- Natural language interface with intelligent routing
+- Specialized agents for each platform (Twitter, TikTok, YouTube, Facebook)
+- Cross-platform analysis agent
+- All powered by Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
+
+**Service Layer:**
 - Reusable across all interfaces (CLI, Agent, API, UI)
 - Type-safe with Pydantic models
 - Clean separation of concerns
 - Easy to test and maintain
+
+**Total Stack:** 6 agents → 4 services → 4 interfaces (CLI, Agent, API, UI)
 """)
