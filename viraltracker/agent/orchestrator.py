@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Create orchestrator agent
 orchestrator = Agent(
-    model="claude-sonnet-4",
+    model="claude-sonnet-4-5-20250929",
     deps_type=AgentDependencies,
     system_prompt="""You are the Orchestrator Agent for the ViralTracker system.
 
@@ -82,7 +82,7 @@ async def route_to_twitter_agent(
     """Route request to Twitter Agent for Twitter/X operations."""
     logger.info(f"Routing to Twitter Agent: {query}")
     result = await twitter_agent.run(query, deps=ctx.deps)
-    return result.data
+    return result.output
 
 @orchestrator.tool
 async def route_to_tiktok_agent(
@@ -92,7 +92,7 @@ async def route_to_tiktok_agent(
     """Route request to TikTok Agent for TikTok operations."""
     logger.info(f"Routing to TikTok Agent: {query}")
     result = await tiktok_agent.run(query, deps=ctx.deps)
-    return result.data
+    return result.output
 
 @orchestrator.tool
 async def route_to_youtube_agent(
@@ -102,7 +102,7 @@ async def route_to_youtube_agent(
     """Route request to YouTube Agent for YouTube operations."""
     logger.info(f"Routing to YouTube Agent: {query}")
     result = await youtube_agent.run(query, deps=ctx.deps)
-    return result.data
+    return result.output
 
 @orchestrator.tool
 async def route_to_facebook_agent(
@@ -112,7 +112,7 @@ async def route_to_facebook_agent(
     """Route request to Facebook Agent for Facebook Ad Library operations."""
     logger.info(f"Routing to Facebook Agent: {query}")
     result = await facebook_agent.run(query, deps=ctx.deps)
-    return result.data
+    return result.output
 
 @orchestrator.tool
 async def route_to_analysis_agent(
@@ -122,6 +122,6 @@ async def route_to_analysis_agent(
     """Route request to Analysis Agent for statistical and AI analysis."""
     logger.info(f"Routing to Analysis Agent: {query}")
     result = await analysis_agent.run(query, deps=ctx.deps)
-    return result.data
+    return result.output
 
 logger.info("Orchestrator Agent initialized with 5 routing tools")

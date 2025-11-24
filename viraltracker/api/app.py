@@ -12,6 +12,10 @@ Features:
 - Automatic OpenAPI documentation
 """
 
+# Load environment variables FIRST before any other imports
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 import os
 import time
@@ -25,6 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+
+from pydantic_ai.result import FinalResult
 
 from .models import (
     AgentRequest,
@@ -232,8 +238,8 @@ async def run_agent(
             project_name=agent_request.project_name
         )
 
-        # Run agent with prompt
-        result = await agent.run(
+        # Run agent with prompt - PydanticAI returns FinalResult with .output attribute
+        result: FinalResult = await agent.run(
             agent_request.prompt,
             deps=deps,
             model=agent_request.model
@@ -243,16 +249,19 @@ async def run_agent(
 
         logger.info(f"Agent execution completed in {execution_time:.2f}s")
 
+        # Extract result data - PydanticAI FinalResult has .output attribute
+        result_data = str(result.output)
+
         # Return response
         return AgentResponse(
             success=True,
-            result=result.data,
+            result=result_data,
             metadata={
                 "model": agent_request.model,
                 "project_name": agent_request.project_name,
                 "execution_time_seconds": round(execution_time, 2),
                 "prompt_length": len(agent_request.prompt),
-                "response_length": len(result.data)
+                "response_length": len(result_data)
             },
             error=None,
             timestamp=datetime.now()

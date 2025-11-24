@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Create Analysis specialist agent
 analysis_agent = Agent(
-    model="claude-sonnet-4",
+    model="claude-sonnet-4-5-20250929",
     deps_type=AgentDependencies,
     system_prompt="""You are the Analysis specialist agent.
 

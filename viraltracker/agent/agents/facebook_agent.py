@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Create Facebook specialist agent
 facebook_agent = Agent(
-    model="claude-sonnet-4",
+    model="claude-sonnet-4-5-20250929",
     deps_type=AgentDependencies,
     system_prompt="""You are the Facebook platform specialist agent.
 

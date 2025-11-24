@@ -749,13 +749,12 @@ async def export_tweets_tool(
     sort_by: str = "views",
     limit: int = 100,
     min_views: int = 0
-) -> str:
+):
     """
-    Export filtered tweet lists to ALL 3 formats (CSV, JSON, Markdown).
+    Export filtered tweet lists with download buttons for CSV, JSON, and Markdown.
 
-    Saves 3 files to ~/Downloads/ directory and returns paths for all formats.
-    Use this when users want to download or export tweet results,
-    especially after showing them a list of tweets.
+    Use this when users want to download or export tweet results.
+    Returns a structured result that Streamlit UI will render with 3 download buttons.
 
     Args:
         ctx: Pydantic AI run context with AgentDependencies
@@ -767,15 +766,12 @@ async def export_tweets_tool(
         min_views: Minimum view count filter (default: 0)
 
     Returns:
-        String with export summary and file paths for CSV, JSON, and Markdown
+        TweetExportResult with tweets and download capabilities
     """
     try:
-        from datetime import datetime
-        from pathlib import Path
-        import csv
-        import json
+        from viraltracker.services.models import TweetExportResult
 
-        logger.info(f"Exporting tweets to ALL formats: keyword={keyword}, sort_by={sort_by}")
+        logger.info(f"Exporting tweets: keyword={keyword}, sort_by={sort_by}")
 
         # Fetch tweets from database
         tweets = await ctx.deps.twitter.get_tweets(
@@ -786,7 +782,18 @@ async def export_tweets_tool(
         )
 
         if not tweets:
-            return f"No tweets found in the last {hours_back} hours."
+            # Return empty result
+            return TweetExportResult(
+                total_tweets=0,
+                keyword_filter=keyword,
+                hours_back=hours_back,
+                sort_by=sort_by,
+                tweets=[],
+                total_views=0,
+                total_likes=0,
+                total_engagement=0,
+                avg_engagement_rate=0.0
+            )
 
         # Filter by keyword(s) if provided - supports multiple keywords with OR logic
         if keyword:
@@ -797,8 +804,18 @@ async def export_tweets_tool(
             tweets = [t for t in tweets if any(kw in t.text.lower() for kw in keywords)]
 
             if not tweets:
-                keyword_display = "' OR '".join(keywords)
-                return f"No tweets found containing '{keyword_display}' in the last {hours_back} hours."
+                # Return empty result
+                return TweetExportResult(
+                    total_tweets=0,
+                    keyword_filter=keyword,
+                    hours_back=hours_back,
+                    sort_by=sort_by,
+                    tweets=[],
+                    total_views=0,
+                    total_likes=0,
+                    total_engagement=0,
+                    avg_engagement_rate=0.0
+                )
 
         # Sort by chosen metric
         if sort_by == "views":
@@ -808,126 +825,42 @@ async def export_tweets_tool(
         elif sort_by == "engagement":
             sorted_tweets = sorted(tweets, key=lambda t: t.engagement_score, reverse=True)
         else:
-            return f"Invalid sort_by parameter: {sort_by}. Use 'views', 'likes', or 'engagement'."
+            raise ValueError(f"Invalid sort_by parameter: {sort_by}. Use 'views', 'likes', or 'engagement'.")
 
         # Limit results
         export_tweets = sorted_tweets[:limit]
 
-        # Generate base filename
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        keyword_slug = f"_{keyword.replace(' ', '_')}" if keyword else ""
-        downloads_dir = Path.home() / "Downloads"
-        base_filename = f"tweets_export{keyword_slug}_{timestamp}"
+        # Calculate summary statistics
+        total_views = sum(t.view_count for t in export_tweets)
+        total_likes = sum(t.like_count for t in export_tweets)
+        total_engagement = sum(
+            t.like_count + t.reply_count + t.retweet_count
+            for t in export_tweets
+        )
+        avg_engagement_rate = (
+            sum(t.engagement_rate for t in export_tweets) / len(export_tweets)
+            if export_tweets else 0.0
+        )
 
-        # ==================================================================
-        # GENERATE ALL 3 FORMATS
-        # ==================================================================
+        # Create result object
+        result = TweetExportResult(
+            total_tweets=len(export_tweets),
+            keyword_filter=keyword,
+            hours_back=hours_back,
+            sort_by=sort_by,
+            tweets=export_tweets,
+            total_views=total_views,
+            total_likes=total_likes,
+            total_engagement=total_engagement,
+            avg_engagement_rate=avg_engagement_rate
+        )
 
-        # ==================================================================
-        # 1. CSV Export
-        # ==================================================================
-        csv_path = downloads_dir / f"{base_filename}.csv"
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'username', 'followers', 'views', 'likes', 'replies', 'retweets',
-                'engagement_rate', 'engagement_score', 'text', 'url', 'created_at'
-            ])
-            for tweet in export_tweets:
-                writer.writerow([
-                    tweet.author_username,
-                    tweet.author_followers,
-                    tweet.view_count,
-                    tweet.like_count,
-                    tweet.reply_count,
-                    tweet.retweet_count,
-                    f"{tweet.engagement_rate:.4f}",
-                    f"{tweet.engagement_score:.2f}",
-                    tweet.text.replace('\n', ' ').replace('\r', ' '),
-                    tweet.url,
-                    tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else ''
-                ])
-
-        # ==================================================================
-        # 2. JSON Export
-        # ==================================================================
-        json_path = downloads_dir / f"{base_filename}.json"
-        tweet_dicts = []
-        for tweet in export_tweets:
-            tweet_dicts.append({
-                'username': tweet.author_username,
-                'followers': tweet.author_followers,
-                'views': tweet.view_count,
-                'likes': tweet.like_count,
-                'replies': tweet.reply_count,
-                'retweets': tweet.retweet_count,
-                'engagement_rate': tweet.engagement_rate,
-                'engagement_score': tweet.engagement_score,
-                'text': tweet.text,
-                'url': tweet.url,
-                'created_at': tweet.created_at.isoformat() if hasattr(tweet, 'created_at') else None
-            })
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(tweet_dicts, f, indent=2)
-
-        # ==================================================================
-        # 3. Markdown Export
-        # ==================================================================
-        md_path = downloads_dir / f"{base_filename}.md"
-        md = f"# Tweet Export Report\n\n"
-        md += f"**Project:** {ctx.deps.project_name}\n"
-        md += f"**Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        md += f"**Period:** Last {hours_back} hours\n"
-        md += f"**Sort by:** {sort_by}\n"
-        if keyword:
-            md += f"**Keyword filter:** {keyword}\n"
-        md += f"**Total tweets:** {len(export_tweets)}\n\n"
-        md += "---\n\n"
-
-        for i, tweet in enumerate(export_tweets, 1):
-            md += f"## {i}. @{tweet.author_username}\n\n"
-            md += f"**Followers:** {tweet.author_followers:,}  \n"
-            md += f"**Views:** {tweet.view_count:,}  \n"
-            md += f"**Likes:** {tweet.like_count:,}  \n"
-            md += f"**Replies:** {tweet.reply_count}  \n"
-            md += f"**Retweets:** {tweet.retweet_count}  \n"
-            md += f"**Engagement Rate:** {tweet.engagement_rate:.2%}  \n"
-            md += f"**Engagement Score:** {tweet.engagement_score:.2f}  \n\n"
-            md += f"**Tweet:**\n> {tweet.text}\n\n"
-            md += f"**URL:** {tweet.url}\n\n"
-            md += "---\n\n"
-
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(md)
-
-        # ==================================================================
-        # Build Response with All 3 File Paths
-        # ==================================================================
-        filter_text = f" (filtered by '{keyword}')" if keyword else ""
-
-        response = f"**✅ Export Complete - All 3 Formats Generated!**\n\n"
-        response += f"Exported {len(export_tweets)} tweets{filter_text}\n\n"
-
-        response += f"**📁 Files saved to ~/Downloads/:**\n\n"
-        response += f"1. **CSV** (Excel/Sheets): `{csv_path.name}`\n"
-        response += f"2. **JSON** (API/Data): `{json_path.name}`\n"
-        response += f"3. **Markdown** (Reports): `{md_path.name}`\n\n"
-
-        # Show CSV preview
-        response += f"**📊 CSV Preview (first 3 rows):**\n```\n"
-        response += "username,followers,views,likes,...\n"
-        for i, tweet in enumerate(export_tweets[:3], 1):
-            response += f"{tweet.author_username},{tweet.author_followers},{tweet.view_count},{tweet.like_count},...\n"
-        response += "```\n\n"
-
-        response += f"All files are ready in your Downloads folder!"
-
-        logger.info(f"Successfully exported {len(export_tweets)} tweets to 3 formats: {base_filename}.*")
-        return response
+        logger.info(f"Successfully created export result with {len(export_tweets)} tweets")
+        return result
 
     except Exception as e:
         logger.error(f"Error in export_tweets_tool: {e}", exc_info=True)
-        return f"Error exporting tweets: {str(e)}"
+        raise
 
 
 # ============================================================================
@@ -957,7 +890,7 @@ async def search_twitter_tool(
     ctx: RunContext[AgentDependencies],
     keyword: str,
     hours_back: int = 24,
-    max_results: int = 5000
+    max_results: int = 50
 ) -> str:
     """
     Search/scrape Twitter by keyword and save results to database.
@@ -971,7 +904,14 @@ async def search_twitter_tool(
         ctx: Pydantic AI run context with AgentDependencies
         keyword: Search keyword or hashtag (e.g., "parenting tips", "#productivity")
         hours_back: Hours of historical data to search (default: 24)
-        max_results: Maximum tweets to scrape (default: 5000, supports up to 10000)
+        max_results: Maximum tweets to scrape (default: 50, min: 50, max: 10000)
+                    CRITICAL: Always extract numeric limits from user prompts:
+                    - "100 tweets" → max_results=100
+                    - "500 tweets" → max_results=500
+                    - "limit to 200" → max_results=200
+                    - "find 1000 tweets" → max_results=1000
+                    Note: Apify minimum is 50 tweets
+                    If no limit specified, use default (50)
 
     Returns:
         Formatted string summary of scraping results

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Create YouTube specialist agent
 youtube_agent = Agent(
-    model="claude-sonnet-4",
+    model="claude-sonnet-4-5-20250929",
     deps_type=AgentDependencies,
     system_prompt="""You are the YouTube platform specialist agent.
 
