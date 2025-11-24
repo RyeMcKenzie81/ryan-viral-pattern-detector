@@ -11,6 +11,27 @@ Scrape, process, and analyze short-form video content and tweets to identify vir
 
 ## Quick Start
 
+### Natural Language Agent Interface (NEW!)
+
+The easiest way to use ViralTracker is through the intelligent agent interface:
+
+```bash
+# Start the agent chat interface
+python -m viraltracker.agent.chat
+
+# Or use the API endpoint
+curl -X POST http://localhost:8000/agent/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Find 100 tweets about AI", "project_name": "my-project"}'
+
+# Or explore the Streamlit UI with interactive catalogs
+streamlit run viraltracker/ui/app.py
+```
+
+The agent automatically routes your request to the right platform specialist (Twitter, TikTok, YouTube, Facebook, or Analysis).
+
+### Traditional CLI Workflows
+
 ```bash
 # 1. Scrape videos (multiple platforms supported)
 # TikTok
@@ -39,6 +60,57 @@ cat results/playbook.md
 ---
 
 ## Features
+
+### 🤖 Intelligent Agent Architecture (NEW!)
+
+**Orchestrator Pattern with PydanticAI:**
+- **1 Orchestrator Agent** analyzes your natural language queries and routes them to specialized platform agents
+- **5 Specialized Agents** with deep platform expertise:
+  - **Twitter Agent** (8 tools) - Search, scraping, outlier detection, comment generation
+  - **TikTok Agent** (5 tools) - Video discovery, user analysis, batch processing
+  - **YouTube Agent** (1 tool) - Shorts and video search
+  - **Facebook Agent** (2 tools) - Ad Library research
+  - **Analysis Agent** (3 tools) - Cross-platform outlier detection and AI-powered insights
+- **24 Total Tools** organized by data pipeline stages (Routing → Ingestion → Filtration → Discovery → Analysis → Generation → Export)
+- **Powered by Claude Sonnet 4.5** (claude-sonnet-4-5-20250929) for all agents
+
+**Agent Architecture:**
+```
+                    USER QUERY
+                        │
+                        ▼
+            ┌───────────────────────┐
+            │  ORCHESTRATOR AGENT   │
+            │  - Analyzes intent    │
+            │  - Routes to agent    │
+            └───────────┬───────────┘
+                        │
+        ┌───────────────┼────────────────┐
+        │               │                │
+        ▼               ▼                ▼
+    Twitter         TikTok          YouTube
+    (8 tools)      (5 tools)       (1 tool)
+        │               │                │
+        └───────────────┼────────────────┘
+                        │
+                        ▼
+                  Analysis Agent
+                   (3 tools)
+```
+
+**Interactive Interfaces:**
+- **Chat Interface:** `python -m viraltracker.agent.chat` - Natural language conversation
+- **FastAPI Endpoint:** `POST /agent/run` - Programmatic access with JSON
+- **Streamlit UI:** `streamlit run viraltracker/ui/app.py` - Web interface with catalog pages
+  - 🤖 Agent Catalog - Explore architecture and workflows
+  - 📚 Tools Catalog - Browse all 24 tools by pipeline stage
+  - ⚙️ Services Catalog - Understand the layered architecture
+
+**Example Queries:**
+- "Find 100 viral tweets about AI from the last week"
+- "Search TikTok for trending fitness content"
+- "Analyze hooks from top-performing tweets"
+- "Find outliers in my Twitter data using z-score"
 
 ### 🎬 Multi-Platform Scraping
 - **TikTok** - Search by keywords, hashtags, trending (Clockworks API)
@@ -962,8 +1034,48 @@ CLOCKWORKS_API_KEY=your-clockworks-key
 
 ## Architecture
 
+### Layered Architecture
+
+ViralTracker uses a **three-layer architecture** for maximum flexibility and reusability:
+
+```
+┌─────────────────────────────────────────────┐
+│          AGENT LAYER (PydanticAI)           │
+│  ┌──────────────────────────────────┐       │
+│  │ Orchestrator (Routing)           │       │
+│  └──────────────┬───────────────────┘       │
+│                 │                           │
+│     ┌───────────┼───────────┬─────────┬──┐  │
+│     ▼           ▼           ▼         ▼  ▼  │
+│  Twitter    TikTok      YouTube    FB  Anal │
+│  (8 tools)  (5 tools)   (1 tool) (2) (3)   │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────┴──────────────────────────┐
+│          SERVICE LAYER (Core)               │
+│  - TwitterService (DB access)               │
+│  - GeminiService (AI analysis)              │
+│  - StatsService (calculations)              │
+│  - ScrapingService (Apify integration)      │
+└──────────────┬──────────────────────────────┘
+               │
+   ┌───────────┼───────────┬──────────────┐
+   │           │           │              │
+   ▼           ▼           ▼              ▼
+┌──────┐  ┌───────┐  ┌─────────┐  ┌────────────┐
+│ CLI  │  │ Agent │  │Streamlit│  │ FastAPI    │
+│      │  │(Chat) │  │  (UI)   │  │ (Webhooks) │
+└──────┘  └───────┘  └─────────┘  └────────────┘
+```
+
+**Layer Benefits:**
+- **Agent Layer** - Natural language interface with intelligent routing
+- **Service Layer** - Reusable business logic across all interfaces
+- **Interface Layer** - Multiple ways to access the same functionality
+
 ### Data Flow
 
+**Traditional Workflow:**
 ```
 1. Scraping → posts table (metadata)
 2. Processing → video_processing table + Supabase Storage
@@ -972,12 +1084,24 @@ CLOCKWORKS_API_KEY=your-clockworks-key
 5. Advanced Analysis → Playbook generation
 ```
 
+**Agent Workflow:**
+```
+1. User Query → Orchestrator Agent
+2. Orchestrator → Routes to Specialized Agent
+3. Specialized Agent → Calls Service Layer
+4. Service Layer → Database/API/AI
+5. Results → Back through agent to user
+```
+
 ### Core Tables
 
 - **brands, products, projects** - Multi-tenant organization
 - **platforms, accounts, posts** - Social media data
 - **video_processing** - Processing status and metrics
 - **video_analysis** - AI analysis results (Hook Intelligence)
+- **generated_comments** - AI-generated comment suggestions
+- **tweet_snapshot** - Historical engagement metrics
+- **acceptance_log** - Duplicate prevention and semantic dedup
 
 ---
 
@@ -1045,6 +1169,30 @@ CLOCKWORKS_API_KEY=your-clockworks-key
 ```
 viraltracker/
 ├── viraltracker/              # Core Python package
+│   ├── agent/                 # Agent layer (NEW!)
+│   │   ├── orchestrator.py    # Main orchestrator agent
+│   │   ├── agents/            # Specialized agents
+│   │   │   ├── twitter_agent.py    # Twitter specialist (8 tools)
+│   │   │   ├── tiktok_agent.py     # TikTok specialist (5 tools)
+│   │   │   ├── youtube_agent.py    # YouTube specialist (1 tool)
+│   │   │   ├── facebook_agent.py   # Facebook specialist (2 tools)
+│   │   │   └── analysis_agent.py   # Analysis specialist (3 tools)
+│   │   ├── tool_registry.py   # Central tool registry
+│   │   ├── dependencies.py    # Agent dependencies
+│   │   └── chat.py            # Interactive chat interface
+│   ├── services/              # Service layer
+│   │   ├── twitter_service.py # Twitter DB operations
+│   │   ├── gemini_service.py  # AI analysis
+│   │   ├── stats_service.py   # Statistical calculations
+│   │   └── scraping_service.py # Apify integration
+│   ├── ui/                    # Streamlit UI
+│   │   ├── app.py             # Main Streamlit app
+│   │   └── pages/             # Catalog pages
+│   │       ├── 0_🤖_Agent_Catalog.py   # Agent architecture docs
+│   │       ├── 1_📚_Tools_Catalog.py   # Tools documentation
+│   │       └── 4_⚙️_Services_Catalog.py # Services documentation
+│   ├── api/                   # FastAPI endpoints
+│   │   └── app.py             # API server with /agent/run
 │   ├── scrapers/              # Platform scrapers
 │   │   ├── tiktok.py          # TikTok (Clockworks API)
 │   │   ├── instagram.py       # Instagram Reels (Apify)
@@ -1058,6 +1206,10 @@ viraltracker/
 │   │   ├── twitter.py         # Twitter CLI commands
 │   │   ├── project.py         # Project management
 │   │   └── scrape.py          # Cross-platform scraping
+│   ├── generation/            # AI generation
+│   │   ├── comment_generator.py      # Comment suggestions
+│   │   ├── async_comment_generator.py # Async batch generation
+│   │   └── cost_tracking.py          # API cost tracking
 │   ├── processing/            # Video processing
 │   ├── analysis/              # AI analysis (Gemini)
 │   └── core/                  # Database, config
@@ -1069,7 +1221,13 @@ viraltracker/
 │
 ├── docs/                      # Documentation
 │   ├── CLI_GUIDE.md           # Command-line reference
-│   └── HOOK_ANALYSIS_GUIDE.md # Analysis methods
+│   ├── HOOK_ANALYSIS_GUIDE.md # Analysis methods
+│   ├── PHASE_6_CHECKPOINT.md  # Orchestrator phase docs
+│   ├── PHASE_7_CHECKPOINT.md  # Agent refinements
+│   ├── PHASE_9_CHECKPOINT.md  # Streamlit deployment
+│   ├── PHASE_9.5_CHECKPOINT.md # Sidebar catalogs
+│   ├── PHASE_10_CHECKPOINT.md # Final UI catalogs
+│   └── PYDANTIC_AI_ARCHITECTURE_COMPARISON.md
 │
 ├── migrations/                # Database migrations
 │   └── 2025-10-16_add_twitter_platform.sql
@@ -1101,6 +1259,44 @@ Historical documentation is available in `docs/archive/`.
 ---
 
 ## Changelog
+
+### 2025-11-24 - Orchestrator Pattern Architecture SHIPPED! 🚀
+- ✅ **Added:** Intelligent Agent Architecture with PydanticAI
+  - 1 Orchestrator Agent with intelligent query routing
+  - 5 Specialized Agents (Twitter, TikTok, YouTube, Facebook, Analysis)
+  - 24 Total Tools (5 routing + 19 platform tools)
+  - Powered by Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
+- ✅ **Added:** Three Interactive Interfaces
+  - Chat interface: `python -m viraltracker.agent.chat`
+  - FastAPI endpoint: `POST /agent/run`
+  - Streamlit UI: `streamlit run viraltracker/ui/app.py`
+- ✅ **Added:** Comprehensive UI Catalog Pages
+  - 🤖 Agent Catalog - Architecture diagrams and workflows
+  - 📚 Tools Catalog - All 24 tools by pipeline stage
+  - ⚙️ Services Catalog - Layered architecture documentation
+- ✅ **Added:** Three-Layer Architecture
+  - Agent Layer (PydanticAI) - Natural language interface
+  - Service Layer (Core) - Reusable business logic
+  - Interface Layer - CLI, Agent, API, UI
+- ✅ **Added:** Tool Registry System
+  - Centralized tool registration with decorators
+  - Automatic API endpoint generation
+  - Auto-generated Pydantic models
+  - Tool metadata with use cases and examples
+- ✅ **Files Added:**
+  - `viraltracker/agent/orchestrator.py` (orchestrator agent)
+  - `viraltracker/agent/agents/*.py` (5 specialized agents)
+  - `viraltracker/agent/tool_registry.py` (central registry)
+  - `viraltracker/ui/pages/0_🤖_Agent_Catalog.py` (agent docs)
+  - `viraltracker/ui/pages/1_📚_Tools_Catalog.py` (updated with routing)
+  - `viraltracker/ui/pages/4_⚙️_Services_Catalog.py` (updated with agent layer)
+  - `docs/PHASE_6_CHECKPOINT.md` through `docs/PHASE_10_CHECKPOINT.md`
+  - `docs/PYDANTIC_AI_ARCHITECTURE_COMPARISON.md`
+- ✅ **Documentation:**
+  - Updated README with orchestrator pattern architecture
+  - Added agent workflow examples
+  - Documented layered architecture benefits
+  - Updated project structure with agent layer
 
 ### 2025-10-30 - Comment Finder V1.7 SHIPPED! 🚀
 - ✅ **Added:** Two-Pass Workflow - Separate scoring from comment generation
@@ -1278,4 +1474,4 @@ For questions or issues, please open a GitHub issue or refer to:
 
 ---
 
-**Last updated:** 2025-11-19 - Railway deployment fix
+**Last updated:** 2025-11-24 - Orchestrator pattern architecture with PydanticAI
