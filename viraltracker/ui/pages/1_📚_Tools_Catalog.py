@@ -86,9 +86,24 @@ categories = ["Routing", "Ingestion", "Filtration", "Discovery", "Analysis", "Ge
 tools_by_category = {cat: [] for cat in categories}
 
 # Add routing tools manually (orchestrator tools not in registry)
-from viraltracker.agent.tool_registry import ToolMetadata
+# Using a simple dict structure instead of ToolMetadata since these are for display only
+from dataclasses import dataclass
+from typing import List
+
+@dataclass
+class RoutingToolDisplay:
+    """Simple data class for displaying routing tools (no callable function needed)"""
+    name: str
+    description: str
+    category: str
+    platform: str
+    api_path: str
+    rate_limit: str
+    use_cases: List[str]
+    examples: List[str]
+
 routing_tools = [
-    ToolMetadata(
+    RoutingToolDisplay(
         name="route_to_twitter_agent",
         description="Route request to Twitter Agent for Twitter/X operations",
         category="Routing",
@@ -98,7 +113,7 @@ routing_tools = [
         use_cases=["Twitter data operations", "Tweet scraping", "Engagement analysis"],
         examples=["Find 100 tweets about AI", "Get top tweets from this week"]
     ),
-    ToolMetadata(
+    RoutingToolDisplay(
         name="route_to_tiktok_agent",
         description="Route request to TikTok Agent for TikTok operations",
         category="Routing",
@@ -108,7 +123,7 @@ routing_tools = [
         use_cases=["TikTok video discovery", "Hashtag research", "User analysis"],
         examples=["Find trending TikToks for #fitness", "Analyze TikTok user @username"]
     ),
-    ToolMetadata(
+    RoutingToolDisplay(
         name="route_to_youtube_agent",
         description="Route request to YouTube Agent for YouTube operations",
         category="Routing",
@@ -118,7 +133,7 @@ routing_tools = [
         use_cases=["YouTube video search", "Shorts discovery"],
         examples=["Search YouTube for viral cooking videos"]
     ),
-    ToolMetadata(
+    RoutingToolDisplay(
         name="route_to_facebook_agent",
         description="Route request to Facebook Agent for Facebook Ad Library operations",
         category="Routing",
@@ -128,7 +143,7 @@ routing_tools = [
         use_cases=["Facebook ad research", "Competitor ad analysis"],
         examples=["Search Facebook ads for competitor X"]
     ),
-    ToolMetadata(
+    RoutingToolDisplay(
         name="route_to_analysis_agent",
         description="Route request to Analysis Agent for statistical and AI analysis",
         category="Routing",
