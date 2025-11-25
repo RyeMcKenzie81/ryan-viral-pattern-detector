@@ -1,21 +1,20 @@
 """
 Tools Catalog - Auto-generated documentation for agent tools.
 
-This page automatically extracts all registered tools from the tool_registry
-and displays them organized by the data pipeline taxonomy:
+This page automatically extracts all tools from agents and displays them
+organized by the data pipeline taxonomy:
 - Routing → Ingestion → Filtration → Discovery → Analysis → Generation → Export
 
 The Routing category shows orchestrator tools that route queries to specialized agents.
 
 Benefits:
-- Zero-maintenance documentation (auto-updates when tools are registered)
-- Single source of truth (tool_registry)
-- No hardcoded data - everything extracted from registry
+- Zero-maintenance documentation (auto-updates when tools are added to agents)
+- Single source of truth (agent tool definitions)
+- No hardcoded data - everything extracted from agents
 """
 
 import streamlit as st
-from viraltracker.agent.tool_registry import tool_registry
-from viraltracker.agent import tools_registered  # Import to trigger tool registration
+from viraltracker.agent.tool_collector import get_all_tools
 
 # Page config
 st.set_page_config(
@@ -71,14 +70,14 @@ with col2:
 st.divider()
 
 # ============================================================================
-# Get Tools from Registry
+# Get Tools from Agents
 # ============================================================================
 
-# Fetch all registered tools
-all_tools = tool_registry.get_all_tools()
+# Fetch all tools from agents
+all_tools = get_all_tools()
 
 if not all_tools:
-    st.warning("No tools registered yet. Register tools using @tool_registry.register() decorator.")
+    st.warning("No tools found. Tools should be defined in agent files using @agent.tool() decorator.")
     st.stop()
 
 # Organize tools by category
@@ -264,8 +263,8 @@ for tab, category in zip(tabs, tabs_to_create):
 st.markdown("---")
 st.caption(f"""
 **Auto-Generated Catalog**
-This page automatically extracts tool information from the `tool_registry`.
-When new tools are registered with `@tool_registry.register()`, they appear here automatically.
+This page automatically extracts tool information from agent definitions.
+When new tools are added to agents with `@agent.tool()`, they appear here automatically.
 
 **Total Tools:** {total_tools} | **Last Updated:** On page load
 """)
