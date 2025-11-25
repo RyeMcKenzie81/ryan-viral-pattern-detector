@@ -17,6 +17,7 @@ from .twitter import twitter_group
 from .facebook import facebook
 from .score import score_group
 from .chat import chat
+from .ad_creation import ad_creation_group
 
 
 @click.group()
@@ -46,6 +47,7 @@ cli.add_command(twitter_group)
 cli.add_command(facebook)
 cli.add_command(score_group)
 cli.add_command(chat)
+cli.add_command(ad_creation_group)
 
 
 if __name__ == '__main__':
