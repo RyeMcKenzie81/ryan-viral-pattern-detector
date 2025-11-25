@@ -5,24 +5,7 @@
 -- ============================================
 
 -- ============================================
--- BRANDS & PRODUCTS (extend existing tables)
--- ============================================
-
--- Add ad-specific columns to brands
-ALTER TABLE brands
-ADD COLUMN IF NOT EXISTS default_ad_brief_id UUID REFERENCES ad_brief_templates(id);
-
--- Add ad-specific columns to products
-ALTER TABLE products
-ADD COLUMN IF NOT EXISTS benefits TEXT[],
-ADD COLUMN IF NOT EXISTS key_ingredients TEXT[],
-ADD COLUMN IF NOT EXISTS target_audience TEXT,
-ADD COLUMN IF NOT EXISTS product_url TEXT,
-ADD COLUMN IF NOT EXISTS main_image_storage_path TEXT,
-ADD COLUMN IF NOT EXISTS reference_image_storage_paths TEXT[];
-
--- ============================================
--- AD BRIEF TEMPLATES
+-- AD BRIEF TEMPLATES (create first - referenced by brands)
 -- ============================================
 
 CREATE TABLE IF NOT EXISTS ad_brief_templates (
@@ -35,8 +18,28 @@ CREATE TABLE IF NOT EXISTS ad_brief_templates (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_ad_brief_brand ON ad_brief_templates(brand_id);
-CREATE INDEX idx_ad_brief_active ON ad_brief_templates(active);
+CREATE INDEX IF NOT EXISTS idx_ad_brief_brand ON ad_brief_templates(brand_id);
+CREATE INDEX IF NOT EXISTS idx_ad_brief_active ON ad_brief_templates(active);
+
+COMMENT ON TABLE ad_brief_templates IS 'Templates for ad creation instructions (brand-specific or global)';
+COMMENT ON COLUMN ad_brief_templates.brand_id IS 'NULL = global template';
+
+-- ============================================
+-- BRANDS & PRODUCTS (extend existing tables)
+-- ============================================
+
+-- Add ad-specific columns to brands (now that ad_brief_templates exists)
+ALTER TABLE brands
+ADD COLUMN IF NOT EXISTS default_ad_brief_id UUID REFERENCES ad_brief_templates(id);
+
+-- Add ad-specific columns to products
+ALTER TABLE products
+ADD COLUMN IF NOT EXISTS benefits TEXT[],
+ADD COLUMN IF NOT EXISTS key_ingredients TEXT[],
+ADD COLUMN IF NOT EXISTS target_audience TEXT,
+ADD COLUMN IF NOT EXISTS product_url TEXT,
+ADD COLUMN IF NOT EXISTS main_image_storage_path TEXT,
+ADD COLUMN IF NOT EXISTS reference_image_storage_paths TEXT[];
 
 COMMENT ON TABLE ad_brief_templates IS 'Templates for ad creation instructions (brand-specific or global)';
 COMMENT ON COLUMN ad_brief_templates.brand_id IS 'NULL = global template';
