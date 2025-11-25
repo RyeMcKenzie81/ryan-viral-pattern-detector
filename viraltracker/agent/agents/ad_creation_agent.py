@@ -476,8 +476,18 @@ async def analyze_reference_ad(
             prompt=analysis_prompt
         )
 
+        # Strip markdown code fences if present (Gemini often wraps JSON in ```json...```)
+        analysis_result_clean = analysis_result.strip()
+        if analysis_result_clean.startswith('```'):
+            # Find the first newline after the opening fence
+            first_newline = analysis_result_clean.find('\n')
+            # Find the closing fence
+            last_fence = analysis_result_clean.rfind('```')
+            if first_newline != -1 and last_fence > first_newline:
+                analysis_result_clean = analysis_result_clean[first_newline + 1:last_fence].strip()
+
         # Parse JSON response
-        analysis_dict = json.loads(analysis_result)
+        analysis_dict = json.loads(analysis_result_clean)
 
         logger.info(f"Reference ad analyzed: format={analysis_dict.get('format_type')}, "
                    f"layout={analysis_dict.get('layout_structure')}")
