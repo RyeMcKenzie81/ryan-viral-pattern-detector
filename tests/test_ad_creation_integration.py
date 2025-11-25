@@ -326,7 +326,7 @@ class TestAdCreationCLI:
         result = runner.invoke(main_cli, ['ad-creation', 'show-run', '--help'])
 
         assert result.exit_code == 0
-        assert '--run-id' in result.output
+        assert 'RUN_ID' in result.output
 
     @pytest.mark.slow
     @pytest.mark.skipif(
