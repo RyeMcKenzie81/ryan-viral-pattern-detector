@@ -25,6 +25,7 @@ Environment variables required:
 """
 
 import asyncio
+import base64
 import json
 import os
 import traceback
@@ -35,7 +36,7 @@ import pandas as pd
 import streamlit as st
 
 from viraltracker.agent import agent, AgentDependencies
-from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult
+from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult
 from viraltracker.core.database import get_supabase_client
 
 
@@ -43,9 +44,9 @@ from viraltracker.core.database import get_supabase_client
 # Download Format Converters
 # ============================================================================
 
-def result_to_csv(result: OutlierResult | HookAnalysisResult | TweetExportResult) -> str:
+def result_to_csv(result: OutlierResult | HookAnalysisResult | TweetExportResult | AdCreationResult) -> str:
     """
-    Convert OutlierResult, HookAnalysisResult, or TweetExportResult to CSV format.
+    Convert OutlierResult, HookAnalysisResult, TweetExportResult, or AdCreationResult to CSV format.
 
     Args:
         result: The result model to convert
@@ -53,7 +54,25 @@ def result_to_csv(result: OutlierResult | HookAnalysisResult | TweetExportResult
     Returns:
         CSV string
     """
-    if isinstance(result, OutlierResult):
+    if isinstance(result, AdCreationResult):
+        # Convert generated ads to DataFrame
+        data = []
+        for ad in result.generated_ads:
+            data.append({
+                'Variation': ad.prompt_index,
+                'Status': ad.final_status.upper(),
+                'Hook': ad.prompt.hook.adapted_text,
+                'Hook Category': ad.prompt.hook.category,
+                'Claude Status': ad.claude_review.status,
+                'Claude Score': round(ad.claude_review.overall_quality, 2),
+                'Gemini Status': ad.gemini_review.status,
+                'Gemini Score': round(ad.gemini_review.overall_quality, 2),
+                'Storage Path': ad.storage_path,
+                'Created At': ad.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            })
+        df = pd.DataFrame(data)
+        return df.to_csv(index=False)
+    elif isinstance(result, OutlierResult):
         # Convert outlier tweets to DataFrame
         data = []
         for outlier in result.outliers:
@@ -122,9 +141,9 @@ def result_to_csv(result: OutlierResult | HookAnalysisResult | TweetExportResult
     return ""
 
 
-def result_to_json(result: OutlierResult | HookAnalysisResult | TweetExportResult) -> str:
+def result_to_json(result: OutlierResult | HookAnalysisResult | TweetExportResult | AdCreationResult) -> str:
     """
-    Convert OutlierResult, HookAnalysisResult, or TweetExportResult to JSON format.
+    Convert OutlierResult, HookAnalysisResult, TweetExportResult, or AdCreationResult to JSON format.
 
     Args:
         result: The result model to convert
@@ -135,7 +154,7 @@ def result_to_json(result: OutlierResult | HookAnalysisResult | TweetExportResul
     return result.model_dump_json(indent=2)
 
 
-def render_download_buttons(result: OutlierResult | HookAnalysisResult | TweetExportResult, message_index: int):
+def render_download_buttons(result: OutlierResult | HookAnalysisResult | TweetExportResult | AdCreationResult, message_index: int):
     """
     Render download buttons for structured results.
 
@@ -144,7 +163,9 @@ def render_download_buttons(result: OutlierResult | HookAnalysisResult | TweetEx
         message_index: Index of the message (for unique keys)
     """
     # Determine filename prefix based on result type
-    if isinstance(result, OutlierResult):
+    if isinstance(result, AdCreationResult):
+        prefix = f"ad_creation_{result.created_at.strftime('%Y%m%d_%H%M%S')}"
+    elif isinstance(result, OutlierResult):
         prefix = f"outliers_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
     elif isinstance(result, HookAnalysisResult):
         prefix = f"hook_analysis_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
@@ -191,6 +212,77 @@ def render_download_buttons(result: OutlierResult | HookAnalysisResult | TweetEx
             key=f"md_{message_index}",
             use_container_width=True
         )
+
+
+def render_ad_creation_results(result: AdCreationResult, message_index: int):
+    """
+    Render ad creation results as rich image cards with status badges.
+
+    Args:
+        result: AdCreationResult with generated ads
+        message_index: Index for unique keys
+    """
+    st.subheader(f"🎨 Generated Ads for {result.product.name}")
+
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Ads", len(result.generated_ads))
+    with col2:
+        st.metric("✅ Approved", result.approved_count)
+    with col3:
+        st.metric("❌ Rejected", result.rejected_count)
+    with col4:
+        st.metric("⚠️ Flagged", result.flagged_count)
+
+    st.divider()
+
+    # Display each ad as an expandable card
+    for i, ad in enumerate(result.generated_ads):
+        status_emoji = {
+            'approved': '✅',
+            'rejected': '❌',
+            'flagged': '⚠️'
+        }.get(ad.final_status, '❓')
+
+        # Expand approved ads by default
+        with st.expander(
+            f"{status_emoji} Variation {ad.prompt_index} - {ad.final_status.upper()}",
+            expanded=(ad.final_status == 'approved')
+        ):
+            # Hook information
+            st.markdown(f"**Hook**: {ad.prompt.hook.adapted_text}")
+            st.markdown(f"**Category**: {ad.prompt.hook.category}")
+
+            st.divider()
+
+            # Review scores in two columns
+            col_claude, col_gemini = st.columns(2)
+
+            with col_claude:
+                st.markdown("**Claude Review**")
+                claude_score = ad.claude_review.overall_quality
+                st.progress(claude_score, text=f"Quality: {claude_score:.2f}")
+                st.caption(f"Status: {ad.claude_review.status}")
+                if ad.claude_review.product_issues:
+                    st.warning(f"Issues: {', '.join(ad.claude_review.product_issues)}")
+
+            with col_gemini:
+                st.markdown("**Gemini Review**")
+                gemini_score = ad.gemini_review.overall_quality
+                st.progress(gemini_score, text=f"Quality: {gemini_score:.2f}")
+                st.caption(f"Status: {ad.gemini_review.status}")
+                if ad.gemini_review.product_issues:
+                    st.warning(f"Issues: {', '.join(ad.gemini_review.product_issues)}")
+
+            # Storage info and actions
+            st.divider()
+            st.caption(f"Storage: `{ad.storage_path}`")
+            st.caption(f"Created: {ad.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # Note: Image display would require fetching from Supabase Storage
+            # This is placeholder for future implementation
+            st.info("💡 Image preview and download will be available in future update")
 
 
 # ============================================================================
@@ -474,7 +566,7 @@ def add_quick_action_message(prompt: str):
                         for part in msg.parts:
                             # ToolReturnPart has a 'content' attribute with the structured result
                             if part.__class__.__name__ == 'ToolReturnPart' and hasattr(part, 'content'):
-                                if isinstance(part.content, (OutlierResult, HookAnalysisResult, TweetExportResult)):
+                                if isinstance(part.content, (OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult)):
                                     structured_result = part.content
                                     break
                     if structured_result:
@@ -525,15 +617,42 @@ def render_chat_interface():
         with st.chat_message(message['role']):
             st.markdown(message['content'])
 
-            # Show download buttons if this message has structured results
+            # Show download buttons and special displays for structured results
             if message['role'] == 'assistant' and idx in st.session_state.structured_results:
                 result = st.session_state.structured_results[idx]
-                if isinstance(result, (OutlierResult, HookAnalysisResult, TweetExportResult)):
+                st.divider()
+                if isinstance(result, AdCreationResult):
+                    render_ad_creation_results(result, idx)
                     st.divider()
                     render_download_buttons(result, idx)
+                elif isinstance(result, (OutlierResult, HookAnalysisResult, TweetExportResult)):
+                    render_download_buttons(result, idx)
+
+    # File uploader for ad creation (optional)
+    uploaded_file = st.file_uploader(
+        "📎 Upload Reference Ad (Optional - for Facebook ad creation)",
+        type=['png', 'jpg', 'jpeg', 'webp'],
+        help="Upload a reference ad image to generate similar Facebook ads",
+        key="reference_ad_uploader"
+    )
+
+    # Store uploaded file in session state as base64
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.read()
+        file_base64 = base64.b64encode(file_bytes).decode('utf-8')
+
+        st.session_state.reference_ad_base64 = file_base64
+        st.session_state.reference_ad_filename = uploaded_file.name
+
+        # Show preview
+        st.image(file_bytes, caption=f"📎 {uploaded_file.name}", width=200)
+        st.success(f"✅ Reference ad uploaded: {uploaded_file.name}")
+    elif 'reference_ad_base64' in st.session_state:
+        # Show currently uploaded file
+        st.info(f"📎 Reference ad ready: {st.session_state.reference_ad_filename}")
 
     # Chat input
-    if prompt := st.chat_input("Ask about viral tweets, hooks, or request a report..."):
+    if prompt := st.chat_input("Ask about viral tweets, hooks, ad creation, or request a report..."):
         # Add user message to chat
         st.session_state.messages.append({
             'role': 'user',
@@ -582,7 +701,7 @@ def render_chat_interface():
                             for part in msg.parts:
                                 # ToolReturnPart has a 'content' attribute with the structured result
                                 if part.__class__.__name__ == 'ToolReturnPart' and hasattr(part, 'content'):
-                                    if isinstance(part.content, (OutlierResult, HookAnalysisResult, TweetExportResult)):
+                                    if isinstance(part.content, (OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult)):
                                         structured_result = part.content
                                         break
                         if structured_result:
@@ -592,7 +711,12 @@ def render_chat_interface():
                 if structured_result:
                     st.session_state.structured_results[message_idx] = structured_result
                     st.divider()
-                    render_download_buttons(structured_result, message_idx)
+                    if isinstance(structured_result, AdCreationResult):
+                        render_ad_creation_results(structured_result, message_idx)
+                        st.divider()
+                        render_download_buttons(structured_result, message_idx)
+                    else:
+                        render_download_buttons(structured_result, message_idx)
 
                 # Store result for future context
                 store_tool_result(prompt, full_response)
