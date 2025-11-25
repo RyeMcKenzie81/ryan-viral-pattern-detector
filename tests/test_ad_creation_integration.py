@@ -25,11 +25,11 @@ from click.testing import CliRunner
 
 # Service layer imports
 from viraltracker.services.ad_creation_service import AdCreationService
-from viraltracker.services.supabase_client import get_supabase_client
+from viraltracker.core.database import get_supabase_client
 
 # Agent imports
-from viraltracker.agent.ad_creation.agent import ad_creation_agent
-from viraltracker.agent.ad_creation.dependencies import AdCreationDependencies
+from viraltracker.agent.agents.ad_creation_agent import ad_creation_agent
+from viraltracker.agent.dependencies import AgentDependencies
 
 # CLI imports
 from viraltracker.cli.main import cli as main_cli
@@ -157,7 +157,7 @@ class TestAdCreationAgentWorkflow:
         - Database persistence
         """
         # Create dependencies
-        deps = AdCreationDependencies.create(
+        deps = AgentDependencies.create(
             product_id=test_product_id,
             reference_ad_base64=test_reference_ad_base64,
             reference_ad_filename="test_reference.png"
@@ -213,7 +213,7 @@ class TestAdCreationAgentWorkflow:
         """Test workflow fails gracefully with invalid product ID"""
         fake_product_id = str(uuid4())
 
-        deps = AdCreationDependencies.create(
+        deps = AgentDependencies.create(
             product_id=fake_product_id,
             reference_ad_base64=test_reference_ad_base64,
             reference_ad_filename="test.png"
