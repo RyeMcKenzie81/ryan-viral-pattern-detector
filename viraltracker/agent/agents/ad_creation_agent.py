@@ -416,8 +416,8 @@ async def analyze_reference_ad(
         if not reference_ad_storage_path:
             raise ValueError("reference_ad_storage_path cannot be empty")
 
-        # Download reference ad image from storage
-        image_data = await ctx.deps.ad_creation.download_image(reference_ad_storage_path)
+        # Download reference ad image from storage as base64
+        image_data = await ctx.deps.ad_creation.get_image_as_base64(reference_ad_storage_path)
 
         # Analyze using Gemini Vision AI
         analysis_prompt = """
