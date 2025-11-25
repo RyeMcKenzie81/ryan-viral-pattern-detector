@@ -44,10 +44,10 @@ def extract_tool_info(tool_name: str, tool: Any, platform: str) -> ToolInfo:
     Returns:
         ToolInfo dataclass with extracted metadata
     """
-    # Get metadata from tool's function if it exists
+    # Get metadata from tool (stored directly on tool object by Pydantic AI)
     metadata = {}
-    if hasattr(tool, 'function') and hasattr(tool.function, 'metadata'):
-        metadata = tool.function.metadata
+    if hasattr(tool, 'metadata') and tool.metadata:
+        metadata = tool.metadata
 
     # Get description from tool
     description = tool.description if hasattr(tool, 'description') and tool.description else "No description available"
