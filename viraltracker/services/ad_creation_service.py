@@ -58,6 +58,25 @@ class AdCreationService:
 
         return Product(**result.data[0])
 
+    async def search_products_by_name(self, product_name: str) -> List[Product]:
+        """
+        Search products by name using case-insensitive partial matching.
+
+        Args:
+            product_name: Product name (or partial name) to search for
+
+        Returns:
+            List of matching Product models, sorted by name
+
+        Examples:
+            >>> search_products_by_name("Wonder Paws")
+            [Product(name="Wonder Paws Collagen 3x"), Product(name="Wonder Paws Omega")]
+        """
+        # Use ilike for case-insensitive partial matching
+        result = self.supabase.table("products").select("*").ilike("name", f"%{product_name}%").order("name").execute()
+
+        return [Product(**row) for row in result.data]
+
     async def get_hooks(
         self,
         product_id: UUID,
