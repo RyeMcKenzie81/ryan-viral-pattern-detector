@@ -109,7 +109,7 @@ class AgentDependencies(BaseModel):
         cls,
         project_name: str = "yakety-pack-instagram",
         gemini_api_key: Optional[str] = None,
-        gemini_model: str = "gemini-2.0-flash-exp",
+        gemini_model: str = "models/gemini-3-pro-image-preview",
         rate_limit_rpm: int = 9,
     ) -> "AgentDependencies":
         """
@@ -118,7 +118,7 @@ class AgentDependencies(BaseModel):
         Args:
             project_name: Name of the project to analyze (default: "yakety-pack-instagram")
             gemini_api_key: Optional Gemini API key (default: uses environment variable)
-            gemini_model: Gemini model to use (default: "gemini-2.0-flash-exp")
+            gemini_model: Gemini model to use (default: "models/gemini-3-pro-image-preview")
             rate_limit_rpm: Rate limit for Gemini API in requests per minute (default: 9)
 
         Returns:
