@@ -36,7 +36,9 @@ from .models import (
     AgentRequest,
     AgentResponse,
     HealthResponse,
-    ErrorResponse
+    ErrorResponse,
+    AdCreationRequest,
+    AdCreationResponse
 )
 from .endpoint_generator import generate_tool_endpoints
 from ..agent.agent import agent  # Keep for backwards compatibility in /agent/run
@@ -46,6 +48,7 @@ from ..agent.agents.tiktok_agent import tiktok_agent
 from ..agent.agents.youtube_agent import youtube_agent
 from ..agent.agents.facebook_agent import facebook_agent
 from ..agent.agents.analysis_agent import analysis_agent
+from ..agent.agents.ad_creation_agent import ad_creation_agent
 from ..agent.dependencies import AgentDependencies
 
 # ============================================================================
@@ -378,6 +381,174 @@ logger.info(f"  - Analysis: {len(analysis_agent._function_toolset.tools)} tools"
 
 
 # ============================================================================
+# Ad Creation Endpoint
+# ============================================================================
+
+@app.post(
+    "/api/ad-creation/create",
+    response_model=AdCreationResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid API key"},
+        429: {"model": ErrorResponse, "description": "Too many requests"},
+        500: {"model": ErrorResponse, "description": "Internal server error"}
+    },
+    tags=["Ad Creation"],
+    summary="Generate 5 Facebook ad variations with AI review"
+)
+@limiter.limit("5/hour")  # Rate limit: 5 requests per hour (image generation is expensive)
+async def create_ads(
+    request: Request,
+    ad_request: AdCreationRequest,
+    authenticated: bool = Depends(verify_api_key)
+):
+    """
+    Execute complete Facebook ad creation workflow.
+
+    This endpoint generates 5 ad variations using the Ad Creation Agent:
+    1. Analyzes reference ad using Vision AI
+    2. Selects 5 diverse persuasive hooks
+    3. Generates 5 ad variations using Gemini Nano Banana Pro 3
+    4. Dual AI review (Claude + Gemini) with OR logic
+    5. Returns complete results with approval status
+
+    **Workflow Steps:**
+    - Upload reference ad to storage
+    - Fetch product data and hooks from database
+    - Analyze reference ad format and style (Vision AI)
+    - Select 5 diverse hooks with AI
+    - Generate 5 ads ONE AT A TIME (resilience)
+    - Dual review: Either Claude OR Gemini approving = approved
+    - Flag disagreements for human review
+
+    **Rate Limits:**
+    - 5 requests per hour per IP (image generation is expensive)
+    - Each request generates 5 ads with dual AI review
+
+    **Authentication:**
+    - Requires X-API-Key header (set VIRALTRACKER_API_KEY env var)
+    - Development mode: No auth required if VIRALTRACKER_API_KEY not set
+
+    **Request Body:**
+    ```json
+    {
+        "product_id": "uuid-string",
+        "reference_ad_base64": "base64-encoded-image-data",
+        "reference_ad_filename": "reference.png",
+        "project_id": "optional-uuid-string"
+    }
+    ```
+
+    **Response Body:**
+    ```json
+    {
+        "success": true,
+        "ad_run_id": "uuid",
+        "data": {
+            "product": {...},
+            "reference_ad_path": "storage-path",
+            "ad_analysis": {...},
+            "selected_hooks": [...],
+            "generated_ads": [
+                {
+                    "prompt_index": 1,
+                    "storage_path": "...",
+                    "final_status": "approved",
+                    "claude_review": {...},
+                    "gemini_review": {...},
+                    "reviewers_agree": true
+                }
+            ],
+            "approved_count": 3,
+            "rejected_count": 1,
+            "flagged_count": 1,
+            "summary": "Ad creation workflow completed..."
+        }
+    }
+    ```
+    """
+    start_time = time.time()
+
+    try:
+        logger.info(f"Ad creation workflow started - Product: {ad_request.product_id}")
+
+        # Initialize agent dependencies
+        deps = AgentDependencies.create(
+            project_name="default"  # Project context optional for ad creation
+        )
+
+        # Call the complete_ad_workflow tool via agent
+        result = await ad_creation_agent.run(
+            f"""Execute the complete ad creation workflow for this request:
+
+Product ID: {ad_request.product_id}
+Reference Ad: (base64 image provided)
+Filename: {ad_request.reference_ad_filename}
+Project ID: {ad_request.project_id or 'None'}
+
+Use the complete_ad_workflow tool to:
+1. Create ad run in database
+2. Upload reference ad to storage
+3. Fetch product data and hooks
+4. Analyze reference ad with Vision AI
+5. Select 5 diverse hooks
+6. Generate 5 ad variations (ONE AT A TIME)
+7. Dual AI review (Claude + Gemini) with OR logic
+8. Return complete results
+
+Call complete_ad_workflow with these parameters:
+- product_id: "{ad_request.product_id}"
+- reference_ad_base64: "{ad_request.reference_ad_base64}"
+- reference_ad_filename: "{ad_request.reference_ad_filename}"
+- project_id: "{ad_request.project_id or ''}"
+""",
+            deps=deps,
+            model="claude-sonnet-4-5-20250929"
+        )
+
+        execution_time = time.time() - start_time
+
+        logger.info(f"Ad creation workflow completed in {execution_time:.2f}s")
+
+        # Extract workflow result
+        workflow_data = result.output if hasattr(result, 'output') else result
+
+        # Return successful response
+        return AdCreationResponse(
+            success=True,
+            ad_run_id=workflow_data.get('ad_run_id') if isinstance(workflow_data, dict) else None,
+            data=workflow_data if isinstance(workflow_data, dict) else {"result": str(workflow_data)},
+            error=None,
+            timestamp=datetime.now()
+        )
+
+    except ValueError as e:
+        # Handle validation errors (invalid product_id, image data, etc.)
+        execution_time = time.time() - start_time
+        logger.error(f"Validation error after {execution_time:.2f}s: {e}")
+
+        return AdCreationResponse(
+            success=False,
+            ad_run_id=None,
+            data=None,
+            error=f"Validation error: {str(e)}",
+            timestamp=datetime.now()
+        )
+
+    except Exception as e:
+        # Handle unexpected errors
+        execution_time = time.time() - start_time
+        logger.error(f"Ad creation workflow failed after {execution_time:.2f}s: {e}", exc_info=True)
+
+        return AdCreationResponse(
+            success=False,
+            ad_run_id=None,
+            data=None,
+            error=f"Workflow failed: {str(e)}",
+            timestamp=datetime.now()
+        )
+
+
+# ============================================================================
 # Root Endpoint
 # ============================================================================
 
@@ -394,6 +565,7 @@ async def root():
         "health": "/health",
         "endpoints": {
             "agent_execution": "/agent/run",
+            "ad_creation": "/api/ad-creation/create",
             "auto_generated_tools": "/tools/* (see /docs for all 16 auto-generated endpoints)"
         }
     }
