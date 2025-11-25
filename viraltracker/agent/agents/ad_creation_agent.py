@@ -408,6 +408,8 @@ async def analyze_reference_ad(
         Exception: If Gemini Vision AI analysis fails
     """
     try:
+        import json
+
         logger.info(f"Analyzing reference ad: {reference_ad_storage_path}")
 
         # Validate input
@@ -475,7 +477,6 @@ async def analyze_reference_ad(
         )
 
         # Parse JSON response
-        import json
         analysis_dict = json.loads(analysis_result)
 
         logger.info(f"Reference ad analyzed: format={analysis_dict.get('format_type')}, "
