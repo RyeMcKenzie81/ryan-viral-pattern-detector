@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from collections import Counter
+from uuid import UUID
 
 
 # ============================================================================
@@ -713,3 +714,123 @@ class TweetExportResult(BaseModel):
                 "generated_at": "2024-01-15T14:00:00Z"
             }
         }
+
+
+# ============================================================================
+# Ad Creation Models (Facebook Ad Creation Agent)
+# ============================================================================
+
+class Product(BaseModel):
+    """Product information with images and metadata"""
+    id: UUID
+    brand_id: UUID
+    name: str
+    benefits: List[str] = Field(default_factory=list, description="Product benefits for ad copy")
+    key_ingredients: Optional[List[str]] = Field(None, description="Key ingredients to highlight")
+    target_audience: Optional[str] = Field(None, description="Target demographic")
+    product_url: Optional[str] = Field(None, description="Product landing page URL")
+    main_image_storage_path: Optional[str] = Field(None, description="Storage path to main product image")
+    reference_image_storage_paths: List[str] = Field(default_factory=list, description="Additional product images")
+
+
+class Hook(BaseModel):
+    """Persuasive hook for ad copywriting"""
+    id: UUID
+    product_id: UUID
+    text: str = Field(..., description="Hook text derived from reviews or created manually")
+    category: str = Field(..., description="Universal persuasive principle category")
+    framework: Optional[str] = Field(None, description="Original framework name")
+    impact_score: int = Field(ge=0, le=21, description="Impact score 0-21 based on persuasive framework")
+    emotional_score: str = Field(..., description="Emotional intensity: Very High, High, Medium, Low")
+    active: bool = True
+
+
+class AdBriefTemplate(BaseModel):
+    """Template for ad creation instructions"""
+    id: UUID
+    brand_id: Optional[UUID] = Field(None, description="NULL = global template")
+    name: str
+    instructions: str = Field(..., description="Markdown instructions for ad creation workflow")
+    active: bool = True
+
+
+class AdAnalysis(BaseModel):
+    """Result of analyzing a reference ad using Vision AI"""
+    format_type: str = Field(..., description="Ad format: testimonial, quote_style, before_after, product_showcase")
+    layout_structure: str = Field(..., description="Layout: single_image, two_panel, carousel")
+    fixed_elements: List[str] = Field(default_factory=list, description="Elements to reuse across all 5 ads")
+    variable_elements: List[str] = Field(default_factory=list, description="Elements that change per variation")
+    text_placement: Dict[str, Any] = Field(default_factory=dict, description="Text positioning details")
+    color_palette: List[str] = Field(default_factory=list, description="Hex color codes")
+    authenticity_markers: List[str] = Field(default_factory=list, description="Timestamps, usernames, emojis")
+    canvas_size: str = Field(..., description="Image dimensions e.g. 1080x1080px")
+    detailed_description: str = Field(..., description="Comprehensive description for prompt engineering")
+
+
+class SelectedHook(BaseModel):
+    """Hook selected for ad generation with style adaptations"""
+    hook_id: UUID
+    text: str = Field(..., description="Original hook text")
+    category: str = Field(..., description="Persuasive category")
+    framework: Optional[str] = None
+    impact_score: int
+    reasoning: str = Field(..., description="Why this hook was selected (diversity, impact, etc.)")
+    adapted_text: str = Field(..., description="Hook text adapted to match reference ad style/tone")
+
+
+class NanoBananaPrompt(BaseModel):
+    """Prompt for Gemini Nano Banana image generation"""
+    prompt_index: int = Field(ge=1, le=5, description="Index 1-5 for this variation")
+    hook: SelectedHook
+    instruction_text: str = Field(..., description="Human-readable instructions for image generation")
+    spec: Dict[str, Any] = Field(..., description="JSON spec with canvas, product, text_elements")
+    full_prompt: str = Field(..., description="Complete prompt sent to Nano Banana API")
+    template_reference_path: str = Field(..., description="Storage path to reference ad image")
+    product_image_path: str = Field(..., description="Storage path to product image")
+
+
+class GeneratedAd(BaseModel):
+    """Generated ad image with metadata"""
+    prompt_index: int = Field(ge=1, le=5)
+    image_base64: Optional[str] = Field(None, description="Temporary base64 before saving to storage")
+    storage_path: Optional[str] = Field(None, description="Set after saving to Supabase Storage")
+
+
+class ReviewResult(BaseModel):
+    """AI review of generated ad quality"""
+    reviewer: str = Field(..., description="Reviewer name: 'claude' or 'gemini'")
+    product_accuracy: float = Field(ge=0.0, le=1.0, description="Product image fidelity score")
+    text_accuracy: float = Field(ge=0.0, le=1.0, description="Text readability and correctness score")
+    layout_accuracy: float = Field(ge=0.0, le=1.0, description="Layout adherence to template score")
+    overall_quality: float = Field(ge=0.0, le=1.0, description="Overall production-ready quality score")
+    product_issues: List[str] = Field(default_factory=list, description="Product image issues found")
+    text_issues: List[str] = Field(default_factory=list, description="Text issues (gibberish, spelling, etc.)")
+    ai_artifacts: List[str] = Field(default_factory=list, description="AI generation artifacts detected")
+    status: str = Field(..., description="Review status: approved, needs_revision, rejected")
+    notes: str = Field(..., description="Additional review notes")
+
+
+class GeneratedAdWithReviews(BaseModel):
+    """Generated ad with dual AI reviews and final decision"""
+    prompt_index: int
+    prompt: NanoBananaPrompt
+    storage_path: str
+    claude_review: Optional[ReviewResult] = None
+    gemini_review: Optional[ReviewResult] = None
+    reviewers_agree: bool = Field(..., description="True if both reviewers gave same status")
+    final_status: str = Field(..., description="approved, rejected, or flagged (disagreement)")
+
+
+class AdCreationResult(BaseModel):
+    """Complete result of ad creation workflow"""
+    ad_run_id: UUID
+    product: Product
+    reference_ad_path: str
+    ad_analysis: AdAnalysis
+    selected_hooks: List[SelectedHook]
+    generated_ads: List[GeneratedAdWithReviews]
+    approved_count: int = Field(..., description="Number of ads approved by AI reviewers")
+    rejected_count: int = Field(..., description="Number of ads rejected by both reviewers")
+    flagged_count: int = Field(..., description="Number of ads with reviewer disagreement")
+    summary: str = Field(..., description="Human-readable summary of workflow results")
+    created_at: datetime = Field(default_factory=datetime.now)
