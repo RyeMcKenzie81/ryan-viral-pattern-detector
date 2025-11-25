@@ -5,6 +5,8 @@
 **Target**: AI-assisted development with Claude Code
 **Status**: Pydantic AI Migration Complete ✅
 
+> **System Architecture**: For system design and technical decisions, see [ARCHITECTURE.md](ARCHITECTURE.md) | [Documentation Index](README.md)
+
 ---
 
 ## Table of Contents
