@@ -1,9 +1,9 @@
 # Claude Code Developer Guide - ViralTracker Tool Development
 
-**Version**: 2.0.0
+**Version**: 3.0.0
 **Date**: 2025-01-24
 **Target**: AI-assisted development with Claude Code
-**Status**: Pydantic AI Alignment Complete
+**Status**: Pydantic AI Migration Complete ✅
 
 ---
 
@@ -32,21 +32,17 @@ When asked to create a new agent tool, follow this checklist:
 - [ ] Identify the pipeline stage (Routing, Ingestion, Filtration, Discovery, Analysis, Generation, Export)
 - [ ] Determine which agent this tool belongs to
 
-**Step 2: Create the tool function**
-- [ ] Add to `viraltracker/agent/tools_registered.py`
-- [ ] Use `@tool_registry.register()` decorator
-- [ ] Include comprehensive docstring (Google format)
-- [ ] Add ToolMetadata with proper categorization
+**Step 2: Create the tool function in the agent file**
+- [ ] Open the appropriate agent file (e.g., `viraltracker/agent/agents/twitter_agent.py`)
+- [ ] Use `@agent.tool()` decorator with metadata parameter
+- [ ] Include comprehensive docstring (Google format) - this is sent to the LLM
+- [ ] Add ToolMetadata TypedDict with categorization (NOT sent to LLM)
 
-**Step 3: Register with agent**
-- [ ] Import tool in agent file (e.g., `agents/twitter_agent.py`)
-- [ ] Call `agent.tool(your_tool_function)`
-- [ ] Verify tool count in agent initialization log
-
-**Step 4: Test**
-- [ ] Test via Python: Import and check `agent._function_toolset.tools`
+**Step 3: Test**
+- [ ] Test via Python: Import agent and check `agent._function_toolset.tools`
 - [ ] Test via API: Check endpoint appears at `/tools/{tool-name}`
 - [ ] Test via CLI: Run agent with natural language query
+- [ ] Verify tool count matches expected number
 
 ---
 
@@ -81,57 +77,58 @@ ViralTracker (Pydantic AI Multi-Agent System)
 6. **Generation** - Content generation, comment creation
 7. **Export** - Data export, reporting, file creation
 
-### Key Insight: Two-Phase Tool Pattern
+### Current Tool Pattern (Pydantic AI Standard)
 
-ViralTracker uses a **hybrid pattern** during Pydantic AI alignment:
+ViralTracker uses **Pydantic AI's @agent.tool() decorator** with metadata:
 
-**Current (Transition) Pattern**:
 ```python
-# 1. Define in tools_registered.py with custom registry
-@tool_registry.register(
-    name="my_tool",
-    description="...",
-    category="Ingestion",
-    platform="Twitter"
+# File: viraltracker/agent/agents/twitter_agent.py
+
+from pydantic_ai import Agent, RunContext
+from ..dependencies import AgentDependencies
+from ..tool_metadata import ToolMetadata
+
+# Create agent
+twitter_agent = Agent(
+    model="claude-sonnet-4-5-20250929",
+    deps_type=AgentDependencies,
+    system_prompt="You are the Twitter/X platform specialist agent..."
 )
-async def my_tool(ctx, param: str):
-    """Docstring sent to LLM"""
-    pass
 
-# 2. Register with agent in agent file
-from ..tools_registered import my_tool
-twitter_agent.tool(my_tool)
-```
-
-**Target (Pydantic AI Standard) Pattern**:
-```python
-# Define directly with agent decorator + metadata
+# Define tools directly in agent file with @agent.tool() decorator
 @twitter_agent.tool(
     metadata=ToolMetadata(
         category='Ingestion',
         platform='Twitter',
         rate_limit='20/minute',
-        use_cases=['Search tweets'],
-        examples=['Find tweets about AI']
+        use_cases=['Search tweets by keyword', 'Collect data from Twitter'],
+        examples=['Find tweets about AI', 'Search for Python tweets']
     )
 )
-async def search_twitter(ctx, keyword: str):
+async def search_twitter(ctx: RunContext[AgentDependencies], keyword: str) -> SearchResult:
     """
     Search Twitter for tweets matching a keyword.
 
+    This docstring is sent to the LLM and helps it understand when to use this tool.
+    Be clear and specific about what the tool does and when to use it.
+
     Args:
+        ctx: Pydantic AI run context with AgentDependencies
         keyword: Search term to find tweets
 
     Returns:
-        SearchResult containing matching tweets
+        SearchResult containing matching tweets with engagement metrics
     """
-    pass
+    # Access services via ctx.deps
+    tweets = await ctx.deps.twitter.search(keyword=keyword, project=ctx.deps.project_name)
+    return SearchResult(tweets=tweets, total_count=len(tweets))
 ```
 
-**When to use which**:
-- **New tools**: Use current pattern until migration complete
-- **After migration**: Use target pattern exclusively
-- **Check**: Read `docs/PHASE_10_PYDANTIC_AI_CHECKPOINT.md` for current status
+**Key Points**:
+- ✅ Tools defined directly in agent files using `@agent.tool()` decorator
+- ✅ Metadata in decorator (category, platform, rate_limit, etc.) - NOT sent to LLM
+- ✅ Docstring is sent to LLM - make it clear and comprehensive
+- ✅ API endpoints auto-generated from `agent._function_toolset.tools`
 
 ---
 
@@ -140,32 +137,43 @@ async def search_twitter(ctx, keyword: str):
 ### Template: Complete Tool Implementation
 
 ```python
-# File: viraltracker/agent/tools_registered.py
+# File: viraltracker/agent/agents/twitter_agent.py
 
+import logging
 from typing import Optional, List
-from pydantic_ai import RunContext
-from .dependencies import AgentDependencies
-from .tool_registry import tool_registry
-from ..services.models import YourResultModel
+from pydantic_ai import Agent, RunContext
+from ..dependencies import AgentDependencies
+from ..tool_metadata import ToolMetadata
+from ...services.models import YourResultModel
 
-@tool_registry.register(
-    name="your_tool_name_tool",  # Suffix with _tool for now
-    description="One-line description of what this tool does",
-    category="Ingestion",  # Or: Routing, Filtration, Discovery, Analysis, Generation, Export
-    platform="Twitter",    # Or: TikTok, YouTube, Facebook, Instagram, All
-    rate_limit="20/minute",  # Adjust based on cost/speed
-    use_cases=[
-        "Use case 1 - when to use this tool",
-        "Use case 2 - another scenario",
-        "Use case 3 - specific application"
-    ],
-    examples=[
-        "Example natural language query 1",
-        "Example natural language query 2",
-        "Example natural language query 3"
-    ]
+logger = logging.getLogger(__name__)
+
+# Create agent (at top of file)
+twitter_agent = Agent(
+    model="claude-sonnet-4-5-20250929",
+    deps_type=AgentDependencies,
+    system_prompt="You are the Twitter/X platform specialist agent..."
 )
-async def your_tool_name_tool(
+
+# Define tool with @agent.tool() decorator
+@twitter_agent.tool(
+    metadata=ToolMetadata(
+        category="Ingestion",  # Or: Routing, Filtration, Discovery, Analysis, Generation, Export
+        platform="Twitter",    # Or: TikTok, YouTube, Facebook, All
+        rate_limit="20/minute",  # Adjust based on cost/speed
+        use_cases=[
+            "Use case 1 - when to use this tool",
+            "Use case 2 - another scenario",
+            "Use case 3 - specific application"
+        ],
+        examples=[
+            "Example natural language query 1",
+            "Example natural language query 2",
+            "Example natural language query 3"
+        ]
+    )
+)
+async def your_tool_name(
     ctx: RunContext[AgentDependencies],
     required_param: str,
     optional_param: int = 10,
@@ -212,26 +220,17 @@ async def your_tool_name_tool(
     except Exception as e:
         logger.error(f"Tool failed: {str(e)}")
         raise Exception(f"Failed to execute tool: {str(e)}")
+
+# At bottom of file, update tool count
+logger.info("Twitter Agent initialized with 9 tools")  # Update count
 ```
 
-### Step-by-Step: Adding to Agent
+### Step-by-Step: Adding a New Tool
 
-```python
-# File: viraltracker/agent/agents/twitter_agent.py
-
-# 1. Add import at top
-from ..tools_registered import (
-    search_twitter_tool,
-    # ... existing tools ...
-    your_tool_name_tool  # NEW
-)
-
-# 2. Register with agent (bottom of file, before logger.info)
-twitter_agent.tool(your_tool_name_tool)
-
-# 3. Update tool count in logger message
-logger.info("Twitter Agent initialized with 9 tools")  # Was 8, now 9
-```
+1. **Open the appropriate agent file** (e.g., `viraltracker/agent/agents/twitter_agent.py`)
+2. **Add the tool function** using `@agent.tool(metadata=...)` decorator
+3. **Update the tool count** in the logger.info statement at the bottom of the file
+4. **Test the tool** using the test commands below
 
 ---
 
@@ -282,9 +281,9 @@ logger.info("Twitter Agent initialized with 9 tools")  # Was 8, now 9
    - Metadata is for system config only
    - Use docstrings for LLM communication
 
-2. **Don't use `_tool` suffix in target pattern**
-   - Current: `search_twitter_tool` (OK during migration)
-   - Target: `search_twitter` (clean function name)
+2. **Don't use `_tool` suffix**
+   - Use clean function names: `search_twitter`, `analyze_hooks`
+   - Not: `search_twitter_tool`, `analyze_hooks_tool`
 
 3. **Don't duplicate parameter descriptions**
    - Put descriptions in docstring Args section
@@ -295,10 +294,10 @@ logger.info("Twitter Agent initialized with 9 tools")  # Was 8, now 9
    - Always type hint return values
    - Pydantic uses these for validation
 
-5. **Don't create circular imports**
-   - Tools in `tools_registered.py`
-   - Agents in `agents/*.py`
-   - Import tools into agents, not vice versa
+5. **Don't import tools between agents**
+   - Tools are defined in agent files directly
+   - Each agent's tools are scoped to that agent
+   - Use the orchestrator for cross-agent communication
 
 ### Docstring Format (Google Style)
 
@@ -346,26 +345,47 @@ async def example_tool(
 ### Pattern 1: Ingestion Tool (API Scraping)
 
 ```python
-@tool_registry.register(
-    name="scrape_platform_tool",
-    description="Scrape data from external platform API",
-    category="Ingestion",
-    platform="Twitter",
-    rate_limit="10/minute",  # Lower for expensive API calls
-    use_cases=[
-        "Collect fresh data from platform",
-        "Search by keyword or hashtag",
-        "Save results to database"
-    ]
+# File: viraltracker/agent/agents/twitter_agent.py
+
+@twitter_agent.tool(
+    metadata=ToolMetadata(
+        category="Ingestion",
+        platform="Twitter",
+        rate_limit="10/minute",  # Lower for expensive API calls
+        use_cases=[
+            "Collect fresh data from platform",
+            "Search by keyword or hashtag",
+            "Save results to database"
+        ],
+        examples=[
+            "Search for tweets about Python",
+            "Find 100 tweets about AI"
+        ]
+    )
 )
-async def scrape_platform_tool(
+async def search_twitter(
     ctx: RunContext[AgentDependencies],
     keyword: str,
     max_results: int = 100
 ) -> ScrapeResult:
-    """Scrape platform for keyword and save to database."""
+    """
+    Search Twitter for tweets matching a keyword and save to database.
+
+    This tool scrapes Twitter/X for tweets containing the specified keyword
+    and saves them to the database for later analysis.
+
+    Args:
+        ctx: Pydantic AI run context with AgentDependencies
+        keyword: Search term or hashtag to find tweets
+        max_results: Maximum number of tweets to collect (default: 100)
+
+    Returns:
+        ScrapeResult with count of tweets collected and search metadata
+    """
     try:
-        # 1. Call external API
+        logger.info(f"Searching Twitter for: {keyword}")
+
+        # 1. Call external API via service
         data = await ctx.deps.twitter.search(
             keyword=keyword,
             max_results=max_results,
@@ -716,54 +736,68 @@ from ..tools_registered import my_tool  # Import tools
 
 ## Migration Guide
 
-### Current State (Transition Phase)
+### Migration Status: COMPLETE ✅
 
-We are in the middle of Pydantic AI alignment. Current pattern:
+The Pydantic AI migration is **complete**. All 19 tools across 5 agents have been migrated to the new pattern.
 
-```python
-# tools_registered.py - Old registry pattern
-@tool_registry.register(name="...", description="...")
-async def my_tool_tool(ctx, ...):
-    pass
+### Current Pattern (Use This)
 
-# agents/twitter_agent.py - Still register separately
-twitter_agent.tool(my_tool_tool)
-```
-
-### Target State (Pydantic AI Standard)
-
-After migration completes:
+All tools are now defined directly in agent files using `@agent.tool()` decorator:
 
 ```python
-# agents/twitter_agent.py - Tools defined in agent file
+# File: viraltracker/agent/agents/twitter_agent.py
+
+from pydantic_ai import Agent, RunContext
+from ..dependencies import AgentDependencies
+from ..tool_metadata import ToolMetadata
+
+# Create agent
+twitter_agent = Agent(
+    model="claude-sonnet-4-5-20250929",
+    deps_type=AgentDependencies,
+    system_prompt="You are the Twitter/X platform specialist agent..."
+)
+
+# Define tools with @agent.tool() decorator
 @twitter_agent.tool(
     metadata=ToolMetadata(
         category='Ingestion',
         platform='Twitter',
-        rate_limit='20/minute'
+        rate_limit='20/minute',
+        use_cases=['Search tweets', 'Collect Twitter data'],
+        examples=['Find tweets about AI', 'Search for Python tweets']
     )
 )
-async def search_twitter(ctx, keyword: str):
-    """Search Twitter for keyword."""
-    pass
+async def search_twitter(ctx: RunContext[AgentDependencies], keyword: str) -> SearchResult:
+    """
+    Search Twitter for tweets matching a keyword.
+
+    Args:
+        ctx: Pydantic AI run context with AgentDependencies
+        keyword: Search term to find tweets
+
+    Returns:
+        SearchResult containing matching tweets
+    """
+    tweets = await ctx.deps.twitter.search(keyword=keyword, project=ctx.deps.project_name)
+    return SearchResult(tweets=tweets, total_count=len(tweets))
 ```
 
-### When Creating New Tools
+### Deprecated Files (Archived)
 
-**Option A: Follow current pattern** (Recommended until migration complete)
-- Add to `tools_registered.py` with `@tool_registry.register()`
-- Import and register in agent file
-- Easier to migrate later
+The following files are **deprecated** and have been moved to `viraltracker/agent/deprecated/`:
+- `tool_registry.py` - Old custom registry (no longer used)
+- `tools_registered.py` - Old centralized tool definitions (replaced by in-agent definitions)
+- `app_with_registry.py` - Old API pattern (replaced by endpoint_generator.py)
 
-**Option B: Use target pattern** (Advanced)
-- Define directly in agent file with `@agent.tool(metadata=...)`
-- Requires updating FastAPI endpoint generator first
-- See `docs/REFACTOR_PLAN_PYDANTIC_AI_ALIGNMENT.md`
+**DO NOT** use these files or patterns for new development.
 
-**Check migration status:**
-```bash
-cat docs/PHASE_10_PYDANTIC_AI_CHECKPOINT.md
-```
+### Migration History
+
+- **Phase 13 (Complete)**: Migrated all 5 agents (Twitter, TikTok, YouTube, Facebook, Analysis)
+- **Phase 14 (Complete)**: Cleaned up deprecated files, updated documentation
+- **Total Tools Migrated**: 19 tools across all agents
+- **API**: Uses `endpoint_generator.py` to auto-generate endpoints from agent toolsets
 
 ---
 
@@ -776,25 +810,33 @@ viraltracker/
 ├── agent/
 │   ├── orchestrator.py           # Orchestrator agent (routing)
 │   ├── dependencies.py           # AgentDependencies definition
-│   ├── tool_registry.py          # Custom registry (to be removed)
-│   ├── tool_metadata.py          # ToolMetadata TypedDict schema ✅ NEW
-│   ├── tools_registered.py       # Current tool definitions
+│   ├── tool_metadata.py          # ToolMetadata TypedDict schema
+│   ├── tool_collector.py         # Utility to discover tools from agents
 │   │
-│   └── agents/                   # Specialized agents
-│       ├── twitter_agent.py      # Twitter/X specialist (8 tools)
-│       ├── tiktok_agent.py       # TikTok specialist (5 tools)
-│       ├── youtube_agent.py      # YouTube specialist (1 tool)
-│       ├── facebook_agent.py     # Facebook specialist (2 tools)
-│       └── analysis_agent.py     # Analysis specialist (3 tools)
+│   ├── agents/                   # Specialized agents (tools defined here)
+│   │   ├── twitter_agent.py      # Twitter/X specialist (8 tools)
+│   │   ├── tiktok_agent.py       # TikTok specialist (5 tools)
+│   │   ├── youtube_agent.py      # YouTube specialist (1 tool)
+│   │   ├── facebook_agent.py     # Facebook specialist (2 tools)
+│   │   └── analysis_agent.py     # Analysis specialist (3 tools)
+│   │
+│   └── deprecated/               # DEPRECATED - DO NOT USE
+│       ├── tool_registry.py      # Old custom registry
+│       ├── tools_registered.py   # Old centralized tool definitions
+│       └── agent.py.backup       # Old agent implementation
 │
 ├── api/
 │   ├── app.py                    # Main FastAPI application
-│   └── endpoint_generator.py    # Auto-generates /tools/* endpoints
+│   ├── endpoint_generator.py    # Auto-generates /tools/* endpoints
+│   │
+│   └── deprecated/               # DEPRECATED - DO NOT USE
+│       └── app_with_registry.py  # Old API pattern
 │
 ├── services/
 │   ├── twitter.py                # TwitterService
 │   ├── tiktok.py                 # TikTokService
 │   ├── youtube.py                # YouTubeService
+│   ├── facebook.py               # FacebookService
 │   ├── gemini.py                 # GeminiService (AI)
 │   └── models.py                 # Pydantic result models
 │
@@ -802,10 +844,12 @@ viraltracker/
     └── main.py                   # CLI commands and chat interface
 
 docs/
-├── CLAUDE_CODE_GUIDE.md          # This file
-├── TOOL_REGISTRY_GUIDE.md        # Registry system docs
-├── PHASE_10_PYDANTIC_AI_CHECKPOINT.md  # Migration checkpoint
-└── REFACTOR_PLAN_PYDANTIC_AI_ALIGNMENT.md  # Full refactor plan
+├── CLAUDE_CODE_GUIDE.md          # This file (CURRENT)
+│
+└── archive/pydantic-ai-refactor/ # ARCHIVED migration docs
+    ├── PHASE_13_COMPLETE.md      # Phase 13 completion summary
+    ├── PHASE_14_STATUS.md        # Phase 14 completion status
+    └── PHASE_*.md                # All other phase documents
 ```
 
 ### Quick Reference: Import Paths
@@ -1076,9 +1120,9 @@ Before considering a tool complete:
 ---
 
 **Last Updated**: 2025-01-24
-**Pydantic AI Alignment**: Phase 1 Complete (85%)
-**Status**: Ready for autonomous tool development
+**Pydantic AI Migration**: COMPLETE ✅
+**Status**: Production-ready, all tools using @agent.tool() pattern
 
 ---
 
-**Pro Tip for Claude Code**: When in doubt, check existing tools in `tools_registered.py` and agent files. They provide working examples of every pattern in this guide.
+**Pro Tip for Claude Code**: When in doubt, check existing tools in agent files (e.g., `viraltracker/agent/agents/twitter_agent.py`). They provide working examples of every pattern in this guide. All tools use the @agent.tool() decorator with ToolMetadata.
