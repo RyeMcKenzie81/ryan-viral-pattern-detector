@@ -116,7 +116,7 @@ async def get_product_with_images(
         product = await ctx.deps.ad_creation.get_product(product_uuid)
 
         logger.info(f"Product fetched: {product.name}")
-        return product.dict()
+        return product.model_dump(mode='json')
 
     except ValueError as e:
         logger.error(f"Product not found: {product_id}")
@@ -193,7 +193,7 @@ async def get_hooks_for_product(
         )
 
         logger.info(f"Fetched {len(hooks)} hooks for product {product_id}")
-        return [hook.dict() for hook in hooks]
+        return [hook.model_dump(mode='json') for hook in hooks]
 
     except ValueError as e:
         logger.error(f"Invalid product_id: {product_id}")
@@ -257,7 +257,7 @@ async def get_ad_brief_template(
         template = await ctx.deps.ad_creation.get_ad_brief_template(brand_id=brand_uuid)
 
         logger.info(f"Ad brief template fetched: {template.name}")
-        return template.dict()
+        return template.model_dump(mode='json')
 
     except ValueError as e:
         logger.error(f"No ad brief template found")

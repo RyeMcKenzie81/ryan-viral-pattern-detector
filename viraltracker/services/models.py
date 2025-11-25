@@ -725,12 +725,18 @@ class Product(BaseModel):
     id: UUID
     brand_id: UUID
     name: str
-    benefits: List[str] = Field(default_factory=list, description="Product benefits for ad copy")
+    benefits: Optional[List[str]] = Field(None, description="Product benefits for ad copy")
     key_ingredients: Optional[List[str]] = Field(None, description="Key ingredients to highlight")
     target_audience: Optional[str] = Field(None, description="Target demographic")
     product_url: Optional[str] = Field(None, description="Product landing page URL")
     main_image_storage_path: Optional[str] = Field(None, description="Storage path to main product image")
-    reference_image_storage_paths: List[str] = Field(default_factory=list, description="Additional product images")
+    reference_image_storage_paths: Optional[List[str]] = Field(None, description="Additional product images")
+
+    @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', mode='before')
+    @classmethod
+    def convert_none_to_empty_list(cls, v):
+        """Convert None to empty list for list fields"""
+        return v if v is not None else []
 
 
 class Hook(BaseModel):
