@@ -164,12 +164,17 @@ class AdCreationService:
         Returns:
             Storage path: "reference-ads/{ad_run_id}_{filename}"
         """
+        import asyncio
+
         storage_path = f"{ad_run_id}_{filename}"
 
-        self.supabase.storage.from_("reference-ads").upload(
-            storage_path,
-            image_data,
-            {"content-type": "image/png"}
+        # Run sync Supabase call in thread pool to avoid blocking event loop
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_("reference-ads").upload(
+                storage_path,
+                image_data,
+                {"content-type": "image/png"}
+            )
         )
 
         logger.info(f"Uploaded reference ad: {storage_path}")
@@ -192,13 +197,18 @@ class AdCreationService:
         Returns:
             Storage path: "generated-ads/{ad_run_id}/{prompt_index}.png"
         """
+        import asyncio
+
         image_data = base64.b64decode(image_base64)
         storage_path = f"{ad_run_id}/{prompt_index}.png"
 
-        self.supabase.storage.from_("generated-ads").upload(
-            storage_path,
-            image_data,
-            {"content-type": "image/png"}
+        # Run sync Supabase call in thread pool to avoid blocking event loop
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_("generated-ads").upload(
+                storage_path,
+                image_data,
+                {"content-type": "image/png"}
+            )
         )
 
         logger.info(f"Uploaded generated ad: {storage_path}")
@@ -214,12 +224,17 @@ class AdCreationService:
         Returns:
             Binary image data
         """
+        import asyncio
+
         # Parse bucket and path
         parts = storage_path.split("/", 1)
         bucket = parts[0]
         path = parts[1] if len(parts) > 1 else storage_path
 
-        data = self.supabase.storage.from_(bucket).download(path)
+        # Run sync Supabase call in thread pool to avoid blocking event loop
+        data = await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(bucket).download(path)
+        )
         return data
 
     async def get_image_as_base64(self, storage_path: str) -> str:
