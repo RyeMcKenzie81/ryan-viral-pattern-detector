@@ -39,7 +39,13 @@ from .models import (
     ErrorResponse
 )
 from .endpoint_generator import generate_tool_endpoints
-from ..agent.agent import agent
+from ..agent.agent import agent  # Keep for backwards compatibility in /agent/run
+from ..agent.orchestrator import orchestrator
+from ..agent.agents.twitter_agent import twitter_agent
+from ..agent.agents.tiktok_agent import tiktok_agent
+from ..agent.agents.youtube_agent import youtube_agent
+from ..agent.agents.facebook_agent import facebook_agent
+from ..agent.agents.analysis_agent import analysis_agent
 from ..agent.dependencies import AgentDependencies
 
 # ============================================================================
@@ -340,11 +346,35 @@ async def shutdown_event():
 # Auto-Generated Tool Endpoints
 # ============================================================================
 
-# Generate and include router for all agent tools
+# Generate and include routers for ALL agents (orchestrator + 5 specialists)
 logger.info("Generating auto-endpoints for all agent tools...")
-tools_router = generate_tool_endpoints(agent, limiter, verify_api_key)
-app.include_router(tools_router)
+
+# Generate router for each agent
+orchestrator_router = generate_tool_endpoints(orchestrator, limiter, verify_api_key)
+twitter_router = generate_tool_endpoints(twitter_agent, limiter, verify_api_key)
+tiktok_router = generate_tool_endpoints(tiktok_agent, limiter, verify_api_key)
+youtube_router = generate_tool_endpoints(youtube_agent, limiter, verify_api_key)
+facebook_router = generate_tool_endpoints(facebook_agent, limiter, verify_api_key)
+analysis_router = generate_tool_endpoints(analysis_agent, limiter, verify_api_key)
+
+# Include all routers with platform-specific prefixes and tags
+app.include_router(orchestrator_router, prefix="/api/v1/orchestrator", tags=["Orchestrator"])
+app.include_router(twitter_router, prefix="/api/v1/twitter", tags=["Twitter"])
+app.include_router(tiktok_router, prefix="/api/v1/tiktok", tags=["TikTok"])
+app.include_router(youtube_router, prefix="/api/v1/youtube", tags=["YouTube"])
+app.include_router(facebook_router, prefix="/api/v1/facebook", tags=["Facebook"])
+app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
+
+# Legacy: Include orchestrator router at /tools/* for backwards compatibility
+app.include_router(orchestrator_router, prefix="/tools", tags=["Tools (Legacy)"])
+
 logger.info("Auto-generated tool endpoints registered successfully")
+logger.info(f"  - Orchestrator: {len(orchestrator._function_toolset.tools)} tools")
+logger.info(f"  - Twitter: {len(twitter_agent._function_toolset.tools)} tools")
+logger.info(f"  - TikTok: {len(tiktok_agent._function_toolset.tools)} tools")
+logger.info(f"  - YouTube: {len(youtube_agent._function_toolset.tools)} tools")
+logger.info(f"  - Facebook: {len(facebook_agent._function_toolset.tools)} tools")
+logger.info(f"  - Analysis: {len(analysis_agent._function_toolset.tools)} tools")
 
 
 # ============================================================================
