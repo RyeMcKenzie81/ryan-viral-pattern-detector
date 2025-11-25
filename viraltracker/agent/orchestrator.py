@@ -20,7 +20,8 @@ from .agents import (
     tiktok_agent,
     youtube_agent,
     facebook_agent,
-    analysis_agent
+    analysis_agent,
+    ad_creation_agent
 )
 
 logger = logging.getLogger(__name__)
