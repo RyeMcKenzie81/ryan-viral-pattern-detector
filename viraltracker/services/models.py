@@ -747,7 +747,7 @@ class Hook(BaseModel):
     category: str = Field(..., description="Universal persuasive principle category")
     framework: Optional[str] = Field(None, description="Original framework name")
     impact_score: int = Field(ge=0, le=21, description="Impact score 0-21 based on persuasive framework")
-    emotional_score: str = Field(..., description="Emotional intensity: Very High, High, Medium, Low")
+    emotional_score: Optional[str] = Field(None, description="Emotional intensity: Very High, High, Medium, Low")
     active: bool = True
 
 

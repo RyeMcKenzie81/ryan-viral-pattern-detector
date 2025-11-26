@@ -441,6 +441,10 @@ Generate the article now:"""
                     from io import BytesIO
 
                     for img_base64 in reference_images[:14]:  # Max 14 reference images
+                        # Convert bytes to base64 string if needed (Bug #11 fix)
+                        if isinstance(img_base64, bytes):
+                            img_base64 = base64.b64encode(img_base64).decode('utf-8')
+
                         # Clean and decode base64 to PIL.Image
                         # Remove whitespace, newlines, and add padding if needed
                         clean_data = img_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
@@ -536,6 +540,10 @@ Generate the article now:"""
                 from PIL import Image
                 from io import BytesIO
 
+                # Convert bytes to base64 string if needed (Bug #14 fix)
+                if isinstance(image_data, bytes):
+                    image_data = base64.b64encode(image_data).decode('utf-8')
+
                 # Clean and decode base64 image
                 # Remove whitespace, newlines, and add padding if needed
                 clean_data = image_data.strip().replace('\n', '').replace('\r', '').replace(' ', '')
@@ -601,3 +609,70 @@ Generate the article now:"""
         """
         # Reuse analyze_image logic - review is a type of analysis
         return await self.analyze_image(image_data, prompt, max_retries)
+
+    async def analyze_text(
+        self,
+        text: str,
+        prompt: str,
+        max_retries: int = 3
+    ) -> str:
+        """
+        Analyze text using Gemini AI with custom prompt.
+
+        General-purpose text analysis method for tasks like hook selection,
+        content evaluation, or any text-based AI analysis.
+
+        Args:
+            text: Text content to analyze
+            prompt: Analysis instructions/question
+            max_retries: Maximum retries on rate limit errors
+
+        Returns:
+            AI analysis result as string
+
+        Raises:
+            Exception: If all retries fail or non-rate-limit error occurs
+        """
+        import asyncio
+
+        # Wait for rate limit
+        await self._rate_limit()
+
+        # Build full prompt
+        full_prompt = f"{prompt}\n\n{text}"
+
+        # Call API with retries (following analyze_hook pattern)
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                logger.debug(f"Analyzing text with Gemini (prompt: {prompt[:50]}...)")
+                response = self.model.generate_content(full_prompt)
+
+                logger.info(f"Text analysis completed successfully")
+                return response.text
+
+            except Exception as e:
+                error_str = str(e)
+                last_error = e
+
+                # Check if it's a rate limit error
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(
+                            f"Rate limit hit during text analysis. "
+                            f"Retry {retry_count}/{max_retries} after {retry_delay}s..."
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"Max retries exceeded for text analysis")
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                else:
+                    logger.error(f"Error analyzing text: {e}")
+                    raise
+
+        raise last_error or Exception("Unknown error during text analysis")

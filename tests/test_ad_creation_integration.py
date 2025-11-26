@@ -56,14 +56,21 @@ def test_product_id():
 
 @pytest.fixture
 def test_reference_ad_base64():
-    """Generate a small 1x1 pixel test image as base64"""
-    # Create a 1x1 transparent PNG image
-    img = Image.new('RGBA', (1, 1), (0, 0, 0, 0))
-    buffer = BytesIO()
-    img.save(buffer, format='PNG')
-    buffer.seek(0)
+    """Load real reference ad from test_images folder as base64"""
+    # Use the real reference ad from test_images
+    test_image_path = Path(__file__).parent.parent / "test_images" / "reference_ads" / "preview-8.jpg"
 
-    return base64.b64encode(buffer.read()).decode('utf-8')
+    if not test_image_path.exists():
+        # Fallback: Create a small test image if the real one doesn't exist
+        img = Image.new('RGB', (100, 100), (255, 0, 0))
+        buffer = BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        return base64.b64encode(buffer.read()).decode('utf-8')
+
+    # Read and encode the real reference ad
+    with open(test_image_path, 'rb') as f:
+        return base64.b64encode(f.read()).decode('utf-8')
 
 
 @pytest.fixture
@@ -155,50 +162,59 @@ class TestAdCreationAgentWorkflow:
         - Ad generation (5 variations)
         - Dual AI review (Claude + Gemini)
         - Database persistence
+
+        NOTE: This test calls the workflow tool directly, not through agent orchestration.
+        This is the correct approach for integration tests - we're testing business logic,
+        not agent prompt engineering.
         """
-        # Create dependencies (no ad-specific params - those go in the agent prompt)
+        # Import the workflow tool function
+        from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+        from pydantic_ai import RunContext
+        from pydantic_ai.models import Model
+        from pydantic_ai.usage import Usage
+
+        # Create dependencies
         deps = AgentDependencies.create(
             project_name="default"
         )
 
-        # Run the agent - it will call the complete_ad_workflow tool
-        result = await ad_creation_agent.run(
-            f"""Execute the complete ad creation workflow for this request:
-
-Product ID: {test_product_id}
-Reference Ad: (base64 image provided)
-Filename: test_reference.png
-
-Use the complete_ad_workflow tool to:
-1. Create ad run in database
-2. Upload reference ad to storage
-3. Fetch product data and hooks
-4. Analyze reference ad with Vision AI
-5. Select 5 diverse hooks
-6. Generate 5 ad variations (ONE AT A TIME)
-7. Dual AI review (Claude + Gemini) with OR logic
-8. Return complete results
-
-Call complete_ad_workflow with these parameters:
-- product_id: "{test_product_id}"
-- reference_ad_base64: "{test_reference_ad_base64}"
-- reference_ad_filename: "test_reference.png"
-- project_id: ""
-""",
+        # Create RunContext for the tool call (with required model and usage parameters)
+        ctx = RunContext(
             deps=deps,
-            model="claude-sonnet-4-5-20250929"
+            model=None,  # Model not needed for direct tool call
+            usage=Usage()  # Empty usage tracker
         )
 
-        # Extract workflow result
-        workflow_data = result.output if hasattr(result, 'output') else result
+        # Call the workflow tool directly
+        result = await complete_ad_workflow(
+            ctx=ctx,
+            product_id=test_product_id,
+            reference_ad_base64=test_reference_ad_base64,
+            reference_ad_filename="test_reference.png",
+            project_id=""
+        )
 
-        # Verify we got data back
-        assert workflow_data is not None
+        # Verify workflow result structure
+        assert result is not None
+        assert isinstance(result, dict)
 
-        # If we got a dict, verify structure
-        if isinstance(workflow_data, dict):
-            # Verify we have key fields
-            assert 'ad_run_id' in workflow_data or 'product' in workflow_data or 'generated_ads' in workflow_data
+        # Verify key workflow outputs
+        assert 'ad_run_id' in result
+        assert 'product' in result
+        assert 'generated_ads' in result
+        assert 'approved_count' in result
+        assert 'rejected_count' in result
+        assert 'flagged_count' in result
+
+        # Verify we generated 5 ads
+        assert len(result['generated_ads']) == 5
+
+        # Verify each ad has reviews
+        for ad in result['generated_ads']:
+            assert 'claude_review' in ad
+            assert 'gemini_review' in ad
+            assert 'final_status' in ad
+            assert ad['final_status'] in ['approved', 'rejected', 'flagged']
 
     @pytest.mark.asyncio
     async def test_workflow_with_invalid_product_id(

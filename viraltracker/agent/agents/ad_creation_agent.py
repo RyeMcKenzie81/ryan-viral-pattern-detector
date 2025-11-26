@@ -564,6 +564,8 @@ async def select_hooks(
         ValueError: If hooks list is empty or count invalid
         Exception: If Gemini AI selection fails
     """
+    import json
+
     try:
         logger.info(f"Selecting {count} diverse hooks from {len(hooks)} candidates")
 
@@ -574,7 +576,6 @@ async def select_hooks(
             raise ValueError("count must be between 1 and 10")
 
         # Build selection prompt
-        import json
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
@@ -618,8 +619,17 @@ async def select_hooks(
             prompt="Select diverse hooks with reasoning and adaptations"
         )
 
+        # Strip markdown code fences if present (Bug #10 fix)
+        result_text = selection_result.strip()
+        if result_text.startswith("```"):
+            # Remove opening fence (e.g., "```json\n")
+            result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+            # Remove closing fence (e.g., "\n```")
+            if result_text.endswith("```"):
+                result_text = result_text.rsplit("\n```", 1)[0]
+
         # Parse JSON response
-        selected_hooks = json.loads(selection_result)
+        selected_hooks = json.loads(result_text)
 
         logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
                    f"{[h.get('category') for h in selected_hooks]}")
@@ -1098,6 +1108,9 @@ async def review_ad_claude(
         ValueError: If storage_path is invalid
         Exception: If Claude Vision API fails
     """
+    # Import json at function scope (Bug #18 fix)
+    import json
+
     try:
         logger.info(f"Claude reviewing ad: {storage_path}")
 
@@ -1109,7 +1122,6 @@ async def review_ad_claude(
         image_data = await ctx.deps.ad_creation.download_image(storage_path)
 
         # Build review prompt
-        import json
         review_prompt = f"""
         You are reviewing a generated Facebook ad image for production readiness.
 
@@ -1172,6 +1184,17 @@ async def review_ad_claude(
 
         anthropic_client = Anthropic()
 
+        # Detect actual image format from magic bytes (Bug #12 fix)
+        media_type = "image/png"  # Default fallback
+        if image_data[:4] == b'RIFF' and image_data[8:12] == b'WEBP':
+            media_type = "image/webp"
+        elif image_data[:3] == b'\xff\xd8\xff':
+            media_type = "image/jpeg"
+        elif image_data[:8] == b'\x89PNG\r\n\x1a\n':
+            media_type = "image/png"
+        elif image_data[:6] in (b'GIF87a', b'GIF89a'):
+            media_type = "image/gif"
+
         # Encode image as base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
 
@@ -1186,7 +1209,7 @@ async def review_ad_claude(
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            "media_type": media_type,
                             "data": image_base64
                         }
                     },
@@ -1200,7 +1223,21 @@ async def review_ad_claude(
 
         # Parse response
         review_text = message.content[0].text
-        review_dict = json.loads(review_text)
+
+        # Strip markdown code fences if present (Bug #13 fix)
+        # Claude sometimes wraps JSON in ```json ... ```
+        review_text_clean = review_text.strip()
+        if review_text_clean.startswith('```'):
+            # Remove opening fence (```json or ```)
+            lines = review_text_clean.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            # Remove closing fence
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            review_text_clean = '\n'.join(lines)
+
+        review_dict = json.loads(review_text_clean)
 
         logger.info(f"Claude review complete: status={review_dict.get('status')}, "
                    f"product_acc={review_dict.get('product_accuracy')}, "
@@ -1354,8 +1391,21 @@ async def review_ad_gemini(
             prompt=review_prompt
         )
 
+        # Strip markdown code fences if present (Bug #15 fix)
+        # Gemini sometimes wraps JSON in ```json ... ```
+        review_text_clean = review_result.strip()
+        if review_text_clean.startswith('```'):
+            # Remove opening fence (```json or ```)
+            lines = review_text_clean.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            # Remove closing fence
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            review_text_clean = '\n'.join(lines)
+
         # Parse JSON response
-        review_dict = json.loads(review_result)
+        review_dict = json.loads(review_text_clean)
 
         logger.info(f"Gemini review complete: status={review_dict.get('status')}, "
                    f"product_acc={review_dict.get('product_accuracy')}, "
@@ -1530,6 +1580,7 @@ async def complete_ad_workflow(
     """
     try:
         from datetime import datetime
+        from uuid import UUID
         import json
 
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
@@ -1656,19 +1707,15 @@ async def complete_ad_workflow(
                 nano_banana_prompt=nano_banana_prompt
             )
 
-            # Save immediately (resilience)
-            storage_path = await save_generated_ad(
-                ctx=ctx,
-                ad_run_id=ad_run_id_str,
-                generated_ad=generated_ad,
-                nano_banana_prompt=nano_banana_prompt,
-                hook=selected_hook
+            # Upload image to storage to get path (Bug #17 fix)
+            # Don't save to database yet - will save with reviews later
+            storage_path = await ctx.deps.ad_creation.upload_generated_ad(
+                ad_run_id=UUID(ad_run_id_str),
+                prompt_index=i,
+                image_base64=generated_ad['image_base64']
             )
 
-            # Update generated_ad with storage path
-            generated_ad['storage_path'] = storage_path
-
-            logger.info(f"  ✓ Variation {i} generated and saved: {storage_path}")
+            logger.info(f"  ✓ Variation {i} generated and uploaded: {storage_path}")
 
             # STAGE 11-12: Dual AI Review
             logger.info(f"  → Reviewing variation {i} with Claude + Gemini...")
