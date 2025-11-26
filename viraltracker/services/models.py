@@ -732,7 +732,14 @@ class Product(BaseModel):
     main_image_storage_path: Optional[str] = Field(None, description="Storage path to main product image")
     reference_image_storage_paths: Optional[List[str]] = Field(None, description="Additional product images")
 
-    @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', mode='before')
+    # Phase 6: Product Constraints & Offer Controls
+    current_offer: Optional[str] = Field(None, description="Active promotional offer text to prevent hallucinated discount claims")
+    prohibited_claims: Optional[List[str]] = Field(None, description="Claims that must not appear in ads for legal compliance")
+    required_disclaimers: Optional[str] = Field(None, description="Legal disclaimers that must appear in ads")
+    brand_voice_notes: Optional[str] = Field(None, description="Tone and style guidelines for ad copy generation")
+    unique_selling_points: Optional[List[str]] = Field(None, description="Key differentiators vs competitors to highlight")
+
+    @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', mode='before')
     @classmethod
     def convert_none_to_empty_list(cls, v):
         """Convert None to empty list for list fields"""

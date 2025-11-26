@@ -613,32 +613,53 @@ async def select_hooks(
         ]
         """
 
-        # Call Gemini AI
-        selection_result = await ctx.deps.gemini.analyze_text(
-            text=selection_prompt,
-            prompt="Select diverse hooks with reasoning and adaptations"
-        )
+        # Bug #20: Add retry logic for malformed JSON responses
+        max_retries = 3
+        last_error = None
 
-        # Strip markdown code fences if present (Bug #10 fix)
-        result_text = selection_result.strip()
-        if result_text.startswith("```"):
-            # Remove opening fence (e.g., "```json\n")
-            result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
-            # Remove closing fence (e.g., "\n```")
-            if result_text.endswith("```"):
-                result_text = result_text.rsplit("\n```", 1)[0]
+        for attempt in range(max_retries):
+            try:
+                # Call Gemini AI
+                selection_result = await ctx.deps.gemini.analyze_text(
+                    text=selection_prompt,
+                    prompt="Select diverse hooks with reasoning and adaptations. IMPORTANT: Return ONLY valid JSON array, no markdown fences."
+                )
 
-        # Parse JSON response
-        selected_hooks = json.loads(result_text)
+                # Strip markdown code fences if present (Bug #10 fix)
+                result_text = selection_result.strip()
+                if result_text.startswith("```"):
+                    # Remove opening fence (e.g., "```json\n")
+                    result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+                    # Remove closing fence (e.g., "\n```")
+                    if result_text.endswith("```"):
+                        result_text = result_text.rsplit("\n```", 1)[0]
 
-        logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
-                   f"{[h.get('category') for h in selected_hooks]}")
+                # Additional JSON cleaning
+                result_text = result_text.strip()
 
-        return selected_hooks
+                # Parse JSON response
+                selected_hooks = json.loads(result_text)
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Gemini selection response: {str(e)}")
-        raise Exception(f"Failed to parse selection result: {str(e)}")
+                logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
+                           f"{[h.get('category') for h in selected_hooks]}")
+
+                return selected_hooks
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} - JSON parse error: {str(e)}")
+                logger.warning(f"Problematic JSON (first 500 chars): {result_text[:500]}...")
+
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying with more explicit JSON instructions...")
+                    # Add more explicit instruction for next attempt
+                    selection_prompt += "\n\nIMPORTANT: Ensure all JSON strings are properly escaped, no trailing commas, and valid JSON syntax."
+                    continue
+                else:
+                    # Final attempt failed
+                    logger.error(f"All {max_retries} attempts failed. Last error: {str(e)}")
+                    logger.error(f"Failed JSON text: {result_text}")
+                    raise Exception(f"Failed to parse selection result after {max_retries} attempts: {str(e)}")
     except ValueError as e:
         logger.error(f"Invalid input: {str(e)}")
         raise
@@ -730,6 +751,82 @@ async def select_product_images(
         raise Exception(f"Failed to select product images: {str(e)}")
 
 
+# Phase 6: Hook-to-Benefit Matching Helper Function
+def match_benefit_to_hook(hook: Dict, benefits: List[str]) -> str:
+    """
+    Select the most relevant product benefit for a given hook.
+
+    Strategy:
+    1. Extract keywords from hook text and category
+    2. Score each benefit by keyword overlap
+    3. Return highest scoring benefit
+    4. Fallback to first benefit if no match or empty list
+
+    Example:
+        Hook: "My dog went from limping to running in 2 weeks!"
+        Category: "before_after"
+        Keywords: ["limping", "running", "mobility", "movement", "pain"]
+
+        Benefits:
+            - "Supports hip & joint mobility" → HIGH SCORE (mobility match)
+            - "Promotes shiny coat" → LOW SCORE (no match)
+
+        Result: "Supports hip & joint mobility"
+    """
+    if not benefits:
+        return ""
+
+    if len(benefits) == 1:
+        return benefits[0]
+
+    # Extract hook keywords (text + category)
+    hook_text = str(hook.get('adapted_text', '') or hook.get('text', '')).lower()
+    hook_category = str(hook.get('category', '')).lower()
+
+    # Common keyword associations for different hook categories
+    category_keywords = {
+        'before_after': ['transform', 'change', 'improve', 'better', 'result', 'difference'],
+        'social_proof': ['trust', 'proven', 'recommend', 'love', 'works', 'effective'],
+        'authority': ['expert', 'professional', 'quality', 'premium', 'science', 'research'],
+        'scarcity': ['limited', 'exclusive', 'special', 'unique', 'rare'],
+        'urgency': ['now', 'today', 'fast', 'quick', 'immediate', 'soon'],
+        'pain_point': ['problem', 'issue', 'struggle', 'pain', 'suffering', 'discomfort'],
+        'aspiration': ['goal', 'dream', 'want', 'desire', 'wish', 'achieve']
+    }
+
+    # Combine hook text words and category keywords
+    hook_words = set(hook_text.split())
+    if hook_category in category_keywords:
+        hook_words.update(category_keywords[hook_category])
+
+    # Score each benefit
+    best_benefit = benefits[0]
+    best_score = 0
+
+    for benefit in benefits:
+        benefit_lower = benefit.lower()
+        benefit_words = set(benefit_lower.split())
+
+        # Calculate overlap score
+        overlap = len(hook_words & benefit_words)
+
+        # Bonus points for partial word matches (e.g., "mobility" contains "mobile")
+        partial_matches = sum(
+            1 for hook_word in hook_words
+            for benefit_word in benefit_words
+            if len(hook_word) > 3 and len(benefit_word) > 3 and
+            (hook_word in benefit_word or benefit_word in hook_word)
+        )
+
+        score = overlap + (partial_matches * 0.5)
+
+        if score > best_score:
+            best_score = score
+            best_benefit = benefit
+
+    return best_benefit
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
@@ -802,6 +899,9 @@ async def generate_nano_banana_prompt(
         if prompt_index < 1 or prompt_index > 5:
             raise ValueError("prompt_index must be between 1 and 5")
 
+        # Phase 6: Match benefit to hook for relevant subheadline
+        matched_benefit = match_benefit_to_hook(selected_hook, product.get('benefits', []))
+
         # Build specification object
         spec = {
             "canvas": f"{ad_analysis.get('canvas_size', '1080x1080px')}, "
@@ -809,12 +909,48 @@ async def generate_nano_banana_prompt(
             "product_image": "Use uploaded product image EXACTLY - no modifications to product appearance",
             "text_elements": {
                 "headline": selected_hook.get('adapted_text'),
-                "subheadline": product.get('benefits', [])[0] if product.get('benefits') else "",
+                "subheadline": matched_benefit,  # Phase 6: Use matched benefit instead of first benefit
                 "layout": ad_analysis.get('text_placement', {})
             },
             "colors": ad_analysis.get('color_palette', []),
             "authenticity_markers": ad_analysis.get('authenticity_markers', [])
         }
+
+        # Phase 6: Build offer and constraints sections
+        offer_section = ""
+        if product.get('current_offer'):
+            offer_section = f"""
+        **Current Offer (USE EXACTLY AS WRITTEN):**
+        "{product.get('current_offer')}"
+        """
+
+        prohibited_section = ""
+        if product.get('prohibited_claims'):
+            prohibited_section = f"""
+        **PROHIBITED CLAIMS (DO NOT USE):**
+        {', '.join(product.get('prohibited_claims', []))}
+        """
+
+        brand_voice_section = ""
+        if product.get('brand_voice_notes'):
+            brand_voice_section = f"""
+        **Brand Voice & Tone:**
+        {product.get('brand_voice_notes')}
+        """
+
+        usp_section = ""
+        if product.get('unique_selling_points'):
+            usp_section = f"""
+        **Unique Selling Points:**
+        {', '.join(product.get('unique_selling_points', []))}
+        """
+
+        disclaimer_section = ""
+        if product.get('required_disclaimers'):
+            disclaimer_section = f"""
+        **Required Disclaimer (MUST INCLUDE):**
+        {product.get('required_disclaimers')}
+        """
 
         # Build instruction text
         instruction_text = f"""
@@ -831,13 +967,15 @@ async def generate_nano_banana_prompt(
 
         **Product:**
         - Name: {product.get('name')}
-        - Benefits: {', '.join(product.get('benefits', []))}
+        - Primary Benefit (matched to hook): {matched_benefit}
         - Target: {product.get('target_audience', 'general audience')}
-
+        {offer_section}{usp_section}{brand_voice_section}{prohibited_section}{disclaimer_section}
         **Critical Requirements:**
         - Use product image EXACTLY as provided (no hallucination)
         - Match reference ad layout and style
         - Maintain brand voice from ad brief
+        - If offer is provided, use EXACT wording (no hallucination of discounts)
+        - Do NOT use any prohibited claims listed above
         """
 
         # Build full prompt
