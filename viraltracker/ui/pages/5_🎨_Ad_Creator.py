@@ -35,6 +35,10 @@ if 'current_ad_run_id' not in st.session_state:
     st.session_state.current_ad_run_id = None
 if 'selected_product' not in st.session_state:
     st.session_state.selected_product = None
+if 'num_variations' not in st.session_state:
+    st.session_state.num_variations = 5
+if 'content_source' not in st.session_state:
+    st.session_state.content_source = "hooks"
 
 
 def get_supabase_client():
@@ -325,13 +329,16 @@ else:
         content_source = st.radio(
             "How should we create the ad variations?",
             options=["hooks", "recreate_template"],
+            index=0 if st.session_state.content_source == "hooks" else 1,
             format_func=lambda x: {
                 "hooks": "🎣 Hooks List - Use persuasive hooks from your database",
                 "recreate_template": "🔄 Recreate Template - Keep template's angle, vary by product benefits"
             }.get(x, x),
             horizontal=False,
-            help="Choose how to generate the messaging for each ad variation"
+            help="Choose how to generate the messaging for each ad variation",
+            disabled=st.session_state.workflow_running
         )
+        st.session_state.content_source = content_source
 
         # Show explanation based on selection
         if content_source == "hooks":
@@ -347,9 +354,11 @@ else:
             "How many ad variations to generate?",
             min_value=1,
             max_value=15,
-            value=5,
-            help="Number of unique ad variations to create"
+            value=st.session_state.num_variations,
+            help="Number of unique ad variations to create",
+            disabled=st.session_state.workflow_running
         )
+        st.session_state.num_variations = num_variations
 
         variation_source = "hooks" if content_source == "hooks" else "benefits/USPs"
         st.caption(f"Will generate {num_variations} ads using different {variation_source}")
@@ -409,18 +418,23 @@ else:
 
         st.divider()
 
-        # Submit button
+        # Submit button - disabled while workflow is running
+        is_running = st.session_state.workflow_running
+        button_text = "⏳ Generating... Please wait" if is_running else f"🚀 Generate {num_variations} Ad Variations"
+
         submitted = st.form_submit_button(
-            f"🚀 Generate {num_variations} Ad Variations",
+            button_text,
             type="primary",
-            use_container_width=True
+            use_container_width=True,
+            disabled=is_running
         )
 
-        if submitted:
+        if submitted and not is_running:
             if not reference_ad_base64:
                 st.error("Please upload or select a reference ad")
             else:
                 st.session_state.workflow_running = True
+                st.rerun()  # Rerun to show disabled button immediately
 
     # Run workflow outside form
     if st.session_state.workflow_running and reference_ad_base64:
