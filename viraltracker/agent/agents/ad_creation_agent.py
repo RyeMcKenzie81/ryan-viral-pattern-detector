@@ -2421,69 +2421,134 @@ async def complete_ad_workflow(
         for i, selected_hook in enumerate(selected_hooks, start=1):
             logger.info(f"  → Generating variation {i}/{num_variations}...")
 
-            # Generate prompt
-            nano_banana_prompt = await generate_nano_banana_prompt(
-                ctx=ctx,
-                prompt_index=i,
-                selected_hook=selected_hook,
-                product=product_dict,
-                ad_analysis=ad_analysis,
-                ad_brief_instructions=ad_brief_instructions,
-                reference_ad_path=reference_ad_path,
-                product_image_path=product_image_path
-            )
+            try:
+                # Generate prompt
+                nano_banana_prompt = await generate_nano_banana_prompt(
+                    ctx=ctx,
+                    prompt_index=i,
+                    selected_hook=selected_hook,
+                    product=product_dict,
+                    ad_analysis=ad_analysis,
+                    ad_brief_instructions=ad_brief_instructions,
+                    reference_ad_path=reference_ad_path,
+                    product_image_path=product_image_path
+                )
 
-            # Execute generation
-            generated_ad = await execute_nano_banana(
-                ctx=ctx,
-                nano_banana_prompt=nano_banana_prompt
-            )
+                # Execute generation
+                generated_ad = await execute_nano_banana(
+                    ctx=ctx,
+                    nano_banana_prompt=nano_banana_prompt
+                )
 
-            # Upload image to storage to get path (Bug #17 fix)
-            # Don't save to database yet - will save with reviews later
-            storage_path = await ctx.deps.ad_creation.upload_generated_ad(
-                ad_run_id=UUID(ad_run_id_str),
-                prompt_index=i,
-                image_base64=generated_ad['image_base64']
-            )
+                # Upload image to storage to get path (Bug #17 fix)
+                # Don't save to database yet - will save with reviews later
+                storage_path = await ctx.deps.ad_creation.upload_generated_ad(
+                    ad_run_id=UUID(ad_run_id_str),
+                    prompt_index=i,
+                    image_base64=generated_ad['image_base64']
+                )
 
-            logger.info(f"  ✓ Variation {i} generated and uploaded: {storage_path}")
+                logger.info(f"  ✓ Variation {i} generated and uploaded: {storage_path}")
+
+            except Exception as gen_error:
+                # Generation failed for this variation - log and continue with others
+                logger.error(f"  ✗ Generation failed for variation {i}: {str(gen_error)}")
+
+                # Record the failure in results
+                generated_ads_with_reviews.append({
+                    "prompt_index": i,
+                    "prompt": None,
+                    "storage_path": None,
+                    "claude_review": None,
+                    "gemini_review": None,
+                    "reviewers_agree": None,
+                    "final_status": "generation_failed",
+                    "error": str(gen_error)
+                })
+                continue  # Skip to next variation
 
             # STAGE 11-12: Dual AI Review
             logger.info(f"  → Reviewing variation {i} with Claude + Gemini...")
 
-            # Claude review
-            claude_review = await review_ad_claude(
-                ctx=ctx,
-                storage_path=storage_path,
-                product_name=product_dict.get('name'),
-                hook_text=selected_hook.get('adapted_text'),
-                ad_analysis=ad_analysis
-            )
+            # Claude review - with error handling
+            claude_review = None
+            claude_error = None
+            try:
+                claude_review = await review_ad_claude(
+                    ctx=ctx,
+                    storage_path=storage_path,
+                    product_name=product_dict.get('name'),
+                    hook_text=selected_hook.get('adapted_text'),
+                    ad_analysis=ad_analysis
+                )
+            except Exception as e:
+                claude_error = str(e)
+                logger.warning(f"  ⚠️ Claude review failed for variation {i}: {claude_error}")
+                claude_review = {
+                    "reviewer": "claude",
+                    "status": "review_failed",
+                    "error": claude_error,
+                    "product_accuracy": 0,
+                    "text_accuracy": 0,
+                    "layout_accuracy": 0,
+                    "overall_quality": 0,
+                    "notes": f"Review failed: {claude_error}"
+                }
 
-            # Gemini review
-            gemini_review = await review_ad_gemini(
-                ctx=ctx,
-                storage_path=storage_path,
-                product_name=product_dict.get('name'),
-                hook_text=selected_hook.get('adapted_text'),
-                ad_analysis=ad_analysis
-            )
+            # Gemini review - with error handling
+            gemini_review = None
+            gemini_error = None
+            try:
+                gemini_review = await review_ad_gemini(
+                    ctx=ctx,
+                    storage_path=storage_path,
+                    product_name=product_dict.get('name'),
+                    hook_text=selected_hook.get('adapted_text'),
+                    ad_analysis=ad_analysis
+                )
+            except Exception as e:
+                gemini_error = str(e)
+                logger.warning(f"  ⚠️ Gemini review failed for variation {i}: {gemini_error}")
+                gemini_review = {
+                    "reviewer": "gemini",
+                    "status": "review_failed",
+                    "error": gemini_error,
+                    "product_accuracy": 0,
+                    "text_accuracy": 0,
+                    "layout_accuracy": 0,
+                    "overall_quality": 0,
+                    "notes": f"Review failed: {gemini_error}"
+                }
 
             # CRITICAL: Dual review logic with OR logic
-            claude_approved = claude_review.get('status') == 'approved'
-            gemini_approved = gemini_review.get('status') == 'approved'
+            claude_status = claude_review.get('status', 'review_failed')
+            gemini_status = gemini_review.get('status', 'review_failed')
+            claude_approved = claude_status == 'approved'
+            gemini_approved = gemini_status == 'approved'
 
-            # OR logic: either approving = approved
-            if claude_approved or gemini_approved:
+            # Handle review failures gracefully
+            if claude_status == 'review_failed' and gemini_status == 'review_failed':
+                # Both reviews failed - flag for human review
+                final_status = 'review_failed'
+            elif claude_status == 'review_failed':
+                # Only Claude failed - use Gemini's decision
+                final_status = 'approved' if gemini_approved else gemini_status
+            elif gemini_status == 'review_failed':
+                # Only Gemini failed - use Claude's decision
+                final_status = 'approved' if claude_approved else claude_status
+            elif claude_approved or gemini_approved:
+                # OR logic: either approving = approved
                 final_status = 'approved'
             elif not claude_approved and not gemini_approved:
                 final_status = 'rejected'  # Both rejected
             else:
                 final_status = 'flagged'  # Disagreement
 
-            # Check if reviewers agree
-            reviewers_agree = (claude_approved == gemini_approved)
+            # Check if reviewers agree (only if both succeeded)
+            if claude_status != 'review_failed' and gemini_status != 'review_failed':
+                reviewers_agree = (claude_approved == gemini_approved)
+            else:
+                reviewers_agree = None  # Can't compare if one failed
 
             logger.info(f"  ✓ Reviews complete: Claude={claude_review.get('status')}, "
                        f"Gemini={gemini_review.get('status')}, Final={final_status}")
@@ -2527,6 +2592,8 @@ async def complete_ad_workflow(
         approved_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'approved')
         rejected_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'rejected')
         flagged_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'flagged')
+        generation_failed_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'generation_failed')
+        review_failed_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'review_failed')
 
         # Build summary
         content_source_label = "hooks" if content_source == "hooks" else "template recreation (benefits/USPs)"
@@ -2536,15 +2603,17 @@ Ad creation workflow completed for {product_dict.get('name')}.
 **Content Source:** {content_source_label}
 
 **Results:**
-- Total ads generated: {num_variations}
+- Total ads requested: {num_variations}
 - Approved (production-ready): {approved_count}
 - Rejected (both reviewers): {rejected_count}
 - Flagged (reviewer disagreement): {flagged_count}
+- Generation failed: {generation_failed_count}
+- Review failed: {review_failed_count}
 
 **Next Steps:**
 {f"- {approved_count} ads ready for immediate use" if approved_count > 0 else ""}
-{f"- {flagged_count} ads require human review" if flagged_count > 0 else ""}
-{f"- {rejected_count} ads should be regenerated" if rejected_count > 0 else ""}
+{f"- {flagged_count + review_failed_count} ads require human review" if (flagged_count + review_failed_count) > 0 else ""}
+{f"- {rejected_count + generation_failed_count} ads should be regenerated" if (rejected_count + generation_failed_count) > 0 else ""}
         """.strip()
 
         # Mark workflow complete
