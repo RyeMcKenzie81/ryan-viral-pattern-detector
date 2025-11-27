@@ -174,7 +174,7 @@ class ErrorResponse(BaseModel):
     """Standard error response model."""
     error: str = Field(..., description="Error message")
     detail: Optional[str] = Field(None, description="Detailed error information")
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
     class Config:
         json_schema_extra = {
