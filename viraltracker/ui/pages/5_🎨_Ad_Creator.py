@@ -420,7 +420,7 @@ else:
 
         # Submit button - disabled while workflow is running
         is_running = st.session_state.workflow_running
-        button_text = "⏳ Generating... Please wait" if is_running else f"🚀 Generate {num_variations} Ad Variations"
+        button_text = "⏳ Generating... Please wait" if is_running else "🚀 Generate Ad Variations"
 
         submitted = st.form_submit_button(
             button_text,
