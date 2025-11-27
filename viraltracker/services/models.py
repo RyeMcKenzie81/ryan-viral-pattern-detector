@@ -738,6 +738,8 @@ class Product(BaseModel):
     required_disclaimers: Optional[str] = Field(None, description="Legal disclaimers that must appear in ads")
     brand_voice_notes: Optional[str] = Field(None, description="Tone and style guidelines for ad copy generation")
     unique_selling_points: Optional[List[str]] = Field(None, description="Key differentiators vs competitors to highlight")
+    product_dimensions: Optional[str] = Field(None, description="Physical size/dimensions to ensure realistic product scaling in generated images (e.g., '3 fl oz bottle, 5 inches tall, palm-sized')")
+    social_proof: Optional[str] = Field(None, description="Social proof statement to include when template has social proof elements (e.g., '100,000+ Bottles Sold', '50,000+ Happy Customers')")
 
     @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', mode='before')
     @classmethod

@@ -450,11 +450,24 @@ async def analyze_reference_ad(
         7. **Authenticity Markers**: What makes this feel authentic?
            (e.g., screenshot style, quote marks, timestamps, usernames, emojis, casual font)
 
-        8. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px, 1200x628px)
+        8. **Social Proof Elements**: Does this ad include trust signals or social proof?
+           Look for:
+           - Statistical badges (e.g., "100,000+ Sold", "5-Star Rating", "#1 Best Seller")
+           - Numerical claims displayed as graphics/badges
+           - Award badges or certification marks
+           - Customer count indicators
+           - Sales volume displays
 
-        9. **Detailed Description**: Provide a comprehensive description of the ad
-           that could be used for prompt engineering. Include layout, visual style,
-           typography, spacing, and any notable design elements.
+           Return:
+           - "has_social_proof": true/false (whether social proof elements are present)
+           - "social_proof_style": description of how social proof is displayed (e.g., "corner badge", "banner across top", "circular seal")
+           - "social_proof_placement": where it's positioned (e.g., "top_right", "bottom_left", "center_top")
+
+        9. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px, 1200x628px)
+
+        10. **Detailed Description**: Provide a comprehensive description of the ad
+            that could be used for prompt engineering. Include layout, visual style,
+            typography, spacing, and any notable design elements.
 
         Return the analysis as structured JSON matching this schema:
         {
@@ -465,6 +478,9 @@ async def analyze_reference_ad(
             "text_placement": {"key": "value"},
             "color_palette": ["#HEX"],
             "authenticity_markers": ["string"],
+            "has_social_proof": boolean,
+            "social_proof_style": "string (or null if no social proof)",
+            "social_proof_placement": "string (or null if no social proof)",
             "canvas_size": "WIDTHxHEIGHTpx",
             "detailed_description": "comprehensive description..."
         }
@@ -525,6 +541,8 @@ async def select_hooks(
     ctx: RunContext[AgentDependencies],
     hooks: List[Dict],
     ad_analysis: Dict,
+    product_name: str = "",
+    target_audience: str = "",
     count: int = 5
 ) -> List[Dict]:
     """
@@ -535,14 +553,18 @@ async def select_hooks(
     - Have high impact scores
     - Match the reference ad style and tone
     - Provide maximum coverage of persuasive principles
+    - Are clear, understandable, and mention product context
 
-    The AI adapts each hook's text to match the reference ad's style.
+    The AI adapts each hook's text to match the reference ad's style and ensures
+    the adapted text makes sense and mentions the product category.
 
     Args:
         ctx: Run context with AgentDependencies
         hooks: List of hook dictionaries from database (with id, text,
             category, framework, impact_score, emotional_score)
         ad_analysis: Ad analysis dictionary with format_type, authenticity_markers
+        product_name: Name of the product (for context)
+        target_audience: Product's target audience (e.g., "pet owners", "dog owners")
         count: Number of hooks to select (default: 5)
 
     Returns:
@@ -579,6 +601,10 @@ async def select_hooks(
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
+        **Product Context:**
+        - Product: {product_name}
+        - Target Audience: {target_audience}
+
         **Reference Ad Style:**
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
@@ -594,9 +620,13 @@ async def select_hooks(
 
         For each selected hook:
         1. Provide reasoning for why it was chosen
-        2. Adapt the text to match the reference ad style/tone
+        2. Adapt the text to match the reference ad style/tone AND ensure clarity:
            - Maintain the core message
            - Match authenticity markers (e.g., casual tone, emojis, timestamps)
+           - **CRITICAL: Fix any typos, nonsense words, or unclear phrasing**
+           - **CRITICAL: Ensure the adapted text mentions or implies the product category/target audience**
+           - Example: If target audience is "dog owners" or "pet owners", the hook should mention "my dog", "my pet", or similar context
+           - **CRITICAL: The adapted text must make sense on its own - someone reading it should understand what product category it's about**
 
         Return JSON array with this structure:
         [
@@ -752,32 +782,44 @@ async def select_product_images(
 
 
 # Phase 6: Hook-to-Benefit Matching Helper Function
-def match_benefit_to_hook(hook: Dict, benefits: List[str]) -> str:
+def match_benefit_to_hook(hook: Dict, benefits: List[str], unique_selling_points: List[str] = None) -> str:
     """
-    Select the most relevant product benefit for a given hook.
+    Select the most relevant product benefit/USP for a given hook.
+
+    Combines both benefits and unique_selling_points to find the best match.
+    USPs are typically more specific, so they're added first for prioritization.
 
     Strategy:
-    1. Extract keywords from hook text and category
-    2. Score each benefit by keyword overlap
-    3. Return highest scoring benefit
-    4. Fallback to first benefit if no match or empty list
+    1. Combine unique_selling_points + benefits into one list
+    2. Extract keywords from hook text and category
+    3. Score each item by keyword overlap
+    4. Return highest scoring item
+    5. Fallback to first item if no match or empty list
 
     Example:
         Hook: "My dog went from limping to running in 2 weeks!"
         Category: "before_after"
         Keywords: ["limping", "running", "mobility", "movement", "pain"]
 
-        Benefits:
+        Combined list:
+            - "Enhanced with hyaluronic acid for joint lubrication" → HIGH SCORE
             - "Supports hip & joint mobility" → HIGH SCORE (mobility match)
             - "Promotes shiny coat" → LOW SCORE (no match)
 
-        Result: "Supports hip & joint mobility"
+        Result: "Enhanced with hyaluronic acid for joint lubrication"
     """
-    if not benefits:
+    # Combine USPs and benefits (USPs first for priority when scores are equal)
+    combined_items = []
+    if unique_selling_points:
+        combined_items.extend(unique_selling_points)
+    if benefits:
+        combined_items.extend(benefits)
+
+    if not combined_items:
         return ""
 
-    if len(benefits) == 1:
-        return benefits[0]
+    if len(combined_items) == 1:
+        return combined_items[0]
 
     # Extract hook keywords (text + category)
     hook_text = str(hook.get('adapted_text', '') or hook.get('text', '')).lower()
@@ -799,32 +841,32 @@ def match_benefit_to_hook(hook: Dict, benefits: List[str]) -> str:
     if hook_category in category_keywords:
         hook_words.update(category_keywords[hook_category])
 
-    # Score each benefit
-    best_benefit = benefits[0]
+    # Score each item (USP or benefit)
+    best_item = combined_items[0]
     best_score = 0
 
-    for benefit in benefits:
-        benefit_lower = benefit.lower()
-        benefit_words = set(benefit_lower.split())
+    for item in combined_items:
+        item_lower = item.lower()
+        item_words = set(item_lower.split())
 
         # Calculate overlap score
-        overlap = len(hook_words & benefit_words)
+        overlap = len(hook_words & item_words)
 
         # Bonus points for partial word matches (e.g., "mobility" contains "mobile")
         partial_matches = sum(
             1 for hook_word in hook_words
-            for benefit_word in benefit_words
-            if len(hook_word) > 3 and len(benefit_word) > 3 and
-            (hook_word in benefit_word or benefit_word in hook_word)
+            for item_word in item_words
+            if len(hook_word) > 3 and len(item_word) > 3 and
+            (hook_word in item_word or item_word in hook_word)
         )
 
         score = overlap + (partial_matches * 0.5)
 
         if score > best_score:
             best_score = score
-            best_benefit = benefit
+            best_item = item
 
-    return best_benefit
+    return best_item
 
 
 @ad_creation_agent.tool(
@@ -899,8 +941,13 @@ async def generate_nano_banana_prompt(
         if prompt_index < 1 or prompt_index > 5:
             raise ValueError("prompt_index must be between 1 and 5")
 
-        # Phase 6: Match benefit to hook for relevant subheadline
-        matched_benefit = match_benefit_to_hook(selected_hook, product.get('benefits', []))
+        # Phase 6: Match benefit/USP to hook for relevant subheadline
+        # Combines both benefits and unique_selling_points for best match
+        matched_benefit = match_benefit_to_hook(
+            selected_hook,
+            product.get('benefits', []),
+            product.get('unique_selling_points')
+        )
 
         # Build specification object
         spec = {
@@ -952,6 +999,48 @@ async def generate_nano_banana_prompt(
         {product.get('required_disclaimers')}
         """
 
+        # Product dimensions/scale guidance
+        dimensions_section = ""
+        if product.get('product_dimensions'):
+            dimensions_section = f"""
+        **Product Dimensions & Scale (CRITICAL FOR REALISTIC SIZING):**
+        {product.get('product_dimensions')}
+        - Ensure the product is realistically sized relative to environmental objects (hands, pets, countertops, furniture)
+        - The product should appear proportionally correct in the scene
+        """
+        else:
+            # Default scale guidance when dimensions aren't specified
+            dimensions_section = """
+        **Scale Guidance (CRITICAL FOR REALISTIC SIZING):**
+        - Ensure the product appears realistically sized for its category
+        - Maintain realistic proportions relative to surrounding objects (countertops, hands, pets, furniture)
+        - The product should fit naturally in the scene without appearing oversized or undersized
+        """
+
+        # Social proof - only include if template has social proof elements AND product has social_proof data
+        social_proof_section = ""
+        if ad_analysis.get('has_social_proof') and product.get('social_proof'):
+            # Template has social proof, so we can include product's social proof
+            social_proof_section = f"""
+        **Social Proof (MATCH TEMPLATE STYLE):**
+        "{product.get('social_proof')}"
+        - Template uses social proof style: {ad_analysis.get('social_proof_style')}
+        - Placement in template: {ad_analysis.get('social_proof_placement')}
+        - Use the EXACT text provided above for social proof
+        - Match the visual style (badge/banner/seal) from the template
+        - Place in similar position as shown in the reference ad
+        """
+        elif ad_analysis.get('has_social_proof') and not product.get('social_proof'):
+            # Template has social proof but product doesn't - warn not to hallucinate
+            social_proof_section = """
+        **⚠️ SOCIAL PROOF WARNING:**
+        - The reference template includes social proof elements, but this product has NO social proof data
+        - DO NOT copy or adapt social proof from the template (e.g., "100,000+ Sold")
+        - DO NOT create fictional social proof statistics
+        - Omit social proof elements from your generated ad
+        """
+        # If template doesn't have social proof, social_proof_section stays empty (no warning needed)
+
         # Build instruction text
         instruction_text = f"""
         Create Facebook ad variation {prompt_index} for {product.get('name')}.
@@ -969,13 +1058,18 @@ async def generate_nano_banana_prompt(
         - Name: {product.get('name')}
         - Primary Benefit (matched to hook): {matched_benefit}
         - Target: {product.get('target_audience', 'general audience')}
-        {offer_section}{usp_section}{brand_voice_section}{prohibited_section}{disclaimer_section}
+        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{social_proof_section}{prohibited_section}{disclaimer_section}
         **Critical Requirements:**
         - Use product image EXACTLY as provided (no hallucination)
         - Match reference ad layout and style
         - Maintain brand voice from ad brief
         - If offer is provided, use EXACT wording (no hallucination of discounts)
         - Do NOT use any prohibited claims listed above
+
+        **⚠️ OFFER WARNING:**
+        - DO NOT copy offer elements from the reference ad template (e.g., "Free gift", "Buy 1 Get 1")
+        - ONLY use the offer text provided in "Current Offer" section above
+        - If NO offer is listed above, DO NOT add any offer/discount text to the ad
         """
 
         # Build full prompt
@@ -1790,6 +1884,8 @@ async def complete_ad_workflow(
             ctx=ctx,
             hooks=hooks_list,
             ad_analysis=ad_analysis,
+            product_name=product_dict.get('name', ''),
+            target_audience=product_dict.get('target_audience', ''),
             count=5
         )
 
