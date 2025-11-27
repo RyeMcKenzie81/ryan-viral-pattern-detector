@@ -463,9 +463,31 @@ async def analyze_reference_ad(
            - "social_proof_style": description of how social proof is displayed (e.g., "corner badge", "banner across top", "circular seal")
            - "social_proof_placement": where it's positioned (e.g., "top_right", "bottom_left", "center_top")
 
-        9. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px, 1200x628px)
+        9. **Founder/Personal Elements**: Does this ad include founder-related content?
 
-        10. **Detailed Description**: Provide a comprehensive description of the ad
+           Look for TWO types:
+
+           A) **Founder Signature** - A sign-off at the end:
+              - Personal signatures (e.g., "Love, The Smith Family", "- John & Sarah")
+              - Founder names at the bottom
+              - Personal sign-offs (e.g., "From our family to yours", "With love,")
+              - Handwritten-style signatures
+
+           B) **Founder Mention** - References to founders in the body text:
+              - First-person plural ("We created this...", "Our family...")
+              - Founder story references ("As parents ourselves...")
+              - Personal pronouns indicating the brand team speaking directly
+
+           Return:
+           - "has_founder_signature": true/false (sign-off at end)
+           - "founder_signature_style": how signature appears (e.g., "handwritten at bottom", "names after dash") or null
+           - "founder_signature_placement": position (e.g., "bottom_center") or null
+           - "has_founder_mention": true/false (founders referenced in body text)
+           - "founder_mention_style": how founders are mentioned (e.g., "first-person narrative", "founder story") or null
+
+        10. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px, 1200x628px)
+
+        11. **Detailed Description**: Provide a comprehensive description of the ad
             that could be used for prompt engineering. Include layout, visual style,
             typography, spacing, and any notable design elements.
 
@@ -479,8 +501,13 @@ async def analyze_reference_ad(
             "color_palette": ["#HEX"],
             "authenticity_markers": ["string"],
             "has_social_proof": boolean,
-            "social_proof_style": "string (or null if no social proof)",
-            "social_proof_placement": "string (or null if no social proof)",
+            "social_proof_style": "string or null",
+            "social_proof_placement": "string or null",
+            "has_founder_signature": boolean,
+            "founder_signature_style": "string or null",
+            "founder_signature_placement": "string or null",
+            "has_founder_mention": boolean,
+            "founder_mention_style": "string or null",
             "canvas_size": "WIDTHxHEIGHTpx",
             "detailed_description": "comprehensive description..."
         }
@@ -1066,6 +1093,49 @@ async def generate_nano_banana_prompt(
         - If the scene has harsh/directional lighting, product should show corresponding shadows
         """
 
+        # Founders section - for personal signatures or founder mentions
+        founders_section = ""
+        has_founder_signature = ad_analysis.get('has_founder_signature', False)
+        has_founder_mention = ad_analysis.get('has_founder_mention', False)
+
+        if (has_founder_signature or has_founder_mention) and product.get('founders'):
+            # Template has founder elements AND product has founder data
+            founders_text = product.get('founders')
+
+            if has_founder_signature:
+                sig_style = ad_analysis.get('founder_signature_style', 'personal sign-off')
+                sig_placement = ad_analysis.get('founder_signature_placement', 'bottom')
+                founders_section = f"""
+        **FOUNDERS / PERSONAL SIGNATURE (USE PRODUCT DATA):**
+        - The reference ad includes a founder signature element
+        - Template style: {sig_style}
+        - Template placement: {sig_placement}
+        - **USE THIS EXACT TEXT FOR FOUNDERS:** "{founders_text}"
+        - DO NOT copy founder names from the reference ad template
+        - Apply similar visual style and placement as the reference
+        """
+            elif has_founder_mention:
+                mention_style = ad_analysis.get('founder_mention_style', 'first-person narrative')
+                founders_section = f"""
+        **FOUNDERS MENTIONED IN AD COPY (USE PRODUCT DATA):**
+        - The reference ad mentions founders in the body text
+        - Template style: {mention_style}
+        - **FOUNDERS TO REFERENCE:** "{founders_text}"
+        - When mentioning founders or using first-person narrative, use the names above
+        - DO NOT copy founder names from the reference ad template
+        """
+        elif (has_founder_signature or has_founder_mention) and not product.get('founders'):
+            # Template has founder elements but product doesn't have founder data
+            founders_section = """
+        **⚠️ FOUNDER SIGNATURE/MENTION WARNING:**
+        - The reference template includes founder/personal signature elements
+        - This product has NO founders data configured
+        - DO NOT copy founder names from the reference ad template
+        - DO NOT create fictional founder names
+        - Omit founder signature/personal sign-off elements from your generated ad
+        """
+        # If template doesn't have founder elements, founders_section stays empty
+
         # Build instruction text
         instruction_text = f"""
         Create Facebook ad variation {prompt_index} for {product.get('name')}.
@@ -1083,7 +1153,7 @@ async def generate_nano_banana_prompt(
         - Name: {product.get('name')}
         - Primary Benefit (matched to hook): {matched_benefit}
         - Target: {product.get('target_audience', 'general audience')}
-        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{lighting_section}{social_proof_section}{prohibited_section}{disclaimer_section}
+        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{lighting_section}{social_proof_section}{founders_section}{prohibited_section}{disclaimer_section}
         **Critical Requirements:**
         - Use product image EXACTLY as provided (no hallucination)
         - Match reference ad layout and style
