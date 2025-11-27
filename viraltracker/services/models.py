@@ -795,7 +795,7 @@ class SelectedHook(BaseModel):
 
 class NanoBananaPrompt(BaseModel):
     """Prompt for Gemini Nano Banana image generation"""
-    prompt_index: int = Field(ge=1, le=5, description="Index 1-5 for this variation")
+    prompt_index: int = Field(ge=1, le=15, description="Index 1-15 for this variation")
     hook: SelectedHook
     instruction_text: str = Field(..., description="Human-readable instructions for image generation")
     spec: Dict[str, Any] = Field(..., description="JSON spec with canvas, product, text_elements")
@@ -806,7 +806,7 @@ class NanoBananaPrompt(BaseModel):
 
 class GeneratedAd(BaseModel):
     """Generated ad image with metadata"""
-    prompt_index: int = Field(ge=1, le=5)
+    prompt_index: int = Field(ge=1, le=15)
     image_base64: Optional[str] = Field(None, description="Temporary base64 before saving to storage")
     storage_path: Optional[str] = Field(None, description="Set after saving to Supabase Storage")
 

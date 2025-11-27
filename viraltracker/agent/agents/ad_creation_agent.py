@@ -949,8 +949,8 @@ async def generate_nano_banana_prompt(
         logger.info(f"Generating Nano Banana prompt for variation {prompt_index}")
 
         # Validate inputs
-        if prompt_index < 1 or prompt_index > 5:
-            raise ValueError("prompt_index must be between 1 and 5")
+        if prompt_index < 1 or prompt_index > 15:
+            raise ValueError("prompt_index must be between 1 and 15")
 
         # Phase 6: Match benefit/USP to hook for relevant subheadline
         # Combines both benefits and unique_selling_points for best match
