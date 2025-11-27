@@ -1052,6 +1052,20 @@ async def generate_nano_banana_prompt(
         """
         # If template doesn't have social proof, social_proof_section stays empty (no warning needed)
 
+        # Lighting integration section - ensures product matches scene lighting
+        lighting_section = """
+        **LIGHTING & PRODUCT INTEGRATION (CRITICAL):**
+        - Analyze the lighting direction, intensity, and color temperature in the generated scene
+        - Apply MATCHING lighting to the product image (shadows, highlights, ambient light)
+        - Product shadows must fall in the same direction as other scene elements
+        - Match the scene's color temperature on the product (warm/cool tones)
+        - Add appropriate ambient occlusion where product meets surfaces
+        - Ensure specular highlights on product match the scene's light source
+        - The product should look naturally "in" the scene, not "pasted on"
+        - If the scene has soft/diffused lighting, product should too
+        - If the scene has harsh/directional lighting, product should show corresponding shadows
+        """
+
         # Build instruction text
         instruction_text = f"""
         Create Facebook ad variation {prompt_index} for {product.get('name')}.
@@ -1069,7 +1083,7 @@ async def generate_nano_banana_prompt(
         - Name: {product.get('name')}
         - Primary Benefit (matched to hook): {matched_benefit}
         - Target: {product.get('target_audience', 'general audience')}
-        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{social_proof_section}{prohibited_section}{disclaimer_section}
+        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{lighting_section}{social_proof_section}{prohibited_section}{disclaimer_section}
         **Critical Requirements:**
         - Use product image EXACTLY as provided (no hallucination)
         - Match reference ad layout and style
