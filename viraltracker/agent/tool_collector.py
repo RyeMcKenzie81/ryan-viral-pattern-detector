@@ -88,13 +88,15 @@ def get_all_tools() -> Dict[str, ToolInfo]:
     from .agents.youtube_agent import youtube_agent
     from .agents.facebook_agent import facebook_agent
     from .agents.analysis_agent import analysis_agent
+    from .agents.ad_creation_agent import ad_creation_agent
 
     agents = {
         'Twitter': twitter_agent,
         'TikTok': tiktok_agent,
         'YouTube': youtube_agent,
         'Facebook': facebook_agent,
-        'Analysis': analysis_agent
+        'Analysis': analysis_agent,
+        'Ad Creation': ad_creation_agent
     }
 
     all_tools = {}
