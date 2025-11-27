@@ -563,6 +563,19 @@ Generate the article now:"""
                 # Call Gemini Vision API
                 response = self.model.generate_content([prompt, image])
 
+                # Check for blocked or empty response before accessing .text
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    logger.error(f"Gemini response blocked or empty. Block reason: {block_reason}")
+                    raise Exception(f"Gemini response blocked: {block_reason}")
+
+                # Check if the candidate was blocked
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (None, 1):  # 1 = STOP (normal)
+                    finish_reason = candidate.finish_reason
+                    logger.error(f"Gemini candidate blocked. Finish reason: {finish_reason}")
+                    raise Exception(f"Gemini response blocked: finish_reason={finish_reason}")
+
                 logger.debug(f"Image analysis complete")
                 return response.text
 
