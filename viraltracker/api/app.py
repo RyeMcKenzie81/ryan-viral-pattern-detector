@@ -305,7 +305,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content=ErrorResponse(
             error=exc.detail,
             detail=str(exc),
-            timestamp=datetime.now()
+            timestamp=datetime.now().isoformat()
         ).model_dump()
     )
 
@@ -319,7 +319,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         content=ErrorResponse(
             error="Internal server error",
             detail=str(exc),
-            timestamp=datetime.now()
+            timestamp=datetime.now().isoformat()
         ).model_dump()
     )
 
