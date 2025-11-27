@@ -184,3 +184,91 @@ class ErrorResponse(BaseModel):
                 "timestamp": "2025-01-18T12:00:00Z"
             }
         }
+
+
+# ============================================================================
+# Ad Creation Models
+# ============================================================================
+
+class AdCreationRequest(BaseModel):
+    """
+    Request model for ad creation workflow.
+
+    Used to generate 5 Facebook ad variations with dual AI review.
+    """
+    product_id: str = Field(
+        ...,
+        description="UUID of product for ad generation"
+    )
+    reference_ad_base64: str = Field(
+        ...,
+        description="Base64-encoded reference ad image"
+    )
+    reference_ad_filename: str = Field(
+        default="reference.png",
+        description="Filename for reference ad (default: reference.png)"
+    )
+    project_id: Optional[str] = Field(
+        None,
+        description="Optional UUID of project"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "product_id": "550e8400-e29b-41d4-a716-446655440000",
+                "reference_ad_base64": "iVBORw0KGgoAAAANS...",
+                "reference_ad_filename": "reference.png",
+                "project_id": None
+            }
+        }
+
+
+class AdCreationResponse(BaseModel):
+    """
+    Response model for ad creation workflow.
+
+    Returns complete workflow results with approval status for all 5 ads.
+    """
+    success: bool = Field(..., description="Whether workflow succeeded")
+    ad_run_id: Optional[str] = Field(None, description="UUID of ad run")
+    data: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Complete workflow results with generated ads and reviews"
+    )
+    error: Optional[str] = Field(
+        None,
+        description="Error message if workflow failed"
+    )
+    timestamp: datetime = Field(
+        default_factory=datetime.now,
+        description="Response timestamp"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "ad_run_id": "550e8400-e29b-41d4-a716-446655440000",
+                "data": {
+                    "ad_run_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "product": {"name": "Wonder Paws", "...": "..."},
+                    "reference_ad_path": "reference-ads/...",
+                    "generated_ads": [
+                        {
+                            "prompt_index": 1,
+                            "storage_path": "generated-ads/...",
+                            "final_status": "approved",
+                            "claude_review": {"status": "approved", "...": "..."},
+                            "gemini_review": {"status": "approved", "...": "..."}
+                        }
+                    ],
+                    "approved_count": 3,
+                    "rejected_count": 1,
+                    "flagged_count": 1,
+                    "summary": "Ad creation workflow completed..."
+                },
+                "error": None,
+                "timestamp": "2025-01-18T12:00:00Z"
+            }
+        }

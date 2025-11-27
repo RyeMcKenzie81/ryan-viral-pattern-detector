@@ -58,6 +58,25 @@ class AdCreationService:
 
         return Product(**result.data[0])
 
+    async def search_products_by_name(self, product_name: str) -> List[Product]:
+        """
+        Search products by name using case-insensitive partial matching.
+
+        Args:
+            product_name: Product name (or partial name) to search for
+
+        Returns:
+            List of matching Product models, sorted by name
+
+        Examples:
+            >>> search_products_by_name("Wonder Paws")
+            [Product(name="Wonder Paws Collagen 3x"), Product(name="Wonder Paws Omega")]
+        """
+        # Use ilike for case-insensitive partial matching
+        result = self.supabase.table("products").select("*").ilike("name", f"%{product_name}%").order("name").execute()
+
+        return [Product(**row) for row in result.data]
+
     async def get_hooks(
         self,
         product_id: UUID,
@@ -145,12 +164,17 @@ class AdCreationService:
         Returns:
             Storage path: "reference-ads/{ad_run_id}_{filename}"
         """
+        import asyncio
+
         storage_path = f"{ad_run_id}_{filename}"
 
-        self.supabase.storage.from_("reference-ads").upload(
-            storage_path,
-            image_data,
-            {"content-type": "image/png"}
+        # Run sync Supabase call in thread pool to avoid blocking event loop
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_("reference-ads").upload(
+                storage_path,
+                image_data,
+                {"content-type": "image/png"}
+            )
         )
 
         logger.info(f"Uploaded reference ad: {storage_path}")
@@ -173,13 +197,18 @@ class AdCreationService:
         Returns:
             Storage path: "generated-ads/{ad_run_id}/{prompt_index}.png"
         """
+        import asyncio
+
         image_data = base64.b64decode(image_base64)
         storage_path = f"{ad_run_id}/{prompt_index}.png"
 
-        self.supabase.storage.from_("generated-ads").upload(
-            storage_path,
-            image_data,
-            {"content-type": "image/png"}
+        # Run sync Supabase call in thread pool to avoid blocking event loop
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_("generated-ads").upload(
+                storage_path,
+                image_data,
+                {"content-type": "image/png"}
+            )
         )
 
         logger.info(f"Uploaded generated ad: {storage_path}")
@@ -195,12 +224,17 @@ class AdCreationService:
         Returns:
             Binary image data
         """
+        import asyncio
+
         # Parse bucket and path
         parts = storage_path.split("/", 1)
         bucket = parts[0]
         path = parts[1] if len(parts) > 1 else storage_path
 
-        data = self.supabase.storage.from_(bucket).download(path)
+        # Run sync Supabase call in thread pool to avoid blocking event loop
+        data = await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(bucket).download(path)
+        )
         return data
 
     async def get_image_as_base64(self, storage_path: str) -> str:

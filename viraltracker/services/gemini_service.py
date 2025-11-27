@@ -396,3 +396,283 @@ OUTPUT FORMAT:
 Generate the article now:"""
 
         return prompt
+
+    async def generate_image(
+        self,
+        prompt: str,
+        reference_images: list = None,
+        max_retries: int = 3
+    ) -> str:
+        """
+        Generate an image using Gemini 3 Pro Image Preview API.
+
+        Uses gemini-3-pro-image-preview model to generate images from text prompts
+        and optional reference images (up to 14). Returns base64-encoded PNG.
+
+        Args:
+            prompt: Text prompt for image generation
+            reference_images: Optional list of base64-encoded reference images (up to 14)
+            max_retries: Maximum retries on rate limit errors
+
+        Returns:
+            Base64-encoded generated image
+
+        Raises:
+            Exception: If all retries fail or non-rate-limit error occurs
+        """
+        # Wait for rate limit
+        await self._rate_limit()
+
+        # Call API with retries
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                logger.debug(f"Generating image with prompt: {prompt[:50]}...")
+
+                # Build contents list: [prompt, image1, image2, ...]
+                contents = [prompt]
+
+                # Add reference images as PIL.Image objects
+                if reference_images:
+                    import base64
+                    from PIL import Image
+                    from io import BytesIO
+
+                    for img_base64 in reference_images[:14]:  # Max 14 reference images
+                        # Convert bytes to base64 string if needed (Bug #11 fix)
+                        if isinstance(img_base64, bytes):
+                            img_base64 = base64.b64encode(img_base64).decode('utf-8')
+
+                        # Clean and decode base64 to PIL.Image
+                        # Remove whitespace, newlines, and add padding if needed
+                        clean_data = img_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+                        # Add padding if necessary
+                        missing_padding = len(clean_data) % 4
+                        if missing_padding:
+                            clean_data += '=' * (4 - missing_padding)
+
+                        # Decode to bytes - encode to ASCII first if needed
+                        try:
+                            img_bytes = base64.b64decode(clean_data)
+                        except (TypeError, ValueError):
+                            # If string decode fails, try encoding to bytes first
+                            img_bytes = base64.b64decode(clean_data.encode('ascii'))
+                        pil_image = Image.open(BytesIO(img_bytes))
+                        contents.append(pil_image)
+
+                    logger.debug(f"Added {len(reference_images)} reference images")
+
+                # Call Gemini API (legacy SDK pattern)
+                # Note: GenerationConfig may not expose response_modalities/image_config yet,
+                # but gemini-3-pro-image-preview returns IMAGE parts by default
+                response = self.model.generate_content(contents)
+
+                # Extract generated image from response
+                # Look for parts with inline_data
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        # inline_data.data contains raw bytes in Python SDK
+                        # Convert to base64 for return
+                        import base64
+                        image_base64 = base64.b64encode(part.inline_data.data).decode('utf-8')
+                        logger.info(f"Image generated successfully ({len(part.inline_data.data)} bytes)")
+                        return image_base64
+
+                # If no image found in response, raise error
+                raise Exception("No image found in Gemini response")
+
+            except Exception as e:
+                error_str = str(e)
+                last_error = e
+
+                # Check if it's a rate limit error
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error("Max retries exceeded for image generation")
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                else:
+                    logger.error(f"Error generating image: {e}")
+                    raise
+
+        raise last_error or Exception("Unknown error during image generation")
+
+    async def analyze_image(
+        self,
+        image_data: str,
+        prompt: str,
+        max_retries: int = 3
+    ) -> str:
+        """
+        Analyze an image using Gemini Vision API.
+
+        Args:
+            image_data: Base64-encoded image data
+            prompt: Analysis prompt/question about the image
+            max_retries: Maximum retries on rate limit errors
+
+        Returns:
+            JSON string with analysis results
+
+        Raises:
+            Exception: If all retries fail or non-rate-limit error occurs
+        """
+        # Wait for rate limit
+        await self._rate_limit()
+
+        # Call API with retries
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                logger.debug(f"Analyzing image with prompt: {prompt[:50]}...")
+
+                # Import image handling
+                import base64
+                from PIL import Image
+                from io import BytesIO
+
+                # Convert bytes to base64 string if needed (Bug #14 fix)
+                if isinstance(image_data, bytes):
+                    image_data = base64.b64encode(image_data).decode('utf-8')
+
+                # Clean and decode base64 image
+                # Remove whitespace, newlines, and add padding if needed
+                clean_data = image_data.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+                # Add padding if necessary
+                missing_padding = len(clean_data) % 4
+                if missing_padding:
+                    clean_data += '=' * (4 - missing_padding)
+
+                # Decode to bytes - encode to ASCII first if needed
+                try:
+                    image_bytes = base64.b64decode(clean_data)
+                except (TypeError, ValueError):
+                    # If string decode fails, try encoding to bytes first
+                    image_bytes = base64.b64decode(clean_data.encode('ascii'))
+                image = Image.open(BytesIO(image_bytes))
+
+                # Call Gemini Vision API
+                response = self.model.generate_content([prompt, image])
+
+                logger.debug(f"Image analysis complete")
+                return response.text
+
+            except Exception as e:
+                error_str = str(e)
+                last_error = e
+
+                # Check if it's a rate limit error
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error("Max retries exceeded for image analysis")
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                else:
+                    logger.error(f"Error analyzing image: {e}")
+                    raise
+
+        raise last_error or Exception("Unknown error during image analysis")
+
+    async def review_image(
+        self,
+        image_data: str,
+        prompt: str,
+        max_retries: int = 3
+    ) -> str:
+        """
+        Review/evaluate an image using Gemini Vision API.
+
+        Args:
+            image_data: Base64-encoded image data
+            prompt: Review prompt/criteria
+            max_retries: Maximum retries on rate limit errors
+
+        Returns:
+            JSON string with review results
+
+        Raises:
+            Exception: If all retries fail or non-rate-limit error occurs
+        """
+        # Reuse analyze_image logic - review is a type of analysis
+        return await self.analyze_image(image_data, prompt, max_retries)
+
+    async def analyze_text(
+        self,
+        text: str,
+        prompt: str,
+        max_retries: int = 3
+    ) -> str:
+        """
+        Analyze text using Gemini AI with custom prompt.
+
+        General-purpose text analysis method for tasks like hook selection,
+        content evaluation, or any text-based AI analysis.
+
+        Args:
+            text: Text content to analyze
+            prompt: Analysis instructions/question
+            max_retries: Maximum retries on rate limit errors
+
+        Returns:
+            AI analysis result as string
+
+        Raises:
+            Exception: If all retries fail or non-rate-limit error occurs
+        """
+        import asyncio
+
+        # Wait for rate limit
+        await self._rate_limit()
+
+        # Build full prompt
+        full_prompt = f"{prompt}\n\n{text}"
+
+        # Call API with retries (following analyze_hook pattern)
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                logger.debug(f"Analyzing text with Gemini (prompt: {prompt[:50]}...)")
+                response = self.model.generate_content(full_prompt)
+
+                logger.info(f"Text analysis completed successfully")
+                return response.text
+
+            except Exception as e:
+                error_str = str(e)
+                last_error = e
+
+                # Check if it's a rate limit error
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(
+                            f"Rate limit hit during text analysis. "
+                            f"Retry {retry_count}/{max_retries} after {retry_delay}s..."
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"Max retries exceeded for text analysis")
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                else:
+                    logger.error(f"Error analyzing text: {e}")
+                    raise
+
+        raise last_error or Exception("Unknown error during text analysis")

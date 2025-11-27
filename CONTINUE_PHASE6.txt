@@ -1,0 +1,38 @@
+Continue Facebook Ad Creation Agent - Phase 6: Streamlit Chat Integration
+
+I'm continuing work on the Facebook Ad Creation Agent for the viraltracker project.
+
+**Read the checkpoint file first**:
+/Users/ryemckenzie/projects/viraltracker/CHECKPOINT_PHASE6_STREAMLIT.md
+
+**Current Status**:
+- ✅ Phases 1-5 COMPLETE (database, tools, CLI, API, tests)
+- ⏳ Phase 6 IN PROGRESS: Streamlit chat integration
+- ✅ Foundational changes complete (ad_creation_agent exported and imported to orchestrator)
+- ⏳ Next: Complete orchestrator integration and Streamlit UI
+
+**Goal**:
+Enable natural language ad creation in Streamlit chat:
+"Create 5 ads for Wonder Paws Collagen 3x using this reference image [upload]"
+
+**What to implement next**:
+1. Update orchestrator system prompt to include ad creation agent description
+2. Add route_to_ad_creation_agent routing tool to orchestrator
+3. Add resolve_product_name tool for natural language product lookup
+4. Add file upload capability to Streamlit chat interface
+5. Implement rich result display for generated ads (image cards with status badges)
+6. Test end-to-end natural language workflow
+
+**Tech Stack**:
+Python 3.11+, Pydantic-AI, Streamlit, FastAPI, Supabase, Claude, Gemini
+
+**Working Directory**:
+/Users/ryemckenzie/projects/viraltracker
+
+**Repository**:
+https://github.com/RyeMcKenzie81/ryan-viral-pattern-detector.git
+
+**Branch**:
+feature/ad-creation-api
+
+Let me know when you're ready to continue Phase 6!

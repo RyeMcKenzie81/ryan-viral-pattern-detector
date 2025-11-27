@@ -116,7 +116,7 @@ async def get_product_with_images(
         product = await ctx.deps.ad_creation.get_product(product_uuid)
 
         logger.info(f"Product fetched: {product.name}")
-        return product.dict()
+        return product.model_dump(mode='json')
 
     except ValueError as e:
         logger.error(f"Product not found: {product_id}")
@@ -193,7 +193,7 @@ async def get_hooks_for_product(
         )
 
         logger.info(f"Fetched {len(hooks)} hooks for product {product_id}")
-        return [hook.dict() for hook in hooks]
+        return [hook.model_dump(mode='json') for hook in hooks]
 
     except ValueError as e:
         logger.error(f"Invalid product_id: {product_id}")
@@ -257,7 +257,7 @@ async def get_ad_brief_template(
         template = await ctx.deps.ad_creation.get_ad_brief_template(brand_id=brand_uuid)
 
         logger.info(f"Ad brief template fetched: {template.name}")
-        return template.dict()
+        return template.model_dump(mode='json')
 
     except ValueError as e:
         logger.error(f"No ad brief template found")
@@ -408,14 +408,16 @@ async def analyze_reference_ad(
         Exception: If Gemini Vision AI analysis fails
     """
     try:
+        import json
+
         logger.info(f"Analyzing reference ad: {reference_ad_storage_path}")
 
         # Validate input
         if not reference_ad_storage_path:
             raise ValueError("reference_ad_storage_path cannot be empty")
 
-        # Download reference ad image from storage
-        image_data = await ctx.deps.ad_creation.download_image(reference_ad_storage_path)
+        # Download reference ad image from storage as base64
+        image_data = await ctx.deps.ad_creation.get_image_as_base64(reference_ad_storage_path)
 
         # Analyze using Gemini Vision AI
         analysis_prompt = """
@@ -448,11 +450,24 @@ async def analyze_reference_ad(
         7. **Authenticity Markers**: What makes this feel authentic?
            (e.g., screenshot style, quote marks, timestamps, usernames, emojis, casual font)
 
-        8. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px, 1200x628px)
+        8. **Social Proof Elements**: Does this ad include trust signals or social proof?
+           Look for:
+           - Statistical badges (e.g., "100,000+ Sold", "5-Star Rating", "#1 Best Seller")
+           - Numerical claims displayed as graphics/badges
+           - Award badges or certification marks
+           - Customer count indicators
+           - Sales volume displays
 
-        9. **Detailed Description**: Provide a comprehensive description of the ad
-           that could be used for prompt engineering. Include layout, visual style,
-           typography, spacing, and any notable design elements.
+           Return:
+           - "has_social_proof": true/false (whether social proof elements are present)
+           - "social_proof_style": description of how social proof is displayed (e.g., "corner badge", "banner across top", "circular seal")
+           - "social_proof_placement": where it's positioned (e.g., "top_right", "bottom_left", "center_top")
+
+        9. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px, 1200x628px)
+
+        10. **Detailed Description**: Provide a comprehensive description of the ad
+            that could be used for prompt engineering. Include layout, visual style,
+            typography, spacing, and any notable design elements.
 
         Return the analysis as structured JSON matching this schema:
         {
@@ -463,6 +478,9 @@ async def analyze_reference_ad(
             "text_placement": {"key": "value"},
             "color_palette": ["#HEX"],
             "authenticity_markers": ["string"],
+            "has_social_proof": boolean,
+            "social_proof_style": "string (or null if no social proof)",
+            "social_proof_placement": "string (or null if no social proof)",
             "canvas_size": "WIDTHxHEIGHTpx",
             "detailed_description": "comprehensive description..."
         }
@@ -474,9 +492,18 @@ async def analyze_reference_ad(
             prompt=analysis_prompt
         )
 
+        # Strip markdown code fences if present (Gemini often wraps JSON in ```json...```)
+        analysis_result_clean = analysis_result.strip()
+        if analysis_result_clean.startswith('```'):
+            # Find the first newline after the opening fence
+            first_newline = analysis_result_clean.find('\n')
+            # Find the closing fence
+            last_fence = analysis_result_clean.rfind('```')
+            if first_newline != -1 and last_fence > first_newline:
+                analysis_result_clean = analysis_result_clean[first_newline + 1:last_fence].strip()
+
         # Parse JSON response
-        import json
-        analysis_dict = json.loads(analysis_result)
+        analysis_dict = json.loads(analysis_result_clean)
 
         logger.info(f"Reference ad analyzed: format={analysis_dict.get('format_type')}, "
                    f"layout={analysis_dict.get('layout_structure')}")
@@ -514,6 +541,8 @@ async def select_hooks(
     ctx: RunContext[AgentDependencies],
     hooks: List[Dict],
     ad_analysis: Dict,
+    product_name: str = "",
+    target_audience: str = "",
     count: int = 5
 ) -> List[Dict]:
     """
@@ -524,14 +553,18 @@ async def select_hooks(
     - Have high impact scores
     - Match the reference ad style and tone
     - Provide maximum coverage of persuasive principles
+    - Are clear, understandable, and mention product context
 
-    The AI adapts each hook's text to match the reference ad's style.
+    The AI adapts each hook's text to match the reference ad's style and ensures
+    the adapted text makes sense and mentions the product category.
 
     Args:
         ctx: Run context with AgentDependencies
         hooks: List of hook dictionaries from database (with id, text,
             category, framework, impact_score, emotional_score)
         ad_analysis: Ad analysis dictionary with format_type, authenticity_markers
+        product_name: Name of the product (for context)
+        target_audience: Product's target audience (e.g., "pet owners", "dog owners")
         count: Number of hooks to select (default: 5)
 
     Returns:
@@ -553,6 +586,8 @@ async def select_hooks(
         ValueError: If hooks list is empty or count invalid
         Exception: If Gemini AI selection fails
     """
+    import json
+
     try:
         logger.info(f"Selecting {count} diverse hooks from {len(hooks)} candidates")
 
@@ -563,9 +598,12 @@ async def select_hooks(
             raise ValueError("count must be between 1 and 10")
 
         # Build selection prompt
-        import json
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
+
+        **Product Context:**
+        - Product: {product_name}
+        - Target Audience: {target_audience}
 
         **Reference Ad Style:**
         - Format: {ad_analysis.get('format_type')}
@@ -582,9 +620,13 @@ async def select_hooks(
 
         For each selected hook:
         1. Provide reasoning for why it was chosen
-        2. Adapt the text to match the reference ad style/tone
+        2. Adapt the text to match the reference ad style/tone AND ensure clarity:
            - Maintain the core message
            - Match authenticity markers (e.g., casual tone, emojis, timestamps)
+           - **CRITICAL: Fix any typos, nonsense words, or unclear phrasing**
+           - **CRITICAL: Ensure the adapted text mentions or implies the product category/target audience**
+           - Example: If target audience is "dog owners" or "pet owners", the hook should mention "my dog", "my pet", or similar context
+           - **CRITICAL: The adapted text must make sense on its own - someone reading it should understand what product category it's about**
 
         Return JSON array with this structure:
         [
@@ -601,23 +643,53 @@ async def select_hooks(
         ]
         """
 
-        # Call Gemini AI
-        selection_result = await ctx.deps.gemini.analyze_text(
-            text=selection_prompt,
-            prompt="Select diverse hooks with reasoning and adaptations"
-        )
+        # Bug #20: Add retry logic for malformed JSON responses
+        max_retries = 3
+        last_error = None
 
-        # Parse JSON response
-        selected_hooks = json.loads(selection_result)
+        for attempt in range(max_retries):
+            try:
+                # Call Gemini AI
+                selection_result = await ctx.deps.gemini.analyze_text(
+                    text=selection_prompt,
+                    prompt="Select diverse hooks with reasoning and adaptations. IMPORTANT: Return ONLY valid JSON array, no markdown fences."
+                )
 
-        logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
-                   f"{[h.get('category') for h in selected_hooks]}")
+                # Strip markdown code fences if present (Bug #10 fix)
+                result_text = selection_result.strip()
+                if result_text.startswith("```"):
+                    # Remove opening fence (e.g., "```json\n")
+                    result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+                    # Remove closing fence (e.g., "\n```")
+                    if result_text.endswith("```"):
+                        result_text = result_text.rsplit("\n```", 1)[0]
 
-        return selected_hooks
+                # Additional JSON cleaning
+                result_text = result_text.strip()
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Gemini selection response: {str(e)}")
-        raise Exception(f"Failed to parse selection result: {str(e)}")
+                # Parse JSON response
+                selected_hooks = json.loads(result_text)
+
+                logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
+                           f"{[h.get('category') for h in selected_hooks]}")
+
+                return selected_hooks
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} - JSON parse error: {str(e)}")
+                logger.warning(f"Problematic JSON (first 500 chars): {result_text[:500]}...")
+
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying with more explicit JSON instructions...")
+                    # Add more explicit instruction for next attempt
+                    selection_prompt += "\n\nIMPORTANT: Ensure all JSON strings are properly escaped, no trailing commas, and valid JSON syntax."
+                    continue
+                else:
+                    # Final attempt failed
+                    logger.error(f"All {max_retries} attempts failed. Last error: {str(e)}")
+                    logger.error(f"Failed JSON text: {result_text}")
+                    raise Exception(f"Failed to parse selection result after {max_retries} attempts: {str(e)}")
     except ValueError as e:
         logger.error(f"Invalid input: {str(e)}")
         raise
@@ -709,6 +781,94 @@ async def select_product_images(
         raise Exception(f"Failed to select product images: {str(e)}")
 
 
+# Phase 6: Hook-to-Benefit Matching Helper Function
+def match_benefit_to_hook(hook: Dict, benefits: List[str], unique_selling_points: List[str] = None) -> str:
+    """
+    Select the most relevant product benefit/USP for a given hook.
+
+    Combines both benefits and unique_selling_points to find the best match.
+    USPs are typically more specific, so they're added first for prioritization.
+
+    Strategy:
+    1. Combine unique_selling_points + benefits into one list
+    2. Extract keywords from hook text and category
+    3. Score each item by keyword overlap
+    4. Return highest scoring item
+    5. Fallback to first item if no match or empty list
+
+    Example:
+        Hook: "My dog went from limping to running in 2 weeks!"
+        Category: "before_after"
+        Keywords: ["limping", "running", "mobility", "movement", "pain"]
+
+        Combined list:
+            - "Enhanced with hyaluronic acid for joint lubrication" → HIGH SCORE
+            - "Supports hip & joint mobility" → HIGH SCORE (mobility match)
+            - "Promotes shiny coat" → LOW SCORE (no match)
+
+        Result: "Enhanced with hyaluronic acid for joint lubrication"
+    """
+    # Combine USPs and benefits (USPs first for priority when scores are equal)
+    combined_items = []
+    if unique_selling_points:
+        combined_items.extend(unique_selling_points)
+    if benefits:
+        combined_items.extend(benefits)
+
+    if not combined_items:
+        return ""
+
+    if len(combined_items) == 1:
+        return combined_items[0]
+
+    # Extract hook keywords (text + category)
+    hook_text = str(hook.get('adapted_text', '') or hook.get('text', '')).lower()
+    hook_category = str(hook.get('category', '')).lower()
+
+    # Common keyword associations for different hook categories
+    category_keywords = {
+        'before_after': ['transform', 'change', 'improve', 'better', 'result', 'difference'],
+        'social_proof': ['trust', 'proven', 'recommend', 'love', 'works', 'effective'],
+        'authority': ['expert', 'professional', 'quality', 'premium', 'science', 'research'],
+        'scarcity': ['limited', 'exclusive', 'special', 'unique', 'rare'],
+        'urgency': ['now', 'today', 'fast', 'quick', 'immediate', 'soon'],
+        'pain_point': ['problem', 'issue', 'struggle', 'pain', 'suffering', 'discomfort'],
+        'aspiration': ['goal', 'dream', 'want', 'desire', 'wish', 'achieve']
+    }
+
+    # Combine hook text words and category keywords
+    hook_words = set(hook_text.split())
+    if hook_category in category_keywords:
+        hook_words.update(category_keywords[hook_category])
+
+    # Score each item (USP or benefit)
+    best_item = combined_items[0]
+    best_score = 0
+
+    for item in combined_items:
+        item_lower = item.lower()
+        item_words = set(item_lower.split())
+
+        # Calculate overlap score
+        overlap = len(hook_words & item_words)
+
+        # Bonus points for partial word matches (e.g., "mobility" contains "mobile")
+        partial_matches = sum(
+            1 for hook_word in hook_words
+            for item_word in item_words
+            if len(hook_word) > 3 and len(item_word) > 3 and
+            (hook_word in item_word or item_word in hook_word)
+        )
+
+        score = overlap + (partial_matches * 0.5)
+
+        if score > best_score:
+            best_score = score
+            best_item = item
+
+    return best_item
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
@@ -781,6 +941,14 @@ async def generate_nano_banana_prompt(
         if prompt_index < 1 or prompt_index > 5:
             raise ValueError("prompt_index must be between 1 and 5")
 
+        # Phase 6: Match benefit/USP to hook for relevant subheadline
+        # Combines both benefits and unique_selling_points for best match
+        matched_benefit = match_benefit_to_hook(
+            selected_hook,
+            product.get('benefits', []),
+            product.get('unique_selling_points')
+        )
+
         # Build specification object
         spec = {
             "canvas": f"{ad_analysis.get('canvas_size', '1080x1080px')}, "
@@ -788,12 +956,90 @@ async def generate_nano_banana_prompt(
             "product_image": "Use uploaded product image EXACTLY - no modifications to product appearance",
             "text_elements": {
                 "headline": selected_hook.get('adapted_text'),
-                "subheadline": product.get('benefits', [])[0] if product.get('benefits') else "",
+                "subheadline": matched_benefit,  # Phase 6: Use matched benefit instead of first benefit
                 "layout": ad_analysis.get('text_placement', {})
             },
             "colors": ad_analysis.get('color_palette', []),
             "authenticity_markers": ad_analysis.get('authenticity_markers', [])
         }
+
+        # Phase 6: Build offer and constraints sections
+        offer_section = ""
+        if product.get('current_offer'):
+            offer_section = f"""
+        **Current Offer (USE EXACTLY AS WRITTEN):**
+        "{product.get('current_offer')}"
+        """
+
+        prohibited_section = ""
+        if product.get('prohibited_claims'):
+            prohibited_section = f"""
+        **PROHIBITED CLAIMS (DO NOT USE):**
+        {', '.join(product.get('prohibited_claims', []))}
+        """
+
+        brand_voice_section = ""
+        if product.get('brand_voice_notes'):
+            brand_voice_section = f"""
+        **Brand Voice & Tone:**
+        {product.get('brand_voice_notes')}
+        """
+
+        usp_section = ""
+        if product.get('unique_selling_points'):
+            usp_section = f"""
+        **Unique Selling Points:**
+        {', '.join(product.get('unique_selling_points', []))}
+        """
+
+        disclaimer_section = ""
+        if product.get('required_disclaimers'):
+            disclaimer_section = f"""
+        **Required Disclaimer (MUST INCLUDE):**
+        {product.get('required_disclaimers')}
+        """
+
+        # Product dimensions/scale guidance
+        dimensions_section = ""
+        if product.get('product_dimensions'):
+            dimensions_section = f"""
+        **Product Dimensions & Scale (CRITICAL FOR REALISTIC SIZING):**
+        {product.get('product_dimensions')}
+        - Ensure the product is realistically sized relative to environmental objects (hands, pets, countertops, furniture)
+        - The product should appear proportionally correct in the scene
+        """
+        else:
+            # Default scale guidance when dimensions aren't specified
+            dimensions_section = """
+        **Scale Guidance (CRITICAL FOR REALISTIC SIZING):**
+        - Ensure the product appears realistically sized for its category
+        - Maintain realistic proportions relative to surrounding objects (countertops, hands, pets, furniture)
+        - The product should fit naturally in the scene without appearing oversized or undersized
+        """
+
+        # Social proof - only include if template has social proof elements AND product has social_proof data
+        social_proof_section = ""
+        if ad_analysis.get('has_social_proof') and product.get('social_proof'):
+            # Template has social proof, so we can include product's social proof
+            social_proof_section = f"""
+        **Social Proof (MATCH TEMPLATE STYLE):**
+        "{product.get('social_proof')}"
+        - Template uses social proof style: {ad_analysis.get('social_proof_style')}
+        - Placement in template: {ad_analysis.get('social_proof_placement')}
+        - Use the EXACT text provided above for social proof
+        - Match the visual style (badge/banner/seal) from the template
+        - Place in similar position as shown in the reference ad
+        """
+        elif ad_analysis.get('has_social_proof') and not product.get('social_proof'):
+            # Template has social proof but product doesn't - warn not to hallucinate
+            social_proof_section = """
+        **⚠️ SOCIAL PROOF WARNING:**
+        - The reference template includes social proof elements, but this product has NO social proof data
+        - DO NOT copy or adapt social proof from the template (e.g., "100,000+ Sold")
+        - DO NOT create fictional social proof statistics
+        - Omit social proof elements from your generated ad
+        """
+        # If template doesn't have social proof, social_proof_section stays empty (no warning needed)
 
         # Build instruction text
         instruction_text = f"""
@@ -810,13 +1056,20 @@ async def generate_nano_banana_prompt(
 
         **Product:**
         - Name: {product.get('name')}
-        - Benefits: {', '.join(product.get('benefits', []))}
+        - Primary Benefit (matched to hook): {matched_benefit}
         - Target: {product.get('target_audience', 'general audience')}
-
+        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{social_proof_section}{prohibited_section}{disclaimer_section}
         **Critical Requirements:**
         - Use product image EXACTLY as provided (no hallucination)
         - Match reference ad layout and style
         - Maintain brand voice from ad brief
+        - If offer is provided, use EXACT wording (no hallucination of discounts)
+        - Do NOT use any prohibited claims listed above
+
+        **⚠️ OFFER WARNING:**
+        - DO NOT copy offer elements from the reference ad template (e.g., "Free gift", "Buy 1 Get 1")
+        - ONLY use the offer text provided in "Current Offer" section above
+        - If NO offer is listed above, DO NOT add any offer/discount text to the ad
         """
 
         # Build full prompt
@@ -1087,6 +1340,9 @@ async def review_ad_claude(
         ValueError: If storage_path is invalid
         Exception: If Claude Vision API fails
     """
+    # Import json at function scope (Bug #18 fix)
+    import json
+
     try:
         logger.info(f"Claude reviewing ad: {storage_path}")
 
@@ -1098,7 +1354,6 @@ async def review_ad_claude(
         image_data = await ctx.deps.ad_creation.download_image(storage_path)
 
         # Build review prompt
-        import json
         review_prompt = f"""
         You are reviewing a generated Facebook ad image for production readiness.
 
@@ -1161,6 +1416,17 @@ async def review_ad_claude(
 
         anthropic_client = Anthropic()
 
+        # Detect actual image format from magic bytes (Bug #12 fix)
+        media_type = "image/png"  # Default fallback
+        if image_data[:4] == b'RIFF' and image_data[8:12] == b'WEBP':
+            media_type = "image/webp"
+        elif image_data[:3] == b'\xff\xd8\xff':
+            media_type = "image/jpeg"
+        elif image_data[:8] == b'\x89PNG\r\n\x1a\n':
+            media_type = "image/png"
+        elif image_data[:6] in (b'GIF87a', b'GIF89a'):
+            media_type = "image/gif"
+
         # Encode image as base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
 
@@ -1175,7 +1441,7 @@ async def review_ad_claude(
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            "media_type": media_type,
                             "data": image_base64
                         }
                     },
@@ -1189,7 +1455,21 @@ async def review_ad_claude(
 
         # Parse response
         review_text = message.content[0].text
-        review_dict = json.loads(review_text)
+
+        # Strip markdown code fences if present (Bug #13 fix)
+        # Claude sometimes wraps JSON in ```json ... ```
+        review_text_clean = review_text.strip()
+        if review_text_clean.startswith('```'):
+            # Remove opening fence (```json or ```)
+            lines = review_text_clean.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            # Remove closing fence
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            review_text_clean = '\n'.join(lines)
+
+        review_dict = json.loads(review_text_clean)
 
         logger.info(f"Claude review complete: status={review_dict.get('status')}, "
                    f"product_acc={review_dict.get('product_accuracy')}, "
@@ -1343,8 +1623,21 @@ async def review_ad_gemini(
             prompt=review_prompt
         )
 
+        # Strip markdown code fences if present (Bug #15 fix)
+        # Gemini sometimes wraps JSON in ```json ... ```
+        review_text_clean = review_result.strip()
+        if review_text_clean.startswith('```'):
+            # Remove opening fence (```json or ```)
+            lines = review_text_clean.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            # Remove closing fence
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            review_text_clean = '\n'.join(lines)
+
         # Parse JSON response
-        review_dict = json.loads(review_result)
+        review_dict = json.loads(review_text_clean)
 
         logger.info(f"Gemini review complete: status={review_dict.get('status')}, "
                    f"product_acc={review_dict.get('product_accuracy')}, "
@@ -1519,6 +1812,7 @@ async def complete_ad_workflow(
     """
     try:
         from datetime import datetime
+        from uuid import UUID
         import json
 
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
@@ -1590,6 +1884,8 @@ async def complete_ad_workflow(
             ctx=ctx,
             hooks=hooks_list,
             ad_analysis=ad_analysis,
+            product_name=product_dict.get('name', ''),
+            target_audience=product_dict.get('target_audience', ''),
             count=5
         )
 
@@ -1645,19 +1941,15 @@ async def complete_ad_workflow(
                 nano_banana_prompt=nano_banana_prompt
             )
 
-            # Save immediately (resilience)
-            storage_path = await save_generated_ad(
-                ctx=ctx,
-                ad_run_id=ad_run_id_str,
-                generated_ad=generated_ad,
-                nano_banana_prompt=nano_banana_prompt,
-                hook=selected_hook
+            # Upload image to storage to get path (Bug #17 fix)
+            # Don't save to database yet - will save with reviews later
+            storage_path = await ctx.deps.ad_creation.upload_generated_ad(
+                ad_run_id=UUID(ad_run_id_str),
+                prompt_index=i,
+                image_base64=generated_ad['image_base64']
             )
 
-            # Update generated_ad with storage path
-            generated_ad['storage_path'] = storage_path
-
-            logger.info(f"  ✓ Variation {i} generated and saved: {storage_path}")
+            logger.info(f"  ✓ Variation {i} generated and uploaded: {storage_path}")
 
             # STAGE 11-12: Dual AI Review
             logger.info(f"  → Reviewing variation {i} with Claude + Gemini...")

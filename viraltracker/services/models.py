@@ -725,12 +725,27 @@ class Product(BaseModel):
     id: UUID
     brand_id: UUID
     name: str
-    benefits: List[str] = Field(default_factory=list, description="Product benefits for ad copy")
+    benefits: Optional[List[str]] = Field(None, description="Product benefits for ad copy")
     key_ingredients: Optional[List[str]] = Field(None, description="Key ingredients to highlight")
     target_audience: Optional[str] = Field(None, description="Target demographic")
     product_url: Optional[str] = Field(None, description="Product landing page URL")
     main_image_storage_path: Optional[str] = Field(None, description="Storage path to main product image")
-    reference_image_storage_paths: List[str] = Field(default_factory=list, description="Additional product images")
+    reference_image_storage_paths: Optional[List[str]] = Field(None, description="Additional product images")
+
+    # Phase 6: Product Constraints & Offer Controls
+    current_offer: Optional[str] = Field(None, description="Active promotional offer text to prevent hallucinated discount claims")
+    prohibited_claims: Optional[List[str]] = Field(None, description="Claims that must not appear in ads for legal compliance")
+    required_disclaimers: Optional[str] = Field(None, description="Legal disclaimers that must appear in ads")
+    brand_voice_notes: Optional[str] = Field(None, description="Tone and style guidelines for ad copy generation")
+    unique_selling_points: Optional[List[str]] = Field(None, description="Key differentiators vs competitors to highlight")
+    product_dimensions: Optional[str] = Field(None, description="Physical size/dimensions to ensure realistic product scaling in generated images (e.g., '3 fl oz bottle, 5 inches tall, palm-sized')")
+    social_proof: Optional[str] = Field(None, description="Social proof statement to include when template has social proof elements (e.g., '100,000+ Bottles Sold', '50,000+ Happy Customers')")
+
+    @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', mode='before')
+    @classmethod
+    def convert_none_to_empty_list(cls, v):
+        """Convert None to empty list for list fields"""
+        return v if v is not None else []
 
 
 class Hook(BaseModel):
@@ -741,7 +756,7 @@ class Hook(BaseModel):
     category: str = Field(..., description="Universal persuasive principle category")
     framework: Optional[str] = Field(None, description="Original framework name")
     impact_score: int = Field(ge=0, le=21, description="Impact score 0-21 based on persuasive framework")
-    emotional_score: str = Field(..., description="Emotional intensity: Very High, High, Medium, Low")
+    emotional_score: Optional[str] = Field(None, description="Emotional intensity: Very High, High, Medium, Low")
     active: bool = True
 
 
