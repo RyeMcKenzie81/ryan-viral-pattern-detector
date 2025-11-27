@@ -1742,6 +1742,344 @@ async def create_ad_run(
         raise Exception(f"Failed to create ad run: {str(e)}")
 
 
+# ============================================================================
+# RECREATE TEMPLATE TOOLS (Alternative to Hooks)
+# ============================================================================
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Analysis',
+        'platform': 'Facebook',
+        'rate_limit': '5/minute',
+        'use_cases': [
+            'Extract the persuasive angle from a reference ad template',
+            'Identify the messaging structure and emotional appeal',
+            'Prepare for benefit-based variations'
+        ],
+        'examples': [
+            'Extract angle from testimonial template',
+            'Analyze persuasive structure of reference ad'
+        ]
+    }
+)
+async def extract_template_angle(
+    ctx: RunContext[AgentDependencies],
+    reference_ad_storage_path: str,
+    ad_analysis: Dict
+) -> Dict:
+    """
+    Extract the persuasive angle and messaging structure from a reference ad.
+
+    This tool uses Vision AI to analyze the reference ad and extract:
+    - The main persuasive angle (before/after, testimonial, benefit-focused, etc.)
+    - The messaging structure/template
+    - Key phrases and patterns that can be adapted
+    - Emotional tone and style
+
+    This is used for "Recreate Template" mode where we keep the template's
+    angle structure but swap in different product benefits.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        reference_ad_storage_path: Storage path to reference ad image
+        ad_analysis: Ad analysis dictionary with format details
+
+    Returns:
+        Dictionary with extracted angle:
+        {
+            "angle_type": "before_after" | "testimonial" | "benefit_statement" | "social_proof" | "question_hook",
+            "messaging_template": "Template structure with {placeholders}",
+            "original_text": "The exact text from the reference ad",
+            "tone": "casual" | "professional" | "urgent" | "emotional",
+            "key_elements": ["transformation", "timeframe", "specific_result"],
+            "adaptation_guidance": "How to adapt this angle for different benefits"
+        }
+
+    Raises:
+        ValueError: If reference ad path is invalid
+        Exception: If Vision AI analysis fails
+    """
+    import json
+
+    try:
+        logger.info(f"Extracting template angle from: {reference_ad_storage_path}")
+
+        # Validate input
+        if not reference_ad_storage_path:
+            raise ValueError("reference_ad_storage_path cannot be empty")
+
+        # Download reference ad image from storage as base64
+        image_data = await ctx.deps.ad_creation.get_image_as_base64(reference_ad_storage_path)
+
+        # Build extraction prompt
+        extraction_prompt = f"""
+        Analyze this Facebook ad and extract its persuasive angle and messaging structure.
+
+        **Context from previous analysis:**
+        - Format: {ad_analysis.get('format_type')}
+        - Layout: {ad_analysis.get('layout_structure')}
+        - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
+
+        **Task:** Extract the core persuasive angle so it can be recreated with different product benefits.
+
+        Analyze:
+
+        1. **Angle Type**: What is the primary persuasive approach?
+           - before_after: Shows transformation (e.g., "went from X to Y")
+           - testimonial: Personal experience/quote format
+           - benefit_statement: Direct benefit claim
+           - social_proof: Uses numbers/authority (e.g., "100,000+ customers")
+           - question_hook: Poses a question to the reader
+           - problem_solution: Presents problem then solution
+
+        2. **Original Text**: Extract the EXACT main headline/hook text from the ad.
+
+        3. **Messaging Template**: Create a template version with {{placeholders}}:
+           - Replace the specific benefit/result with {{benefit}}
+           - Replace specific product name with {{product}}
+           - Replace specific timeframe with {{timeframe}} if present
+           - Keep the structure and tone intact
+           Example: "My dog went from limping to running in 2 weeks!"
+           → "My {{subject}} went from {{problem}} to {{result}} in {{timeframe}}!"
+
+        4. **Tone**: What's the emotional tone?
+           - casual: Friendly, conversational, relatable
+           - professional: Expert, authoritative, clinical
+           - urgent: Time-sensitive, action-oriented
+           - emotional: Heart-tugging, personal, vulnerable
+
+        5. **Key Elements**: What structural elements are critical?
+           (e.g., transformation, timeframe, specific_result, personal_pronoun, exclamation)
+
+        6. **Adaptation Guidance**: Brief notes on how to adapt this template
+           for different benefits while maintaining effectiveness.
+
+        Return JSON with this structure:
+        {{
+            "angle_type": "string",
+            "original_text": "exact text from ad",
+            "messaging_template": "template with {{placeholders}}",
+            "tone": "string",
+            "key_elements": ["element1", "element2"],
+            "adaptation_guidance": "guidance text"
+        }}
+        """
+
+        # Call Gemini Vision API
+        analysis_result = await ctx.deps.gemini.analyze_image(
+            image_data=image_data,
+            prompt=extraction_prompt
+        )
+
+        # Strip markdown code fences if present
+        result_clean = analysis_result.strip()
+        if result_clean.startswith('```'):
+            first_newline = result_clean.find('\n')
+            last_fence = result_clean.rfind('```')
+            if first_newline != -1 and last_fence > first_newline:
+                result_clean = result_clean[first_newline + 1:last_fence].strip()
+
+        # Parse JSON response
+        angle_dict = json.loads(result_clean)
+
+        logger.info(f"Extracted template angle: type={angle_dict.get('angle_type')}, "
+                   f"tone={angle_dict.get('tone')}")
+
+        return angle_dict
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse angle extraction response: {str(e)}")
+        raise Exception(f"Failed to parse angle extraction: {str(e)}")
+    except ValueError as e:
+        logger.error(f"Invalid reference ad path: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to extract template angle: {str(e)}")
+        raise Exception(f"Failed to extract template angle: {str(e)}")
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Analysis',
+        'platform': 'Facebook',
+        'rate_limit': '5/minute',
+        'use_cases': [
+            'Generate hook-like variations from product benefits',
+            'Create messaging variations based on template angle',
+            'Produce content for recreate template mode'
+        ],
+        'examples': [
+            'Generate 5 benefit variations for joint supplement',
+            'Create messaging from USPs using testimonial template'
+        ]
+    }
+)
+async def generate_benefit_variations(
+    ctx: RunContext[AgentDependencies],
+    product: Dict,
+    template_angle: Dict,
+    ad_analysis: Dict,
+    count: int = 5
+) -> List[Dict]:
+    """
+    Generate hook-like variations by applying the template angle to product benefits.
+
+    This tool takes the extracted template angle and applies it to different
+    product benefits and USPs, creating variations that maintain the template's
+    persuasive structure while highlighting different aspects of the product.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        product: Product dictionary with benefits, unique_selling_points, etc.
+        template_angle: Extracted angle from extract_template_angle()
+        ad_analysis: Ad analysis dictionary with format details
+        count: Number of variations to generate (1-15)
+
+    Returns:
+        List of hook-like dictionaries (same structure as select_hooks output):
+        [
+            {
+                "hook_id": "benefit_1",  # Synthetic ID for benefit-based hooks
+                "text": "Original benefit text",
+                "category": "benefit_variation",
+                "framework": "Recreate Template",
+                "impact_score": 15,  # Default score
+                "reasoning": "Why this benefit was chosen...",
+                "adapted_text": "Benefit applied to template structure"
+            },
+            ...
+        ]
+
+    Raises:
+        ValueError: If product has no benefits/USPs or count is invalid
+        Exception: If Gemini AI generation fails
+    """
+    import json
+    import random
+    from uuid import uuid4
+
+    try:
+        logger.info(f"Generating {count} benefit variations using template angle")
+
+        # Validate inputs
+        if count < 1 or count > 15:
+            raise ValueError("count must be between 1 and 15")
+
+        # Combine benefits and USPs
+        benefits = product.get('benefits', []) or []
+        usps = product.get('unique_selling_points', []) or []
+        key_ingredients = product.get('key_ingredients', []) or []
+
+        all_content = benefits + usps + key_ingredients
+        if not all_content:
+            raise ValueError("Product has no benefits, USPs, or key ingredients to use")
+
+        # Shuffle for variety
+        shuffled_content = all_content.copy()
+        random.shuffle(shuffled_content)
+
+        # Build generation prompt
+        generation_prompt = f"""
+        You are generating ad copy variations by applying a proven template structure to different product benefits.
+
+        **Product:** {product.get('name', 'Product')}
+        **Target Audience:** {product.get('target_audience', 'General audience')}
+
+        **Template Angle (from successful reference ad):**
+        - Type: {template_angle.get('angle_type')}
+        - Original text: "{template_angle.get('original_text', '')}"
+        - Template structure: "{template_angle.get('messaging_template', '')}"
+        - Tone: {template_angle.get('tone')}
+        - Key elements: {', '.join(template_angle.get('key_elements', []))}
+        - Adaptation guidance: {template_angle.get('adaptation_guidance', '')}
+
+        **Reference Ad Style:**
+        - Format: {ad_analysis.get('format_type')}
+        - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
+
+        **Available Product Content to Apply:**
+        {json.dumps(shuffled_content, indent=2)}
+
+        **Task:** Select exactly {count} different benefits/USPs/ingredients and create adapted headlines.
+
+        For each:
+        1. Pick a benefit/USP/ingredient that would work well with the template structure
+        2. Apply the template pattern to create a new headline
+        3. Maintain the same tone and key elements as the original
+        4. Ensure the adapted text mentions or implies the product category
+        5. Make it sound natural and authentic (not templated)
+
+        **CRITICAL Rules:**
+        - Each variation MUST use a DIFFERENT benefit/USP
+        - Maintain the template's persuasive structure
+        - Match the tone (casual, professional, etc.)
+        - Include key elements (timeframe, transformation, etc.) where appropriate
+        - The adapted text must make sense on its own
+
+        Return JSON array:
+        [
+            {{
+                "original_benefit": "the benefit/USP text you're using",
+                "reasoning": "Why this benefit works well with the template",
+                "adapted_text": "The new headline applying the template to this benefit"
+            }},
+            ...
+        ]
+        """
+
+        # Call Gemini AI
+        max_retries = 3
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                result = await ctx.deps.gemini.analyze_text(
+                    text=generation_prompt,
+                    prompt="Generate benefit-based ad variations. Return ONLY valid JSON array."
+                )
+
+                # Strip markdown code fences if present
+                result_text = result.strip()
+                if result_text.startswith("```"):
+                    result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+                    if result_text.endswith("```"):
+                        result_text = result_text.rsplit("\n```", 1)[0]
+
+                result_text = result_text.strip()
+                variations_raw = json.loads(result_text)
+
+                # Convert to hook-like format for compatibility with rest of workflow
+                variations = []
+                for i, var in enumerate(variations_raw, start=1):
+                    variations.append({
+                        "hook_id": str(uuid4()),  # Generate unique ID
+                        "text": var.get('original_benefit', ''),
+                        "category": "benefit_variation",
+                        "framework": f"Recreate Template ({template_angle.get('angle_type', 'unknown')})",
+                        "impact_score": 15,  # Default score for benefit-based
+                        "reasoning": var.get('reasoning', ''),
+                        "adapted_text": var.get('adapted_text', '')
+                    })
+
+                logger.info(f"Generated {len(variations)} benefit variations")
+                return variations
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} - JSON parse error: {str(e)}")
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    raise Exception(f"Failed to parse variations after {max_retries} attempts: {str(e)}")
+
+    except ValueError as e:
+        logger.error(f"Invalid input: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate benefit variations: {str(e)}")
+        raise Exception(f"Failed to generate benefit variations: {str(e)}")
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
@@ -1764,7 +2102,8 @@ async def complete_ad_workflow(
     reference_ad_base64: str,
     reference_ad_filename: str = "reference.png",
     project_id: Optional[str] = None,
-    num_variations: int = 5
+    num_variations: int = 5,
+    content_source: str = "hooks"
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -1772,9 +2111,12 @@ async def complete_ad_workflow(
     This orchestration tool:
     1. Creates ad run in database
     2. Uploads reference ad to storage
-    3. Fetches product data and hooks
+    3. Fetches product data (and hooks if content_source="hooks")
     4. Analyzes reference ad (Vision AI)
-    5. Selects N diverse hooks (configurable via num_variations)
+    5. Gets content variations:
+       - If content_source="hooks": Selects N diverse hooks from database
+       - If content_source="recreate_template": Extracts template angle and
+         generates variations from product benefits/USPs
     6. Generates N ad variations (ONE AT A TIME)
     7. Dual AI review (Claude + Gemini) for each ad
     8. Applies OR logic: either reviewer approving = approved
@@ -1792,6 +2134,9 @@ async def complete_ad_workflow(
         reference_ad_filename: Filename for storage (default: reference.png)
         project_id: Optional UUID of project as string
         num_variations: Number of ad variations to generate (default: 5, max: 15)
+        content_source: Source for ad content variations:
+            - "hooks": Use hooks from database (default)
+            - "recreate_template": Extract template angle and use product benefits
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -1800,6 +2145,8 @@ async def complete_ad_workflow(
             "product": {...},
             "reference_ad_path": "storage path",
             "ad_analysis": {...},
+            "content_source": "hooks" or "recreate_template",
+            "template_angle": {...} (only if recreate_template),
             "selected_hooks": [...],
             "generated_ads": [
                 {
@@ -1822,7 +2169,7 @@ async def complete_ad_workflow(
 
     Raises:
         Exception: If workflow fails at any stage
-        ValueError: If num_variations is out of range (1-15)
+        ValueError: If num_variations is out of range (1-15) or invalid content_source
     """
     try:
         from datetime import datetime
@@ -1833,8 +2180,13 @@ async def complete_ad_workflow(
         if num_variations < 1 or num_variations > 15:
             raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
 
+        # Validate content_source
+        valid_content_sources = ["hooks", "recreate_template"]
+        if content_source not in valid_content_sources:
+            raise ValueError(f"content_source must be one of {valid_content_sources}, got {content_source}")
+
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
-        logger.info(f"Generating {num_variations} ad variations")
+        logger.info(f"Generating {num_variations} ad variations using content_source='{content_source}'")
 
         # STAGE 1: Initialize ad run and upload reference ad
         logger.info("Stage 1: Creating ad run...")
@@ -1867,14 +2219,18 @@ async def complete_ad_workflow(
         logger.info("Stage 2: Fetching product data...")
         product_dict = await get_product_with_images(ctx=ctx, product_id=product_id)
 
-        # STAGE 3: Fetch hooks
-        logger.info("Stage 3: Fetching hooks...")
-        hooks_list = await get_hooks_for_product(
-            ctx=ctx,
-            product_id=product_id,
-            limit=50,
-            active_only=True
-        )
+        # STAGE 3: Fetch hooks (only if using hooks content source)
+        hooks_list = []
+        if content_source == "hooks":
+            logger.info("Stage 3: Fetching hooks...")
+            hooks_list = await get_hooks_for_product(
+                ctx=ctx,
+                product_id=product_id,
+                limit=50,
+                active_only=True
+            )
+        else:
+            logger.info("Stage 3: Skipping hooks (using recreate_template mode)")
 
         # STAGE 4: Get ad brief template
         logger.info("Stage 4: Fetching ad brief template...")
@@ -1897,18 +2253,39 @@ async def complete_ad_workflow(
             ad_analysis=ad_analysis
         )
 
-        # STAGE 6: Select diverse hooks
-        logger.info(f"Stage 6: Selecting {num_variations} diverse hooks with AI...")
-        selected_hooks = await select_hooks(
-            ctx=ctx,
-            hooks=hooks_list,
-            ad_analysis=ad_analysis,
-            product_name=product_dict.get('name', ''),
-            target_audience=product_dict.get('target_audience', ''),
-            count=num_variations
-        )
+        # STAGE 6: Get content variations based on content_source
+        template_angle = None  # Will be set if using recreate_template
 
-        # Save selected hooks to database
+        if content_source == "hooks":
+            # Original hooks-based flow
+            logger.info(f"Stage 6: Selecting {num_variations} diverse hooks with AI...")
+            selected_hooks = await select_hooks(
+                ctx=ctx,
+                hooks=hooks_list,
+                ad_analysis=ad_analysis,
+                product_name=product_dict.get('name', ''),
+                target_audience=product_dict.get('target_audience', ''),
+                count=num_variations
+            )
+        else:
+            # Recreate template flow
+            logger.info("Stage 6a: Extracting template angle...")
+            template_angle = await extract_template_angle(
+                ctx=ctx,
+                reference_ad_storage_path=reference_ad_path,
+                ad_analysis=ad_analysis
+            )
+
+            logger.info(f"Stage 6b: Generating {num_variations} benefit variations...")
+            selected_hooks = await generate_benefit_variations(
+                ctx=ctx,
+                product=product_dict,
+                template_angle=template_angle,
+                ad_analysis=ad_analysis,
+                count=num_variations
+            )
+
+        # Save selected hooks/variations to database
         await ctx.deps.ad_creation.update_ad_run(
             ad_run_id=UUID(ad_run_id_str),
             selected_hooks=selected_hooks
@@ -2043,11 +2420,14 @@ async def complete_ad_workflow(
         flagged_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'flagged')
 
         # Build summary
+        content_source_label = "hooks" if content_source == "hooks" else "template recreation (benefits/USPs)"
         summary = f"""
 Ad creation workflow completed for {product_dict.get('name')}.
 
+**Content Source:** {content_source_label}
+
 **Results:**
-- Total ads generated: 5
+- Total ads generated: {num_variations}
 - Approved (production-ready): {approved_count}
 - Rejected (both reviewers): {rejected_count}
 - Flagged (reviewer disagreement): {flagged_count}
@@ -2070,6 +2450,8 @@ Ad creation workflow completed for {product_dict.get('name')}.
             "product": product_dict,
             "reference_ad_path": reference_ad_path,
             "ad_analysis": ad_analysis,
+            "content_source": content_source,
+            "template_angle": template_angle,  # None if using hooks
             "selected_hooks": selected_hooks,
             "generated_ads": generated_ads_with_reviews,
             "approved_count": approved_count,
@@ -2102,4 +2484,4 @@ Ad creation workflow completed for {product_dict.get('name')}.
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 14 tools (ALL PHASES COMPLETE)")
+logger.info("Ad Creation Agent initialized with 16 tools (includes extract_template_angle, generate_benefit_variations)")

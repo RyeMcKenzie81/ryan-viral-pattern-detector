@@ -509,7 +509,8 @@ async def create_ads(
             reference_ad_base64=ad_request.reference_ad_base64,
             reference_ad_filename=ad_request.reference_ad_filename,
             project_id=str(ad_request.project_id) if ad_request.project_id else "",
-            num_variations=ad_request.num_variations
+            num_variations=ad_request.num_variations,
+            content_source=ad_request.content_source
         )
 
         execution_time = time.time() - start_time
