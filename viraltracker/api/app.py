@@ -48,8 +48,12 @@ from ..agent.agents.tiktok_agent import tiktok_agent
 from ..agent.agents.youtube_agent import youtube_agent
 from ..agent.agents.facebook_agent import facebook_agent
 from ..agent.agents.analysis_agent import analysis_agent
-from ..agent.agents.ad_creation_agent import ad_creation_agent
+from ..agent.agents.ad_creation_agent import ad_creation_agent, complete_ad_workflow
 from ..agent.dependencies import AgentDependencies
+
+# For direct workflow execution (bypassing agent prompt)
+from pydantic_ai import RunContext
+from pydantic_ai.usage import RunUsage
 
 # ============================================================================
 # Logging Configuration
@@ -480,41 +484,36 @@ async def create_ads(
             project_name="default"  # Project context optional for ad creation
         )
 
-        # Call the complete_ad_workflow tool via agent
-        result = await ad_creation_agent.run(
-            f"""Execute the complete ad creation workflow for this request:
+        # TODO: REFACTOR TO PYDANTIC-GRAPH
+        # This workflow should be refactored to use pydantic-graph for proper
+        # workflow orchestration. Currently using direct function call which:
+        # - Works but bypasses pydantic-ai's agent orchestration
+        # - Doesn't allow adding LLM logic to intermediate steps easily
+        # - See: https://ai.pydantic.dev/graph/ for the proper pattern
+        #
+        # The workflow has 4 deterministic steps and 4 LLM steps - ideal for
+        # a graph with typed nodes where LLM nodes call specialized agents.
 
-Product ID: {ad_request.product_id}
-Reference Ad: (base64 image provided)
-Filename: {ad_request.reference_ad_filename}
-Project ID: {ad_request.project_id or 'None'}
-
-Use the complete_ad_workflow tool to:
-1. Create ad run in database
-2. Upload reference ad to storage
-3. Fetch product data and hooks
-4. Analyze reference ad with Vision AI
-5. Select 5 diverse hooks
-6. Generate 5 ad variations (ONE AT A TIME)
-7. Dual AI review (Claude + Gemini) with OR logic
-8. Return complete results
-
-Call complete_ad_workflow with these parameters:
-- product_id: "{ad_request.product_id}"
-- reference_ad_base64: "{ad_request.reference_ad_base64}"
-- reference_ad_filename: "{ad_request.reference_ad_filename}"
-- project_id: "{ad_request.project_id or ''}"
-""",
+        # Create RunContext for direct tool execution (no LLM orchestration needed)
+        ctx = RunContext(
             deps=deps,
-            model="claude-sonnet-4-5-20250929"
+            model=None,  # No model needed - workflow calls agents internally
+            usage=RunUsage()
+        )
+
+        # Call workflow directly - avoids embedding large base64 in prompt
+        # This mirrors how test_parallel_workflows.py executes the workflow
+        workflow_data = await complete_ad_workflow(
+            ctx=ctx,
+            product_id=str(ad_request.product_id),
+            reference_ad_base64=ad_request.reference_ad_base64,
+            reference_ad_filename=ad_request.reference_ad_filename,
+            project_id=str(ad_request.project_id) if ad_request.project_id else ""
         )
 
         execution_time = time.time() - start_time
 
         logger.info(f"Ad creation workflow completed in {execution_time:.2f}s")
-
-        # Extract workflow result
-        workflow_data = result.output if hasattr(result, 'output') else result
 
         # Return successful response
         return AdCreationResponse(
