@@ -1,0 +1,395 @@
+"""
+Ad Creator - Generate Facebook ad variations with AI.
+
+This page allows users to:
+- Select a product from the database
+- Choose the number of ad variations (1-15)
+- Upload a reference ad or select from existing templates
+- Run the ad creation workflow
+- View generated ads with approval status
+"""
+
+import streamlit as st
+import base64
+import asyncio
+from pathlib import Path
+from datetime import datetime
+
+# Page config
+st.set_page_config(
+    page_title="Ad Creator",
+    page_icon="🎨",
+    layout="wide"
+)
+
+# Initialize session state
+if 'workflow_running' not in st.session_state:
+    st.session_state.workflow_running = False
+if 'workflow_result' not in st.session_state:
+    st.session_state.workflow_result = None
+if 'selected_product' not in st.session_state:
+    st.session_state.selected_product = None
+
+
+def get_supabase_client():
+    """Get Supabase client."""
+    from viraltracker.core.database import get_supabase_client
+    return get_supabase_client()
+
+
+def get_products():
+    """Fetch all products from database."""
+    try:
+        db = get_supabase_client()
+        result = db.table("products").select("id, name, brand_id, target_audience").order("name").execute()
+        return result.data
+    except Exception as e:
+        st.error(f"Failed to fetch products: {e}")
+        return []
+
+
+def get_existing_templates():
+    """Get existing reference ad templates from storage."""
+    try:
+        db = get_supabase_client()
+        # List files in reference-ads bucket
+        result = db.storage.from_("reference-ads").list()
+        templates = []
+        for item in result:
+            if item.get('name', '').lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                templates.append({
+                    'name': item['name'],
+                    'path': f"reference-ads/{item['name']}",
+                    'size': item.get('metadata', {}).get('size', 0)
+                })
+        return templates
+    except Exception as e:
+        st.warning(f"Could not load existing templates: {e}")
+        return []
+
+
+def get_signed_url(storage_path: str) -> str:
+    """Get a signed URL for a storage path."""
+    try:
+        db = get_supabase_client()
+        # Parse bucket and path
+        parts = storage_path.split('/', 1)
+        if len(parts) == 2:
+            bucket, path = parts
+        else:
+            bucket = "generated-ads"
+            path = storage_path
+
+        # Get signed URL (valid for 1 hour)
+        result = db.storage.from_(bucket).create_signed_url(path, 3600)
+        return result.get('signedURL', '')
+    except Exception as e:
+        return ""
+
+
+def get_ad_run_details(ad_run_id: str):
+    """Fetch ad run details including generated ads."""
+    try:
+        db = get_supabase_client()
+
+        # Get ad run
+        run_result = db.table("ad_runs").select("*").eq("id", ad_run_id).execute()
+        if not run_result.data:
+            return None
+
+        ad_run = run_result.data[0]
+
+        # Get generated ads
+        ads_result = db.table("generated_ads").select("*").eq("ad_run_id", ad_run_id).order("prompt_index").execute()
+        ad_run['generated_ads'] = ads_result.data
+
+        return ad_run
+    except Exception as e:
+        st.error(f"Failed to fetch ad run: {e}")
+        return None
+
+
+async def run_workflow(product_id: str, reference_ad_base64: str, filename: str, num_variations: int):
+    """Run the ad creation workflow."""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+    from viraltracker.agent.dependencies import AgentDependencies
+
+    # Create dependencies
+    deps = AgentDependencies.create(project_name="default")
+
+    # Create RunContext
+    ctx = RunContext(
+        deps=deps,
+        model=None,
+        usage=RunUsage()
+    )
+
+    # Run workflow
+    result = await complete_ad_workflow(
+        ctx=ctx,
+        product_id=product_id,
+        reference_ad_base64=reference_ad_base64,
+        reference_ad_filename=filename,
+        project_id="",
+        num_variations=num_variations
+    )
+
+    return result
+
+
+# ============================================================================
+# Main UI
+# ============================================================================
+
+st.title("🎨 Ad Creator")
+st.markdown("**Generate Facebook ad variations with AI-powered dual review**")
+
+st.divider()
+
+# Check if we have a completed workflow to display
+if st.session_state.workflow_result:
+    result = st.session_state.workflow_result
+
+    # Success header
+    st.success(f"✅ Ad Creation Complete!")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Ads", len(result.get('generated_ads', [])))
+    with col2:
+        st.metric("Approved", result.get('approved_count', 0))
+    with col3:
+        st.metric("Rejected", result.get('rejected_count', 0))
+    with col4:
+        st.metric("Flagged", result.get('flagged_count', 0))
+
+    st.divider()
+
+    # Display generated ads
+    st.subheader("Generated Ads")
+
+    generated_ads = result.get('generated_ads', [])
+
+    # Create columns for ads (3 per row)
+    for i in range(0, len(generated_ads), 3):
+        cols = st.columns(3)
+        for j, col in enumerate(cols):
+            if i + j < len(generated_ads):
+                ad = generated_ads[i + j]
+                with col:
+                    # Status badge
+                    status = ad.get('final_status', 'unknown')
+                    if status == 'approved':
+                        st.success(f"✅ Ad {ad.get('prompt_index', i+j+1)} - Approved")
+                    elif status == 'rejected':
+                        st.error(f"❌ Ad {ad.get('prompt_index', i+j+1)} - Rejected")
+                    else:
+                        st.warning(f"🚩 Ad {ad.get('prompt_index', i+j+1)} - Flagged")
+
+                    # Try to display the image
+                    storage_path = ad.get('storage_path', '')
+                    if storage_path:
+                        signed_url = get_signed_url(storage_path)
+                        if signed_url:
+                            st.image(signed_url, use_container_width=True)
+                        else:
+                            st.info(f"📁 {storage_path}")
+
+                    # Review details in expander
+                    with st.expander("Review Details"):
+                        claude = ad.get('claude_review', {})
+                        gemini = ad.get('gemini_review', {})
+
+                        st.markdown(f"**Claude:** {claude.get('status', 'N/A')}")
+                        if claude.get('reasoning'):
+                            st.caption(claude.get('reasoning', '')[:200])
+
+                        st.markdown(f"**Gemini:** {gemini.get('status', 'N/A')}")
+                        if gemini.get('reasoning'):
+                            st.caption(gemini.get('reasoning', '')[:200])
+
+    st.divider()
+
+    # Button to create more ads
+    if st.button("🔄 Create More Ads", type="primary"):
+        st.session_state.workflow_result = None
+        st.rerun()
+
+else:
+    # ============================================================================
+    # Configuration Form
+    # ============================================================================
+
+    with st.form("ad_creation_form"):
+        st.subheader("1. Select Product")
+
+        products = get_products()
+        if not products:
+            st.error("No products found in database")
+            st.stop()
+
+        product_options = {p['name']: p['id'] for p in products}
+        selected_product_name = st.selectbox(
+            "Product",
+            options=list(product_options.keys()),
+            help="Select the product to create ads for"
+        )
+        selected_product_id = product_options[selected_product_name]
+
+        # Show product details
+        selected_product = next((p for p in products if p['id'] == selected_product_id), None)
+        if selected_product:
+            st.caption(f"Target Audience: {selected_product.get('target_audience', 'Not specified')}")
+
+        st.divider()
+
+        st.subheader("2. Number of Variations")
+
+        num_variations = st.slider(
+            "How many ad variations to generate?",
+            min_value=1,
+            max_value=15,
+            value=5,
+            help="Each variation uses a different hook from your hook database"
+        )
+
+        st.info(f"💡 This will select {num_variations} diverse hooks and generate {num_variations} unique ads")
+
+        st.divider()
+
+        st.subheader("3. Reference Ad")
+
+        reference_source = st.radio(
+            "Reference ad source",
+            options=["Upload New", "Use Existing Template"],
+            horizontal=True
+        )
+
+        reference_ad_base64 = None
+        reference_filename = None
+
+        if reference_source == "Upload New":
+            uploaded_file = st.file_uploader(
+                "Upload reference ad image",
+                type=['jpg', 'jpeg', 'png', 'webp'],
+                help="Upload a high-performing ad to use as a style reference"
+            )
+
+            if uploaded_file:
+                # Preview
+                st.image(uploaded_file, caption="Reference Ad Preview", width=300)
+
+                # Encode to base64
+                reference_ad_base64 = base64.b64encode(uploaded_file.read()).decode('utf-8')
+                reference_filename = uploaded_file.name
+                uploaded_file.seek(0)  # Reset for potential re-read
+
+        else:
+            templates = get_existing_templates()
+            if templates:
+                template_names = [t['name'] for t in templates]
+                selected_template = st.selectbox(
+                    "Select existing template",
+                    options=template_names
+                )
+
+                if selected_template:
+                    # Get the template from storage
+                    try:
+                        db = get_supabase_client()
+                        template_data = db.storage.from_("reference-ads").download(selected_template)
+                        reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
+                        reference_filename = selected_template
+
+                        # Preview
+                        st.image(template_data, caption=f"Template: {selected_template}", width=300)
+                    except Exception as e:
+                        st.error(f"Failed to load template: {e}")
+            else:
+                st.warning("No existing templates found. Please upload a new reference ad.")
+
+        st.divider()
+
+        # Submit button
+        submitted = st.form_submit_button(
+            f"🚀 Generate {num_variations} Ad Variations",
+            type="primary",
+            use_container_width=True
+        )
+
+        if submitted:
+            if not reference_ad_base64:
+                st.error("Please upload or select a reference ad")
+            else:
+                st.session_state.workflow_running = True
+
+    # Run workflow outside form
+    if st.session_state.workflow_running and reference_ad_base64:
+        with st.spinner(f"🎨 Generating {num_variations} ad variations... This may take a few minutes."):
+            progress_bar = st.progress(0, text="Starting workflow...")
+
+            try:
+                # Update progress
+                progress_bar.progress(10, text="Analyzing reference ad...")
+
+                # Run the async workflow
+                result = asyncio.run(run_workflow(
+                    product_id=selected_product_id,
+                    reference_ad_base64=reference_ad_base64,
+                    filename=reference_filename,
+                    num_variations=num_variations
+                ))
+
+                progress_bar.progress(100, text="Complete!")
+
+                # Store result and reset running state
+                st.session_state.workflow_result = result
+                st.session_state.workflow_running = False
+
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.workflow_running = False
+                st.error(f"Workflow failed: {str(e)}")
+                st.exception(e)
+
+# ============================================================================
+# Sidebar - Recent Runs
+# ============================================================================
+
+with st.sidebar:
+    st.subheader("📜 Recent Ad Runs")
+
+    try:
+        db = get_supabase_client()
+        recent_runs = db.table("ad_runs").select(
+            "id, created_at, status, product_id"
+        ).order("created_at", desc=True).limit(5).execute()
+
+        for run in recent_runs.data:
+            status_emoji = {
+                'completed': '✅',
+                'failed': '❌',
+                'generating': '⏳',
+                'analyzing': '🔍'
+            }.get(run.get('status', ''), '❓')
+
+            created = run.get('created_at', '')[:10]
+            run_id = run.get('id', '')[:8]
+
+            if st.button(f"{status_emoji} {run_id}... ({created})", key=f"run_{run['id']}"):
+                # Load this run's results
+                ad_run = get_ad_run_details(run['id'])
+                if ad_run:
+                    st.session_state.workflow_result = {
+                        'ad_run_id': ad_run['id'],
+                        'generated_ads': ad_run.get('generated_ads', []),
+                        'approved_count': sum(1 for a in ad_run.get('generated_ads', []) if a.get('final_status') == 'approved'),
+                        'rejected_count': sum(1 for a in ad_run.get('generated_ads', []) if a.get('final_status') == 'rejected'),
+                        'flagged_count': sum(1 for a in ad_run.get('generated_ads', []) if a.get('final_status') == 'flagged'),
+                    }
+                    st.rerun()
+    except Exception as e:
+        st.caption(f"Could not load recent runs: {e}")

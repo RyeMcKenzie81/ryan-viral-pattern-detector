@@ -194,7 +194,7 @@ class AdCreationRequest(BaseModel):
     """
     Request model for ad creation workflow.
 
-    Used to generate 5 Facebook ad variations with dual AI review.
+    Used to generate Facebook ad variations with dual AI review.
     """
     product_id: str = Field(
         ...,
@@ -212,6 +212,12 @@ class AdCreationRequest(BaseModel):
         None,
         description="Optional UUID of project"
     )
+    num_variations: int = Field(
+        default=5,
+        description="Number of ad variations to generate (1-15)",
+        ge=1,
+        le=15
+    )
 
     class Config:
         json_schema_extra = {
@@ -219,7 +225,8 @@ class AdCreationRequest(BaseModel):
                 "product_id": "550e8400-e29b-41d4-a716-446655440000",
                 "reference_ad_base64": "iVBORw0KGgoAAAANS...",
                 "reference_ad_filename": "reference.png",
-                "project_id": None
+                "project_id": None,
+                "num_variations": 5
             }
         }
 

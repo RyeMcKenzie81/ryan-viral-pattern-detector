@@ -543,12 +543,12 @@ async def select_hooks(
     ad_analysis: Dict,
     product_name: str = "",
     target_audience: str = "",
-    count: int = 5
+    count: int = 10
 ) -> List[Dict]:
     """
     Select diverse hooks using AI to maximize persuasive variety.
 
-    This tool uses Gemini AI to select 5 hooks that:
+    This tool uses Gemini AI to select hooks that:
     - Cover different persuasive categories (avoid repetition)
     - Have high impact scores
     - Match the reference ad style and tone
@@ -558,6 +558,9 @@ async def select_hooks(
     The AI adapts each hook's text to match the reference ad's style and ensures
     the adapted text makes sense and mentions the product category.
 
+    NOTE: Hooks are shuffled before sending to Gemini to ensure variety across
+    multiple runs. This prevents the same hooks from being selected repeatedly.
+
     Args:
         ctx: Run context with AgentDependencies
         hooks: List of hook dictionaries from database (with id, text,
@@ -565,7 +568,7 @@ async def select_hooks(
         ad_analysis: Ad analysis dictionary with format_type, authenticity_markers
         product_name: Name of the product (for context)
         target_audience: Product's target audience (e.g., "pet owners", "dog owners")
-        count: Number of hooks to select (default: 5)
+        count: Number of hooks to select (default: 10)
 
     Returns:
         List of selected hook dictionaries with adaptation:
@@ -587,6 +590,7 @@ async def select_hooks(
         Exception: If Gemini AI selection fails
     """
     import json
+    import random
 
     try:
         logger.info(f"Selecting {count} diverse hooks from {len(hooks)} candidates")
@@ -594,8 +598,15 @@ async def select_hooks(
         # Validate inputs
         if not hooks:
             raise ValueError("hooks list cannot be empty")
-        if count < 1 or count > 10:
-            raise ValueError("count must be between 1 and 10")
+        if count < 1 or count > 15:
+            raise ValueError("count must be between 1 and 15")
+
+        # Shuffle hooks to ensure variety across runs
+        # This prevents Gemini from always selecting the same hooks
+        # when presented with the same ordered list
+        shuffled_hooks = hooks.copy()
+        random.shuffle(shuffled_hooks)
+        logger.info(f"Shuffled {len(shuffled_hooks)} hooks for diversity")
 
         # Build selection prompt
         selection_prompt = f"""
@@ -609,8 +620,8 @@ async def select_hooks(
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
 
-        **Available Hooks** ({len(hooks)} total):
-        {json.dumps(hooks, indent=2)}
+        **Available Hooks** ({len(shuffled_hooks)} total):
+        {json.dumps(shuffled_hooks, indent=2)}
 
         **Task:** Select exactly {count} hooks that:
         1. Maximize diversity across persuasive categories
@@ -1739,11 +1750,11 @@ async def create_ad_run(
         'use_cases': [
             'Execute complete ad creation workflow end-to-end',
             'Orchestrate all 13 tools in sequence',
-            'Generate 5 ad variations with dual AI review'
+            'Generate ad variations with dual AI review'
         ],
         'examples': [
             'Create complete ad campaign for Wonder Paws',
-            'Generate 5 Facebook ads with full workflow'
+            'Generate 10 Facebook ads with full workflow'
         ]
     }
 )
@@ -1752,7 +1763,8 @@ async def complete_ad_workflow(
     product_id: str,
     reference_ad_base64: str,
     reference_ad_filename: str = "reference.png",
-    project_id: Optional[str] = None
+    project_id: Optional[str] = None,
+    num_variations: int = 5
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -1762,8 +1774,8 @@ async def complete_ad_workflow(
     2. Uploads reference ad to storage
     3. Fetches product data and hooks
     4. Analyzes reference ad (Vision AI)
-    5. Selects 5 diverse hooks
-    6. Generates 5 ad variations (ONE AT A TIME)
+    5. Selects N diverse hooks (configurable via num_variations)
+    6. Generates N ad variations (ONE AT A TIME)
     7. Dual AI review (Claude + Gemini) for each ad
     8. Applies OR logic: either reviewer approving = approved
     9. Returns complete AdCreationResult
@@ -1779,6 +1791,7 @@ async def complete_ad_workflow(
         reference_ad_base64: Base64-encoded reference ad image
         reference_ad_filename: Filename for storage (default: reference.png)
         project_id: Optional UUID of project as string
+        num_variations: Number of ad variations to generate (default: 5, max: 15)
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -1809,13 +1822,19 @@ async def complete_ad_workflow(
 
     Raises:
         Exception: If workflow fails at any stage
+        ValueError: If num_variations is out of range (1-15)
     """
     try:
         from datetime import datetime
         from uuid import UUID
         import json
 
+        # Validate num_variations
+        if num_variations < 1 or num_variations > 15:
+            raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
+
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
+        logger.info(f"Generating {num_variations} ad variations")
 
         # STAGE 1: Initialize ad run and upload reference ad
         logger.info("Stage 1: Creating ad run...")
@@ -1878,15 +1897,15 @@ async def complete_ad_workflow(
             ad_analysis=ad_analysis
         )
 
-        # STAGE 6: Select 5 diverse hooks
-        logger.info("Stage 6: Selecting 5 diverse hooks with AI...")
+        # STAGE 6: Select diverse hooks
+        logger.info(f"Stage 6: Selecting {num_variations} diverse hooks with AI...")
         selected_hooks = await select_hooks(
             ctx=ctx,
             hooks=hooks_list,
             ad_analysis=ad_analysis,
             product_name=product_dict.get('name', ''),
             target_audience=product_dict.get('target_audience', ''),
-            count=5
+            count=num_variations
         )
 
         # Save selected hooks to database
@@ -1916,12 +1935,12 @@ async def complete_ad_workflow(
             status="generating"
         )
 
-        # STAGE 8-10: Generate 5 ad variations (ONE AT A TIME)
-        logger.info("Stage 8-10: Generating 5 ad variations...")
+        # STAGE 8-10: Generate ad variations (ONE AT A TIME)
+        logger.info(f"Stage 8-10: Generating {num_variations} ad variations...")
         generated_ads_with_reviews = []
 
         for i, selected_hook in enumerate(selected_hooks, start=1):
-            logger.info(f"  → Generating variation {i}/5...")
+            logger.info(f"  → Generating variation {i}/{num_variations}...")
 
             # Generate prompt
             nano_banana_prompt = await generate_nano_banana_prompt(
