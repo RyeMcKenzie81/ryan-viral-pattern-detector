@@ -296,6 +296,7 @@ async def run_agent(
 # ============================================================================
 # Error Handlers
 # ============================================================================
+# Note: Timestamps converted to ISO format strings for JSON serialization
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
