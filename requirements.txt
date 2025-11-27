@@ -86,3 +86,4 @@ slowapi==0.1.9
 
 # Streamlit UI Dependencies
 streamlit==1.40.0
+
