@@ -740,6 +740,7 @@ class Product(BaseModel):
     unique_selling_points: Optional[List[str]] = Field(None, description="Key differentiators vs competitors to highlight")
     product_dimensions: Optional[str] = Field(None, description="Physical size/dimensions to ensure realistic product scaling in generated images (e.g., '3 fl oz bottle, 5 inches tall, palm-sized')")
     social_proof: Optional[str] = Field(None, description="Social proof statement to include when template has social proof elements (e.g., '100,000+ Bottles Sold', '50,000+ Happy Customers')")
+    founders: Optional[str] = Field(None, description="Founder names for personal signatures in ads (e.g., 'Chris, Kevin, D'Arcy, and Ryan')")
 
     @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', mode='before')
     @classmethod
