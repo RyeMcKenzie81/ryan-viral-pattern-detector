@@ -2386,13 +2386,20 @@ async def complete_ad_workflow(
             logger.info(f"  ✓ Reviews complete: Claude={claude_review.get('status')}, "
                        f"Gemini={gemini_review.get('status')}, Final={final_status}")
 
+            # Determine hook_id - None for benefit variations (recreate_template mode)
+            # because they don't reference actual hooks in the database
+            if content_source == "hooks":
+                hook_id = UUID(selected_hook['hook_id'])
+            else:
+                hook_id = None  # Benefit-based variations don't have real hook_ids
+
             # Update database with reviews
             await ctx.deps.ad_creation.save_generated_ad(
                 ad_run_id=UUID(ad_run_id_str),
                 prompt_index=i,
                 prompt_text=nano_banana_prompt['full_prompt'],
                 prompt_spec=nano_banana_prompt['spec'],
-                hook_id=UUID(selected_hook['hook_id']),
+                hook_id=hook_id,
                 hook_text=selected_hook['adapted_text'],
                 storage_path=storage_path,
                 claude_review=claude_review,

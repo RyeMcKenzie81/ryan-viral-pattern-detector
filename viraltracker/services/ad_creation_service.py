@@ -335,7 +335,7 @@ class AdCreationService:
         prompt_index: int,
         prompt_text: str,
         prompt_spec: Dict,
-        hook_id: UUID,
+        hook_id: Optional[UUID],
         hook_text: str,
         storage_path: str,
         claude_review: Optional[Dict] = None,
@@ -350,7 +350,7 @@ class AdCreationService:
             prompt_index: Index (1-5)
             prompt_text: Full prompt sent to Nano Banana
             prompt_spec: JSON spec for image
-            hook_id: UUID of hook used
+            hook_id: UUID of hook used (None for benefit-based variations)
             hook_text: Adapted hook text
             storage_path: Storage path to generated image
             claude_review: Claude review JSON (optional)
@@ -372,7 +372,6 @@ class AdCreationService:
             "prompt_index": prompt_index,
             "prompt_text": prompt_text,
             "prompt_spec": prompt_spec,
-            "hook_id": str(hook_id),
             "hook_text": hook_text,
             "storage_path": storage_path,
             "claude_review": claude_review,
@@ -380,6 +379,10 @@ class AdCreationService:
             "reviewers_agree": reviewers_agree,
             "final_status": final_status
         }
+
+        # Only include hook_id if it's a valid UUID (not for benefit-based variations)
+        if hook_id is not None:
+            data["hook_id"] = str(hook_id)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])
