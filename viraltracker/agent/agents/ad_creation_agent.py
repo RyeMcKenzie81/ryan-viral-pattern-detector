@@ -1978,12 +1978,26 @@ async def generate_benefit_variations(
         shuffled_content = all_content.copy()
         random.shuffle(shuffled_content)
 
+        # Get product offer and prohibited claims
+        current_offer = product.get('current_offer', '')
+        prohibited_claims = product.get('prohibited_claims', []) or []
+        social_proof = product.get('social_proof', '')
+
         # Build generation prompt
         generation_prompt = f"""
         You are generating ad copy variations by applying a proven template structure to different product benefits.
 
         **Product:** {product.get('name', 'Product')}
         **Target Audience:** {product.get('target_audience', 'General audience')}
+
+        **PRODUCT'S ACTUAL OFFER (USE THIS EXACTLY):**
+        {current_offer if current_offer else "No specific offer - do not mention discounts or percentages"}
+
+        **SOCIAL PROOF (USE IF APPROPRIATE):**
+        {social_proof if social_proof else "None available"}
+
+        **PROHIBITED CLAIMS (NEVER USE THESE):**
+        {json.dumps(prohibited_claims) if prohibited_claims else "None specified"}
 
         **Template Angle (from successful reference ad):**
         - Type: {template_angle.get('angle_type')}
@@ -1997,24 +2011,28 @@ async def generate_benefit_variations(
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
 
-        **Available Product Content to Apply:**
+        **Available Product Benefits/USPs to Apply:**
         {json.dumps(shuffled_content, indent=2)}
 
-        **Task:** Select exactly {count} different benefits/USPs/ingredients and create adapted headlines.
+        **Task:** Select exactly {count} different benefits/USPs and create adapted headlines.
 
         For each:
-        1. Pick a benefit/USP/ingredient that would work well with the template structure
+        1. Pick a benefit/USP that would work well with the template structure
         2. Apply the template pattern to create a new headline
         3. Maintain the same tone and key elements as the original
         4. Ensure the adapted text mentions or implies the product category
         5. Make it sound natural and authentic (not templated)
 
-        **CRITICAL Rules:**
+        **CRITICAL ACCURACY RULES:**
+        - ONLY use the EXACT offer specified above ("{current_offer}") - NEVER make up percentages or discounts
+        - If the template has a different offer, replace it with the product's actual offer
+        - If no offer is specified, do NOT include any discount or percentage claims
+        - NEVER use any prohibited claims listed above
         - Each variation MUST use a DIFFERENT benefit/USP
         - Maintain the template's persuasive structure
         - Match the tone (casual, professional, etc.)
-        - Include key elements (timeframe, transformation, etc.) where appropriate
         - The adapted text must make sense on its own
+        - You may include the social proof if it fits naturally
 
         Return JSON array:
         [
