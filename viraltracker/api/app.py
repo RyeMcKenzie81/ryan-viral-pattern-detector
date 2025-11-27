@@ -297,10 +297,12 @@ async def run_agent(
 # Error Handlers
 # ============================================================================
 # Note: Timestamps converted to ISO format strings for JSON serialization
+# Railway deployment fix: Force clean rebuild
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle HTTP exceptions with consistent error format."""
+    logger.info(f"HTTPException caught: {exc.status_code} - {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
@@ -315,6 +317,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions."""
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.info(f"Exception handler using .isoformat() for timestamp - Railway fix v2")
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(
