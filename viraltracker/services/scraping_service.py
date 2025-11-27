@@ -24,9 +24,15 @@ class ScrapingService:
     """
 
     def __init__(self):
-        """Initialize scraping service with Twitter scraper"""
-        self.scraper = TwitterScraper()
+        """Initialize scraping service (lazy scraper initialization)"""
+        self.scraper = None  # Lazy initialization - only create when needed
         logger.info("ScrapingService initialized")
+
+    def _get_scraper(self) -> TwitterScraper:
+        """Get or create TwitterScraper instance (lazy initialization)."""
+        if self.scraper is None:
+            self.scraper = TwitterScraper()
+        return self.scraper
 
     async def search_twitter(
         self,
@@ -62,7 +68,8 @@ class ScrapingService:
 
         try:
             # Run the scrape (this saves to database automatically)
-            scrape_result = self.scraper.scrape_search(
+            scraper = self._get_scraper()
+            scrape_result = scraper.scrape_search(
                 search_terms=[keyword],
                 project_slug=project,
                 max_tweets=max_results,
