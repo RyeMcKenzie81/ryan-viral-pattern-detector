@@ -576,6 +576,14 @@ Generate the article now:"""
                     logger.error(f"Gemini candidate blocked. Finish reason: {finish_reason}")
                     raise Exception(f"Gemini response blocked: finish_reason={finish_reason}")
 
+                # Check if candidate has content parts (avoids "whichOneof" error)
+                if not hasattr(candidate, 'content') or not candidate.content:
+                    logger.error("Gemini response has no content")
+                    raise Exception("Gemini response has no content")
+                if not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+                    logger.error("Gemini response has no content parts")
+                    raise Exception("Gemini response has no content parts")
+
                 logger.debug(f"Image analysis complete")
                 return response.text
 
@@ -594,6 +602,10 @@ Generate the article now:"""
                     else:
                         logger.error("Max retries exceeded for image analysis")
                         raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                # Check for whichOneof error (protobuf error when response is malformed)
+                elif "whichOneof" in error_str:
+                    logger.error(f"Gemini returned malformed response (whichOneof error). This usually means the image triggered content safety filters or the response was empty.")
+                    raise Exception("Gemini image analysis failed: The image may have triggered content safety filters. Try a different reference ad image.")
                 else:
                     logger.error(f"Error analyzing image: {e}")
                     raise
@@ -662,6 +674,25 @@ Generate the article now:"""
             try:
                 logger.debug(f"Analyzing text with Gemini (prompt: {prompt[:50]}...)")
                 response = self.model.generate_content(full_prompt)
+
+                # Check for blocked or empty response (avoids "whichOneof" error)
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    logger.error(f"Gemini text response blocked or empty. Block reason: {block_reason}")
+                    raise Exception(f"Gemini response blocked: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (None, 1):
+                    finish_reason = candidate.finish_reason
+                    logger.error(f"Gemini text candidate blocked. Finish reason: {finish_reason}")
+                    raise Exception(f"Gemini response blocked: finish_reason={finish_reason}")
+
+                if not hasattr(candidate, 'content') or not candidate.content:
+                    logger.error("Gemini text response has no content")
+                    raise Exception("Gemini response has no content")
+                if not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+                    logger.error("Gemini text response has no content parts")
+                    raise Exception("Gemini response has no content parts")
 
                 logger.info(f"Text analysis completed successfully")
                 return response.text
