@@ -2067,6 +2067,27 @@ async def generate_benefit_variations(
         prohibited_claims = product.get('prohibited_claims', []) or []
         social_proof = product.get('social_proof', '')
 
+        # Separate emotional benefits (good for headlines) from technical specs (not for headlines)
+        # Benefits are typically emotional/outcome-focused, USPs may include specs
+        emotional_benefits = benefits.copy() if benefits else []
+
+        # Filter USPs to only include emotional/outcome-focused ones, not technical specs
+        emotional_usps = []
+        technical_specs = []
+        for usp in (usps or []):
+            usp_lower = usp.lower()
+            # Technical specs often contain numbers, measurements, or product features
+            if any(term in usp_lower for term in ['cards', 'pages', 'included', 'app', 'guide', 'dictionary', 'guarantee', 'money-back']):
+                technical_specs.append(usp)
+            else:
+                emotional_usps.append(usp)
+
+        # Combine emotional content for headline generation
+        headline_content = emotional_benefits + emotional_usps
+        if not headline_content:
+            # Fallback to all content if filtering removed everything
+            headline_content = benefits + usps
+
         # Build generation prompt
         generation_prompt = f"""
         You are generating ad copy variations by applying a proven template structure to different product benefits.
@@ -2095,25 +2116,36 @@ async def generate_benefit_variations(
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
 
-        **Available Product Benefits/USPs to Apply:**
-        {json.dumps(shuffled_content, indent=2)}
+        **EMOTIONAL BENEFITS (Use these for headlines - they connect with the audience):**
+        {json.dumps(headline_content, indent=2)}
 
-        **Task:** Select exactly {count} different benefits/USPs and create adapted headlines.
+        **TECHNICAL SPECS (Do NOT use these in headlines - too feature-focused):**
+        {json.dumps(technical_specs, indent=2) if technical_specs else "None"}
+
+        **Task:** Select exactly {count} different EMOTIONAL BENEFITS and create adapted headlines.
 
         For each:
-        1. Pick a benefit/USP that would work well with the template structure
+        1. Pick an EMOTIONAL BENEFIT that would work well with the template structure
         2. Apply the template pattern to create a new headline
         3. Maintain the same tone and key elements as the original
-        4. Ensure the adapted text mentions or implies the product category
-        5. Make it sound natural and authentic (not templated)
+        4. Make it sound natural and authentic (not templated)
+
+        **CRITICAL CLARITY RULES:**
+        - The headline MUST be immediately clear about WHO this is for
+        - NEVER use pronouns like "their", "them", "they" without first establishing who you're talking about
+        - If the product is for parents of children, SAY "your child", "your kids", "your son/daughter"
+        - The reader should understand within 2 seconds what this product helps them with
+        - Avoid vague language - be specific about the transformation or benefit
+        - Example BAD: "Finally understand their world" (who is 'their'?)
+        - Example GOOD: "Finally understand your child's gaming world"
 
         **CRITICAL ACCURACY RULES:**
         - ONLY use the EXACT offer specified above ("{current_offer}") - NEVER make up percentages or discounts
         - If the template has a different offer, replace it with the product's actual offer
         - If no offer is specified, do NOT include any discount or percentage claims
         - NEVER use any prohibited claims listed above
-        - Each variation MUST use a DIFFERENT benefit/USP
-        - Maintain the template's persuasive structure
+        - Each variation MUST use a DIFFERENT benefit
+        - DO NOT use technical specs like "linen-finish cards", "86 cards", etc. in headlines
         - Match the tone (casual, professional, etc.)
         - The adapted text must make sense on its own
         - You may include the social proof if it fits naturally
@@ -2121,7 +2153,7 @@ async def generate_benefit_variations(
         Return JSON array:
         [
             {{
-                "original_benefit": "the benefit/USP text you're using",
+                "original_benefit": "the benefit text you're using",
                 "reasoning": "Why this benefit works well with the template",
                 "adapted_text": "The new headline applying the template to this benefit"
             }},
