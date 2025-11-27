@@ -58,7 +58,7 @@ def test_product_id():
 def test_reference_ad_base64():
     """Load real reference ad from test_images folder as base64"""
     # Use the real reference ad from test_images
-    test_image_path = Path(__file__).parent.parent / "test_images" / "reference_ads" / "preview-8.jpg"
+    test_image_path = Path(__file__).parent.parent / "test_images" / "reference_ads" / "ad4-example.jpg"
 
     if not test_image_path.exists():
         # Fallback: Create a small test image if the real one doesn't exist
