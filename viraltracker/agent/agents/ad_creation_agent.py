@@ -1105,14 +1105,19 @@ async def generate_nano_banana_prompt(
             if has_founder_signature:
                 sig_style = ad_analysis.get('founder_signature_style', 'personal sign-off')
                 sig_placement = ad_analysis.get('founder_signature_placement', 'bottom')
+                # Count founders for emphasis
+                founder_count = len([f.strip() for f in founders_text.replace(' and ', ', ').split(',') if f.strip()])
                 founders_section = f"""
-        **FOUNDERS / PERSONAL SIGNATURE (USE PRODUCT DATA):**
+        **FOUNDERS / PERSONAL SIGNATURE (CRITICAL - USE ALL {founder_count} NAMES):**
         - The reference ad includes a founder signature element
         - Template style: {sig_style}
         - Template placement: {sig_placement}
-        - **USE THIS EXACT TEXT FOR FOUNDERS:** "{founders_text}"
+        - **⚠️ MUST USE ALL {founder_count} FOUNDER NAMES EXACTLY:** "{founders_text}"
+        - This product has {founder_count} founders - include ALL of them, not just some
+        - DO NOT truncate, shorten, or skip any names
         - DO NOT copy founder names from the reference ad template
         - Apply similar visual style and placement as the reference
+        - If space is limited, use a smaller font size rather than omitting names
         """
             elif has_founder_mention:
                 mention_style = ad_analysis.get('founder_mention_style', 'first-person narrative')
