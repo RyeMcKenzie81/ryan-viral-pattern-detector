@@ -292,27 +292,30 @@ else:
             # All ads from this run
             ads = get_ads_for_run(run['id'])
 
-            # Download all button and header
-            col_header, col_download = st.columns([3, 1])
-            with col_header:
-                st.markdown("### All Generated Ads")
-            with col_download:
-                if ads:
-                    # Create safe filename
-                    safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
-                    zip_filename = f"{safe_product_name}_{run_id}_ads.zip"
+            # Header with download button
+            st.markdown("### All Generated Ads")
 
-                    # Use session state to track if we should prepare download
-                    download_key = f"prepare_download_{run['id']}"
-                    if download_key not in st.session_state:
-                        st.session_state[download_key] = False
+            # Download all button - prominent placement
+            if ads:
+                # Create safe filename
+                safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
+                zip_filename = f"{safe_product_name}_{run_id}_ads.zip"
 
-                    if st.button("📥 Prepare Download", key=f"btn_{run['id']}", type="secondary"):
+                # Use session state to track if we should prepare download
+                download_key = f"prepare_download_{run['id']}"
+                if download_key not in st.session_state:
+                    st.session_state[download_key] = False
+
+                col_btn1, col_btn2, col_spacer = st.columns([1, 1, 2])
+
+                with col_btn1:
+                    if st.button("📥 Prepare Download", key=f"btn_{run['id']}", use_container_width=True):
                         st.session_state[download_key] = True
                         st.rerun()
 
+                with col_btn2:
                     if st.session_state[download_key]:
-                        with st.spinner("Creating ZIP file..."):
+                        with st.spinner("Creating ZIP..."):
                             zip_data = create_zip_for_run(
                                 ads=ads,
                                 product_name=product_name,
@@ -325,8 +328,10 @@ else:
                             file_name=zip_filename,
                             mime="application/zip",
                             key=f"save_{run['id']}",
-                            type="primary"
+                            use_container_width=True
                         )
+
+                st.markdown("")  # Spacing
 
             if not ads:
                 st.info("No ads found for this run.")
