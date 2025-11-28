@@ -2112,6 +2112,8 @@ async def generate_benefit_variations(
         **Template Angle (from successful reference ad):**
         - Type: {template_angle.get('angle_type')}
         - Original text: "{template_angle.get('original_text', '')}"
+        - Original word count: {len(template_angle.get('original_text', '').split())} words
+        - Original character count: {len(template_angle.get('original_text', ''))} characters
         - Template structure: "{template_angle.get('messaging_template', '')}"
         - Tone: {template_angle.get('tone')}
         - Key elements: {', '.join(template_angle.get('key_elements', []))}
@@ -2134,6 +2136,14 @@ async def generate_benefit_variations(
         2. Apply the template pattern to create a new headline
         3. Maintain the same tone and key elements as the original
         4. Make it sound natural and authentic (not templated)
+
+        **CRITICAL LENGTH RULES (VERY IMPORTANT):**
+        - The original template headline is {len(template_angle.get('original_text', '').split())} words / {len(template_angle.get('original_text', ''))} characters
+        - Your adapted headlines MUST be similar length: aim for {len(template_angle.get('original_text', '').split())} words (±3 words max)
+        - DO NOT write paragraphs - write PUNCHY headlines
+        - Shorter is better - if you can say it in fewer words, do it
+        - Long headlines = worse ad performance AND harder for AI to render text cleanly
+        - If the original is 8 words, yours should be 5-11 words, NOT 20 words
 
         **CRITICAL CLARITY RULES:**
         - The headline MUST be immediately clear about WHO this is for
