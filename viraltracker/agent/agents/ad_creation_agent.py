@@ -2197,16 +2197,26 @@ async def generate_benefit_variations(
         ]
         """
 
-        # Call Gemini AI
+        # Call Claude Opus 4.5 for high-quality copy generation
+        from anthropic import Anthropic
+        import asyncio
+
+        anthropic_client = Anthropic()
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
             try:
-                result = await ctx.deps.gemini.analyze_text(
-                    text=generation_prompt,
-                    prompt="Generate benefit-based ad variations. Return ONLY valid JSON array."
+                # Use Claude Opus 4.5 for best copy quality
+                message = anthropic_client.messages.create(
+                    model="claude-opus-4-5-20251101",
+                    max_tokens=4000,
+                    messages=[{
+                        "role": "user",
+                        "content": f"{generation_prompt}\n\nReturn ONLY valid JSON array, no other text."
+                    }]
                 )
+                result = message.content[0].text
 
                 # Strip markdown code fences if present
                 result_text = result.strip()
