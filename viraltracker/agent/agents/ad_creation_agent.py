@@ -2154,16 +2154,21 @@ async def generate_benefit_variations(
         - Example BAD: "Finally understand their world" (who is 'their'?)
         - Example GOOD: "Finally understand your child's gaming world"
 
+        **CRITICAL OFFER RULES (DO NOT HALLUCINATE):**
+        - The product's ACTUAL offer is: "{current_offer if current_offer else 'NO OFFER - do not mention any discounts or gifts'}"
+        - ONLY use the EXACT offer text above - nothing else
+        - DO NOT copy offers from the reference template (it's for a different product!)
+        - DO NOT invent: free gifts, bonus items, limited quantities ("50 owners"), time limits ("this weekend", "until midnight"), dollar amounts, or bundle deals
+        - If the template says "4 FREE gifts" but our product offer doesn't mention gifts, DO NOT include gifts
+        - If our offer is just "Up to 35% off", that's ALL you can say about the offer - no additions
+
         **CRITICAL ACCURACY RULES:**
-        - ONLY use the EXACT offer specified above ("{current_offer}") - NEVER make up percentages or discounts
-        - If the template has a different offer, replace it with the product's actual offer
-        - If no offer is specified, do NOT include any discount or percentage claims
-        - NEVER use any prohibited claims listed above
         - Each variation MUST use a DIFFERENT benefit
         - DO NOT use technical specs like "linen-finish cards", "86 cards", etc. in headlines
         - Match the tone (casual, professional, etc.)
         - The adapted text must make sense on its own
         - You may include the social proof if it fits naturally
+        - NEVER use any prohibited claims listed above
 
         Return JSON array:
         [
