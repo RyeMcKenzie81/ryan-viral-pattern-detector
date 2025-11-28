@@ -2071,6 +2071,8 @@ async def generate_benefit_variations(
         current_offer = product.get('current_offer', '')
         prohibited_claims = product.get('prohibited_claims', []) or []
         social_proof = product.get('social_proof', '')
+        brand_name = product.get('brand_name', '')
+        banned_terms = product.get('banned_terms', []) or []
 
         # Separate emotional benefits (good for headlines) from technical specs (not for headlines)
         # Benefits are typically emotional/outcome-focused, USPs may include specs
@@ -2115,6 +2117,13 @@ async def generate_benefit_variations(
 
         **PROHIBITED CLAIMS (NEVER USE THESE):**
         {json.dumps(prohibited_claims) if prohibited_claims else "None specified"}
+
+        **BANNED COMPETITOR NAMES (NEVER USE - use "{brand_name}" instead):**
+        {json.dumps(banned_terms) if banned_terms else "None specified"}
+
+        **FORMATTING RULES:**
+        - Do NOT use markdown formatting (no asterisks for bold like *word*)
+        - Write plain text only - the rendering system will handle formatting
 
         **Template Angle (from successful reference ad):**
         - Type: {template_angle.get('angle_type')}
@@ -2209,9 +2218,40 @@ async def generate_benefit_variations(
                 result_text = result_text.strip()
                 variations_raw = json.loads(result_text)
 
+                # Helper function to strip markdown formatting from text
+                def strip_markdown(text: str) -> str:
+                    """Remove markdown formatting like *bold* and _italic_ from text."""
+                    import re
+                    # Remove bold (**text** or __text__)
+                    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+                    text = re.sub(r'__(.+?)__', r'\1', text)
+                    # Remove italic (*text* or _text_)
+                    text = re.sub(r'\*(.+?)\*', r'\1', text)
+                    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', text)
+                    return text
+
+                # Helper function to replace banned terms with brand name
+                def replace_banned_terms(text: str, banned: List[str], brand: str) -> str:
+                    """Replace banned competitor names with brand name (case-insensitive)."""
+                    import re
+                    result = text
+                    for term in banned:
+                        if term and brand:
+                            # Case-insensitive replacement
+                            pattern = re.compile(re.escape(term), re.IGNORECASE)
+                            result = pattern.sub(brand, result)
+                    return result
+
                 # Convert to hook-like format for compatibility with rest of workflow
                 variations = []
                 for i, var in enumerate(variations_raw, start=1):
+                    adapted_text = var.get('adapted_text', '')
+                    # Strip markdown formatting (e.g., *bold* → bold)
+                    adapted_text = strip_markdown(adapted_text)
+                    # Replace banned competitor terms with brand name
+                    if banned_terms and brand_name:
+                        adapted_text = replace_banned_terms(adapted_text, banned_terms, brand_name)
+
                     variations.append({
                         "hook_id": str(uuid4()),  # Generate unique ID
                         "text": var.get('original_benefit', ''),
@@ -2219,7 +2259,7 @@ async def generate_benefit_variations(
                         "framework": f"Recreate Template ({template_angle.get('angle_type', 'unknown')})",
                         "impact_score": 15,  # Default score for benefit-based
                         "reasoning": var.get('reasoning', ''),
-                        "adapted_text": var.get('adapted_text', '')
+                        "adapted_text": adapted_text
                     })
 
                 # Validate each variation for hallucinated content

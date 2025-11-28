@@ -741,8 +741,10 @@ class Product(BaseModel):
     product_dimensions: Optional[str] = Field(None, description="Physical size/dimensions to ensure realistic product scaling in generated images (e.g., '3 fl oz bottle, 5 inches tall, palm-sized')")
     social_proof: Optional[str] = Field(None, description="Social proof statement to include when template has social proof elements (e.g., '100,000+ Bottles Sold', '50,000+ Happy Customers')")
     founders: Optional[str] = Field(None, description="Founder names for personal signatures in ads (e.g., 'Chris, Kevin, D'Arcy, and Ryan')")
+    brand_name: Optional[str] = Field(None, description="Brand name to use in ad copy (e.g., 'Wonder Paws')")
+    banned_terms: Optional[List[str]] = Field(None, description="Competitor names and terms that must never appear in ads (e.g., ['Wuffes', 'PupVitality'])")
 
-    @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', mode='before')
+    @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', 'banned_terms', mode='before')
     @classmethod
     def convert_none_to_empty_list(cls, v):
         """Convert None to empty list for list fields"""
