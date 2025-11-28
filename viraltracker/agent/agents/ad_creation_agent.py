@@ -2095,7 +2095,14 @@ async def generate_benefit_variations(
 
         # Build generation prompt
         generation_prompt = f"""
-        You are generating ad copy variations by applying a proven template structure to different product benefits.
+        You are a world-class direct response copywriter - the kind who has generated millions in sales through Facebook ads. Your copy is:
+        - Crystal clear: The reader knows EXACTLY what this is and who it's for within 2 seconds
+        - Emotionally resonant: You tap into real pain points and desires
+        - Punchy and concise: Every word earns its place, no fluff
+        - Action-oriented: The reader feels compelled to learn more
+        - Authentic: It sounds like a real person, not a corporation
+
+        You're writing headline variations for a Facebook ad campaign.
 
         **Product:** {product.get('name', 'Product')}
         **Target Audience:** {product.get('target_audience', 'General audience')}
@@ -2215,7 +2222,78 @@ async def generate_benefit_variations(
                         "adapted_text": var.get('adapted_text', '')
                     })
 
-                logger.info(f"Generated {len(variations)} benefit variations")
+                # Validate each variation for hallucinated content
+                validation_issues = []
+                original_word_count = len(template_angle.get('original_text', '').split())
+
+                for i, var in enumerate(variations):
+                    adapted = var.get('adapted_text', '').lower()
+                    issues = []
+
+                    # Check for hallucinated offer elements not in product offer
+                    offer_lower = (current_offer or '').lower()
+
+                    # Check for free gifts if not in actual offer
+                    if 'free gift' in adapted or 'free bonus' in adapted or 'free ' in adapted:
+                        if 'free' not in offer_lower:
+                            issues.append("mentions 'free gifts/bonus' but product offer doesn't include free items")
+
+                    # Check for invented scarcity numbers
+                    import re
+                    scarcity_patterns = re.findall(r'\b(\d+)\s*(owners?|customers?|people|buyers?|spots?)\b', adapted)
+                    if scarcity_patterns:
+                        issues.append(f"contains invented scarcity numbers: {scarcity_patterns}")
+
+                    # Check for invented time limits
+                    time_limits = ['this week', 'this weekend', 'today only', 'until midnight', 'next 24 hours',
+                                   'limited time', 'ends soon', 'last chance', 'hurry', 'act now', 'for black friday']
+                    for limit in time_limits:
+                        if limit in adapted and limit not in offer_lower:
+                            issues.append(f"contains invented time limit: '{limit}'")
+                            break
+
+                    # Check for dollar amounts not in offer
+                    dollar_amounts = re.findall(r'\$\d+', adapted)
+                    for amount in dollar_amounts:
+                        if amount not in (current_offer or ''):
+                            issues.append(f"contains invented dollar amount: {amount}")
+                            break
+
+                    # Check word count (allow ±5 words from original)
+                    adapted_word_count = len(var.get('adapted_text', '').split())
+                    if original_word_count > 0 and abs(adapted_word_count - original_word_count) > 8:
+                        issues.append(f"too long: {adapted_word_count} words vs original {original_word_count} words")
+
+                    if issues:
+                        validation_issues.append({
+                            "index": i,
+                            "adapted_text": var.get('adapted_text', ''),
+                            "issues": issues
+                        })
+
+                # If we have validation issues, regenerate with feedback
+                if validation_issues and attempt < max_retries - 1:
+                    issues_summary = "\n".join([
+                        f"- Variation {v['index']+1}: {'; '.join(v['issues'])}"
+                        for v in validation_issues
+                    ])
+                    logger.warning(f"Validation failed for {len(validation_issues)} variations:\n{issues_summary}")
+
+                    # Add feedback to prompt for retry
+                    generation_prompt += f"""
+
+        **⚠️ YOUR PREVIOUS ATTEMPT HAD THESE ISSUES - FIX THEM:**
+        {issues_summary}
+
+        Remember:
+        - Only use the EXACT offer: "{current_offer if current_offer else 'NO OFFER'}"
+        - Do NOT invent free gifts, scarcity numbers, time limits, or dollar amounts
+        - Keep headlines around {original_word_count} words (±5 max)
+        - Write like a top direct response copywriter - clear, punchy, persuasive
+                    """
+                    continue  # Retry with feedback
+
+                logger.info(f"Generated {len(variations)} benefit variations (validated)")
                 return variations
 
             except json.JSONDecodeError as e:
