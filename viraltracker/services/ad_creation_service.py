@@ -340,7 +340,12 @@ class AdCreationService:
         storage_path: str,
         claude_review: Optional[Dict] = None,
         gemini_review: Optional[Dict] = None,
-        final_status: str = "pending"
+        final_status: str = "pending",
+        # Model tracking metadata
+        model_requested: Optional[str] = None,
+        model_used: Optional[str] = None,
+        generation_time_ms: Optional[int] = None,
+        generation_retries: Optional[int] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -356,6 +361,10 @@ class AdCreationService:
             claude_review: Claude review JSON (optional)
             gemini_review: Gemini review JSON (optional)
             final_status: Status (pending/approved/rejected/flagged)
+            model_requested: Model we requested for image generation
+            model_used: Model that actually generated the image (may differ due to fallback)
+            generation_time_ms: Time taken to generate the image
+            generation_retries: Number of retries needed
 
         Returns:
             UUID of generated ad record
@@ -384,8 +393,20 @@ class AdCreationService:
         if hook_id is not None:
             data["hook_id"] = str(hook_id)
 
+        # Add model tracking metadata if provided
+        if model_requested is not None:
+            data["model_requested"] = model_requested
+        if model_used is not None:
+            data["model_used"] = model_used
+        if generation_time_ms is not None:
+            data["generation_time_ms"] = generation_time_ms
+        if generation_retries is not None:
+            data["generation_retries"] = generation_retries
+
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])
 
-        logger.info(f"Saved generated ad: {generated_ad_id} (status: {final_status})")
+        # Log with model info if available
+        model_info = f", model={model_used}" if model_used else ""
+        logger.info(f"Saved generated ad: {generated_ad_id} (status: {final_status}{model_info})")
         return generated_ad_id

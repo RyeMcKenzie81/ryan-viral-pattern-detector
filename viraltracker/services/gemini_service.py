@@ -401,8 +401,9 @@ Generate the article now:"""
         self,
         prompt: str,
         reference_images: list = None,
-        max_retries: int = 3
-    ) -> str:
+        max_retries: int = 3,
+        return_metadata: bool = False
+    ) -> str | dict:
         """
         Generate an image using Gemini 3 Pro Image Preview API.
 
@@ -413,13 +414,28 @@ Generate the article now:"""
             prompt: Text prompt for image generation
             reference_images: Optional list of base64-encoded reference images (up to 14)
             max_retries: Maximum retries on rate limit errors
+            return_metadata: If True, return dict with image and generation metadata
 
         Returns:
-            Base64-encoded generated image
+            If return_metadata=False: Base64-encoded generated image (string)
+            If return_metadata=True: Dict with:
+                - image_base64: The generated image
+                - model_requested: Model we requested
+                - model_used: Model that actually processed (from response)
+                - generation_time_ms: Time taken
+                - retries: Number of retries needed
 
         Raises:
             Exception: If all retries fail or non-rate-limit error occurs
         """
+        import time
+
+        # Track metadata
+        model_requested = "models/gemini-3-pro-image-preview"
+        model_used = None
+        start_time = time.time()
+        total_retries = 0
+
         # Wait for rate limit
         await self._rate_limit()
 
@@ -472,6 +488,22 @@ Generate the article now:"""
                 )
                 response = image_model.generate_content(contents)
 
+                # Try to extract actual model used from response metadata
+                try:
+                    # Response may have model_version in metadata
+                    if hasattr(response, 'model_version'):
+                        model_used = response.model_version
+                    elif hasattr(response, '_result') and hasattr(response._result, 'model_version'):
+                        model_used = response._result.model_version
+                    # Check candidates for model info
+                    elif response.candidates and hasattr(response.candidates[0], 'model'):
+                        model_used = response.candidates[0].model
+                    else:
+                        # Fallback - assume requested model was used
+                        model_used = model_requested
+                except Exception:
+                    model_used = model_requested
+
                 # Extract generated image from response
                 # Look for parts with inline_data
                 for part in response.candidates[0].content.parts:
@@ -480,7 +512,20 @@ Generate the article now:"""
                         # Convert to base64 for return
                         import base64
                         image_base64 = base64.b64encode(part.inline_data.data).decode('utf-8')
-                        logger.info(f"Image generated successfully ({len(part.inline_data.data)} bytes)")
+                        generation_time_ms = int((time.time() - start_time) * 1000)
+
+                        logger.info(f"Image generated successfully ({len(part.inline_data.data)} bytes) "
+                                   f"model_requested={model_requested}, model_used={model_used}, "
+                                   f"time={generation_time_ms}ms, retries={total_retries}")
+
+                        if return_metadata:
+                            return {
+                                "image_base64": image_base64,
+                                "model_requested": model_requested,
+                                "model_used": model_used,
+                                "generation_time_ms": generation_time_ms,
+                                "retries": total_retries
+                            }
                         return image_base64
 
                 # If no image found in response, raise error
@@ -493,6 +538,7 @@ Generate the article now:"""
                 # Check if it's a rate limit error
                 if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
                     retry_count += 1
+                    total_retries += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
                         logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")

@@ -91,7 +91,8 @@ def get_ads_for_run(ad_run_id: str):
         db = get_supabase_client()
         result = db.table("generated_ads").select(
             "id, prompt_index, storage_path, hook_text, final_status, "
-            "claude_review, gemini_review, reviewers_agree, created_at"
+            "claude_review, gemini_review, reviewers_agree, created_at, "
+            "model_requested, model_used, generation_time_ms, generation_retries"
         ).eq("ad_run_id", ad_run_id).order("prompt_index").execute()
         return result.data
     except Exception as e:
@@ -370,6 +371,26 @@ else:
 
                                 agree_icon = "✅" if ad.get('reviewers_agree') else "⚠️"
                                 st.caption(f"Claude: {claude_score} | Gemini: {gemini_score} {agree_icon}")
+
+                                # Model info (if available)
+                                model_used = ad.get('model_used')
+                                model_requested = ad.get('model_requested')
+                                gen_time = ad.get('generation_time_ms')
+                                retries = ad.get('generation_retries', 0)
+
+                                if model_used:
+                                    # Check if fallback occurred
+                                    fallback_warning = ""
+                                    if model_requested and model_used != model_requested:
+                                        fallback_warning = " ⚠️ FALLBACK"
+
+                                    # Format model name (extract just the model part)
+                                    model_short = model_used.split('/')[-1] if '/' in model_used else model_used
+
+                                    time_str = f" | {gen_time}ms" if gen_time else ""
+                                    retry_str = f" | {retries} retries" if retries > 0 else ""
+
+                                    st.caption(f"🤖 {model_short}{time_str}{retry_str}{fallback_warning}")
 
                                 st.markdown("---")
 

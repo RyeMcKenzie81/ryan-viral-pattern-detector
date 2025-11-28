@@ -1305,20 +1305,27 @@ async def execute_nano_banana(
             nano_banana_prompt['product_image_path']
         )
 
-        # Call Gemini Nano Banana API
-        # Note: Actual implementation depends on Gemini service interface
-        image_base64 = await ctx.deps.gemini.generate_image(
+        # Call Gemini Nano Banana API with metadata tracking
+        generation_result = await ctx.deps.gemini.generate_image(
             prompt=nano_banana_prompt['full_prompt'],
-            reference_images=[template_data, product_data]
+            reference_images=[template_data, product_data],
+            return_metadata=True
         )
 
         generated_ad = {
             "prompt_index": prompt_index,
-            "image_base64": image_base64,
-            "storage_path": None  # Will be set by save_generated_ad
+            "image_base64": generation_result["image_base64"],
+            "storage_path": None,  # Will be set by save_generated_ad
+            # Generation metadata for logging
+            "model_requested": generation_result.get("model_requested"),
+            "model_used": generation_result.get("model_used"),
+            "generation_time_ms": generation_result.get("generation_time_ms"),
+            "generation_retries": generation_result.get("retries", 0)
         }
 
-        logger.info(f"Generated ad image for variation {prompt_index}")
+        logger.info(f"Generated ad image for variation {prompt_index} "
+                   f"(model={generation_result.get('model_used')}, "
+                   f"time={generation_result.get('generation_time_ms')}ms)")
         return generated_ad
 
     except Exception as e:
@@ -1394,7 +1401,7 @@ async def save_generated_ad(
             image_base64=generated_ad['image_base64']
         )
 
-        # Save to database
+        # Save to database (including model metadata for logging)
         generated_ad_id = await ctx.deps.ad_creation.save_generated_ad(
             ad_run_id=ad_run_uuid,
             prompt_index=prompt_index,
@@ -1403,7 +1410,12 @@ async def save_generated_ad(
             hook_id=hook_uuid,
             hook_text=hook['adapted_text'],
             storage_path=storage_path,
-            final_status="pending"  # Will be updated after reviews
+            final_status="pending",  # Will be updated after reviews
+            # Model tracking metadata
+            model_requested=generated_ad.get('model_requested'),
+            model_used=generated_ad.get('model_used'),
+            generation_time_ms=generated_ad.get('generation_time_ms'),
+            generation_retries=generated_ad.get('generation_retries', 0)
         )
 
         logger.info(f"Saved generated ad {prompt_index}: {storage_path}")
