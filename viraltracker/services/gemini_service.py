@@ -464,10 +464,9 @@ Generate the article now:"""
 
                     logger.debug(f"Added {len(reference_images)} reference images")
 
-                # Call Gemini API (legacy SDK pattern)
-                # Note: GenerationConfig may not expose response_modalities/image_config yet,
-                # but gemini-3-pro-image-preview returns IMAGE parts by default
-                response = self.model.generate_content(contents)
+                # Use dedicated image generation model (not the default text model)
+                image_model = genai.GenerativeModel("models/gemini-3-pro-image-preview")
+                response = image_model.generate_content(contents)
 
                 # Extract generated image from response
                 # Look for parts with inline_data
