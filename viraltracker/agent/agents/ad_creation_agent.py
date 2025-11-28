@@ -513,13 +513,55 @@ async def analyze_reference_ad(
         }
         """
 
-        # Call Gemini Vision API
-        analysis_result = await ctx.deps.gemini.analyze_image(
-            image_data=image_data,
-            prompt=analysis_prompt
-        )
+        # Call Claude Opus 4.5 Vision API for best analysis quality
+        from anthropic import Anthropic
+        import base64
 
-        # Strip markdown code fences if present (Gemini often wraps JSON in ```json...```)
+        anthropic_client = Anthropic()
+
+        # Convert image data to base64 if needed
+        if isinstance(image_data, bytes):
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+        else:
+            image_base64 = image_data
+
+        # Detect image format from base64 header or assume PNG
+        media_type = "image/png"
+        try:
+            raw_bytes = base64.b64decode(image_base64[:32] + '==')
+            if raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
+                media_type = "image/webp"
+            elif raw_bytes[:3] == b'\xff\xd8\xff':
+                media_type = "image/jpeg"
+            elif raw_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                media_type = "image/png"
+        except Exception:
+            pass  # Default to PNG
+
+        message = anthropic_client.messages.create(
+            model="claude-opus-4-5-20251101",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_base64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": f"{analysis_prompt}\n\nReturn ONLY valid JSON, no other text."
+                    }
+                ]
+            }]
+        )
+        analysis_result = message.content[0].text
+
+        # Strip markdown code fences if present (Claude sometimes wraps JSON in ```json...```)
         analysis_result_clean = analysis_result.strip()
         if analysis_result_clean.startswith('```'):
             # Find the first newline after the opening fence
@@ -1954,11 +1996,53 @@ async def extract_template_angle(
         }}
         """
 
-        # Call Gemini Vision API
-        analysis_result = await ctx.deps.gemini.analyze_image(
-            image_data=image_data,
-            prompt=extraction_prompt
+        # Call Claude Opus 4.5 Vision API for best analysis quality
+        from anthropic import Anthropic
+        import base64
+
+        anthropic_client = Anthropic()
+
+        # Convert image data to base64 if needed
+        if isinstance(image_data, bytes):
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+        else:
+            image_base64 = image_data
+
+        # Detect image format from base64 header or assume PNG
+        media_type = "image/png"
+        try:
+            raw_bytes = base64.b64decode(image_base64[:32] + '==')
+            if raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
+                media_type = "image/webp"
+            elif raw_bytes[:3] == b'\xff\xd8\xff':
+                media_type = "image/jpeg"
+            elif raw_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                media_type = "image/png"
+        except Exception:
+            pass  # Default to PNG
+
+        message = anthropic_client.messages.create(
+            model="claude-opus-4-5-20251101",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_base64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": f"{extraction_prompt}\n\nReturn ONLY valid JSON, no other text."
+                    }
+                ]
+            }]
         )
+        analysis_result = message.content[0].text
 
         # Strip markdown code fences if present
         result_clean = analysis_result.strip()
