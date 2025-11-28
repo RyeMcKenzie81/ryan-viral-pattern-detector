@@ -6,9 +6,13 @@ This page allows users to:
 - View a summary table of all ad runs
 - Expand to see all ads from a specific run
 - See approval status for each ad
+- Download all images from a run as a zip file
 """
 
 import streamlit as st
+import io
+import zipfile
+import requests
 from datetime import datetime
 
 # Page config
@@ -152,6 +156,72 @@ def get_status_badge(status: str) -> str:
     return f"<span style='background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:12px;'>{status}</span>"
 
 
+def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path: str = None) -> bytes:
+    """
+    Create a zip file containing all images from an ad run.
+
+    Args:
+        ads: List of ad dictionaries with storage_path
+        product_name: Name of the product for filename
+        run_id: Ad run ID (short version)
+        reference_path: Optional path to reference template image
+
+    Returns:
+        Bytes of the zip file
+    """
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        # Add reference template if available
+        if reference_path:
+            ref_url = get_signed_url(reference_path)
+            if ref_url:
+                try:
+                    response = requests.get(ref_url, timeout=30)
+                    if response.status_code == 200:
+                        # Determine extension from content type or path
+                        ext = ".png"
+                        if "jpeg" in response.headers.get('content-type', ''):
+                            ext = ".jpg"
+                        elif "webp" in response.headers.get('content-type', ''):
+                            ext = ".webp"
+                        zip_file.writestr(f"00_reference_template{ext}", response.content)
+                except Exception as e:
+                    pass  # Skip if download fails
+
+        # Add each generated ad
+        for ad in ads:
+            storage_path = ad.get('storage_path', '')
+            if not storage_path:
+                continue
+
+            ad_url = get_signed_url(storage_path)
+            if not ad_url:
+                continue
+
+            try:
+                response = requests.get(ad_url, timeout=30)
+                if response.status_code == 200:
+                    # Determine extension
+                    ext = ".png"
+                    if "jpeg" in response.headers.get('content-type', ''):
+                        ext = ".jpg"
+                    elif "webp" in response.headers.get('content-type', ''):
+                        ext = ".webp"
+
+                    # Create filename with variation number and status
+                    variation = ad.get('prompt_index', 0)
+                    status = ad.get('final_status', 'unknown')
+                    filename = f"{variation:02d}_variation_{status}{ext}"
+
+                    zip_file.writestr(filename, response.content)
+            except Exception as e:
+                continue  # Skip if download fails
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+
 # ============================================
 # MAIN UI
 # ============================================
@@ -220,9 +290,43 @@ else:
             st.markdown("---")
 
             # All ads from this run
-            st.markdown("### All Generated Ads")
-
             ads = get_ads_for_run(run['id'])
+
+            # Download all button and header
+            col_header, col_download = st.columns([3, 1])
+            with col_header:
+                st.markdown("### All Generated Ads")
+            with col_download:
+                if ads:
+                    # Create safe filename
+                    safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
+                    zip_filename = f"{safe_product_name}_{run_id}_ads.zip"
+
+                    # Use session state to track if we should prepare download
+                    download_key = f"prepare_download_{run['id']}"
+                    if download_key not in st.session_state:
+                        st.session_state[download_key] = False
+
+                    if st.button("📥 Prepare Download", key=f"btn_{run['id']}", type="secondary"):
+                        st.session_state[download_key] = True
+                        st.rerun()
+
+                    if st.session_state[download_key]:
+                        with st.spinner("Creating ZIP file..."):
+                            zip_data = create_zip_for_run(
+                                ads=ads,
+                                product_name=product_name,
+                                run_id=run_id,
+                                reference_path=run.get('reference_ad_storage_path')
+                            )
+                        st.download_button(
+                            label="💾 Download ZIP",
+                            data=zip_data,
+                            file_name=zip_filename,
+                            mime="application/zip",
+                            key=f"save_{run['id']}",
+                            type="primary"
+                        )
 
             if not ads:
                 st.info("No ads found for this run.")
