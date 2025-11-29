@@ -35,6 +35,8 @@ if 'num_variations' not in st.session_state:
     st.session_state.num_variations = 5
 if 'content_source' not in st.session_state:
     st.session_state.content_source = "hooks"
+if 'color_mode' not in st.session_state:
+    st.session_state.color_mode = "original"
 
 
 def get_supabase_client():
@@ -115,7 +117,7 @@ def get_ad_run_details(ad_run_id: str):
         return None
 
 
-async def run_workflow(product_id: str, reference_ad_base64: str, filename: str, num_variations: int, content_source: str = "hooks"):
+async def run_workflow(product_id: str, reference_ad_base64: str, filename: str, num_variations: int, content_source: str = "hooks", color_mode: str = "original"):
     """Run the ad creation workflow.
 
     Args:
@@ -124,6 +126,7 @@ async def run_workflow(product_id: str, reference_ad_base64: str, filename: str,
         filename: Original filename of the reference ad
         num_variations: Number of ad variations to generate (1-15)
         content_source: "hooks" or "recreate_template"
+        color_mode: "original" (from reference ad) or "complementary" (AI-generated)
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -148,7 +151,8 @@ async def run_workflow(product_id: str, reference_ad_base64: str, filename: str,
         reference_ad_filename=filename,
         project_id="",
         num_variations=num_variations,
-        content_source=content_source
+        content_source=content_source,
+        color_mode=color_mode
     )
 
     return result
@@ -354,6 +358,29 @@ else:
 
         st.divider()
 
+        st.subheader("5. Color Scheme")
+
+        color_mode = st.radio(
+            "What colors should we use?",
+            options=["original", "complementary"],
+            index=0 if st.session_state.color_mode == "original" else 1,
+            format_func=lambda x: {
+                "original": "🎨 Original - Use colors from the reference ad template",
+                "complementary": "🌈 Complementary - Generate fresh, eye-catching color scheme"
+            }.get(x, x),
+            horizontal=False,
+            help="Choose the color scheme for the generated ads",
+            disabled=st.session_state.workflow_running
+        )
+        st.session_state.color_mode = color_mode
+
+        if color_mode == "original":
+            st.info("💡 Colors will be extracted from your reference ad and applied to the new variations.")
+        else:
+            st.info("💡 AI will generate a fresh complementary color scheme optimized for Facebook ads.")
+
+        st.divider()
+
         # Submit button - disabled while workflow is running
         is_running = st.session_state.workflow_running
         button_text = "⏳ Generating... Please wait" if is_running else "🚀 Generate Ad Variations"
@@ -385,7 +412,8 @@ else:
                 reference_ad_base64=reference_ad_base64,
                 filename=reference_filename,
                 num_variations=num_variations,
-                content_source=content_source
+                content_source=content_source,
+                color_mode=color_mode
             ))
 
             # Success - store result and show

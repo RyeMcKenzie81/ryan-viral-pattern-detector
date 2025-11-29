@@ -973,7 +973,8 @@ async def generate_nano_banana_prompt(
     ad_analysis: Dict,
     ad_brief_instructions: str,
     reference_ad_path: str,
-    product_image_path: str
+    product_image_path: str,
+    color_mode: str = "original"
 ) -> Dict:
     """
     Generate Nano Banana Pro 3 prompt for ad image generation.
@@ -994,6 +995,7 @@ async def generate_nano_banana_prompt(
         ad_brief_instructions: Instructions from ad brief template
         reference_ad_path: Storage path to reference ad
         product_image_path: Storage path to product image
+        color_mode: "original" (use template colors) or "complementary" (AI generates fresh colors)
 
     Returns:
         Dictionary with Nano Banana prompt:
@@ -1029,17 +1031,31 @@ async def generate_nano_banana_prompt(
             product.get('unique_selling_points')
         )
 
+        # Handle color mode
+        template_colors = ad_analysis.get('color_palette', ['#F5F0E8'])
+        if color_mode == "complementary":
+            # AI will generate fresh complementary colors
+            colors_for_spec = ["AI_GENERATE_COMPLEMENTARY"]
+            background_color = "AI_GENERATE_COMPLEMENTARY"
+            color_instructions = "Generate a fresh, eye-catching complementary color scheme that works well for Facebook ads. Create harmonious colors that enhance readability and visual appeal."
+        else:
+            # Use original template colors
+            colors_for_spec = template_colors
+            background_color = template_colors[0] if template_colors else '#F5F0E8'
+            color_instructions = f"Use the exact colors from reference: {', '.join(template_colors)}"
+
         # Build specification object
         spec = {
             "canvas": f"{ad_analysis.get('canvas_size', '1080x1080px')}, "
-                     f"background {ad_analysis.get('color_palette', ['#F5F0E8'])[0]}",
+                     f"background {background_color}",
             "product_image": "Use uploaded product image EXACTLY - no modifications to product appearance",
             "text_elements": {
                 "headline": selected_hook.get('adapted_text'),
                 "subheadline": matched_benefit,  # Phase 6: Use matched benefit instead of first benefit
                 "layout": ad_analysis.get('text_placement', {})
             },
-            "colors": ad_analysis.get('color_palette', []),
+            "colors": colors_for_spec,
+            "color_mode": color_mode,
             "authenticity_markers": ad_analysis.get('authenticity_markers', [])
         }
 
@@ -1190,7 +1206,7 @@ async def generate_nano_banana_prompt(
         **Style Guide:**
         - Format: {ad_analysis.get('format_type')}
         - Layout: {ad_analysis.get('layout_structure')}
-        - Colors: {', '.join(ad_analysis.get('color_palette', []))}
+        - Colors: {color_instructions}
         - Authenticity: {', '.join(ad_analysis.get('authenticity_markers', []))}
 
         **Hook (Main Headline):**
@@ -2481,7 +2497,8 @@ async def complete_ad_workflow(
     reference_ad_filename: str = "reference.png",
     project_id: Optional[str] = None,
     num_variations: int = 5,
-    content_source: str = "hooks"
+    content_source: str = "hooks",
+    color_mode: str = "original"
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2707,7 +2724,8 @@ async def complete_ad_workflow(
                     ad_analysis=ad_analysis,
                     ad_brief_instructions=ad_brief_instructions,
                     reference_ad_path=reference_ad_path,
-                    product_image_path=product_image_path
+                    product_image_path=product_image_path,
+                    color_mode=color_mode
                 )
 
                 # Execute generation
