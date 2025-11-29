@@ -2836,7 +2836,7 @@ async def complete_ad_workflow(
             else:
                 hook_id = None  # Benefit-based variations don't have real hook_ids
 
-            # Update database with reviews
+            # Update database with reviews and model metadata
             await ctx.deps.ad_creation.save_generated_ad(
                 ad_run_id=UUID(ad_run_id_str),
                 prompt_index=i,
@@ -2847,7 +2847,12 @@ async def complete_ad_workflow(
                 storage_path=storage_path,
                 claude_review=claude_review,
                 gemini_review=gemini_review,
-                final_status=final_status
+                final_status=final_status,
+                # Model tracking metadata from generation
+                model_requested=generated_ad.get('model_requested'),
+                model_used=generated_ad.get('model_used'),
+                generation_time_ms=generated_ad.get('generation_time_ms'),
+                generation_retries=generated_ad.get('generation_retries', 0)
             )
 
             # Add to results
