@@ -61,6 +61,40 @@ Each ad now shows:
 
 ## Next Steps
 
-- [ ] Add color mode option (Original vs Complementary)
+- [x] Add color mode option (Original vs Complementary) - ✅ COMPLETE
 - [ ] Add brand colors support (Phase 2)
 - [ ] Populate workflow_logs table for detailed step tracking
+
+---
+
+# Color Mode Feature (Phase 1) - COMPLETE
+
+**Commit:** `c37f57a`
+
+## What's Implemented
+
+| Mode | Description |
+|------|-------------|
+| **Original** | Uses colors extracted from the reference ad template |
+| **Complementary** | AI generates fresh, eye-catching complementary colors |
+
+## Files Modified
+
+- `viraltracker/ui/pages/5_🎨_Ad_Creator.py` - Added color mode UI radio button
+- `viraltracker/agent/agents/ad_creation_agent.py`:
+  - Added `color_mode` parameter to `generate_nano_banana_prompt`
+  - Added `color_mode` parameter to `complete_ad_workflow`
+  - Color instructions passed to image generation prompt
+
+## How It Works
+
+1. User selects color mode in Ad Creator UI
+2. `color_mode` passed through `run_workflow` → `complete_ad_workflow` → `generate_nano_banana_prompt`
+3. Prompt instructions differ based on mode:
+   - **Original**: "Use the exact colors from reference: #F5F0E8, #2D4A5C, ..."
+   - **Complementary**: "Generate a fresh, eye-catching complementary color scheme..."
+
+## Phase 2 (Future)
+
+- Add brand colors option (uses colors from brand settings)
+- Requires adding `brand_colors` field to brands table
