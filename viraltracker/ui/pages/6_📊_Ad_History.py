@@ -43,9 +43,35 @@ def get_brands():
         return []
 
 
-def get_ad_runs(brand_id: str = None):
+def get_ad_runs_count(brand_id: str = None) -> int:
+    """Get total count of ad runs for pagination."""
+    try:
+        db = get_supabase_client()
+        query = db.table("ad_runs").select("id", count="exact")
+
+        if brand_id and brand_id != "all":
+            # Get product IDs for this brand first
+            products = db.table("products").select("id").eq("brand_id", brand_id).execute()
+            product_ids = [p['id'] for p in products.data]
+            if product_ids:
+                query = query.in_("product_id", product_ids)
+            else:
+                return 0
+
+        result = query.execute()
+        return result.count if result.count else 0
+    except Exception as e:
+        return 0
+
+
+def get_ad_runs(brand_id: str = None, page: int = 1, page_size: int = 25):
     """
-    Fetch all ad runs with product info and stats.
+    Fetch ad runs with product info and stats (paginated).
+
+    Args:
+        brand_id: Optional brand ID to filter by
+        page: Page number (1-indexed)
+        page_size: Number of records per page
 
     Returns list of ad runs with:
     - run info (id, created_at, status, reference_ad_storage_path)
@@ -55,29 +81,39 @@ def get_ad_runs(brand_id: str = None):
     try:
         db = get_supabase_client()
 
+        # Calculate offset
+        offset = (page - 1) * page_size
+
         # Build query for ad_runs with product join
         query = db.table("ad_runs").select(
             "id, created_at, status, reference_ad_storage_path, product_id, "
             "products(id, name, brand_id, brands(id, name))"
         ).order("created_at", desc=True)
 
-        result = query.execute()
-
-        # Filter by brand if specified
-        runs = result.data
+        # Filter by brand if specified (do this in query for proper pagination)
         if brand_id and brand_id != "all":
-            runs = [r for r in runs if r.get('products', {}).get('brand_id') == brand_id]
+            # Get product IDs for this brand first
+            products = db.table("products").select("id").eq("brand_id", brand_id).execute()
+            product_ids = [p['id'] for p in products.data]
+            if product_ids:
+                query = query.in_("product_id", product_ids)
+            else:
+                return []
 
-        # Get ad counts for each run
+        # Apply pagination
+        query = query.range(offset, offset + page_size - 1)
+        result = query.execute()
+        runs = result.data
+
+        # Get ad counts for each run (lightweight query - just counts)
         for run in runs:
             ads_result = db.table("generated_ads").select(
-                "id, final_status, storage_path"
+                "id, final_status"
             ).eq("ad_run_id", run['id']).execute()
 
             ads = ads_result.data
             run['total_ads'] = len(ads)
             run['approved_ads'] = len([a for a in ads if a.get('final_status') == 'approved'])
-            run['first_ad_path'] = ads[0].get('storage_path') if ads else None
 
         return runs
     except Exception as e:
@@ -227,6 +263,14 @@ def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path
 # MAIN UI
 # ============================================
 
+# Initialize pagination state
+if 'ad_history_page' not in st.session_state:
+    st.session_state.ad_history_page = 1
+if 'expanded_run_id' not in st.session_state:
+    st.session_state.expanded_run_id = None
+
+PAGE_SIZE = 25
+
 # Brand filter
 brands = get_brands()
 brand_options = {"all": "All Brands"}
@@ -237,162 +281,222 @@ selected_brand = st.selectbox(
     "Filter by Brand",
     options=list(brand_options.keys()),
     format_func=lambda x: brand_options[x],
-    key="brand_filter"
+    key="brand_filter",
+    on_change=lambda: setattr(st.session_state, 'ad_history_page', 1)  # Reset to page 1 on filter change
 )
 
 st.markdown("---")
 
-# Fetch ad runs
+# Get total count and fetch paginated ad runs
+brand_filter = selected_brand if selected_brand != "all" else None
+total_count = get_ad_runs_count(brand_filter)
+total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+
+# Ensure current page is valid
+if st.session_state.ad_history_page > total_pages:
+    st.session_state.ad_history_page = 1
+
 with st.spinner("Loading ad runs..."):
-    ad_runs = get_ad_runs(selected_brand if selected_brand != "all" else None)
+    ad_runs = get_ad_runs(brand_filter, page=st.session_state.ad_history_page, page_size=PAGE_SIZE)
 
 if not ad_runs:
     st.info("No ad runs found. Create some ads in the Ad Creator page!")
 else:
-    st.markdown(f"**{len(ad_runs)} ad runs found**")
+    # Show pagination info
+    start_idx = (st.session_state.ad_history_page - 1) * PAGE_SIZE + 1
+    end_idx = min(st.session_state.ad_history_page * PAGE_SIZE, total_count)
+    st.markdown(f"**Showing {start_idx}-{end_idx} of {total_count} ad runs** (Page {st.session_state.ad_history_page} of {total_pages})")
 
-    # Display each ad run as an expandable card
+    # Display each ad run as a row with expand button
     for run in ad_runs:
         product_name = run.get('products', {}).get('name', 'Unknown Product')
         brand_name = run.get('products', {}).get('brands', {}).get('name', 'Unknown Brand')
-        run_id = run['id'][:8]  # Short ID
+        run_id_short = run['id'][:8]  # Short ID
+        run_id_full = run['id']
         date_str = format_date(run.get('created_at'))
         total_ads = run.get('total_ads', 0)
         approved_ads = run.get('approved_ads', 0)
         status = run.get('status', 'unknown')
+        is_expanded = st.session_state.expanded_run_id == run_id_full
 
-        # Create expander header with summary info
-        header = f"**{product_name}** | Run: `{run_id}` | {date_str} | {approved_ads}/{total_ads} approved"
+        # Summary row with expand button
+        col_expand, col_info, col_stats = st.columns([0.5, 3, 1.5])
 
-        with st.expander(header, expanded=False):
-            # Top row with thumbnails and summary
-            col1, col2, col3 = st.columns([1, 1, 2])
+        with col_expand:
+            btn_label = "▼" if is_expanded else "▶"
+            if st.button(btn_label, key=f"expand_{run_id_full}", help="Click to expand/collapse"):
+                if is_expanded:
+                    st.session_state.expanded_run_id = None
+                else:
+                    st.session_state.expanded_run_id = run_id_full
+                st.rerun()
 
-            with col1:
-                st.markdown("**Reference Template**")
-                template_url = get_signed_url(run.get('reference_ad_storage_path', ''))
-                display_thumbnail(template_url, width=120)
+        with col_info:
+            st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str}")
 
-            with col2:
-                st.markdown("**First Generated Ad**")
-                first_ad_url = get_signed_url(run.get('first_ad_path', ''))
-                display_thumbnail(first_ad_url, width=120)
+        with col_stats:
+            approval_pct = int(approved_ads/total_ads*100) if total_ads > 0 else 0
+            st.markdown(f"{get_status_badge(status)} {approved_ads}/{total_ads} ({approval_pct}%)", unsafe_allow_html=True)
 
-            with col3:
-                st.markdown("**Run Details**")
-                st.markdown(f"**Product:** {product_name}")
-                st.markdown(f"**Brand:** {brand_name}")
-                st.markdown(f"**Run ID:** `{run['id']}`")
-                st.markdown(f"**Date:** {date_str}")
-                st.markdown(f"**Status:** {get_status_badge(status)}", unsafe_allow_html=True)
-                st.markdown(f"**Ads Created:** {total_ads}")
-                st.markdown(f"**Approved:** {approved_ads} ({int(approved_ads/total_ads*100) if total_ads > 0 else 0}%)")
+        # Expanded content - ONLY load images when expanded
+        if is_expanded:
+            with st.container():
+                st.markdown("---")
 
-            st.markdown("---")
+                # Top row with thumbnails and summary
+                col1, col2, col3 = st.columns([1, 1, 2])
 
-            # All ads from this run
-            ads = get_ads_for_run(run['id'])
+                with col1:
+                    st.markdown("**Reference Template**")
+                    template_url = get_signed_url(run.get('reference_ad_storage_path', ''))
+                    display_thumbnail(template_url, width=120)
 
-            # Header with download button
-            st.markdown("### All Generated Ads")
+                with col2:
+                    st.markdown("**First Generated Ad**")
+                    # Only fetch first ad path when expanded
+                    ads_for_thumb = get_ads_for_run(run_id_full)
+                    first_ad_path = ads_for_thumb[0].get('storage_path') if ads_for_thumb else None
+                    first_ad_url = get_signed_url(first_ad_path) if first_ad_path else ""
+                    display_thumbnail(first_ad_url, width=120)
 
-            # Download all button - prominent placement
-            if ads:
-                # Create safe filename
-                safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
-                zip_filename = f"{safe_product_name}_{run_id}_ads.zip"
+                with col3:
+                    st.markdown("**Run Details**")
+                    st.markdown(f"**Product:** {product_name}")
+                    st.markdown(f"**Brand:** {brand_name}")
+                    st.markdown(f"**Run ID:** `{run_id_full}`")
+                    st.markdown(f"**Date:** {date_str}")
+                    st.markdown(f"**Status:** {get_status_badge(status)}", unsafe_allow_html=True)
+                    st.markdown(f"**Ads Created:** {total_ads}")
+                    st.markdown(f"**Approved:** {approved_ads} ({approval_pct}%)")
 
-                # Use session state to track if we should prepare download
-                download_key = f"prepare_download_{run['id']}"
-                if download_key not in st.session_state:
-                    st.session_state[download_key] = False
+                st.markdown("---")
 
-                col_btn1, col_btn2, col_spacer = st.columns([1, 1, 2])
+                # All ads from this run (already fetched above)
+                ads = ads_for_thumb
 
-                with col_btn1:
-                    if st.button("📥 Prepare Download", key=f"btn_{run['id']}", use_container_width=True):
-                        st.session_state[download_key] = True
-                        st.rerun()
+                # Header with download button
+                st.markdown("### All Generated Ads")
 
-                with col_btn2:
-                    if st.session_state[download_key]:
-                        with st.spinner("Creating ZIP..."):
-                            zip_data = create_zip_for_run(
-                                ads=ads,
-                                product_name=product_name,
-                                run_id=run_id,
-                                reference_path=run.get('reference_ad_storage_path')
+                # Download all button - prominent placement
+                if ads:
+                    # Create safe filename
+                    safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
+                    zip_filename = f"{safe_product_name}_{run_id_short}_ads.zip"
+
+                    # Use session state to track if we should prepare download
+                    download_key = f"prepare_download_{run_id_full}"
+                    if download_key not in st.session_state:
+                        st.session_state[download_key] = False
+
+                    col_btn1, col_btn2, col_spacer = st.columns([1, 1, 2])
+
+                    with col_btn1:
+                        if st.button("📥 Prepare Download", key=f"btn_{run_id_full}", use_container_width=True):
+                            st.session_state[download_key] = True
+                            st.rerun()
+
+                    with col_btn2:
+                        if st.session_state[download_key]:
+                            with st.spinner("Creating ZIP..."):
+                                zip_data = create_zip_for_run(
+                                    ads=ads,
+                                    product_name=product_name,
+                                    run_id=run_id_short,
+                                    reference_path=run.get('reference_ad_storage_path')
+                                )
+                            st.download_button(
+                                label="💾 Download ZIP",
+                                data=zip_data,
+                                file_name=zip_filename,
+                                mime="application/zip",
+                                key=f"save_{run_id_full}",
+                                use_container_width=True
                             )
-                        st.download_button(
-                            label="💾 Download ZIP",
-                            data=zip_data,
-                            file_name=zip_filename,
-                            mime="application/zip",
-                            key=f"save_{run['id']}",
-                            use_container_width=True
-                        )
 
-                st.markdown("")  # Spacing
+                    st.markdown("")  # Spacing
 
-            if not ads:
-                st.info("No ads found for this run.")
-            else:
-                # Display ads in a grid
-                cols_per_row = 3
-                for i in range(0, len(ads), cols_per_row):
-                    cols = st.columns(cols_per_row)
-                    for j, col in enumerate(cols):
-                        if i + j < len(ads):
-                            ad = ads[i + j]
-                            with col:
-                                # Ad image
-                                ad_url = get_signed_url(ad.get('storage_path', ''))
-                                if ad_url:
-                                    st.image(ad_url, use_container_width=True)
-                                else:
-                                    st.markdown("<div style='height:200px;background:#333;display:flex;align-items:center;justify-content:center;color:#666;'>Image not available</div>", unsafe_allow_html=True)
+                if not ads:
+                    st.info("No ads found for this run.")
+                else:
+                    # Display ads in a grid
+                    cols_per_row = 3
+                    for i in range(0, len(ads), cols_per_row):
+                        cols = st.columns(cols_per_row)
+                        for j, col in enumerate(cols):
+                            if i + j < len(ads):
+                                ad = ads[i + j]
+                                with col:
+                                    # Ad image
+                                    ad_url = get_signed_url(ad.get('storage_path', ''))
+                                    if ad_url:
+                                        st.image(ad_url, use_container_width=True)
+                                    else:
+                                        st.markdown("<div style='height:200px;background:#333;display:flex;align-items:center;justify-content:center;color:#666;'>Image not available</div>", unsafe_allow_html=True)
 
-                                # Ad info
-                                ad_status = ad.get('final_status', 'pending')
-                                st.markdown(f"**Variation {ad.get('prompt_index', '?')}** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
+                                    # Ad info
+                                    ad_status = ad.get('final_status', 'pending')
+                                    st.markdown(f"**Variation {ad.get('prompt_index', '?')}** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
 
-                                # Hook text (truncated)
-                                hook_text = ad.get('hook_text', '')
-                                if hook_text:
-                                    display_text = hook_text[:80] + "..." if len(hook_text) > 80 else hook_text
-                                    st.caption(f"_{display_text}_")
+                                    # Hook text (truncated)
+                                    hook_text = ad.get('hook_text', '')
+                                    if hook_text:
+                                        display_text = hook_text[:80] + "..." if len(hook_text) > 80 else hook_text
+                                        st.caption(f"_{display_text}_")
 
-                                # Review scores
-                                claude_review = ad.get('claude_review') or {}
-                                gemini_review = ad.get('gemini_review') or {}
+                                    # Review scores
+                                    claude_review = ad.get('claude_review') or {}
+                                    gemini_review = ad.get('gemini_review') or {}
 
-                                claude_score = claude_review.get('overall_score', 'N/A')
-                                gemini_score = gemini_review.get('overall_score', 'N/A')
+                                    claude_score = claude_review.get('overall_score', 'N/A')
+                                    gemini_score = gemini_review.get('overall_score', 'N/A')
 
-                                agree_icon = "✅" if ad.get('reviewers_agree') else "⚠️"
-                                st.caption(f"Claude: {claude_score} | Gemini: {gemini_score} {agree_icon}")
+                                    agree_icon = "✅" if ad.get('reviewers_agree') else "⚠️"
+                                    st.caption(f"Claude: {claude_score} | Gemini: {gemini_score} {agree_icon}")
 
-                                # Model info (if available)
-                                model_used = ad.get('model_used')
-                                model_requested = ad.get('model_requested')
-                                gen_time = ad.get('generation_time_ms')
-                                retries = ad.get('generation_retries', 0)
+                                    # Model info (if available)
+                                    model_used = ad.get('model_used')
+                                    model_requested = ad.get('model_requested')
+                                    gen_time = ad.get('generation_time_ms')
+                                    retries = ad.get('generation_retries', 0)
 
-                                if model_used:
-                                    # Check if fallback occurred
-                                    fallback_warning = ""
-                                    if model_requested and model_used != model_requested:
-                                        fallback_warning = " ⚠️ FALLBACK"
+                                    if model_used:
+                                        # Check if fallback occurred
+                                        fallback_warning = ""
+                                        if model_requested and model_used != model_requested:
+                                            fallback_warning = " ⚠️ FALLBACK"
 
-                                    # Format model name (extract just the model part)
-                                    model_short = model_used.split('/')[-1] if '/' in model_used else model_used
+                                        # Format model name (extract just the model part)
+                                        model_short = model_used.split('/')[-1] if '/' in model_used else model_used
 
-                                    time_str = f" | {gen_time}ms" if gen_time else ""
-                                    retry_str = f" | {retries} retries" if retries > 0 else ""
+                                        time_str = f" | {gen_time}ms" if gen_time else ""
+                                        retry_str = f" | {retries} retries" if retries > 0 else ""
 
-                                    st.caption(f"🤖 {model_short}{time_str}{retry_str}{fallback_warning}")
+                                        st.caption(f"🤖 {model_short}{time_str}{retry_str}{fallback_warning}")
 
-                                st.markdown("---")
+                                    st.markdown("---")
+
+                st.markdown("---")  # End of expanded section
+
+    # Pagination controls
+    st.markdown("---")
+    col_prev, col_page_info, col_next = st.columns([1, 2, 1])
+
+    with col_prev:
+        if st.session_state.ad_history_page > 1:
+            if st.button("← Previous", use_container_width=True):
+                st.session_state.ad_history_page -= 1
+                st.session_state.expanded_run_id = None  # Collapse when changing pages
+                st.rerun()
+
+    with col_page_info:
+        st.markdown(f"<div style='text-align: center; padding-top: 5px;'>Page {st.session_state.ad_history_page} of {total_pages}</div>", unsafe_allow_html=True)
+
+    with col_next:
+        if st.session_state.ad_history_page < total_pages:
+            if st.button("Next →", use_container_width=True):
+                st.session_state.ad_history_page += 1
+                st.session_state.expanded_run_id = None  # Collapse when changing pages
+                st.rerun()
 
 # Footer
 st.markdown("---")
