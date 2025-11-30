@@ -83,11 +83,32 @@ Generated Ad with new colors
 4. Generate ads
 5. Compare colors to original template - should see fresh color scheme
 
-## Phase 2 (Future)
+## Phase 2: Brand Colors - COMPLETE
 
-- [ ] Add "Brand Colors" option
-- [ ] Requires `brand_colors` field in brands table
-- [ ] Would use brand's official color palette instead of template or AI-generated
+**Commit:** `09a2bd8`
+
+### What's Implemented
+
+The "Brand Colors" option now appears when a product's brand has colors configured.
+
+### Wonder Paws Brand Colors
+
+| Color | Name | Hex |
+|-------|------|-----|
+| Primary | Purple | #4747C9 |
+| Secondary | Marigold | #FDBE2D |
+| Background | Dove Grey | #F5F5F5 |
+
+### Brand Fonts (stored for future use)
+
+- **Primary:** Larsseit (Bold, Medium, Regular) - body copy
+- **Secondary:** Uomo Bold - headlines and personality
+
+### SQL Migration Required
+
+Run `sql/add_brand_colors_fonts.sql` to:
+1. Add `brand_colors`, `brand_fonts`, `brand_guidelines` columns to brands table
+2. Insert Wonder Paws brand data
 
 ## Related Checkpoints
 
