@@ -974,7 +974,8 @@ async def generate_nano_banana_prompt(
     ad_brief_instructions: str,
     reference_ad_path: str,
     product_image_path: str,
-    color_mode: str = "original"
+    color_mode: str = "original",
+    brand_colors: Optional[Dict] = None
 ) -> Dict:
     """
     Generate Nano Banana Pro 3 prompt for ad image generation.
@@ -995,7 +996,8 @@ async def generate_nano_banana_prompt(
         ad_brief_instructions: Instructions from ad brief template
         reference_ad_path: Storage path to reference ad
         product_image_path: Storage path to product image
-        color_mode: "original" (use template colors) or "complementary" (AI generates fresh colors)
+        color_mode: "original" (use template colors), "complementary" (AI generates fresh colors), or "brand" (use brand colors)
+        brand_colors: Brand color data when color_mode is "brand" (dict with primary, secondary, background, all)
 
     Returns:
         Dictionary with Nano Banana prompt:
@@ -1033,13 +1035,25 @@ async def generate_nano_banana_prompt(
 
         # Handle color mode
         template_colors = ad_analysis.get('color_palette', ['#F5F0E8'])
-        if color_mode == "complementary":
+        if color_mode == "brand" and brand_colors:
+            # Use official brand colors
+            brand_color_list = brand_colors.get('all', [])
+            primary = brand_colors.get('primary', '#4747C9')
+            secondary = brand_colors.get('secondary', '#FDBE2D')
+            background = brand_colors.get('background', '#F5F5F5')
+            primary_name = brand_colors.get('primary_name', 'Primary')
+            secondary_name = brand_colors.get('secondary_name', 'Secondary')
+
+            colors_for_spec = brand_color_list if brand_color_list else [primary, secondary, background]
+            background_color = background
+            color_instructions = f"Use official brand colors: {primary_name} ({primary}) as primary, {secondary_name} ({secondary}) as accent, and {background} as background. These are the brand's official colors - use them consistently."
+        elif color_mode == "complementary":
             # AI will generate fresh complementary colors
             colors_for_spec = ["AI_GENERATE_COMPLEMENTARY"]
             background_color = "AI_GENERATE_COMPLEMENTARY"
             color_instructions = "Generate a fresh, eye-catching complementary color scheme that works well for Facebook ads. Create harmonious colors that enhance readability and visual appeal."
         else:
-            # Use original template colors
+            # Use original template colors (default)
             colors_for_spec = template_colors
             background_color = template_colors[0] if template_colors else '#F5F0E8'
             color_instructions = f"Use the exact colors from reference: {', '.join(template_colors)}"
@@ -2498,7 +2512,8 @@ async def complete_ad_workflow(
     project_id: Optional[str] = None,
     num_variations: int = 5,
     content_source: str = "hooks",
-    color_mode: str = "original"
+    color_mode: str = "original",
+    brand_colors: Optional[Dict] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2725,7 +2740,8 @@ async def complete_ad_workflow(
                     ad_brief_instructions=ad_brief_instructions,
                     reference_ad_path=reference_ad_path,
                     product_image_path=product_image_path,
-                    color_mode=color_mode
+                    color_mode=color_mode,
+                    brand_colors=brand_colors
                 )
 
                 # Execute generation

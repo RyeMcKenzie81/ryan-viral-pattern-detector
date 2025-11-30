@@ -46,14 +46,28 @@ def get_supabase_client():
 
 
 def get_products():
-    """Fetch all products from database."""
+    """Fetch all products from database with brand info."""
     try:
         db = get_supabase_client()
-        result = db.table("products").select("id, name, brand_id, target_audience").order("name").execute()
+        result = db.table("products").select(
+            "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts)"
+        ).order("name").execute()
         return result.data
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
         return []
+
+
+def get_brand_colors(brand_id: str) -> dict:
+    """Get brand colors for a specific brand."""
+    try:
+        db = get_supabase_client()
+        result = db.table("brands").select("brand_colors, brand_fonts").eq("id", brand_id).execute()
+        if result.data:
+            return result.data[0]
+        return {}
+    except Exception as e:
+        return {}
 
 
 def get_existing_templates():
@@ -117,7 +131,7 @@ def get_ad_run_details(ad_run_id: str):
         return None
 
 
-async def run_workflow(product_id: str, reference_ad_base64: str, filename: str, num_variations: int, content_source: str = "hooks", color_mode: str = "original"):
+async def run_workflow(product_id: str, reference_ad_base64: str, filename: str, num_variations: int, content_source: str = "hooks", color_mode: str = "original", brand_colors: dict = None):
     """Run the ad creation workflow.
 
     Args:
@@ -126,7 +140,8 @@ async def run_workflow(product_id: str, reference_ad_base64: str, filename: str,
         filename: Original filename of the reference ad
         num_variations: Number of ad variations to generate (1-15)
         content_source: "hooks" or "recreate_template"
-        color_mode: "original" (from reference ad) or "complementary" (AI-generated)
+        color_mode: "original", "complementary", or "brand"
+        brand_colors: Brand color data when color_mode is "brand"
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -152,7 +167,8 @@ async def run_workflow(product_id: str, reference_ad_base64: str, filename: str,
         project_id="",
         num_variations=num_variations,
         content_source=content_source,
-        color_mode=color_mode
+        color_mode=color_mode,
+        brand_colors=brand_colors
     )
 
     return result
@@ -360,14 +376,42 @@ else:
 
         st.subheader("5. Color Scheme")
 
+        # Check if selected product has brand colors
+        brand_colors_available = False
+        brand_color_preview = ""
+        if selected_product and selected_product.get('brands'):
+            brand_data = selected_product.get('brands', {})
+            if brand_data and brand_data.get('brand_colors'):
+                brand_colors_available = True
+                colors = brand_data.get('brand_colors', {})
+                color_list = colors.get('all', [])
+                if color_list:
+                    brand_color_preview = f" ({', '.join(color_list[:3])})"
+
+        # Build color mode options
+        color_options = ["original", "complementary"]
+        color_labels = {
+            "original": "🎨 Original - Use colors from the reference ad template",
+            "complementary": "🌈 Complementary - Generate fresh, eye-catching color scheme"
+        }
+
+        if brand_colors_available:
+            color_options.append("brand")
+            brand_name = selected_product.get('brands', {}).get('name', 'Brand')
+            color_labels["brand"] = f"🏷️ Brand Colors - Use {brand_name} official colors{brand_color_preview}"
+
+        # Determine default index
+        current_mode = st.session_state.color_mode
+        if current_mode in color_options:
+            default_index = color_options.index(current_mode)
+        else:
+            default_index = 0
+
         color_mode = st.radio(
             "What colors should we use?",
-            options=["original", "complementary"],
-            index=0 if st.session_state.color_mode == "original" else 1,
-            format_func=lambda x: {
-                "original": "🎨 Original - Use colors from the reference ad template",
-                "complementary": "🌈 Complementary - Generate fresh, eye-catching color scheme"
-            }.get(x, x),
+            options=color_options,
+            index=default_index,
+            format_func=lambda x: color_labels.get(x, x),
             horizontal=False,
             help="Choose the color scheme for the generated ads",
             disabled=st.session_state.workflow_running
@@ -376,8 +420,13 @@ else:
 
         if color_mode == "original":
             st.info("💡 Colors will be extracted from your reference ad and applied to the new variations.")
-        else:
+        elif color_mode == "complementary":
             st.info("💡 AI will generate a fresh complementary color scheme optimized for Facebook ads.")
+        elif color_mode == "brand":
+            colors = selected_product.get('brands', {}).get('brand_colors', {})
+            primary = colors.get('primary_name', colors.get('primary', ''))
+            secondary = colors.get('secondary_name', colors.get('secondary', ''))
+            st.info(f"💡 Using official brand colors: **{primary}** and **{secondary}**")
 
         st.divider()
 
@@ -406,6 +455,11 @@ else:
         st.warning("⏳ **Please wait** - This may take 2-5 minutes. Do not refresh the page.")
 
         try:
+            # Get brand colors if using brand color mode
+            brand_colors_data = None
+            if color_mode == "brand" and selected_product:
+                brand_colors_data = selected_product.get('brands', {}).get('brand_colors')
+
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -413,7 +467,8 @@ else:
                 filename=reference_filename,
                 num_variations=num_variations,
                 content_source=content_source,
-                color_mode=color_mode
+                color_mode=color_mode,
+                brand_colors=brand_colors_data
             ))
 
             # Success - store result and show
