@@ -158,16 +158,36 @@ async def analyze_image(image_path: str) -> dict:
     return await analyze_product_image(ctx=ctx, image_storage_path=image_path)
 
 
-def save_image_analysis(image_id: str, analysis: dict):
-    """Save analysis to database."""
+def save_image_analysis(image_id: str, storage_path: str, product_id: str, analysis: dict):
+    """Save analysis to database.
+
+    For legacy images (from products table), creates a new row in product_images.
+    For existing product_images rows, updates in place.
+    """
     try:
         db = get_supabase_client()
-        db.table("product_images").update({
-            "image_analysis": analysis,
-            "analyzed_at": datetime.utcnow().isoformat(),
-            "analysis_model": analysis.get("analysis_model"),
-            "analysis_version": analysis.get("analysis_version")
-        }).eq("id", image_id).execute()
+
+        # Check if this is a legacy image (fake ID)
+        if image_id.startswith("legacy_"):
+            # Insert new row into product_images
+            db.table("product_images").insert({
+                "product_id": product_id,
+                "storage_path": storage_path,
+                "image_analysis": analysis,
+                "analyzed_at": datetime.utcnow().isoformat(),
+                "analysis_model": analysis.get("analysis_model"),
+                "analysis_version": analysis.get("analysis_version"),
+                "is_main": image_id.startswith("legacy_main_")
+            }).execute()
+        else:
+            # Update existing row
+            db.table("product_images").update({
+                "image_analysis": analysis,
+                "analyzed_at": datetime.utcnow().isoformat(),
+                "analysis_model": analysis.get("analysis_model"),
+                "analysis_version": analysis.get("analysis_version")
+            }).eq("id", image_id).execute()
+
         return True
     except Exception as e:
         st.error(f"Failed to save analysis: {e}")
@@ -369,7 +389,7 @@ else:
                                 for img in unanalyzed:
                                     try:
                                         analysis = asyncio.run(analyze_image(img['storage_path']))
-                                        save_image_analysis(img['id'], analysis)
+                                        save_image_analysis(img['id'], img['storage_path'], product_id, analysis)
                                     except Exception as e:
                                         st.error(f"Failed to analyze {img['storage_path']}: {e}")
                                 st.success("Analysis complete!")
@@ -400,7 +420,7 @@ else:
                                         with st.spinner("Analyzing..."):
                                             try:
                                                 result = asyncio.run(analyze_image(img['storage_path']))
-                                                save_image_analysis(img['id'], result)
+                                                save_image_analysis(img['id'], img['storage_path'], product_id, result)
                                                 st.success("Done!")
                                                 st.rerun()
                                             except Exception as e:
