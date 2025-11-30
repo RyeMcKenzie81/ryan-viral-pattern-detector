@@ -2798,7 +2798,9 @@ async def complete_ad_workflow(
     num_variations: int = 5,
     content_source: str = "hooks",
     color_mode: str = "original",
-    brand_colors: Optional[Dict] = None
+    brand_colors: Optional[Dict] = None,
+    image_selection_mode: str = "auto",
+    selected_image_path: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2832,6 +2834,12 @@ async def complete_ad_workflow(
         content_source: Source for ad content variations:
             - "hooks": Use hooks from database (default)
             - "recreate_template": Extract template angle and use product benefits
+        color_mode: Color scheme to use ("original", "complementary", "brand")
+        brand_colors: Brand color data when color_mode is "brand"
+        image_selection_mode: How to select product image:
+            - "auto": AI selects best matching image (default)
+            - "manual": Use user-selected image
+        selected_image_path: Storage path when image_selection_mode is "manual"
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -2987,22 +2995,39 @@ async def complete_ad_workflow(
         )
 
         # STAGE 7: Select product images
-        logger.info("Stage 7: Selecting product images...")
+        logger.info(f"Stage 7: Selecting product images (mode: {image_selection_mode})...")
         product_image_paths = [product_dict.get('main_image_storage_path')] + \
                               product_dict.get('reference_image_storage_paths', [])
         product_image_paths = [p for p in product_image_paths if p]  # Remove None values
 
-        # Build image analyses dict from product data (if available)
+        # Fetch stored image analyses from database
         image_analyses = {}
-        # TODO: Fetch stored analyses from product_images table when available
+        try:
+            db = ctx.deps.ad_creation.db
+            images_result = db.table("product_images").select(
+                "storage_path, image_analysis"
+            ).eq("product_id", product_id).execute()
+            for img in images_result.data or []:
+                if img.get('image_analysis') and img.get('storage_path'):
+                    image_analyses[img['storage_path']] = img['image_analysis']
+            logger.info(f"Loaded {len(image_analyses)} stored image analyses")
+        except Exception as e:
+            logger.warning(f"Could not fetch image analyses: {e}")
+
+        # Prepare manual selection if applicable
+        manual_selection = None
+        if image_selection_mode == "manual" and selected_image_path:
+            manual_selection = [selected_image_path]
+            logger.info(f"Using manually selected image: {selected_image_path}")
 
         selected_product_images = await select_product_images(
             ctx=ctx,
             product_image_paths=product_image_paths,
             ad_analysis=ad_analysis,
             count=1,
-            selection_mode="auto",
-            image_analyses=image_analyses
+            selection_mode=image_selection_mode,
+            image_analyses=image_analyses,
+            manual_selection=manual_selection
         )
 
         # Extract path from selection result

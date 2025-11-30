@@ -1,7 +1,7 @@
 # Checkpoint: Brand Manager & Image Analysis
 
 **Date:** 2025-11-29
-**Status:** In Progress (70% complete)
+**Status:** Complete (100%)
 
 ## Summary
 
@@ -57,22 +57,21 @@ Features:
 - "Analyze All" button for batch analysis
 - "Create Ads" quick action
 
-## What's Remaining
+## What's Complete (Continued)
 
-### 5. Update select_product_images ⏳
-Need to modify the existing tool to:
+### 5. Update select_product_images ✅
+Modified the existing tool to:
 - Accept `selection_mode: "auto" | "manual"`
 - Use stored `image_analysis` for auto-selection
 - Calculate match scores against reference ad analysis
 - Return `ImageSelectionResult` with reasoning
 
-### 6. Add Image Selection to Ad Creator ⏳
+### 6. Add Image Selection to Ad Creator ✅
 New section in Ad Creator form:
-```
-6. Product Image
-○ 🤖 Auto-Select - Best match for this template
-○ 🖼️ Choose Image - Select specific image
-```
+- Radio button: Auto-Select vs Choose Image
+- Image grid with thumbnails and analysis scores when manual mode selected
+- Validation to ensure image is selected in manual mode
+- Passes `image_selection_mode` and `selected_image_path` through workflow
 
 ## Commits This Session
 
@@ -99,12 +98,12 @@ Run these in Supabase:
 | `viraltracker/agent/agents/ad_creation_agent.py` | Modified - added tool |
 | `viraltracker/ui/pages/7_🏢_Brand_Manager.py` | Created |
 
-## To Continue
+## To Continue (Before Use)
 
-1. Run SQL migrations in Supabase
-2. Update `select_product_images` tool with auto-selection logic
-3. Add image selection mode to Ad Creator UI
-4. Test end-to-end flow
+1. Run SQL migrations in Supabase:
+   - `sql/add_brand_colors_fonts.sql` - Brand colors/fonts columns
+   - `sql/add_image_analysis.sql` - Image analysis columns
+2. Test end-to-end flow
 
 ## Related Features (Same Session)
 
@@ -119,6 +118,22 @@ Run these in Supabase:
 [completed] Design Pydantic schemas
 [completed] Create SQL migration
 [completed] Implement analyze_product_image tool
-[in_progress] Update select_product_images
-[pending] Add image selection mode to Ad Creator
+[completed] Build Brand Manager UI page
+[completed] Update select_product_images
+[completed] Add image selection mode to Ad Creator
 ```
+
+## Summary of Changes
+
+### Ad Creator UI (`viraltracker/ui/pages/5_🎨_Ad_Creator.py`)
+- Added `get_product_images()` helper function
+- Added session state for `image_selection_mode` and `selected_image_path`
+- Added "6. Product Image" section with Auto-Select/Choose Image options
+- Manual mode shows image grid with thumbnails and analysis scores
+- Updated `run_workflow()` to accept new parameters
+- Added validation for manual selection mode
+
+### Ad Creation Agent (`viraltracker/agent/agents/ad_creation_agent.py`)
+- Updated `complete_ad_workflow()` signature with `image_selection_mode` and `selected_image_path`
+- Added database query to fetch stored image analyses
+- Passes selection mode and manual selection to `select_product_images()`

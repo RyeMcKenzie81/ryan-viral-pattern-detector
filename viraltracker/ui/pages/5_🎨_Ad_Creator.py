@@ -37,6 +37,10 @@ if 'content_source' not in st.session_state:
     st.session_state.content_source = "hooks"
 if 'color_mode' not in st.session_state:
     st.session_state.color_mode = "original"
+if 'image_selection_mode' not in st.session_state:
+    st.session_state.image_selection_mode = "auto"
+if 'selected_image_path' not in st.session_state:
+    st.session_state.selected_image_path = None
 
 
 def get_supabase_client():
@@ -68,6 +72,18 @@ def get_brand_colors(brand_id: str) -> dict:
         return {}
     except Exception as e:
         return {}
+
+
+def get_product_images(product_id: str) -> list:
+    """Get all images for a product with analysis data."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_images").select(
+            "id, storage_path, image_analysis, analyzed_at"
+        ).eq("product_id", product_id).execute()
+        return result.data or []
+    except Exception as e:
+        return []
 
 
 def get_existing_templates():
@@ -131,7 +147,17 @@ def get_ad_run_details(ad_run_id: str):
         return None
 
 
-async def run_workflow(product_id: str, reference_ad_base64: str, filename: str, num_variations: int, content_source: str = "hooks", color_mode: str = "original", brand_colors: dict = None):
+async def run_workflow(
+    product_id: str,
+    reference_ad_base64: str,
+    filename: str,
+    num_variations: int,
+    content_source: str = "hooks",
+    color_mode: str = "original",
+    brand_colors: dict = None,
+    image_selection_mode: str = "auto",
+    selected_image_path: str = None
+):
     """Run the ad creation workflow.
 
     Args:
@@ -142,6 +168,8 @@ async def run_workflow(product_id: str, reference_ad_base64: str, filename: str,
         content_source: "hooks" or "recreate_template"
         color_mode: "original", "complementary", or "brand"
         brand_colors: Brand color data when color_mode is "brand"
+        image_selection_mode: "auto" or "manual"
+        selected_image_path: Storage path when mode is "manual"
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -168,7 +196,9 @@ async def run_workflow(product_id: str, reference_ad_base64: str, filename: str,
         num_variations=num_variations,
         content_source=content_source,
         color_mode=color_mode,
-        brand_colors=brand_colors
+        brand_colors=brand_colors,
+        image_selection_mode=image_selection_mode,
+        selected_image_path=selected_image_path
     )
 
     return result
@@ -430,6 +460,85 @@ else:
 
         st.divider()
 
+        st.subheader("6. Product Image")
+
+        # Fetch product images
+        product_images = get_product_images(selected_product_id) if selected_product_id else []
+
+        if not product_images:
+            st.warning("⚠️ No product images found. Upload images in the Brand Manager.")
+            image_selection_mode = "auto"
+            selected_image_path = None
+        else:
+            # Check how many are analyzed
+            analyzed_count = len([img for img in product_images if img.get('analyzed_at')])
+            total_count = len(product_images)
+
+            image_selection_mode = st.radio(
+                "How should we select the product image?",
+                options=["auto", "manual"],
+                index=0 if st.session_state.image_selection_mode == "auto" else 1,
+                format_func=lambda x: {
+                    "auto": "🤖 Auto-Select - Best match for this template style",
+                    "manual": "🖼️ Choose Image - Select a specific product image"
+                }.get(x, x),
+                horizontal=False,
+                help="Auto-select uses AI analysis to pick the best matching image",
+                disabled=st.session_state.workflow_running
+            )
+            st.session_state.image_selection_mode = image_selection_mode
+
+            if image_selection_mode == "auto":
+                if analyzed_count < total_count:
+                    st.warning(f"💡 {analyzed_count}/{total_count} images analyzed. Run analysis in Brand Manager for better auto-selection.")
+                else:
+                    st.info("💡 AI will automatically select the best product image to match your reference ad style.")
+                selected_image_path = None
+            else:
+                # Manual selection - show image grid
+                st.markdown("**Select a product image:**")
+
+                # Create columns for image selection
+                cols = st.columns(4)
+                for idx, img in enumerate(product_images):
+                    with cols[idx % 4]:
+                        storage_path = img.get('storage_path', '')
+
+                        # Get signed URL for display
+                        img_url = get_signed_url(storage_path)
+                        if img_url:
+                            st.image(img_url, use_container_width=True)
+                        else:
+                            st.markdown("<div style='height:80px;background:#444;border-radius:4px;'></div>", unsafe_allow_html=True)
+
+                        # Show analysis info if available
+                        analysis = img.get('image_analysis')
+                        if analysis:
+                            quality = analysis.get('quality_score', 0)
+                            use_cases = analysis.get('best_use_cases', [])[:2]
+                            st.caption(f"⭐ {quality:.2f} | {', '.join(use_cases)}")
+                        else:
+                            st.caption("❓ Not analyzed")
+
+                        # Selection radio (use session state to track)
+                        is_selected = st.session_state.selected_image_path == storage_path
+                        if st.checkbox(
+                            "Select" if not is_selected else "✓ Selected",
+                            value=is_selected,
+                            key=f"img_select_{img['id']}"
+                        ):
+                            st.session_state.selected_image_path = storage_path
+                        elif is_selected:
+                            # Unchecked - clear selection
+                            st.session_state.selected_image_path = None
+
+                selected_image_path = st.session_state.selected_image_path
+
+                if not selected_image_path:
+                    st.warning("⚠️ Please select an image, or switch to Auto-Select mode.")
+
+        st.divider()
+
         # Submit button - disabled while workflow is running
         is_running = st.session_state.workflow_running
         button_text = "⏳ Generating... Please wait" if is_running else "🚀 Generate Ad Variations"
@@ -444,6 +553,8 @@ else:
         if submitted and not is_running:
             if not reference_ad_base64:
                 st.error("Please upload or select a reference ad")
+            elif image_selection_mode == "manual" and not selected_image_path:
+                st.error("Please select a product image or switch to Auto-Select mode")
             else:
                 st.session_state.workflow_running = True
                 st.rerun()  # Rerun to show disabled button immediately
@@ -460,6 +571,10 @@ else:
             if color_mode == "brand" and selected_product:
                 brand_colors_data = selected_product.get('brands', {}).get('brand_colors')
 
+            # Get image selection params from session state
+            img_mode = st.session_state.image_selection_mode
+            img_path = st.session_state.selected_image_path if img_mode == "manual" else None
+
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -468,7 +583,9 @@ else:
                 num_variations=num_variations,
                 content_source=content_source,
                 color_mode=color_mode,
-                brand_colors=brand_colors_data
+                brand_colors=brand_colors_data,
+                image_selection_mode=img_mode,
+                selected_image_path=img_path
             ))
 
             # Success - store result and show
