@@ -949,6 +949,193 @@ def match_benefit_to_hook(hook: Dict, benefits: List[str], unique_selling_points
     return best_item
 
 
+# ============================================================================
+# IMAGE ANALYSIS TOOL
+# ============================================================================
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Analysis',
+        'platform': 'Facebook',
+        'rate_limit': '10/minute',
+        'use_cases': [
+            'Analyze product image for ad generation matching',
+            'Extract visual characteristics for smart auto-selection',
+            'One-time analysis stored for future reuse'
+        ],
+        'examples': [
+            'Analyze new product image for Wonder Paws',
+            'Re-analyze product images after quality update'
+        ]
+    }
+)
+async def analyze_product_image(
+    ctx: RunContext[AgentDependencies],
+    image_storage_path: str,
+    force_reanalyze: bool = False
+) -> Dict:
+    """
+    Analyze a product image using Vision AI and return structured analysis.
+
+    This tool performs comprehensive analysis of product images to enable
+    smart auto-selection for ad generation. Results can be cached in the
+    database for reuse.
+
+    Analysis includes:
+    - Quality metrics (sharpness, resolution)
+    - Lighting type and characteristics
+    - Background type and removability
+    - Product angle and composition
+    - Best use cases for different ad formats
+    - Color palette extraction
+    - Potential issues detection
+
+    Args:
+        ctx: Run context with AgentDependencies
+        image_storage_path: Storage path to product image
+        force_reanalyze: If True, analyze even if cached result exists
+
+    Returns:
+        Dictionary matching ProductImageAnalysis schema:
+        {
+            "quality_score": 0.95,
+            "resolution_adequate": true,
+            "lighting_type": "studio",
+            "background_type": "transparent",
+            "product_angle": "front",
+            "product_coverage": 0.72,
+            "product_centered": true,
+            "best_use_cases": ["hero", "testimonial"],
+            "dominant_colors": ["#8B4513", "#F5F5F5"],
+            "detected_issues": [],
+            "analysis_model": "claude-opus-4-5-20251101",
+            "analysis_version": "v1"
+        }
+
+    Raises:
+        ValueError: If image_storage_path is invalid
+        Exception: If Vision AI analysis fails
+    """
+    import json
+    from datetime import datetime
+
+    try:
+        logger.info(f"Analyzing product image: {image_storage_path}")
+
+        # Validate input
+        if not image_storage_path:
+            raise ValueError("image_storage_path cannot be empty")
+
+        # Download image as base64
+        image_data = await ctx.deps.ad_creation.get_image_as_base64(image_storage_path)
+
+        # Build analysis prompt
+        analysis_prompt = """
+        Analyze this product image for use in Facebook ad generation.
+        Return a detailed JSON analysis covering all visual characteristics.
+
+        **RESPOND WITH VALID JSON ONLY - NO MARKDOWN, NO EXTRA TEXT**
+
+        {
+            "quality_score": <float 0-1, overall quality>,
+            "resolution_adequate": <boolean, sufficient for 1080x1080 ads>,
+            "sharpness_score": <float 0-1, image clarity>,
+
+            "lighting_type": <one of: "natural_soft", "natural_bright", "studio", "dramatic", "flat", "warm", "cool", "unknown">,
+            "lighting_notes": <string, brief observation about lighting>,
+
+            "background_type": <one of: "transparent", "solid_white", "solid_color", "gradient", "lifestyle", "textured", "outdoor", "unknown">,
+            "background_color": <hex color if solid/gradient, else null>,
+            "background_removable": <boolean, can background be easily replaced>,
+
+            "product_angle": <one of: "front", "three_quarter", "side", "back", "top_down", "angled", "hero", "multiple">,
+
+            "product_coverage": <float 0-1, how much of frame product fills>,
+            "product_centered": <boolean>,
+            "product_position": <one of: "center", "left", "right", "top", "bottom">,
+            "has_shadows": <boolean>,
+            "shadow_direction": <string if shadows present, else null>,
+            "has_reflections": <boolean>,
+
+            "best_use_cases": [<array of: "hero", "testimonial", "lifestyle", "detail", "comparison", "packaging", "social_proof", "minimal">],
+
+            "dominant_colors": [<array of 3-5 hex color codes>],
+            "color_mood": <one of: "warm", "cool", "neutral", "vibrant", "muted">,
+
+            "product_fully_visible": <boolean, not cropped>,
+            "label_readable": <boolean, can read product text>,
+
+            "detected_issues": [<array of issue strings, empty if none>],
+            "recommended_crops": [<array of: "1:1", "4:5", "9:16">]
+        }
+
+        Be accurate and thorough. Quality score should reflect:
+        - Image sharpness and clarity
+        - Professional appearance
+        - Suitability for advertising
+        - Color accuracy and balance
+        """
+
+        # Use Claude Vision for analysis
+        import anthropic
+        client = anthropic.Anthropic()
+
+        response = client.messages.create(
+            model="claude-opus-4-5-20251101",
+            max_tokens=2000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": image_data
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": analysis_prompt
+                        }
+                    ]
+                }
+            ]
+        )
+
+        # Parse response
+        response_text = response.content[0].text.strip()
+
+        # Clean up response if it has markdown
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
+
+        analysis = json.loads(response_text)
+
+        # Add metadata
+        analysis["analysis_model"] = "claude-opus-4-5-20251101"
+        analysis["analysis_version"] = "v1"
+
+        logger.info(f"Image analysis complete. Quality: {analysis.get('quality_score')}, "
+                   f"Best for: {analysis.get('best_use_cases')}")
+
+        return analysis
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse analysis JSON: {str(e)}")
+        raise Exception(f"Failed to parse image analysis: {str(e)}")
+    except ValueError as e:
+        logger.error(f"Invalid input: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to analyze product image: {str(e)}")
+        raise Exception(f"Failed to analyze image: {str(e)}")
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
