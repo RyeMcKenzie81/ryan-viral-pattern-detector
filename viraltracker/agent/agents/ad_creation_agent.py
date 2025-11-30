@@ -1127,6 +1127,20 @@ async def analyze_product_image(
         # Download image as base64
         image_data = await ctx.deps.ad_creation.get_image_as_base64(image_storage_path)
 
+        # Detect media type from file extension
+        lower_path = image_storage_path.lower()
+        if lower_path.endswith('.png'):
+            media_type = "image/png"
+        elif lower_path.endswith('.webp'):
+            media_type = "image/webp"
+        elif lower_path.endswith('.gif'):
+            media_type = "image/gif"
+        else:
+            # Default to JPEG for .jpg, .jpeg, or unknown
+            media_type = "image/jpeg"
+
+        logger.info(f"Detected media type: {media_type}")
+
         # Build analysis prompt
         analysis_prompt = """
         Analyze this product image for use in Facebook ad generation.
@@ -1189,7 +1203,7 @@ async def analyze_product_image(
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": media_type,
                                 "data": image_data
                             }
                         },
