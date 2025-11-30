@@ -798,60 +798,91 @@ async def select_product_images(
     ctx: RunContext[AgentDependencies],
     product_image_paths: List[str],
     ad_analysis: Dict,
-    count: int = 1
-) -> List[str]:
+    count: int = 1,
+    selection_mode: str = "auto",
+    image_analyses: Optional[Dict[str, Dict]] = None,
+    manual_selection: Optional[List[str]] = None
+) -> List[Dict]:
     """
     Select best product images matching reference ad format.
 
-    This tool selects the most appropriate product images based on:
-    - Image quality and clarity
-    - Compatibility with reference ad layout
-    - Product visibility and presentation
+    Supports two modes:
+    - auto: Uses stored image analysis to match against reference ad style
+    - manual: Returns user-selected images with their analysis
 
     Args:
         ctx: Run context with AgentDependencies
         product_image_paths: List of storage paths to product images
         ad_analysis: Ad analysis dictionary with format_type, layout_structure
         count: Number of images to select (default: 1)
+        selection_mode: "auto" for smart selection, "manual" for user choice
+        image_analyses: Dict mapping storage_path -> ProductImageAnalysis dict
+        manual_selection: List of paths if manual mode
 
     Returns:
-        List of selected storage paths (ordered by preference):
-        ["products/{id}/main.png", ...]
+        List of selection results with match scores:
+        [
+            {
+                "storage_path": "products/xxx/main.png",
+                "match_score": 0.85,
+                "match_reasons": ["Good lighting match", "High quality"],
+                "analysis": {...}
+            }
+        ]
 
     Raises:
         ValueError: If product_image_paths is empty or count invalid
     """
     try:
-        logger.info(f"Selecting {count} product images from {len(product_image_paths)} candidates")
+        logger.info(f"Selecting {count} product images ({selection_mode} mode)")
 
         # Validate inputs
         if not product_image_paths:
             raise ValueError("product_image_paths cannot be empty")
-        if count < 1 or count > len(product_image_paths):
-            raise ValueError(f"count must be between 1 and {len(product_image_paths)}")
+        if count < 1:
+            raise ValueError("count must be at least 1")
 
-        # For now, implement simple selection logic
-        # In production, this could use Vision AI to rank images
-        # Priority: main image first, then reference images
-        selected_paths = []
+        # Manual mode - return user selections
+        if selection_mode == "manual" and manual_selection:
+            results = []
+            for path in manual_selection[:count]:
+                analysis = (image_analyses or {}).get(path, {})
+                results.append({
+                    "storage_path": path,
+                    "match_score": 1.0,  # User choice = perfect match
+                    "match_reasons": ["User selected"],
+                    "analysis": analysis
+                })
+            return results
 
-        # Prefer main images first
+        # Auto mode - score and rank images
+        scored_images = []
+        image_analyses = image_analyses or {}
+
         for path in product_image_paths:
-            if "main" in path:
-                selected_paths.append(path)
-                if len(selected_paths) >= count:
-                    break
+            analysis = image_analyses.get(path, {})
+            score, reasons = _calculate_image_match_score(analysis, ad_analysis)
 
-        # Fill remaining slots with other images
-        if len(selected_paths) < count:
-            for path in product_image_paths:
-                if path not in selected_paths:
-                    selected_paths.append(path)
-                    if len(selected_paths) >= count:
-                        break
+            # Fallback bonus for "main" in path if no analysis
+            if not analysis and "main" in path.lower():
+                score = max(score, 0.6)
+                reasons.append("Main product image (fallback)")
 
-        logger.info(f"Selected images: {selected_paths}")
-        return selected_paths
+            scored_images.append({
+                "storage_path": path,
+                "match_score": score,
+                "match_reasons": reasons,
+                "analysis": analysis
+            })
+
+        # Sort by score descending
+        scored_images.sort(key=lambda x: x["match_score"], reverse=True)
+
+        # Return top N
+        selected = scored_images[:count]
+        logger.info(f"Selected {len(selected)} images. Top score: {selected[0]['match_score']:.2f}")
+
+        return selected
 
     except ValueError as e:
         logger.error(f"Invalid input: {str(e)}")
@@ -859,6 +890,73 @@ async def select_product_images(
     except Exception as e:
         logger.error(f"Failed to select product images: {str(e)}")
         raise Exception(f"Failed to select product images: {str(e)}")
+
+
+def _calculate_image_match_score(image_analysis: Dict, ad_analysis: Dict) -> tuple:
+    """
+    Calculate how well a product image matches reference ad style.
+
+    Returns (score, reasons) tuple.
+    """
+    if not image_analysis:
+        return 0.5, ["No analysis available - using default score"]
+
+    score = 0.0
+    reasons = []
+
+    # Quality score (20% weight)
+    quality = image_analysis.get("quality_score", 0.5)
+    score += quality * 0.2
+    if quality >= 0.8:
+        reasons.append(f"High quality ({quality:.2f})")
+
+    # Background compatibility (25% weight)
+    bg_type = image_analysis.get("background_type", "unknown")
+    ref_format = ad_analysis.get("format_type", "")
+
+    if bg_type in ["transparent", "solid_white"]:
+        score += 0.25
+        reasons.append("Clean background - versatile")
+    elif bg_type == "lifestyle" and "lifestyle" in ref_format.lower():
+        score += 0.25
+        reasons.append("Lifestyle background matches format")
+    elif bg_type != "unknown":
+        score += 0.15
+
+    # Lighting compatibility (20% weight)
+    lighting = image_analysis.get("lighting_type", "unknown")
+    if lighting in ["studio", "natural_soft"]:
+        score += 0.2
+        reasons.append(f"Good lighting ({lighting})")
+    elif lighting != "unknown":
+        score += 0.1
+
+    # Use case match (25% weight)
+    best_uses = image_analysis.get("best_use_cases", [])
+    ref_format_lower = ref_format.lower()
+
+    use_case_map = {
+        "testimonial": "testimonial",
+        "product_showcase": "hero",
+        "quote_style": "testimonial",
+        "before_after": "comparison"
+    }
+
+    target_use = use_case_map.get(ref_format_lower, "hero")
+    if target_use in best_uses:
+        score += 0.25
+        reasons.append(f"Good for {target_use} ads")
+    elif best_uses:
+        score += 0.1
+
+    # Composition bonus (10% weight)
+    if image_analysis.get("product_centered", False):
+        score += 0.05
+        reasons.append("Product centered")
+    if image_analysis.get("product_fully_visible", True):
+        score += 0.05
+
+    return min(score, 1.0), reasons
 
 
 # Phase 6: Hook-to-Benefit Matching Helper Function
@@ -2894,14 +2992,22 @@ async def complete_ad_workflow(
                               product_dict.get('reference_image_storage_paths', [])
         product_image_paths = [p for p in product_image_paths if p]  # Remove None values
 
+        # Build image analyses dict from product data (if available)
+        image_analyses = {}
+        # TODO: Fetch stored analyses from product_images table when available
+
         selected_product_images = await select_product_images(
             ctx=ctx,
             product_image_paths=product_image_paths,
             ad_analysis=ad_analysis,
-            count=1
+            count=1,
+            selection_mode="auto",
+            image_analyses=image_analyses
         )
 
-        product_image_path = selected_product_images[0]
+        # Extract path from selection result
+        product_image_path = selected_product_images[0]["storage_path"]
+        logger.info(f"Selected image: {product_image_path} (score: {selected_product_images[0]['match_score']:.2f})")
 
         # Update status
         await ctx.deps.ad_creation.update_ad_run(
