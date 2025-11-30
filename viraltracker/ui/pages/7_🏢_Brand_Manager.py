@@ -53,27 +53,43 @@ def get_products_for_brand(brand_id: str):
     1. products.main_image_storage_path and products.reference_image_storage_paths (legacy)
     2. product_images table (new, with analysis support)
 
-    This function merges both sources.
+    This function merges both sources and marks file types.
     """
     try:
         db = get_supabase_client()
         result = db.table("products").select(
-            "*, main_image_storage_path, reference_image_storage_paths, product_images(id, storage_path, image_analysis, analyzed_at)"
+            "*, main_image_storage_path, reference_image_storage_paths, product_images(id, storage_path, image_analysis, analyzed_at, notes)"
         ).eq("brand_id", brand_id).order("name").execute()
+
+        # Supported image formats for Vision AI analysis
+        image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
 
         # Merge legacy image columns with product_images table
         for product in result.data:
             images = list(product.get('product_images') or [])
             existing_paths = {img['storage_path'] for img in images}
 
+            # Add file type info to existing images
+            for img in images:
+                path = img.get('storage_path', '').lower()
+                img['is_image'] = path.endswith(image_extensions)
+                img['is_pdf'] = path.endswith('.pdf')
+                img['file_type'] = 'pdf' if img['is_pdf'] else 'image' if img['is_image'] else 'other'
+
             # Add main image if not already in product_images
             main_path = product.get('main_image_storage_path')
             if main_path and main_path not in existing_paths:
+                is_image = main_path.lower().endswith(image_extensions)
+                is_pdf = main_path.lower().endswith('.pdf')
                 images.insert(0, {
                     'id': f"legacy_main_{product['id']}",
                     'storage_path': main_path,
                     'image_analysis': None,
-                    'analyzed_at': None
+                    'analyzed_at': None,
+                    'notes': None,
+                    'is_image': is_image,
+                    'is_pdf': is_pdf,
+                    'file_type': 'pdf' if is_pdf else 'image' if is_image else 'other'
                 })
                 existing_paths.add(main_path)
 
@@ -81,11 +97,17 @@ def get_products_for_brand(brand_id: str):
             ref_paths = product.get('reference_image_storage_paths') or []
             for ref_path in ref_paths:
                 if ref_path and ref_path not in existing_paths:
+                    is_image = ref_path.lower().endswith(image_extensions)
+                    is_pdf = ref_path.lower().endswith('.pdf')
                     images.append({
                         'id': f"legacy_ref_{hash(ref_path)}",
                         'storage_path': ref_path,
                         'image_analysis': None,
-                        'analyzed_at': None
+                        'analyzed_at': None,
+                        'notes': None,
+                        'is_image': is_image,
+                        'is_pdf': is_pdf,
+                        'file_type': 'pdf' if is_pdf else 'image' if is_image else 'other'
                     })
                     existing_paths.add(ref_path)
 
@@ -191,6 +213,41 @@ def save_image_analysis(image_id: str, storage_path: str, product_id: str, analy
         return True
     except Exception as e:
         st.error(f"Failed to save analysis: {e}")
+        return False
+
+
+def save_image_notes(image_id: str, storage_path: str, product_id: str, notes: str):
+    """Save notes for an image."""
+    try:
+        db = get_supabase_client()
+
+        if image_id.startswith("legacy_"):
+            # Check if row exists for this storage_path
+            existing = db.table("product_images").select("id").eq(
+                "storage_path", storage_path
+            ).eq("product_id", product_id).execute()
+
+            if existing.data:
+                # Update existing row
+                db.table("product_images").update({
+                    "notes": notes
+                }).eq("id", existing.data[0]['id']).execute()
+            else:
+                # Insert new row
+                db.table("product_images").insert({
+                    "product_id": product_id,
+                    "storage_path": storage_path,
+                    "notes": notes,
+                    "is_main": image_id.startswith("legacy_main_")
+                }).execute()
+        else:
+            db.table("product_images").update({
+                "notes": notes
+            }).eq("id", image_id).execute()
+
+        return True
+    except Exception as e:
+        st.error(f"Failed to save notes: {e}")
         return False
 
 
@@ -381,8 +438,9 @@ else:
                     if not images:
                         st.info("No images uploaded for this product.")
                     else:
-                        # Analyze All button
-                        unanalyzed = [i for i in images if not i.get('analyzed_at')]
+                        # Analyze All button - only for images (not PDFs)
+                        analyzable_images = [i for i in images if i.get('is_image', True) and not i.get('is_pdf')]
+                        unanalyzed = [i for i in analyzable_images if not i.get('analyzed_at')]
                         if unanalyzed:
                             if st.button(f"🔍 Analyze All ({len(unanalyzed)} unanalyzed)", key=f"analyze_all_{product_id}"):
                                 st.info("Analyzing images... This may take a minute.")
@@ -395,36 +453,70 @@ else:
                                 st.success("Analysis complete!")
                                 st.rerun()
 
-                        # Image grid
+                        # Image/file grid
                         cols = st.columns(4)
                         for idx, img in enumerate(images):
                             with cols[idx % 4]:
-                                # Thumbnail
-                                img_url = get_signed_url(img['storage_path'])
-                                if img_url:
-                                    st.image(img_url, use_container_width=True)
-                                else:
-                                    st.markdown("<div style='height:100px;background:#333;'></div>", unsafe_allow_html=True)
+                                is_pdf = img.get('is_pdf', False)
+                                is_image = img.get('is_image', True)
 
-                                # Analysis status
-                                analysis = img.get('image_analysis')
-                                if analysis:
-                                    quality = analysis.get('quality_score', 0)
-                                    stars = "⭐" * int(quality * 5)
-                                    use_cases = analysis.get('best_use_cases', [])[:2]
-                                    st.caption(f"{stars} {quality:.2f}")
-                                    st.caption(f"{', '.join(use_cases)}")
+                                # Display thumbnail or PDF badge
+                                if is_pdf:
+                                    # PDF badge
+                                    st.markdown(
+                                        "<div style='height:100px;background:#2d2d2d;border-radius:8px;"
+                                        "display:flex;align-items:center;justify-content:center;"
+                                        "font-size:2em;'>📄</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    filename = img['storage_path'].split('/')[-1]
+                                    st.caption(f"**PDF:** {filename[:20]}...")
                                 else:
-                                    st.caption("❓ Not analyzed")
-                                    if st.button("Analyze", key=f"analyze_{img['id']}", type="secondary"):
-                                        with st.spinner("Analyzing..."):
-                                            try:
-                                                result = asyncio.run(analyze_image(img['storage_path']))
-                                                save_image_analysis(img['id'], img['storage_path'], product_id, result)
-                                                st.success("Done!")
-                                                st.rerun()
-                                            except Exception as e:
-                                                st.error(f"Failed: {e}")
+                                    # Regular image thumbnail
+                                    img_url = get_signed_url(img['storage_path'])
+                                    if img_url:
+                                        st.image(img_url, use_container_width=True)
+                                    else:
+                                        st.markdown("<div style='height:100px;background:#333;'></div>", unsafe_allow_html=True)
+
+                                # Analysis status (only for images)
+                                if is_image and not is_pdf:
+                                    analysis = img.get('image_analysis')
+                                    if analysis:
+                                        quality = analysis.get('quality_score', 0)
+                                        stars = "⭐" * int(quality * 5)
+                                        use_cases = analysis.get('best_use_cases', [])[:2]
+                                        st.caption(f"{stars} {quality:.2f}")
+                                        st.caption(f"{', '.join(use_cases)}")
+                                    else:
+                                        st.caption("❓ Not analyzed")
+                                        if st.button("Analyze", key=f"analyze_{img['id']}", type="secondary"):
+                                            with st.spinner("Analyzing..."):
+                                                try:
+                                                    result = asyncio.run(analyze_image(img['storage_path']))
+                                                    save_image_analysis(img['id'], img['storage_path'], product_id, result)
+                                                    st.success("Done!")
+                                                    st.rerun()
+                                                except Exception as e:
+                                                    st.error(f"Failed: {e}")
+                                elif is_pdf:
+                                    st.caption("📋 PDF - Gemini analysis coming soon")
+
+                                # Notes input (for all file types)
+                                current_notes = img.get('notes', '') or ''
+                                with st.expander("📝 Notes", expanded=bool(current_notes)):
+                                    new_notes = st.text_area(
+                                        "Add context",
+                                        value=current_notes,
+                                        key=f"notes_{img['id']}",
+                                        placeholder="e.g., Product packaging front view, Card examples...",
+                                        height=80
+                                    )
+                                    if new_notes != current_notes:
+                                        if st.button("Save", key=f"save_notes_{img['id']}", type="primary"):
+                                            save_image_notes(img['id'], img['storage_path'], product_id, new_notes)
+                                            st.success("Saved!")
+                                            st.rerun()
 
                 with tab_stats:
                     # Hooks count

@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS product_images (
     image_analysis JSONB DEFAULT NULL,
     analyzed_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
     analysis_model VARCHAR(100) DEFAULT NULL,
-    analysis_version VARCHAR(20) DEFAULT NULL
+    analysis_version VARCHAR(20) DEFAULT NULL,
+
+    -- User-provided context/notes about the image
+    notes TEXT DEFAULT NULL
 );
 
 -- If table already exists, add the analysis columns
@@ -31,6 +34,9 @@ ADD COLUMN IF NOT EXISTS analysis_model VARCHAR(100) DEFAULT NULL;
 
 ALTER TABLE product_images
 ADD COLUMN IF NOT EXISTS analysis_version VARCHAR(20) DEFAULT NULL;
+
+ALTER TABLE product_images
+ADD COLUMN IF NOT EXISTS notes TEXT DEFAULT NULL;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_product_images_product_id
