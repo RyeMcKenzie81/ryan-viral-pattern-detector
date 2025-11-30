@@ -75,13 +75,56 @@ def get_brand_colors(brand_id: str) -> dict:
 
 
 def get_product_images(product_id: str) -> list:
-    """Get all images for a product with analysis data."""
+    """Get all images for a product with analysis data.
+
+    Images can come from two sources:
+    1. products.main_image_storage_path and products.reference_image_storage_paths (legacy)
+    2. product_images table (new, with analysis support)
+
+    This function merges both sources.
+    """
     try:
         db = get_supabase_client()
-        result = db.table("product_images").select(
+
+        # Get product_images table data
+        img_result = db.table("product_images").select(
             "id, storage_path, image_analysis, analyzed_at"
         ).eq("product_id", product_id).execute()
-        return result.data or []
+        images = list(img_result.data or [])
+        existing_paths = {img['storage_path'] for img in images}
+
+        # Get legacy image columns from products table
+        prod_result = db.table("products").select(
+            "main_image_storage_path, reference_image_storage_paths"
+        ).eq("id", product_id).execute()
+
+        if prod_result.data:
+            product = prod_result.data[0]
+
+            # Add main image if not in product_images
+            main_path = product.get('main_image_storage_path')
+            if main_path and main_path not in existing_paths:
+                images.insert(0, {
+                    'id': f"legacy_main_{product_id}",
+                    'storage_path': main_path,
+                    'image_analysis': None,
+                    'analyzed_at': None
+                })
+                existing_paths.add(main_path)
+
+            # Add reference images if not in product_images
+            ref_paths = product.get('reference_image_storage_paths') or []
+            for ref_path in ref_paths:
+                if ref_path and ref_path not in existing_paths:
+                    images.append({
+                        'id': f"legacy_ref_{hash(ref_path)}",
+                        'storage_path': ref_path,
+                        'image_analysis': None,
+                        'analyzed_at': None
+                    })
+                    existing_paths.add(ref_path)
+
+        return images
     except Exception as e:
         return []
 
