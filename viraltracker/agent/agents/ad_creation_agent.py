@@ -2976,6 +2976,7 @@ async def complete_ad_workflow(
 
         # STAGE 7: Select product images
         logger.info(f"Stage 7: Selecting product images (mode: {image_selection_mode})...")
+        logger.info(f"Fetching images for product_id: {product_id}")
 
         # Fetch product images from product_images table
         image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
@@ -2987,6 +2988,8 @@ async def complete_ad_workflow(
                 "storage_path, image_analysis, is_main"
             ).eq("product_id", product_id).order("is_main", desc=True).execute()
 
+            logger.info(f"Query returned {len(images_result.data or [])} rows from product_images")
+
             for img in images_result.data or []:
                 path = img.get('storage_path', '')
                 # Only include actual image files (skip PDFs)
@@ -2997,7 +3000,15 @@ async def complete_ad_workflow(
 
             logger.info(f"Found {len(product_image_paths)} images, {len(image_analyses)} with analysis")
         except Exception as e:
-            logger.warning(f"Could not fetch product images: {e}")
+            logger.error(f"Failed to fetch product images: {e}")
+            raise ValueError(f"Could not fetch product images: {e}")
+
+        # Validate we have images
+        if not product_image_paths:
+            raise ValueError(
+                f"No images found for product {product_id}. "
+                f"Please add images in Brand Manager before creating ads."
+            )
 
         # Prepare manual selection if applicable
         manual_selection = None
