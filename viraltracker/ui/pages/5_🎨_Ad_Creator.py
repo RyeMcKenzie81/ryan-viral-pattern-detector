@@ -81,10 +81,13 @@ def get_product_images(product_id: str) -> list:
     1. products.main_image_storage_path and products.reference_image_storage_paths (legacy)
     2. product_images table (new, with analysis support)
 
-    This function merges both sources.
+    This function merges both sources and filters out non-image files.
     """
     try:
         db = get_supabase_client()
+
+        # Supported image formats
+        image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
 
         # Get product_images table data
         img_result = db.table("product_images").select(
@@ -104,28 +107,33 @@ def get_product_images(product_id: str) -> list:
             # Add main image if not in product_images
             main_path = product.get('main_image_storage_path')
             if main_path and main_path not in existing_paths:
-                images.insert(0, {
-                    'id': f"legacy_main_{product_id}",
-                    'storage_path': main_path,
-                    'image_analysis': None,
-                    'analyzed_at': None
-                })
-                existing_paths.add(main_path)
+                # Only add if it's an image file
+                if main_path.lower().endswith(image_extensions):
+                    images.insert(0, {
+                        'id': f"legacy_main_{product_id}",
+                        'storage_path': main_path,
+                        'image_analysis': None,
+                        'analyzed_at': None
+                    })
+                    existing_paths.add(main_path)
 
             # Add reference images if not in product_images
             ref_paths = product.get('reference_image_storage_paths') or []
             for ref_path in ref_paths:
                 if ref_path and ref_path not in existing_paths:
-                    images.append({
-                        'id': f"legacy_ref_{hash(ref_path)}",
-                        'storage_path': ref_path,
-                        'image_analysis': None,
-                        'analyzed_at': None
-                    })
-                    existing_paths.add(ref_path)
+                    # Only add if it's an image file (skip PDFs)
+                    if ref_path.lower().endswith(image_extensions):
+                        images.append({
+                            'id': f"legacy_ref_{hash(ref_path)}",
+                            'storage_path': ref_path,
+                            'image_analysis': None,
+                            'analyzed_at': None
+                        })
+                        existing_paths.add(ref_path)
 
         return images
     except Exception as e:
+        st.error(f"Error loading images: {e}")
         return []
 
 
@@ -507,6 +515,9 @@ else:
 
         # Fetch product images
         product_images = get_product_images(selected_product_id) if selected_product_id else []
+
+        # Debug info
+        st.caption(f"🔍 Product ID: {selected_product_id} | Found: {len(product_images)} images")
 
         if not product_images:
             st.warning("⚠️ No product images found. Upload images in the Brand Manager.")
