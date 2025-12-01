@@ -107,19 +107,37 @@ def get_product_images(product_id: str) -> list:
 
 
 def get_existing_templates():
-    """Get existing reference ad templates from storage."""
+    """Get existing reference ad templates from storage, deduplicated by original filename."""
     try:
         db = get_supabase_client()
         # List files in reference-ads bucket
         result = db.storage.from_("reference-ads").list()
-        templates = []
+
+        # Deduplicate by original filename (files are named {uuid}_{original_filename})
+        seen_originals = {}
         for item in result:
-            if item.get('name', '').lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                templates.append({
-                    'name': item['name'],
-                    'path': f"reference-ads/{item['name']}",
-                    'size': item.get('metadata', {}).get('size', 0)
-                })
+            full_name = item.get('name', '')
+            if not full_name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                continue
+
+            # Extract original filename (after UUID prefix)
+            # Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx_original.jpg
+            parts = full_name.split('_', 1)
+            if len(parts) == 2 and len(parts[0]) == 36:  # UUID is 36 chars
+                original_name = parts[1]
+            else:
+                original_name = full_name  # No UUID prefix
+
+            # Keep the first (or newest) occurrence of each original filename
+            if original_name not in seen_originals:
+                seen_originals[original_name] = {
+                    'name': original_name,  # Display friendly name
+                    'storage_name': full_name,  # Actual file in storage
+                    'path': f"reference-ads/{full_name}",
+                }
+
+        # Sort by name and return as list
+        templates = sorted(seen_originals.values(), key=lambda x: x['name'].lower())
         return templates
     except Exception as e:
         st.warning(f"Could not load existing templates: {e}")
@@ -455,6 +473,8 @@ else:
         templates = get_existing_templates()
         if templates:
             template_names = [t['name'] for t in templates]
+            # Map display name to storage name
+            name_to_storage = {t['name']: t['storage_name'] for t in templates}
 
             # Find current index
             current_idx = 0
@@ -470,12 +490,15 @@ else:
             st.session_state.selected_template = selected_template
 
             if selected_template:
+                # Get the actual storage filename
+                storage_name = name_to_storage.get(selected_template, selected_template)
+
                 # Get the template from storage
                 try:
                     db = get_supabase_client()
-                    template_data = db.storage.from_("reference-ads").download(selected_template)
+                    template_data = db.storage.from_("reference-ads").download(storage_name)
                     reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                    reference_filename = selected_template
+                    reference_filename = selected_template  # Use friendly name
 
                     # Preview
                     st.image(template_data, caption=f"Template: {selected_template}", width=300)
