@@ -49,6 +49,12 @@ if 'selected_template_storage' not in st.session_state:
     st.session_state.selected_template_storage = None
 if 'templates_visible' not in st.session_state:
     st.session_state.templates_visible = 30
+if 'export_destination' not in st.session_state:
+    st.session_state.export_destination = "none"
+if 'export_email' not in st.session_state:
+    st.session_state.export_email = ""
+if 'export_slack_webhook' not in st.session_state:
+    st.session_state.export_slack_webhook = ""
 
 
 def get_supabase_client():
@@ -198,9 +204,14 @@ async def run_workflow(
     color_mode: str = "original",
     brand_colors: dict = None,
     image_selection_mode: str = "auto",
-    selected_image_path: str = None
+    selected_image_path: str = None,
+    export_destination: str = "none",
+    export_email: str = None,
+    export_slack_webhook: str = None,
+    product_name: str = None,
+    brand_name: str = None
 ):
-    """Run the ad creation workflow.
+    """Run the ad creation workflow with optional export.
 
     Args:
         product_id: UUID of the product
@@ -212,6 +223,11 @@ async def run_workflow(
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: "auto" or "manual"
         selected_image_path: Storage path when mode is "manual"
+        export_destination: "none", "email", "slack", or "both"
+        export_email: Email address for email export
+        export_slack_webhook: Slack webhook URL (None to use default)
+        product_name: Product name for export context
+        brand_name: Brand name for export context
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -243,7 +259,115 @@ async def run_workflow(
         selected_image_path=selected_image_path
     )
 
+    # Handle exports if configured
+    if export_destination != "none" and result:
+        await handle_export(
+            result=result,
+            export_destination=export_destination,
+            export_email=export_email,
+            export_slack_webhook=export_slack_webhook,
+            product_name=product_name or "Product",
+            brand_name=brand_name or "Brand",
+            deps=deps
+        )
+
     return result
+
+
+async def handle_export(
+    result: dict,
+    export_destination: str,
+    export_email: str,
+    export_slack_webhook: str,
+    product_name: str,
+    brand_name: str,
+    deps
+):
+    """Handle exporting generated ads to email and/or Slack.
+
+    Args:
+        result: The workflow result containing generated_ads
+        export_destination: "email", "slack", or "both"
+        export_email: Email address for email export
+        export_slack_webhook: Custom Slack webhook URL (None for default)
+        product_name: Product name for context
+        brand_name: Brand name for context
+        deps: AgentDependencies for accessing services
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Collect image URLs for approved ads
+    db = get_supabase_client()
+    image_urls = []
+
+    generated_ads = result.get('generated_ads', [])
+    for ad in generated_ads:
+        storage_path = ad.get('storage_path')
+        if storage_path and ad.get('final_status') in ['approved', 'flagged']:
+            # Get public URL for the image
+            signed_url = get_signed_url(storage_path)
+            if signed_url:
+                image_urls.append(signed_url)
+
+    if not image_urls:
+        logger.warning("No approved/flagged ads to export")
+        return
+
+    # TODO: Generate ZIP download URL (future enhancement)
+    zip_download_url = None
+
+    # Send to Email if configured
+    if export_destination in ["email", "both"] and export_email:
+        try:
+            from viraltracker.services.email_service import AdEmailContent
+
+            content = AdEmailContent(
+                product_name=product_name,
+                brand_name=brand_name,
+                image_urls=image_urls,
+                zip_download_url=zip_download_url,
+                ad_run_ids=[result.get('ad_run_id')]
+            )
+
+            email_result = await deps.email.send_ad_export_email(
+                to_email=export_email,
+                content=content
+            )
+
+            if email_result.success:
+                logger.info(f"Email sent successfully to {export_email}")
+            else:
+                logger.error(f"Email failed: {email_result.error}")
+
+        except Exception as e:
+            logger.error(f"Email export failed: {str(e)}")
+
+    # Send to Slack if configured
+    if export_destination in ["slack", "both"]:
+        try:
+            from viraltracker.services.slack_service import AdSlackContent
+
+            content = AdSlackContent(
+                product_name=product_name,
+                brand_name=brand_name,
+                image_urls=image_urls,
+                zip_download_url=zip_download_url,
+                ad_run_ids=[result.get('ad_run_id')]
+            )
+
+            slack_result = await deps.slack.send_ad_export_message(
+                content=content,
+                webhook_url=export_slack_webhook if export_slack_webhook else None
+            )
+
+            if slack_result.success:
+                logger.info("Slack message sent successfully")
+            else:
+                logger.error(f"Slack failed: {slack_result.error}")
+
+        except Exception as e:
+            logger.error(f"Slack export failed: {str(e)}")
 
 
 # ============================================================================
@@ -652,6 +776,74 @@ else:
 
         st.divider()
 
+        st.subheader("7. Export Destination (Optional)")
+
+        export_destination = st.radio(
+            "Where should we send the generated ads?",
+            options=["none", "email", "slack", "both"],
+            index=["none", "email", "slack", "both"].index(st.session_state.export_destination),
+            format_func=lambda x: {
+                "none": "📁 None - View in browser only",
+                "email": "📧 Email - Send image links via email",
+                "slack": "💬 Slack - Post to Slack channel",
+                "both": "📧💬 Both - Email and Slack"
+            }.get(x, x),
+            horizontal=False,
+            help="Optionally export generated ads to email or Slack",
+            disabled=st.session_state.workflow_running
+        )
+        st.session_state.export_destination = export_destination
+
+        # Show email input if email or both selected
+        export_email = ""
+        if export_destination in ["email", "both"]:
+            export_email = st.text_input(
+                "Email address",
+                value=st.session_state.export_email,
+                placeholder="marketing@company.com",
+                help="Enter the email address to send the ads to",
+                disabled=st.session_state.workflow_running
+            )
+            st.session_state.export_email = export_email
+
+        # Show Slack webhook input if slack or both selected
+        export_slack_webhook = ""
+        if export_destination in ["slack", "both"]:
+            # Check if default webhook is configured
+            from viraltracker.core.config import Config
+            default_webhook = Config.SLACK_WEBHOOK_URL
+
+            if default_webhook:
+                use_default = st.checkbox(
+                    "Use default Slack channel",
+                    value=True,
+                    help="Use the Slack channel configured in environment",
+                    disabled=st.session_state.workflow_running
+                )
+                if not use_default:
+                    export_slack_webhook = st.text_input(
+                        "Custom Slack Webhook URL",
+                        value=st.session_state.export_slack_webhook,
+                        placeholder="https://hooks.slack.com/services/...",
+                        help="Enter a custom Slack webhook URL for a different channel",
+                        disabled=st.session_state.workflow_running
+                    )
+                    st.session_state.export_slack_webhook = export_slack_webhook
+                else:
+                    export_slack_webhook = ""  # Will use default
+            else:
+                export_slack_webhook = st.text_input(
+                    "Slack Webhook URL",
+                    value=st.session_state.export_slack_webhook,
+                    placeholder="https://hooks.slack.com/services/...",
+                    help="Enter a Slack incoming webhook URL",
+                    disabled=st.session_state.workflow_running
+                )
+                st.session_state.export_slack_webhook = export_slack_webhook
+                st.caption("💡 Set SLACK_WEBHOOK_URL in .env for a default channel")
+
+        st.divider()
+
         # Submit button - disabled while workflow is running
         is_running = st.session_state.workflow_running
         button_text = "⏳ Generating... Please wait" if is_running else "🚀 Generate Ad Variations"
@@ -664,10 +856,26 @@ else:
         )
 
         if submitted and not is_running:
+            # Validate form
+            validation_error = None
+
             if not reference_ad_base64:
-                st.error("Please upload or select a reference ad")
+                validation_error = "Please upload or select a reference ad"
             elif image_selection_mode == "manual" and not selected_image_path:
-                st.error("Please select a product image or switch to Auto-Select mode")
+                validation_error = "Please select a product image or switch to Auto-Select mode"
+            elif export_destination in ["email", "both"] and not export_email:
+                validation_error = "Please enter an email address for email export"
+            elif export_destination in ["email", "both"] and "@" not in export_email:
+                validation_error = "Please enter a valid email address"
+            elif export_destination in ["slack", "both"]:
+                # Check if we have a webhook (either default or custom)
+                from viraltracker.core.config import Config
+                has_webhook = bool(Config.SLACK_WEBHOOK_URL) or bool(export_slack_webhook)
+                if not has_webhook:
+                    validation_error = "Please enter a Slack webhook URL or configure SLACK_WEBHOOK_URL"
+
+            if validation_error:
+                st.error(validation_error)
             else:
                 st.session_state.workflow_running = True
                 st.rerun()  # Rerun to show disabled button immediately
@@ -688,6 +896,16 @@ else:
             img_mode = st.session_state.image_selection_mode
             img_path = st.session_state.selected_image_path if img_mode == "manual" else None
 
+            # Get export params from session state
+            exp_dest = st.session_state.export_destination
+            exp_email = st.session_state.export_email if exp_dest in ["email", "both"] else None
+            exp_slack = st.session_state.export_slack_webhook if exp_dest in ["slack", "both"] else None
+
+            # Get product and brand names for export
+            prod_name = selected_product.get('name', 'Product') if selected_product else 'Product'
+            brand_info = selected_product.get('brands', {}) if selected_product else {}
+            brd_name = brand_info.get('name', 'Brand') if brand_info else 'Brand'
+
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -698,7 +916,12 @@ else:
                 color_mode=color_mode,
                 brand_colors=brand_colors_data,
                 image_selection_mode=img_mode,
-                selected_image_path=img_path
+                selected_image_path=img_path,
+                export_destination=exp_dest,
+                export_email=exp_email,
+                export_slack_webhook=exp_slack,
+                product_name=prod_name,
+                brand_name=brd_name
             ))
 
             # Success - store result and show
