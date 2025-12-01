@@ -335,33 +335,125 @@ if st.session_state.workflow_result:
 
 else:
     # ============================================================================
-    # Configuration Form
+    # Configuration - Product & Image Selection (outside form for interactivity)
+    # ============================================================================
+
+    st.subheader("1. Select Product")
+
+    products = get_products()
+    if not products:
+        st.error("No products found in database")
+        st.stop()
+
+    product_options = {p['name']: p['id'] for p in products}
+
+    # Use session state to persist product selection
+    if 'selected_product_name' not in st.session_state:
+        st.session_state.selected_product_name = list(product_options.keys())[0]
+
+    selected_product_name = st.selectbox(
+        "Product",
+        options=list(product_options.keys()),
+        index=list(product_options.keys()).index(st.session_state.selected_product_name) if st.session_state.selected_product_name in product_options else 0,
+        help="Select the product to create ads for",
+        key="product_selector"
+    )
+    st.session_state.selected_product_name = selected_product_name
+    selected_product_id = product_options[selected_product_name]
+
+    # Show product details
+    selected_product = next((p for p in products if p['id'] == selected_product_id), None)
+    if selected_product:
+        st.caption(f"Target Audience: {selected_product.get('target_audience', 'Not specified')}")
+
+    st.divider()
+
+    # ============================================================================
+    # Image Selection (outside form for interactivity)
+    # ============================================================================
+
+    st.subheader("2. Product Image")
+
+    # Fetch product images
+    product_images = get_product_images(selected_product_id) if selected_product_id else []
+
+    if not product_images:
+        st.warning("⚠️ No product images found. Upload images in the Brand Manager.")
+        image_selection_mode = "auto"
+        selected_image_path = None
+    else:
+        # Check how many are analyzed
+        analyzed_count = len([img for img in product_images if img.get('analyzed_at')])
+        total_count = len(product_images)
+
+        image_selection_mode = st.radio(
+            "How should we select the product image?",
+            options=["auto", "manual"],
+            index=0 if st.session_state.image_selection_mode == "auto" else 1,
+            format_func=lambda x: {
+                "auto": f"🤖 Auto-Select - Best match for template ({analyzed_count}/{total_count} analyzed)",
+                "manual": "🖼️ Choose Image - Select a specific product image"
+            }.get(x, x),
+            horizontal=True,
+            help="Auto-select uses AI analysis to pick the best matching image",
+            disabled=st.session_state.workflow_running
+        )
+        st.session_state.image_selection_mode = image_selection_mode
+
+        if image_selection_mode == "auto":
+            if analyzed_count < total_count:
+                st.info(f"💡 Run image analysis in Brand Manager for better auto-selection.")
+            selected_image_path = None
+        else:
+            # Manual selection - show image grid
+            st.markdown("**Select a product image:**")
+
+            # Create columns for image selection
+            cols = st.columns(4)
+            for idx, img in enumerate(product_images):
+                with cols[idx % 4]:
+                    storage_path = img.get('storage_path', '')
+
+                    # Get signed URL for display
+                    img_url = get_signed_url(storage_path)
+                    if img_url:
+                        st.image(img_url, use_container_width=True)
+                    else:
+                        st.markdown("<div style='height:80px;background:#444;border-radius:4px;'></div>", unsafe_allow_html=True)
+
+                    # Show analysis info if available
+                    analysis = img.get('image_analysis')
+                    if analysis:
+                        quality = analysis.get('quality_score', 0)
+                        use_cases = analysis.get('best_use_cases', [])[:2]
+                        st.caption(f"⭐ {quality:.2f} | {', '.join(use_cases)}")
+                    else:
+                        st.caption("❓ Not analyzed")
+
+                    # Selection checkbox
+                    is_selected = st.session_state.selected_image_path == storage_path
+                    if st.checkbox(
+                        "Select" if not is_selected else "✓ Selected",
+                        value=is_selected,
+                        key=f"img_select_{img['id']}"
+                    ):
+                        st.session_state.selected_image_path = storage_path
+                    elif is_selected:
+                        st.session_state.selected_image_path = None
+
+            selected_image_path = st.session_state.selected_image_path
+
+            if not selected_image_path:
+                st.warning("⚠️ Please select an image, or switch to Auto-Select mode.")
+
+    st.divider()
+
+    # ============================================================================
+    # Configuration Form (for remaining options)
     # ============================================================================
 
     with st.form("ad_creation_form"):
-        st.subheader("1. Select Product")
-
-        products = get_products()
-        if not products:
-            st.error("No products found in database")
-            st.stop()
-
-        product_options = {p['name']: p['id'] for p in products}
-        selected_product_name = st.selectbox(
-            "Product",
-            options=list(product_options.keys()),
-            help="Select the product to create ads for"
-        )
-        selected_product_id = product_options[selected_product_name]
-
-        # Show product details
-        selected_product = next((p for p in products if p['id'] == selected_product_id), None)
-        if selected_product:
-            st.caption(f"Target Audience: {selected_product.get('target_audience', 'Not specified')}")
-
-        st.divider()
-
-        st.subheader("2. Content Source")
+        st.subheader("3. Content Source")
 
         content_source = st.radio(
             "How should we create the ad variations?",
@@ -385,7 +477,7 @@ else:
 
         st.divider()
 
-        st.subheader("3. Number of Variations")
+        st.subheader("4. Number of Variations")
 
         num_variations = st.slider(
             "How many ad variations to generate?",
@@ -402,7 +494,7 @@ else:
 
         st.divider()
 
-        st.subheader("4. Reference Ad")
+        st.subheader("5. Reference Ad")
 
         reference_source = st.radio(
             "Reference ad source",
@@ -455,7 +547,7 @@ else:
 
         st.divider()
 
-        st.subheader("5. Color Scheme")
+        st.subheader("6. Color Scheme")
 
         # Check if selected product has brand colors
         brand_colors_available = False
@@ -508,88 +600,6 @@ else:
             primary = colors.get('primary_name', colors.get('primary', ''))
             secondary = colors.get('secondary_name', colors.get('secondary', ''))
             st.info(f"💡 Using official brand colors: **{primary}** and **{secondary}**")
-
-        st.divider()
-
-        st.subheader("6. Product Image")
-
-        # Fetch product images
-        product_images = get_product_images(selected_product_id) if selected_product_id else []
-
-        # Debug info
-        st.caption(f"🔍 Product ID: {selected_product_id} | Found: {len(product_images)} images")
-
-        if not product_images:
-            st.warning("⚠️ No product images found. Upload images in the Brand Manager.")
-            image_selection_mode = "auto"
-            selected_image_path = None
-        else:
-            # Check how many are analyzed
-            analyzed_count = len([img for img in product_images if img.get('analyzed_at')])
-            total_count = len(product_images)
-
-            image_selection_mode = st.radio(
-                "How should we select the product image?",
-                options=["auto", "manual"],
-                index=0 if st.session_state.image_selection_mode == "auto" else 1,
-                format_func=lambda x: {
-                    "auto": "🤖 Auto-Select - Best match for this template style",
-                    "manual": "🖼️ Choose Image - Select a specific product image"
-                }.get(x, x),
-                horizontal=False,
-                help="Auto-select uses AI analysis to pick the best matching image",
-                disabled=st.session_state.workflow_running
-            )
-            st.session_state.image_selection_mode = image_selection_mode
-
-            if image_selection_mode == "auto":
-                if analyzed_count < total_count:
-                    st.warning(f"💡 {analyzed_count}/{total_count} images analyzed. Run analysis in Brand Manager for better auto-selection.")
-                else:
-                    st.info("💡 AI will automatically select the best product image to match your reference ad style.")
-                selected_image_path = None
-            else:
-                # Manual selection - show image grid
-                st.markdown("**Select a product image:**")
-
-                # Create columns for image selection
-                cols = st.columns(4)
-                for idx, img in enumerate(product_images):
-                    with cols[idx % 4]:
-                        storage_path = img.get('storage_path', '')
-
-                        # Get signed URL for display
-                        img_url = get_signed_url(storage_path)
-                        if img_url:
-                            st.image(img_url, use_container_width=True)
-                        else:
-                            st.markdown("<div style='height:80px;background:#444;border-radius:4px;'></div>", unsafe_allow_html=True)
-
-                        # Show analysis info if available
-                        analysis = img.get('image_analysis')
-                        if analysis:
-                            quality = analysis.get('quality_score', 0)
-                            use_cases = analysis.get('best_use_cases', [])[:2]
-                            st.caption(f"⭐ {quality:.2f} | {', '.join(use_cases)}")
-                        else:
-                            st.caption("❓ Not analyzed")
-
-                        # Selection radio (use session state to track)
-                        is_selected = st.session_state.selected_image_path == storage_path
-                        if st.checkbox(
-                            "Select" if not is_selected else "✓ Selected",
-                            value=is_selected,
-                            key=f"img_select_{img['id']}"
-                        ):
-                            st.session_state.selected_image_path = storage_path
-                        elif is_selected:
-                            # Unchecked - clear selection
-                            st.session_state.selected_image_path = None
-
-                selected_image_path = st.session_state.selected_image_path
-
-                if not selected_image_path:
-                    st.warning("⚠️ Please select an image, or switch to Auto-Select mode.")
 
         st.divider()
 
