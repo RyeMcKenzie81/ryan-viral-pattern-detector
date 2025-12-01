@@ -2983,7 +2983,7 @@ async def complete_ad_workflow(
         product_image_paths = []
         image_analyses = {}
         try:
-            db = ctx.deps.ad_creation.db
+            db = ctx.deps.ad_creation.supabase
             images_result = db.table("product_images").select(
                 "storage_path, image_analysis, is_main"
             ).eq("product_id", product_id).order("is_main", desc=True).execute()
