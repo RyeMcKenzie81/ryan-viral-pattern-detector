@@ -497,6 +497,10 @@ def render_create_schedule():
 
     col1, col2 = st.columns(2)
 
+    # Show current time for reference
+    current_time = datetime.now(PST)
+    st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
     with col1:
         schedule_type = st.radio(
             "Schedule Type",
@@ -541,11 +545,11 @@ def render_create_schedule():
                 )
 
             with time_col2:
-                run_minute = st.selectbox(
+                run_minute = st.number_input(
                     "Minute",
-                    options=[0, 15, 30, 45],
-                    index=0,  # :00
-                    format_func=lambda x: f":{x:02d}",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
                     key="recurring_minute"
                 )
 
@@ -592,11 +596,11 @@ def render_create_schedule():
                 )
 
             with time_col2:
-                onetime_minute = st.selectbox(
+                onetime_minute = st.number_input(
                     "Minute",
-                    options=[0, 15, 30, 45],
-                    index=0,  # :00
-                    format_func=lambda x: f":{x:02d}",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
                     key="onetime_minute"
                 )
 
@@ -620,26 +624,26 @@ def render_create_schedule():
         cron_expression = None
         st.caption(f"Scheduled: {run_date.strftime('%b %d, %Y')} at {onetime_hour_12}:{onetime_minute:02d} {onetime_ampm} PST")
 
-    # Run limits
-    st.markdown("**Run Limits**")
-    col1, col2 = st.columns(2)
+    # Run limits (only for recurring schedules)
+    max_runs = None
+    if schedule_type == 'recurring':
+        st.markdown("**Run Limits**")
+        col1, col2 = st.columns(2)
 
-    with col1:
-        limit_runs = st.checkbox(
-            "Limit number of runs",
-            value=existing_job.get('max_runs') is not None if existing_job else False
-        )
-
-    with col2:
-        if limit_runs:
-            max_runs = st.number_input(
-                "Maximum runs",
-                min_value=1,
-                max_value=100,
-                value=existing_job.get('max_runs', 4) if existing_job else 4
+        with col1:
+            limit_runs = st.checkbox(
+                "Limit number of runs",
+                value=existing_job.get('max_runs') is not None if existing_job else False
             )
-        else:
-            max_runs = None
+
+        with col2:
+            if limit_runs:
+                max_runs = st.number_input(
+                    "Maximum runs",
+                    min_value=1,
+                    max_value=100,
+                    value=existing_job.get('max_runs', 4) if existing_job else 4
+                )
 
     st.divider()
 
