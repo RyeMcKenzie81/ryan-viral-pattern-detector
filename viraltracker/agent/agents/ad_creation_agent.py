@@ -1127,19 +1127,7 @@ async def analyze_product_image(
         # Download image as base64
         image_data = await ctx.deps.ad_creation.get_image_as_base64(image_storage_path)
 
-        # Detect media type from file extension
-        lower_path = image_storage_path.lower()
-        if lower_path.endswith('.png'):
-            media_type = "image/png"
-        elif lower_path.endswith('.webp'):
-            media_type = "image/webp"
-        elif lower_path.endswith('.gif'):
-            media_type = "image/gif"
-        else:
-            # Default to JPEG for .jpg, .jpeg, or unknown
-            media_type = "image/jpeg"
-
-        logger.info(f"Detected media type: {media_type}")
+        logger.info(f"Image loaded, sending to Gemini for analysis...")
 
         # Build analysis prompt
         analysis_prompt = """
@@ -1188,48 +1176,26 @@ async def analyze_product_image(
         - Color accuracy and balance
         """
 
-        # Use Claude Vision for analysis
-        import anthropic
-        client = anthropic.Anthropic()
-
-        response = client.messages.create(
-            model="claude-opus-4-5-20251101",
-            max_tokens=2000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": image_data
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": analysis_prompt
-                        }
-                    ]
-                }
-            ]
+        # Use Gemini Vision for analysis (handles larger files than Claude's 5MB limit)
+        response_text = await ctx.deps.gemini.review_image(
+            image_data=image_data,
+            prompt=analysis_prompt
         )
 
-        # Parse response
-        response_text = response.content[0].text.strip()
-
-        # Clean up response if it has markdown
+        # Clean up response if it has markdown code fences
+        response_text = response_text.strip()
         if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-            response_text = response_text.strip()
+            lines = response_text.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            response_text = '\n'.join(lines)
 
         analysis = json.loads(response_text)
 
         # Add metadata
-        analysis["analysis_model"] = "claude-opus-4-5-20251101"
+        analysis["analysis_model"] = "gemini-2.0-flash"
         analysis["analysis_version"] = "v1"
 
         logger.info(f"Image analysis complete. Quality: {analysis.get('quality_score')}, "
