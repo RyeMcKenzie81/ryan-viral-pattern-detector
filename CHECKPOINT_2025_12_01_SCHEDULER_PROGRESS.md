@@ -2,7 +2,7 @@
 
 **Date:** 2025-12-01
 **Branch:** `feature/ad-scheduler`
-**Last Commit:** `3d2ddd7`
+**Last Commit:** `5beb359`
 
 ---
 
@@ -14,8 +14,8 @@
 | 2 | Export Destination in Ad Creator | ✅ Complete |
 | 3 | Database Tables | ✅ Complete |
 | 4 | Scheduler UI Page | ✅ Complete |
-| 5 | Background Worker | ⏳ Next |
-| 6 | Template Usage Tracking | Pending |
+| 5 | Background Worker | ✅ Complete |
+| 6 | Template Usage Tracking | ✅ Complete (in worker) |
 
 ---
 
@@ -66,6 +66,26 @@ Created `viraltracker/ui/pages/8_📅_Ad_Scheduler.py` with three views:
 - Action buttons: Pause/Resume, Edit, Delete
 - Run history with status, timestamps, logs
 
+### Background Worker Created
+
+Created `viraltracker/worker/scheduler_worker.py`:
+
+**Features:**
+- Polls `scheduled_jobs` table every 60 seconds for due jobs
+- Executes jobs sequentially (one template at a time)
+- Creates `scheduled_job_runs` records with full logging
+- Template selection: "unused" mode auto-selects templates not used for product
+- Records template usage in `product_template_usage` table
+- Handles email/Slack exports after each ad run
+- Calculates and updates `next_run_at` for recurring jobs
+- Marks jobs as "completed" when max_runs reached or one-time job finishes
+- Graceful shutdown on SIGTERM/SIGINT signals
+
+**Run with:**
+```bash
+python -m viraltracker.worker.scheduler_worker
+```
+
 ---
 
 ## Files Created/Modified This Session
@@ -75,6 +95,8 @@ Created `viraltracker/ui/pages/8_📅_Ad_Scheduler.py` with three views:
 - `viraltracker/services/slack_service.py` - SlackService with Webhooks
 - `sql/create_scheduler_tables.sql` - Scheduler database tables
 - `viraltracker/ui/pages/8_📅_Ad_Scheduler.py` - Scheduler UI page
+- `viraltracker/worker/__init__.py` - Worker package
+- `viraltracker/worker/scheduler_worker.py` - Background worker for scheduled jobs
 
 ### Modified Files
 - `viraltracker/core/config.py` - Added RESEND_API_KEY, EMAIL_FROM, SLACK_WEBHOOK_URL
@@ -98,9 +120,9 @@ SLACK_WEBHOOK_URL=<configured in .env>
 
 ## Next Steps
 
-1. **Build Background Worker** (`viraltracker/worker/scheduler_worker.py`) for scheduled job execution
-2. **Implement Template Usage Tracking** in ad creation workflow
-3. **Test end-to-end** scheduled job creation and execution
+1. **Deploy worker to Railway** - Add as separate process in railway.json or Procfile
+2. **Test end-to-end** - Create a schedule, wait for execution, verify results
+3. **Optional: Track template usage in Ad Creator** - So manual runs also mark templates as "used"
 
 ---
 
