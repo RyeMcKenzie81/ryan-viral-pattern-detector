@@ -3289,7 +3289,200 @@ Ad creation workflow completed for {product_dict.get('name')}.
 
 
 # ============================================================================
+# EXPORT TOOLS (17-18)
+# ============================================================================
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Export',
+        'platform': 'All',
+        'rate_limit': '10/minute',
+        'use_cases': [
+            'Send generated ads via email',
+            'Email ad export with download links',
+            'Notify team of completed ad runs'
+        ],
+        'examples': [
+            'Email the generated ads to marketing@company.com',
+            'Send ad export to user with download link'
+        ]
+    }
+)
+async def send_ads_email(
+    ctx: RunContext[AgentDependencies],
+    to_email: str,
+    product_name: str,
+    brand_name: str,
+    image_urls: List[str],
+    zip_download_url: Optional[str] = None,
+    schedule_name: Optional[str] = None
+) -> Dict:
+    """
+    Send an email with generated ad images and download links.
+
+    This tool sends an HTML email containing:
+    - Preview thumbnails of generated ads
+    - Direct links to view each ad
+    - Optional ZIP download link for bulk download
+    - Brand and product information
+
+    Args:
+        ctx: Run context with AgentDependencies
+        to_email: Recipient email address
+        product_name: Name of the product for context
+        brand_name: Name of the brand for context
+        image_urls: List of public URLs for generated ad images
+        zip_download_url: Optional URL to download all images as ZIP
+        schedule_name: Optional schedule name if from scheduled job
+
+    Returns:
+        Dictionary with send result:
+        {
+            "success": true/false,
+            "message_id": "email-id" (if success),
+            "error": "error message" (if failed)
+        }
+
+    Raises:
+        Exception: If email service is disabled or send fails
+    """
+    from ...services.email_service import AdEmailContent
+
+    try:
+        logger.info(f"Sending ad export email to {to_email}")
+
+        if not ctx.deps.email.enabled:
+            return {
+                "success": False,
+                "error": "Email service is disabled - RESEND_API_KEY not configured"
+            }
+
+        content = AdEmailContent(
+            product_name=product_name,
+            brand_name=brand_name,
+            image_urls=image_urls,
+            zip_download_url=zip_download_url,
+            schedule_name=schedule_name
+        )
+
+        result = await ctx.deps.email.send_ad_export_email(
+            to_email=to_email,
+            content=content
+        )
+
+        if result.success:
+            logger.info(f"Email sent successfully: {result.message_id}")
+            return {
+                "success": True,
+                "message_id": result.message_id
+            }
+        else:
+            logger.error(f"Email send failed: {result.error}")
+            return {
+                "success": False,
+                "error": result.error
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        raise Exception(f"Failed to send email: {str(e)}")
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Export',
+        'platform': 'All',
+        'rate_limit': '10/minute',
+        'use_cases': [
+            'Post generated ads to Slack channel',
+            'Send Slack notification of completed ads',
+            'Share ad previews with team on Slack'
+        ],
+        'examples': [
+            'Post the generated ads to Slack',
+            'Send ad notification to the marketing channel'
+        ]
+    }
+)
+async def send_ads_slack(
+    ctx: RunContext[AgentDependencies],
+    product_name: str,
+    brand_name: str,
+    image_urls: List[str],
+    zip_download_url: Optional[str] = None,
+    schedule_name: Optional[str] = None,
+    webhook_url: Optional[str] = None
+) -> Dict:
+    """
+    Send a Slack message with generated ad images and download links.
+
+    This tool posts a rich Block Kit message containing:
+    - Header with brand/product info
+    - Image previews (first 3 images)
+    - Links to view all images
+    - Download ZIP button
+    - Context about the generation
+
+    Args:
+        ctx: Run context with AgentDependencies
+        product_name: Name of the product for context
+        brand_name: Name of the brand for context
+        image_urls: List of public URLs for generated ad images
+        zip_download_url: Optional URL to download all images as ZIP
+        schedule_name: Optional schedule name if from scheduled job
+        webhook_url: Optional override webhook URL (for per-schedule channels)
+
+    Returns:
+        Dictionary with send result:
+        {
+            "success": true/false,
+            "error": "error message" (if failed)
+        }
+
+    Raises:
+        Exception: If Slack service is disabled or send fails
+    """
+    from ...services.slack_service import AdSlackContent
+
+    try:
+        logger.info(f"Sending ad export to Slack")
+
+        if not ctx.deps.slack.enabled and not webhook_url:
+            return {
+                "success": False,
+                "error": "Slack service is disabled - no webhook URL configured"
+            }
+
+        content = AdSlackContent(
+            product_name=product_name,
+            brand_name=brand_name,
+            image_urls=image_urls,
+            zip_download_url=zip_download_url,
+            schedule_name=schedule_name
+        )
+
+        result = await ctx.deps.slack.send_ad_export_message(
+            content=content,
+            webhook_url=webhook_url
+        )
+
+        if result.success:
+            logger.info("Slack message sent successfully")
+            return {"success": True}
+        else:
+            logger.error(f"Slack send failed: {result.error}")
+            return {
+                "success": False,
+                "error": result.error
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to send Slack message: {str(e)}")
+        raise Exception(f"Failed to send Slack message: {str(e)}")
+
+
+# ============================================================================
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 16 tools (includes extract_template_angle, generate_benefit_variations)")
+logger.info("Ad Creation Agent initialized with 18 tools (includes email/slack export)")

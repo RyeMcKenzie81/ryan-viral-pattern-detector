@@ -18,6 +18,8 @@ from ..services.tiktok_service import TikTokService
 from ..services.youtube_service import YouTubeService
 from ..services.facebook_service import FacebookService
 from ..services.ad_creation_service import AdCreationService
+from ..services.email_service import EmailService
+from ..services.slack_service import SlackService
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,8 @@ class AgentDependencies(BaseModel):
         youtube: YouTubeService for YouTube video scraping operations
         facebook: FacebookService for Facebook Ads scraping operations
         ad_creation: AdCreationService for Facebook ad creative generation
+        email: EmailService for sending emails via Resend
+        slack: SlackService for sending Slack messages via webhooks
         project_name: Name of the project being analyzed (e.g., 'yakety-pack-instagram')
         result_cache: Shared result cache for inter-agent communication
 
@@ -101,6 +105,8 @@ class AgentDependencies(BaseModel):
     youtube: YouTubeService
     facebook: FacebookService
     ad_creation: AdCreationService
+    email: EmailService
+    slack: SlackService
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
 
@@ -181,6 +187,14 @@ class AgentDependencies(BaseModel):
         ad_creation = AdCreationService()
         logger.info("AdCreationService initialized")
 
+        # Initialize EmailService for email notifications
+        email = EmailService()
+        logger.info(f"EmailService initialized (enabled={email.enabled})")
+
+        # Initialize SlackService for Slack notifications
+        slack = SlackService()
+        logger.info(f"SlackService initialized (enabled={slack.enabled})")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -191,6 +205,8 @@ class AgentDependencies(BaseModel):
             youtube=youtube,
             facebook=facebook,
             ad_creation=ad_creation,
+            email=email,
+            slack=slack,
             project_name=project_name
         )
 
@@ -198,7 +214,8 @@ class AgentDependencies(BaseModel):
         """String representation for debugging."""
         return (
             f"AgentDependencies(project_name='{self.project_name}', "
-            f"services=[TwitterService, GeminiService, StatsService, ScrapingService, CommentService, TikTokService, YouTubeService, FacebookService, AdCreationService], "
+            f"services=[TwitterService, GeminiService, StatsService, ScrapingService, CommentService, "
+            f"TikTokService, YouTubeService, FacebookService, AdCreationService, EmailService, SlackService], "
             f"result_cache={self.result_cache})"
         )
 

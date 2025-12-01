@@ -27,6 +27,13 @@ class Config:
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
     GEMINI_VIDEO_MODEL: str = 'models/gemini-2.5-pro'  # Gemini 2.5 Pro for video analysis
 
+    # Email (Resend)
+    RESEND_API_KEY: str = os.getenv('RESEND_API_KEY', '')
+    EMAIL_FROM: str = os.getenv('EMAIL_FROM', 'noreply@viraltracker.io')
+
+    # Slack
+    SLACK_WEBHOOK_URL: str = os.getenv('SLACK_WEBHOOK_URL', '')
+
     # Scraping defaults
     DEFAULT_DAYS_BACK: int = int(os.getenv('DAYS_BACK', '120'))
     DEFAULT_CONCURRENCY: int = int(os.getenv('CONCURRENCY', '5'))

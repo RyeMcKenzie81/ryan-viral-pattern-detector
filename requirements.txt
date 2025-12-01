@@ -87,3 +87,6 @@ slowapi==0.1.9
 # Streamlit UI Dependencies
 streamlit==1.40.0
 
+# Email & Notification Dependencies
+resend==2.19.0
+
