@@ -293,7 +293,8 @@ class AdCreationService:
         ad_analysis: Optional[Dict] = None,
         selected_hooks: Optional[List[Dict]] = None,
         selected_product_images: Optional[List[str]] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        reference_ad_storage_path: Optional[str] = None
     ) -> None:
         """
         Update ad run with stage outputs.
@@ -305,6 +306,7 @@ class AdCreationService:
             selected_hooks: Selected hooks JSON array
             selected_product_images: Storage paths to product images
             error_message: Error message if failed
+            reference_ad_storage_path: Storage path to reference ad
         """
         updates = {}
 
@@ -318,6 +320,8 @@ class AdCreationService:
             updates["selected_product_images"] = selected_product_images
         if error_message:
             updates["error_message"] = error_message
+        if reference_ad_storage_path:
+            updates["reference_ad_storage_path"] = reference_ad_storage_path
 
         if status == "complete":
             updates["completed_at"] = datetime.now().isoformat()

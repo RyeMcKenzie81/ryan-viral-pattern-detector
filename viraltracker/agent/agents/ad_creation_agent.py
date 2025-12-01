@@ -2890,10 +2890,11 @@ async def complete_ad_workflow(
             filename=reference_ad_filename
         )
 
-        # Update ad run with correct reference path
+        # Update ad run with correct reference path and status
         await ctx.deps.ad_creation.update_ad_run(
             ad_run_id=UUID(ad_run_id_str),
-            status="analyzing"
+            status="analyzing",
+            reference_ad_storage_path=reference_ad_path
         )
 
         logger.info(f"Ad run created: {ad_run_id_str}")
