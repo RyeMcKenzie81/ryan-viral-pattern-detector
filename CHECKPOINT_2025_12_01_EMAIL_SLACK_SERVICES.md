@@ -1,8 +1,8 @@
-# Checkpoint: Email & Slack Services Implementation
+# Checkpoint: Email & Slack Services + Export Destination
 
 **Date:** 2025-12-01
 **Branch:** `feature/ad-scheduler`
-**Status:** Complete - Build Order Item #1
+**Status:** Complete - Build Order Items #1 and #2
 
 ---
 
@@ -138,11 +138,45 @@ result = await service.send_ad_export_message(content=content)
 
 ---
 
+## Build Order Item #2: Export Destination in Ad Creator
+
+### Changes Made
+
+**File Modified:** `viraltracker/ui/pages/5_🎨_Ad_Creator.py`
+
+#### New Session State Variables
+```python
+export_destination = "none"  # "none", "email", "slack", "both"
+export_email = ""            # Email address for email export
+export_slack_webhook = ""    # Custom Slack webhook (optional)
+```
+
+#### New UI Section (Section 7)
+- Radio buttons: None / Email / Slack / Both
+- Conditional email input field
+- Conditional Slack webhook field (with "use default" checkbox)
+- Validation for email format and webhook requirement
+
+#### New Functions
+- `handle_export()` - Routes to email/Slack services after workflow completes
+- Updated `run_workflow()` - Now accepts export parameters
+
+#### Workflow Changes
+1. User selects export destination in form
+2. Form validation ensures required fields are filled
+3. After ad generation completes successfully:
+   - Collects signed URLs for approved/flagged ads
+   - Sends to email if configured
+   - Posts to Slack if configured
+4. Errors are logged but don't fail the workflow
+
+---
+
 ## Next Steps (Build Order)
 
 1. ~~Email & Slack Services~~ ✅
-2. **Export Destination in Ad Creator** (add to existing workflow)
-3. Database Tables (scheduled_jobs, scheduled_job_runs, product_template_usage)
+2. ~~Export Destination in Ad Creator~~ ✅
+3. **Database Tables** (scheduled_jobs, scheduled_job_runs, product_template_usage)
 4. Scheduler UI Page (`8_📅_Ad_Scheduler.py`)
 5. Background Worker (Railway worker process)
 6. Template Usage Tracking
