@@ -251,14 +251,14 @@ def cron_to_description(cron: str, schedule_type: str) -> str:
         return f"Daily at {time_str}"
 
 
-def build_cron_expression(frequency: str, day_of_week: int, hour: int) -> str:
+def build_cron_expression(frequency: str, day_of_week: int, hour: int, minute: int = 0) -> str:
     """Build cron expression from UI selections."""
     if frequency == 'daily':
-        return f"0 {hour} * * *"
+        return f"{minute} {hour} * * *"
     elif frequency == 'weekly':
-        return f"0 {hour} * * {day_of_week}"
+        return f"{minute} {hour} * * {day_of_week}"
     elif frequency == 'monthly':
-        return f"0 {hour} 1 * *"
+        return f"{minute} {hour} 1 * *"
     return None
 
 
@@ -529,15 +529,42 @@ def render_create_schedule():
                 day_of_week = 0
 
         with col3:
-            run_hour = st.selectbox(
-                "Time (PST)",
-                options=list(range(24)),
-                index=9,  # 9 AM
-                format_func=lambda x: f"{x}:00" if x >= 10 else f"0{x}:00"
-            )
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
 
-        cron_expression = build_cron_expression(frequency, day_of_week, run_hour)
-        st.caption(f"Cron: `{cron_expression}`")
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=8,  # 9
+                    key="recurring_hour"
+                )
+
+            with time_col2:
+                run_minute = st.selectbox(
+                    "Minute",
+                    options=[0, 15, 30, 45],
+                    index=0,  # :00
+                    format_func=lambda x: f":{x:02d}",
+                    key="recurring_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="recurring_ampm"
+                )
+
+            # Convert to 24-hour format
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        st.caption(f"{run_hour_12}:{run_minute:02d} {run_ampm} PST")
 
         scheduled_at = None
 
@@ -553,13 +580,45 @@ def render_create_schedule():
             )
 
         with col2:
-            run_time = st.time_input(
-                "Time (PST)",
-                value=time(9, 0)
-            )
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=8,  # 9
+                    key="onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.selectbox(
+                    "Minute",
+                    options=[0, 15, 30, 45],
+                    index=0,  # :00
+                    format_func=lambda x: f":{x:02d}",
+                    key="onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="onetime_ampm"
+                )
+
+            # Convert to 24-hour format
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
 
         scheduled_at = PST.localize(datetime.combine(run_date, run_time))
         cron_expression = None
+        st.caption(f"Scheduled: {run_date.strftime('%b %d, %Y')} at {onetime_hour_12}:{onetime_minute:02d} {onetime_ampm} PST")
 
     # Run limits
     st.markdown("**Run Limits**")
