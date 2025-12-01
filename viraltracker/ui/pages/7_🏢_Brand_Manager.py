@@ -47,69 +47,28 @@ def get_brands():
 
 
 def get_products_for_brand(brand_id: str):
-    """Fetch all products for a brand with images.
-
-    Images can come from two sources:
-    1. products.main_image_storage_path and products.reference_image_storage_paths (legacy)
-    2. product_images table (new, with analysis support)
-
-    This function merges both sources and marks file types.
-    """
+    """Fetch all products for a brand with images from product_images table."""
     try:
         db = get_supabase_client()
         result = db.table("products").select(
-            "*, main_image_storage_path, reference_image_storage_paths, product_images(id, storage_path, image_analysis, analyzed_at, notes)"
+            "*, product_images(id, storage_path, image_analysis, analyzed_at, notes, is_main)"
         ).eq("brand_id", brand_id).order("name").execute()
 
         # Supported image formats for Vision AI analysis
         image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
 
-        # Merge legacy image columns with product_images table
+        # Add file type info to images
         for product in result.data:
             images = list(product.get('product_images') or [])
-            existing_paths = {img['storage_path'] for img in images}
 
-            # Add file type info to existing images
+            # Sort: main image first, then by storage_path
+            images.sort(key=lambda x: (not x.get('is_main', False), x.get('storage_path', '')))
+
             for img in images:
                 path = img.get('storage_path', '').lower()
                 img['is_image'] = path.endswith(image_extensions)
                 img['is_pdf'] = path.endswith('.pdf')
                 img['file_type'] = 'pdf' if img['is_pdf'] else 'image' if img['is_image'] else 'other'
-
-            # Add main image if not already in product_images
-            main_path = product.get('main_image_storage_path')
-            if main_path and main_path not in existing_paths:
-                is_image = main_path.lower().endswith(image_extensions)
-                is_pdf = main_path.lower().endswith('.pdf')
-                images.insert(0, {
-                    'id': f"legacy_main_{product['id']}",
-                    'storage_path': main_path,
-                    'image_analysis': None,
-                    'analyzed_at': None,
-                    'notes': None,
-                    'is_image': is_image,
-                    'is_pdf': is_pdf,
-                    'file_type': 'pdf' if is_pdf else 'image' if is_image else 'other'
-                })
-                existing_paths.add(main_path)
-
-            # Add reference images if not already in product_images
-            ref_paths = product.get('reference_image_storage_paths') or []
-            for ref_path in ref_paths:
-                if ref_path and ref_path not in existing_paths:
-                    is_image = ref_path.lower().endswith(image_extensions)
-                    is_pdf = ref_path.lower().endswith('.pdf')
-                    images.append({
-                        'id': f"legacy_ref_{hash(ref_path)}",
-                        'storage_path': ref_path,
-                        'image_analysis': None,
-                        'analyzed_at': None,
-                        'notes': None,
-                        'is_image': is_image,
-                        'is_pdf': is_pdf,
-                        'file_type': 'pdf' if is_pdf else 'image' if is_image else 'other'
-                    })
-                    existing_paths.add(ref_path)
 
             product['product_images'] = images
 
@@ -180,71 +139,29 @@ async def analyze_image(image_path: str) -> dict:
     return await analyze_product_image(ctx=ctx, image_storage_path=image_path)
 
 
-def save_image_analysis(image_id: str, storage_path: str, product_id: str, analysis: dict):
-    """Save analysis to database.
-
-    For legacy images (from products table), creates a new row in product_images.
-    For existing product_images rows, updates in place.
-    """
+def save_image_analysis(image_id: str, analysis: dict):
+    """Save analysis to product_images table."""
     try:
         db = get_supabase_client()
-
-        # Check if this is a legacy image (fake ID)
-        if image_id.startswith("legacy_"):
-            # Insert new row into product_images
-            db.table("product_images").insert({
-                "product_id": product_id,
-                "storage_path": storage_path,
-                "image_analysis": analysis,
-                "analyzed_at": datetime.utcnow().isoformat(),
-                "analysis_model": analysis.get("analysis_model"),
-                "analysis_version": analysis.get("analysis_version"),
-                "is_main": image_id.startswith("legacy_main_")
-            }).execute()
-        else:
-            # Update existing row
-            db.table("product_images").update({
-                "image_analysis": analysis,
-                "analyzed_at": datetime.utcnow().isoformat(),
-                "analysis_model": analysis.get("analysis_model"),
-                "analysis_version": analysis.get("analysis_version")
-            }).eq("id", image_id).execute()
-
+        db.table("product_images").update({
+            "image_analysis": analysis,
+            "analyzed_at": datetime.utcnow().isoformat(),
+            "analysis_model": analysis.get("analysis_model"),
+            "analysis_version": analysis.get("analysis_version")
+        }).eq("id", image_id).execute()
         return True
     except Exception as e:
         st.error(f"Failed to save analysis: {e}")
         return False
 
 
-def save_image_notes(image_id: str, storage_path: str, product_id: str, notes: str):
+def save_image_notes(image_id: str, notes: str):
     """Save notes for an image."""
     try:
         db = get_supabase_client()
-
-        if image_id.startswith("legacy_"):
-            # Check if row exists for this storage_path
-            existing = db.table("product_images").select("id").eq(
-                "storage_path", storage_path
-            ).eq("product_id", product_id).execute()
-
-            if existing.data:
-                # Update existing row
-                db.table("product_images").update({
-                    "notes": notes
-                }).eq("id", existing.data[0]['id']).execute()
-            else:
-                # Insert new row
-                db.table("product_images").insert({
-                    "product_id": product_id,
-                    "storage_path": storage_path,
-                    "notes": notes,
-                    "is_main": image_id.startswith("legacy_main_")
-                }).execute()
-        else:
-            db.table("product_images").update({
-                "notes": notes
-            }).eq("id", image_id).execute()
-
+        db.table("product_images").update({
+            "notes": notes
+        }).eq("id", image_id).execute()
         return True
     except Exception as e:
         st.error(f"Failed to save notes: {e}")
@@ -447,7 +364,7 @@ else:
                                 for img in unanalyzed:
                                     try:
                                         analysis = asyncio.run(analyze_image(img['storage_path']))
-                                        save_image_analysis(img['id'], img['storage_path'], product_id, analysis)
+                                        save_image_analysis(img['id'], analysis)
                                     except Exception as e:
                                         st.error(f"Failed to analyze {img['storage_path']}: {e}")
                                 st.success("Analysis complete!")
@@ -494,7 +411,7 @@ else:
                                             with st.spinner("Analyzing..."):
                                                 try:
                                                     result = asyncio.run(analyze_image(img['storage_path']))
-                                                    save_image_analysis(img['id'], img['storage_path'], product_id, result)
+                                                    save_image_analysis(img['id'], result)
                                                     st.success("Done!")
                                                     st.rerun()
                                                 except Exception as e:
@@ -514,7 +431,7 @@ else:
                                     )
                                     if new_notes != current_notes:
                                         if st.button("Save", key=f"save_notes_{img['id']}", type="primary"):
-                                            save_image_notes(img['id'], img['storage_path'], product_id, new_notes)
+                                            save_image_notes(img['id'], new_notes)
                                             st.success("Saved!")
                                             st.rerun()
 

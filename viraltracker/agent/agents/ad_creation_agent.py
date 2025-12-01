@@ -3010,23 +3010,28 @@ async def complete_ad_workflow(
 
         # STAGE 7: Select product images
         logger.info(f"Stage 7: Selecting product images (mode: {image_selection_mode})...")
-        product_image_paths = [product_dict.get('main_image_storage_path')] + \
-                              product_dict.get('reference_image_storage_paths', [])
-        product_image_paths = [p for p in product_image_paths if p]  # Remove None values
 
-        # Fetch stored image analyses from database
+        # Fetch product images from product_images table
+        image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+        product_image_paths = []
         image_analyses = {}
         try:
             db = ctx.deps.ad_creation.db
             images_result = db.table("product_images").select(
-                "storage_path, image_analysis"
-            ).eq("product_id", product_id).execute()
+                "storage_path, image_analysis, is_main"
+            ).eq("product_id", product_id).order("is_main", desc=True).execute()
+
             for img in images_result.data or []:
-                if img.get('image_analysis') and img.get('storage_path'):
-                    image_analyses[img['storage_path']] = img['image_analysis']
-            logger.info(f"Loaded {len(image_analyses)} stored image analyses")
+                path = img.get('storage_path', '')
+                # Only include actual image files (skip PDFs)
+                if path.lower().endswith(image_extensions):
+                    product_image_paths.append(path)
+                    if img.get('image_analysis'):
+                        image_analyses[path] = img['image_analysis']
+
+            logger.info(f"Found {len(product_image_paths)} images, {len(image_analyses)} with analysis")
         except Exception as e:
-            logger.warning(f"Could not fetch image analyses: {e}")
+            logger.warning(f"Could not fetch product images: {e}")
 
         # Prepare manual selection if applicable
         manual_selection = None

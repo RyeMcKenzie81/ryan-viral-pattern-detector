@@ -2,9 +2,9 @@
 Agent Catalog - Comprehensive documentation for the PydanticAI agent architecture.
 
 This page documents the orchestrator pattern with:
-- 1 Orchestrator Agent with 5 routing tools
-- 5 Specialized Agents (Twitter, TikTok, YouTube, Facebook, Analysis)
-- Total: 19 underlying tools + 5 routing tools = 24 tools
+- 1 Orchestrator Agent with 6 routing tools
+- 6 Specialized Agents (Twitter, TikTok, YouTube, Facebook, Analysis, Ad Creation)
+- Total: 33 underlying tools + 6 routing tools = 39 tools
 - All agents use claude-sonnet-4-5-20250929
 """
 
@@ -78,13 +78,13 @@ st.divider()
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("Total Agents", "6", help="1 Orchestrator + 5 Specialized")
+    st.metric("Total Agents", "7", help="1 Orchestrator + 6 Specialized")
 with col2:
-    st.metric("Routing Tools", "5", help="Orchestrator routing tools")
+    st.metric("Routing Tools", "6", help="Orchestrator routing tools")
 with col3:
-    st.metric("Platform Tools", "19", help="Specialized agent tools")
+    st.metric("Platform Tools", "33", help="Specialized agent tools")
 with col4:
-    st.metric("Total Tools", "24", help="Routing + Platform tools")
+    st.metric("Total Tools", "39", help="Routing + Platform tools")
 
 st.divider()
 
@@ -101,7 +101,8 @@ tabs = st.tabs([
     "TikTok Agent",
     "YouTube Agent",
     "Facebook Agent",
-    "Analysis Agent"
+    "Analysis Agent",
+    "Ad Creation Agent"
 ])
 
 # Orchestrator Agent
@@ -363,6 +364,59 @@ with tabs[5]:
             st.markdown(f"**Description:** {description}")
             st.markdown(f"**Platform:** Cross-platform")
 
+# Ad Creation Agent
+with tabs[6]:
+    st.markdown("### Ad Creation Agent")
+    st.markdown("**Role:** Facebook ad creative generation specialist")
+    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
+    st.markdown("**Module:** `viraltracker.agent.agents.ad_creation_agent`")
+
+    st.divider()
+
+    st.markdown("""
+    Handles end-to-end Facebook ad creative generation with AI-powered dual review system.
+
+    **Capabilities:**
+    - Generate 5 ad variations from reference ad
+    - AI vision analysis of reference ads (Claude)
+    - Smart hook and product image selection
+    - Dual AI review (Claude + Gemini)
+    - Automated quality control workflow
+    - Complete tracking and storage
+
+    **Services Used:**
+    - `SupabaseService` - Product/hooks retrieval & storage
+    - `ClaudeService` - Vision analysis & quality review
+    - `GeminiService` - Image generation & secondary review
+    - `StorageService` - Image upload/download
+    """)
+
+    st.divider()
+
+    st.markdown("#### Tools (14)")
+
+    ad_creation_tools = [
+        ("get_product_with_images", "Fetch product details and images from Supabase"),
+        ("get_hooks_for_product", "Retrieve viral hooks based on product category"),
+        ("get_ad_brief_template", "Get structured ad brief template"),
+        ("upload_reference_ad", "Upload reference ad to Supabase Storage"),
+        ("analyze_reference_ad", "Claude vision analysis of reference ad"),
+        ("select_hooks", "Smart hook selection for ad variations"),
+        ("select_product_images", "Choose best product images for ads"),
+        ("generate_nano_banana_prompt", "Create Gemini image generation prompt"),
+        ("execute_nano_banana", "Generate ad image using Gemini AI"),
+        ("save_generated_ad", "Save generated ad to database with metadata"),
+        ("review_ad_claude", "Claude AI quality review of generated ad"),
+        ("review_ad_gemini", "Gemini AI quality review of generated ad"),
+        ("create_ad_run", "Create workflow run tracker in database"),
+        ("complete_ad_workflow", "Master orchestrator for 5-ad workflow")
+    ]
+
+    for tool_name, description in ad_creation_tools:
+        with st.expander(f"🔧 `{tool_name}`", expanded=False):
+            st.markdown(f"**Description:** {description}")
+            st.markdown(f"**Platform:** Facebook Ads")
+
 # ============================================================================
 # Workflow Examples
 # ============================================================================
@@ -440,11 +494,11 @@ with col2:
 st.markdown("---")
 st.caption("""
 **Architecture Benefits:**
-- Clear separation of concerns (1 orchestrator, 5 specialists)
+- Clear separation of concerns (1 orchestrator, 6 specialists)
 - Automatic intelligent routing based on intent
 - Scalable pattern - easy to add new agents
 - Consistent model across all agents (Claude Sonnet 4.5)
 - Inter-agent communication via ResultCache
 
-**Total Capability:** 24 tools across 6 agents covering Twitter, TikTok, YouTube, Facebook, and cross-platform analysis.
+**Total Capability:** 39 tools across 7 agents covering Twitter, TikTok, YouTube, Facebook, cross-platform analysis, and AI-powered ad creation.
 """)
