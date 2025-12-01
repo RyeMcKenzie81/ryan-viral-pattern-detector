@@ -45,6 +45,10 @@ if 'reference_source' not in st.session_state:
     st.session_state.reference_source = "Upload New"
 if 'selected_template' not in st.session_state:
     st.session_state.selected_template = None
+if 'selected_template_storage' not in st.session_state:
+    st.session_state.selected_template_storage = None
+if 'templates_visible' not in st.session_state:
+    st.session_state.templates_visible = 30
 
 
 def get_supabase_client():
@@ -472,36 +476,73 @@ else:
     else:
         templates = get_existing_templates()
         if templates:
-            template_names = [t['name'] for t in templates]
-            # Map display name to storage name
-            name_to_storage = {t['name']: t['storage_name'] for t in templates}
+            total_templates = len(templates)
+            visible_count = min(st.session_state.templates_visible, total_templates)
+            visible_templates = templates[:visible_count]
 
-            # Find current index
-            current_idx = 0
-            if st.session_state.selected_template in template_names:
-                current_idx = template_names.index(st.session_state.selected_template)
+            st.caption(f"Showing {visible_count} of {total_templates} templates")
 
-            selected_template = st.selectbox(
-                "Select existing template",
-                options=template_names,
-                index=current_idx,
-                key="template_selectbox"
-            )
-            st.session_state.selected_template = selected_template
+            # Thumbnail grid - 5 columns
+            cols = st.columns(5)
+            for idx, template in enumerate(visible_templates):
+                with cols[idx % 5]:
+                    storage_name = template['storage_name']
+                    display_name = template['name']
+                    is_selected = st.session_state.selected_template_storage == storage_name
 
-            if selected_template:
-                # Get the actual storage filename
-                storage_name = name_to_storage.get(selected_template, selected_template)
+                    # Get signed URL for thumbnail
+                    thumb_url = get_signed_url(f"reference-ads/{storage_name}")
 
-                # Get the template from storage
+                    # Show thumbnail with selection border
+                    if thumb_url:
+                        border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
+                        st.markdown(
+                            f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{display_name}"/>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f'<div style="height:80px;background:#333;border-radius:4px;'
+                            f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
+                            f'{display_name[:10]}...</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    # Select button
+                    if st.button(
+                        "✓ Selected" if is_selected else "Select",
+                        key=f"tpl_{idx}",
+                        type="primary" if is_selected else "secondary",
+                        use_container_width=True
+                    ):
+                        st.session_state.selected_template = display_name
+                        st.session_state.selected_template_storage = storage_name
+                        st.rerun()
+
+            # Load more button
+            if visible_count < total_templates:
+                remaining = total_templates - visible_count
+                if st.button(f"Load More ({remaining} more)", use_container_width=True):
+                    st.session_state.templates_visible += 30
+                    st.rerun()
+
+            # Show selected template preview
+            if st.session_state.selected_template_storage:
+                st.markdown("---")
+                st.markdown(f"**Selected:** {st.session_state.selected_template}")
+
                 try:
                     db = get_supabase_client()
-                    template_data = db.storage.from_("reference-ads").download(storage_name)
+                    template_data = db.storage.from_("reference-ads").download(
+                        st.session_state.selected_template_storage
+                    )
                     reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                    reference_filename = selected_template  # Use friendly name
+                    reference_filename = st.session_state.selected_template
 
-                    # Preview
-                    st.image(template_data, caption=f"Template: {selected_template}", width=300)
+                    # Larger preview
+                    st.image(template_data, caption="Selected Template", width=300)
                 except Exception as e:
                     st.error(f"Failed to load template: {e}")
         else:
