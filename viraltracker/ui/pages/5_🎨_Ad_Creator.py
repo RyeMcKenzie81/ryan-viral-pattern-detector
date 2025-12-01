@@ -41,6 +41,10 @@ if 'image_selection_mode' not in st.session_state:
     st.session_state.image_selection_mode = "auto"
 if 'selected_image_path' not in st.session_state:
     st.session_state.selected_image_path = None
+if 'reference_source' not in st.session_state:
+    st.session_state.reference_source = "Upload New"
+if 'selected_template' not in st.session_state:
+    st.session_state.selected_template = None
 
 
 def get_supabase_client():
@@ -414,11 +418,80 @@ else:
     st.divider()
 
     # ============================================================================
+    # Section 3: Reference Ad (outside form for interactivity)
+    # ============================================================================
+
+    st.subheader("3. Reference Ad")
+
+    reference_source = st.radio(
+        "Reference ad source",
+        options=["Upload New", "Use Existing Template"],
+        index=0 if st.session_state.reference_source == "Upload New" else 1,
+        horizontal=True,
+        key="reference_source_radio"
+    )
+    st.session_state.reference_source = reference_source
+
+    reference_ad_base64 = None
+    reference_filename = None
+
+    if reference_source == "Upload New":
+        uploaded_file = st.file_uploader(
+            "Upload reference ad image",
+            type=['jpg', 'jpeg', 'png', 'webp'],
+            help="Upload a high-performing ad to use as a style reference"
+        )
+
+        if uploaded_file:
+            # Preview
+            st.image(uploaded_file, caption="Reference Ad Preview", width=300)
+
+            # Encode to base64
+            reference_ad_base64 = base64.b64encode(uploaded_file.read()).decode('utf-8')
+            reference_filename = uploaded_file.name
+            uploaded_file.seek(0)  # Reset for potential re-read
+
+    else:
+        templates = get_existing_templates()
+        if templates:
+            template_names = [t['name'] for t in templates]
+
+            # Find current index
+            current_idx = 0
+            if st.session_state.selected_template in template_names:
+                current_idx = template_names.index(st.session_state.selected_template)
+
+            selected_template = st.selectbox(
+                "Select existing template",
+                options=template_names,
+                index=current_idx,
+                key="template_selectbox"
+            )
+            st.session_state.selected_template = selected_template
+
+            if selected_template:
+                # Get the template from storage
+                try:
+                    db = get_supabase_client()
+                    template_data = db.storage.from_("reference-ads").download(selected_template)
+                    reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
+                    reference_filename = selected_template
+
+                    # Preview
+                    st.image(template_data, caption=f"Template: {selected_template}", width=300)
+                except Exception as e:
+                    st.error(f"Failed to load template: {e}")
+        else:
+            st.warning("No existing templates found. Please upload a new reference ad.")
+
+    st.divider()
+
+    # ============================================================================
     # Configuration Form (for remaining options)
     # ============================================================================
 
     with st.form("ad_creation_form"):
-        st.subheader("3. Content Source")
+        st.subheader("4. Content Source")
 
         content_source = st.radio(
             "How should we create the ad variations?",
@@ -442,7 +515,7 @@ else:
 
         st.divider()
 
-        st.subheader("4. Number of Variations")
+        st.subheader("5. Number of Variations")
 
         num_variations = st.slider(
             "How many ad variations to generate?",
@@ -456,59 +529,6 @@ else:
 
         variation_source = "hooks" if content_source == "hooks" else "benefits/USPs"
         st.caption(f"Will generate {num_variations} ads using different {variation_source}")
-
-        st.divider()
-
-        st.subheader("5. Reference Ad")
-
-        reference_source = st.radio(
-            "Reference ad source",
-            options=["Upload New", "Use Existing Template"],
-            horizontal=True
-        )
-
-        reference_ad_base64 = None
-        reference_filename = None
-
-        if reference_source == "Upload New":
-            uploaded_file = st.file_uploader(
-                "Upload reference ad image",
-                type=['jpg', 'jpeg', 'png', 'webp'],
-                help="Upload a high-performing ad to use as a style reference"
-            )
-
-            if uploaded_file:
-                # Preview
-                st.image(uploaded_file, caption="Reference Ad Preview", width=300)
-
-                # Encode to base64
-                reference_ad_base64 = base64.b64encode(uploaded_file.read()).decode('utf-8')
-                reference_filename = uploaded_file.name
-                uploaded_file.seek(0)  # Reset for potential re-read
-
-        else:
-            templates = get_existing_templates()
-            if templates:
-                template_names = [t['name'] for t in templates]
-                selected_template = st.selectbox(
-                    "Select existing template",
-                    options=template_names
-                )
-
-                if selected_template:
-                    # Get the template from storage
-                    try:
-                        db = get_supabase_client()
-                        template_data = db.storage.from_("reference-ads").download(selected_template)
-                        reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                        reference_filename = selected_template
-
-                        # Preview
-                        st.image(template_data, caption=f"Template: {selected_template}", width=300)
-                    except Exception as e:
-                        st.error(f"Failed to load template: {e}")
-            else:
-                st.warning("No existing templates found. Please upload a new reference ad.")
 
         st.divider()
 
