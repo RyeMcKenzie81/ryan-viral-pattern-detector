@@ -111,18 +111,32 @@ def update_job(job_id: str, updates: Dict):
 
 
 def get_unused_templates(product_id: str, count: int) -> List[str]:
-    """Get templates not yet used for this product."""
+    """Get templates not yet used for this product, deduplicated by original filename."""
     try:
         db = get_supabase_client()
 
-        # Get all templates
+        # Get all templates from storage
         all_templates = db.storage.from_("reference-ads").list()
-        all_storage_names = set()
 
+        # Deduplicate by original filename (files are named {uuid}_{original_filename})
+        seen_originals = {}
         for item in all_templates:
-            name = item.get('name', '')
-            if name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                all_storage_names.add(name)
+            full_name = item.get('name', '')
+            if not full_name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                continue
+
+            # Extract original filename (after UUID prefix)
+            parts = full_name.split('_', 1)
+            if len(parts) == 2 and len(parts[0]) == 36:  # UUID is 36 chars
+                original_name = parts[1]
+            else:
+                original_name = full_name
+
+            # Keep first occurrence of each original filename
+            if original_name not in seen_originals:
+                seen_originals[original_name] = full_name
+
+        all_storage_names = set(seen_originals.values())
 
         # Get used templates for this product
         used_result = db.table("product_template_usage").select(
@@ -131,8 +145,26 @@ def get_unused_templates(product_id: str, count: int) -> List[str]:
 
         used_names = set(r['template_storage_name'] for r in (used_result.data or []))
 
-        # Return unused templates
-        unused = list(all_storage_names - used_names)
+        # Also check original filenames of used templates (in case different UUID copies were used)
+        used_originals = set()
+        for used_name in used_names:
+            parts = used_name.split('_', 1)
+            if len(parts) == 2 and len(parts[0]) == 36:
+                used_originals.add(parts[1])
+            else:
+                used_originals.add(used_name)
+
+        # Filter out templates where original filename was already used
+        unused = []
+        for storage_name in all_storage_names:
+            parts = storage_name.split('_', 1)
+            if len(parts) == 2 and len(parts[0]) == 36:
+                original = parts[1]
+            else:
+                original = storage_name
+
+            if original not in used_originals and storage_name not in used_names:
+                unused.append(storage_name)
 
         # Return up to 'count' templates
         return unused[:count]
@@ -229,6 +261,10 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
     params = job.get('parameters', {})
 
     logger.info(f"Starting job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent job being picked up again
+    # This prevents race conditions if the job takes longer than the poll interval
+    update_job(job_id, {"next_run_at": None})
 
     # Create job run record
     run_id = create_job_run(job_id)
