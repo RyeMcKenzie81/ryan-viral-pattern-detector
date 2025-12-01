@@ -675,11 +675,86 @@ else:
     st.divider()
 
     # ============================================================================
+    # Section 4: Export Destination (outside form for conditional fields)
+    # ============================================================================
+
+    st.subheader("4. Export Destination (Optional)")
+
+    export_destination = st.radio(
+        "Where should we send the generated ads?",
+        options=["none", "email", "slack", "both"],
+        index=["none", "email", "slack", "both"].index(st.session_state.export_destination),
+        format_func=lambda x: {
+            "none": "📁 None - View in browser only",
+            "email": "📧 Email - Send image links via email",
+            "slack": "💬 Slack - Post to Slack channel",
+            "both": "📧💬 Both - Email and Slack"
+        }.get(x, x),
+        horizontal=False,
+        help="Optionally export generated ads to email or Slack",
+        disabled=st.session_state.workflow_running,
+        key="export_destination_radio"
+    )
+    st.session_state.export_destination = export_destination
+
+    # Show email input if email or both selected
+    if export_destination in ["email", "both"]:
+        export_email = st.text_input(
+            "Email address",
+            value=st.session_state.export_email,
+            placeholder="marketing@company.com",
+            help="Enter the email address to send the ads to",
+            disabled=st.session_state.workflow_running,
+            key="export_email_input"
+        )
+        st.session_state.export_email = export_email
+
+    # Show Slack webhook input if slack or both selected
+    if export_destination in ["slack", "both"]:
+        # Check if default webhook is configured
+        from viraltracker.core.config import Config
+        default_webhook = Config.SLACK_WEBHOOK_URL
+
+        if default_webhook:
+            use_default = st.checkbox(
+                "Use default Slack channel",
+                value=True,
+                help="Use the Slack channel configured in environment",
+                disabled=st.session_state.workflow_running,
+                key="use_default_slack"
+            )
+            if not use_default:
+                export_slack_webhook = st.text_input(
+                    "Custom Slack Webhook URL",
+                    value=st.session_state.export_slack_webhook,
+                    placeholder="https://hooks.slack.com/services/...",
+                    help="Enter a custom Slack webhook URL for a different channel",
+                    disabled=st.session_state.workflow_running,
+                    key="slack_webhook_input"
+                )
+                st.session_state.export_slack_webhook = export_slack_webhook
+            else:
+                st.session_state.export_slack_webhook = ""  # Will use default
+        else:
+            export_slack_webhook = st.text_input(
+                "Slack Webhook URL",
+                value=st.session_state.export_slack_webhook,
+                placeholder="https://hooks.slack.com/services/...",
+                help="Enter a Slack incoming webhook URL",
+                disabled=st.session_state.workflow_running,
+                key="slack_webhook_input"
+            )
+            st.session_state.export_slack_webhook = export_slack_webhook
+            st.caption("💡 Set SLACK_WEBHOOK_URL in .env for a default channel")
+
+    st.divider()
+
+    # ============================================================================
     # Configuration Form (for remaining options)
     # ============================================================================
 
     with st.form("ad_creation_form"):
-        st.subheader("4. Content Source")
+        st.subheader("5. Content Source")
 
         content_source = st.radio(
             "How should we create the ad variations?",
@@ -703,7 +778,7 @@ else:
 
         st.divider()
 
-        st.subheader("5. Number of Variations")
+        st.subheader("6. Number of Variations")
 
         num_variations = st.slider(
             "How many ad variations to generate?",
@@ -720,7 +795,7 @@ else:
 
         st.divider()
 
-        st.subheader("6. Color Scheme")
+        st.subheader("7. Color Scheme")
 
         # Check if selected product has brand colors
         brand_colors_available = False
@@ -773,74 +848,6 @@ else:
             primary = colors.get('primary_name', colors.get('primary', ''))
             secondary = colors.get('secondary_name', colors.get('secondary', ''))
             st.info(f"💡 Using official brand colors: **{primary}** and **{secondary}**")
-
-        st.divider()
-
-        st.subheader("7. Export Destination (Optional)")
-
-        export_destination = st.radio(
-            "Where should we send the generated ads?",
-            options=["none", "email", "slack", "both"],
-            index=["none", "email", "slack", "both"].index(st.session_state.export_destination),
-            format_func=lambda x: {
-                "none": "📁 None - View in browser only",
-                "email": "📧 Email - Send image links via email",
-                "slack": "💬 Slack - Post to Slack channel",
-                "both": "📧💬 Both - Email and Slack"
-            }.get(x, x),
-            horizontal=False,
-            help="Optionally export generated ads to email or Slack",
-            disabled=st.session_state.workflow_running
-        )
-        st.session_state.export_destination = export_destination
-
-        # Show email input if email or both selected
-        export_email = ""
-        if export_destination in ["email", "both"]:
-            export_email = st.text_input(
-                "Email address",
-                value=st.session_state.export_email,
-                placeholder="marketing@company.com",
-                help="Enter the email address to send the ads to",
-                disabled=st.session_state.workflow_running
-            )
-            st.session_state.export_email = export_email
-
-        # Show Slack webhook input if slack or both selected
-        export_slack_webhook = ""
-        if export_destination in ["slack", "both"]:
-            # Check if default webhook is configured
-            from viraltracker.core.config import Config
-            default_webhook = Config.SLACK_WEBHOOK_URL
-
-            if default_webhook:
-                use_default = st.checkbox(
-                    "Use default Slack channel",
-                    value=True,
-                    help="Use the Slack channel configured in environment",
-                    disabled=st.session_state.workflow_running
-                )
-                if not use_default:
-                    export_slack_webhook = st.text_input(
-                        "Custom Slack Webhook URL",
-                        value=st.session_state.export_slack_webhook,
-                        placeholder="https://hooks.slack.com/services/...",
-                        help="Enter a custom Slack webhook URL for a different channel",
-                        disabled=st.session_state.workflow_running
-                    )
-                    st.session_state.export_slack_webhook = export_slack_webhook
-                else:
-                    export_slack_webhook = ""  # Will use default
-            else:
-                export_slack_webhook = st.text_input(
-                    "Slack Webhook URL",
-                    value=st.session_state.export_slack_webhook,
-                    placeholder="https://hooks.slack.com/services/...",
-                    help="Enter a Slack incoming webhook URL",
-                    disabled=st.session_state.workflow_running
-                )
-                st.session_state.export_slack_webhook = export_slack_webhook
-                st.caption("💡 Set SLACK_WEBHOOK_URL in .env for a default channel")
 
         st.divider()
 

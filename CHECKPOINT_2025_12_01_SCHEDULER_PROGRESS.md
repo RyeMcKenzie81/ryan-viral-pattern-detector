@@ -11,23 +11,60 @@
 | # | Item | Status |
 |---|------|--------|
 | 1 | Email & Slack Services | ✅ Complete |
-| 2 | Export Destination in Ad Creator | ✅ Complete (has bug) |
-| 3 | Database Tables | ⏳ Next |
-| 4 | Scheduler UI Page | Pending |
-| 5 | Background Worker | Pending |
+| 2 | Export Destination in Ad Creator | ✅ Complete |
+| 3 | Database Tables | ✅ Complete |
+| 4 | Scheduler UI Page | ✅ Complete |
+| 5 | Background Worker | ⏳ Next |
 | 6 | Template Usage Tracking | Pending |
 
 ---
 
-## Known Bug to Fix
+## Completed This Session
 
-**Issue:** In Ad Creator (`viraltracker/ui/pages/5_🎨_Ad_Creator.py`), the email/Slack input fields don't appear when selecting export destination until form submission fails.
+### Bug Fix: Export Destination Fields Not Showing
 
-**Root Cause:** The export destination radio buttons and conditional input fields are inside `st.form()`. Streamlit forms don't rerun on widget changes - they only submit all values at once. So the conditional `if export_destination in ["email", "both"]` check doesn't trigger a rerun to show the email field.
+**Issue:** Email/Slack input fields didn't appear when selecting export destination until form submission failed.
 
-**Fix Required:** Move the export destination section OUTSIDE the form (like we did for product/image selection), or use session state to persist values and show fields based on session state.
+**Solution:** Moved export destination section (Section 4) OUTSIDE the `st.form()`, using session state for persistence. The section now shows conditional fields (email input, Slack webhook) immediately when the user selects email/Slack export.
 
-**Location:** Lines ~661-725 in `viraltracker/ui/pages/5_🎨_Ad_Creator.py`
+**Changes Made:**
+- Moved export destination radio + conditional inputs to lines 677-749 (outside form)
+- Added unique widget keys to prevent conflicts
+- Updated section numbering (Content Source is now 5, Variations is 6, Color Scheme is 7)
+- Removed duplicate export section that was inside the form
+
+### Database Tables Created
+
+Created `sql/create_scheduler_tables.sql` with:
+- `scheduled_jobs` - Job configuration and scheduling
+- `scheduled_job_runs` - Execution history and logs
+- `product_template_usage` - Track which templates used per product
+- Indexes for efficient querying
+- Helper views (`v_active_scheduled_jobs`, `v_recent_job_runs`)
+- `updated_at` trigger for scheduled_jobs
+
+### Scheduler UI Page Created
+
+Created `viraltracker/ui/pages/8_📅_Ad_Scheduler.py` with three views:
+
+**1. Schedule List View:**
+- Filterable by brand, product, status
+- Shows job cards with schedule info, run counts, next run time
+- Quick actions to view details
+
+**2. Create/Edit Schedule View:**
+- Product selection
+- Job name
+- Schedule configuration (recurring: daily/weekly/monthly or one-time)
+- Run limits (optional max runs)
+- Template mode: "unused" (auto-select) or "specific" (manual selection)
+- Ad creation parameters (variations, content source, color mode, image mode)
+- Export destination (none/email/slack/both)
+
+**3. Schedule Detail View:**
+- Full job configuration display
+- Action buttons: Pause/Resume, Edit, Delete
+- Run history with status, timestamps, logs
 
 ---
 
@@ -36,12 +73,14 @@
 ### New Files
 - `viraltracker/services/email_service.py` - EmailService with Resend
 - `viraltracker/services/slack_service.py` - SlackService with Webhooks
+- `sql/create_scheduler_tables.sql` - Scheduler database tables
+- `viraltracker/ui/pages/8_📅_Ad_Scheduler.py` - Scheduler UI page
 
 ### Modified Files
 - `viraltracker/core/config.py` - Added RESEND_API_KEY, EMAIL_FROM, SLACK_WEBHOOK_URL
 - `viraltracker/agent/dependencies.py` - Added email, slack services
 - `viraltracker/agent/agents/ad_creation_agent.py` - Added send_ads_email, send_ads_slack tools
-- `viraltracker/ui/pages/5_🎨_Ad_Creator.py` - Added export destination UI (needs fix)
+- `viraltracker/ui/pages/5_🎨_Ad_Creator.py` - Export destination UI (fixed conditional fields bug)
 - `.env.example` - Added email/Slack config
 - `requirements.txt` - Added resend==2.19.0
 
@@ -59,9 +98,9 @@ SLACK_WEBHOOK_URL=<configured in .env>
 
 ## Next Steps
 
-1. **Fix the export field visibility bug** in Ad Creator
-2. **Create database tables** (scheduled_jobs, scheduled_job_runs, product_template_usage)
-3. Continue with Scheduler UI, Background Worker, Template Usage Tracking
+1. **Build Background Worker** (`viraltracker/worker/scheduler_worker.py`) for scheduled job execution
+2. **Implement Template Usage Tracking** in ad creation workflow
+3. **Test end-to-end** scheduled job creation and execution
 
 ---
 
