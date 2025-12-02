@@ -34,6 +34,9 @@ class Config:
     # Slack
     SLACK_WEBHOOK_URL: str = os.getenv('SLACK_WEBHOOK_URL', '')
 
+    # ElevenLabs (Audio Production)
+    ELEVENLABS_API_KEY: str = os.getenv('ELEVENLABS_API_KEY', '')
+
     # Scraping defaults
     DEFAULT_DAYS_BACK: int = int(os.getenv('DAYS_BACK', '120'))
     DEFAULT_CONCURRENCY: int = int(os.getenv('CONCURRENCY', '5'))
