@@ -261,29 +261,32 @@ def render_browse_view():
             col1, col2 = st.columns([4, 1])
 
             with col1:
-                # Tags
-                tags_html = "".join([f'<span class="tag-chip">{tag}</span>' for tag in doc.tags])
-
-                # Tools
-                tools_html = "".join([f'<span class="tool-chip">{tool}</span>' for tool in doc.tool_usage])
-
                 # Format date
                 date_str = doc.updated_at.strftime("%b %d, %Y")
 
                 # Get chunk count
                 chunk_count = doc_service.get_chunk_count(doc.id)
 
-                st.markdown(f"""
-                <div class="doc-card">
-                    <div class="doc-title">{doc.title}</div>
-                    <div class="doc-meta">
-                        {chunk_count} chunks | Updated: {date_str}
-                        {f' | Source: {doc.source}' if doc.source else ''}
-                    </div>
-                    <div>{tags_html}</div>
-                    <div style="margin-top: 4px">{tools_html}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                # Build tags HTML
+                tags_parts = [f'<span class="tag-chip">{tag}</span>' for tag in doc.tags]
+                tags_html = "".join(tags_parts)
+
+                # Build tools HTML
+                tools_parts = [f'<span class="tool-chip">{tool}</span>' for tool in doc.tool_usage]
+                tools_html = "".join(tools_parts)
+
+                # Source text
+                source_text = f" | Source: {doc.source}" if doc.source else ""
+
+                # Build complete card HTML
+                card_html = f'''<div class="doc-card">
+<div class="doc-title">{doc.title}</div>
+<div class="doc-meta">{chunk_count} chunks | Updated: {date_str}{source_text}</div>
+<div>{tags_html}</div>
+<div style="margin-top: 4px">{tools_html}</div>
+</div>'''
+
+                st.markdown(card_html, unsafe_allow_html=True)
 
             with col2:
                 st.write("")  # Spacing
