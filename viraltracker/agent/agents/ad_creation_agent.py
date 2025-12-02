@@ -617,7 +617,7 @@ async def select_hooks(
     """
     Select diverse hooks using AI to maximize persuasive variety.
 
-    This tool uses Gemini AI to select hooks that:
+    This tool uses Claude Opus 4.5 to select hooks that:
     - Cover different persuasive categories (avoid repetition)
     - Have high impact scores
     - Match the reference ad style and tone
@@ -627,7 +627,7 @@ async def select_hooks(
     The AI adapts each hook's text to match the reference ad's style and ensures
     the adapted text makes sense and mentions the product category.
 
-    NOTE: Hooks are shuffled before sending to Gemini to ensure variety across
+    NOTE: Hooks are shuffled before sending to Claude to ensure variety across
     multiple runs. This prevents the same hooks from being selected repeatedly.
 
     Args:
@@ -727,13 +727,27 @@ async def select_hooks(
         max_retries = 3
         last_error = None
 
+        # Use Claude Opus for better hook selection and adaptation quality
+        from anthropic import Anthropic
+        import asyncio
+
+        anthropic_client = Anthropic()
+
         for attempt in range(max_retries):
             try:
-                # Call Gemini AI
-                selection_result = await ctx.deps.gemini.analyze_text(
-                    text=selection_prompt,
-                    prompt="Select diverse hooks with reasoning and adaptations. IMPORTANT: Return ONLY valid JSON array, no markdown fences."
+                # Call Claude Opus 4.5 for hook selection
+                message = anthropic_client.messages.create(
+                    model="claude-opus-4-5-20251101",
+                    max_tokens=4096,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": f"{selection_prompt}\n\nReturn ONLY valid JSON array, no markdown fences, no other text."
+                        }
+                    ]
                 )
+
+                selection_result = message.content[0].text
 
                 # Strip markdown code fences if present (Bug #10 fix)
                 result_text = selection_result.strip()
@@ -751,7 +765,7 @@ async def select_hooks(
                 selected_hooks = json.loads(result_text)
 
                 logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
-                           f"{[h.get('category') for h in selected_hooks]}")
+                           f"{[h.get('category') for h in selected_hooks]} (model: claude-opus-4-5)")
 
                 return selected_hooks
 
