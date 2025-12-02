@@ -43,8 +43,8 @@ if 'color_mode' not in st.session_state:
     st.session_state.color_mode = "original"
 if 'image_selection_mode' not in st.session_state:
     st.session_state.image_selection_mode = "auto"
-if 'selected_image_path' not in st.session_state:
-    st.session_state.selected_image_path = None
+if 'selected_image_paths' not in st.session_state:
+    st.session_state.selected_image_paths = []  # List of up to 2 image paths
 if 'reference_source' not in st.session_state:
     st.session_state.reference_source = "Upload New"
 if 'selected_template' not in st.session_state:
@@ -208,7 +208,7 @@ async def run_workflow(
     color_mode: str = "original",
     brand_colors: dict = None,
     image_selection_mode: str = "auto",
-    selected_image_path: str = None,
+    selected_image_paths: list = None,
     export_destination: str = "none",
     export_email: str = None,
     export_slack_webhook: str = None,
@@ -226,7 +226,7 @@ async def run_workflow(
         color_mode: "original", "complementary", or "brand"
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: "auto" or "manual"
-        selected_image_path: Storage path when mode is "manual"
+        selected_image_paths: List of storage paths when mode is "manual" (1-2 images)
         export_destination: "none", "email", "slack", or "both"
         export_email: Email address for email export
         export_slack_webhook: Slack webhook URL (None to use default)
@@ -260,7 +260,7 @@ async def run_workflow(
         color_mode=color_mode,
         brand_colors=brand_colors,
         image_selection_mode=image_selection_mode,
-        selected_image_path=selected_image_path
+        selected_image_paths=selected_image_paths
     )
 
     # Handle exports if configured
@@ -499,22 +499,22 @@ else:
     if not product_images:
         st.warning("⚠️ No product images found. Upload images in the Brand Manager.")
         image_selection_mode = "auto"
-        selected_image_path = None
+        selected_image_paths = []
     else:
         # Check how many are analyzed
         analyzed_count = len([img for img in product_images if img.get('analyzed_at')])
         total_count = len(product_images)
 
         image_selection_mode = st.radio(
-            "How should we select the product image?",
+            "How should we select the product image(s)?",
             options=["auto", "manual"],
             index=0 if st.session_state.image_selection_mode == "auto" else 1,
             format_func=lambda x: {
-                "auto": f"🤖 Auto-Select - Best match for template ({analyzed_count}/{total_count} analyzed)",
-                "manual": "🖼️ Choose Image - Select a specific product image"
+                "auto": f"🤖 Auto-Select - AI picks best 1-2 images ({analyzed_count}/{total_count} analyzed)",
+                "manual": "🖼️ Choose Images - Select up to 2 product images"
             }.get(x, x),
             horizontal=True,
-            help="Auto-select uses AI analysis to pick the best matching image",
+            help="Auto-select uses AI analysis to pick up to 2 matching images. Manual lets you choose specific images.",
             disabled=st.session_state.workflow_running
         )
         st.session_state.image_selection_mode = image_selection_mode
@@ -522,10 +522,12 @@ else:
         if image_selection_mode == "auto":
             if analyzed_count < total_count:
                 st.info(f"💡 Run image analysis in Brand Manager for better auto-selection.")
-            selected_image_path = None
+            if total_count >= 2:
+                st.caption("Auto mode will select up to 2 diverse images (e.g., packaging + contents)")
+            selected_image_paths = []
         else:
             # Manual selection - show image grid
-            st.markdown("**Select a product image:**")
+            st.markdown("**Select up to 2 product images** (1st = primary/hero, 2nd = secondary/contents):")
 
             # Create columns for image selection
             cols = st.columns(4)
@@ -535,35 +537,61 @@ else:
 
                     # Get signed URL for display
                     img_url = get_signed_url(storage_path)
+
+                    # Check selection status
+                    current_selections = st.session_state.selected_image_paths
+                    is_selected = storage_path in current_selections
+                    selection_index = current_selections.index(storage_path) + 1 if is_selected else 0
+
+                    # Show image with selection indicator
                     if img_url:
-                        st.image(img_url, use_container_width=True)
+                        # Add border for selected images
+                        if selection_index == 1:
+                            st.markdown(f"<div style='border: 3px solid #00ff00; border-radius: 4px; padding: 2px;'><img src='{img_url}' style='width:100%;border-radius:2px;'/></div>", unsafe_allow_html=True)
+                            st.caption("🥇 **Primary** (hero/packaging)")
+                        elif selection_index == 2:
+                            st.markdown(f"<div style='border: 3px solid #00aaff; border-radius: 4px; padding: 2px;'><img src='{img_url}' style='width:100%;border-radius:2px;'/></div>", unsafe_allow_html=True)
+                            st.caption("🥈 **Secondary** (contents)")
+                        else:
+                            st.image(img_url, use_container_width=True)
                     else:
                         st.markdown("<div style='height:80px;background:#444;border-radius:4px;'></div>", unsafe_allow_html=True)
 
                     # Show analysis info if available
                     analysis = img.get('image_analysis')
-                    if analysis:
+                    if analysis and not is_selected:
                         quality = analysis.get('quality_score', 0)
                         use_cases = analysis.get('best_use_cases', [])[:2]
                         st.caption(f"⭐ {quality:.2f} | {', '.join(use_cases)}")
-                    else:
+                    elif not analysis and not is_selected:
                         st.caption("❓ Not analyzed")
 
-                    # Selection checkbox
-                    is_selected = st.session_state.selected_image_path == storage_path
-                    if st.checkbox(
-                        "Select" if not is_selected else "✓ Selected",
-                        value=is_selected,
-                        key=f"img_select_{img['id']}"
-                    ):
-                        st.session_state.selected_image_path = storage_path
-                    elif is_selected:
-                        st.session_state.selected_image_path = None
+                    # Selection button
+                    if is_selected:
+                        if st.button("✓ Remove", key=f"img_remove_{img['id']}", use_container_width=True):
+                            st.session_state.selected_image_paths.remove(storage_path)
+                            st.rerun()
+                    else:
+                        # Only allow selection if less than 2 already selected
+                        can_select = len(current_selections) < 2
+                        if st.button(
+                            "Select" if can_select else "Max 2",
+                            key=f"img_select_{img['id']}",
+                            use_container_width=True,
+                            disabled=not can_select
+                        ):
+                            st.session_state.selected_image_paths.append(storage_path)
+                            st.rerun()
 
-            selected_image_path = st.session_state.selected_image_path
+            selected_image_paths = st.session_state.selected_image_paths
 
-            if not selected_image_path:
-                st.warning("⚠️ Please select an image, or switch to Auto-Select mode.")
+            # Show selection status
+            if len(selected_image_paths) == 0:
+                st.warning("⚠️ Please select at least 1 image, or switch to Auto-Select mode.")
+            elif len(selected_image_paths) == 1:
+                st.info("💡 You can optionally select a 2nd image to show product contents or an alternate view.")
+            else:
+                st.success(f"✅ {len(selected_image_paths)} images selected - primary + secondary")
 
     st.divider()
 
@@ -872,8 +900,8 @@ else:
 
             if not reference_ad_base64:
                 validation_error = "Please upload or select a reference ad"
-            elif image_selection_mode == "manual" and not selected_image_path:
-                validation_error = "Please select a product image or switch to Auto-Select mode"
+            elif image_selection_mode == "manual" and not selected_image_paths:
+                validation_error = "Please select at least one product image or switch to Auto-Select mode"
             elif export_destination in ["email", "both"] and not export_email:
                 validation_error = "Please enter an email address for email export"
             elif export_destination in ["email", "both"] and "@" not in export_email:
@@ -905,7 +933,7 @@ else:
 
             # Get image selection params from session state
             img_mode = st.session_state.image_selection_mode
-            img_path = st.session_state.selected_image_path if img_mode == "manual" else None
+            img_paths = st.session_state.selected_image_paths if img_mode == "manual" else None
 
             # Get export params from session state
             exp_dest = st.session_state.export_destination
@@ -927,7 +955,7 @@ else:
                 color_mode=color_mode,
                 brand_colors=brand_colors_data,
                 image_selection_mode=img_mode,
-                selected_image_path=img_path,
+                selected_image_paths=img_paths,
                 export_destination=exp_dest,
                 export_email=exp_email,
                 export_slack_webhook=exp_slack,
