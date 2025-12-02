@@ -117,6 +117,20 @@ async def load_voice_profiles():
     return await service.get_all_voice_profiles()
 
 
+async def get_audio_url(storage_path: str) -> str:
+    """Get a signed URL for audio playback."""
+    from viraltracker.services.audio_production_service import AudioProductionService
+    service = AudioProductionService()
+    return await service.get_audio_url(storage_path)
+
+
+async def download_audio_data(storage_path: str) -> bytes:
+    """Download audio data from storage."""
+    from viraltracker.services.audio_production_service import AudioProductionService
+    service = AudioProductionService()
+    return await service.download_audio(storage_path)
+
+
 # ============================================================================
 # UI Components
 # ============================================================================
@@ -298,22 +312,48 @@ def render_session_editor():
         has_selections = any(b.selected_take_id for b in session.beats)
         if st.button("Export Selected", disabled=not has_selections):
             with st.spinner("Preparing download..."):
-                exported = asyncio.run(export_session(session.session_id))
-                if exported:
-                    # Create ZIP file for download
-                    import zipfile
-                    import io
+                import zipfile
+                import io
 
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        for file_path in exported:
-                            zf.write(file_path, file_path.name)
-                    zip_buffer.seek(0)
+                zip_buffer = io.BytesIO()
+                file_count = 0
 
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for bwt in session.beats:
+                        if not bwt.selected_take_id:
+                            continue
+                        selected_take = next(
+                            (t for t in bwt.takes if t.take_id == bwt.selected_take_id), None
+                        )
+                        if not selected_take:
+                            continue
+
+                        audio_path_str = selected_take.audio_path
+                        filename = f"{bwt.beat.beat_id}.mp3"
+
+                        try:
+                            if audio_path_str.startswith("audio-production/"):
+                                # Download from Supabase Storage
+                                audio_data = asyncio.run(download_audio_data(audio_path_str))
+                                zf.writestr(filename, audio_data)
+                            else:
+                                # Local file
+                                local_path = Path(audio_path_str)
+                                if local_path.exists():
+                                    zf.write(local_path, filename)
+                            file_count += 1
+                        except Exception as e:
+                            st.warning(f"Failed to export {bwt.beat.beat_id}: {e}")
+
+                zip_buffer.seek(0)
+
+                if file_count > 0:
                     st.session_state['export_zip'] = zip_buffer.getvalue()
                     st.session_state['export_filename'] = f"{session.video_title.replace(' ', '_')}_audio.zip"
-                    st.success(f"Ready! {len(exported)} files prepared.")
+                    st.success(f"Ready! {file_count} files prepared.")
                     st.rerun()
+                else:
+                    st.error("No files could be exported")
 
         # Show download button if export is ready
         if st.session_state.get('export_zip'):
@@ -395,11 +435,25 @@ def render_beat_row(session_id: str, bwt):
                         (t for t in takes if t.take_id == selected_take_id), None
                     )
                     if selected_take:
-                        audio_path = Path(selected_take.audio_path)
-                        if audio_path.exists():
-                            st.audio(str(audio_path), format="audio/mp3")
+                        audio_path_str = selected_take.audio_path
+                        # Check if it's a storage path or local path
+                        if audio_path_str.startswith("audio-production/"):
+                            # Fetch from Supabase Storage
+                            try:
+                                audio_url = asyncio.run(get_audio_url(audio_path_str))
+                                if audio_url:
+                                    st.audio(audio_url, format="audio/mp3")
+                                else:
+                                    st.warning("Could not get audio URL")
+                            except Exception as e:
+                                st.warning(f"Audio error: {e}")
                         else:
-                            st.warning("Audio file not found")
+                            # Local file path
+                            audio_path = Path(audio_path_str)
+                            if audio_path.exists():
+                                st.audio(str(audio_path), format="audio/mp3")
+                            else:
+                                st.warning("Audio file not found")
 
                 # Revise button
                 if st.button("Revise", key=f"revise_{beat.beat_id}"):

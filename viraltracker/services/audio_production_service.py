@@ -34,12 +34,85 @@ logger = logging.getLogger(__name__)
 class AudioProductionService:
     """Service for audio production workflow operations"""
 
+    STORAGE_BUCKET = "audio-production"
+
     def __init__(self):
         """Initialize service with Supabase client."""
         self.supabase = get_supabase_client()
         self.output_base = Path("audio_production")
         self.output_base.mkdir(exist_ok=True)
         logger.info("AudioProductionService initialized")
+
+    # =========================================================================
+    # Storage Operations
+    # =========================================================================
+
+    async def upload_audio(self, session_id: str, filename: str, audio_data: bytes) -> str:
+        """
+        Upload audio file to Supabase Storage.
+
+        Args:
+            session_id: Session UUID
+            filename: Filename (e.g., "01_hook_abc123.mp3")
+            audio_data: Audio file bytes
+
+        Returns:
+            Storage path: "audio-production/{session_id}/{filename}"
+        """
+        storage_path = f"{session_id}/{filename}"
+
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                storage_path,
+                audio_data,
+                {"content-type": "audio/mpeg"}
+            )
+        )
+
+        logger.info(f"Uploaded audio: {storage_path}")
+        return f"{self.STORAGE_BUCKET}/{storage_path}"
+
+    async def download_audio(self, storage_path: str) -> bytes:
+        """
+        Download audio file from Supabase Storage.
+
+        Args:
+            storage_path: Full storage path (e.g., "audio-production/session/file.mp3")
+
+        Returns:
+            Audio file bytes
+        """
+        # Parse bucket and path
+        parts = storage_path.split("/", 1)
+        bucket = parts[0]
+        path = parts[1] if len(parts) > 1 else storage_path
+
+        data = await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(bucket).download(path)
+        )
+
+        return data
+
+    async def get_audio_url(self, storage_path: str, expires_in: int = 3600) -> str:
+        """
+        Get a signed URL for audio playback.
+
+        Args:
+            storage_path: Full storage path
+            expires_in: URL expiry in seconds (default 1 hour)
+
+        Returns:
+            Signed URL for audio playback
+        """
+        parts = storage_path.split("/", 1)
+        bucket = parts[0]
+        path = parts[1] if len(parts) > 1 else storage_path
+
+        result = await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(bucket).create_signed_url(path, expires_in)
+        )
+
+        return result.get("signedURL", "")
 
     # =========================================================================
     # Session Operations

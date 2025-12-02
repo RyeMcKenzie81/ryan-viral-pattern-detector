@@ -844,6 +844,17 @@ async def complete_audio_workflow(
             )
             total_duration_ms += take.audio_duration_ms
 
+            # Upload to Supabase Storage for persistence
+            if audio_path.exists():
+                audio_data = audio_path.read_bytes()
+                storage_path = await ctx.deps.audio_production.upload_audio(
+                    session_id=session_id,
+                    filename=audio_path.name,
+                    audio_data=audio_data
+                )
+                take.audio_path = storage_path  # Update to storage path
+                logger.info(f"Uploaded to storage: {storage_path}")
+
             # Save to database
             await ctx.deps.audio_production.save_take(session_id, take)
 
