@@ -1,8 +1,8 @@
-# Checkpoint: Knowledge Base System Plan
+# Checkpoint: Knowledge Base System
 
 **Date:** 2025-12-02
 **Branch:** main
-**Status:** Ready to implement
+**Status:** Implemented - Ready for testing
 
 ## Summary
 
@@ -69,10 +69,27 @@ OPENAI_API_KEY=sk-...  # For embeddings only
 5. Streamlit UI (document management)
 6. Initial Content (ingest user's docs)
 
-## Next Steps
+## Testing Checklist
 
-1. Apply SQL migration to Supabase
-2. Build DocService class
-3. Create knowledge_toolset
-4. Build Streamlit UI
-5. Test with sample documents
+### Setup
+- [ ] Add `OPENAI_API_KEY` to Railway environment variables
+- [ ] Run `sql/create_knowledge_base.sql` in Supabase SQL Editor
+
+### UI Testing
+- [ ] Visit Knowledge Base page - should show "0 Documents"
+- [ ] Upload a test document with tags and tool usage
+- [ ] Verify document appears in Browse view
+- [ ] Test semantic search returns relevant results
+- [ ] Delete document works
+
+### Agent Integration Testing
+- [ ] Verify DocService initializes when OPENAI_API_KEY is set
+- [ ] Test knowledge_toolset.search_knowledge() returns results
+- [ ] Test hook selector can access knowledge base
+
+## Rollback
+
+If issues arise, the knowledge base is fully optional:
+- Remove `OPENAI_API_KEY` env var to disable
+- DocService gracefully handles missing API key
+- Agents work normally without knowledge base access
