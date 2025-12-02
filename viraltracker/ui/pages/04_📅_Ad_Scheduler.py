@@ -46,6 +46,8 @@ if 'sched_selected_templates' not in st.session_state:
     st.session_state.sched_selected_templates = []
 if 'sched_templates_visible' not in st.session_state:
     st.session_state.sched_templates_visible = 30
+if 'sched_uploaded_files' not in st.session_state:
+    st.session_state.sched_uploaded_files = []
 
 
 # ============================================================================
@@ -187,6 +189,32 @@ def get_signed_url(storage_path: str) -> str:
         return result.get('signedURL', '')
     except Exception as e:
         return ""
+
+
+def upload_template_files(files: list) -> list:
+    """Upload template files to reference-ads storage and return storage names."""
+    import uuid
+    db = get_supabase_client()
+    storage_names = []
+
+    for file in files:
+        # Generate unique storage name: uuid_originalname
+        storage_name = f"{uuid.uuid4()}_{file.name}"
+
+        try:
+            file_bytes = file.read()
+            file.seek(0)  # Reset for potential re-read
+
+            db.storage.from_("reference-ads").upload(
+                storage_name,
+                file_bytes,
+                {"content-type": file.type, "upsert": "true"}
+            )
+            storage_names.append(storage_name)
+        except Exception as e:
+            st.error(f"Failed to upload {file.name}: {e}")
+
+    return storage_names
 
 
 def create_scheduled_job(job_data: dict) -> str:
@@ -657,13 +685,22 @@ def render_create_schedule():
 
     st.subheader("4. Templates")
 
+    # Determine default index for template mode
+    mode_options = ['unused', 'specific', 'upload']
+    if existing_job:
+        existing_mode = existing_job.get('template_mode', 'unused')
+        default_index = mode_options.index(existing_mode) if existing_mode in mode_options else 0
+    else:
+        default_index = 0
+
     template_mode = st.radio(
         "Template Selection Mode",
-        options=['unused', 'specific'],
-        index=0 if not existing_job or existing_job.get('template_mode') == 'unused' else 1,
+        options=mode_options,
+        index=default_index,
         format_func=lambda x: {
             'unused': '🔄 Use Unused Templates - Auto-select templates not yet used for this product',
-            'specific': '📋 Specific Templates - Choose exact templates to use'
+            'specific': '📋 Specific Templates - Choose from existing templates',
+            'upload': '📤 Upload New - Upload reference ads for this run'
         }.get(x, x),
         horizontal=False
     )
@@ -686,7 +723,7 @@ def render_create_schedule():
         )
         template_ids = None
 
-    else:
+    elif template_mode == 'specific':
         # Specific template selection
         templates = get_existing_templates()
 
@@ -739,6 +776,39 @@ def render_create_schedule():
             st.warning("No templates available")
             template_ids = []
             template_count = 0
+
+    elif template_mode == 'upload':
+        # Upload new templates mode
+        st.markdown("**Upload reference ad templates:**")
+
+        uploaded_files = st.file_uploader(
+            "Upload reference ad images",
+            type=['jpg', 'jpeg', 'png', 'webp'],
+            accept_multiple_files=True,
+            help="Upload one or more reference ads to use for this scheduled run",
+            key="sched_file_uploader"
+        )
+
+        if uploaded_files:
+            # Preview uploaded files in grid
+            num_cols = min(5, len(uploaded_files))
+            cols = st.columns(num_cols)
+            for idx, file in enumerate(uploaded_files):
+                with cols[idx % num_cols]:
+                    st.image(file, use_container_width=True)
+                    st.caption(file.name[:20] + "..." if len(file.name) > 20 else file.name)
+
+            st.success(f"📤 {len(uploaded_files)} template(s) ready to upload")
+
+            # Store files in session state for upload on save
+            st.session_state.sched_uploaded_files = uploaded_files
+            template_count = len(uploaded_files)
+            template_ids = None  # Will be populated on save after upload
+        else:
+            st.info("Upload one or more reference ad images to use for this scheduled run")
+            st.session_state.sched_uploaded_files = []
+            template_count = 0
+            template_ids = None
 
     st.divider()
 
@@ -839,6 +909,8 @@ def render_create_schedule():
                 errors.append("Job name is required")
             if template_mode == 'specific' and not template_ids:
                 errors.append("Select at least one template")
+            if template_mode == 'upload' and not st.session_state.sched_uploaded_files:
+                errors.append("Upload at least one template image")
             if export_destination in ['email', 'both'] and not export_email:
                 errors.append("Email address is required")
 
@@ -846,6 +918,18 @@ def render_create_schedule():
                 for error in errors:
                     st.error(error)
             else:
+                # Handle upload mode - upload files first
+                if template_mode == 'upload':
+                    with st.spinner("Uploading templates..."):
+                        uploaded_storage_names = upload_template_files(st.session_state.sched_uploaded_files)
+
+                    if not uploaded_storage_names:
+                        st.error("Failed to upload templates")
+                        st.stop()
+
+                    template_ids = uploaded_storage_names
+                    template_count = len(uploaded_storage_names)
+                    st.success(f"✅ Uploaded {template_count} template(s)")
                 # Build job data
                 parameters = {
                     'num_variations': num_variations,
@@ -869,7 +953,8 @@ def render_create_schedule():
                     'max_runs': max_runs,
                     'template_mode': template_mode,
                     'template_count': template_count if template_mode == 'unused' else None,
-                    'template_ids': template_ids if template_mode == 'specific' else None,
+                    # Both 'specific' and 'upload' modes use template_ids
+                    'template_ids': template_ids if template_mode in ['specific', 'upload'] else None,
                     'parameters': parameters
                 }
 
@@ -878,6 +963,7 @@ def render_create_schedule():
                         st.success("Schedule updated!")
                         st.session_state.scheduler_view = 'list'
                         st.session_state.sched_selected_templates = []
+                        st.session_state.sched_uploaded_files = []
                         st.rerun()
                 else:
                     job_id = create_scheduled_job(job_data)
@@ -885,12 +971,14 @@ def render_create_schedule():
                         st.success("Schedule created!")
                         st.session_state.scheduler_view = 'list'
                         st.session_state.sched_selected_templates = []
+                        st.session_state.sched_uploaded_files = []
                         st.rerun()
 
     with col2:
         if st.button("Cancel", use_container_width=True):
             st.session_state.scheduler_view = 'list'
             st.session_state.sched_selected_templates = []
+            st.session_state.sched_uploaded_files = []
             st.rerun()
 
 
