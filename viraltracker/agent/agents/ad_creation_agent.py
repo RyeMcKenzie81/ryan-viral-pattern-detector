@@ -677,7 +677,35 @@ async def select_hooks(
         random.shuffle(shuffled_hooks)
         logger.info(f"Shuffled {len(shuffled_hooks)} hooks for diversity")
 
+        # Query knowledge base for copywriting best practices
+        knowledge_context = ""
+        if hasattr(ctx.deps, 'docs') and ctx.deps.docs is not None:
+            try:
+                # Search for relevant hook and copywriting knowledge
+                knowledge_results = ctx.deps.docs.search(
+                    f"hook writing techniques {target_audience} advertising",
+                    limit=3,
+                    tags=["hooks", "copywriting"]
+                )
+                if knowledge_results:
+                    knowledge_sections = []
+                    for r in knowledge_results:
+                        knowledge_sections.append(f"### {r.title}\n{r.chunk_content}")
+                    knowledge_context = "\n\n".join(knowledge_sections)
+                    logger.info(f"Retrieved {len(knowledge_results)} knowledge base sections for hook selection")
+            except Exception as e:
+                logger.warning(f"Knowledge base query failed (continuing without): {e}")
+
         # Build selection prompt
+        knowledge_section = ""
+        if knowledge_context:
+            knowledge_section = f"""
+        **Copywriting Best Practices (from knowledge base):**
+        {knowledge_context}
+
+        Use these best practices to guide your hook selection and adaptation.
+        """
+
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
@@ -688,6 +716,7 @@ async def select_hooks(
         **Reference Ad Style:**
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
+        {knowledge_section}
 
         **Available Hooks** ({len(shuffled_hooks)} total):
         {json.dumps(shuffled_hooks, indent=2)}
