@@ -1281,7 +1281,7 @@ async def generate_nano_banana_prompt(
     ad_analysis: Dict,
     ad_brief_instructions: str,
     reference_ad_path: str,
-    product_image_path: str,
+    product_image_paths: List[str],
     color_mode: str = "original",
     brand_colors: Optional[Dict] = None
 ) -> Dict:
@@ -1295,6 +1295,11 @@ async def generate_nano_banana_prompt(
     - Ad brief instructions (brand guidelines)
     - Technical specifications (canvas size, image paths)
 
+    Supports 1-2 product images:
+    - Single image: Standard behavior, product image used as-is
+    - Two images: Primary (hero/packaging) + Secondary (contents/lifestyle)
+      with conditional prompting to guide AI on how to use both
+
     Args:
         ctx: Run context with AgentDependencies
         prompt_index: Index 1-5 for this variation
@@ -1303,7 +1308,7 @@ async def generate_nano_banana_prompt(
         ad_analysis: Ad analysis dictionary with all format details
         ad_brief_instructions: Instructions from ad brief template
         reference_ad_path: Storage path to reference ad
-        product_image_path: Storage path to product image
+        product_image_paths: List of storage paths to product images (1-2 images)
         color_mode: "original" (use template colors), "complementary" (AI generates fresh colors), or "brand" (use brand colors)
         brand_colors: Brand color data when color_mode is "brand" (dict with primary, secondary, background, all)
 
@@ -1315,16 +1320,16 @@ async def generate_nano_banana_prompt(
             "instruction_text": "Human-readable instructions",
             "spec": {
                 "canvas": "1080x1080px, background #F5F0E8",
-                "bottle": "Use uploaded bottle EXACTLY...",
+                "product_images": ["path1", "path2"],
                 "text_elements": {...}
             },
             "full_prompt": "Complete prompt text...",
             "template_reference_path": "reference-ads/...",
-            "product_image_path": "products/..."
+            "product_image_paths": ["products/...", "products/..."]
         }
 
     Raises:
-        ValueError: If required parameters are missing
+        ValueError: If required parameters are missing or product_image_paths is empty
     """
     try:
         logger.info(f"Generating Nano Banana prompt for variation {prompt_index}")
@@ -1332,6 +1337,13 @@ async def generate_nano_banana_prompt(
         # Validate inputs
         if prompt_index < 1 or prompt_index > 15:
             raise ValueError("prompt_index must be between 1 and 15")
+
+        if not product_image_paths or len(product_image_paths) == 0:
+            raise ValueError("product_image_paths cannot be empty")
+
+        # Log image count for debugging
+        num_product_images = len(product_image_paths)
+        logger.info(f"Using {num_product_images} product image(s) for generation")
 
         # Phase 6: Match benefit/USP to hook for relevant subheadline
         # Combines both benefits and unique_selling_points for best match
@@ -1366,11 +1378,31 @@ async def generate_nano_banana_prompt(
             background_color = template_colors[0] if template_colors else '#F5F0E8'
             color_instructions = f"Use the exact colors from reference: {', '.join(template_colors)}"
 
+        # Build product image instructions based on count (1 or 2)
+        if num_product_images == 1:
+            product_image_instructions = "Use uploaded product image EXACTLY - no modifications to product appearance"
+        else:
+            # Two images: primary (hero/packaging) + secondary (contents/lifestyle)
+            product_image_instructions = """**MULTIPLE PRODUCT IMAGES PROVIDED:**
+
+**PRIMARY PRODUCT IMAGE (Image 2 in reference list):**
+- This is the main product packaging/hero shot
+- Reproduce EXACTLY - no modifications to product appearance
+- This should be the dominant product representation in the ad
+
+**SECONDARY PRODUCT IMAGE (Image 3 in reference list):**
+- This shows the product contents, interior, or alternate view
+- Use this to show what's inside or provide additional context
+- Incorporate thoughtfully based on ad layout and style
+- If the layout doesn't suit two product views, prioritize the primary image
+- Consider: showing contents spilling out, inset view, or subtle background element"""
+
         # Build specification object
         spec = {
             "canvas": f"{ad_analysis.get('canvas_size', '1080x1080px')}, "
                      f"background {background_color}",
-            "product_image": "Use uploaded product image EXACTLY - no modifications to product appearance",
+            "product_images": product_image_paths,
+            "product_image_instructions": product_image_instructions,
             "text_elements": {
                 "headline": selected_hook.get('adapted_text'),
                 "subheadline": matched_benefit,  # Phase 6: Use matched benefit instead of first benefit
@@ -1539,8 +1571,11 @@ async def generate_nano_banana_prompt(
         - Primary Benefit (matched to hook): {matched_benefit}
         - Target: {product.get('target_audience', 'general audience')}
         {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{lighting_section}{social_proof_section}{founders_section}{prohibited_section}{disclaimer_section}
+        **Product Image Instructions:**
+        {product_image_instructions}
+
         **Critical Requirements:**
-        - Use product image EXACTLY as provided (no hallucination)
+        - Use product image(s) EXACTLY as provided (no hallucination)
         - Match reference ad layout and style
         - Maintain brand voice from ad brief
         - If offer is provided, use EXACT wording (no hallucination of discounts)
@@ -1552,6 +1587,15 @@ async def generate_nano_banana_prompt(
         - If NO offer is listed above, DO NOT add any offer/discount text to the ad
         """
 
+        # Build reference images list for prompt
+        if num_product_images == 1:
+            reference_images_text = f"""- Template (Image 1): {reference_ad_path}
+        - Product (Image 2): {product_image_paths[0]}"""
+        else:
+            reference_images_text = f"""- Template (Image 1): {reference_ad_path}
+        - Primary Product (Image 2): {product_image_paths[0]}
+        - Secondary Product (Image 3): {product_image_paths[1]}"""
+
         # Build full prompt
         full_prompt = f"""
         {ad_brief_instructions}
@@ -1562,8 +1606,7 @@ async def generate_nano_banana_prompt(
         {spec}
 
         **Reference Images:**
-        - Template: {reference_ad_path}
-        - Product: {product_image_path}
+        {reference_images_text}
 
         {ad_analysis.get('detailed_description', '')}
         """
@@ -1575,7 +1618,7 @@ async def generate_nano_banana_prompt(
             "spec": spec,
             "full_prompt": full_prompt,
             "template_reference_path": reference_ad_path,
-            "product_image_path": product_image_path
+            "product_image_paths": product_image_paths
         }
 
         logger.info(f"Generated prompt for variation {prompt_index}")
@@ -1616,9 +1659,14 @@ async def execute_nano_banana(
     based on the constructed prompt. Images are generated ONE AT A TIME
     (not batched) for resilience.
 
+    Supports 1-2 product images:
+    - Single image: Template + 1 product image = 2 reference images
+    - Two images: Template + 2 product images = 3 reference images
+
     Args:
         ctx: Run context with AgentDependencies
         nano_banana_prompt: Prompt dictionary from generate_nano_banana_prompt
+            Must contain 'product_image_paths' (list of 1-2 paths)
 
     Returns:
         Dictionary with generated ad:
@@ -1635,18 +1683,37 @@ async def execute_nano_banana(
         prompt_index = nano_banana_prompt.get('prompt_index')
         logger.info(f"Executing Nano Banana generation for variation {prompt_index}")
 
-        # Download reference images
+        # Download template reference image
         template_data = await ctx.deps.ad_creation.download_image(
             nano_banana_prompt['template_reference_path']
         )
-        product_data = await ctx.deps.ad_creation.download_image(
-            nano_banana_prompt['product_image_path']
-        )
+
+        # Download all product images (1-2 images)
+        product_image_paths = nano_banana_prompt.get('product_image_paths', [])
+        product_images_data = []
+        for path in product_image_paths:
+            img_data = await ctx.deps.ad_creation.download_image(path)
+            product_images_data.append(img_data)
+
+        # Build reference images list: template + all product images
+        reference_images = [template_data] + product_images_data
+
+        # Log for verification
+        num_product_images = len(product_images_data)
+        logger.info(f"Reference images for Nano Banana: {len(reference_images)} total")
+        logger.info(f"  - 1 template image")
+        logger.info(f"  - {num_product_images} product image(s)")
+
+        # Log whether secondary image instructions are present
+        if "SECONDARY" in nano_banana_prompt.get('full_prompt', ''):
+            logger.info("Prompt includes SECONDARY image instructions ✓")
+        else:
+            logger.info("Prompt uses single image mode (no SECONDARY)")
 
         # Call Gemini Nano Banana API with metadata tracking
         generation_result = await ctx.deps.gemini.generate_image(
             prompt=nano_banana_prompt['full_prompt'],
-            reference_images=[template_data, product_data],
+            reference_images=reference_images,
             return_metadata=True
         )
 
@@ -1658,12 +1725,14 @@ async def execute_nano_banana(
             "model_requested": generation_result.get("model_requested"),
             "model_used": generation_result.get("model_used"),
             "generation_time_ms": generation_result.get("generation_time_ms"),
-            "generation_retries": generation_result.get("retries", 0)
+            "generation_retries": generation_result.get("retries", 0),
+            "num_reference_images": len(reference_images)
         }
 
         logger.info(f"Generated ad image for variation {prompt_index} "
                    f"(model={generation_result.get('model_used')}, "
-                   f"time={generation_result.get('generation_time_ms')}ms)")
+                   f"time={generation_result.get('generation_time_ms')}ms, "
+                   f"ref_images={len(reference_images)})")
         return generated_ad
 
     except Exception as e:
@@ -2851,7 +2920,7 @@ async def complete_ad_workflow(
     color_mode: str = "original",
     brand_colors: Optional[Dict] = None,
     image_selection_mode: str = "auto",
-    selected_image_path: Optional[str] = None
+    selected_image_paths: Optional[List[str]] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2887,10 +2956,10 @@ async def complete_ad_workflow(
             - "recreate_template": Extract template angle and use product benefits
         color_mode: Color scheme to use ("original", "complementary", "brand")
         brand_colors: Brand color data when color_mode is "brand"
-        image_selection_mode: How to select product image:
-            - "auto": AI selects best matching image (default)
-            - "manual": Use user-selected image
-        selected_image_path: Storage path when image_selection_mode is "manual"
+        image_selection_mode: How to select product images:
+            - "auto": AI selects best matching 1-2 images (default)
+            - "manual": Use user-selected images
+        selected_image_paths: List of storage paths when image_selection_mode is "manual" (1-2 images)
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3084,23 +3153,35 @@ async def complete_ad_workflow(
 
         # Prepare manual selection if applicable
         manual_selection = None
-        if image_selection_mode == "manual" and selected_image_path:
-            manual_selection = [selected_image_path]
-            logger.info(f"Using manually selected image: {selected_image_path}")
+        if image_selection_mode == "manual" and selected_image_paths:
+            manual_selection = selected_image_paths[:2]  # Max 2 images
+            logger.info(f"Using manually selected images: {manual_selection}")
+
+        # Determine how many images to select
+        # Auto mode: select up to 2 if available, manual mode: use what user selected
+        if image_selection_mode == "auto":
+            # Select up to 2 images in auto mode (if 2+ available)
+            auto_count = min(2, len(product_image_paths))
+            logger.info(f"Auto-select mode: will select {auto_count} image(s)")
+        else:
+            # Manual mode: use count from user selection
+            auto_count = len(manual_selection) if manual_selection else 1
 
         selected_product_images = await select_product_images(
             ctx=ctx,
             product_image_paths=product_image_paths,
             ad_analysis=ad_analysis,
-            count=1,
+            count=auto_count,
             selection_mode=image_selection_mode,
             image_analyses=image_analyses,
             manual_selection=manual_selection
         )
 
-        # Extract path from selection result
-        product_image_path = selected_product_images[0]["storage_path"]
-        logger.info(f"Selected image: {product_image_path} (score: {selected_product_images[0]['match_score']:.2f})")
+        # Extract paths from selection results (1-2 images)
+        selected_image_paths_final = [img["storage_path"] for img in selected_product_images]
+        logger.info(f"Selected {len(selected_image_paths_final)} image(s):")
+        for idx, img in enumerate(selected_product_images):
+            logger.info(f"  Image {idx+1}: {img['storage_path']} (score: {img['match_score']:.2f})")
 
         # Update status
         await ctx.deps.ad_creation.update_ad_run(
@@ -3125,7 +3206,7 @@ async def complete_ad_workflow(
                     ad_analysis=ad_analysis,
                     ad_brief_instructions=ad_brief_instructions,
                     reference_ad_path=reference_ad_path,
-                    product_image_path=product_image_path,
+                    product_image_paths=selected_image_paths_final,
                     color_mode=color_mode,
                     brand_colors=brand_colors
                 )
