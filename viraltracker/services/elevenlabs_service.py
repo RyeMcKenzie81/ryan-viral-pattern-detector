@@ -258,8 +258,8 @@ class ElevenLabsService:
                 speed=self._clamp_speed(beat.primary_pace.to_speed())
             )
 
-        # Generate unique take ID
-        take_id = str(uuid.uuid4())[:8]
+        # Generate unique take ID (full UUID for database)
+        take_id = str(uuid.uuid4())
         filename = f"{beat.beat_id}_{take_id}.mp3"
         output_path = output_dir / filename
 
