@@ -42,12 +42,10 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Vector similarity search index (IVFFlat for performance)
--- Note: Requires at least 100 rows to build effectively
+-- Vector similarity search index (HNSW - works well for any dataset size)
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding
 ON knowledge_chunks
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100);
+USING hnsw (embedding vector_cosine_ops);
 
 -- Index for document lookup
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document_id

@@ -11,6 +11,7 @@ Welcome to ViralTracker development! This guide will help you set up your enviro
 6. [Code Organization](#code-organization)
 7. [Common Tasks](#common-tasks)
 8. [Streamlit Authentication](#streamlit-authentication)
+9. [Knowledge Base (RAG)](#knowledge-base-rag)
 
 ## Quick Start
 
@@ -312,6 +313,72 @@ This allows sharing links like:
 ```
 https://yourapp.railway.app/Client_Gallery?token=abc123
 ```
+
+## Knowledge Base (RAG)
+
+The knowledge base provides semantic search over domain-specific documents (copywriting guides, hook formulas, brand guidelines) for AI agents.
+
+### Configuration
+
+Set the `OPENAI_API_KEY` environment variable in Railway:
+```
+OPENAI_API_KEY=sk-...
+```
+
+Run the SQL migration in Supabase SQL Editor:
+```bash
+# Copy contents of sql/create_knowledge_base.sql
+```
+
+### How It Works
+
+1. Documents are uploaded via the Knowledge Base Streamlit page
+2. Content is chunked and embedded using OpenAI text-embedding-3-small
+3. Embeddings are stored in Supabase with pgvector
+4. Agents search semantically via the `knowledge_toolset`
+
+### Using in Agents
+
+The `knowledge_toolset` provides three tools for any agent:
+
+```python
+from viraltracker.agent.toolsets import knowledge_toolset
+
+# Attach to an agent
+my_agent = Agent(
+    model="claude-sonnet-4-5-20250929",
+    deps_type=AgentDependencies,
+    toolsets=[knowledge_toolset]
+)
+```
+
+Available tools:
+- `search_knowledge(query, tags, limit)` - Semantic search
+- `get_knowledge_by_category(category)` - Get all docs in a category
+- `list_knowledge_categories()` - List available categories
+
+### Managing Documents
+
+Use the Knowledge Base page in Streamlit UI to:
+- **Browse** - View all documents with tags and tool usage
+- **Upload** - Add new documents with tags and tool assignments
+- **Search Test** - Verify semantic search works correctly
+
+### Document Tags
+
+Standard tags for categorization:
+- `copywriting` - General copywriting techniques
+- `hooks` - Hook and headline formulas
+- `brand` - Brand voice and guidelines
+- `templates` - Reusable content templates
+- `products` - Product-specific knowledge
+
+### Tool Usage
+
+Assign documents to tools that should use them:
+- `hook_selector` - Hook selection and adaptation
+- `ad_review` - Ad quality review
+- `ad_creation` - Full ad creation workflow
 
 ## Resources
 
