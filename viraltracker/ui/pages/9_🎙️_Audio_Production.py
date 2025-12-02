@@ -29,6 +29,10 @@ if 'audio_workflow_result' not in st.session_state:
     st.session_state.audio_workflow_result = None
 if 'els_input' not in st.session_state:
     st.session_state.els_input = ""
+if 'export_zip' not in st.session_state:
+    st.session_state.export_zip = None
+if 'export_filename' not in st.session_state:
+    st.session_state.export_filename = None
 
 
 def get_supabase_client():
@@ -293,9 +297,32 @@ def render_session_editor():
     with col1:
         has_selections = any(b.selected_take_id for b in session.beats)
         if st.button("Export Selected", disabled=not has_selections):
-            with st.spinner("Exporting..."):
+            with st.spinner("Preparing download..."):
                 exported = asyncio.run(export_session(session.session_id))
-                st.success(f"Exported {len(exported)} files!")
+                if exported:
+                    # Create ZIP file for download
+                    import zipfile
+                    import io
+
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for file_path in exported:
+                            zf.write(file_path, file_path.name)
+                    zip_buffer.seek(0)
+
+                    st.session_state['export_zip'] = zip_buffer.getvalue()
+                    st.session_state['export_filename'] = f"{session.video_title.replace(' ', '_')}_audio.zip"
+                    st.success(f"Ready! {len(exported)} files prepared.")
+                    st.rerun()
+
+        # Show download button if export is ready
+        if st.session_state.get('export_zip'):
+            st.download_button(
+                label="Download ZIP",
+                data=st.session_state['export_zip'],
+                file_name=st.session_state.get('export_filename', 'audio_export.zip'),
+                mime="application/zip"
+            )
 
     with col2:
         if st.button("Refresh"):
