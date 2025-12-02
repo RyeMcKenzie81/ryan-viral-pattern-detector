@@ -136,6 +136,36 @@ def get_ads_for_run(ad_run_id: str):
         return []
 
 
+def get_scheduled_job_for_ad_runs(ad_run_ids: list) -> dict:
+    """
+    Check if any ad_run_ids were created by scheduled jobs.
+    Returns dict mapping ad_run_id -> job_name.
+    """
+    if not ad_run_ids:
+        return {}
+
+    try:
+        db = get_supabase_client()
+
+        # Get all job runs that contain any of these ad_run_ids
+        result = db.table("scheduled_job_runs").select(
+            "ad_run_ids, scheduled_job_id, scheduled_jobs(name)"
+        ).execute()
+
+        mapping = {}
+        for job_run in (result.data or []):
+            job_ad_run_ids = job_run.get('ad_run_ids') or []
+            job_name = job_run.get('scheduled_jobs', {}).get('name', 'Scheduled Job')
+
+            for ad_run_id in ad_run_ids:
+                if ad_run_id in job_ad_run_ids:
+                    mapping[ad_run_id] = job_name
+
+        return mapping
+    except Exception as e:
+        return {}
+
+
 def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     """Get a signed URL for a storage path."""
     if not storage_path:
@@ -307,6 +337,10 @@ else:
     end_idx = min(st.session_state.ad_history_page * PAGE_SIZE, total_count)
     st.markdown(f"**Showing {start_idx}-{end_idx} of {total_count} ad runs** (Page {st.session_state.ad_history_page} of {total_pages})")
 
+    # Get scheduled job info for all runs on this page
+    ad_run_ids = [run['id'] for run in ad_runs]
+    scheduled_job_mapping = get_scheduled_job_for_ad_runs(ad_run_ids)
+
     # Display each ad run as a row with expand button
     for run in ad_runs:
         product_name = run.get('products', {}).get('name', 'Unknown Product')
@@ -332,7 +366,12 @@ else:
                 st.rerun()
 
         with col_info:
-            st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str}")
+            # Check if this run was from a scheduled job
+            job_name = scheduled_job_mapping.get(run_id_full)
+            if job_name:
+                st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str} | 📅 _{job_name}_")
+            else:
+                st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str}")
 
         with col_stats:
             approval_pct = int(approved_ads/total_ads*100) if total_ads > 0 else 0
