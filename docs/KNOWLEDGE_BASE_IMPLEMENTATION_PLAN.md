@@ -1,7 +1,7 @@
-# Knowledge Base Implementation Plan
+# Knowledge Base Implementation
 
 **Date:** 2025-12-02
-**Status:** Planning
+**Status:** ✅ Implemented
 **Branch:** main
 
 ## Overview
@@ -79,10 +79,9 @@ CREATE TABLE knowledge_chunks (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Vector similarity search index
+-- Vector similarity search index (HNSW - works for any dataset size)
 CREATE INDEX ON knowledge_chunks
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100);
+USING hnsw (embedding vector_cosine_ops);
 ```
 
 ### Function: `match_knowledge`
@@ -370,39 +369,39 @@ Features:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Implementation Order
+## Implementation Status
 
-### Phase 1: Database Setup
-1. Create SQL migration for tables and function
-2. Apply to Supabase
+### Phase 1: Database Setup ✅
+1. Created SQL migration `sql/create_knowledge_base.sql`
+2. Applied to Supabase with pgvector 0.8.0
+3. **Note:** Changed from IVFFlat to HNSW index (IVFFlat requires minimum ~100 documents to work properly)
 
-### Phase 2: Core Service
-1. Create `viraltracker/services/knowledge_base/` module
-2. Implement Pydantic models
-3. Implement DocService class
-4. Add to AgentDependencies
+### Phase 2: Core Service ✅
+1. Created `viraltracker/services/knowledge_base/` module
+2. Implemented Pydantic models in `models.py`
+3. Implemented DocService class in `service.py`
+4. Added DocService to AgentDependencies
 
-### Phase 3: Toolset
-1. Create `viraltracker/agent/toolsets/knowledge_toolset.py`
-2. Implement search_knowledge tool
-3. Implement get_knowledge_by_category tool
+### Phase 3: Toolset ✅
+1. Created `viraltracker/agent/toolsets/knowledge_toolset.py`
+2. Implemented search_knowledge tool
+3. Implemented get_knowledge_by_category tool
+4. Implemented list_knowledge_categories tool
 
-### Phase 4: Agent Integration
-1. Add toolset to ad_creation_agent
-2. Update hook selector to use knowledge base
-3. Test with sample documents
+### Phase 4: Agent Integration ✅
+1. Integrated with `select_hooks()` - queries knowledge base for hook writing techniques
+2. Integrated with `generate_benefit_variations()` - queries for copywriting best practices when using "Recreate Template"
+3. Both functions include knowledge context in prompts when available
 
-### Phase 5: Streamlit UI
-1. Create Knowledge Base page
-2. Document list with filters
-3. Upload functionality (text, file)
-4. Search testing interface
-5. Edit/delete capabilities
+### Phase 5: Streamlit UI ✅
+1. Created Knowledge Base page at `pages/07_📚_Knowledge_Base.py`
+2. Browse view - list documents with metadata
+3. Upload view - add new documents with tags
+4. Search Test view - test semantic search with relevance scores
 
-### Phase 6: Initial Content
-1. Ingest user's existing copywriting documents
-2. Create sample hook formulas document
-3. Test search quality
+### Phase 6: Initial Content ✅
+1. User uploaded "Hook Writing Best Practices for Direct-Response Advertising" document
+2. Search verified working with 40-65% relevance scores for hook-related queries
 
 ## Environment Variables
 
@@ -428,24 +427,38 @@ viraltracker/
 │   └── dependencies.py        # Modified
 └── ui/
     └── pages/
-        └── 11_📚_Knowledge_Base.py
+        └── 07_📚_Knowledge_Base.py
 ```
 
-## Success Criteria
+## Success Criteria ✅
 
-1. Documents can be uploaded via Streamlit UI
-2. Semantic search returns relevant chunks
-3. Hook selector uses knowledge base for better copy
-4. Multiple agents can share the same knowledge
-5. Tool usage tracking shows which tools use which docs
+1. ✅ Documents can be uploaded via Streamlit UI
+2. ✅ Semantic search returns relevant chunks
+3. ✅ Hook selector uses knowledge base for better copy
+4. ✅ Multiple agents can share the same knowledge
+5. ✅ Tool usage tracking shows which tools use which docs
 
-## Estimated Effort
+## Ad Creation Workflow Integration
 
-- Phase 1 (Database): 30 minutes
-- Phase 2 (Service): 1-2 hours
-- Phase 3 (Toolset): 30 minutes
-- Phase 4 (Integration): 1 hour
-- Phase 5 (UI): 1-2 hours
-- Phase 6 (Content): 30 minutes
+The knowledge base is integrated into two key functions in `ad_creation_agent.py`:
 
-Total: ~5-7 hours
+### 1. `select_hooks()` (line ~2080)
+When selecting hooks for an ad, queries the knowledge base with:
+```python
+f"hook writing techniques {target_audience} advertising"
+```
+Tags: `["hooks", "copywriting"]`
+
+### 2. `generate_benefit_variations()` (line ~2504)
+When using "Recreate Template" to generate headline variations, queries with:
+```python
+f"hook writing {angle_type} {target_audience} direct response advertising"
+```
+Tags: `["hooks", "copywriting"]`
+
+Both integrations:
+- Check if `ctx.deps.docs` is available
+- Query for up to 3 relevant knowledge chunks
+- Format results as markdown sections
+- Include in the generation prompt under "COPYWRITING BEST PRACTICES FROM KNOWLEDGE BASE"
+- Fail gracefully if knowledge base is unavailable
