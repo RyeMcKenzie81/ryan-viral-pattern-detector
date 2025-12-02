@@ -40,7 +40,7 @@ PUBLIC_PAGES = []
 
 # Cookie settings
 COOKIE_NAME = "viraltracker_auth"
-COOKIE_EXPIRY_DAYS = int(os.getenv("STREAMLIT_COOKIE_EXPIRY_DAYS", "30"))
+COOKIE_EXPIRY_DAYS = int(os.getenv("STREAMLIT_COOKIE_EXPIRY_DAYS", "90"))
 
 def _get_cookie_key() -> str:
     """Get or generate the cookie signing key."""
@@ -243,7 +243,7 @@ def _show_login_form(correct_password: str):
 
     with st.form("login_form"):
         password_input = st.text_input("Password", type="password")
-        remember = st.checkbox("Remember me for 30 days", value=True)
+        remember = st.checkbox("Remember me for 90 days", value=True)
         submitted = st.form_submit_button("Login", type="primary")
 
         if submitted:

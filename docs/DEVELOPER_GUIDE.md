@@ -253,14 +253,14 @@ STREAMLIT_PASSWORD=your-secure-password
 Optional settings:
 ```
 STREAMLIT_COOKIE_KEY=custom-signing-key    # Auto-generated if not set
-STREAMLIT_COOKIE_EXPIRY_DAYS=30            # How long sessions last
+STREAMLIT_COOKIE_EXPIRY_DAYS=90            # How long sessions last (default: 90)
 ```
 
 ### How It Works
 
 1. Users visit any page and see a login form
 2. After entering the correct password, a signed token is stored in localStorage
-3. The token persists for 30 days (configurable)
+3. The token persists for 90 days (configurable)
 4. Users can logout via the sidebar button
 
 ### Creating a Protected Page
