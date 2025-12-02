@@ -2501,6 +2501,26 @@ async def generate_benefit_variations(
         shuffled_content = all_content.copy()
         random.shuffle(shuffled_content)
 
+        # Query knowledge base for copywriting best practices
+        knowledge_context = ""
+        if hasattr(ctx.deps, 'docs') and ctx.deps.docs is not None:
+            try:
+                target_audience = product.get('target_audience', 'general audience')
+                angle_type = template_angle.get('angle_type', 'benefit')
+                knowledge_results = ctx.deps.docs.search(
+                    f"hook writing {angle_type} {target_audience} direct response advertising",
+                    limit=3,
+                    tags=["hooks", "copywriting"]
+                )
+                if knowledge_results:
+                    knowledge_sections = []
+                    for r in knowledge_results:
+                        knowledge_sections.append(f"### {r.title}\n{r.chunk_content}")
+                    knowledge_context = "\n\n".join(knowledge_sections)
+                    logger.info(f"Retrieved {len(knowledge_results)} knowledge base sections for benefit variations")
+            except Exception as e:
+                logger.warning(f"Knowledge base query failed (continuing without): {e}")
+
         # Get product offer and prohibited claims
         current_offer = product.get('current_offer', '')
         prohibited_claims = product.get('prohibited_claims', []) or []
@@ -2572,6 +2592,14 @@ async def generate_benefit_variations(
         **Reference Ad Style:**
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
+
+        {f'''**COPYWRITING BEST PRACTICES FROM KNOWLEDGE BASE:**
+        Use these proven techniques to write more compelling headlines:
+
+        {knowledge_context}
+
+        Apply these principles when crafting your adapted headlines.
+        ''' if knowledge_context else ''}
 
         **EMOTIONAL BENEFITS (Use these for headlines - they connect with the audience):**
         {json.dumps(headline_content, indent=2)}
