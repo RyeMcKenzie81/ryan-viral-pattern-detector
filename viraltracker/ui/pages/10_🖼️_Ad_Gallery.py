@@ -8,7 +8,7 @@ Pinterest-style masonry gallery of all generated ads.
 """
 
 import streamlit as st
-import asyncio
+import streamlit.components.v1 as components
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -137,129 +137,11 @@ def get_signed_url(storage_path: str) -> str:
 
 
 # ============================================================================
-# CSS Styles
+# CSS Styles (for non-gallery elements)
 # ============================================================================
 
-MASONRY_CSS = """
+STATS_CSS = """
 <style>
-/* Pinterest-style masonry grid */
-.masonry-grid {
-    column-count: 4;
-    column-gap: 16px;
-    padding: 16px;
-}
-
-@media (max-width: 1400px) {
-    .masonry-grid {
-        column-count: 3;
-    }
-}
-
-@media (max-width: 1000px) {
-    .masonry-grid {
-        column-count: 2;
-    }
-}
-
-@media (max-width: 600px) {
-    .masonry-grid {
-        column-count: 1;
-    }
-}
-
-.masonry-item {
-    break-inside: avoid;
-    margin-bottom: 16px;
-    background: #1e1e1e;
-    border-radius: 16px;
-    overflow: hidden;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.masonry-item:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 12px 24px rgba(0,0,0,0.3);
-}
-
-.masonry-item img {
-    width: 100%;
-    height: auto;
-    display: block;
-}
-
-.masonry-item-info {
-    padding: 12px;
-}
-
-.masonry-item-product {
-    font-weight: 600;
-    font-size: 14px;
-    color: #ffffff;
-    margin-bottom: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.masonry-item-date {
-    font-size: 12px;
-    color: #888;
-}
-
-.masonry-item-status {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 500;
-    margin-top: 6px;
-}
-
-.status-approved {
-    background: #1a472a;
-    color: #4ade80;
-}
-
-.status-rejected {
-    background: #472a2a;
-    color: #f87171;
-}
-
-.status-pending {
-    background: #3d3d00;
-    color: #facc15;
-}
-
-.status-flagged {
-    background: #472a1a;
-    color: #fb923c;
-}
-
-.masonry-item-hook {
-    font-size: 12px;
-    color: #aaa;
-    margin-top: 8px;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-}
-
-/* Filter bar styling */
-.filter-bar {
-    background: #1e1e1e;
-    padding: 16px;
-    border-radius: 12px;
-    margin-bottom: 16px;
-}
-
-/* Load more button */
-.load-more-container {
-    text-align: center;
-    padding: 24px;
-}
-
-/* Stats bar */
 .stats-bar {
     display: flex;
     gap: 24px;
@@ -268,20 +150,21 @@ MASONRY_CSS = """
     border-radius: 8px;
     margin-bottom: 16px;
 }
-
 .stat-item {
     text-align: center;
 }
-
 .stat-value {
     font-size: 24px;
     font-weight: 700;
     color: #ffffff;
 }
-
 .stat-label {
     font-size: 12px;
     color: #888;
+}
+.load-more-container {
+    text-align: center;
+    padding: 24px;
 }
 </style>
 """
@@ -363,7 +246,7 @@ def render_stats_bar(total_count: int, loaded_count: int, product_filter: str):
 
 
 def render_masonry_gallery(ads: List[Dict[str, Any]]):
-    """Render Pinterest-style masonry gallery."""
+    """Render Pinterest-style masonry gallery using components.html for proper rendering."""
     if not ads:
         st.info("No ads found. Create some ads first!")
         return
@@ -389,17 +272,21 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
         status_class = f"status-{status}"
         status_display = status.title()
 
-        # Hook text (truncated)
+        # Hook text (truncated) - escape quotes for HTML
         hook_html = ""
         if ad.get("hook_text"):
             hook_text = ad["hook_text"][:100] + "..." if len(ad.get("hook_text", "")) > 100 else ad.get("hook_text", "")
+            hook_text = hook_text.replace('"', '&quot;').replace("'", "&#39;")
             hook_html = f'<div class="masonry-item-hook">"{hook_text}"</div>'
+
+        # Escape product name for HTML
+        product_name = ad['product_name'].replace('"', '&quot;').replace("'", "&#39;")
 
         html_items.append(f"""
         <div class="masonry-item">
-            <img src="{image_url}" alt="Ad for {ad['product_name']}" loading="lazy">
+            <img src="{image_url}" alt="Ad for {product_name}" loading="lazy">
             <div class="masonry-item-info">
-                <div class="masonry-item-product">{ad['product_name']}</div>
+                <div class="masonry-item-product">{product_name}</div>
                 <div class="masonry-item-date">{date_str}</div>
                 <span class="masonry-item-status {status_class}">{status_display}</span>
                 {hook_html}
@@ -407,14 +294,119 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
         </div>
         """)
 
-    # Combine into masonry grid
-    masonry_html = f"""
-    <div class="masonry-grid">
-        {''.join(html_items)}
-    </div>
+    # Calculate height based on number of items (rough estimate)
+    # Each item is roughly 300-400px, 4 columns, so rows = items/4, height = rows * 350
+    num_items = len(html_items)
+    estimated_rows = (num_items + 3) // 4  # Ceiling division
+    estimated_height = max(600, min(3000, estimated_rows * 380))
+
+    # Complete HTML with embedded CSS
+    full_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: transparent;
+            }}
+            .masonry-grid {{
+                column-count: 4;
+                column-gap: 16px;
+                padding: 8px;
+            }}
+            @media (max-width: 1400px) {{
+                .masonry-grid {{ column-count: 3; }}
+            }}
+            @media (max-width: 1000px) {{
+                .masonry-grid {{ column-count: 2; }}
+            }}
+            @media (max-width: 600px) {{
+                .masonry-grid {{ column-count: 1; }}
+            }}
+            .masonry-item {{
+                break-inside: avoid;
+                margin-bottom: 16px;
+                background: #1e1e1e;
+                border-radius: 16px;
+                overflow: hidden;
+                transition: transform 0.2s ease, box-shadow 0.2s ease;
+            }}
+            .masonry-item:hover {{
+                transform: translateY(-4px);
+                box-shadow: 0 12px 24px rgba(0,0,0,0.3);
+            }}
+            .masonry-item img {{
+                width: 100%;
+                height: auto;
+                display: block;
+            }}
+            .masonry-item-info {{
+                padding: 12px;
+            }}
+            .masonry-item-product {{
+                font-weight: 600;
+                font-size: 14px;
+                color: #ffffff;
+                margin-bottom: 4px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }}
+            .masonry-item-date {{
+                font-size: 12px;
+                color: #888;
+            }}
+            .masonry-item-status {{
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: 500;
+                margin-top: 6px;
+            }}
+            .status-approved {{
+                background: #1a472a;
+                color: #4ade80;
+            }}
+            .status-rejected {{
+                background: #472a2a;
+                color: #f87171;
+            }}
+            .status-pending {{
+                background: #3d3d00;
+                color: #facc15;
+            }}
+            .status-flagged {{
+                background: #472a1a;
+                color: #fb923c;
+            }}
+            .masonry-item-hook {{
+                font-size: 12px;
+                color: #aaa;
+                margin-top: 8px;
+                display: -webkit-box;
+                -webkit-line-clamp: 2;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="masonry-grid">
+            {''.join(html_items)}
+        </div>
+    </body>
+    </html>
     """
 
-    st.markdown(masonry_html, unsafe_allow_html=True)
+    # Render using components.html for proper iframe rendering
+    components.html(full_html, height=estimated_height, scrolling=True)
 
 
 def render_load_more_button(current_count: int, total_count: int):
@@ -448,7 +440,7 @@ st.title("Ad Gallery")
 st.markdown("**Browse all generated ads in a Pinterest-style layout**")
 
 # Inject CSS
-st.markdown(MASONRY_CSS, unsafe_allow_html=True)
+st.markdown(STATS_CSS, unsafe_allow_html=True)
 
 # Load products for filter
 products = get_products_for_filter()
