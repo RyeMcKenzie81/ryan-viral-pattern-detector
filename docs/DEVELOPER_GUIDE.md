@@ -380,6 +380,71 @@ Assign documents to tools that should use them:
 - `ad_review` - Ad quality review
 - `ad_creation` - Full ad creation workflow
 
+---
+
+## Ad Creation Workflow
+
+The ad creation system generates Facebook ad variations using AI. See [AD_CREATION_AGENT_PLAN.md](AD_CREATION_AGENT_PLAN.md) for full architecture.
+
+### Key Components
+
+| Component | Description |
+|-----------|-------------|
+| `complete_ad_workflow` | Main orchestrator - runs all stages |
+| `generate_nano_banana_prompt` | Builds prompt for Gemini image generation |
+| `execute_nano_banana` | Calls Gemini API with reference images |
+| `review_ad_claude` / `review_ad_gemini` | Dual AI review system |
+
+### Product Image Selection
+
+The workflow supports **1-2 product images** per ad generation:
+
+**Auto Mode** (default):
+- AI selects best 1-2 images based on analysis scores
+- Considers image diversity (e.g., packaging + contents)
+- Uses `select_product_images` tool with `count=2`
+
+**Manual Mode**:
+- User selects up to 2 images in Ad Creator UI
+- Primary image (🥇): Hero/packaging shot
+- Secondary image (🥈): Contents/lifestyle/alternate view
+
+### Conditional Prompting
+
+When 2 images are provided, the prompt includes special instructions:
+
+```
+**PRIMARY PRODUCT IMAGE (Image 2):**
+- Main product packaging/hero shot
+- Reproduce EXACTLY
+
+**SECONDARY PRODUCT IMAGE (Image 3):**
+- Product contents, interior, or alternate view
+- Incorporate thoughtfully based on ad layout
+```
+
+Single image mode uses standard prompting without PRIMARY/SECONDARY labels.
+
+### Reference Images to Gemini
+
+The `execute_nano_banana` tool passes images to Gemini:
+- **1 image mode**: Template + Product = 2 reference images
+- **2 image mode**: Template + Primary + Secondary = 3 reference images
+
+Gemini supports up to 14 reference images, so there's headroom for future expansion.
+
+### Testing Ad Creation
+
+```bash
+# Unit test for prompt construction
+python3 test_secondary_image.py
+
+# Integration test with Yakety Pack
+python3 test_yakety_pack_workflow.py
+```
+
+---
+
 ## Resources
 
 - [Architecture Overview](ARCHITECTURE.md) - System design
