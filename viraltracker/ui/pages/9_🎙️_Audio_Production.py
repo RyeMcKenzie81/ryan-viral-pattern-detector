@@ -20,6 +20,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 # Initialize session state
 if 'audio_session_id' not in st.session_state:
     st.session_state.audio_session_id = None

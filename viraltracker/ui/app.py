@@ -389,6 +389,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Authentication - must be after page config
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 
 # ============================================================================
 # Session State Initialization

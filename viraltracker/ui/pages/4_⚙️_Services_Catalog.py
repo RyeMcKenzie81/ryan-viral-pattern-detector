@@ -25,6 +25,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 st.title("⚙️ Services Catalog")
 st.markdown("**Layered architecture: Agent Layer → Service Layer**")
 

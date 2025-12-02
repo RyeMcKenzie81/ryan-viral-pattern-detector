@@ -23,6 +23,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 st.title("📜 Conversation History")
 st.markdown("**View and export your current chat session**")
 

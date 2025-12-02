@@ -23,6 +23,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 st.title("🗄️ Database Browser")
 st.markdown("**Browse and export data from all database tables**")
 

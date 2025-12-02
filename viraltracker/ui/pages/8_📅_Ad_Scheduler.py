@@ -19,6 +19,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 # PST timezone for all scheduling
 PST = pytz.timezone('America/Los_Angeles')
 

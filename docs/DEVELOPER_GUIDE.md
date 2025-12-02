@@ -10,6 +10,7 @@ Welcome to ViralTracker development! This guide will help you set up your enviro
 5. [Testing Strategy](#testing-strategy)
 6. [Code Organization](#code-organization)
 7. [Common Tasks](#common-tasks)
+8. [Streamlit Authentication](#streamlit-authentication)
 
 ## Quick Start
 
@@ -236,6 +237,80 @@ git commit -m "feat: Add new feature"
 
 # Push and create PR
 git push origin feature/my-new-feature
+```
+
+## Streamlit Authentication
+
+The Streamlit UI is password-protected with persistent cookie-based sessions.
+
+### Configuration
+
+Set the `STREAMLIT_PASSWORD` environment variable in Railway:
+```
+STREAMLIT_PASSWORD=your-secure-password
+```
+
+Optional settings:
+```
+STREAMLIT_COOKIE_KEY=custom-signing-key    # Auto-generated if not set
+STREAMLIT_COOKIE_EXPIRY_DAYS=30            # How long sessions last
+```
+
+### How It Works
+
+1. Users visit any page and see a login form
+2. After entering the correct password, a signed token is stored in localStorage
+3. The token persists for 30 days (configurable)
+4. Users can logout via the sidebar button
+
+### Creating a Protected Page
+
+All pages are protected by default. Add this after `st.set_page_config()`:
+
+```python
+st.set_page_config(page_title="My Page", page_icon="📄", layout="wide")
+
+# Authentication - add this line
+from viraltracker.ui.auth import require_auth
+require_auth()
+
+# Rest of your page code...
+st.title("My Protected Page")
+```
+
+### Creating a Public Page (No Auth Required)
+
+**Option 1: Use the `public` parameter**
+```python
+from viraltracker.ui.auth import require_auth
+require_auth(public=True)  # Skip authentication for this page
+```
+
+**Option 2: Add to the whitelist**
+
+Edit `viraltracker/ui/auth.py` and add your page filename to `PUBLIC_PAGES`:
+```python
+# Pages that don't require authentication
+PUBLIC_PAGES = [
+    "Client_Gallery.py",
+    "Public_Report.py",
+]
+```
+
+### Token-Based Client Access (Future Enhancement)
+
+For client-facing pages with per-client tokens:
+```python
+# Check for client token in URL
+client_token = st.query_params.get("token")
+if not verify_client_token(client_token):
+    st.error("Invalid or expired link")
+    st.stop()
+```
+
+This allows sharing links like:
+```
+https://yourapp.railway.app/Client_Gallery?token=abc123
 ```
 
 ## Resources
