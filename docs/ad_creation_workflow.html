@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ad Creation Workflow - Technical Documentation</title>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #3b82f6;
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --bg-code: #0d1117;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #334155;
+            --connector: #475569;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--primary), #a855f7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+
+        .workflow-overview {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 3rem;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+
+        .stat-card .number {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .stat-card .label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Flowchart Styles */
+        .flowchart {
+            position: relative;
+            padding: 2rem 0;
+        }
+
+        .stage {
+            margin-bottom: 2rem;
+            position: relative;
+        }
+
+        .stage-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .stage-number {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.1rem;
+            flex-shrink: 0;
+        }
+
+        .stage-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .stage-description {
+            color: var(--text-secondary);
+            margin-left: 56px;
+            margin-bottom: 1rem;
+        }
+
+        /* Tool Node Styles */
+        .tool-node {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-left: 56px;
+            margin-bottom: 1rem;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .tool-node:hover {
+            border-color: var(--primary);
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.2);
+        }
+
+        .tool-node.expanded {
+            border-color: var(--primary);
+        }
+
+        .tool-header {
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), transparent);
+        }
+
+        .tool-header:hover {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), transparent);
+        }
+
+        .tool-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .tool-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+
+        .tool-icon.ingestion { background: rgba(59, 130, 246, 0.2); }
+        .tool-icon.analysis { background: rgba(168, 85, 247, 0.2); }
+        .tool-icon.generation { background: rgba(34, 197, 94, 0.2); }
+        .tool-icon.review { background: rgba(245, 158, 11, 0.2); }
+
+        .tool-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .tool-category {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .tool-category.ingestion { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+        .tool-category.analysis { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+        .tool-category.generation { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
+        .tool-category.review { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+
+        .expand-icon {
+            font-size: 1.5rem;
+            color: var(--text-muted);
+            transition: transform 0.3s ease;
+        }
+
+        .tool-node.expanded .expand-icon {
+            transform: rotate(180deg);
+        }
+
+        .tool-content {
+            display: none;
+            padding: 0 1.5rem 1.5rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .tool-node.expanded .tool-content {
+            display: block;
+        }
+
+        .tool-section {
+            margin-top: 1.5rem;
+        }
+
+        .tool-section h4 {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .tool-section h4::before {
+            content: '';
+            width: 4px;
+            height: 16px;
+            background: var(--primary);
+            border-radius: 2px;
+        }
+
+        .description-text {
+            color: var(--text-primary);
+            line-height: 1.7;
+        }
+
+        /* Code Block Styles */
+        .code-block {
+            background: var(--bg-code);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: 'Fira Code', 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            border: 1px solid var(--border);
+        }
+
+        .code-block .keyword { color: #ff79c6; }
+        .code-block .string { color: #f1fa8c; }
+        .code-block .number { color: #bd93f9; }
+        .code-block .comment { color: #6272a4; }
+        .code-block .function { color: #50fa7b; }
+        .code-block .variable { color: #8be9fd; }
+
+        /* Prompt Block Styles */
+        .prompt-block {
+            background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(99, 102, 241, 0.1));
+            border: 1px solid rgba(168, 85, 247, 0.3);
+            border-radius: 8px;
+            padding: 1rem;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .prompt-block::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .prompt-block::-webkit-scrollbar-track {
+            background: var(--bg-dark);
+            border-radius: 4px;
+        }
+
+        .prompt-block::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        /* JSON Schema Styles */
+        .json-schema {
+            background: var(--bg-code);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            border: 1px solid var(--border);
+        }
+
+        .json-key { color: #8be9fd; }
+        .json-string { color: #f1fa8c; }
+        .json-number { color: #bd93f9; }
+        .json-boolean { color: #ff79c6; }
+
+        /* Tags */
+        .tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .tag {
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--primary);
+        }
+
+        /* Connector Lines */
+        .connector {
+            position: relative;
+            margin-left: 76px;
+            padding-left: 20px;
+            margin-bottom: 0.5rem;
+        }
+
+        .connector::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--connector);
+        }
+
+        .connector::after {
+            content: '↓';
+            position: absolute;
+            left: -7px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--connector);
+            font-size: 1rem;
+        }
+
+        /* Decision Node */
+        .decision-node {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(249, 115, 22, 0.2));
+            border: 2px dashed rgba(245, 158, 11, 0.5);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-left: 56px;
+            margin-bottom: 1rem;
+        }
+
+        .decision-title {
+            font-weight: 600;
+            color: #fbbf24;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .branch {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .branch-option {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 1rem;
+            border: 1px solid var(--border);
+        }
+
+        .branch-option h5 {
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        /* Loop Indicator */
+        .loop-container {
+            border: 2px dashed var(--primary);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-left: 56px;
+            position: relative;
+        }
+
+        .loop-label {
+            position: absolute;
+            top: -12px;
+            left: 20px;
+            background: var(--bg-dark);
+            padding: 0 0.75rem;
+            color: var(--primary);
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        /* Footer */
+        footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        /* Mode Toggle */
+        .mode-toggle {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .mode-btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .mode-btn:hover {
+            border-color: var(--primary);
+        }
+
+        .mode-btn.active {
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            h1 {
+                font-size: 1.75rem;
+            }
+
+            .tool-node {
+                margin-left: 0;
+            }
+
+            .stage-description {
+                margin-left: 0;
+            }
+
+            .branch {
+                grid-template-columns: 1fr;
+            }
+
+            .loop-container {
+                margin-left: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎨 Ad Creation Workflow</h1>
+            <p class="subtitle">Complete technical documentation of the Facebook ad generation pipeline</p>
+        </header>
+
+        <!-- Overview Stats -->
+        <div class="workflow-overview">
+            <div class="stat-card">
+                <div class="number">16</div>
+                <div class="label">Specialized Tools</div>
+            </div>
+            <div class="stat-card">
+                <div class="number">13</div>
+                <div class="label">Workflow Stages</div>
+            </div>
+            <div class="stat-card">
+                <div class="number">2</div>
+                <div class="label">AI Reviewers</div>
+            </div>
+            <div class="stat-card">
+                <div class="number">2</div>
+                <div class="label">Content Modes</div>
+            </div>
+        </div>
+
+        <!-- Mode Toggle -->
+        <div class="mode-toggle">
+            <button class="mode-btn active" onclick="setMode('all')">All Tools</button>
+            <button class="mode-btn" onclick="setMode('hooks')">Hooks Mode</button>
+            <button class="mode-btn" onclick="setMode('template')">Recreate Template Mode</button>
+        </div>
+
+        <!-- Flowchart -->
+        <div class="flowchart">
+
+            <!-- STAGE 1: Initialization -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">1</div>
+                    <h2 class="stage-title">Initialization</h2>
+                </div>
+                <p class="stage-description">Create database record and upload reference ad to storage</p>
+
+                <!-- create_ad_run -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon generation">📝</div>
+                            <span class="tool-name">create_ad_run</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category generation">Generation</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Initialize the ad creation workflow by creating a record in the ad_runs table. This links the product and reference ad, sets the initial status to "pending", and returns an ad_run_id for subsequent operations.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Parameters</h4>
+                            <div class="code-block">
+<span class="variable">product_id</span>: <span class="keyword">str</span>  <span class="comment"># UUID of product</span>
+<span class="variable">reference_ad_storage_path</span>: <span class="keyword">str</span>  <span class="comment"># Storage path to uploaded reference ad</span>
+<span class="variable">project_id</span>: <span class="keyword">Optional</span>[<span class="keyword">str</span>]  <span class="comment"># Optional UUID of project</span>
+                            </div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">
+<span class="json-string">"ad_run_id"</span>: <span class="json-string">"uuid-string"</span>
+                            </div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Rate Limit</h4>
+                            <div class="tags">
+                                <span class="tag">10/minute</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- upload_reference_ad -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon ingestion">📤</div>
+                            <span class="tool-name">upload_reference_ad</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category ingestion">Ingestion</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Upload the user-provided reference ad image to Supabase Storage. This image will be analyzed by Vision AI to understand the desired ad format and style.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Parameters</h4>
+                            <div class="code-block">
+<span class="variable">ad_run_id</span>: <span class="keyword">str</span>  <span class="comment"># UUID of ad run</span>
+<span class="variable">image_base64</span>: <span class="keyword">str</span>  <span class="comment"># Base64-encoded image data</span>
+<span class="variable">filename</span>: <span class="keyword">str</span> = <span class="string">"reference.png"</span>  <span class="comment"># Filename for storage</span>
+                            </div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">
+<span class="json-string">"reference-ads/{ad_run_id}_{filename}"</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 2: Data Fetching -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">2</div>
+                    <h2 class="stage-title">Data Fetching</h2>
+                </div>
+                <p class="stage-description">Load product data, hooks, and ad brief template from database</p>
+
+                <!-- get_product_with_images -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon ingestion">📦</div>
+                            <span class="tool-name">get_product_with_images</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category ingestion">Ingestion</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Fetch complete product information from the database including benefits, target audience, unique selling points, brand voice notes, current offer, social proof, prohibited claims, founders, and storage paths to all product images needed for ad generation.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">{
+  <span class="json-key">"id"</span>: <span class="json-string">"uuid"</span>,
+  <span class="json-key">"name"</span>: <span class="json-string">"Product Name"</span>,
+  <span class="json-key">"benefits"</span>: [<span class="json-string">"benefit1"</span>, <span class="json-string">"benefit2"</span>],
+  <span class="json-key">"unique_selling_points"</span>: [<span class="json-string">"USP1"</span>, <span class="json-string">"USP2"</span>],
+  <span class="json-key">"key_ingredients"</span>: [<span class="json-string">"ingredient1"</span>],
+  <span class="json-key">"target_audience"</span>: <span class="json-string">"audience description"</span>,
+  <span class="json-key">"current_offer"</span>: <span class="json-string">"25% OFF + 2 Free Gifts"</span>,
+  <span class="json-key">"social_proof"</span>: <span class="json-string">"4.9 stars from 312+ families"</span>,
+  <span class="json-key">"prohibited_claims"</span>: [<span class="json-string">"claim1"</span>],
+  <span class="json-key">"brand_voice_notes"</span>: <span class="json-string">"tone guidelines..."</span>,
+  <span class="json-key">"founders"</span>: <span class="json-string">"Chris, Kevin, D'Arcy, and Ryan"</span>,
+  <span class="json-key">"main_image_storage_path"</span>: <span class="json-string">"products/{id}/main.png"</span>,
+  <span class="json-key">"brand_id"</span>: <span class="json-string">"uuid"</span>
+}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- get_hooks_for_product -->
+                <div class="tool-node" data-mode="hooks" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon ingestion">🪝</div>
+                            <span class="tool-name">get_hooks_for_product</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category ingestion">Ingestion</span>
+                            <span class="tag" style="background: rgba(59, 130, 246, 0.3);">Hooks Mode Only</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Fetch persuasive hooks for a product from the database. Hooks are scored by impact (0-21 points) and emotional resonance, returned sorted by impact_score DESC.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Parameters</h4>
+                            <div class="code-block">
+<span class="variable">product_id</span>: <span class="keyword">str</span>  <span class="comment"># UUID of product</span>
+<span class="variable">limit</span>: <span class="keyword">int</span> = <span class="number">50</span>  <span class="comment"># Maximum hooks to return</span>
+<span class="variable">active_only</span>: <span class="keyword">bool</span> = <span class="keyword">True</span>  <span class="comment"># Only return active hooks</span>
+                            </div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">[{
+  <span class="json-key">"id"</span>: <span class="json-string">"uuid"</span>,
+  <span class="json-key">"text"</span>: <span class="json-string">"Hook text here"</span>,
+  <span class="json-key">"category"</span>: <span class="json-string">"skepticism_overcome"</span>,
+  <span class="json-key">"framework"</span>: <span class="json-string">"Skepticism Overcome"</span>,
+  <span class="json-key">"impact_score"</span>: <span class="json-number">21</span>,
+  <span class="json-key">"emotional_score"</span>: <span class="json-string">"Very High"</span>,
+  <span class="json-key">"active"</span>: <span class="json-boolean">true</span>
+}]</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- get_ad_brief_template -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon ingestion">📋</div>
+                            <span class="tool-name">get_ad_brief_template</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category ingestion">Ingestion</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Fetch ad brief template for brand (or global). Contains guidelines for image generation, brand voice, and creative requirements. Falls back to global template if brand-specific template not found.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">{
+  <span class="json-key">"id"</span>: <span class="json-string">"uuid"</span>,
+  <span class="json-key">"brand_id"</span>: <span class="json-string">"uuid"</span> | <span class="json-boolean">null</span>,
+  <span class="json-key">"name"</span>: <span class="json-string">"Template Name"</span>,
+  <span class="json-key">"instructions"</span>: <span class="json-string">"Detailed instructions for ad generation..."</span>,
+  <span class="json-key">"active"</span>: <span class="json-boolean">true</span>
+}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 3: Reference Ad Analysis -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">3</div>
+                    <h2 class="stage-title">Reference Ad Analysis</h2>
+                </div>
+                <p class="stage-description">Use Vision AI to understand the reference ad format, style, and structure</p>
+
+                <!-- analyze_reference_ad -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon analysis">🔍</div>
+                            <span class="tool-name">analyze_reference_ad</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category analysis">Analysis</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Analyze reference ad using Gemini Vision AI to extract format type, layout structure, fixed/variable elements, text placement, color palette, authenticity markers, social proof elements, founder signatures/mentions, and canvas dimensions.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Vision AI Prompt</h4>
+                            <div class="prompt-block">Analyze this Facebook ad reference image and extract the following:
+
+1. **Format Type**: What type of ad is this?
+   - testimonial (customer quote/review)
+   - quote_style (text overlay on product)
+   - before_after (transformation showcase)
+   - product_showcase (product-focused with benefits)
+
+2. **Layout Structure**: How is the ad laid out?
+   - single_image (one cohesive design)
+   - two_panel (split screen/side-by-side)
+   - carousel (multiple frames)
+
+3. **Fixed Elements**: What elements should stay the same across all 5 variations?
+   (e.g., product bottle, logo, offer bar, benefit icons)
+
+4. **Variable Elements**: What elements should change per variation?
+   (e.g., hook text, background color, testimonial name)
+
+5. **Text Placement**: Where is text positioned?
+   Provide a mapping of text type → position
+
+6. **Color Palette**: Extract main colors as hex codes
+
+7. **Authenticity Markers**: What makes this feel authentic?
+   (e.g., screenshot style, quote marks, timestamps, usernames, emojis)
+
+8. **Social Proof Elements**: Does this ad include trust signals?
+   - Statistical badges (e.g., "100,000+ Sold")
+   - Award badges or certification marks
+   - Return: has_social_proof, social_proof_style, social_proof_placement
+
+9. **Founder/Personal Elements**: Does this ad include founder-related content?
+   A) Founder Signature - Sign-offs at the end
+   B) Founder Mention - References in body text
+   - Return: has_founder_signature, founder_signature_style, founder_signature_placement
+   - Return: has_founder_mention, founder_mention_style
+
+10. **Canvas Size**: What are the dimensions? (e.g., 1080x1080px)
+
+11. **Detailed Description**: Comprehensive description for prompt engineering</div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">{
+  <span class="json-key">"format_type"</span>: <span class="json-string">"testimonial"</span>,
+  <span class="json-key">"layout_structure"</span>: <span class="json-string">"single_image"</span>,
+  <span class="json-key">"fixed_elements"</span>: [<span class="json-string">"product_bottle"</span>, <span class="json-string">"offer_bar"</span>],
+  <span class="json-key">"variable_elements"</span>: [<span class="json-string">"hook_text"</span>, <span class="json-string">"background_color"</span>],
+  <span class="json-key">"text_placement"</span>: {<span class="json-key">"headline"</span>: <span class="json-string">"top_center"</span>},
+  <span class="json-key">"color_palette"</span>: [<span class="json-string">"#F5F0E8"</span>, <span class="json-string">"#2A5434"</span>],
+  <span class="json-key">"authenticity_markers"</span>: [<span class="json-string">"screenshot_style"</span>],
+  <span class="json-key">"has_social_proof"</span>: <span class="json-boolean">true</span>,
+  <span class="json-key">"social_proof_style"</span>: <span class="json-string">"corner badge"</span>,
+  <span class="json-key">"social_proof_placement"</span>: <span class="json-string">"top_right"</span>,
+  <span class="json-key">"has_founder_signature"</span>: <span class="json-boolean">true</span>,
+  <span class="json-key">"founder_signature_style"</span>: <span class="json-string">"handwritten at bottom"</span>,
+  <span class="json-key">"founder_signature_placement"</span>: <span class="json-string">"bottom_center"</span>,
+  <span class="json-key">"has_founder_mention"</span>: <span class="json-boolean">false</span>,
+  <span class="json-key">"founder_mention_style"</span>: <span class="json-boolean">null</span>,
+  <span class="json-key">"canvas_size"</span>: <span class="json-string">"1080x1080px"</span>,
+  <span class="json-key">"detailed_description"</span>: <span class="json-string">"Full description..."</span>
+}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 4: Content Selection (Decision Point) -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">4</div>
+                    <h2 class="stage-title">Content Source Selection</h2>
+                </div>
+                <p class="stage-description">Choose between hooks from database or recreate template mode</p>
+
+                <div class="decision-node">
+                    <div class="decision-title">⚡ Content Source Decision</div>
+                    <p>The workflow branches based on the <code>content_source</code> parameter:</p>
+
+                    <div class="branch">
+                        <div class="branch-option">
+                            <h5>🪝 Hooks Mode</h5>
+                            <p>Use existing hooks from the database. Best when you have a library of tested, high-performing hooks.</p>
+                            <p style="margin-top: 0.5rem; color: var(--text-muted); font-size: 0.85rem;"><code>content_source="hooks"</code></p>
+                        </div>
+                        <div class="branch-option">
+                            <h5>🔄 Recreate Template Mode</h5>
+                            <p>Extract the template's persuasive angle and generate variations using product benefits/USPs.</p>
+                            <p style="margin-top: 0.5rem; color: var(--text-muted); font-size: 0.85rem;"><code>content_source="recreate_template"</code></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- select_hooks -->
+                <div class="tool-node" data-mode="hooks" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon analysis">🎯</div>
+                            <span class="tool-name">select_hooks</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category analysis">Analysis</span>
+                            <span class="tag" style="background: rgba(59, 130, 246, 0.3);">Hooks Mode</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Select diverse hooks using Gemini AI to maximize persuasive variety. Hooks are shuffled before sending to ensure variety across runs. The AI adapts each hook's text to match the reference ad's style.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Selection Criteria</h4>
+                            <ul style="margin-left: 1.5rem; color: var(--text-secondary);">
+                                <li>Maximize diversity across persuasive categories</li>
+                                <li>Prioritize high impact scores (15-21 preferred)</li>
+                                <li>Avoid repetition of the same category</li>
+                                <li>Cover different persuasive principles</li>
+                                <li>Fix any typos or unclear phrasing</li>
+                                <li>Ensure adapted text mentions product category</li>
+                            </ul>
+                        </div>
+                        <div class="tool-section">
+                            <h4>AI Prompt (Gemini)</h4>
+                            <div class="prompt-block">You are selecting hooks for Facebook ad variations.
+
+**Product Context:**
+- Product: {product_name}
+- Target Audience: {target_audience}
+
+**Reference Ad Style:**
+- Format: {format_type}
+- Authenticity markers: {authenticity_markers}
+
+**Task:** Select exactly {count} hooks that:
+1. Maximize diversity across persuasive categories
+2. Prioritize high impact scores (15-21 preferred)
+3. Avoid repetition of the same category
+4. Cover different persuasive principles
+
+For each selected hook:
+1. Provide reasoning for why it was chosen
+2. Adapt the text to match the reference ad style/tone AND ensure clarity:
+   - Maintain the core message
+   - Match authenticity markers (e.g., casual tone, emojis)
+   - **CRITICAL: Fix any typos, nonsense words, or unclear phrasing**
+   - **CRITICAL: Ensure the adapted text mentions the product category**</div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">[{
+  <span class="json-key">"hook_id"</span>: <span class="json-string">"uuid from input"</span>,
+  <span class="json-key">"text"</span>: <span class="json-string">"original text"</span>,
+  <span class="json-key">"category"</span>: <span class="json-string">"category from input"</span>,
+  <span class="json-key">"framework"</span>: <span class="json-string">"framework from input"</span>,
+  <span class="json-key">"impact_score"</span>: <span class="json-number">21</span>,
+  <span class="json-key">"reasoning"</span>: <span class="json-string">"Brief explanation"</span>,
+  <span class="json-key">"adapted_text"</span>: <span class="json-string">"Hook adapted to reference ad style"</span>
+}]</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- extract_template_angle -->
+                <div class="tool-node" data-mode="template" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon analysis">📐</div>
+                            <span class="tool-name">extract_template_angle</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category analysis">Analysis</span>
+                            <span class="tag" style="background: rgba(168, 85, 247, 0.3);">Template Mode</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Extract the persuasive angle and messaging structure from a reference ad using Vision AI. This identifies the template pattern that can be adapted for different product benefits.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Vision AI Prompt</h4>
+                            <div class="prompt-block">Analyze this Facebook ad and extract its persuasive angle and messaging structure.
+
+1. **Angle Type**: What is the primary persuasive approach?
+   - before_after: Shows transformation (e.g., "went from X to Y")
+   - testimonial: Personal experience/quote format
+   - benefit_statement: Direct benefit claim
+   - social_proof: Uses numbers/authority
+   - question_hook: Poses a question to the reader
+   - problem_solution: Presents problem then solution
+
+2. **Original Text**: Extract the EXACT main headline/hook text from the ad.
+
+3. **Messaging Template**: Create a template version with {placeholders}:
+   - Replace the specific benefit/result with {benefit}
+   - Replace specific product name with {product}
+   - Replace specific timeframe with {timeframe} if present
+   Example: "My dog went from limping to running in 2 weeks!"
+   → "My {subject} went from {problem} to {result} in {timeframe}!"
+
+4. **Tone**: casual | professional | urgent | emotional
+
+5. **Key Elements**: Critical structural elements
+   (e.g., transformation, timeframe, specific_result, personal_pronoun)
+
+6. **Adaptation Guidance**: How to adapt this template for different benefits</div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">{
+  <span class="json-key">"angle_type"</span>: <span class="json-string">"before_after"</span>,
+  <span class="json-key">"original_text"</span>: <span class="json-string">"My dog went from limping to running in 2 weeks!"</span>,
+  <span class="json-key">"messaging_template"</span>: <span class="json-string">"My {subject} went from {problem} to {result} in {timeframe}!"</span>,
+  <span class="json-key">"tone"</span>: <span class="json-string">"casual"</span>,
+  <span class="json-key">"key_elements"</span>: [<span class="json-string">"transformation"</span>, <span class="json-string">"timeframe"</span>],
+  <span class="json-key">"adaptation_guidance"</span>: <span class="json-string">"Keep the before/after structure..."</span>
+}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- generate_benefit_variations -->
+                <div class="tool-node" data-mode="template" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon analysis">✨</div>
+                            <span class="tool-name">generate_benefit_variations</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category analysis">Analysis</span>
+                            <span class="tag" style="background: rgba(168, 85, 247, 0.3);">Template Mode</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Generate hook-like variations by applying the extracted template angle to different product benefits and USPs. Creates variations that maintain the template's persuasive structure while highlighting different aspects of the product.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>AI Prompt (Gemini)</h4>
+                            <div class="prompt-block">You are generating ad copy variations by applying a proven template structure to different product benefits.
+
+**Product:** {product_name}
+**Target Audience:** {target_audience}
+
+**PRODUCT'S ACTUAL OFFER (USE THIS EXACTLY):**
+{current_offer}
+
+**PROHIBITED CLAIMS (NEVER USE THESE):**
+{prohibited_claims}
+
+**Template Angle (from successful reference ad):**
+- Type: {angle_type}
+- Original text: "{original_text}"
+- Template structure: "{messaging_template}"
+- Tone: {tone}
+- Key elements: {key_elements}
+
+**Task:** Select exactly {count} different benefits/USPs and create adapted headlines.
+
+**CRITICAL ACCURACY RULES:**
+- ONLY use the EXACT offer specified above - NEVER make up percentages or discounts
+- If the template has a different offer, replace it with the product's actual offer
+- If no offer is specified, do NOT include any discount claims
+- NEVER use any prohibited claims
+- Each variation MUST use a DIFFERENT benefit/USP</div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">[{
+  <span class="json-key">"hook_id"</span>: <span class="json-string">"generated-uuid"</span>,
+  <span class="json-key">"text"</span>: <span class="json-string">"original benefit text"</span>,
+  <span class="json-key">"category"</span>: <span class="json-string">"benefit_variation"</span>,
+  <span class="json-key">"framework"</span>: <span class="json-string">"Recreate Template (before_after)"</span>,
+  <span class="json-key">"impact_score"</span>: <span class="json-number">15</span>,
+  <span class="json-key">"reasoning"</span>: <span class="json-string">"Why this benefit works..."</span>,
+  <span class="json-key">"adapted_text"</span>: <span class="json-string">"Benefit applied to template structure"</span>
+}]</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 5: Image Selection -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">5</div>
+                    <h2 class="stage-title">Product Image Selection</h2>
+                </div>
+                <p class="stage-description">Select the best product images for ad generation</p>
+
+                <!-- select_product_images -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon analysis">🖼️</div>
+                            <span class="tool-name">select_product_images</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category analysis">Analysis</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Select the most appropriate product images based on image quality, compatibility with reference ad layout, and product visibility. Prefers main images first, then fills remaining slots with other images.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Selection Logic</h4>
+                            <div class="code-block">
+<span class="comment"># Priority: main images first</span>
+<span class="keyword">for</span> path <span class="keyword">in</span> product_image_paths:
+    <span class="keyword">if</span> <span class="string">"main"</span> <span class="keyword">in</span> path:
+        selected_paths.<span class="function">append</span>(path)
+
+<span class="comment"># Fill remaining slots with other images</span>
+<span class="keyword">for</span> path <span class="keyword">in</span> product_image_paths:
+    <span class="keyword">if</span> path <span class="keyword">not in</span> selected_paths:
+        selected_paths.<span class="function">append</span>(path)
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- match_benefit_to_hook (helper function) -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon analysis">🔗</div>
+                            <span class="tool-name">match_benefit_to_hook</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tag" style="background: rgba(100, 116, 139, 0.3); color: #94a3b8;">Helper Function</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Select the most relevant product benefit/USP for a given hook. Combines both benefits and unique_selling_points to find the best semantic match using keyword overlap scoring.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Matching Logic</h4>
+                            <div class="code-block">
+<span class="comment"># Strategy:</span>
+<span class="comment"># 1. Combine unique_selling_points + benefits into one list</span>
+<span class="comment"># 2. Extract keywords from hook text and category</span>
+<span class="comment"># 3. Score each item by keyword overlap</span>
+<span class="comment"># 4. Return highest scoring item</span>
+
+<span class="variable">category_keywords</span> = {
+    <span class="string">'before_after'</span>: [<span class="string">'transform'</span>, <span class="string">'change'</span>, <span class="string">'improve'</span>],
+    <span class="string">'social_proof'</span>: [<span class="string">'trust'</span>, <span class="string">'proven'</span>, <span class="string">'works'</span>],
+    <span class="string">'authority'</span>: [<span class="string">'expert'</span>, <span class="string">'professional'</span>, <span class="string">'science'</span>],
+    <span class="comment"># ... more categories</span>
+}
+
+<span class="comment"># Score = word overlap + partial match bonus (0.5)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 6-8: Generation Loop -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">6-8</div>
+                    <h2 class="stage-title">Ad Generation Loop</h2>
+                </div>
+                <p class="stage-description">Generate N ad variations ONE AT A TIME for resilience</p>
+
+                <div class="loop-container">
+                    <span class="loop-label">🔁 For each variation (1 to N)</span>
+
+                    <!-- generate_nano_banana_prompt -->
+                    <div class="tool-node" onclick="toggleTool(this)" style="margin-left: 0;">
+                        <div class="tool-header">
+                            <div class="tool-info">
+                                <div class="tool-icon generation">📝</div>
+                                <span class="tool-name">generate_nano_banana_prompt</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 1rem;">
+                                <span class="tool-category generation">Generation</span>
+                                <span class="expand-icon">▼</span>
+                            </div>
+                        </div>
+                        <div class="tool-content">
+                            <div class="tool-section">
+                                <h4>Description</h4>
+                                <p class="description-text">Construct a detailed prompt for Gemini Nano Banana Pro 3 image generation. Combines reference ad analysis, selected hook, product information, ad brief instructions, and technical specifications.</p>
+                            </div>
+                            <div class="tool-section">
+                                <h4>Prompt Sections Built</h4>
+                                <ul style="margin-left: 1.5rem; color: var(--text-secondary);">
+                                    <li><strong>Style Guide:</strong> Format, layout, colors, authenticity markers</li>
+                                    <li><strong>Hook:</strong> Adapted headline text</li>
+                                    <li><strong>Product:</strong> Name, matched benefit, target audience</li>
+                                    <li><strong>Current Offer:</strong> EXACT offer wording (if available)</li>
+                                    <li><strong>USPs:</strong> Unique selling points</li>
+                                    <li><strong>Brand Voice:</strong> Tone and style guidelines</li>
+                                    <li><strong>Dimensions:</strong> Product sizing for realistic placement</li>
+                                    <li><strong>Lighting:</strong> Scene lighting integration guidance</li>
+                                    <li><strong>Social Proof:</strong> If template has it AND product has data</li>
+                                    <li><strong>Founders:</strong> If template has signature/mention AND product has founders</li>
+                                    <li><strong>Prohibited Claims:</strong> What NOT to say</li>
+                                    <li><strong>Disclaimers:</strong> Required legal text</li>
+                                </ul>
+                            </div>
+                            <div class="tool-section">
+                                <h4>Critical Requirements in Prompt</h4>
+                                <div class="prompt-block">**Critical Requirements:**
+- Use product image EXACTLY as provided (no hallucination)
+- Match reference ad layout and style
+- Maintain brand voice from ad brief
+- If offer is provided, use EXACT wording (no hallucination of discounts)
+- Do NOT use any prohibited claims listed above
+
+**⚠️ OFFER WARNING:**
+- DO NOT copy offer elements from the reference ad template
+- ONLY use the offer text provided in "Current Offer" section above
+- If NO offer is listed above, DO NOT add any offer/discount text
+
+**LIGHTING & PRODUCT INTEGRATION (CRITICAL):**
+- Analyze the lighting direction, intensity, and color temperature
+- Apply MATCHING lighting to the product image
+- Product shadows must fall in the same direction as scene elements
+- The product should look naturally "in" the scene, not "pasted on"
+
+**FOUNDERS / PERSONAL SIGNATURE (if detected):**
+- USE THIS EXACT TEXT FOR FOUNDERS: "{founders_text}"
+- DO NOT copy founder names from the reference ad template</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- execute_nano_banana -->
+                    <div class="tool-node" onclick="toggleTool(this)" style="margin-left: 0; margin-top: 1rem;">
+                        <div class="tool-header">
+                            <div class="tool-info">
+                                <div class="tool-icon generation">🎨</div>
+                                <span class="tool-name">execute_nano_banana</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 1rem;">
+                                <span class="tool-category generation">Generation</span>
+                                <span class="expand-icon">▼</span>
+                            </div>
+                        </div>
+                        <div class="tool-content">
+                            <div class="tool-section">
+                                <h4>Description</h4>
+                                <p class="description-text">Execute Gemini Nano Banana Pro 3 image generation. Downloads reference images, calls the Gemini API with the constructed prompt, and returns the generated image as base64.</p>
+                            </div>
+                            <div class="tool-section">
+                                <h4>Process Flow</h4>
+                                <div class="code-block">
+<span class="comment"># 1. Download reference images</span>
+<span class="variable">template_data</span> = <span class="keyword">await</span> download_image(template_reference_path)
+<span class="variable">product_data</span> = <span class="keyword">await</span> download_image(product_image_path)
+
+<span class="comment"># 2. Call Gemini Nano Banana API</span>
+<span class="variable">image_base64</span> = <span class="keyword">await</span> gemini.<span class="function">generate_image</span>(
+    prompt=nano_banana_prompt[<span class="string">'full_prompt'</span>],
+    reference_images=[template_data, product_data]
+)
+
+<span class="comment"># 3. Return generated ad</span>
+<span class="keyword">return</span> {
+    <span class="string">"prompt_index"</span>: prompt_index,
+    <span class="string">"image_base64"</span>: image_base64,
+    <span class="string">"storage_path"</span>: <span class="keyword">None</span>  <span class="comment"># Set by save_generated_ad</span>
+}
+                                </div>
+                            </div>
+                            <div class="tool-section">
+                                <h4>Rate Limit</h4>
+                                <div class="tags">
+                                    <span class="tag">2/minute</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- save_generated_ad -->
+                    <div class="tool-node" onclick="toggleTool(this)" style="margin-left: 0; margin-top: 1rem;">
+                        <div class="tool-header">
+                            <div class="tool-info">
+                                <div class="tool-icon generation">💾</div>
+                                <span class="tool-name">save_generated_ad</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 1rem;">
+                                <span class="tool-category generation">Generation</span>
+                                <span class="expand-icon">▼</span>
+                            </div>
+                        </div>
+                        <div class="tool-content">
+                            <div class="tool-section">
+                                <h4>Description</h4>
+                                <p class="description-text">Save generated ad image to Supabase Storage and metadata to database. Each ad is saved IMMEDIATELY after generation (not batched) for resilience.</p>
+                            </div>
+                            <div class="tool-section">
+                                <h4>Process Flow</h4>
+                                <div class="code-block">
+<span class="comment"># 1. Upload to storage</span>
+<span class="variable">storage_path</span> = <span class="keyword">await</span> upload_generated_ad(
+    ad_run_id, prompt_index, image_base64
+)  <span class="comment"># → "generated-ads/{ad_run_id}/{prompt_index}.png"</span>
+
+<span class="comment"># 2. Save to database</span>
+<span class="keyword">await</span> save_generated_ad(
+    ad_run_id, prompt_index, prompt_text, prompt_spec,
+    hook_id,  <span class="comment"># None for benefit variations</span>
+    hook_text, storage_path,
+    claude_review, gemini_review, final_status
+)
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 9-10: Dual AI Review -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">9-10</div>
+                    <h2 class="stage-title">Dual AI Review</h2>
+                </div>
+                <p class="stage-description">Both Claude and Gemini review each generated ad for quality</p>
+
+                <!-- review_ad_claude -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon review">🔬</div>
+                            <span class="tool-name">review_ad_claude</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category review">Review</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Review generated ad using Claude Vision API. Downloads the generated ad image and analyzes product accuracy, text accuracy, layout accuracy, and overall quality. Minimum threshold: 0.8 for product/text accuracy to approve.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Review Criteria</h4>
+                            <div class="prompt-block">**Review Criteria:**
+
+1. **Product Accuracy** (0.0-1.0 score):
+   - Is the product image reproduced EXACTLY as provided?
+   - No hallucinations or modifications to product appearance?
+   - Product visible and clearly identifiable?
+   - Score 1.0 = perfect reproduction, 0.0 = completely wrong
+
+2. **Text Accuracy** (0.0-1.0 score):
+   - Is all text readable and correct?
+   - No gibberish, misspellings, or garbled text?
+   - Hook text matches what was requested?
+   - Score 1.0 = all text perfect, 0.0 = unreadable
+
+3. **Layout Accuracy** (0.0-1.0 score):
+   - Does layout match reference ad format?
+   - Elements positioned correctly?
+   - Colors and spacing appropriate?
+   - Score 1.0 = matches reference, 0.0 = completely different
+
+4. **Overall Quality** (0.0-1.0 score):
+   - Production-ready quality?
+   - No AI artifacts (distortions, glitches)?
+   - Professional appearance?
+   - Score 1.0 = ready to publish, 0.0 = not usable
+
+**Approval Logic:**
+- APPROVED: product_accuracy >= 0.8 AND text_accuracy >= 0.8
+- NEEDS_REVISION: One score between 0.5-0.79
+- REJECTED: Any score < 0.5</div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Returns</h4>
+                            <div class="json-schema">{
+  <span class="json-key">"reviewer"</span>: <span class="json-string">"claude"</span>,
+  <span class="json-key">"product_accuracy"</span>: <span class="json-number">0.95</span>,
+  <span class="json-key">"text_accuracy"</span>: <span class="json-number">0.90</span>,
+  <span class="json-key">"layout_accuracy"</span>: <span class="json-number">0.85</span>,
+  <span class="json-key">"overall_quality"</span>: <span class="json-number">0.88</span>,
+  <span class="json-key">"product_issues"</span>: [],
+  <span class="json-key">"text_issues"</span>: [<span class="json-string">"Minor kerning issue"</span>],
+  <span class="json-key">"ai_artifacts"</span>: [],
+  <span class="json-key">"status"</span>: <span class="json-string">"approved"</span>,
+  <span class="json-key">"notes"</span>: <span class="json-string">"High quality ad ready for production"</span>
+}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- review_ad_gemini -->
+                <div class="tool-node" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon review">🔬</div>
+                            <span class="tool-name">review_ad_gemini</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category review">Review</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Review generated ad using Gemini Vision API. Provides second opinion for dual review system. Same scoring criteria as Claude review. Enables cross-validation and flagging of disagreements.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Review Criteria</h4>
+                            <p class="description-text">Same criteria as Claude review: product accuracy, text accuracy, layout accuracy, overall quality with 0.8 threshold for approval.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dual Review Logic -->
+                <div class="decision-node">
+                    <div class="decision-title">⚖️ Dual Review OR Logic</div>
+                    <div class="code-block" style="margin-top: 1rem; background: var(--bg-code);">
+<span class="variable">claude_approved</span> = claude_review[<span class="string">'status'</span>] == <span class="string">'approved'</span>
+<span class="variable">gemini_approved</span> = gemini_review[<span class="string">'status'</span>] == <span class="string">'approved'</span>
+
+<span class="comment"># OR logic: either approving = approved</span>
+<span class="keyword">if</span> claude_approved <span class="keyword">or</span> gemini_approved:
+    <span class="variable">final_status</span> = <span class="string">'approved'</span>
+<span class="keyword">elif</span> <span class="keyword">not</span> claude_approved <span class="keyword">and</span> <span class="keyword">not</span> gemini_approved:
+    <span class="variable">final_status</span> = <span class="string">'rejected'</span>  <span class="comment"># Both rejected</span>
+<span class="keyword">else</span>:
+    <span class="variable">final_status</span> = <span class="string">'flagged'</span>  <span class="comment"># Disagreement → human review</span>
+
+<span class="variable">reviewers_agree</span> = (claude_approved == gemini_approved)
+                    </div>
+                </div>
+            </div>
+
+            <!-- STAGE 11: Complete Workflow Orchestration -->
+            <div class="stage">
+                <div class="stage-header">
+                    <div class="stage-number">11</div>
+                    <h2 class="stage-title">Workflow Orchestration</h2>
+                </div>
+                <p class="stage-description">The master tool that orchestrates all stages end-to-end</p>
+
+                <!-- complete_ad_workflow -->
+                <div class="tool-node expanded" onclick="toggleTool(this)">
+                    <div class="tool-header">
+                        <div class="tool-info">
+                            <div class="tool-icon generation">🎯</div>
+                            <span class="tool-name">complete_ad_workflow</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <span class="tool-category generation">Orchestration</span>
+                            <span class="expand-icon">▼</span>
+                        </div>
+                    </div>
+                    <div class="tool-content">
+                        <div class="tool-section">
+                            <h4>Description</h4>
+                            <p class="description-text">Execute complete ad creation workflow from start to finish. This is the main entry point that orchestrates all 15 other tools in the correct sequence.</p>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Parameters</h4>
+                            <div class="code-block">
+<span class="variable">product_id</span>: <span class="keyword">str</span>  <span class="comment"># UUID of product</span>
+<span class="variable">reference_ad_base64</span>: <span class="keyword">str</span>  <span class="comment"># Base64-encoded reference ad image</span>
+<span class="variable">reference_ad_filename</span>: <span class="keyword">str</span> = <span class="string">"reference.png"</span>
+<span class="variable">project_id</span>: <span class="keyword">Optional</span>[<span class="keyword">str</span>] = <span class="keyword">None</span>
+<span class="variable">num_variations</span>: <span class="keyword">int</span> = <span class="number">5</span>  <span class="comment"># 1-15 variations</span>
+<span class="variable">content_source</span>: <span class="keyword">str</span> = <span class="string">"hooks"</span>  <span class="comment"># "hooks" or "recreate_template"</span>
+                            </div>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Workflow Stages</h4>
+                            <ol style="margin-left: 1.5rem; color: var(--text-secondary); line-height: 2;">
+                                <li>Create ad run in database</li>
+                                <li>Upload reference ad to storage</li>
+                                <li>Fetch product data</li>
+                                <li>Fetch hooks (if content_source="hooks")</li>
+                                <li>Get ad brief template</li>
+                                <li>Analyze reference ad (Vision AI)</li>
+                                <li>Get content variations (hooks OR template recreation)</li>
+                                <li>Select product images</li>
+                                <li>Generate N ad variations (ONE AT A TIME)</li>
+                                <li>Dual AI review (Claude + Gemini) for each</li>
+                                <li>Apply OR logic for approval</li>
+                                <li>Compile results</li>
+                            </ol>
+                        </div>
+                        <div class="tool-section">
+                            <h4>Final Result Structure</h4>
+                            <div class="json-schema">{
+  <span class="json-key">"ad_run_id"</span>: <span class="json-string">"uuid"</span>,
+  <span class="json-key">"product"</span>: {...},
+  <span class="json-key">"reference_ad_path"</span>: <span class="json-string">"storage path"</span>,
+  <span class="json-key">"ad_analysis"</span>: {...},
+  <span class="json-key">"content_source"</span>: <span class="json-string">"hooks"</span> | <span class="json-string">"recreate_template"</span>,
+  <span class="json-key">"template_angle"</span>: {...} <span class="comment">// only if recreate_template</span>,
+  <span class="json-key">"selected_hooks"</span>: [...],
+  <span class="json-key">"generated_ads"</span>: [
+    {
+      <span class="json-key">"prompt_index"</span>: <span class="json-number">1</span>,
+      <span class="json-key">"prompt"</span>: {...},
+      <span class="json-key">"storage_path"</span>: <span class="json-string">"..."</span>,
+      <span class="json-key">"claude_review"</span>: {...},
+      <span class="json-key">"gemini_review"</span>: {...},
+      <span class="json-key">"reviewers_agree"</span>: <span class="json-boolean">true</span>,
+      <span class="json-key">"final_status"</span>: <span class="json-string">"approved"</span>
+    }
+  ],
+  <span class="json-key">"approved_count"</span>: <span class="json-number">3</span>,
+  <span class="json-key">"rejected_count"</span>: <span class="json-number">1</span>,
+  <span class="json-key">"flagged_count"</span>: <span class="json-number">1</span>,
+  <span class="json-key">"summary"</span>: <span class="json-string">"Human-readable summary"</span>,
+  <span class="json-key">"created_at"</span>: <span class="json-string">"ISO timestamp"</span>
+}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <footer>
+            <p>Ad Creation Workflow Documentation | Generated from <code>ad_creation_agent.py</code></p>
+            <p style="margin-top: 0.5rem;">16 Tools | 13 Stages | Dual AI Review | Two Content Modes</p>
+        </footer>
+    </div>
+
+    <script>
+        function toggleTool(element) {
+            element.classList.toggle('expanded');
+        }
+
+        function setMode(mode) {
+            // Update button states
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Show/hide tools based on mode
+            document.querySelectorAll('.tool-node').forEach(node => {
+                const toolMode = node.getAttribute('data-mode');
+
+                if (mode === 'all') {
+                    node.style.display = 'block';
+                } else if (mode === 'hooks') {
+                    if (toolMode === 'template') {
+                        node.style.display = 'none';
+                    } else {
+                        node.style.display = 'block';
+                    }
+                } else if (mode === 'template') {
+                    if (toolMode === 'hooks') {
+                        node.style.display = 'none';
+                    } else {
+                        node.style.display = 'block';
+                    }
+                }
+            });
+        }
+
+        // Expand all tools on page load for demonstration
+        // document.querySelectorAll('.tool-node').forEach(node => node.classList.add('expanded'));
+    </script>
+</body>
+</html>
