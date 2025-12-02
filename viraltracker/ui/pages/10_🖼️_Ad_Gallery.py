@@ -277,18 +277,18 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
         if ad.get("hook_text"):
             hook_text = ad["hook_text"][:100] + "..." if len(ad.get("hook_text", "")) > 100 else ad.get("hook_text", "")
             hook_text = hook_text.replace('"', '&quot;').replace("'", "&#39;")
-            hook_html = f'<div class="masonry-item-hook">"{hook_text}"</div>'
+            hook_html = f'<div class="gallery-item-hook">"{hook_text}"</div>'
 
         # Escape product name for HTML
         product_name = ad['product_name'].replace('"', '&quot;').replace("'", "&#39;")
 
         html_items.append(f"""
-        <div class="masonry-item">
+        <div class="gallery-item">
             <img src="{image_url}" alt="Ad for {product_name}" loading="lazy">
-            <div class="masonry-item-info">
-                <div class="masonry-item-product">{product_name}</div>
-                <div class="masonry-item-date">{date_str}</div>
-                <span class="masonry-item-status {status_class}">{status_display}</span>
+            <div class="gallery-item-info">
+                <div class="gallery-item-product">{product_name}</div>
+                <div class="gallery-item-date">{date_str}</div>
+                <span class="gallery-item-status {status_class}">{status_display}</span>
                 {hook_html}
             </div>
         </div>
@@ -300,7 +300,7 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
     estimated_rows = (num_items + 3) // 4  # Ceiling division
     estimated_height = max(600, min(3000, estimated_rows * 380))
 
-    # Complete HTML with embedded CSS
+    # Complete HTML with embedded CSS - using CSS Grid for row-based layout
     full_html = f"""
     <!DOCTYPE html>
     <html>
@@ -315,41 +315,40 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 background: transparent;
             }}
-            .masonry-grid {{
-                column-count: 4;
-                column-gap: 16px;
+            .gallery-grid {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 16px;
                 padding: 8px;
             }}
             @media (max-width: 1400px) {{
-                .masonry-grid {{ column-count: 3; }}
+                .gallery-grid {{ grid-template-columns: repeat(3, 1fr); }}
             }}
             @media (max-width: 1000px) {{
-                .masonry-grid {{ column-count: 2; }}
+                .gallery-grid {{ grid-template-columns: repeat(2, 1fr); }}
             }}
             @media (max-width: 600px) {{
-                .masonry-grid {{ column-count: 1; }}
+                .gallery-grid {{ grid-template-columns: 1fr; }}
             }}
-            .masonry-item {{
-                break-inside: avoid;
-                margin-bottom: 16px;
+            .gallery-item {{
                 background: #1e1e1e;
                 border-radius: 16px;
                 overflow: hidden;
                 transition: transform 0.2s ease, box-shadow 0.2s ease;
             }}
-            .masonry-item:hover {{
+            .gallery-item:hover {{
                 transform: translateY(-4px);
                 box-shadow: 0 12px 24px rgba(0,0,0,0.3);
             }}
-            .masonry-item img {{
+            .gallery-item img {{
                 width: 100%;
                 height: auto;
                 display: block;
             }}
-            .masonry-item-info {{
+            .gallery-item-info {{
                 padding: 12px;
             }}
-            .masonry-item-product {{
+            .gallery-item-product {{
                 font-weight: 600;
                 font-size: 14px;
                 color: #ffffff;
@@ -358,11 +357,11 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
                 overflow: hidden;
                 text-overflow: ellipsis;
             }}
-            .masonry-item-date {{
+            .gallery-item-date {{
                 font-size: 12px;
                 color: #888;
             }}
-            .masonry-item-status {{
+            .gallery-item-status {{
                 display: inline-block;
                 padding: 2px 8px;
                 border-radius: 12px;
@@ -386,7 +385,7 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
                 background: #472a1a;
                 color: #fb923c;
             }}
-            .masonry-item-hook {{
+            .gallery-item-hook {{
                 font-size: 12px;
                 color: #aaa;
                 margin-top: 8px;
@@ -398,7 +397,7 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
         </style>
     </head>
     <body>
-        <div class="masonry-grid">
+        <div class="gallery-grid">
             {''.join(html_items)}
         </div>
     </body>
@@ -437,7 +436,7 @@ def render_load_more_button(current_count: int, total_count: int):
 # ============================================================================
 
 st.title("Ad Gallery")
-st.markdown("**Browse all generated ads in a Pinterest-style layout**")
+st.markdown("**Browse all generated ads in a grid layout**")
 
 # Inject CSS
 st.markdown(STATS_CSS, unsafe_allow_html=True)
