@@ -900,8 +900,8 @@ else:
 
             if not reference_ad_base64:
                 validation_error = "Please upload or select a reference ad"
-            elif image_selection_mode == "manual" and not selected_image_path:
-                validation_error = "Please select a product image or switch to Auto-Select mode"
+            elif image_selection_mode == "manual" and not selected_image_paths:
+                validation_error = "Please select at least one product image or switch to Auto-Select mode"
             elif export_destination in ["email", "both"] and not export_email:
                 validation_error = "Please enter an email address for email export"
             elif export_destination in ["email", "both"] and "@" not in export_email:

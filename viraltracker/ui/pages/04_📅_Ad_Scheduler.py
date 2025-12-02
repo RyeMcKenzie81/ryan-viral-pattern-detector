@@ -788,9 +788,10 @@ def render_create_schedule():
             options=['auto', 'manual'],
             index=0 if existing_params.get('image_selection_mode', 'auto') == 'auto' else 1,
             format_func=lambda x: {
-                'auto': '🤖 Auto - AI selects best image',
+                'auto': '🤖 Auto - AI selects best 1-2 images',
                 'manual': '🖼️ Manual - (Selected in Ad Creator)'
-            }.get(x, x)
+            }.get(x, x),
+            help="Auto mode picks up to 2 diverse images (e.g., packaging + contents)"
         )
 
     st.divider()
