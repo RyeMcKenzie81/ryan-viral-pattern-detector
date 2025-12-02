@@ -5,9 +5,12 @@ Provides typed access to all services (Twitter, Gemini, Stats, Scraping, Comment
 and configuration needed by agent tools.
 """
 
+import os
 import logging
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
+
+from ..core.database import get_supabase_client
 
 from ..services.twitter_service import TwitterService
 from ..services.gemini_service import GeminiService
@@ -23,6 +26,7 @@ from ..services.slack_service import SlackService
 from ..services.elevenlabs_service import ElevenLabsService
 from ..services.ffmpeg_service import FFmpegService
 from ..services.audio_production_service import AudioProductionService
+from ..services.knowledge_base import DocService
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +117,7 @@ class AgentDependencies(BaseModel):
     elevenlabs: ElevenLabsService
     ffmpeg: FFmpegService
     audio_production: AudioProductionService
+    docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
 
@@ -213,6 +218,18 @@ class AgentDependencies(BaseModel):
         audio_production = AudioProductionService()
         logger.info("AudioProductionService initialized")
 
+        # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
+        docs = None
+        if os.getenv("OPENAI_API_KEY"):
+            try:
+                supabase = get_supabase_client()
+                docs = DocService(supabase=supabase)
+                logger.info("DocService initialized (knowledge base enabled)")
+            except Exception as e:
+                logger.warning(f"DocService initialization failed: {e}")
+        else:
+            logger.info("DocService skipped (OPENAI_API_KEY not set)")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -228,16 +245,18 @@ class AgentDependencies(BaseModel):
             elevenlabs=elevenlabs,
             ffmpeg=ffmpeg,
             audio_production=audio_production,
+            docs=docs,
             project_name=project_name
         )
 
     def __str__(self) -> str:
         """String representation for debugging."""
+        docs_status = "enabled" if self.docs else "disabled"
         return (
             f"AgentDependencies(project_name='{self.project_name}', "
             f"services=[TwitterService, GeminiService, StatsService, ScrapingService, CommentService, "
-            f"TikTokService, YouTubeService, FacebookService, AdCreationService, EmailService, SlackService], "
-            f"result_cache={self.result_cache})"
+            f"TikTokService, YouTubeService, FacebookService, AdCreationService, EmailService, SlackService, "
+            f"DocService({docs_status})], result_cache={self.result_cache})"
         )
 
     def __repr__(self) -> str:
