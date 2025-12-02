@@ -20,6 +20,9 @@ from ..services.facebook_service import FacebookService
 from ..services.ad_creation_service import AdCreationService
 from ..services.email_service import EmailService
 from ..services.slack_service import SlackService
+from ..services.elevenlabs_service import ElevenLabsService
+from ..services.ffmpeg_service import FFmpegService
+from ..services.audio_production_service import AudioProductionService
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,9 @@ class AgentDependencies(BaseModel):
     ad_creation: AdCreationService
     email: EmailService
     slack: SlackService
+    elevenlabs: ElevenLabsService
+    ffmpeg: FFmpegService
+    audio_production: AudioProductionService
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
 
@@ -195,6 +201,18 @@ class AgentDependencies(BaseModel):
         slack = SlackService()
         logger.info(f"SlackService initialized (enabled={slack.enabled})")
 
+        # Initialize ElevenLabsService for audio generation
+        elevenlabs = ElevenLabsService()
+        logger.info(f"ElevenLabsService initialized (enabled={elevenlabs.enabled})")
+
+        # Initialize FFmpegService for audio processing
+        ffmpeg = FFmpegService()
+        logger.info(f"FFmpegService initialized (available={ffmpeg.available})")
+
+        # Initialize AudioProductionService for production workflow
+        audio_production = AudioProductionService()
+        logger.info("AudioProductionService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -207,6 +225,9 @@ class AgentDependencies(BaseModel):
             ad_creation=ad_creation,
             email=email,
             slack=slack,
+            elevenlabs=elevenlabs,
+            ffmpeg=ffmpeg,
+            audio_production=audio_production,
             project_name=project_name
         )
 
