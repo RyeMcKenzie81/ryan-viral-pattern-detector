@@ -483,7 +483,7 @@ class AdCreationService:
             "prompt_spec": prompt_spec,
             "hook_text": hook_text,
             "storage_path": storage_path,
-            "final_status": "pending"  # Needs review
+            "final_status": "approved"  # Auto-approved (inherits from approved source ad)
         }
 
         if hook_id:
