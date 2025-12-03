@@ -1486,41 +1486,26 @@ async def generate_nano_banana_prompt(
             # Build explicit REPLACEMENT instruction instead of just prohibition
             # Image models respond better to "put X here" than "don't put Y"
 
-            # Format the approved review data for display
-            review_display = ""
+            # Build the exact review string to display
+            # Format: ★★★★★ 4.8/5 (2000+ Reviews)
+            rating_value = ''
+            count_value = ''
             if review_platforms:
-                for platform, data in review_platforms.items():
-                    rating = data.get('rating', '')
-                    count = data.get('count', '')
-                    review_display = f"{rating}★ ({count} Reviews)"
-                    break  # Use first platform
+                first_platform_data = list(review_platforms.values())[0]
+                rating_value = first_platform_data.get('rating', '')
+                count_value = first_platform_data.get('count', '')
 
-            # Extract the actual values to use
-            rating_value = list(review_platforms.values())[0].get('rating', '') if review_platforms else ''
-            count_value = list(review_platforms.values())[0].get('count', '') if review_platforms else ''
+            # Build the exact display string
+            review_display_string = f"★★★★★ {rating_value}/5 ({count_value} Reviews)"
 
             social_proof_section = f"""
-        **🔄 SOCIAL PROOF - USE THIS EXACT TEXT:**
+        **REVIEW BADGE - DISPLAY THIS EXACT TEXT:**
 
-        For the review badge area, display EXACTLY:
+        {review_display_string}
 
-        ★ Rating: {rating_value}
-        ★ Review count: {count_value} Reviews
-        ★ Label: "Customer Reviews" (NOT Trustpilot, NOT Amazon, NOT any brand name)
-
-        **EXACT TEXT TO WRITE:**
-        "{rating_value}★" for the star rating
-        "{count_value} Reviews" for the review count
-        "Customer Reviews" as the label (if needed)
-
-        **VISUAL STYLE:**
-        - Keep similar badge shape and placement as the reference template
-        - Use a clean, generic review badge style
-        - No green Trustpilot colors or logos
-        - No platform-specific branding
-
-        **Media Features:** {json.dumps(media_features) if media_features else "None for this product"}
-        **Awards:** {json.dumps(awards_certs) if awards_certs else "None for this product"}
+        Write ONLY the text above in the review badge area. Do not add extra words.
+        Do not copy any numbers or text from the reference template's review section.
+        Keep similar visual styling (badge shape, colors, placement) but use OUR text above.
         """
         elif ad_analysis.get('has_social_proof') and not has_any_verified_social_proof:
             # Template has social proof but product has NO verified data - strict warning
