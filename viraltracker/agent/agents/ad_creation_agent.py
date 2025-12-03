@@ -1478,16 +1478,31 @@ async def generate_nano_banana_prompt(
 
         if ad_analysis.get('has_social_proof') and has_any_verified_social_proof:
             # Template has social proof AND we have verified data to use
+            # Build explicit list of PROHIBITED platforms (common ones not in our data)
+            common_review_platforms = ['trustpilot', 'amazon', 'google', 'yelp', 'bbb', 'facebook']
+            product_platforms = [k.lower() for k in review_platforms.keys()]
+            prohibited_platforms = [p for p in common_review_platforms if p not in product_platforms]
+
+            prohibited_section = ""
+            if prohibited_platforms:
+                prohibited_section = f"""
+        **🚫 PROHIBITED REVIEW PLATFORMS (DO NOT USE - NOT IN OUR DATABASE):**
+        {', '.join([p.upper() for p in prohibited_platforms])}
+        - The reference template may show these platforms but we have NO verified data for them
+        - DO NOT copy Trustpilot, Amazon, or any other review badge from the template unless listed above
+        - DO NOT include any star ratings, review counts, or logos for these platforms
+        """
+
             social_proof_section = f"""
         **VERIFIED SOCIAL PROOF (USE ONLY THIS DATA - DO NOT INVENT):**
-
-        Review Platforms (ONLY these - use exact ratings/counts):
+        {prohibited_section}
+        **✅ APPROVED Review Platforms (ONLY these - use exact ratings/counts):**
         {json.dumps(review_platforms, indent=2) if review_platforms else "NONE AVAILABLE"}
 
-        Media Features ("As Seen On" - ONLY these outlets):
+        **✅ APPROVED Media Features ("As Seen On" - ONLY these outlets):**
         {json.dumps(media_features) if media_features else "NONE AVAILABLE"}
 
-        Awards & Certifications (ONLY these):
+        **✅ APPROVED Awards & Certifications (ONLY these):**
         {json.dumps(awards_certs) if awards_certs else "NONE AVAILABLE"}
 
         Legacy Text: {legacy_social_proof if legacy_social_proof else "None"}
@@ -1495,12 +1510,12 @@ async def generate_nano_banana_prompt(
         - Template uses social proof style: {ad_analysis.get('social_proof_style')}
         - Template placement: {ad_analysis.get('social_proof_placement')}
 
-        **CRITICAL SOCIAL PROOF RULES:**
-        - If template shows Trustpilot badge but we have NO Trustpilot data → OMIT entirely or use a platform we DO have
-        - If template shows "As Seen On Forbes" but Forbes NOT in media_features → OMIT that logo
-        - NEVER invent: star ratings, review counts, media logos, "100,000+ sold", "#1 Best Seller"
-        - You may SUBSTITUTE: e.g., use Amazon rating if template shows Trustpilot but we only have Amazon
-        - When in doubt, OMIT the social proof element rather than making something up
+        **⚠️ CRITICAL - READ CAREFULLY:**
+        - The reference image may show Trustpilot/Amazon/etc but DO NOT COPY THEM unless they are in APPROVED list above
+        - If you see a Trustpilot badge in the reference but "trustpilot" is not in our APPROVED list → REPLACE with our approved platform OR OMIT entirely
+        - NEVER reproduce review platform logos/badges that are not explicitly APPROVED above
+        - Use our APPROVED data to create a similar badge (e.g., "total_reviews 4.8★ 2000+ reviews" styled like the template)
+        - When in doubt, OMIT the social proof element rather than copying from reference
         """
         elif ad_analysis.get('has_social_proof') and not has_any_verified_social_proof:
             # Template has social proof but product has NO verified data - strict warning
