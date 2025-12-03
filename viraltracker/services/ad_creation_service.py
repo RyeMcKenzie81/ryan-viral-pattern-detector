@@ -510,3 +510,193 @@ class AdCreationService:
         except Exception as e:
             logger.error(f"Failed to get existing variants: {e}")
             return []
+
+    # ============================================
+    # SIZE VARIANT GENERATION
+    # ============================================
+
+    # Meta ad size configurations
+    META_AD_SIZES = {
+        "1:1": {"dimensions": "1080x1080", "name": "Square", "use_case": "Feed posts"},
+        "4:5": {"dimensions": "1080x1350", "name": "Portrait", "use_case": "Feed (optimal)"},
+        "9:16": {"dimensions": "1080x1920", "name": "Story", "use_case": "Stories, Reels"},
+        "16:9": {"dimensions": "1920x1080", "name": "Landscape", "use_case": "Video, links"},
+    }
+
+    async def create_size_variant(
+        self,
+        source_ad_id: UUID,
+        target_size: str,
+        source_image_base64: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a size variant of an existing ad using Gemini.
+
+        Takes an approved ad and creates a version at a different aspect ratio,
+        keeping all visual elements as similar as possible.
+
+        Args:
+            source_ad_id: UUID of the source ad to resize
+            target_size: Target size ratio ("1:1", "4:5", "9:16", "16:9")
+            source_image_base64: Optional pre-loaded source image (if not provided, will fetch)
+
+        Returns:
+            Dict with variant info: variant_id, storage_path, variant_size, generation_time_ms
+
+        Raises:
+            ValueError: If target_size is invalid or source ad not found
+            Exception: If generation fails
+        """
+        import time
+        import os
+        from google import genai
+        from google.genai import types
+
+        # Validate target size
+        if target_size not in self.META_AD_SIZES:
+            raise ValueError(f"Invalid target_size: {target_size}. Must be one of {list(self.META_AD_SIZES.keys())}")
+
+        size_config = self.META_AD_SIZES[target_size]
+        target_dimensions = size_config["dimensions"]
+
+        logger.info(f"Creating {target_size} variant for ad {source_ad_id}")
+
+        # Get source ad data
+        source_ad = await self.get_ad_for_variant(source_ad_id)
+        if not source_ad:
+            raise ValueError(f"Source ad not found: {source_ad_id}")
+
+        ad_run_id = source_ad.get("ad_run_id")
+        original_spec = source_ad.get("prompt_spec", {})
+        hook_text = source_ad.get("hook_text", "")
+        hook_id = source_ad.get("hook_id")
+
+        # Get source image if not provided
+        if not source_image_base64:
+            source_image_base64 = await self.get_image_as_base64(source_ad["storage_path"])
+
+        # Build the resize prompt
+        prompt_text = f"""Recreate this EXACT ad at {target_dimensions} ({target_size} aspect ratio).
+
+CRITICAL INSTRUCTIONS:
+- Keep ALL text exactly the same (same words, same fonts)
+- Keep ALL colors exactly the same
+- Keep the product image(s) exactly the same
+- Keep the overall visual style and layout matching the original
+- Only reposition/resize elements as needed to fit the new {target_size} canvas
+- The hook text is: "{hook_text}"
+
+This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimensions change.
+Target use case: {size_config['use_case']}"""
+
+        # Create updated prompt spec for new dimensions
+        variant_spec = original_spec.copy() if original_spec else {}
+        variant_spec["canvas"] = {
+            "dimensions": target_dimensions,
+            "aspect_ratio": target_size
+        }
+
+        # Generate with Gemini
+        start_time = time.time()
+
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+        # Create image part from base64
+        image_bytes = base64.b64decode(source_image_base64)
+        reference_image = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=[reference_image, prompt_text],
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+                temperature=0.1,  # Low temperature for consistency
+            )
+        )
+
+        generation_time_ms = int((time.time() - start_time) * 1000)
+
+        # Extract generated image
+        generated_image_base64 = None
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
+                generated_image_base64 = base64.b64encode(part.inline_data.data).decode('utf-8')
+                break
+
+        if not generated_image_base64:
+            raise Exception("Gemini did not return an image")
+
+        # Upload to storage
+        import uuid as uuid_module
+        storage_filename = f"{ad_run_id}/variant_{target_size.replace(':', 'x')}_{uuid_module.uuid4().hex[:8]}.png"
+
+        image_data = base64.b64decode(generated_image_base64)
+        self.supabase.storage.from_("generated-ads").upload(
+            storage_filename,
+            image_data,
+            {"content-type": "image/png"}
+        )
+
+        full_storage_path = f"generated-ads/{storage_filename}"
+
+        # Save to database
+        variant_id = await self.save_size_variant(
+            parent_ad_id=source_ad_id,
+            ad_run_id=ad_run_id,
+            variant_size=target_size,
+            storage_path=full_storage_path,
+            prompt_text=prompt_text,
+            prompt_spec=variant_spec,
+            hook_text=hook_text,
+            hook_id=hook_id,
+            model_used="gemini-2.0-flash-exp",
+            generation_time_ms=generation_time_ms
+        )
+
+        logger.info(f"Created {target_size} variant: {variant_id} ({generation_time_ms}ms)")
+
+        return {
+            "variant_id": str(variant_id),
+            "storage_path": full_storage_path,
+            "variant_size": target_size,
+            "generation_time_ms": generation_time_ms
+        }
+
+    async def create_size_variants_batch(
+        self,
+        source_ad_id: UUID,
+        target_sizes: List[str],
+        source_image_base64: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create multiple size variants for an ad.
+
+        Args:
+            source_ad_id: UUID of the source ad
+            target_sizes: List of target sizes (e.g., ["1:1", "4:5"])
+            source_image_base64: Optional pre-loaded source image
+
+        Returns:
+            Dict with "successful" and "failed" lists
+        """
+        results = {"successful": [], "failed": []}
+
+        # Get source image once if not provided
+        if not source_image_base64:
+            source_ad = await self.get_ad_for_variant(source_ad_id)
+            if source_ad:
+                source_image_base64 = await self.get_image_as_base64(source_ad["storage_path"])
+
+        for size in target_sizes:
+            try:
+                result = await self.create_size_variant(
+                    source_ad_id=source_ad_id,
+                    target_size=size,
+                    source_image_base64=source_image_base64
+                )
+                results["successful"].append(result)
+            except Exception as e:
+                logger.error(f"Failed to create {size} variant: {e}")
+                results["failed"].append({"size": size, "error": str(e)})
+
+        return results

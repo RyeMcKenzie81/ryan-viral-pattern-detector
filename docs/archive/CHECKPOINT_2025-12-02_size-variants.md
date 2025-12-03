@@ -1,7 +1,7 @@
 # CHECKPOINT: Size Variants Feature
 
 **Date**: December 2, 2025
-**Status**: Implementation Complete - Pending SQL Migration
+**Status**: Implementation Complete
 **Feature**: Create size variants of approved ads for different Meta ad placements
 
 ---
@@ -10,9 +10,14 @@
 
 Added ability to create different aspect ratio versions of approved ads. Users can select an approved ad, choose target Meta sizes (1:1, 4:5, 9:16, 16:9), and generate new versions that match the original ad's content but fit the new canvas dimensions.
 
+**Architecture**: Follows the project's layered architecture pattern:
+- **Service Layer** (`ad_creation_service.py`) - Contains all business logic including Gemini AI generation
+- **Agent Tool** (`ad_creation_agent.py`) - Thin wrapper that calls service methods via `ctx.deps`
+- **UI Layer** (`02_Ad_History.py`, `03_Ad_Gallery.py`) - Calls service methods directly
+
 ---
 
-## Database Migration (User Must Run)
+## Database Migration (Already Run)
 
 ```sql
 -- Add parent reference to track variants
@@ -38,60 +43,79 @@ CREATE INDEX idx_generated_ads_parent_ad_id ON generated_ads(parent_ad_id);
 
 ## Files Modified
 
-### 1. `viraltracker/services/ad_creation_service.py`
+### 1. `viraltracker/services/ad_creation_service.py` (Business Logic)
 
-Added three new methods:
+All generation logic lives here. Added:
 
 ```python
+# Size configurations
+META_AD_SIZES = {
+    "1:1": {"dimensions": "1080x1080", "name": "Square", "use_case": "Feed posts"},
+    "4:5": {"dimensions": "1080x1350", "name": "Portrait", "use_case": "Feed (optimal)"},
+    "9:16": {"dimensions": "1080x1920", "name": "Story", "use_case": "Stories, Reels"},
+    "16:9": {"dimensions": "1920x1080", "name": "Landscape", "use_case": "Video, links"},
+}
+
+async def create_size_variant(
+    self,
+    source_ad_id: UUID,
+    target_size: str,
+    source_image_base64: Optional[str] = None
+) -> Dict[str, Any]:
+    """Create a size variant using Gemini. Returns variant_id, storage_path, etc."""
+
+async def create_size_variants_batch(
+    self,
+    source_ad_id: UUID,
+    target_sizes: List[str],
+    source_image_base64: Optional[str] = None
+) -> Dict[str, Any]:
+    """Create multiple size variants. Returns successful/failed lists."""
+
 async def get_ad_for_variant(self, ad_id: UUID) -> Optional[Dict]:
     """Get ad data needed for creating size variants."""
 
-async def save_size_variant(
-    self,
-    parent_ad_id: UUID,
-    ad_run_id: UUID,
-    variant_size: str,
-    storage_path: str,
-    prompt_text: str,
-    prompt_spec: Dict,
-    hook_text: str,
-    hook_id: Optional[UUID] = None,
-    model_used: Optional[str] = None,
-    generation_time_ms: Optional[int] = None
-) -> UUID:
-    """Save a size variant of an existing ad."""
+async def save_size_variant(...) -> UUID:
+    """Save a size variant record to database."""
 
 async def get_existing_variants(self, parent_ad_id: UUID) -> List[str]:
     """Get list of variant sizes that already exist for an ad."""
 ```
 
-### 2. `viraltracker/ui/pages/02_📊_Ad_History.py`
+### 2. `viraltracker/agent/agents/ad_creation_agent.py` (Agent Tool)
 
-- Added `META_AD_SIZES` constant
-- Added session state for size variant creation
-- Added helper functions:
-  - `get_existing_variants()` - check which sizes already exist
-  - `get_ad_image_base64()` - download source image
-  - `create_size_variants_async()` - async variant generation
+Thin wrapper that calls service:
+
+```python
+@ad_creation_agent.tool(metadata={...})
+async def generate_size_variant(
+    ctx: RunContext[AgentDependencies],
+    source_ad_id: str,
+    target_size: str
+) -> Dict:
+    """Generate a size variant - calls service layer."""
+    result = await ctx.deps.ad_creation.create_size_variant(
+        source_ad_id=UUID(source_ad_id),
+        target_size=target_size
+    )
+    return {"success": True, **result}
+```
+
+### 3. `viraltracker/ui/pages/02_📊_Ad_History.py` (UI)
+
+- Calls service directly via `get_ad_creation_service()`
 - Added "📐 Create Sizes" button for each approved ad
-- Added size selection modal with checkboxes
-- Added generation progress and results display
-- Updated ads query to include `parent_ad_id` and `variant_size`
-- Added variant badge display ("4:5 Variant" instead of "Variation X")
+- Size selection modal with checkboxes
+- Generation progress and results display
+- Variant badge display ("4:5 Variant" instead of "Variation X")
 
-### 3. `viraltracker/ui/pages/03_🖼️_Ad_Gallery.py`
+### 4. `viraltracker/ui/pages/03_🖼️_Ad_Gallery.py` (UI)
 
-- Added `META_AD_SIZES` constant
-- Added session state for size variant creation
-- Added helper functions (similar to Ad History)
+- Calls service directly via `get_ad_creation_service()`
 - Added "📐 Create Size Variants" button at top of gallery
-- Added expandable panel with:
-  - Dropdown to select from approved ads (last 100)
-  - Preview of selected ad
-  - Size checkboxes with "exists" indicators
-  - Generate and Cancel buttons
-- Updated gallery query to include variant info
-- Added variant badge display in gallery HTML (📐 1:1 badge)
+- Expandable panel with ad selector dropdown
+- Preview of selected ad with size checkboxes
+- Variant badge display in gallery HTML (📐 1:1 badge)
 
 ---
 
