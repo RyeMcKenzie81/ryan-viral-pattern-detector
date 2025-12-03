@@ -1769,6 +1769,7 @@ async def save_generated_ad(
     """
     try:
         from uuid import UUID
+        import uuid as uuid_module
 
         prompt_index = generated_ad['prompt_index']
         logger.info(f"Saving generated ad {prompt_index} for run {ad_run_id}")
@@ -1781,15 +1782,29 @@ async def save_generated_ad(
         ad_run_uuid = UUID(ad_run_id)
         hook_uuid = UUID(hook['hook_id'])
 
-        # Upload to storage
-        # Returns tuple of (storage_path, ad_id) - ad_id is None for legacy naming
+        # Generate ad_id upfront for structured naming
+        ad_uuid = uuid_module.uuid4()
+
+        # Get product_id for structured naming
+        product_id = await ctx.deps.ad_creation.get_product_id_for_run(ad_run_uuid)
+
+        # Get canvas size from prompt spec
+        canvas_size = None
+        spec = nano_banana_prompt.get('spec', {})
+        if spec.get('canvas', {}).get('dimensions'):
+            canvas_size = spec['canvas']['dimensions']
+
+        # Upload to storage with structured naming params
         storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
             ad_run_id=ad_run_uuid,
             prompt_index=prompt_index,
-            image_base64=generated_ad['image_base64']
+            image_base64=generated_ad['image_base64'],
+            product_id=product_id,
+            ad_id=ad_uuid,
+            canvas_size=canvas_size
         )
 
-        # Save to database (including model metadata for logging)
+        # Save to database with same ad_id for consistency
         generated_ad_id = await ctx.deps.ad_creation.save_generated_ad(
             ad_run_id=ad_run_uuid,
             prompt_index=prompt_index,
@@ -1803,7 +1818,8 @@ async def save_generated_ad(
             model_requested=generated_ad.get('model_requested'),
             model_used=generated_ad.get('model_used'),
             generation_time_ms=generated_ad.get('generation_time_ms'),
-            generation_retries=generated_ad.get('generation_retries', 0)
+            generation_retries=generated_ad.get('generation_retries', 0),
+            ad_id=ad_uuid  # Use same ID as upload for consistency
         )
 
         logger.info(f"Saved generated ad {prompt_index}: {storage_path}")
@@ -3240,6 +3256,10 @@ async def complete_ad_workflow(
         logger.info(f"Stage 8-10: Generating {num_variations} ad variations...")
         generated_ads_with_reviews = []
 
+        # Get product_id once for structured naming (used for all variations)
+        import uuid as uuid_module
+        product_id_for_naming = await ctx.deps.ad_creation.get_product_id_for_run(UUID(ad_run_id_str))
+
         for i, selected_hook in enumerate(selected_hooks, start=1):
             logger.info(f"  → Generating variation {i}/{num_variations}...")
 
@@ -3264,13 +3284,23 @@ async def complete_ad_workflow(
                     nano_banana_prompt=nano_banana_prompt
                 )
 
-                # Upload image to storage to get path (Bug #17 fix)
-                # Don't save to database yet - will save with reviews later
-                # Returns tuple of (storage_path, ad_id) - ad_id is None for legacy naming
+                # Generate ad_id upfront for structured naming
+                ad_uuid = uuid_module.uuid4()
+
+                # Get canvas size from prompt spec
+                canvas_size = None
+                spec = nano_banana_prompt.get('spec', {})
+                if spec.get('canvas', {}).get('dimensions'):
+                    canvas_size = spec['canvas']['dimensions']
+
+                # Upload image to storage with structured naming
                 storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
                     ad_run_id=UUID(ad_run_id_str),
                     prompt_index=i,
-                    image_base64=generated_ad['image_base64']
+                    image_base64=generated_ad['image_base64'],
+                    product_id=product_id_for_naming,
+                    ad_id=ad_uuid,
+                    canvas_size=canvas_size
                 )
 
                 logger.info(f"  ✓ Variation {i} generated and uploaded: {storage_path}")
@@ -3401,7 +3431,8 @@ async def complete_ad_workflow(
                 model_requested=generated_ad.get('model_requested'),
                 model_used=generated_ad.get('model_used'),
                 generation_time_ms=generated_ad.get('generation_time_ms'),
-                generation_retries=generated_ad.get('generation_retries', 0)
+                generation_retries=generated_ad.get('generation_retries', 0),
+                ad_id=ad_uuid  # Use same ID as upload for consistency
             )
 
             # Add to results

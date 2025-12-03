@@ -463,6 +463,17 @@ class AdCreationService:
         self.supabase.table("ad_runs").update(updates).eq("id", str(ad_run_id)).execute()
         logger.info(f"Updated ad run {ad_run_id}: {list(updates.keys())}")
 
+    async def get_product_id_for_run(self, ad_run_id: UUID) -> Optional[UUID]:
+        """Get product_id for an ad run (needed for structured naming)."""
+        try:
+            result = self.supabase.table("ad_runs").select("product_id").eq("id", str(ad_run_id)).execute()
+            if result.data and result.data[0].get("product_id"):
+                return UUID(result.data[0]["product_id"])
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get product_id for run {ad_run_id}: {e}")
+            return None
+
     # ============================================
     # GENERATED AD CRUD
     # ============================================
@@ -483,7 +494,9 @@ class AdCreationService:
         model_requested: Optional[str] = None,
         model_used: Optional[str] = None,
         generation_time_ms: Optional[int] = None,
-        generation_retries: Optional[int] = None
+        generation_retries: Optional[int] = None,
+        # Pre-generated ID for structured naming
+        ad_id: Optional[UUID] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -503,6 +516,7 @@ class AdCreationService:
             model_used: Model that actually generated the image (may differ due to fallback)
             generation_time_ms: Time taken to generate the image
             generation_retries: Number of retries needed
+            ad_id: Optional pre-generated UUID (for structured naming)
 
         Returns:
             UUID of generated ad record
@@ -526,6 +540,10 @@ class AdCreationService:
             "reviewers_agree": reviewers_agree,
             "final_status": final_status
         }
+
+        # Use pre-generated ID if provided (for structured naming)
+        if ad_id is not None:
+            data["id"] = str(ad_id)
 
         # Only include hook_id if it's a valid UUID (not for benefit-based variations)
         if hook_id is not None:
