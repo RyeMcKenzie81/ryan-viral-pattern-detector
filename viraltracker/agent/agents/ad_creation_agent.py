@@ -3649,7 +3649,279 @@ async def send_ads_slack(
 
 
 # ============================================================================
+# SIZE VARIANT TOOLS
+# ============================================================================
+
+# Meta ad size configurations
+META_AD_SIZES = {
+    "1:1": {"dimensions": "1080x1080", "name": "Square", "use_case": "Feed posts"},
+    "4:5": {"dimensions": "1080x1350", "name": "Portrait", "use_case": "Feed (optimal)"},
+    "9:16": {"dimensions": "1080x1920", "name": "Story", "use_case": "Stories, Reels"},
+    "16:9": {"dimensions": "1920x1080", "name": "Landscape", "use_case": "Video, links"},
+}
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Generation',
+        'platform': 'Facebook',
+        'rate_limit': '1/minute',
+        'use_cases': [
+            'Create size variant of existing ad',
+            'Resize approved ad to different aspect ratio',
+            'Generate Facebook/Instagram story version from feed ad'
+        ],
+        'examples': [
+            'Create 1:1 version of this 9:16 story ad',
+            'Generate 4:5 feed version from this square ad'
+        ]
+    }
+)
+async def generate_size_variant(
+    ctx: RunContext[AgentDependencies],
+    source_ad_id: str,
+    target_size: str,
+    source_image_base64: Optional[str] = None
+) -> Dict:
+    """
+    Generate a size variant of an existing ad.
+
+    Takes an approved ad and creates a version at a different aspect ratio,
+    keeping all visual elements as similar as possible.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        source_ad_id: UUID of the source ad to resize
+        target_size: Target size ratio ("1:1", "4:5", "9:16", "16:9")
+        source_image_base64: Optional pre-loaded source image (if not provided, will fetch)
+
+    Returns:
+        Dict with variant info including storage_path, variant_id
+
+    Raises:
+        ValueError: If target_size is invalid or source ad not found
+        Exception: If generation fails
+    """
+    import time
+    from uuid import UUID
+
+    try:
+        logger.info(f"=== GENERATING SIZE VARIANT: {target_size} for ad {source_ad_id} ===")
+
+        # Validate target size
+        if target_size not in META_AD_SIZES:
+            raise ValueError(f"Invalid target_size: {target_size}. Must be one of {list(META_AD_SIZES.keys())}")
+
+        size_config = META_AD_SIZES[target_size]
+        target_dimensions = size_config["dimensions"]
+
+        # Get source ad data
+        source_ad = await ctx.deps.ad_creation.get_ad_for_variant(UUID(source_ad_id))
+        if not source_ad:
+            raise ValueError(f"Source ad not found: {source_ad_id}")
+
+        # Check if variant already exists
+        existing_variants = await ctx.deps.ad_creation.get_existing_variants(UUID(source_ad_id))
+        if target_size in existing_variants:
+            logger.warning(f"Variant {target_size} already exists for ad {source_ad_id}")
+            # Continue anyway - user might want to regenerate
+
+        # Get source image if not provided
+        if not source_image_base64:
+            source_image_base64 = await ctx.deps.ad_creation.get_image_base64(
+                source_ad["storage_path"]
+            )
+
+        # Build the variant prompt
+        original_spec = source_ad.get("prompt_spec", {})
+        hook_text = source_ad.get("hook_text", "")
+
+        # Create updated prompt spec for new dimensions
+        variant_spec = original_spec.copy() if original_spec else {}
+        variant_spec["canvas"] = f"{target_dimensions}, same background color as source"
+        variant_spec["variant_of"] = source_ad_id
+        variant_spec["target_ratio"] = target_size
+
+        # Build the resize prompt
+        resize_prompt = f"""
+## RESIZE EXISTING AD TO NEW DIMENSIONS
+
+You are resizing an existing approved ad to a new aspect ratio. Your goal is to recreate
+the ad as IDENTICALLY as possible, only adjusting element positions to fit the new canvas.
+
+### SOURCE AD
+The attached image is the source ad that you must recreate.
+
+### TARGET DIMENSIONS
+- Aspect Ratio: {target_size}
+- Canvas Size: {target_dimensions}
+- Use Case: {size_config['use_case']}
+
+### CRITICAL INSTRUCTIONS
+
+1. **KEEP IDENTICAL**:
+   - All text content (headlines, body copy, CTAs) - EXACT same wording
+   - All colors and color scheme
+   - Product image(s) - same product, same style
+   - Font styles and weights
+   - Overall visual style and mood
+   - Logo placement (if any)
+
+2. **ADJUST FOR NEW CANVAS**:
+   - Reposition elements to fit {target_size} aspect ratio
+   - Scale elements proportionally if needed
+   - Maintain visual hierarchy
+   - Keep text readable at new size
+   - Ensure nothing is cut off
+
+3. **HOOK TEXT TO INCLUDE**:
+   "{hook_text}"
+
+4. **DO NOT**:
+   - Change any text content
+   - Use different colors
+   - Add or remove elements
+   - Change the product appearance
+   - Alter the overall design style
+
+Generate a {target_dimensions} version of the source ad that looks as identical as possible,
+just reformatted for the {target_size} aspect ratio.
+"""
+
+        # Generate the variant using Gemini
+        start_time = time.time()
+
+        # Use the generate_single_ad tool's image generation logic
+        from google import genai
+        from google.genai import types
+        import os
+        import base64
+
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+        # Decode source image
+        source_image_bytes = base64.b64decode(source_image_base64)
+
+        # Create the generation request with source image as reference
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=[
+                types.Part.from_bytes(data=source_image_bytes, mime_type="image/png"),
+                resize_prompt
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,  # Very low for consistency
+                response_modalities=["image", "text"]
+            )
+        )
+
+        generation_time_ms = int((time.time() - start_time) * 1000)
+
+        # Extract generated image
+        generated_image_bytes = None
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
+                generated_image_bytes = part.inline_data.data
+                break
+
+        if not generated_image_bytes:
+            raise Exception("No image generated in response")
+
+        # Upload to storage
+        ad_run_id = source_ad.get("ad_run_id")
+        storage_path = f"generated-ads/{ad_run_id}/{source_ad_id}_{target_size.replace(':', 'x')}.png"
+
+        await ctx.deps.ad_creation.upload_image(
+            storage_path,
+            generated_image_bytes
+        )
+
+        # Save variant record
+        variant_id = await ctx.deps.ad_creation.save_size_variant(
+            parent_ad_id=UUID(source_ad_id),
+            ad_run_id=UUID(ad_run_id),
+            variant_size=target_size,
+            storage_path=storage_path,
+            prompt_text=resize_prompt,
+            prompt_spec=variant_spec,
+            hook_text=hook_text,
+            hook_id=UUID(source_ad["hook_id"]) if source_ad.get("hook_id") else None,
+            model_used="gemini-2.0-flash-exp",
+            generation_time_ms=generation_time_ms
+        )
+
+        logger.info(f"✅ Created {target_size} variant: {variant_id} ({generation_time_ms}ms)")
+
+        return {
+            "success": True,
+            "variant_id": str(variant_id),
+            "parent_ad_id": source_ad_id,
+            "variant_size": target_size,
+            "dimensions": target_dimensions,
+            "storage_path": storage_path,
+            "generation_time_ms": generation_time_ms
+        }
+
+    except ValueError as e:
+        logger.error(f"Invalid input: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate size variant: {str(e)}")
+        raise Exception(f"Failed to generate size variant: {str(e)}")
+
+
+async def create_size_variants_batch(
+    ctx: RunContext[AgentDependencies],
+    source_ad_id: str,
+    target_sizes: List[str]
+) -> Dict:
+    """
+    Create multiple size variants for an ad.
+
+    Args:
+        ctx: Run context
+        source_ad_id: UUID of source ad
+        target_sizes: List of target sizes (e.g., ["1:1", "4:5"])
+
+    Returns:
+        Dict with results for each size
+    """
+    results = {
+        "source_ad_id": source_ad_id,
+        "variants": [],
+        "errors": []
+    }
+
+    # Pre-load source image once
+    from uuid import UUID
+    source_ad = await ctx.deps.ad_creation.get_ad_for_variant(UUID(source_ad_id))
+    if not source_ad:
+        raise ValueError(f"Source ad not found: {source_ad_id}")
+
+    source_image_base64 = await ctx.deps.ad_creation.get_image_base64(
+        source_ad["storage_path"]
+    )
+
+    for target_size in target_sizes:
+        try:
+            result = await generate_size_variant(
+                ctx=ctx,
+                source_ad_id=source_ad_id,
+                target_size=target_size,
+                source_image_base64=source_image_base64
+            )
+            results["variants"].append(result)
+        except Exception as e:
+            results["errors"].append({
+                "target_size": target_size,
+                "error": str(e)
+            })
+
+    return results
+
+
+# ============================================================================
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 18 tools (includes email/slack export)")
+logger.info("Ad Creation Agent initialized with 19 tools (includes email/slack export, size variants)")

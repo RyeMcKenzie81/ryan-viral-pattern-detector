@@ -419,3 +419,94 @@ class AdCreationService:
         model_info = f", model={model_used}" if model_used else ""
         logger.info(f"Saved generated ad: {generated_ad_id} (status: {final_status}{model_info})")
         return generated_ad_id
+
+    # ============================================
+    # SIZE VARIANTS
+    # ============================================
+
+    async def get_ad_for_variant(self, ad_id: UUID) -> Optional[Dict]:
+        """
+        Get ad data needed for creating size variants.
+
+        Returns ad with storage_path, prompt_spec, hook_text, ad_run info.
+        """
+        try:
+            result = self.supabase.table("generated_ads").select(
+                "id, storage_path, prompt_spec, prompt_text, hook_text, hook_id, "
+                "ad_run_id, ad_runs(product_id)"
+            ).eq("id", str(ad_id)).execute()
+
+            if result.data:
+                return result.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get ad for variant: {e}")
+            return None
+
+    async def save_size_variant(
+        self,
+        parent_ad_id: UUID,
+        ad_run_id: UUID,
+        variant_size: str,
+        storage_path: str,
+        prompt_text: str,
+        prompt_spec: Dict,
+        hook_text: str,
+        hook_id: Optional[UUID] = None,
+        model_used: Optional[str] = None,
+        generation_time_ms: Optional[int] = None
+    ) -> UUID:
+        """
+        Save a size variant of an existing ad.
+
+        Args:
+            parent_ad_id: UUID of the source ad being resized
+            ad_run_id: UUID of the ad run (same as parent)
+            variant_size: Size label (e.g., "1:1", "4:5", "9:16")
+            storage_path: Storage path to the new variant image
+            prompt_text: Prompt used for generation
+            prompt_spec: Updated prompt spec with new dimensions
+            hook_text: Same hook text as parent
+            hook_id: Same hook_id as parent (if applicable)
+            model_used: Model that generated the variant
+            generation_time_ms: Generation time
+
+        Returns:
+            UUID of created variant ad
+        """
+        data = {
+            "ad_run_id": str(ad_run_id),
+            "parent_ad_id": str(parent_ad_id),
+            "variant_size": variant_size,
+            "prompt_index": 0,  # Variants don't have prompt index
+            "prompt_text": prompt_text,
+            "prompt_spec": prompt_spec,
+            "hook_text": hook_text,
+            "storage_path": storage_path,
+            "final_status": "pending"  # Needs review
+        }
+
+        if hook_id:
+            data["hook_id"] = str(hook_id)
+        if model_used:
+            data["model_used"] = model_used
+        if generation_time_ms:
+            data["generation_time_ms"] = generation_time_ms
+
+        result = self.supabase.table("generated_ads").insert(data).execute()
+        variant_id = UUID(result.data[0]["id"])
+
+        logger.info(f"Saved size variant: {variant_id} ({variant_size}) of parent {parent_ad_id}")
+        return variant_id
+
+    async def get_existing_variants(self, parent_ad_id: UUID) -> List[str]:
+        """Get list of variant sizes that already exist for an ad."""
+        try:
+            result = self.supabase.table("generated_ads").select(
+                "variant_size"
+            ).eq("parent_ad_id", str(parent_ad_id)).execute()
+
+            return [r["variant_size"] for r in result.data if r.get("variant_size")]
+        except Exception as e:
+            logger.error(f"Failed to get existing variants: {e}")
+            return []

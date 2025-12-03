@@ -7,13 +7,23 @@ This page allows users to:
 - Expand to see all ads from a specific run
 - See approval status for each ad
 - Download all images from a run as a zip file
+- Create size variants of approved ads
 """
 
 import streamlit as st
 import io
 import zipfile
 import requests
+import asyncio
 from datetime import datetime
+
+# Meta ad size definitions
+META_AD_SIZES = {
+    "1:1": {"dimensions": "1080x1080", "name": "Square", "use_case": "Feed posts"},
+    "4:5": {"dimensions": "1080x1350", "name": "Portrait", "use_case": "Feed (optimal)"},
+    "9:16": {"dimensions": "1080x1920", "name": "Story", "use_case": "Stories, Reels"},
+    "16:9": {"dimensions": "1920x1080", "name": "Landscape", "use_case": "Video, links"},
+}
 
 # Page config
 st.set_page_config(
@@ -132,7 +142,8 @@ def get_ads_for_run(ad_run_id: str):
         result = db.table("generated_ads").select(
             "id, prompt_index, storage_path, hook_text, final_status, "
             "claude_review, gemini_review, reviewers_agree, created_at, "
-            "model_requested, model_used, generation_time_ms, generation_retries"
+            "model_requested, model_used, generation_time_ms, generation_retries, "
+            "parent_ad_id, variant_size"
         ).eq("ad_run_id", ad_run_id).order("prompt_index").execute()
         return result.data
     except Exception as e:
@@ -227,6 +238,180 @@ def get_status_badge(status: str) -> str:
     return f"<span style='background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:12px;'>{status}</span>"
 
 
+def get_existing_variants(ad_id: str) -> list:
+    """Get list of variant sizes that already exist for an ad."""
+    try:
+        db = get_supabase_client()
+        result = db.table("generated_ads").select(
+            "variant_size"
+        ).eq("parent_ad_id", ad_id).execute()
+        return [r["variant_size"] for r in result.data if r.get("variant_size")]
+    except Exception as e:
+        return []
+
+
+def get_ad_image_base64(storage_path: str) -> str:
+    """Download ad image and return as base64 string."""
+    import base64
+    if not storage_path:
+        return ""
+    try:
+        db = get_supabase_client()
+        parts = storage_path.split('/', 1)
+        if len(parts) == 2:
+            bucket, path = parts
+        else:
+            bucket = "generated-ads"
+            path = storage_path
+
+        image_data = db.storage.from_(bucket).download(path)
+        return base64.b64encode(image_data).decode('utf-8')
+    except Exception as e:
+        st.error(f"Failed to download image: {e}")
+        return ""
+
+
+async def create_size_variants_async(ad_id: str, target_sizes: list, source_image_base64: str) -> dict:
+    """Create size variants using the ad creation agent."""
+    from viraltracker.agent.agents.ad_creation_agent import create_size_variants_batch, AgentDependencies
+    from pydantic_ai import RunContext
+
+    # Create a minimal context for the tool call
+    deps = AgentDependencies(
+        product_id=None,
+        project_id=None,
+        reference_ad_base64=source_image_base64,
+        source_ad_id=ad_id
+    )
+
+    # We need to call the tool function directly
+    # The agent tools expect RunContext but we can call the underlying service
+    from viraltracker.services.ad_creation_service import AdCreationService
+
+    service = AdCreationService()
+    results = {"successful": [], "failed": []}
+
+    # Get source ad data
+    ad_data = await service.get_ad_for_variant(ad_id)
+    if not ad_data:
+        return {"successful": [], "failed": target_sizes, "error": "Source ad not found"}
+
+    ad_run_id = ad_data.get("ad_run_id")
+    prompt_spec = ad_data.get("prompt_spec", {})
+    hook_text = ad_data.get("hook_text", "")
+    hook_id = ad_data.get("hook_id")
+
+    # Import the Gemini generation function
+    from viraltracker.agent.agents.ad_creation_agent import generate_ad_with_gemini
+    import time
+
+    for size in target_sizes:
+        try:
+            size_info = META_AD_SIZES.get(size)
+            if not size_info:
+                results["failed"].append({"size": size, "error": "Unknown size"})
+                continue
+
+            # Update prompt spec for new dimensions
+            new_prompt_spec = prompt_spec.copy() if prompt_spec else {}
+            new_prompt_spec["canvas"] = {
+                "dimensions": size_info["dimensions"],
+                "aspect_ratio": size
+            }
+
+            # Build the generation prompt
+            prompt_text = f"""Recreate this EXACT ad at {size_info['dimensions']} ({size} aspect ratio).
+
+CRITICAL INSTRUCTIONS:
+- Keep ALL text exactly the same (same words, same fonts)
+- Keep ALL colors exactly the same
+- Keep the product image(s) exactly the same
+- Keep the overall visual style and layout matching the original
+- Only reposition/resize elements as needed to fit the new {size} canvas
+- The hook text is: "{hook_text}"
+
+This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimensions change."""
+
+            # Generate with Gemini using reference image
+            start_time = time.time()
+
+            # Call Gemini with reference image
+            from google import genai
+            from google.genai import types
+            import os
+            import base64
+
+            client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+            # Parse dimensions
+            width, height = map(int, size_info["dimensions"].split("x"))
+
+            # Create image part from base64
+            image_bytes = base64.b64decode(source_image_base64)
+            reference_image = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp",
+                contents=[reference_image, prompt_text],
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                    temperature=0.1,  # Low temperature for consistency
+                )
+            )
+
+            generation_time_ms = int((time.time() - start_time) * 1000)
+
+            # Extract generated image
+            generated_image_base64 = None
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    generated_image_base64 = base64.b64encode(part.inline_data.data).decode('utf-8')
+                    break
+
+            if not generated_image_base64:
+                results["failed"].append({"size": size, "error": "No image generated"})
+                continue
+
+            # Upload to storage
+            import uuid
+            storage_path = f"{ad_run_id}/variant_{size.replace(':', 'x')}_{uuid.uuid4().hex[:8]}.png"
+
+            image_data = base64.b64decode(generated_image_base64)
+            db = get_supabase_client()
+            db.storage.from_("generated-ads").upload(
+                storage_path,
+                image_data,
+                {"content-type": "image/png"}
+            )
+
+            full_storage_path = f"generated-ads/{storage_path}"
+
+            # Save to database
+            variant_id = await service.save_size_variant(
+                parent_ad_id=ad_id,
+                ad_run_id=ad_run_id,
+                variant_size=size,
+                storage_path=full_storage_path,
+                prompt_text=prompt_text,
+                prompt_spec=new_prompt_spec,
+                hook_text=hook_text,
+                hook_id=hook_id,
+                model_used="gemini-2.0-flash-exp",
+                generation_time_ms=generation_time_ms
+            )
+
+            results["successful"].append({
+                "size": size,
+                "variant_id": str(variant_id),
+                "storage_path": full_storage_path
+            })
+
+        except Exception as e:
+            results["failed"].append({"size": size, "error": str(e)})
+
+    return results
+
+
 def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path: str = None) -> bytes:
     """
     Create a zip file containing all images from an ad run.
@@ -302,6 +487,14 @@ if 'ad_history_page' not in st.session_state:
     st.session_state.ad_history_page = 1
 if 'expanded_run_id' not in st.session_state:
     st.session_state.expanded_run_id = None
+
+# Size variant state
+if 'size_variant_ad_id' not in st.session_state:
+    st.session_state.size_variant_ad_id = None
+if 'size_variant_generating' not in st.session_state:
+    st.session_state.size_variant_generating = False
+if 'size_variant_results' not in st.session_state:
+    st.session_state.size_variant_results = None
 
 PAGE_SIZE = 25
 
@@ -503,7 +696,12 @@ else:
 
                                     # Ad info
                                     ad_status = ad.get('final_status', 'pending')
-                                    st.markdown(f"**Variation {ad.get('prompt_index', '?')}** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
+                                    variant_size = ad.get('variant_size')
+                                    if variant_size:
+                                        # This is a size variant
+                                        st.markdown(f"**{variant_size} Variant** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
+                                    else:
+                                        st.markdown(f"**Variation {ad.get('prompt_index', '?')}** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
 
                                     # Hook text (truncated)
                                     hook_text = ad.get('hook_text', '')
@@ -540,6 +738,95 @@ else:
                                         retry_str = f" | {retries} retries" if retries > 0 else ""
 
                                         st.caption(f"🤖 {model_short}{time_str}{retry_str}{fallback_warning}")
+
+                                    # Create Sizes button for approved ads
+                                    ad_id = ad.get('id')
+                                    if ad_status == 'approved' and ad_id:
+                                        # Check if size modal is open for this ad
+                                        is_size_modal_open = st.session_state.size_variant_ad_id == ad_id
+
+                                        if st.button("📐 Create Sizes", key=f"create_sizes_{ad_id}"):
+                                            if is_size_modal_open:
+                                                st.session_state.size_variant_ad_id = None
+                                            else:
+                                                st.session_state.size_variant_ad_id = ad_id
+                                                st.session_state.size_variant_results = None
+                                            st.rerun()
+
+                                        # Show size selection modal
+                                        if is_size_modal_open:
+                                            st.markdown("**Select Target Sizes:**")
+
+                                            # Get existing variants
+                                            existing_variants = get_existing_variants(ad_id)
+
+                                            # Size checkboxes
+                                            selected_sizes = []
+                                            for size, info in META_AD_SIZES.items():
+                                                already_exists = size in existing_variants
+                                                label = f"{info['name']} ({size}) - {info['use_case']}"
+                                                if already_exists:
+                                                    label += " ✓ exists"
+
+                                                is_selected = st.checkbox(
+                                                    label,
+                                                    value=False,
+                                                    disabled=already_exists,
+                                                    key=f"size_{ad_id}_{size}"
+                                                )
+                                                if is_selected:
+                                                    selected_sizes.append(size)
+
+                                            # Show results if available
+                                            if st.session_state.size_variant_results:
+                                                results = st.session_state.size_variant_results
+                                                if results.get("successful"):
+                                                    success_sizes = ', '.join([r['size'] for r in results['successful']])
+                                                    st.success(f"✅ Created {len(results['successful'])} variant(s): {success_sizes}")
+                                                if results.get("failed"):
+                                                    failed_msgs = [f"{r['size']}: {r.get('error', 'Unknown error')}" for r in results['failed']]
+                                                    st.error(f"❌ Failed: {', '.join(failed_msgs)}")
+
+                                            # Generate button
+                                            btn_col1, btn_col2 = st.columns(2)
+                                            with btn_col1:
+                                                if st.button(
+                                                    "🚀 Generate Variants",
+                                                    key=f"generate_variants_{ad_id}",
+                                                    disabled=len(selected_sizes) == 0 or st.session_state.size_variant_generating
+                                                ):
+                                                    st.session_state.size_variant_generating = True
+                                                    st.rerun()
+
+                                            with btn_col2:
+                                                if st.button("Cancel", key=f"cancel_sizes_{ad_id}"):
+                                                    st.session_state.size_variant_ad_id = None
+                                                    st.session_state.size_variant_results = None
+                                                    st.rerun()
+
+                                            # Handle generation
+                                            if st.session_state.size_variant_generating and selected_sizes:
+                                                with st.spinner(f"Generating {len(selected_sizes)} size variant(s)..."):
+                                                    # Get source image
+                                                    source_image_base64 = get_ad_image_base64(ad.get('storage_path', ''))
+                                                    if source_image_base64:
+                                                        # Run async generation
+                                                        results = asyncio.run(
+                                                            create_size_variants_async(
+                                                                ad_id=ad_id,
+                                                                target_sizes=selected_sizes,
+                                                                source_image_base64=source_image_base64
+                                                            )
+                                                        )
+                                                        st.session_state.size_variant_results = results
+                                                    else:
+                                                        st.session_state.size_variant_results = {
+                                                            "successful": [],
+                                                            "failed": [{"size": s, "error": "Could not load source image"} for s in selected_sizes]
+                                                        }
+
+                                                st.session_state.size_variant_generating = False
+                                                st.rerun()
 
                                     st.markdown("---")
 
