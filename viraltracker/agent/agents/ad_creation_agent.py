@@ -1345,11 +1345,6 @@ async def generate_nano_banana_prompt(
         num_product_images = len(product_image_paths)
         logger.info(f"Using {num_product_images} product image(s) for generation")
 
-        # Sanitize ad_analysis to remove unverified social proof platform mentions
-        # This prevents Gemini from "seeing" Trustpilot/etc in the prompt text
-        # Uses service layer for deterministic preprocessing (per pydantic-ai best practices)
-        ad_analysis = ctx.deps.ad_creation.sanitize_social_proof_mentions(ad_analysis, product)
-
         # Phase 6: Match benefit/USP to hook for relevant subheadline
         # Combines both benefits and unique_selling_points for best match
         matched_benefit = match_benefit_to_hook(
@@ -1472,54 +1467,9 @@ async def generate_nano_banana_prompt(
         - The product should fit naturally in the scene without appearing oversized or undersized
         """
 
-        # Social proof - use ONLY verified data from product database
+        # Social proof section - kept simple for now
+        # NOTE: Avoid using templates with Trustpilot/review badges until we have a better solution
         social_proof_section = ""
-        review_platforms = product.get('review_platforms', {}) or {}
-        media_features = product.get('media_features', []) or []
-        awards_certs = product.get('awards_certifications', []) or []
-        legacy_social_proof = product.get('social_proof', '')
-
-        has_any_verified_social_proof = review_platforms or media_features or awards_certs or legacy_social_proof
-
-        if ad_analysis.get('has_social_proof') and has_any_verified_social_proof:
-            # Template has social proof AND we have verified data to use
-            # Build explicit REPLACEMENT instruction instead of just prohibition
-            # Image models respond better to "put X here" than "don't put Y"
-
-            # Build the exact review string to display
-            # Format: ★★★★★ 4.8/5 (2000+ Reviews)
-            rating_value = ''
-            count_value = ''
-            if review_platforms:
-                first_platform_data = list(review_platforms.values())[0]
-                rating_value = first_platform_data.get('rating', '')
-                count_value = first_platform_data.get('count', '')
-
-            # Build the exact display string
-            review_display_string = f"★★★★★ {rating_value}/5 ({count_value} Reviews)"
-
-            social_proof_section = f"""
-        **REVIEW BADGE - DISPLAY THIS EXACT TEXT:**
-
-        {review_display_string}
-
-        Write ONLY the text above in the review badge area. Do not add extra words.
-        Do not copy any numbers or text from the reference template's review section.
-        Keep similar visual styling (badge shape, colors, placement) but use OUR text above.
-        """
-        elif ad_analysis.get('has_social_proof') and not has_any_verified_social_proof:
-            # Template has social proof but product has NO verified data - strict warning
-            social_proof_section = """
-        **⚠️ SOCIAL PROOF - NO DATA AVAILABLE:**
-        - The reference template includes review badges or social proof elements
-        - This product has NO verified review data
-        - DO NOT copy any review badges, star ratings, or review counts from the template
-        - DO NOT create any Trustpilot, Amazon, or other platform badges
-        - DO NOT invent any star ratings, review counts, or awards
-        - LEAVE BLANK: Where the template shows a review badge, leave that area empty
-        - Fill that space with background color or extend nearby design elements
-        """
-        # If template doesn't have social proof, social_proof_section stays empty (no warning needed)
 
         # Lighting integration section - ensures product matches scene lighting
         lighting_section = """
