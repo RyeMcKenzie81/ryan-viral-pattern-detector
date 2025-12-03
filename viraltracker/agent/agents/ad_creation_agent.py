@@ -1782,7 +1782,8 @@ async def save_generated_ad(
         hook_uuid = UUID(hook['hook_id'])
 
         # Upload to storage
-        storage_path = await ctx.deps.ad_creation.upload_generated_ad(
+        # Returns tuple of (storage_path, ad_id) - ad_id is None for legacy naming
+        storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
             ad_run_id=ad_run_uuid,
             prompt_index=prompt_index,
             image_base64=generated_ad['image_base64']
@@ -3265,7 +3266,8 @@ async def complete_ad_workflow(
 
                 # Upload image to storage to get path (Bug #17 fix)
                 # Don't save to database yet - will save with reviews later
-                storage_path = await ctx.deps.ad_creation.upload_generated_ad(
+                # Returns tuple of (storage_path, ad_id) - ad_id is None for legacy naming
+                storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
                     ad_run_id=UUID(ad_run_id_str),
                     prompt_index=i,
                     image_base64=generated_ad['image_base64']

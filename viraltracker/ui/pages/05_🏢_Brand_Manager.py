@@ -188,6 +188,32 @@ def save_image_notes(image_id: str, notes: str):
         return False
 
 
+def save_brand_code(brand_id: str, brand_code: str) -> bool:
+    """Save brand_code for a brand (used in ad filenames)."""
+    try:
+        db = get_supabase_client()
+        # Validate: max 4 chars, uppercase
+        code = brand_code.strip().upper()[:4] if brand_code else None
+        db.table("brands").update({"brand_code": code}).eq("id", brand_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save brand code: {e}")
+        return False
+
+
+def save_product_code(product_id: str, product_code: str) -> bool:
+    """Save product_code for a product (used in ad filenames)."""
+    try:
+        db = get_supabase_client()
+        # Validate: max 4 chars, uppercase
+        code = product_code.strip().upper()[:4] if product_code else None
+        db.table("products").update({"product_code": code}).eq("id", product_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save product code: {e}")
+        return False
+
+
 def format_color_swatch(hex_color: str, name: str = None) -> str:
     """Create HTML for a color swatch."""
     label = f" {name}" if name else ""
@@ -240,6 +266,25 @@ if not selected_brand:
 st.subheader("Brand Settings")
 
 with st.container():
+    # Brand Code (for ad filenames)
+    col_code, col_code_spacer = st.columns([1, 3])
+    with col_code:
+        current_brand_code = selected_brand.get('brand_code') or ''
+        new_brand_code = st.text_input(
+            "Brand Code",
+            value=current_brand_code,
+            max_chars=4,
+            placeholder="e.g., WP",
+            help="2-4 character code used in ad filenames (e.g., WP for WonderPaws)"
+        )
+        if new_brand_code.upper() != current_brand_code.upper():
+            if st.button("Save Code", key="save_brand_code", type="primary"):
+                if save_brand_code(selected_brand_id, new_brand_code):
+                    st.success("Brand code saved!")
+                    st.rerun()
+
+    st.markdown("")  # Spacer
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -340,6 +385,26 @@ else:
                 tab_details, tab_images, tab_stats = st.tabs(["Details", "Images", "Stats"])
 
                 with tab_details:
+                    # Product Code (for ad filenames)
+                    col_pc, col_pc_spacer = st.columns([1, 3])
+                    with col_pc:
+                        current_product_code = product.get('product_code') or ''
+                        new_product_code = st.text_input(
+                            "Product Code",
+                            value=current_product_code,
+                            max_chars=4,
+                            placeholder="e.g., C3",
+                            help="2-4 character code used in ad filenames (e.g., C3 for Collagen 3x)",
+                            key=f"product_code_{product_id}"
+                        )
+                        if new_product_code.upper() != current_product_code.upper():
+                            if st.button("Save Code", key=f"save_pc_{product_id}", type="primary"):
+                                if save_product_code(product_id, new_product_code):
+                                    st.success("Product code saved!")
+                                    st.rerun()
+
+                    st.markdown("")  # Spacer
+
                     col_d1, col_d2 = st.columns(2)
 
                     with col_d1:

@@ -180,12 +180,115 @@ class AdCreationService:
         logger.info(f"Uploaded reference ad: {storage_path}")
         return f"reference-ads/{storage_path}"
 
+    # ============================================
+    # AD FILENAME GENERATION
+    # ============================================
+
+    def get_format_code(self, canvas_size: str) -> str:
+        """
+        Convert canvas dimensions to format code.
+
+        Args:
+            canvas_size: Canvas size string (e.g., "1080x1080px", "1080x1920px")
+
+        Returns:
+            Format code: SQ (square), ST (story), PT (portrait), LS (landscape)
+        """
+        # Parse dimensions from canvas_size (e.g., "1080x1080px" or "1080x1920")
+        import re
+        match = re.search(r'(\d+)\s*x\s*(\d+)', canvas_size.lower())
+        if not match:
+            return "SQ"  # Default to square
+
+        width = int(match.group(1))
+        height = int(match.group(2))
+
+        # Determine aspect ratio
+        ratio = width / height if height > 0 else 1
+
+        if 0.95 <= ratio <= 1.05:  # Square (1:1)
+            return "SQ"
+        elif ratio < 0.7:  # Story/Portrait tall (9:16 = 0.5625, 4:5 = 0.8)
+            if ratio < 0.65:
+                return "ST"  # Story (9:16)
+            else:
+                return "PT"  # Portrait (4:5)
+        else:  # Landscape (16:9 = 1.78)
+            return "LS"
+
+    async def get_brand_product_codes(self, product_id: UUID) -> tuple[str, str]:
+        """
+        Get brand_code and product_code for a product.
+
+        Args:
+            product_id: UUID of the product
+
+        Returns:
+            Tuple of (brand_code, product_code)
+            Returns ("XX", "XX") if codes not set
+        """
+        # Get product with brand info
+        result = self.supabase.table("products").select(
+            "product_code, brand_id, brands(brand_code)"
+        ).eq("id", str(product_id)).execute()
+
+        if not result.data:
+            return ("XX", "XX")
+
+        product = result.data[0]
+        product_code = product.get("product_code") or "XX"
+        brand_code = "XX"
+
+        if product.get("brands"):
+            brand_code = product["brands"].get("brand_code") or "XX"
+
+        return (brand_code.upper(), product_code.upper())
+
+    def generate_ad_filename(
+        self,
+        brand_code: str,
+        product_code: str,
+        ad_run_id: UUID,
+        ad_id: UUID,
+        format_code: str,
+        extension: str = "png"
+    ) -> str:
+        """
+        Generate structured ad filename.
+
+        Format: {brand_code}-{product_code}-{run_id_short}-{ad_id_short}-{format}.{ext}
+        Example: WP-C3-a1b2c3-d4e5f6-SQ.png
+
+        Args:
+            brand_code: Brand code (e.g., "WP")
+            product_code: Product code (e.g., "C3")
+            ad_run_id: UUID of the ad run
+            ad_id: UUID of the generated ad
+            format_code: Format code (SQ, ST, PT, LS)
+            extension: File extension (default: png)
+
+        Returns:
+            Structured filename
+        """
+        run_short = str(ad_run_id).replace("-", "")[:6]
+        ad_short = str(ad_id).replace("-", "")[:6]
+
+        return f"{brand_code}-{product_code}-{run_short}-{ad_short}-{format_code}.{extension}"
+
+    # ============================================
+    # IMAGE UPLOAD
+    # ============================================
+
     async def upload_generated_ad(
         self,
         ad_run_id: UUID,
         prompt_index: int,
-        image_base64: str
-    ) -> str:
+        image_base64: str,
+        # New optional params for structured naming
+        product_id: Optional[UUID] = None,
+        ad_id: Optional[UUID] = None,
+        canvas_size: Optional[str] = None
+    ) -> tuple[str, Optional[UUID]]:
         """
         Upload generated ad image to Supabase Storage.
 
@@ -193,14 +296,40 @@ class AdCreationService:
             ad_run_id: UUID of ad run
             prompt_index: Index (1-5)
             image_base64: Base64-encoded image
+            product_id: Optional product UUID for structured naming
+            ad_id: Optional pre-generated ad UUID (will generate one if not provided)
+            canvas_size: Optional canvas size for format detection (e.g., "1080x1080px")
 
         Returns:
-            Storage path: "generated-ads/{ad_run_id}/{prompt_index}.png"
+            Tuple of (storage_path, ad_id)
+            - storage_path: Full path like "generated-ads/WP-C3-a1b2c3-d4e5f6-SQ.png"
+            - ad_id: UUID to use for the generated_ads record
         """
         import asyncio
+        import uuid as uuid_module
 
         image_data = base64.b64decode(image_base64)
-        storage_path = f"{ad_run_id}/{prompt_index}.png"
+
+        # Generate ad_id if not provided
+        generated_ad_id = ad_id if ad_id else uuid_module.uuid4()
+
+        # Use structured naming if product_id is provided
+        if product_id and canvas_size:
+            brand_code, product_code = await self.get_brand_product_codes(product_id)
+            format_code = self.get_format_code(canvas_size)
+            filename = self.generate_ad_filename(
+                brand_code=brand_code,
+                product_code=product_code,
+                ad_run_id=ad_run_id,
+                ad_id=generated_ad_id,
+                format_code=format_code
+            )
+            # Store in a folder structure: {ad_run_id}/{filename}
+            storage_path = f"{ad_run_id}/{filename}"
+        else:
+            # Fall back to legacy naming for backwards compatibility
+            storage_path = f"{ad_run_id}/{prompt_index}.png"
+            generated_ad_id = None  # Don't return ad_id for legacy mode
 
         # Run sync Supabase call in thread pool to avoid blocking event loop
         await asyncio.to_thread(
@@ -212,7 +341,7 @@ class AdCreationService:
         )
 
         logger.info(f"Uploaded generated ad: {storage_path}")
-        return f"generated-ads/{storage_path}"
+        return (f"generated-ads/{storage_path}", generated_ad_id)
 
     async def download_image(self, storage_path: str) -> bytes:
         """
@@ -454,7 +583,8 @@ class AdCreationService:
         hook_text: str,
         hook_id: Optional[UUID] = None,
         model_used: Optional[str] = None,
-        generation_time_ms: Optional[int] = None
+        generation_time_ms: Optional[int] = None,
+        variant_id: Optional[UUID] = None
     ) -> UUID:
         """
         Save a size variant of an existing ad.
@@ -470,6 +600,7 @@ class AdCreationService:
             hook_id: Same hook_id as parent (if applicable)
             model_used: Model that generated the variant
             generation_time_ms: Generation time
+            variant_id: Optional pre-generated UUID (for structured naming)
 
         Returns:
             UUID of created variant ad
@@ -486,6 +617,9 @@ class AdCreationService:
             "final_status": "approved"  # Auto-approved (inherits from approved source ad)
         }
 
+        # Use pre-generated ID if provided (for structured naming)
+        if variant_id:
+            data["id"] = str(variant_id)
         if hook_id:
             data["hook_id"] = str(hook_id)
         if model_used:
@@ -634,9 +768,31 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         generation_time_ms = generation_result.get("generation_time_ms", 0)
         model_used = generation_result.get("model_used", "models/gemini-3-pro-image-preview")
 
-        # Upload to storage
+        # Generate variant ID upfront for structured naming
         import uuid as uuid_module
-        storage_filename = f"{ad_run_id}/variant_{target_size.replace(':', 'x')}_{uuid_module.uuid4().hex[:8]}.png"
+        variant_id = uuid_module.uuid4()
+
+        # Get product_id from source ad's ad_run for structured naming
+        product_id = None
+        if source_ad.get("ad_runs") and source_ad["ad_runs"].get("product_id"):
+            product_id = UUID(source_ad["ad_runs"]["product_id"])
+
+        # Build structured filename or fall back to legacy format
+        if product_id:
+            brand_code, product_code = await self.get_brand_product_codes(product_id)
+            format_code = self.get_format_code(size_config["dimensions"])
+            filename = self.generate_ad_filename(
+                brand_code=brand_code,
+                product_code=product_code,
+                ad_run_id=ad_run_id,
+                ad_id=variant_id,
+                format_code=format_code,
+                extension="png"
+            )
+            storage_filename = f"{ad_run_id}/{filename}"
+        else:
+            # Fallback for ads without product_id
+            storage_filename = f"{ad_run_id}/variant_{target_size.replace(':', 'x')}_{uuid_module.uuid4().hex[:8]}.png"
 
         image_data = base64.b64decode(generated_image_base64)
         self.supabase.storage.from_("generated-ads").upload(
@@ -647,7 +803,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
 
         full_storage_path = f"generated-ads/{storage_filename}"
 
-        # Save to database
+        # Save to database with pre-generated variant_id
         variant_id = await self.save_size_variant(
             parent_ad_id=source_ad_id,
             ad_run_id=ad_run_id,
@@ -658,7 +814,8 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             hook_text=hook_text,
             hook_id=hook_id,
             model_used=model_used,
-            generation_time_ms=generation_time_ms
+            generation_time_ms=generation_time_ms,
+            variant_id=variant_id
         )
 
         logger.info(f"Created {target_size} variant: {variant_id} ({generation_time_ms}ms)")
