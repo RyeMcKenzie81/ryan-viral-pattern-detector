@@ -124,8 +124,8 @@ def get_existing_templates():
     """Get existing reference ad templates from storage, deduplicated by original filename."""
     try:
         db = get_supabase_client()
-        # List files in reference-ads bucket
-        result = db.storage.from_("reference-ads").list()
+        # List files in reference-ads bucket (increase limit from default 100)
+        result = db.storage.from_("reference-ads").list(path='', options={'limit': 1000})
 
         # Deduplicate by original filename (files are named {uuid}_{original_filename})
         seen_originals = {}
