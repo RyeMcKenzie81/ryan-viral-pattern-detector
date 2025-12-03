@@ -1,0 +1,268 @@
+# ViralTracker Development Guidelines
+
+> **Full Documentation**: See [docs/README.md](docs/README.md) for complete documentation index.
+
+## Required Reading
+
+Before making changes, review these docs:
+- `/docs/architecture.md` - System design and layered architecture
+- `/docs/claude_code_guide.md` - Tool development patterns and best practices
+
+---
+
+## Development Workflow (ALWAYS FOLLOW)
+
+For every task, follow this workflow:
+
+### 1. Plan
+- Understand the requirement fully before coding
+- Identify affected files and systems
+- Consider edge cases and error handling
+- Use TodoWrite to track multi-step tasks
+
+### 2. Implement
+- Follow the architecture patterns below
+- Keep changes focused and minimal
+- Don't over-engineer or add unnecessary features
+
+### 3. Document
+- Update docstrings for any modified functions
+- Update relevant docs in `/docs/` if behavior changes
+- Add inline comments only where logic isn't self-evident
+
+### 4. Test
+- Verify syntax: `python3 -m py_compile <file>`
+- Test the feature manually if possible
+- Check for regressions in related functionality
+
+### 5. QA & Cleanup
+- Remove any debug code or print statements
+- Ensure no unused imports or variables
+- Verify error handling is appropriate
+
+### 6. Update External Documentation
+- If you changed behavior, check if these need updates:
+  - `/docs/architecture.md`
+  - `/docs/claude_code_guide.md`
+  - `/docs/README.md`
+  - Any checkpoint files in `/docs/archive/`
+- Documentation should always reflect current system state
+
+---
+
+## Core Architecture (3 Layers)
+
+```
+Agent Layer (PydanticAI) → Tools = thin orchestration, LLM decides when to call
+Service Layer           → Business logic, deterministic preprocessing, reusable
+Interface Layer         → CLI, API, Streamlit UI (all call services)
+```
+
+### File Locations
+```
+viraltracker/
+├── agent/
+│   ├── agents/           # Specialist agents (tools defined here)
+│   ├── orchestrator.py   # Main routing agent
+│   └── dependencies.py   # AgentDependencies (service container)
+├── services/             # Business logic layer
+│   ├── ad_creation_service.py
+│   ├── gemini_service.py
+│   ├── twitter_service.py
+│   └── models.py         # Pydantic models
+└── ui/
+    └── pages/            # Streamlit UI pages
+```
+
+---
+
+## Pydantic-AI Best Practices
+
+### Tool vs Service Decision
+| Question | Yes → | No → |
+|----------|-------|------|
+| Does LLM decide when to call this? | Tool | Service |
+| Must always run (deterministic)? | Service | Could be Tool |
+| Reusable across agents/interfaces? | Service | Tool OK |
+
+### Thin Tools Pattern (CRITICAL)
+```python
+# ✅ CORRECT: Tool calls service
+@agent.tool(...)
+async def my_tool(ctx: RunContext[AgentDependencies], ...):
+    result = ctx.deps.my_service.do_business_logic(...)
+    return result
+
+# ❌ WRONG: Business logic in tool or helper in agent file
+def helper_function(...):  # Should be in service!
+    pass
+```
+
+### Key Rules
+1. **Tools** = `@agent.tool()` decorator, thin orchestration only
+2. **Services** = Business logic in `viraltracker/services/`
+3. **deps_type** = Service container (`AgentDependencies`)
+4. **Docstrings** = Sent to LLM (be clear and comprehensive)
+5. **Metadata** = System config only (rate limits, categories)
+
+---
+
+## Python Workflow Examples
+
+### Example 1: Adding a New Service Method
+
+```python
+# viraltracker/services/ad_creation_service.py
+
+class AdCreationService:
+    def my_new_method(self, param1: str, param2: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Brief description of what this method does.
+
+        Args:
+            param1: Description of param1
+            param2: Description of param2
+
+        Returns:
+            Description of return value
+        """
+        # Business logic here
+        result = self._process_data(param1, param2)
+        logger.info(f"Processed: {param1}")
+        return result
+```
+
+### Example 2: Adding a New Tool (Thin Wrapper)
+
+```python
+# viraltracker/agent/agents/ad_creation_agent.py
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Generation',
+        'platform': 'Facebook',
+        'rate_limit': '10/minute',
+        'use_cases': ['Use case 1', 'Use case 2'],
+        'examples': ['Example query 1', 'Example query 2']
+    }
+)
+async def my_new_tool(
+    ctx: RunContext[AgentDependencies],
+    param1: str,
+    param2: int = 10
+) -> Dict:
+    """
+    Clear description for the LLM about when to use this tool.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        param1: Description of param1
+        param2: Description with default (default: 10)
+
+    Returns:
+        Dictionary with results
+    """
+    # Thin wrapper - delegate to service
+    result = ctx.deps.ad_creation.my_new_method(param1, {"count": param2})
+    return result
+```
+
+### Example 3: Adding a Streamlit UI Component
+
+```python
+# viraltracker/ui/pages/01_🎨_Ad_Creator.py
+
+def render_my_section():
+    """Render a new UI section."""
+    st.subheader("Section Title")
+
+    # Get data from service (not direct DB calls)
+    service = get_ad_creation_service()
+    data = service.get_data()
+
+    # Render UI
+    if data:
+        for item in data:
+            st.write(item)
+    else:
+        st.info("No data available")
+```
+
+### Example 4: Database Migration
+
+```sql
+-- migrations/YYYY-MM-DD_description.sql
+
+-- Migration: Brief description
+-- Date: YYYY-MM-DD
+-- Purpose: Detailed explanation
+
+ALTER TABLE table_name ADD COLUMN IF NOT EXISTS new_column TYPE;
+
+COMMENT ON COLUMN table_name.new_column IS 'Description of the column';
+```
+
+---
+
+## Commit Message Format
+
+```
+type: Brief description
+
+Longer explanation if needed.
+- Bullet points for multiple changes
+- Keep it concise
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
+
+---
+
+## Common Patterns
+
+### Accessing Services in Tools
+```python
+ctx.deps.ad_creation    # AdCreationService
+ctx.deps.gemini         # GeminiService
+ctx.deps.twitter        # TwitterService
+```
+
+### Error Handling
+```python
+try:
+    result = await ctx.deps.service.method()
+    return result
+except ValueError as e:
+    logger.error(f"Validation error: {e}")
+    raise
+except Exception as e:
+    logger.error(f"Unexpected error: {e}")
+    raise Exception(f"Failed to process: {e}")
+```
+
+### Logging
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+logger.info(f"Processing: {item}")      # Normal operations
+logger.warning(f"Unexpected: {item}")   # Non-fatal issues
+logger.error(f"Failed: {e}")            # Errors
+```
+
+---
+
+## Checklist Before Completing Any Task
+
+- [ ] Code follows thin-tools pattern (business logic in services)
+- [ ] Syntax verified with `python3 -m py_compile`
+- [ ] Docstrings updated for modified functions
+- [ ] Relevant `/docs/` files updated if behavior changed
+- [ ] No debug code or unused imports
+- [ ] Error handling appropriate
+- [ ] Changes committed with descriptive message
+- [ ] Changes pushed to GitHub
