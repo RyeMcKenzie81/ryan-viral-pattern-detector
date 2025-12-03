@@ -46,6 +46,8 @@ ViralTracker is a multi-platform viral content analysis system built on a three-
 
 **Key Pattern**: `@agent.tool(metadata=ToolMetadata(...))` decorator
 
+**Thin Tools Principle**: Tools are orchestration glue—they decide *what* to do based on LLM selection, but delegate *how* to do it to the service layer. Business logic and deterministic preprocessing belong in services, not tools.
+
 ### Layer 2: Service Layer (Core Business Logic)
 - **TwitterService**: Database operations for Twitter data
 - **GeminiService**: AI-powered analysis

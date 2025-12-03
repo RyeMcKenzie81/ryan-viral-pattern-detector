@@ -56,87 +56,6 @@ Use them sequentially, validating output at each step.
 
 
 # ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def sanitize_social_proof_mentions(ad_analysis: Dict, product: Dict) -> Dict:
-    """
-    Sanitize ad_analysis to remove mentions of unverified social proof platforms.
-
-    Image generation models (like Gemini) tend to reproduce text they see in prompts,
-    even when instructed not to. By removing platform names from the detailed description
-    and other analysis fields, we prevent the model from "seeing" Trustpilot, etc.
-
-    Args:
-        ad_analysis: The analysis dictionary from analyze_reference_ad
-        product: The product dictionary containing review_platforms, etc.
-
-    Returns:
-        A modified copy of ad_analysis with sanitized text fields
-    """
-    import re
-    import copy
-
-    # Make a deep copy so we don't modify the original
-    sanitized = copy.deepcopy(ad_analysis)
-
-    # Get verified review platforms (lowercase for comparison)
-    review_platforms = product.get('review_platforms', {}) or {}
-    verified_platforms = set(p.lower() for p in review_platforms.keys())
-
-    # Common social proof platform names to potentially sanitize
-    # Only remove if NOT in the product's verified platforms
-    PLATFORM_PATTERNS = [
-        ('trustpilot', r'\btrustpilot\b'),
-        ('amazon', r'\bamazon\b'),
-        ('google', r'\bgoogle\s*reviews?\b'),
-        ('yelp', r'\byelp\b'),
-        ('bbb', r'\b(bbb|better\s*business\s*bureau)\b'),
-        ('facebook', r'\bfacebook\s*reviews?\b'),
-    ]
-
-    # Build list of platforms to remove (not in verified list)
-    platforms_to_remove = []
-    for platform_key, pattern in PLATFORM_PATTERNS:
-        if platform_key not in verified_platforms:
-            platforms_to_remove.append((platform_key, pattern))
-
-    # Also handle specific rating patterns like "4.7" from Trustpilot
-    # We'll replace these with generic placeholders
-
-    def sanitize_text(text: str) -> str:
-        """Remove unverified platform mentions from text."""
-        if not text or not isinstance(text, str):
-            return text
-
-        result = text
-
-        for platform_key, pattern in platforms_to_remove:
-            # Replace platform name with generic term
-            result = re.sub(pattern, '[review badge]', result, flags=re.IGNORECASE)
-
-        # Also remove specific numeric patterns that look like copied ratings
-        # e.g., "4.7 stars" "3,643 reviews" when they appear near review context
-        # But be careful not to remove all numbers
-
-        return result
-
-    # Sanitize the detailed_description (most important - this goes to Gemini)
-    if 'detailed_description' in sanitized:
-        sanitized['detailed_description'] = sanitize_text(sanitized['detailed_description'])
-
-    # Sanitize social_proof_style if present
-    if 'social_proof_style' in sanitized and sanitized['social_proof_style']:
-        sanitized['social_proof_style'] = sanitize_text(sanitized['social_proof_style'])
-
-    # Log what was sanitized
-    if platforms_to_remove:
-        logger.info(f"Sanitized ad_analysis: removed mentions of {[p[0] for p in platforms_to_remove]}")
-
-    return sanitized
-
-
-# ============================================================================
 # DATA RETRIEVAL TOOLS (1-4)
 # ============================================================================
 
@@ -1428,7 +1347,8 @@ async def generate_nano_banana_prompt(
 
         # Sanitize ad_analysis to remove unverified social proof platform mentions
         # This prevents Gemini from "seeing" Trustpilot/etc in the prompt text
-        ad_analysis = sanitize_social_proof_mentions(ad_analysis, product)
+        # Uses service layer for deterministic preprocessing (per pydantic-ai best practices)
+        ad_analysis = ctx.deps.ad_creation.sanitize_social_proof_mentions(ad_analysis, product)
 
         # Phase 6: Match benefit/USP to hook for relevant subheadline
         # Combines both benefits and unique_selling_points for best match

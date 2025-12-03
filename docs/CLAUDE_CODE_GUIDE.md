@@ -340,6 +340,56 @@ async def example_tool(
     pass
 ```
 
+### Service Layer Pattern (Thin Tools)
+
+**Key Principle**: Tools should be **thin orchestration layers** that call service methods. Business logic and deterministic preprocessing belong in the **service layer**, not in tools.
+
+**Decision Criteria:**
+| Question | If Yes → | If No → |
+|----------|----------|---------|
+| Does the LLM decide when to call this? | **Tool** | **Service method** |
+| Must it always run (deterministic)? | **Service method** | Could be a tool |
+| Is it reusable across agents/interfaces? | **Service method** | Tool is OK |
+
+**✅ Correct Pattern (Thin Tool):**
+```python
+# services/ad_creation_service.py
+class AdCreationService:
+    def sanitize_social_proof_mentions(self, ad_analysis: Dict, product: Dict) -> Dict:
+        """Deterministic preprocessing - always runs, not LLM-decided."""
+        # Business logic here
+        return sanitized_analysis
+
+# agents/ad_creation_agent.py
+@ad_creation_agent.tool(...)
+async def generate_nano_banana_prompt(ctx: RunContext[AgentDependencies], ...):
+    """Tool is thin - just orchestrates service calls."""
+    # Call service for preprocessing
+    ad_analysis = ctx.deps.ad_creation.sanitize_social_proof_mentions(ad_analysis, product)
+    # ... rest of orchestration
+```
+
+**❌ Wrong Pattern (Fat Tool):**
+```python
+# agents/ad_creation_agent.py
+
+def sanitize_social_proof_mentions(...):  # Helper in agent file - WRONG!
+    """This should be in the service layer."""
+    pass
+
+@ad_creation_agent.tool(...)
+async def generate_nano_banana_prompt(ctx: RunContext[AgentDependencies], ...):
+    """Tool contains business logic - WRONG!"""
+    # Preprocessing logic directly in tool - should be in service
+    sanitized = sanitize_social_proof_mentions(...)
+```
+
+**Why This Matters:**
+1. **Testability**: Service methods can be unit tested without agent context
+2. **Reusability**: Services are shared across CLI, API, UI - not just agents
+3. **Clarity**: Tools = "what LLM can do", Services = "how it's done"
+4. **Pydantic AI Alignment**: deps_type is designed as a service container
+
 ---
 
 ## Tool Development Patterns
