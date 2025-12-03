@@ -3079,22 +3079,38 @@ async def complete_ad_workflow(
         )
         ad_brief_instructions = ad_brief_dict.get('instructions', '')
 
-        # STAGE 5: Analyze reference ad
-        logger.info("Stage 5: Analyzing reference ad with Vision AI...")
-        ad_analysis = await analyze_reference_ad(
-            ctx=ctx,
-            reference_ad_storage_path=reference_ad_path
-        )
+        # STAGE 5 & 6a: Check for cached template analysis (saves 4-8 minutes!)
+        template_angle = None  # Will be set if using recreate_template
+        used_cache = False
 
-        # Save analysis to database
+        if content_source == "recreate_template":
+            # Check for cached analysis first
+            logger.info("Stage 5: Checking for cached template analysis...")
+            cached = await ctx.deps.ad_creation.get_cached_template_analysis(reference_ad_path)
+
+            if cached:
+                logger.info("✓ CACHE HIT! Using cached analysis (skipping 4-8 min of Opus 4.5 calls)")
+                ad_analysis = cached["ad_analysis"]
+                template_angle = cached["template_angle"]
+                used_cache = True
+            else:
+                logger.info("✗ Cache miss - running full analysis...")
+
+        if not used_cache:
+            # STAGE 5: Analyze reference ad (expensive Opus 4.5 call)
+            logger.info("Stage 5: Analyzing reference ad with Vision AI...")
+            ad_analysis = await analyze_reference_ad(
+                ctx=ctx,
+                reference_ad_storage_path=reference_ad_path
+            )
+
+        # Save analysis to database (for this ad run)
         await ctx.deps.ad_creation.update_ad_run(
             ad_run_id=UUID(ad_run_id_str),
             ad_analysis=ad_analysis
         )
 
         # STAGE 6: Get content variations based on content_source
-        template_angle = None  # Will be set if using recreate_template
-
         if content_source == "hooks":
             # Original hooks-based flow
             logger.info(f"Stage 6: Selecting {num_variations} diverse hooks with AI...")
@@ -3108,13 +3124,24 @@ async def complete_ad_workflow(
             )
         else:
             # Recreate template flow
-            logger.info("Stage 6a: Extracting template angle...")
-            template_angle = await extract_template_angle(
-                ctx=ctx,
-                reference_ad_storage_path=reference_ad_path,
-                ad_analysis=ad_analysis
-            )
+            if not used_cache:
+                # Stage 6a only needed if we didn't get from cache
+                logger.info("Stage 6a: Extracting template angle...")
+                template_angle = await extract_template_angle(
+                    ctx=ctx,
+                    reference_ad_storage_path=reference_ad_path,
+                    ad_analysis=ad_analysis
+                )
 
+                # Save to cache for future runs (async, don't wait)
+                logger.info("Saving template analysis to cache for future use...")
+                await ctx.deps.ad_creation.save_template_analysis(
+                    storage_path=reference_ad_path,
+                    ad_analysis=ad_analysis,
+                    template_angle=template_angle
+                )
+
+            # Stage 6b: Generate benefit variations (always needed - product-specific)
             logger.info(f"Stage 6b: Generating {num_variations} benefit variations...")
             selected_hooks = await generate_benefit_variations(
                 ctx=ctx,

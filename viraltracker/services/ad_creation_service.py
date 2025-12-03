@@ -808,3 +808,115 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             "deleted_variants": deleted_variants,
             "storage_deleted": storage_deleted
         }
+
+    # ============================================
+    # TEMPLATE ANALYSIS CACHING
+    # ============================================
+
+    async def get_cached_template_analysis(
+        self,
+        storage_path: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get cached analysis for a template if it exists.
+
+        Checks the ad_templates table for previously analyzed templates
+        to skip expensive Opus 4.5 vision analysis (saves 4-8 minutes).
+
+        Args:
+            storage_path: Storage path of the template (e.g., "reference-ads/uuid_file.png")
+
+        Returns:
+            Dict with cached analysis or None if not cached:
+            {
+                "ad_analysis": {...},      # Stage 5 results
+                "template_angle": {...},   # Stage 6a results
+                "analysis_model": "...",
+                "analysis_created_at": "..."
+            }
+        """
+        try:
+            result = self.supabase.table("ad_templates").select(
+                "ad_analysis, template_angle, analysis_model, analysis_created_at"
+            ).eq("storage_path", storage_path).execute()
+
+            if result.data and len(result.data) > 0:
+                template = result.data[0]
+                # Only return if both analyses are cached
+                if template.get("ad_analysis") and template.get("template_angle"):
+                    logger.info(f"Found cached analysis for template: {storage_path}")
+                    return {
+                        "ad_analysis": template["ad_analysis"],
+                        "template_angle": template["template_angle"],
+                        "analysis_model": template.get("analysis_model"),
+                        "analysis_created_at": template.get("analysis_created_at")
+                    }
+
+            logger.info(f"No cached analysis for template: {storage_path}")
+            return None
+
+        except Exception as e:
+            # Table might not exist yet - that's OK
+            logger.warning(f"Could not check template cache (table may not exist): {e}")
+            return None
+
+    async def save_template_analysis(
+        self,
+        storage_path: str,
+        ad_analysis: Dict[str, Any],
+        template_angle: Dict[str, Any],
+        original_filename: Optional[str] = None,
+        analysis_model: str = "claude-opus-4-5-20251101"
+    ) -> bool:
+        """
+        Save template analysis to cache for future reuse.
+
+        Stores the expensive Opus 4.5 vision analysis results so subsequent
+        uses of the same template can skip Stages 5 and 6a.
+
+        Args:
+            storage_path: Storage path of the template
+            ad_analysis: Results from analyze_reference_ad (Stage 5)
+            template_angle: Results from extract_template_angle (Stage 6a)
+            original_filename: Display name for the template
+            analysis_model: Model used for analysis
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        try:
+            # Extract original filename from storage path if not provided
+            if not original_filename:
+                # Format: reference-ads/uuid_original.jpg
+                path_parts = storage_path.split("/")
+                if len(path_parts) > 1:
+                    filename = path_parts[-1]
+                    # Remove UUID prefix if present
+                    name_parts = filename.split("_", 1)
+                    if len(name_parts) == 2 and len(name_parts[0]) == 36:
+                        original_filename = name_parts[1]
+                    else:
+                        original_filename = filename
+
+            # Upsert - insert or update if exists
+            data = {
+                "storage_path": storage_path,
+                "original_filename": original_filename,
+                "ad_analysis": ad_analysis,
+                "template_angle": template_angle,
+                "analysis_model": analysis_model,
+                "analysis_created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+
+            self.supabase.table("ad_templates").upsert(
+                data,
+                on_conflict="storage_path"
+            ).execute()
+
+            logger.info(f"Saved template analysis cache for: {storage_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save template analysis cache: {e}")
+            return False
