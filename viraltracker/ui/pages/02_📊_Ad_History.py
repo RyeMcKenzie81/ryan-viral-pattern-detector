@@ -258,6 +258,15 @@ async def create_size_variants_async(ad_id: str, target_sizes: list) -> dict:
     )
 
 
+async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
+    """Delete an ad using the AdCreationService."""
+    service = get_ad_creation_service()
+    return await service.delete_generated_ad(
+        ad_id=UUID(ad_id),
+        delete_variants=delete_variants
+    )
+
+
 def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path: str = None) -> bytes:
     """
     Create a zip file containing all images from an ad run.
@@ -341,6 +350,10 @@ if 'size_variant_generating' not in st.session_state:
     st.session_state.size_variant_generating = False
 if 'size_variant_results' not in st.session_state:
     st.session_state.size_variant_results = None
+
+# Delete ad state
+if 'delete_confirm_ad_id' not in st.session_state:
+    st.session_state.delete_confirm_ad_id = None
 
 PAGE_SIZE = 25
 
@@ -585,9 +598,12 @@ else:
 
                                         st.caption(f"🤖 {model_short}{time_str}{retry_str}{fallback_warning}")
 
-                                    # Create Sizes button for approved ads
+                                    # Get ad_id for buttons
                                     ad_id = ad.get('id')
-                                    if ad_status == 'approved' and ad_id:
+                                    is_variant = ad.get('parent_ad_id') is not None
+
+                                    # Create Sizes button for approved ads (non-variants only)
+                                    if ad_status == 'approved' and ad_id and not is_variant:
                                         # Check if size modal is open for this ad
                                         is_size_modal_open = st.session_state.size_variant_ad_id == ad_id
 
@@ -666,6 +682,40 @@ else:
 
                                                 st.session_state.size_variant_generating = False
                                                 st.rerun()
+
+                                    # Delete button for all ads
+                                    if ad_id:
+                                        is_delete_confirm = st.session_state.delete_confirm_ad_id == ad_id
+
+                                        if not is_delete_confirm:
+                                            if st.button("🗑️ Delete", key=f"delete_{ad_id}", type="secondary"):
+                                                st.session_state.delete_confirm_ad_id = ad_id
+                                                st.rerun()
+                                        else:
+                                            # Confirmation UI
+                                            st.warning("⚠️ Delete this ad?")
+                                            if is_variant:
+                                                st.caption("This will delete this size variant.")
+                                            else:
+                                                variant_count = len([a for a in ads if a.get('parent_ad_id') == ad_id])
+                                                if variant_count > 0:
+                                                    st.caption(f"This will also delete {variant_count} size variant(s).")
+
+                                            del_col1, del_col2 = st.columns(2)
+                                            with del_col1:
+                                                if st.button("✅ Confirm Delete", key=f"confirm_delete_{ad_id}", type="primary"):
+                                                    with st.spinner("Deleting..."):
+                                                        try:
+                                                            result = asyncio.run(delete_ad_async(ad_id))
+                                                            st.session_state.delete_confirm_ad_id = None
+                                                            st.success(f"Deleted ad" + (f" and {result['deleted_variants']} variant(s)" if result['deleted_variants'] > 0 else ""))
+                                                            st.rerun()
+                                                        except Exception as e:
+                                                            st.error(f"Failed to delete: {e}")
+                                            with del_col2:
+                                                if st.button("Cancel", key=f"cancel_delete_{ad_id}"):
+                                                    st.session_state.delete_confirm_ad_id = None
+                                                    st.rerun()
 
                                     st.markdown("---")
 

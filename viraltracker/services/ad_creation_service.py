@@ -583,11 +583,12 @@ class AdCreationService:
 
 **CRITICAL INSTRUCTIONS:**
 - Keep ALL text exactly the same (same words, same fonts, same styling)
+- DO NOT duplicate any text - each text element should appear only ONCE
 - Keep ALL colors exactly the same
 - Keep the product image(s) exactly the same - do not modify the product
 - Keep the overall visual style and layout matching the original
 - Only reposition/resize elements as needed to fit the new {target_size} canvas
-- The hook text MUST be: "{hook_text}"
+- The hook text MUST be: "{hook_text}" (appear exactly ONCE, not repeated)
 - Maintain the same visual hierarchy and composition
 - Ensure text remains legible at the new dimensions
 
@@ -692,3 +693,103 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
                 results["failed"].append({"size": size, "error": str(e)})
 
         return results
+
+    # ============================================
+    # AD DELETION
+    # ============================================
+
+    async def delete_generated_ad(
+        self,
+        ad_id: UUID,
+        delete_variants: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Delete a generated ad and optionally its variants.
+
+        Removes the ad from the database and deletes the image from storage.
+        If delete_variants is True, also deletes any size variants of this ad.
+
+        Args:
+            ad_id: UUID of the ad to delete
+            delete_variants: If True, also delete any variants of this ad
+
+        Returns:
+            Dict with deletion results:
+            {
+                "deleted_ad_id": str,
+                "deleted_variants": int,
+                "storage_deleted": bool
+            }
+
+        Raises:
+            ValueError: If ad not found
+        """
+        import asyncio
+
+        logger.info(f"Deleting ad {ad_id} (delete_variants={delete_variants})")
+
+        # Get the ad to find storage path
+        result = self.supabase.table("generated_ads").select(
+            "id, storage_path, parent_ad_id"
+        ).eq("id", str(ad_id)).execute()
+
+        if not result.data:
+            raise ValueError(f"Ad not found: {ad_id}")
+
+        ad = result.data[0]
+        storage_path = ad.get("storage_path", "")
+
+        deleted_variants = 0
+
+        # Delete variants first if requested
+        if delete_variants:
+            # Find all variants of this ad
+            variants_result = self.supabase.table("generated_ads").select(
+                "id, storage_path"
+            ).eq("parent_ad_id", str(ad_id)).execute()
+
+            for variant in variants_result.data:
+                # Delete variant from storage
+                variant_path = variant.get("storage_path", "")
+                if variant_path:
+                    try:
+                        parts = variant_path.split("/", 1)
+                        bucket = parts[0]
+                        path = parts[1] if len(parts) > 1 else variant_path
+                        await asyncio.to_thread(
+                            lambda p=path: self.supabase.storage.from_(bucket).remove([p])
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to delete variant storage {variant_path}: {e}")
+
+                # Delete variant from database
+                self.supabase.table("generated_ads").delete().eq(
+                    "id", variant["id"]
+                ).execute()
+                deleted_variants += 1
+                logger.info(f"Deleted variant {variant['id']}")
+
+        # Delete main ad from storage
+        storage_deleted = False
+        if storage_path:
+            try:
+                parts = storage_path.split("/", 1)
+                bucket = parts[0]
+                path = parts[1] if len(parts) > 1 else storage_path
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(bucket).remove([path])
+                )
+                storage_deleted = True
+                logger.info(f"Deleted storage: {storage_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete storage {storage_path}: {e}")
+
+        # Delete ad from database
+        self.supabase.table("generated_ads").delete().eq("id", str(ad_id)).execute()
+        logger.info(f"Deleted ad {ad_id} from database")
+
+        return {
+            "deleted_ad_id": str(ad_id),
+            "deleted_variants": deleted_variants,
+            "storage_deleted": storage_deleted
+        }
