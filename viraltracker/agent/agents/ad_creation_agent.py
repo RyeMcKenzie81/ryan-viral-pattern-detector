@@ -56,6 +56,87 @@ Use them sequentially, validating output at each step.
 
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def sanitize_social_proof_mentions(ad_analysis: Dict, product: Dict) -> Dict:
+    """
+    Sanitize ad_analysis to remove mentions of unverified social proof platforms.
+
+    Image generation models (like Gemini) tend to reproduce text they see in prompts,
+    even when instructed not to. By removing platform names from the detailed description
+    and other analysis fields, we prevent the model from "seeing" Trustpilot, etc.
+
+    Args:
+        ad_analysis: The analysis dictionary from analyze_reference_ad
+        product: The product dictionary containing review_platforms, etc.
+
+    Returns:
+        A modified copy of ad_analysis with sanitized text fields
+    """
+    import re
+    import copy
+
+    # Make a deep copy so we don't modify the original
+    sanitized = copy.deepcopy(ad_analysis)
+
+    # Get verified review platforms (lowercase for comparison)
+    review_platforms = product.get('review_platforms', {}) or {}
+    verified_platforms = set(p.lower() for p in review_platforms.keys())
+
+    # Common social proof platform names to potentially sanitize
+    # Only remove if NOT in the product's verified platforms
+    PLATFORM_PATTERNS = [
+        ('trustpilot', r'\btrustpilot\b'),
+        ('amazon', r'\bamazon\b'),
+        ('google', r'\bgoogle\s*reviews?\b'),
+        ('yelp', r'\byelp\b'),
+        ('bbb', r'\b(bbb|better\s*business\s*bureau)\b'),
+        ('facebook', r'\bfacebook\s*reviews?\b'),
+    ]
+
+    # Build list of platforms to remove (not in verified list)
+    platforms_to_remove = []
+    for platform_key, pattern in PLATFORM_PATTERNS:
+        if platform_key not in verified_platforms:
+            platforms_to_remove.append((platform_key, pattern))
+
+    # Also handle specific rating patterns like "4.7" from Trustpilot
+    # We'll replace these with generic placeholders
+
+    def sanitize_text(text: str) -> str:
+        """Remove unverified platform mentions from text."""
+        if not text or not isinstance(text, str):
+            return text
+
+        result = text
+
+        for platform_key, pattern in platforms_to_remove:
+            # Replace platform name with generic term
+            result = re.sub(pattern, '[review badge]', result, flags=re.IGNORECASE)
+
+        # Also remove specific numeric patterns that look like copied ratings
+        # e.g., "4.7 stars" "3,643 reviews" when they appear near review context
+        # But be careful not to remove all numbers
+
+        return result
+
+    # Sanitize the detailed_description (most important - this goes to Gemini)
+    if 'detailed_description' in sanitized:
+        sanitized['detailed_description'] = sanitize_text(sanitized['detailed_description'])
+
+    # Sanitize social_proof_style if present
+    if 'social_proof_style' in sanitized and sanitized['social_proof_style']:
+        sanitized['social_proof_style'] = sanitize_text(sanitized['social_proof_style'])
+
+    # Log what was sanitized
+    if platforms_to_remove:
+        logger.info(f"Sanitized ad_analysis: removed mentions of {[p[0] for p in platforms_to_remove]}")
+
+    return sanitized
+
+
+# ============================================================================
 # DATA RETRIEVAL TOOLS (1-4)
 # ============================================================================
 
@@ -1345,6 +1426,10 @@ async def generate_nano_banana_prompt(
         num_product_images = len(product_image_paths)
         logger.info(f"Using {num_product_images} product image(s) for generation")
 
+        # Sanitize ad_analysis to remove unverified social proof platform mentions
+        # This prevents Gemini from "seeing" Trustpilot/etc in the prompt text
+        ad_analysis = sanitize_social_proof_mentions(ad_analysis, product)
+
         # Phase 6: Match benefit/USP to hook for relevant subheadline
         # Combines both benefits and unique_selling_points for best match
         matched_benefit = match_benefit_to_hook(
@@ -1478,44 +1563,45 @@ async def generate_nano_banana_prompt(
 
         if ad_analysis.get('has_social_proof') and has_any_verified_social_proof:
             # Template has social proof AND we have verified data to use
-            # Build explicit list of PROHIBITED platforms (common ones not in our data)
-            common_review_platforms = ['trustpilot', 'amazon', 'google', 'yelp', 'bbb', 'facebook']
-            product_platforms = [k.lower() for k in review_platforms.keys()]
-            prohibited_platforms = [p for p in common_review_platforms if p not in product_platforms]
+            # Build explicit REPLACEMENT instruction instead of just prohibition
+            # Image models respond better to "put X here" than "don't put Y"
 
-            prohibited_section = ""
-            if prohibited_platforms:
-                prohibited_section = f"""
-        **🚫 PROHIBITED REVIEW PLATFORMS (DO NOT USE - NOT IN OUR DATABASE):**
-        {', '.join([p.upper() for p in prohibited_platforms])}
-        - The reference template may show these platforms but we have NO verified data for them
-        - DO NOT copy Trustpilot, Amazon, or any other review badge from the template unless listed above
-        - DO NOT include any star ratings, review counts, or logos for these platforms
-        """
+            # Format the approved review data for display
+            review_display = ""
+            if review_platforms:
+                for platform, data in review_platforms.items():
+                    rating = data.get('rating', '')
+                    count = data.get('count', '')
+                    review_display = f"{rating}★ ({count} Reviews)"
+                    break  # Use first platform
 
             social_proof_section = f"""
-        **VERIFIED SOCIAL PROOF (USE ONLY THIS DATA - DO NOT INVENT):**
-        {prohibited_section}
-        **✅ APPROVED Review Platforms (ONLY these - use exact ratings/counts):**
-        {json.dumps(review_platforms, indent=2) if review_platforms else "NONE AVAILABLE"}
+        **🔄 SOCIAL PROOF REPLACEMENT INSTRUCTION (VERY IMPORTANT):**
 
-        **✅ APPROVED Media Features ("As Seen On" - ONLY these outlets):**
-        {json.dumps(media_features) if media_features else "NONE AVAILABLE"}
+        The reference template shows a review badge (possibly Trustpilot, Amazon, etc.).
+        You MUST REPLACE that badge with our verified data. DO NOT copy the original badge.
 
-        **✅ APPROVED Awards & Certifications (ONLY these):**
-        {json.dumps(awards_certs) if awards_certs else "NONE AVAILABLE"}
+        **REPLACE the review section with THIS EXACT DATA:**
+        ┌─────────────────────────────────────┐
+        │  {review_display if review_display else "OMIT - No review data"}
+        │  Style: Clean badge similar to template layout
+        │  DO NOT write "Trustpilot" - use generic "Customer Reviews" or just the stars
+        └─────────────────────────────────────┘
 
-        Legacy Text: {legacy_social_proof if legacy_social_proof else "None"}
+        **WHAT TO DO:**
+        - Where you see "Trustpilot" text in reference → REPLACE with "Customer Reviews" or OMIT the platform name
+        - Where you see star rating → USE: {list(review_platforms.values())[0].get('rating', 'N/A') if review_platforms else 'OMIT'}★
+        - Where you see review count → USE: {list(review_platforms.values())[0].get('count', 'N/A') if review_platforms else 'OMIT'} Reviews
+        - Keep similar visual style (badge shape, placement) but CHANGE the content
 
-        - Template uses social proof style: {ad_analysis.get('social_proof_style')}
-        - Template placement: {ad_analysis.get('social_proof_placement')}
+        **DO NOT:**
+        - Do NOT write "Trustpilot" anywhere
+        - Do NOT copy "4.7" or "3,643" from reference - use OUR numbers above
+        - Do NOT include the green Trustpilot logo/star icon
+        - Do NOT copy any review platform branding from the reference
 
-        **⚠️ CRITICAL - READ CAREFULLY:**
-        - The reference image may show Trustpilot/Amazon/etc but DO NOT COPY THEM unless they are in APPROVED list above
-        - If you see a Trustpilot badge in the reference but "trustpilot" is not in our APPROVED list → REPLACE with our approved platform OR OMIT entirely
-        - NEVER reproduce review platform logos/badges that are not explicitly APPROVED above
-        - Use our APPROVED data to create a similar badge (e.g., "total_reviews 4.8★ 2000+ reviews" styled like the template)
-        - When in doubt, OMIT the social proof element rather than copying from reference
+        **Media Features:** {json.dumps(media_features) if media_features else "NONE - omit 'As Seen On' sections"}
+        **Awards:** {json.dumps(awards_certs) if awards_certs else "NONE - omit award badges"}
         """
         elif ad_analysis.get('has_social_proof') and not has_any_verified_social_proof:
             # Template has social proof but product has NO verified data - strict warning
