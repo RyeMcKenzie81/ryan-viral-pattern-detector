@@ -44,20 +44,27 @@ Implemented size variants feature allowing users to create different aspect rati
 
 ---
 
-## Database Migration (Already Run)
+## Database Migrations (Already Run)
 
 ```sql
+-- Initial migration for variant tracking
 ALTER TABLE generated_ads ADD COLUMN parent_ad_id UUID REFERENCES generated_ads(id);
 ALTER TABLE generated_ads ADD COLUMN variant_size TEXT;
 CREATE INDEX idx_generated_ads_parent_ad_id ON generated_ads(parent_ad_id);
+
+-- Allow NULL prompt_index for variants (required for fix below)
+ALTER TABLE generated_ads ALTER COLUMN prompt_index DROP NOT NULL;
 ```
 
 ---
 
-## Bug Fixed
+## Bugs Fixed
 
-**Issue**: `prompt_index = 0` violated CHECK constraint requiring `>= 1`
-**Fix**: Omit `prompt_index` for variants (NULL allowed)
+**Issue 1**: `prompt_index = 0` violated CHECK constraint requiring `>= 1`
+**Fix**: Omit `prompt_index` for variants (becomes NULL)
+
+**Issue 2**: NOT NULL constraint on `prompt_index` blocked NULL values
+**Fix**: Migration to allow NULL values for variant records
 
 ---
 
