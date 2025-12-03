@@ -530,10 +530,11 @@ class AdCreationService:
         source_image_base64: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Create a size variant of an existing ad using Gemini.
+        Create a size variant of an existing ad using Gemini Nano Banana Pro 3.
 
         Takes an approved ad and creates a version at a different aspect ratio,
-        keeping all visual elements as similar as possible.
+        keeping all visual elements as similar as possible. Uses the same
+        GeminiService.generate_image() method as main ad generation.
 
         Args:
             source_ad_id: UUID of the source ad to resize
@@ -547,10 +548,7 @@ class AdCreationService:
             ValueError: If target_size is invalid or source ad not found
             Exception: If generation fails
         """
-        import time
-        import os
-        from google import genai
-        from google.genai import types
+        from .gemini_service import GeminiService
 
         # Validate target size
         if target_size not in self.META_AD_SIZES:
@@ -575,19 +573,28 @@ class AdCreationService:
         if not source_image_base64:
             source_image_base64 = await self.get_image_as_base64(source_ad["storage_path"])
 
-        # Build the resize prompt
-        prompt_text = f"""Recreate this EXACT ad at {target_dimensions} ({target_size} aspect ratio).
+        # Build the resize prompt - includes canvas size in Technical Specifications
+        # This follows the same pattern as generate_nano_banana_prompt
+        prompt_text = f"""Recreate this EXACT ad at a different canvas size.
 
-CRITICAL INSTRUCTIONS:
-- Keep ALL text exactly the same (same words, same fonts)
+**Technical Specifications:**
+- Canvas: {target_dimensions}px ({target_size} aspect ratio)
+- Target use case: {size_config['use_case']}
+
+**CRITICAL INSTRUCTIONS:**
+- Keep ALL text exactly the same (same words, same fonts, same styling)
 - Keep ALL colors exactly the same
-- Keep the product image(s) exactly the same
+- Keep the product image(s) exactly the same - do not modify the product
 - Keep the overall visual style and layout matching the original
 - Only reposition/resize elements as needed to fit the new {target_size} canvas
-- The hook text is: "{hook_text}"
+- The hook text MUST be: "{hook_text}"
+- Maintain the same visual hierarchy and composition
+- Ensure text remains legible at the new dimensions
 
-This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimensions change.
-Target use case: {size_config['use_case']}"""
+**Reference Image:**
+The attached image is the source ad to recreate at {target_dimensions}px.
+
+This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimensions change to {target_dimensions}px ({target_size})."""
 
         # Create updated prompt spec for new dimensions
         variant_spec = original_spec.copy() if original_spec else {}
@@ -596,35 +603,20 @@ Target use case: {size_config['use_case']}"""
             "aspect_ratio": target_size
         }
 
-        # Generate with Gemini
-        start_time = time.time()
+        # Use GeminiService.generate_image() - same as main ad generation
+        # This uses models/gemini-3-pro-image-preview with proper reference image handling
+        gemini_service = GeminiService()
 
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-
-        # Create image part from base64
-        image_bytes = base64.b64decode(source_image_base64)
-        reference_image = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
-
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-exp",
-            contents=[reference_image, prompt_text],
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"],
-                temperature=0.1,  # Low temperature for consistency
-            )
+        # generate_image expects reference_images as a list
+        generation_result = await gemini_service.generate_image(
+            prompt=prompt_text,
+            reference_images=[source_image_base64],
+            return_metadata=True
         )
 
-        generation_time_ms = int((time.time() - start_time) * 1000)
-
-        # Extract generated image
-        generated_image_base64 = None
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                generated_image_base64 = base64.b64encode(part.inline_data.data).decode('utf-8')
-                break
-
-        if not generated_image_base64:
-            raise Exception("Gemini did not return an image")
+        generated_image_base64 = generation_result["image_base64"]
+        generation_time_ms = generation_result.get("generation_time_ms", 0)
+        model_used = generation_result.get("model_used", "models/gemini-3-pro-image-preview")
 
         # Upload to storage
         import uuid as uuid_module
@@ -649,7 +641,7 @@ Target use case: {size_config['use_case']}"""
             prompt_spec=variant_spec,
             hook_text=hook_text,
             hook_id=hook_id,
-            model_used="gemini-2.0-flash-exp",
+            model_used=model_used,
             generation_time_ms=generation_time_ms
         )
 
