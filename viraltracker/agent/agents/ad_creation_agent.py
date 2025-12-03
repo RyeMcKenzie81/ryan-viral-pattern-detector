@@ -1788,11 +1788,11 @@ async def save_generated_ad(
         # Get product_id for structured naming
         product_id = await ctx.deps.ad_creation.get_product_id_for_run(ad_run_uuid)
 
-        # Get canvas size from prompt spec
+        # Get canvas size from prompt spec (canvas is a string like "1080x1080px, background #F5F0E8")
         canvas_size = None
         spec = nano_banana_prompt.get('spec', {})
-        if spec.get('canvas', {}).get('dimensions'):
-            canvas_size = spec['canvas']['dimensions']
+        if isinstance(spec, dict) and spec.get('canvas'):
+            canvas_size = spec['canvas']
 
         # Upload to storage with structured naming params
         storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
@@ -3287,11 +3287,11 @@ async def complete_ad_workflow(
                 # Generate ad_id upfront for structured naming
                 ad_uuid = uuid_module.uuid4()
 
-                # Get canvas size from prompt spec
+                # Get canvas size from prompt spec (canvas is a string like "1080x1080px, background #F5F0E8")
                 canvas_size = None
                 spec = nano_banana_prompt.get('spec', {})
-                if spec.get('canvas', {}).get('dimensions'):
-                    canvas_size = spec['canvas']['dimensions']
+                if isinstance(spec, dict) and spec.get('canvas'):
+                    canvas_size = spec['canvas']
 
                 # Upload image to storage with structured naming
                 storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
