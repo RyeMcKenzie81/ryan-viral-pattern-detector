@@ -11,6 +11,7 @@ This page allows users to:
 
 import streamlit as st
 import asyncio
+import json
 from datetime import datetime
 
 # Page config
@@ -141,6 +142,21 @@ async def analyze_image(image_path: str) -> dict:
     ctx = RunContext(deps=deps, model=None, usage=RunUsage())
 
     return await analyze_product_image(ctx=ctx, image_storage_path=image_path)
+
+
+def save_product_social_proof(product_id: str, review_platforms: dict, media_features: list, awards_certifications: list):
+    """Save social proof data for a product."""
+    try:
+        db = get_supabase_client()
+        db.table("products").update({
+            "review_platforms": review_platforms,
+            "media_features": media_features,
+            "awards_certifications": awards_certifications
+        }).eq("id", product_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save social proof: {e}")
+        return False
 
 
 def save_image_analysis(image_id: str, analysis: dict):
@@ -352,6 +368,113 @@ else:
 
                         st.markdown("**Founders**")
                         st.caption(product.get('founders', 'Not specified'))
+
+                    # Social Proof section (full width)
+                    st.markdown("---")
+                    st.markdown("**📊 Verified Social Proof** (used in ad generation)")
+
+                    col_sp1, col_sp2, col_sp3 = st.columns(3)
+
+                    with col_sp1:
+                        st.markdown("**Review Platforms**")
+                        review_platforms = product.get('review_platforms', {})
+                        if review_platforms:
+                            for platform, data in review_platforms.items():
+                                rating = data.get('rating', 'N/A')
+                                count = data.get('count', 'N/A')
+                                st.caption(f"• {platform}: {rating}★ ({count} reviews)")
+                        else:
+                            st.caption("None configured")
+
+                    with col_sp2:
+                        st.markdown("**Media Features**")
+                        media_features = product.get('media_features', [])
+                        if media_features:
+                            for media in media_features[:5]:
+                                st.caption(f"• {media}")
+                        else:
+                            st.caption("None configured")
+
+                    with col_sp3:
+                        st.markdown("**Awards & Certifications**")
+                        awards = product.get('awards_certifications', [])
+                        if awards:
+                            for award in awards[:5]:
+                                st.caption(f"• {award}")
+                        else:
+                            st.caption("None configured")
+
+                    # Edit Social Proof button
+                    edit_key = f"edit_sp_{product_id}"
+                    if edit_key not in st.session_state:
+                        st.session_state[edit_key] = False
+
+                    if st.button("✏️ Edit Social Proof", key=f"btn_edit_sp_{product_id}"):
+                        st.session_state[edit_key] = not st.session_state[edit_key]
+                        st.rerun()
+
+                    if st.session_state[edit_key]:
+                        with st.form(key=f"form_sp_{product_id}"):
+                            st.markdown("#### Edit Social Proof")
+
+                            # Review Platforms
+                            st.markdown("**Review Platforms** (JSON format)")
+                            st.caption("Example: {\"trustpilot\": {\"rating\": 4.5, \"count\": 1200}, \"amazon\": {\"rating\": 4.7, \"count\": 3500}}")
+                            current_reviews = product.get('review_platforms', {}) or {}
+                            reviews_str = st.text_area(
+                                "Review Platforms JSON",
+                                value=json.dumps(current_reviews, indent=2) if current_reviews else "{}",
+                                height=100,
+                                key=f"reviews_{product_id}"
+                            )
+
+                            # Media Features
+                            st.markdown("**Media Features** (one per line)")
+                            st.caption("Example: Forbes, Good Morning America, Today Show")
+                            current_media = product.get('media_features', []) or []
+                            media_str = st.text_area(
+                                "Media Features",
+                                value="\n".join(current_media) if current_media else "",
+                                height=80,
+                                key=f"media_{product_id}"
+                            )
+
+                            # Awards & Certifications
+                            st.markdown("**Awards & Certifications** (one per line)")
+                            st.caption("Example: #1 Best Seller, Vet Recommended, NASC Certified")
+                            current_awards = product.get('awards_certifications', []) or []
+                            awards_str = st.text_area(
+                                "Awards & Certifications",
+                                value="\n".join(current_awards) if current_awards else "",
+                                height=80,
+                                key=f"awards_{product_id}"
+                            )
+
+                            col_save, col_cancel = st.columns(2)
+                            with col_save:
+                                submitted = st.form_submit_button("💾 Save", type="primary")
+                            with col_cancel:
+                                cancelled = st.form_submit_button("Cancel")
+
+                            if submitted:
+                                try:
+                                    # Parse JSON for review platforms
+                                    review_data = json.loads(reviews_str) if reviews_str.strip() else {}
+
+                                    # Parse newline-separated lists
+                                    media_list = [m.strip() for m in media_str.split("\n") if m.strip()]
+                                    awards_list = [a.strip() for a in awards_str.split("\n") if a.strip()]
+
+                                    if save_product_social_proof(product_id, review_data, media_list, awards_list):
+                                        st.success("Social proof saved!")
+                                        st.session_state[edit_key] = False
+                                        st.rerun()
+                                except json.JSONDecodeError as e:
+                                    st.error(f"Invalid JSON in Review Platforms: {e}")
+
+                            if cancelled:
+                                st.session_state[edit_key] = False
+                                st.rerun()
 
                 with tab_images:
                     images = product.get('product_images', [])

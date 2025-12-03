@@ -1467,27 +1467,52 @@ async def generate_nano_banana_prompt(
         - The product should fit naturally in the scene without appearing oversized or undersized
         """
 
-        # Social proof - only include if template has social proof elements AND product has social_proof data
+        # Social proof - use ONLY verified data from product database
         social_proof_section = ""
-        if ad_analysis.get('has_social_proof') and product.get('social_proof'):
-            # Template has social proof, so we can include product's social proof
+        review_platforms = product.get('review_platforms', {}) or {}
+        media_features = product.get('media_features', []) or []
+        awards_certs = product.get('awards_certifications', []) or []
+        legacy_social_proof = product.get('social_proof', '')
+
+        has_any_verified_social_proof = review_platforms or media_features or awards_certs or legacy_social_proof
+
+        if ad_analysis.get('has_social_proof') and has_any_verified_social_proof:
+            # Template has social proof AND we have verified data to use
             social_proof_section = f"""
-        **Social Proof (MATCH TEMPLATE STYLE):**
-        "{product.get('social_proof')}"
+        **VERIFIED SOCIAL PROOF (USE ONLY THIS DATA - DO NOT INVENT):**
+
+        Review Platforms (ONLY these - use exact ratings/counts):
+        {json.dumps(review_platforms, indent=2) if review_platforms else "NONE AVAILABLE"}
+
+        Media Features ("As Seen On" - ONLY these outlets):
+        {json.dumps(media_features) if media_features else "NONE AVAILABLE"}
+
+        Awards & Certifications (ONLY these):
+        {json.dumps(awards_certs) if awards_certs else "NONE AVAILABLE"}
+
+        Legacy Text: {legacy_social_proof if legacy_social_proof else "None"}
+
         - Template uses social proof style: {ad_analysis.get('social_proof_style')}
-        - Placement in template: {ad_analysis.get('social_proof_placement')}
-        - Use the EXACT text provided above for social proof
-        - Match the visual style (badge/banner/seal) from the template
-        - Place in similar position as shown in the reference ad
+        - Template placement: {ad_analysis.get('social_proof_placement')}
+
+        **CRITICAL SOCIAL PROOF RULES:**
+        - If template shows Trustpilot badge but we have NO Trustpilot data → OMIT entirely or use a platform we DO have
+        - If template shows "As Seen On Forbes" but Forbes NOT in media_features → OMIT that logo
+        - NEVER invent: star ratings, review counts, media logos, "100,000+ sold", "#1 Best Seller"
+        - You may SUBSTITUTE: e.g., use Amazon rating if template shows Trustpilot but we only have Amazon
+        - When in doubt, OMIT the social proof element rather than making something up
         """
-        elif ad_analysis.get('has_social_proof') and not product.get('social_proof'):
-            # Template has social proof but product doesn't - warn not to hallucinate
+        elif ad_analysis.get('has_social_proof') and not has_any_verified_social_proof:
+            # Template has social proof but product has NO verified data - strict warning
             social_proof_section = """
-        **⚠️ SOCIAL PROOF WARNING:**
-        - The reference template includes social proof elements, but this product has NO social proof data
-        - DO NOT copy or adapt social proof from the template (e.g., "100,000+ Sold")
-        - DO NOT create fictional social proof statistics
-        - Omit social proof elements from your generated ad
+        **⚠️ SOCIAL PROOF - CRITICAL WARNING:**
+        - The reference template includes social proof elements (reviews, badges, "As Seen On")
+        - This product has NO verified social proof data in our database
+        - DO NOT copy ANY social proof from the template
+        - DO NOT create: Trustpilot badges, Amazon ratings, media logos, review counts, "X sold"
+        - DO NOT invent: star ratings, customer counts, awards, certifications
+        - COMPLETELY OMIT all social proof elements from your generated ad
+        - Leave that space empty or extend the background/design elements
         """
         # If template doesn't have social proof, social_proof_section stays empty (no warning needed)
 
@@ -2601,6 +2626,11 @@ async def generate_benefit_variations(
         brand_name = product.get('brand_name', '')
         banned_terms = product.get('banned_terms', []) or []
 
+        # Get VERIFIED social proof (new structured fields)
+        review_platforms = product.get('review_platforms', {}) or {}
+        media_features = product.get('media_features', []) or []
+        awards_certifications = product.get('awards_certifications', []) or []
+
         # Separate emotional benefits (good for headlines) from technical specs (not for headlines)
         # Benefits are typically emotional/outcome-focused, USPs may include specs
         emotional_benefits = benefits.copy() if benefits else []
@@ -2639,8 +2669,27 @@ async def generate_benefit_variations(
         **PRODUCT'S ACTUAL OFFER (USE THIS EXACTLY):**
         {current_offer if current_offer else "No specific offer - do not mention discounts or percentages"}
 
-        **SOCIAL PROOF (USE IF APPROPRIATE):**
-        {social_proof if social_proof else "None available"}
+        **VERIFIED SOCIAL PROOF - USE ONLY THESE (CRITICAL - DO NOT INVENT):**
+
+        Review Platforms (ONLY use these exact ratings/counts):
+        {json.dumps(review_platforms, indent=2) if review_platforms else "NONE - Do not mention Trustpilot, Amazon reviews, or any review platform"}
+
+        Media Features ("As Seen On" / "Featured In" - ONLY use these):
+        {json.dumps(media_features) if media_features else "NONE - Do not mention any media outlets, TV shows, or publications"}
+
+        Awards & Certifications (ONLY use these):
+        {json.dumps(awards_certifications) if awards_certifications else "NONE - Do not mention any awards or certifications"}
+
+        Legacy Social Proof Text:
+        {social_proof if social_proof else "None"}
+
+        **SOCIAL PROOF RULES (VERY IMPORTANT):**
+        - ONLY use review platforms, ratings, and counts listed above - NEVER invent them
+        - If template shows Trustpilot but we have NO Trustpilot data → OMIT the Trustpilot badge entirely
+        - If template shows "As Seen On Forbes" but Forbes is NOT in our media_features → OMIT it
+        - You may substitute: if template shows Trustpilot but we have Amazon reviews, use Amazon instead
+        - NEVER invent: star ratings, review counts, media logos, "100,000+ sold", "#1 Best Seller" unless verified above
+        - When in doubt, OMIT the social proof element rather than making something up
 
         **PROHIBITED CLAIMS (NEVER USE THESE):**
         {json.dumps(prohibited_claims) if prohibited_claims else "None specified"}
