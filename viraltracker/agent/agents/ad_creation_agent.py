@@ -2237,7 +2237,8 @@ async def create_ad_run(
     ctx: RunContext[AgentDependencies],
     product_id: str,
     reference_ad_storage_path: str,
-    project_id: Optional[str] = None
+    project_id: Optional[str] = None,
+    parameters: Optional[Dict] = None
 ) -> str:
     """
     Create new ad run record in database to track workflow.
@@ -2246,13 +2247,15 @@ async def create_ad_run(
     1. Creating a record in the ad_runs table
     2. Linking to product and reference ad
     3. Setting initial status to "pending"
-    4. Returning ad_run_id for subsequent operations
+    4. Storing generation parameters for tracking
+    5. Returning ad_run_id for subsequent operations
 
     Args:
         ctx: Run context with AgentDependencies
         product_id: UUID of product as string
         reference_ad_storage_path: Storage path to uploaded reference ad
         project_id: Optional UUID of project as string
+        parameters: Optional dict of generation parameters (num_variations, content_source, etc.)
 
     Returns:
         ad_run_id as string (UUID format)
@@ -2278,7 +2281,8 @@ async def create_ad_run(
         ad_run_id = await ctx.deps.ad_creation.create_ad_run(
             product_id=product_uuid,
             reference_ad_storage_path=reference_ad_storage_path,
-            project_id=project_uuid
+            project_id=project_uuid,
+            parameters=parameters
         )
 
         logger.info(f"Ad run created: {ad_run_id}")
@@ -3011,6 +3015,16 @@ async def complete_ad_workflow(
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
         logger.info(f"Generating {num_variations} ad variations using content_source='{content_source}'")
 
+        # Build parameters dict for tracking
+        run_parameters = {
+            "num_variations": num_variations,
+            "content_source": content_source,
+            "color_mode": color_mode,
+            "image_selection_mode": image_selection_mode,
+            "selected_image_paths": selected_image_paths,
+            "brand_colors": brand_colors
+        }
+
         # STAGE 1: Initialize ad run and upload reference ad
         logger.info("Stage 1: Creating ad run...")
 
@@ -3019,7 +3033,8 @@ async def complete_ad_workflow(
             ctx=ctx,
             product_id=product_id,
             reference_ad_storage_path="temp",  # Will update after upload
-            project_id=project_id
+            project_id=project_id,
+            parameters=run_parameters
         )
 
         # Upload reference ad

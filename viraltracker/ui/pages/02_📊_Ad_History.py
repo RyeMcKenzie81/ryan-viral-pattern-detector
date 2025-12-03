@@ -90,7 +90,7 @@ def get_ad_runs(brand_id: str = None, page: int = 1, page_size: int = 25):
 
         # Build query for ad_runs with product join
         query = db.table("ad_runs").select(
-            "id, created_at, status, reference_ad_storage_path, product_id, "
+            "id, created_at, status, reference_ad_storage_path, product_id, parameters, "
             "products(id, name, brand_id, brands(id, name))"
         ).order("created_at", desc=True)
 
@@ -411,6 +411,31 @@ else:
                     st.markdown(f"**Status:** {get_status_badge(status)}", unsafe_allow_html=True)
                     st.markdown(f"**Ads Created:** {total_ads}")
                     st.markdown(f"**Approved:** {approved_ads} ({approval_pct}%)")
+
+                # Display generation parameters if available
+                params = run.get('parameters')
+                if params:
+                    st.markdown("---")
+                    st.markdown("**Generation Parameters**")
+                    param_cols = st.columns(4)
+
+                    with param_cols[0]:
+                        st.markdown(f"**Variations:** {params.get('num_variations', 'N/A')}")
+
+                    with param_cols[1]:
+                        content_src = params.get('content_source', 'N/A')
+                        content_display = "Hooks" if content_src == "hooks" else "Recreate Template" if content_src == "recreate_template" else content_src
+                        st.markdown(f"**Content:** {content_display}")
+
+                    with param_cols[2]:
+                        color = params.get('color_mode', 'N/A')
+                        color_display = color.replace('_', ' ').title() if color else 'N/A'
+                        st.markdown(f"**Colors:** {color_display}")
+
+                    with param_cols[3]:
+                        img_mode = params.get('image_selection_mode', 'N/A')
+                        img_display = "Auto" if img_mode == "auto" else "Manual" if img_mode == "manual" else img_mode
+                        st.markdown(f"**Images:** {img_display}")
 
                 st.markdown("---")
 

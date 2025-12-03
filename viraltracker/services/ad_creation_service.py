@@ -258,7 +258,8 @@ class AdCreationService:
         self,
         product_id: UUID,
         reference_ad_storage_path: str,
-        project_id: Optional[UUID] = None
+        project_id: Optional[UUID] = None,
+        parameters: Optional[Dict] = None
     ) -> UUID:
         """
         Create new ad run record.
@@ -267,6 +268,7 @@ class AdCreationService:
             product_id: UUID of product
             reference_ad_storage_path: Storage path to reference ad
             project_id: Optional project UUID
+            parameters: Optional generation parameters (num_variations, content_source, etc.)
 
         Returns:
             UUID of created ad run
@@ -279,6 +281,9 @@ class AdCreationService:
 
         if project_id:
             data["project_id"] = str(project_id)
+
+        if parameters:
+            data["parameters"] = parameters
 
         result = self.supabase.table("ad_runs").insert(data).execute()
         ad_run_id = UUID(result.data[0]["id"])
