@@ -91,10 +91,10 @@ def get_ad_runs(brand_id: str = None, page: int = 1, page_size: int = 25):
         # Calculate offset
         offset = (page - 1) * page_size
 
-        # Build query for ad_runs with product join
+        # Build query for ad_runs with product join (including codes for structured naming)
         query = db.table("ad_runs").select(
             "id, created_at, status, reference_ad_storage_path, product_id, parameters, "
-            "products(id, name, brand_id, brands(id, name))"
+            "products(id, name, brand_id, product_code, brands(id, name, brand_code))"
         ).order("created_at", desc=True)
 
         # Filter by brand if specified (do this in query for proper pagination)
@@ -312,20 +312,63 @@ async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
     )
 
 
-def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path: str = None) -> bytes:
+def get_format_code_from_spec(prompt_spec: dict) -> str:
+    """Determine format code from prompt_spec canvas dimensions."""
+    if not prompt_spec:
+        return "SQ"
+
+    canvas = prompt_spec.get("canvas", {})
+    dimensions = canvas.get("dimensions", "")
+
+    # Parse dimensions like "1080x1080" or "1080 x 1350"
+    import re
+    match = re.search(r'(\d+)\s*x\s*(\d+)', dimensions.lower())
+    if not match:
+        return "SQ"
+
+    width = int(match.group(1))
+    height = int(match.group(2))
+    ratio = width / height if height > 0 else 1
+
+    if 0.95 <= ratio <= 1.05:
+        return "SQ"  # Square
+    elif ratio < 0.7:
+        if ratio < 0.65:
+            return "ST"  # Story (9:16)
+        else:
+            return "PT"  # Portrait (4:5)
+    else:
+        return "LS"  # Landscape
+
+
+def generate_structured_filename(brand_code: str, product_code: str, run_id: str,
+                                  ad_id: str, format_code: str, ext: str = "png") -> str:
+    """Generate structured filename like WP-C3-a1b2c3-d4e5f6-SQ.png"""
+    run_short = run_id.replace("-", "")[:6]
+    ad_short = ad_id.replace("-", "")[:6]
+    bc = (brand_code or "XX").upper()
+    pc = (product_code or "XX").upper()
+    return f"{bc}-{pc}-{run_short}-{ad_short}-{format_code}.{ext}"
+
+
+def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path: str = None,
+                       brand_code: str = None, product_code: str = None) -> bytes:
     """
     Create a zip file containing all images from an ad run.
 
     Args:
         ads: List of ad dictionaries with storage_path
         product_name: Name of the product for filename
-        run_id: Ad run ID (short version)
+        run_id: Ad run ID (full UUID)
         reference_path: Optional path to reference template image
+        brand_code: Brand code for structured naming (e.g., "WP")
+        product_code: Product code for structured naming (e.g., "C3")
 
     Returns:
         Bytes of the zip file
     """
     zip_buffer = io.BytesIO()
+    use_structured_naming = brand_code and product_code
 
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         # Add reference template if available
@@ -359,16 +402,25 @@ def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path
                 response = requests.get(ad_url, timeout=30)
                 if response.status_code == 200:
                     # Determine extension
-                    ext = ".png"
+                    ext = "png"
                     if "jpeg" in response.headers.get('content-type', ''):
-                        ext = ".jpg"
+                        ext = "jpg"
                     elif "webp" in response.headers.get('content-type', ''):
-                        ext = ".webp"
+                        ext = "webp"
 
-                    # Create filename with variation number and status
-                    variation = ad.get('prompt_index', 0)
-                    status = ad.get('final_status', 'unknown')
-                    filename = f"{variation:02d}_variation_{status}{ext}"
+                    # Use structured naming if codes are available
+                    if use_structured_naming:
+                        ad_id = ad.get('id', '')
+                        prompt_spec = ad.get('prompt_spec', {})
+                        format_code = get_format_code_from_spec(prompt_spec)
+                        filename = generate_structured_filename(
+                            brand_code, product_code, run_id, ad_id, format_code, ext
+                        )
+                    else:
+                        # Fallback to legacy naming
+                        variation = ad.get('prompt_index', 0)
+                        status = ad.get('final_status', 'unknown')
+                        filename = f"{variation:02d}_variation_{status}.{ext}"
 
                     zip_file.writestr(filename, response.content)
             except Exception as e:
@@ -562,12 +614,20 @@ else:
 
                     with col_btn2:
                         if st.session_state[download_key]:
+                            # Get codes for structured naming
+                            product_data = run.get('products', {}) or {}
+                            brand_data = product_data.get('brands', {}) or {}
+                            brand_code = brand_data.get('brand_code')
+                            product_code = product_data.get('product_code')
+
                             with st.spinner("Creating ZIP..."):
                                 zip_data = create_zip_for_run(
                                     ads=ads,
                                     product_name=product_name,
-                                    run_id=run_id_short,
-                                    reference_path=run.get('reference_ad_storage_path')
+                                    run_id=run_id_full,  # Use full UUID for structured naming
+                                    reference_path=run.get('reference_ad_storage_path'),
+                                    brand_code=brand_code,
+                                    product_code=product_code
                                 )
                             st.download_button(
                                 label="💾 Download ZIP",
