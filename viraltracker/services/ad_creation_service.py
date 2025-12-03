@@ -478,7 +478,7 @@ class AdCreationService:
             "ad_run_id": str(ad_run_id),
             "parent_ad_id": str(parent_ad_id),
             "variant_size": variant_size,
-            "prompt_index": 0,  # Variants don't have prompt index
+            # prompt_index omitted - NULL for variants (CHECK constraint requires >= 1 for regular ads)
             "prompt_text": prompt_text,
             "prompt_spec": prompt_spec,
             "hook_text": hook_text,
