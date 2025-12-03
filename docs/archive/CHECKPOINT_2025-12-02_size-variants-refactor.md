@@ -1,42 +1,87 @@
-# CHECKPOINT: Size Variants Refactor
+# CHECKPOINT: Size Variants Feature Complete
 
 **Date**: December 2, 2025
-**Status**: Refactored to follow architecture - Bug found
+**Status**: ✅ Complete
 
 ---
 
-## What Was Done
+## Summary
 
-Refactored size variants feature to follow project architecture:
-
-1. **Service Layer** (`ad_creation_service.py`) - All Gemini generation logic moved here
-2. **Agent Tool** (`ad_creation_agent.py`) - Thin wrapper calling service
-3. **UI Layer** - Calls service directly, no duplicated logic
-
-Commit: `1ccda23` - "refactor: Move size variant generation logic to service layer"
+Implemented size variants feature allowing users to create different aspect ratio versions of approved ads for Meta ad placements (1:1, 4:5, 9:16, 16:9).
 
 ---
 
-## Bug Found
+## Commits This Session
 
-When trying to create size variants from Ad History, got error:
+| Commit | Description |
+|--------|-------------|
+| `35e5570` | feat: Add size variants feature for approved ads |
+| `1ccda23` | refactor: Move size variant generation logic to service layer |
+| `7594767` | fix: Use NULL instead of 0 for variant prompt_index |
+
+---
+
+## Architecture (Following Best Practices)
 
 ```
-new row for relation "generated_ads" violates check constraint "generated_ads_prompt_index_check"
+┌─────────────────────────────────────────┐
+│         SERVICE LAYER (Core)            │
+│  AdCreationService.create_size_variant()│
+│  - Gemini AI generation (temp=0.1)      │
+│  - Storage upload                       │
+│  - Database save                        │
+└─────────────┬───────────────────────────┘
+              │
+   ┌──────────┴──────────┐
+   │                     │
+   ▼                     ▼
+┌──────────┐      ┌────────────┐
+│  Agent   │      │    UI      │
+│  Tool    │      │ (Streamlit)│
+│ (wrapper)│      │            │
+└──────────┘      └────────────┘
 ```
-
-**Root Cause**: `save_size_variant()` sets `prompt_index=0` for variants, but there's a database CHECK constraint requiring `prompt_index >= 1` or similar.
-
-**Fix Needed**: Either:
-1. Update the CHECK constraint to allow 0 or NULL for variants
-2. Use a different value for variant prompt_index (e.g., NULL)
 
 ---
 
-## Files Modified This Session
+## Database Migration (Already Run)
 
-- `viraltracker/services/ad_creation_service.py` - Added generation methods
-- `viraltracker/agent/agents/ad_creation_agent.py` - Simplified to call service
-- `viraltracker/ui/pages/02_📊_Ad_History.py` - Removed duplicated logic
-- `viraltracker/ui/pages/03_🖼️_Ad_Gallery.py` - Removed duplicated logic
-- `docs/archive/CHECKPOINT_2025-12-02_size-variants.md` - Updated documentation
+```sql
+ALTER TABLE generated_ads ADD COLUMN parent_ad_id UUID REFERENCES generated_ads(id);
+ALTER TABLE generated_ads ADD COLUMN variant_size TEXT;
+CREATE INDEX idx_generated_ads_parent_ad_id ON generated_ads(parent_ad_id);
+```
+
+---
+
+## Bug Fixed
+
+**Issue**: `prompt_index = 0` violated CHECK constraint requiring `>= 1`
+**Fix**: Omit `prompt_index` for variants (NULL allowed)
+
+---
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `ad_creation_service.py` | Added `create_size_variant()`, `create_size_variants_batch()`, `META_AD_SIZES` |
+| `ad_creation_agent.py` | Simplified tool to call `ctx.deps.ad_creation.create_size_variant()` |
+| `02_Ad_History.py` | Added "📐 Create Sizes" button, calls service |
+| `03_Ad_Gallery.py` | Added "📐 Create Size Variants" panel, calls service |
+
+---
+
+## How to Use
+
+**Ad History:**
+1. Expand an ad run
+2. Click "📐 Create Sizes" on an approved ad
+3. Select target sizes → Generate
+
+**Ad Gallery:**
+1. Click "📐 Create Size Variants" button
+2. Select ad from dropdown
+3. Select sizes → Generate
+
+Variants appear in the same ad run with "4:5 Variant" badge.
