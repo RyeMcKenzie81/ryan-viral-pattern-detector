@@ -575,12 +575,27 @@ class AdCreationService:
 
         # Build the resize prompt - includes canvas size in Technical Specifications
         # This follows the same pattern as generate_nano_banana_prompt
+
+        # Add letterboxing instructions for tall aspect ratios (9:16) to avoid stretching
+        letterbox_instructions = ""
+        if target_size == "9:16":
+            letterbox_instructions = """
+**LETTERBOXING FOR TALL FORMAT (CRITICAL):**
+- DO NOT stretch or distort the original ad content to fill the 9:16 canvas
+- Use LETTERBOXING: place the original ad content in the center/upper portion
+- Fill the extra vertical space (top and/or bottom) with colors that match the ad's color palette
+- The letterbox areas should use solid colors or subtle gradients from the ad's existing colors
+- Keep all original content at proper proportions - NO stretching or warping
+- You may extend background colors/patterns naturally into the letterbox areas
+- The content should look native to Stories/Reels format, not stretched
+"""
+
         prompt_text = f"""Recreate this EXACT ad at a different canvas size.
 
 **Technical Specifications:**
 - Canvas: {target_dimensions}px ({target_size} aspect ratio)
 - Target use case: {size_config['use_case']}
-
+{letterbox_instructions}
 **CRITICAL INSTRUCTIONS:**
 - Keep ALL text exactly the same (same words, same fonts, same styling)
 - DO NOT duplicate any text - each text element should appear only ONCE
