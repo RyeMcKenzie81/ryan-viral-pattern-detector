@@ -249,6 +249,51 @@ def get_existing_variants(ad_id: str) -> list:
         return []
 
 
+def get_ad_current_size(ad: dict) -> str:
+    """
+    Determine the current aspect ratio of an ad from its prompt_spec.
+
+    Returns the size key (e.g., "1:1", "4:5") or None if unknown.
+    """
+    # Check if it's already a variant with a known size
+    if ad.get('variant_size'):
+        return ad.get('variant_size')
+
+    # Try to get from prompt_spec canvas
+    prompt_spec = ad.get('prompt_spec') or {}
+    canvas = prompt_spec.get('canvas', {})
+
+    # Check for aspect_ratio field
+    if isinstance(canvas, dict) and canvas.get('aspect_ratio'):
+        return canvas.get('aspect_ratio')
+
+    # Try to parse from canvas string (e.g., "1080x1080px, background #F5F0E8")
+    if isinstance(canvas, str):
+        if '1080x1080' in canvas:
+            return "1:1"
+        elif '1080x1350' in canvas:
+            return "4:5"
+        elif '1080x1920' in canvas:
+            return "9:16"
+        elif '1920x1080' in canvas:
+            return "16:9"
+
+    # Check dimensions field
+    if isinstance(canvas, dict):
+        dims = canvas.get('dimensions', '')
+        if '1080x1080' in dims:
+            return "1:1"
+        elif '1080x1350' in dims:
+            return "4:5"
+        elif '1080x1920' in dims:
+            return "9:16"
+        elif '1920x1080' in dims:
+            return "16:9"
+
+    # Default assumption for ads without explicit size info is 1:1
+    return "1:1"
+
+
 async def create_size_variants_async(ad_id: str, target_sizes: list) -> dict:
     """Create size variants using the AdCreationService."""
     service = get_ad_creation_service()
@@ -619,14 +664,19 @@ else:
                                         if is_size_modal_open:
                                             st.markdown("**Select Target Sizes:**")
 
-                                            # Get existing variants and size definitions from service
+                                            # Get current size, existing variants, and size definitions
+                                            current_size = get_ad_current_size(ad)
                                             existing_variants = get_existing_variants(ad_id)
                                             service = get_ad_creation_service()
                                             meta_sizes = service.META_AD_SIZES
 
-                                            # Size checkboxes
+                                            # Size checkboxes (skip current size)
                                             selected_sizes = []
                                             for size, info in meta_sizes.items():
+                                                # Skip the source ad's current size
+                                                if size == current_size:
+                                                    continue
+
                                                 already_exists = size in existing_variants
                                                 label = f"{info['name']} ({size}) - {info['use_case']}"
                                                 if already_exists:
