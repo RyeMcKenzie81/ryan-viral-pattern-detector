@@ -1495,45 +1495,44 @@ async def generate_nano_banana_prompt(
                     review_display = f"{rating}★ ({count} Reviews)"
                     break  # Use first platform
 
+            # Extract the actual values to use
+            rating_value = list(review_platforms.values())[0].get('rating', '') if review_platforms else ''
+            count_value = list(review_platforms.values())[0].get('count', '') if review_platforms else ''
+
             social_proof_section = f"""
-        **🔄 SOCIAL PROOF REPLACEMENT INSTRUCTION (VERY IMPORTANT):**
+        **🔄 SOCIAL PROOF - USE THIS EXACT TEXT:**
 
-        The reference template shows a review badge (possibly Trustpilot, Amazon, etc.).
-        You MUST REPLACE that badge with our verified data. DO NOT copy the original badge.
+        For the review badge area, display EXACTLY:
 
-        **REPLACE the review section with THIS EXACT DATA:**
-        ┌─────────────────────────────────────┐
-        │  {review_display if review_display else "OMIT - No review data"}
-        │  Style: Clean badge similar to template layout
-        │  DO NOT write "Trustpilot" - use generic "Customer Reviews" or just the stars
-        └─────────────────────────────────────┘
+        ★ Rating: {rating_value}
+        ★ Review count: {count_value} Reviews
+        ★ Label: "Customer Reviews" (NOT Trustpilot, NOT Amazon, NOT any brand name)
 
-        **WHAT TO DO:**
-        - Where you see "Trustpilot" text in reference → REPLACE with "Customer Reviews" or OMIT the platform name
-        - Where you see star rating → USE: {list(review_platforms.values())[0].get('rating', 'N/A') if review_platforms else 'OMIT'}★
-        - Where you see review count → USE: {list(review_platforms.values())[0].get('count', 'N/A') if review_platforms else 'OMIT'} Reviews
-        - Keep similar visual style (badge shape, placement) but CHANGE the content
+        **EXACT TEXT TO WRITE:**
+        "{rating_value}★" for the star rating
+        "{count_value} Reviews" for the review count
+        "Customer Reviews" as the label (if needed)
 
-        **DO NOT:**
-        - Do NOT write "Trustpilot" anywhere
-        - Do NOT copy "4.7" or "3,643" from reference - use OUR numbers above
-        - Do NOT include the green Trustpilot logo/star icon
-        - Do NOT copy any review platform branding from the reference
+        **VISUAL STYLE:**
+        - Keep similar badge shape and placement as the reference template
+        - Use a clean, generic review badge style
+        - No green Trustpilot colors or logos
+        - No platform-specific branding
 
-        **Media Features:** {json.dumps(media_features) if media_features else "NONE - omit 'As Seen On' sections"}
-        **Awards:** {json.dumps(awards_certs) if awards_certs else "NONE - omit award badges"}
+        **Media Features:** {json.dumps(media_features) if media_features else "None for this product"}
+        **Awards:** {json.dumps(awards_certs) if awards_certs else "None for this product"}
         """
         elif ad_analysis.get('has_social_proof') and not has_any_verified_social_proof:
             # Template has social proof but product has NO verified data - strict warning
             social_proof_section = """
-        **⚠️ SOCIAL PROOF - CRITICAL WARNING:**
-        - The reference template includes social proof elements (reviews, badges, "As Seen On")
-        - This product has NO verified social proof data in our database
-        - DO NOT copy ANY social proof from the template
-        - DO NOT create: Trustpilot badges, Amazon ratings, media logos, review counts, "X sold"
-        - DO NOT invent: star ratings, customer counts, awards, certifications
-        - COMPLETELY OMIT all social proof elements from your generated ad
-        - Leave that space empty or extend the background/design elements
+        **⚠️ SOCIAL PROOF - NO DATA AVAILABLE:**
+        - The reference template includes review badges or social proof elements
+        - This product has NO verified review data
+        - DO NOT copy any review badges, star ratings, or review counts from the template
+        - DO NOT create any Trustpilot, Amazon, or other platform badges
+        - DO NOT invent any star ratings, review counts, or awards
+        - LEAVE BLANK: Where the template shows a review badge, leave that area empty
+        - Fill that space with background color or extend nearby design elements
         """
         # If template doesn't have social proof, social_proof_section stays empty (no warning needed)
 
