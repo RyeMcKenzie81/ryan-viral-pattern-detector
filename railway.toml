@@ -12,7 +12,7 @@ command = "python run_daily_scrape_with_logging.py"
 # Web dashboard service - view cron history and download CSVs
 [[services]]
 name = "web"
-startCommand = "uvicorn viraltracker.web.app:app --host 0.0.0.0 --port $PORT"
+startCommand = "bash start.sh"
 
 [env]
 # Environment variables (set these in Railway dashboard)
