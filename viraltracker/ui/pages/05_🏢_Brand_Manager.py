@@ -32,6 +32,8 @@ if 'expanded_product_id' not in st.session_state:
     st.session_state.expanded_product_id = None
 if 'analyzing_image' not in st.session_state:
     st.session_state.analyzing_image = None
+if 'scraping_ads' not in st.session_state:
+    st.session_state.scraping_ads = False
 
 
 def get_supabase_client():
@@ -220,6 +222,47 @@ def format_color_swatch(hex_color: str, name: str = None) -> str:
     return f'<span style="display:inline-block;width:20px;height:20px;background:{hex_color};border:1px solid #ccc;border-radius:3px;vertical-align:middle;margin-right:5px;"></span><code>{hex_color}</code>{label}'
 
 
+def scrape_facebook_ads(ad_library_url: str, brand_id: str, max_ads: int = 100) -> dict:
+    """
+    Scrape ads from Facebook Ad Library and save to database.
+
+    Args:
+        ad_library_url: Facebook Ad Library URL to scrape
+        brand_id: Brand UUID to link ads to
+        max_ads: Maximum number of ads to scrape
+
+    Returns:
+        Dict with results: {"success": bool, "count": int, "message": str}
+    """
+    try:
+        from viraltracker.scrapers.facebook_ads import FacebookAdsScraper
+
+        scraper = FacebookAdsScraper()
+
+        # Scrape ads from Ad Library
+        df = scraper.search_ad_library(
+            search_url=ad_library_url,
+            count=max_ads,
+            scrape_details=False,
+            timeout=900  # 15 min timeout for large scrapes
+        )
+
+        if len(df) == 0:
+            return {"success": True, "count": 0, "message": "No ads found at this URL"}
+
+        # Save to database linked to brand
+        saved_ids = scraper.save_ads_to_db(df, brand_id=brand_id)
+
+        return {
+            "success": True,
+            "count": len(saved_ids),
+            "message": f"Successfully scraped and saved {len(saved_ids)} ads"
+        }
+
+    except Exception as e:
+        return {"success": False, "count": 0, "message": str(e)}
+
+
 # ============================================================================
 # MAIN UI
 # ============================================================================
@@ -371,8 +414,20 @@ with st.container():
         scrape_url = new_ad_library_url or current_ad_library_url
         if scrape_url:
             if st.button("Scrape Ads", key="scrape_brand_ads", type="primary"):
-                st.info("Scraping... (this runs in background)")
-                st.code(f'python -m viraltracker facebook search "{scrape_url}" --count {scrape_count} --save --brand {selected_brand.get("slug", "your-brand")}', language="bash")
+                with st.spinner(f"Scraping up to {scrape_count} ads from Facebook Ad Library... This may take several minutes."):
+                    result = scrape_facebook_ads(
+                        ad_library_url=scrape_url,
+                        brand_id=selected_brand_id,
+                        max_ads=scrape_count
+                    )
+
+                if result["success"]:
+                    if result["count"] > 0:
+                        st.success(f"✅ {result['message']}")
+                    else:
+                        st.warning(result["message"])
+                else:
+                    st.error(f"❌ Scraping failed: {result['message']}")
         else:
             st.button("Scrape Ads", key="scrape_brand_ads_disabled", disabled=True)
 
