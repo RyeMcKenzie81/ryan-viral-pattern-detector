@@ -149,6 +149,8 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
 
         try:
             all_asset_ids = []
+            total_images_found = 0
+            total_videos_found = 0
 
             for ad_id in ctx.state.ad_ids:
                 # Get snapshot from database
@@ -181,27 +183,39 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
                     scrape_source="template_ingestion_pipeline"
                 )
 
-                logger.info(f"Ad {ad_id}: downloaded {len(assets.get('images', []))} images, {len(assets.get('videos', []))} videos")
+                images = assets.get("images", [])
+                videos = assets.get("videos", [])
+                total_images_found += len(images)
+                total_videos_found += len(videos)
+                logger.info(f"Ad {ad_id}: downloaded {len(images)} images, {len(videos)} videos")
 
                 # Filter to images only if requested
                 if ctx.state.images_only:
-                    all_asset_ids.extend(assets.get("images", []))
+                    all_asset_ids.extend(images)
                 else:
-                    all_asset_ids.extend(assets.get("images", []))
-                    all_asset_ids.extend(assets.get("videos", []))
+                    all_asset_ids.extend(images)
+                    all_asset_ids.extend(videos)
 
             ctx.state.asset_ids = all_asset_ids
             ctx.state.current_step = "downloaded"
 
-            logger.info(f"Downloaded {len(all_asset_ids)} total assets from {len(ctx.state.ad_ids)} ads")
+            logger.info(f"Downloaded {len(all_asset_ids)} assets from {len(ctx.state.ad_ids)} ads (total found: {total_images_found} images, {total_videos_found} videos)")
 
             # Early exit if no assets were downloaded
             if not all_asset_ids:
-                logger.warning("No assets downloaded from any ads - ads may have text-only content or failed to download")
-                return End({
-                    "status": "no_assets",
-                    "message": f"Processed {len(ctx.state.ad_ids)} ads but no images/videos could be extracted. Ads may have text-only content."
-                })
+                # Give specific message based on what was found vs filtered
+                if ctx.state.images_only and total_videos_found > 0:
+                    logger.warning(f"Found {total_videos_found} videos but images_only=True - uncheck 'Images Only' to include videos")
+                    return End({
+                        "status": "no_assets",
+                        "message": f"Found {total_videos_found} videos but 'Images Only' was checked. Uncheck it to download video ads."
+                    })
+                else:
+                    logger.warning("No assets downloaded from any ads - ads may have text-only content or failed to download")
+                    return End({
+                        "status": "no_assets",
+                        "message": f"Processed {len(ctx.state.ad_ids)} ads but no images/videos could be extracted. Ads may have text-only content."
+                    })
 
             return QueueForReviewNode()
 
