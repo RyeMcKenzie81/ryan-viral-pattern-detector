@@ -1,8 +1,8 @@
 # Checkpoint: Brand Research Pipeline & Template System
 
 **Date**: 2025-12-03 (Updated: 2025-12-04)
-**Status**: Phase 2A In Progress - Brand Research Analysis
-**Version**: 2.2.0
+**Status**: Phase 2B In Progress - Template Queue
+**Version**: 2.3.0
 **Branch**: `feature/brand-research-pipeline`
 
 ---
@@ -68,6 +68,22 @@ Pipeline nodes:
 3. AnalyzeImagesNode - Claude Vision analysis
 4. AnalyzeVideosNode - (Gemini, pending implementation)
 5. SynthesizeNode - Combine insights into brand summary
+
+### Extracted Fields Enhancement ✅ COMPLETE
+Added 10 new queryable columns to `facebook_ads` table:
+- `link_url` - Landing page URL (for competitor/funnel research)
+- `cta_text`, `cta_type` - CTA analysis ("Shop now", "Learn more")
+- `ad_title`, `ad_body` - Ad copy text
+- `caption` - Link preview (often shows offers like "wuffes.com/Save50%")
+- `link_description` - Link description text
+- `page_like_count` - Page authority metric
+- `page_profile_uri` - Facebook page URL
+- `display_format` - Ad type (VIDEO, DCO, IMAGE, etc.)
+
+Files:
+- `sql/migration_facebook_ads_extract_fields.sql` - Migration script
+- Updated `AdScrapingService.save_facebook_ad()` - Extracts fields on save
+- Backfilled 804 existing ads via Python script
 
 ---
 
@@ -1883,3 +1899,4 @@ WHERE link_url IS NULL AND snapshot->>'link_url' IS NOT NULL;
 | 2025-12-03 | 2.0.0 | Added Pydantic Graph architecture, detailed implementation plan |
 | 2025-12-04 | 2.2.0 | Phase 2A complete - BrandResearchService, pipeline nodes |
 | 2025-12-04 | 2.2.1 | Added future features backlog (comments, landing pages) |
+| 2025-12-04 | 2.3.0 | Extracted 10 fields from snapshot to columns, backfilled 804 ads |
