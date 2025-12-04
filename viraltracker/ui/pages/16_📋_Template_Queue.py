@@ -355,11 +355,13 @@ def render_ingestion_trigger():
             elif result.get("status") == "error":
                 st.error(f"Pipeline error: {result.get('error')}")
             elif result.get("status") == "no_ads":
-                st.warning("No ads found at that URL. Check the URL is valid and the page has active ads.")
+                msg = result.get("message", "No ads found at that URL. Check the URL is valid and the page has active ads.")
+                st.warning(f"⚠️ {msg}")
             elif result.get("status") == "no_new_ads":
                 st.info("These ads were already scraped. Check the Pending Review tab for existing templates.")
             elif result.get("status") == "no_assets":
-                st.warning("Ads were found but no images/videos could be downloaded. The ads may only have text content.")
+                msg = result.get("message", "Ads were found but no images/videos could be downloaded.")
+                st.warning(f"⚠️ {msg}")
             else:
                 st.warning(f"Status: {result.get('status')} - {result.get('message', '')}")
 

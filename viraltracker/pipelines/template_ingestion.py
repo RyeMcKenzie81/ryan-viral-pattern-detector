@@ -39,7 +39,7 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
     ) -> "DownloadAssetsNode":
         # Clean URL - remove trailing slashes/backslashes
         clean_url = ctx.state.ad_library_url.rstrip('/\\')
-        logger.info(f"Step 1: Scraping ads from {clean_url[:60]}...")
+        logger.info(f"Step 1: Scraping ads from {clean_url[:80]}...")
         ctx.state.current_step = "scraping"
 
         try:
@@ -51,14 +51,34 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
                 save_to_db=False
             )
 
+            ad_count = len(ads) if ads else 0
+            logger.info(f"FacebookService returned {ad_count} ads")
+
+            # Log first ad sample to debug structure
+            if ads and len(ads) > 0:
+                first_ad = ads[0]
+                logger.info(f"First ad sample - id: {first_ad.id}, page: {first_ad.page_name}, has_snapshot: {bool(first_ad.snapshot)}")
+
             if not ads:
                 logger.warning("No ads found from search")
                 ctx.state.current_step = "complete"
                 return End({"status": "no_ads", "message": "No ads found at the provided URL. Check the URL is valid."})
 
+            # Filter to ads with valid snapshots (needed for asset download)
+            ads_with_snapshots = [ad for ad in ads if ad.snapshot]
+            logger.info(f"Of {ad_count} ads, {len(ads_with_snapshots)} have snapshot data")
+
+            if not ads_with_snapshots:
+                logger.warning("No ads have snapshot data - cannot download assets")
+                ctx.state.current_step = "complete"
+                return End({
+                    "status": "no_ads",
+                    "message": f"Found {ad_count} ads but none had downloadable content. The page may have text-only ads."
+                })
+
             # Save ads to database
             saved_ids = []
-            for ad in ads:
+            for ad in ads_with_snapshots:
                 ad_dict = {
                     "id": ad.id,
                     "ad_archive_id": ad.ad_archive_id,
@@ -84,6 +104,8 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
                 )
                 if ad_id:
                     saved_ids.append(ad_id)
+
+            logger.info(f"Saved {len(saved_ids)} ads to database (from {len(ads_with_snapshots)} with snapshots)")
 
             ctx.state.ad_ids = saved_ids
             ctx.state.current_step = "scraped"
@@ -120,6 +142,11 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
         logger.info(f"Step 2: Downloading assets from {len(ctx.state.ad_ids)} ads")
         ctx.state.current_step = "downloading"
 
+        # Early exit if no ad_ids (shouldn't happen but safety check)
+        if not ctx.state.ad_ids:
+            logger.warning("No ad IDs to download assets from")
+            return End({"status": "no_ads", "message": "No ads available to download assets from"})
+
         try:
             all_asset_ids = []
 
@@ -130,11 +157,22 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
                 ).eq("id", str(ad_id)).execute()
 
                 if not result.data:
+                    logger.warning(f"Ad {ad_id} not found in database")
                     continue
 
                 snapshot = result.data[0].get("snapshot", {})
                 if not snapshot:
+                    logger.warning(f"Ad {ad_id} has no snapshot")
                     continue
+
+                # Parse snapshot if it's a string
+                if isinstance(snapshot, str):
+                    import json
+                    try:
+                        snapshot = json.loads(snapshot)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Ad {ad_id} has invalid JSON snapshot")
+                        continue
 
                 # Download and store assets
                 assets = await ctx.deps.ad_scraping.scrape_and_store_assets(
@@ -142,6 +180,8 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
                     snapshot=snapshot,
                     scrape_source="template_ingestion_pipeline"
                 )
+
+                logger.info(f"Ad {ad_id}: downloaded {len(assets.get('images', []))} images, {len(assets.get('videos', []))} videos")
 
                 # Filter to images only if requested
                 if ctx.state.images_only:
@@ -153,7 +193,16 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
             ctx.state.asset_ids = all_asset_ids
             ctx.state.current_step = "downloaded"
 
-            logger.info(f"Downloaded {len(all_asset_ids)} assets")
+            logger.info(f"Downloaded {len(all_asset_ids)} total assets from {len(ctx.state.ad_ids)} ads")
+
+            # Early exit if no assets were downloaded
+            if not all_asset_ids:
+                logger.warning("No assets downloaded from any ads - ads may have text-only content or failed to download")
+                return End({
+                    "status": "no_assets",
+                    "message": f"Processed {len(ctx.state.ad_ids)} ads but no images/videos could be extracted. Ads may have text-only content."
+                })
+
             return QueueForReviewNode()
 
         except Exception as e:
