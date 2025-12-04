@@ -29,6 +29,7 @@ from ..services.audio_production_service import AudioProductionService
 from ..services.knowledge_base import DocService
 from ..services.ad_scraping_service import AdScrapingService
 from ..services.brand_research_service import BrandResearchService
+from ..services.template_queue_service import TemplateQueueService
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ class AgentDependencies(BaseModel):
     audio_production: AudioProductionService
     ad_scraping: AdScrapingService
     brand_research: BrandResearchService
+    template_queue: TemplateQueueService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -230,6 +232,10 @@ class AgentDependencies(BaseModel):
         brand_research = BrandResearchService()
         logger.info("BrandResearchService initialized")
 
+        # Initialize TemplateQueueService for template approval workflow
+        template_queue = TemplateQueueService()
+        logger.info("TemplateQueueService initialized")
+
         # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
         docs = None
         if os.getenv("OPENAI_API_KEY"):
@@ -259,6 +265,7 @@ class AgentDependencies(BaseModel):
             audio_production=audio_production,
             ad_scraping=ad_scraping,
             brand_research=brand_research,
+            template_queue=template_queue,
             docs=docs,
             project_name=project_name
         )

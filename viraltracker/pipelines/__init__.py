@@ -16,6 +16,13 @@ from .brand_onboarding import (
     AnalyzeVideosNode,
     SynthesizeNode,
 )
+from .template_ingestion import (
+    template_ingestion_graph,
+    run_template_ingestion,
+    ScrapeAdsNode as TemplateScrapeAdsNode,
+    DownloadAssetsNode as TemplateDownloadAssetsNode,
+    QueueForReviewNode,
+)
 
 __all__ = [
     # States
@@ -29,4 +36,10 @@ __all__ = [
     "AnalyzeImagesNode",
     "AnalyzeVideosNode",
     "SynthesizeNode",
+    # Template Ingestion
+    "template_ingestion_graph",
+    "run_template_ingestion",
+    "TemplateScrapeAdsNode",
+    "TemplateDownloadAssetsNode",
+    "QueueForReviewNode",
 ]

@@ -1,8 +1,8 @@
 # Checkpoint: Brand Research Pipeline & Template System
 
 **Date**: 2025-12-03 (Updated: 2025-12-04)
-**Status**: Phase 2B In Progress - Template Queue
-**Version**: 2.3.0
+**Status**: Phase 2B Complete - Template Queue
+**Version**: 2.4.0
 **Branch**: `feature/brand-research-pipeline`
 
 ---
@@ -84,6 +84,34 @@ Files:
 - `sql/migration_facebook_ads_extract_fields.sql` - Migration script
 - Updated `AdScrapingService.save_facebook_ad()` - Extracts fields on save
 - Backfilled 804 existing ads via Python script
+
+### Phase 2B: Template Queue ✅ COMPLETE
+Implemented:
+- `viraltracker/services/template_queue_service.py` - Queue management service
+- `viraltracker/pipelines/template_ingestion.py` - 3-node pipeline
+- `viraltracker/ui/pages/16_📋_Template_Queue.py` - Streamlit approval UI
+- Added TemplateQueueService to AgentDependencies
+
+Pipeline flow:
+1. ScrapeAdsNode - Scrape ads via Apify
+2. DownloadAssetsNode - Download to Supabase storage
+3. QueueForReviewNode - Add to template_queue table (pauses here)
+4. Human reviews in Streamlit UI - approve/reject/archive
+
+Streamlit UI features:
+- Queue statistics dashboard (pending/approved/rejected/archived)
+- Three tabs: Pending Review, Template Library, Ingest New
+- Preview images with approve/reject/archive actions
+- Category selection and naming on approval
+- Template ingestion trigger form
+
+Tested flows:
+- ✓ Add asset to queue
+- ✓ Approve template (creates scraped_templates record)
+- ✓ Reject template with reason
+- ✓ Archive template
+- ✓ Queue stats update correctly
+- ✓ Templates appear in library after approval
 
 ---
 
@@ -1685,24 +1713,37 @@ See previous checkpoint for full implementation.
 - [ ] Implement Gemini video analysis
 - [x] Create `AnalyzeVideosNode` (placeholder, skips for now)
 
-### Phase 2B: Template Queue
+### Phase 2B: Template Queue ✅ COMPLETE
 **Effort**: 1.5 sessions
 
 **Step 2B.1: TemplateQueueService**
-- [ ] Create `viraltracker/services/template_queue_service.py`
-- [ ] Implement `add_to_queue()`
-- [ ] Implement `get_pending_queue()`
-- [ ] Implement `approve_template()`
-- [ ] Implement `reject_template()`
+- [x] Create `viraltracker/services/template_queue_service.py`
+- [x] Implement `add_to_queue()`
+- [x] Implement `get_pending_queue()`
+- [x] Implement `approve_template()`
+- [x] Implement `reject_template()`
+- [x] Implement `archive_template()`
+- [x] Implement `get_templates()`
+- [x] Implement `get_queue_stats()`
+- [x] Implement `record_template_usage()`
+- [x] Implement `get_asset_preview_url()`
 
 **Step 2B.2: Template Pipeline**
-- [ ] Create `viraltracker/pipelines/template_ingestion.py`
-- [ ] Create `QueueForReviewNode`
+- [x] Create `viraltracker/pipelines/template_ingestion.py`
+- [x] Create `ScrapeAdsNode`
+- [x] Create `DownloadAssetsNode`
+- [x] Create `QueueForReviewNode`
+- [x] Create `template_ingestion_graph`
+- [x] Create `run_template_ingestion()` convenience function
 
 **Step 2B.3: Streamlit UI**
-- [ ] Create Template Queue page
-- [ ] Implement approval interface
-- [ ] Test full ingestion + approval flow
+- [x] Create Template Queue page (`16_📋_Template_Queue.py`)
+- [x] Implement queue stats dashboard
+- [x] Implement pending review tab with preview
+- [x] Implement approval interface (approve/reject/archive)
+- [x] Implement template library tab
+- [x] Implement ingestion trigger form
+- [x] Test full approve/reject/archive flows
 
 ### Phase 3: Integration
 **Effort**: 1 session
@@ -1900,3 +1941,4 @@ WHERE link_url IS NULL AND snapshot->>'link_url' IS NOT NULL;
 | 2025-12-04 | 2.2.0 | Phase 2A complete - BrandResearchService, pipeline nodes |
 | 2025-12-04 | 2.2.1 | Added future features backlog (comments, landing pages) |
 | 2025-12-04 | 2.3.0 | Extracted 10 fields from snapshot to columns, backfilled 804 ads |
+| 2025-12-04 | 2.4.0 | Phase 2B complete - TemplateQueueService, template_ingestion pipeline, Streamlit UI |
