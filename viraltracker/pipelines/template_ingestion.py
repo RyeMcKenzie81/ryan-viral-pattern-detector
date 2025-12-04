@@ -37,13 +37,15 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
         self,
         ctx: GraphRunContext[TemplateIngestionState, AgentDependencies]
     ) -> "DownloadAssetsNode":
-        logger.info(f"Step 1: Scraping ads from {ctx.state.ad_library_url[:60]}...")
+        # Clean URL - remove trailing slashes/backslashes
+        clean_url = ctx.state.ad_library_url.rstrip('/\\')
+        logger.info(f"Step 1: Scraping ads from {clean_url[:60]}...")
         ctx.state.current_step = "scraping"
 
         try:
             # Use FacebookService to scrape ads
             ads = await ctx.deps.facebook.search_ads(
-                search_url=ctx.state.ad_library_url,
+                search_url=clean_url,
                 project="template_ingestion",
                 count=ctx.state.max_ads,
                 save_to_db=False
@@ -52,7 +54,7 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
             if not ads:
                 logger.warning("No ads found from search")
                 ctx.state.current_step = "complete"
-                return End({"status": "no_ads", "message": "No ads found at the provided URL"})
+                return End({"status": "no_ads", "message": "No ads found at the provided URL. Check the URL is valid."})
 
             # Save ads to database
             saved_ids = []
@@ -85,6 +87,13 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
 
             ctx.state.ad_ids = saved_ids
             ctx.state.current_step = "scraped"
+
+            if not saved_ids:
+                logger.warning(f"Scraped {len(ads)} ads but none saved (may already exist)")
+                return End({
+                    "status": "no_new_ads",
+                    "message": f"Found {len(ads)} ads but none were new. Assets may already be in queue."
+                })
 
             logger.info(f"Scraped and saved {len(saved_ids)} ads")
             return DownloadAssetsNode()

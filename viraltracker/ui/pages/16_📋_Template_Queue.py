@@ -29,6 +29,14 @@ if 'queue_tab' not in st.session_state:
     st.session_state.queue_tab = "Pending Review"
 if 'queue_page' not in st.session_state:
     st.session_state.queue_page = 0
+if 'ingestion_running' not in st.session_state:
+    st.session_state.ingestion_running = False
+if 'ingestion_url' not in st.session_state:
+    st.session_state.ingestion_url = ""
+if 'ingestion_max_ads' not in st.session_state:
+    st.session_state.ingestion_max_ads = 20
+if 'ingestion_images_only' not in st.session_state:
+    st.session_state.ingestion_images_only = True
 
 
 def get_template_queue_service():
@@ -279,49 +287,85 @@ def render_ingestion_trigger():
     """Render template ingestion trigger form."""
     st.subheader("Ingest New Templates")
 
+    is_running = st.session_state.ingestion_running
+
     with st.form("ingest_templates"):
         url = st.text_input(
             "Facebook Ad Library URL",
-            placeholder="https://www.facebook.com/ads/library/?..."
+            value=st.session_state.ingestion_url,
+            placeholder="https://www.facebook.com/ads/library/?...",
+            disabled=is_running
         )
 
         col1, col2 = st.columns(2)
         with col1:
-            max_ads = st.number_input("Max Ads", min_value=10, max_value=100, value=20)
+            max_ads = st.number_input(
+                "Max Ads",
+                min_value=10,
+                max_value=100,
+                value=st.session_state.ingestion_max_ads,
+                disabled=is_running
+            )
         with col2:
-            images_only = st.checkbox("Images Only", value=True)
+            images_only = st.checkbox(
+                "Images Only",
+                value=st.session_state.ingestion_images_only,
+                disabled=is_running
+            )
 
-        submit = st.form_submit_button("Start Ingestion", type="primary")
+        button_text = "⏳ Scraping... Please wait" if is_running else "🚀 Start Ingestion"
+        submit = st.form_submit_button(button_text, type="primary", disabled=is_running)
 
-        if submit:
+        if submit and not is_running:
             if not url:
                 st.error("Please enter a Facebook Ad Library URL")
             else:
-                with st.spinner("Running template ingestion pipeline..."):
-                    try:
-                        import asyncio
-                        from viraltracker.pipelines import run_template_ingestion
+                # Store form values and set running state
+                st.session_state.ingestion_url = url
+                st.session_state.ingestion_max_ads = max_ads
+                st.session_state.ingestion_images_only = images_only
+                st.session_state.ingestion_running = True
+                st.rerun()
 
-                        result = asyncio.run(run_template_ingestion(
-                            ad_library_url=url,
-                            max_ads=max_ads,
-                            images_only=images_only
-                        ))
+    # Run ingestion outside form when triggered
+    if is_running:
+        st.info("🔄 Scraping ads from Facebook Ad Library... This may take 1-3 minutes.")
+        st.warning("⏳ **Please wait** - Do not refresh the page.")
 
-                        if result.get("status") == "awaiting_approval":
-                            st.success(
-                                f"Queued {result.get('queued_count', 0)} templates for review! "
-                                f"({result.get('ads_scraped', 0)} ads scraped)"
-                            )
-                            st.cache_data.clear()
-                            st.rerun()
-                        elif result.get("status") == "error":
-                            st.error(f"Pipeline error: {result.get('error')}")
-                        else:
-                            st.warning(f"Status: {result.get('status')} - {result.get('message', '')}")
+        try:
+            import asyncio
+            from viraltracker.pipelines import run_template_ingestion
 
-                    except Exception as e:
-                        st.error(f"Failed to run pipeline: {e}")
+            result = asyncio.run(run_template_ingestion(
+                ad_library_url=st.session_state.ingestion_url,
+                max_ads=st.session_state.ingestion_max_ads,
+                images_only=st.session_state.ingestion_images_only
+            ))
+
+            st.session_state.ingestion_running = False
+
+            if result.get("status") == "awaiting_approval":
+                st.success(
+                    f"✅ Queued {result.get('queued_count', 0)} templates for review! "
+                    f"({result.get('ads_scraped', 0)} ads scraped)"
+                )
+                st.cache_data.clear()
+                st.session_state.ingestion_url = ""  # Clear URL after success
+                st.rerun()
+            elif result.get("status") == "error":
+                st.error(f"Pipeline error: {result.get('error')}")
+            elif result.get("status") == "no_ads":
+                st.warning("No ads found at that URL. Check the URL is valid and the page has active ads.")
+            elif result.get("status") == "no_new_ads":
+                st.info("These ads were already scraped. Check the Pending Review tab for existing templates.")
+            elif result.get("status") == "no_assets":
+                st.warning("Ads were found but no images/videos could be downloaded. The ads may only have text content.")
+            else:
+                st.warning(f"Status: {result.get('status')} - {result.get('message', '')}")
+
+        except Exception as e:
+            st.session_state.ingestion_running = False
+            st.error(f"Failed to run pipeline: {e}")
 
 
 # ============================================================================
