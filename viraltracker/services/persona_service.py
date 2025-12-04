@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # AI Prompt for generating 4D persona from product data
 PERSONA_GENERATION_PROMPT = """You are an expert at creating detailed customer personas for copywriting.
 
-Given the following product/brand information, generate a comprehensive 4D persona for their target customer.
+Given the following product/brand information and ad insights, generate a comprehensive 4D persona for their target customer.
 
 PRODUCT/BRAND INFO:
 {product_info}
@@ -43,7 +43,11 @@ PRODUCT/BRAND INFO:
 EXISTING TARGET AUDIENCE (if any):
 {target_audience}
 
+AD INSIGHTS (extracted from analyzed ads - use these to inform the persona):
+{ad_insights}
+
 Generate a detailed 4D persona with ALL of the following sections. Be specific and use language the customer would actually use.
+Use the hooks, benefits, and pain points from the ad insights to inform the persona's desires, pain points, and language.
 
 Return JSON with this structure:
 {{
@@ -353,13 +357,132 @@ class PersonaService:
     # AI-Assisted Generation
     # =========================================================================
 
+    async def _gather_ad_insights(
+        self,
+        brand_id: Optional[UUID],
+        product_id: UUID
+    ) -> Dict[str, Any]:
+        """
+        Gather insights from existing ad analyses for persona generation.
+
+        Pulls from:
+        - product_images.image_analysis (analyzed product images)
+        - facebook_ads with brand analysis
+        - brand_research_synthesis (if available)
+        """
+        insights = {
+            "hooks_found": [],
+            "benefits_mentioned": [],
+            "pain_points_addressed": [],
+            "persona_signals": [],
+            "brand_voice": [],
+            "source_count": 0
+        }
+
+        try:
+            # 1. Get analyzed product images
+            images_result = self.supabase.table("product_images").select(
+                "image_analysis"
+            ).eq("product_id", str(product_id)).not_.is_("image_analysis", "null").execute()
+
+            for img in images_result.data:
+                analysis = img.get("image_analysis", {})
+                if isinstance(analysis, str):
+                    try:
+                        analysis = json.loads(analysis)
+                    except json.JSONDecodeError:
+                        continue
+
+                # Extract hooks
+                hooks = analysis.get("hooks", [])
+                for hook in hooks:
+                    if isinstance(hook, dict):
+                        insights["hooks_found"].append({
+                            "text": hook.get("text", ""),
+                            "type": hook.get("hook_type", ""),
+                            "source": "product_image"
+                        })
+
+                # Extract benefits
+                benefits = analysis.get("benefits_mentioned", [])
+                insights["benefits_mentioned"].extend(benefits)
+
+                # Extract pain points
+                pain_points = analysis.get("pain_points_addressed", [])
+                insights["pain_points_addressed"].extend(pain_points)
+
+                # Extract persona signals
+                persona = analysis.get("persona_signals", {})
+                if persona:
+                    insights["persona_signals"].append(persona)
+
+                # Extract brand voice
+                voice = analysis.get("brand_voice", {})
+                if voice:
+                    insights["brand_voice"].append(voice)
+
+                insights["source_count"] += 1
+
+            # 2. Get brand research synthesis if available
+            if brand_id:
+                synthesis_result = self.supabase.table("brand_research_synthesis").select(
+                    "top_benefits, common_pain_points, recommended_hooks, target_persona"
+                ).eq("brand_id", str(brand_id)).order("created_at", desc=True).limit(1).execute()
+
+                if synthesis_result.data:
+                    synthesis = synthesis_result.data[0]
+
+                    # Add synthesized benefits
+                    top_benefits = synthesis.get("top_benefits", [])
+                    insights["benefits_mentioned"].extend(top_benefits)
+
+                    # Add synthesized pain points
+                    pain_points = synthesis.get("common_pain_points", [])
+                    insights["pain_points_addressed"].extend(pain_points)
+
+                    # Add recommended hooks
+                    rec_hooks = synthesis.get("recommended_hooks", [])
+                    for hook in rec_hooks:
+                        if isinstance(hook, dict):
+                            insights["hooks_found"].append({
+                                "text": hook.get("hook_template", hook.get("example", "")),
+                                "type": hook.get("hook_type", ""),
+                                "source": "brand_synthesis"
+                            })
+
+                    # Add target persona insights
+                    target_persona = synthesis.get("target_persona", {})
+                    if target_persona:
+                        insights["persona_signals"].append(target_persona)
+
+                    insights["source_count"] += 1
+
+            # Deduplicate lists
+            insights["benefits_mentioned"] = list(set(insights["benefits_mentioned"]))
+            insights["pain_points_addressed"] = list(set(insights["pain_points_addressed"]))
+
+            logger.info(f"Gathered ad insights: {insights['source_count']} sources, "
+                       f"{len(insights['hooks_found'])} hooks, "
+                       f"{len(insights['benefits_mentioned'])} benefits")
+
+            return insights if insights["source_count"] > 0 else {}
+
+        except Exception as e:
+            logger.warning(f"Failed to gather ad insights: {e}")
+            return {}
+
     async def generate_persona_from_product(
         self,
         product_id: UUID,
         brand_id: Optional[UUID] = None
     ) -> Persona4D:
         """
-        Generate a 4D persona using AI from product data.
+        Generate a 4D persona using AI from product data and existing ad analyses.
+
+        Uses:
+        - Product table data (benefits, target audience, etc.)
+        - Existing ad image analyses (hooks, benefits, pain points)
+        - Brand research synthesis (if available)
 
         Returns the generated persona (not saved - user reviews first).
         """
@@ -372,6 +495,7 @@ class PersonaService:
             raise ValueError(f"Product not found: {product_id}")
 
         product = product_result.data[0]
+        resolved_brand_id = brand_id or (UUID(product.get("brand_id")) if product.get("brand_id") else None)
 
         # Build product info for prompt
         product_info = {
@@ -387,11 +511,15 @@ class PersonaService:
 
         target_audience = product.get("target_audience", "Not specified")
 
+        # Gather ad insights from existing analyses
+        ad_insights = await self._gather_ad_insights(resolved_brand_id, product_id)
+
         # Call Claude for generation
         anthropic = Anthropic()
         prompt = PERSONA_GENERATION_PROMPT.format(
             product_info=json.dumps(product_info, indent=2),
-            target_audience=target_audience
+            target_audience=target_audience,
+            ad_insights=json.dumps(ad_insights, indent=2) if ad_insights else "No ad analyses available yet."
         )
 
         message = anthropic.messages.create(

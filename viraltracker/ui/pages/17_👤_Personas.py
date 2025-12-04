@@ -103,13 +103,25 @@ def get_product_persona_links(product_id: str):
         return []
 
 
-async def generate_persona_for_product(product_id: str, brand_id: str):
-    """Generate a persona using AI."""
+def generate_persona_for_product_sync(product_id: str, brand_id: str):
+    """Generate a persona using AI (sync wrapper for Streamlit)."""
     service = get_persona_service()
-    return await service.generate_persona_from_product(
-        product_id=UUID(product_id),
-        brand_id=UUID(brand_id)
-    )
+
+    # Use nest_asyncio to handle Streamlit's event loop
+    import nest_asyncio
+    nest_asyncio.apply()
+
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            service.generate_persona_from_product(
+                product_id=UUID(product_id),
+                brand_id=UUID(brand_id)
+            )
+        )
+    finally:
+        loop.close()
 
 
 def save_persona(persona_data: Dict[str, Any]) -> Optional[str]:
@@ -797,11 +809,13 @@ def render_ai_generation():
         if p.get("target_audience"):
             st.markdown(f"Current target audience: *{p.get('target_audience')}*")
 
-    if st.button("Generate Persona", type="primary"):
-        with st.spinner("Generating 4D persona with Claude..."):
+    if st.button("Generate Persona", type="primary", disabled=st.session_state.get('_generating', False)):
+        st.session_state._generating = True
+        with st.spinner("Generating 4D persona with Claude... (this takes 15-30 seconds)"):
             try:
-                persona = asyncio.run(generate_persona_for_product(product_id, brand_id))
-
+                persona = generate_persona_for_product_sync(product_id, brand_id)
+                st.session_state._generated_persona = persona
+                st.session_state._generating = False
                 st.success(f"Generated: **{persona.name}**")
                 st.markdown(f"*{persona.snapshot}*")
 

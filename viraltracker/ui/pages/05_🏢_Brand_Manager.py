@@ -334,6 +334,48 @@ with st.container():
         with st.expander("Brand Guidelines"):
             st.markdown(selected_brand['brand_guidelines'])
 
+    # Facebook Ad Library Section
+    st.markdown("")  # Spacer
+    st.markdown("**Facebook Ad Library**")
+
+    current_ad_library_url = selected_brand.get('ad_library_url') or ""
+    current_page_id = selected_brand.get('facebook_page_id') or ""
+
+    col_url, col_save = st.columns([4, 1])
+
+    with col_url:
+        new_ad_library_url = st.text_input(
+            "Ad Library URL",
+            value=current_ad_library_url,
+            placeholder="https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&view_all_page_id=YOUR_PAGE_ID",
+            help="Full Facebook Ad Library URL for scraping your brand's ads",
+            key="brand_ad_library_url"
+        )
+
+    with col_save:
+        st.markdown("")  # Align with input
+        if new_ad_library_url != current_ad_library_url:
+            if st.button("Save URL", key="save_ad_library_url", type="primary"):
+                try:
+                    db = get_supabase_client()
+                    db.table("brands").update({
+                        "ad_library_url": new_ad_library_url
+                    }).eq("id", selected_brand_id).execute()
+                    st.success("Ad Library URL saved!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save: {e}")
+
+    if current_ad_library_url:
+        st.caption(f"[Open in Facebook Ad Library]({current_ad_library_url})")
+
+        # Quick scrape button
+        with st.expander("Scrape Ads from Ad Library"):
+            scrape_count = st.number_input("Max ads to scrape", min_value=10, max_value=500, value=50, step=10)
+            if st.button("Start Scraping", key="scrape_brand_ads"):
+                st.info("Scraping functionality will be added. For now, use CLI:")
+                st.code(f'python -m viraltracker facebook search "{current_ad_library_url}" --count {scrape_count} --save --brand {selected_brand.get("slug", "your-brand")}')
+
 st.divider()
 
 # ============================================================================
