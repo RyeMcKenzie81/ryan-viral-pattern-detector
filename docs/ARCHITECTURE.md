@@ -211,6 +211,40 @@ Step 3: Export to CSV (<1 min, $0)
 - **Benefit**: Standard Pydantic AI pattern, simpler, no custom registry code
 - **Completion**: Phase 13 (all 5 agents), Phase 14 (cleanup)
 
+### Pydantic-Graph vs Direct Service Calls
+
+When building workflows, choose the appropriate pattern:
+
+| Pattern | When to Use | Examples |
+|---------|-------------|----------|
+| **pydantic-graph** | Autonomous, multi-step workflows where AI makes decisions | Ad generation pipeline, content analysis pipelines |
+| **Direct Service Calls** | User-driven, interactive workflows with UI control | Template approval, form submissions, manual triggers |
+
+**Use pydantic-graph when:**
+- The LLM needs to decide what happens next
+- Workflow runs autonomously (e.g., cron jobs, background tasks)
+- Complex branching logic based on AI analysis
+- Multiple AI-powered steps in sequence
+
+**Use direct service calls when:**
+- User controls the flow (clicking buttons, filling forms)
+- Operations are short and synchronous
+- UI presents choices and waits for user input
+- Two-step confirmation workflows (AI suggests → user confirms)
+
+**Example - Template Approval Workflow:**
+```python
+# ❌ WRONG: Using pydantic-graph for user-driven flow
+# The graph would try to make autonomous decisions
+
+# ✅ CORRECT: Direct service calls with UI control
+# Step 1: User clicks "Approve" → service.start_approval() runs AI
+# Step 2: UI shows suggestions → User edits/confirms
+# Step 3: User clicks "Confirm" → service.finalize_approval()
+```
+
+The key question: **Who decides what happens next—the AI or the user?**
+
 ---
 
 **Related Documentation**:

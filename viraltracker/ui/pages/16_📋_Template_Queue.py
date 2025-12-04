@@ -39,6 +39,10 @@ if 'ingestion_images_only' not in st.session_state:
     st.session_state.ingestion_images_only = True
 if 'ingestion_result' not in st.session_state:
     st.session_state.ingestion_result = None  # Store last result for display
+if 'reviewing_item_id' not in st.session_state:
+    st.session_state.reviewing_item_id = None  # Item ID being reviewed (pending_details)
+if 'ai_suggestions' not in st.session_state:
+    st.session_state.ai_suggestions = None  # AI suggestions for current review
 
 
 def get_template_queue_service():
@@ -144,6 +148,77 @@ def archive_item(queue_id: str):
 
 
 # ============================================================================
+# Two-Step Approval Actions
+# ============================================================================
+
+def start_ai_approval(queue_id: str):
+    """Start AI-assisted approval (step 1)."""
+    import asyncio
+    from uuid import UUID
+    service = get_template_queue_service()
+    try:
+        with st.spinner("Analyzing template with AI..."):
+            suggestions = asyncio.run(service.start_approval(UUID(queue_id)))
+        st.session_state.reviewing_item_id = queue_id
+        st.session_state.ai_suggestions = suggestions
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"AI analysis failed: {e}")
+        return False
+
+
+def finalize_ai_approval(
+    queue_id: str,
+    name: str,
+    description: str,
+    category: str,
+    industry_niche: str,
+    target_sex: str,
+    awareness_level: int,
+    sales_event: str
+):
+    """Finalize approval with confirmed details (step 2)."""
+    from uuid import UUID
+    service = get_template_queue_service()
+    try:
+        result = service.finalize_approval(
+            queue_id=UUID(queue_id),
+            name=name,
+            description=description,
+            category=category,
+            industry_niche=industry_niche,
+            target_sex=target_sex,
+            awareness_level=awareness_level,
+            sales_event=sales_event if sales_event != "None" else None,
+            reviewed_by="streamlit_user"
+        )
+        st.success(f"Template approved: {name}")
+        st.session_state.reviewing_item_id = None
+        st.session_state.ai_suggestions = None
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to finalize approval: {e}")
+        return False
+
+
+def cancel_ai_approval(queue_id: str):
+    """Cancel in-progress approval and return to pending."""
+    from uuid import UUID
+    service = get_template_queue_service()
+    try:
+        service.cancel_approval(UUID(queue_id))
+        st.session_state.reviewing_item_id = None
+        st.session_state.ai_suggestions = None
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to cancel: {e}")
+        return False
+
+
+# ============================================================================
 # UI Components
 # ============================================================================
 
@@ -158,8 +233,196 @@ def render_stats():
     col4.metric("Total", stats.get("total", 0))
 
 
+def get_industry_options() -> List[str]:
+    """Get list of industry/niche options."""
+    return [
+        "supplements", "pets", "skincare", "fitness", "fashion",
+        "tech", "food_beverage", "home_garden", "finance",
+        "health_wellness", "beauty", "automotive", "travel", "education", "other"
+    ]
+
+
+def get_sales_event_options() -> List[str]:
+    """Get list of sales event options."""
+    return [
+        "None", "black_friday", "cyber_monday", "mothers_day", "fathers_day",
+        "valentines_day", "christmas", "new_year", "summer_sale",
+        "labor_day", "memorial_day", "other"
+    ]
+
+
+def get_awareness_level_options() -> List[tuple]:
+    """Get awareness level options as (value, display_name) tuples."""
+    return [
+        (1, "1 - Unaware"),
+        (2, "2 - Problem Aware"),
+        (3, "3 - Solution Aware"),
+        (4, "4 - Product Aware"),
+        (5, "5 - Most Aware")
+    ]
+
+
+def render_details_review():
+    """Render the AI suggestions review form (step 2 of approval)."""
+    queue_id = st.session_state.reviewing_item_id
+    suggestions = st.session_state.ai_suggestions
+
+    if not queue_id or not suggestions:
+        st.warning("No review in progress. Please select an item to approve.")
+        if st.button("Back to Queue"):
+            st.session_state.reviewing_item_id = None
+            st.session_state.ai_suggestions = None
+            st.rerun()
+        return
+
+    # Get the queue item for preview
+    service = get_template_queue_service()
+    item = service.get_pending_details_item(queue_id)
+
+    if not item:
+        st.warning("Item no longer available for review.")
+        st.session_state.reviewing_item_id = None
+        st.session_state.ai_suggestions = None
+        st.rerun()
+        return
+
+    st.subheader("Review AI Suggestions")
+    st.caption("Review and edit the AI-generated metadata before finalizing approval.")
+
+    asset = item.get("scraped_ad_assets", {})
+    storage_path = asset.get("storage_path", "")
+    asset_type = asset.get("asset_type", "image")
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        # Preview image
+        if storage_path:
+            url = get_asset_url(storage_path)
+            if url and asset_type == "image":
+                st.image(url, use_container_width=True)
+            elif url and asset_type == "video":
+                st.video(url)
+
+        # Source info (read-only)
+        st.caption("**Source Info**")
+        st.text(f"Brand: {suggestions.get('source_brand', 'Unknown')}")
+        landing_page = suggestions.get('source_landing_page', '')
+        if landing_page:
+            st.text(f"Landing: {landing_page[:50]}...")
+
+        # Visual notes from AI
+        visual_notes = suggestions.get("visual_notes", "")
+        if visual_notes:
+            st.caption("**AI Visual Notes**")
+            st.caption(visual_notes)
+
+    with col2:
+        # Editable form with AI suggestions pre-filled
+        with st.form(key="finalize_approval"):
+            # Name and Description
+            name = st.text_input(
+                "Template Name",
+                value=suggestions.get("suggested_name", ""),
+                help="Short descriptive name for this template"
+            )
+            description = st.text_area(
+                "Description",
+                value=suggestions.get("suggested_description", ""),
+                height=80,
+                help="Brief description of template style and use case"
+            )
+
+            # Category (format type)
+            categories = service.get_template_categories()
+            suggested_category = suggestions.get("format_type", "other")
+            category_index = categories.index(suggested_category) if suggested_category in categories else 0
+            category = st.selectbox(
+                "Format Category",
+                options=categories,
+                index=category_index
+            )
+
+            # Industry/Niche
+            industries = get_industry_options()
+            suggested_industry = suggestions.get("industry_niche", "other")
+            industry_index = industries.index(suggested_industry) if suggested_industry in industries else len(industries) - 1
+            industry_niche = st.selectbox(
+                "Industry/Niche",
+                options=industries,
+                index=industry_index
+            )
+
+            # Target Sex
+            target_sex = st.radio(
+                "Target Audience",
+                options=["male", "female", "unisex"],
+                index=["male", "female", "unisex"].index(suggestions.get("target_sex", "unisex")),
+                horizontal=True
+            )
+
+            # Awareness Level
+            awareness_options = get_awareness_level_options()
+            suggested_awareness = suggestions.get("awareness_level", 3)
+            awareness_level = st.selectbox(
+                "Awareness Level",
+                options=[opt[0] for opt in awareness_options],
+                format_func=lambda x: next((opt[1] for opt in awareness_options if opt[0] == x), str(x)),
+                index=suggested_awareness - 1,
+                help=suggestions.get("awareness_level_reasoning", "")
+            )
+
+            # Show AI reasoning for awareness level
+            reasoning = suggestions.get("awareness_level_reasoning", "")
+            if reasoning:
+                st.caption(f"*AI Reasoning: {reasoning}*")
+
+            # Sales Event
+            events = get_sales_event_options()
+            suggested_event = suggestions.get("sales_event") or "None"
+            event_index = events.index(suggested_event) if suggested_event in events else 0
+            sales_event = st.selectbox(
+                "Sales Event (if applicable)",
+                options=events,
+                index=event_index
+            )
+
+            st.divider()
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                confirm = st.form_submit_button("Confirm & Approve", type="primary")
+            with col_b:
+                cancel = st.form_submit_button("Cancel")
+
+            if confirm:
+                if not name:
+                    st.error("Template name is required")
+                else:
+                    finalize_ai_approval(
+                        queue_id=queue_id,
+                        name=name,
+                        description=description,
+                        category=category,
+                        industry_niche=industry_niche,
+                        target_sex=target_sex,
+                        awareness_level=awareness_level,
+                        sales_event=sales_event
+                    )
+                    st.rerun()
+
+            if cancel:
+                cancel_ai_approval(queue_id)
+                st.rerun()
+
+
 def render_pending_queue():
     """Render pending items for review."""
+    # Check if we're in the middle of reviewing an item
+    if st.session_state.reviewing_item_id:
+        render_details_review()
+        return
+
     items = get_pending_items(limit=20, offset=st.session_state.queue_page * 20)
 
     if not items:
@@ -167,7 +430,6 @@ def render_pending_queue():
         return
 
     service = get_template_queue_service()
-    categories = service.get_template_categories()
 
     for item in items:
         asset = item.get("scraped_ad_assets", {})
@@ -191,46 +453,26 @@ def render_pending_queue():
                     st.write("No preview")
 
             with col2:
-                # AI Analysis
+                # AI Analysis (from previous queue analysis if available)
                 ai_analysis = item.get("ai_analysis", {})
                 if ai_analysis and ai_analysis.get("analyzed"):
-                    st.caption(f"AI Suggested: {ai_analysis.get('suggested_category', 'N/A')}")
-                    st.caption(f"Quality Score: {ai_analysis.get('quality_score', 'N/A')}")
+                    st.caption(f"Pre-Analysis: {ai_analysis.get('suggested_category', 'N/A')}")
 
-                # Approval form
-                with st.form(key=f"approve_{item['id']}"):
-                    name = st.text_input("Template Name", key=f"name_{item['id']}")
-                    category = st.selectbox(
-                        "Category",
-                        options=categories,
-                        key=f"cat_{item['id']}"
-                    )
-                    description = st.text_area(
-                        "Description (optional)",
-                        key=f"desc_{item['id']}",
-                        height=68
-                    )
+                st.markdown("**Quick Actions**")
+                st.caption("Click 'Approve' to run AI analysis and review suggested metadata.")
 
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        approve = st.form_submit_button("Approve", type="primary")
-                    with col_b:
-                        skip = st.form_submit_button("Skip/Archive")
-                    with col_c:
-                        reject = st.form_submit_button("Reject")
-
-                    if approve:
-                        if not name:
-                            st.error("Name is required")
-                        else:
-                            approve_item(item["id"], category, name, description)
+                # Action buttons (not a form - for immediate action)
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    if st.button("Approve", key=f"approve_{item['id']}", type="primary"):
+                        if start_ai_approval(item["id"]):
                             st.rerun()
-
-                    if skip:
+                with col_b:
+                    if st.button("Skip", key=f"skip_{item['id']}"):
                         archive_item(item["id"])
                         st.rerun()
-
-                    if reject:
+                with col_c:
+                    if st.button("Reject", key=f"reject_{item['id']}"):
                         reject_item(item["id"], "Rejected via UI")
                         st.rerun()
 
