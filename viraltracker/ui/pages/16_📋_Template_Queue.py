@@ -332,7 +332,7 @@ def render_ingestion_trigger():
             max_ads = st.number_input(
                 "Max Ads",
                 min_value=10,
-                max_value=100,
+                max_value=1000,
                 value=st.session_state.ingestion_max_ads,
                 disabled=is_running
             )
