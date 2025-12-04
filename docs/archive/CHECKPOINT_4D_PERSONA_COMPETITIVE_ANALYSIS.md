@@ -103,9 +103,11 @@ Both use the same 4D framework - one for own brand, one for competitors.
 CREATE TABLE personas_4d (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id UUID REFERENCES brands(id),
+    product_id UUID REFERENCES products(id),  -- Can link to specific product
     competitor_id UUID REFERENCES competitors(id),  -- NULL for own brand
-    persona_type TEXT,  -- 'own_brand' or 'competitor'
+    persona_type TEXT NOT NULL,  -- 'own_brand', 'product_specific', 'competitor'
     name TEXT NOT NULL,
+    is_primary BOOLEAN DEFAULT false,  -- Primary persona for this product/brand
 
     -- Basics
     snapshot TEXT,
@@ -165,6 +167,20 @@ CREATE TABLE personas_4d (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Junction table for products with multiple personas
+CREATE TABLE product_personas (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id UUID REFERENCES products(id) ON DELETE CASCADE,
+    persona_id UUID REFERENCES personas_4d(id) ON DELETE CASCADE,
+    is_primary BOOLEAN DEFAULT false,
+    weight FLOAT DEFAULT 1.0,  -- For weighted persona targeting
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(product_id, persona_id)
+);
+
+CREATE INDEX idx_product_personas_product ON product_personas(product_id);
+CREATE INDEX idx_product_personas_persona ON product_personas(persona_id);
 
 CREATE TABLE competitors (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -285,6 +301,26 @@ Use 4D persona data in:
 - Angle selection (target specific pain points)
 - Objection handling (address their specific barriers)
 
+**Ad Creation Flow Enhancement:**
+```
+1. Select Product → Show linked personas
+2. Select Target Persona (or use primary)
+3. Persona data injected into prompts:
+   - Desires to appeal to
+   - Language/verbiage to use
+   - Pain points to address
+   - Identity narratives to leverage
+   - Objections to preempt
+```
+
+### Phase 6: Existing Product Migration
+
+For existing products:
+1. AI-generate initial 4D persona from existing `target_audience` + product data
+2. User reviews and enriches via Persona Builder UI
+3. Link personas to products via `product_personas` junction table
+4. Multiple personas per product supported (e.g., "Budget-conscious Mom", "Premium Dad")
+
 ---
 
 ## Workflow: Competitive Analysis Pipeline
@@ -345,12 +381,24 @@ Use 4D persona data in:
 
 ## Success Criteria
 
+### Own Brand Personas
+- [ ] Can create multiple 4D personas per product
+- [ ] Can set primary persona for a product
+- [ ] AI can generate initial persona from existing product data
+- [ ] Persona Builder UI for manual enrichment
+- [ ] Ad creation uses selected persona for copy generation
+
+### Competitive Analysis
 - [ ] Can add a competitor and scrape their Ad Library
 - [ ] AI extracts products, benefits, pain points from competitor ads
 - [ ] Can generate 4D persona for competitor's target customer
-- [ ] Can create 4D persona for own brand
-- [ ] Personas inform ad copy generation
 - [ ] Competitive report shows differentiation opportunities
+
+### Integration
+- [ ] Personas inform hook generation (specific desires)
+- [ ] Personas inform copy writing (their language/verbiage)
+- [ ] Personas inform objection handling (their specific barriers)
+- [ ] Side-by-side view: own persona vs competitor persona
 
 ---
 
