@@ -97,6 +97,20 @@ class FacebookService:
                     except (ValueError, TypeError):
                         pass
 
+                # Parse impressions - can be int or dict with impressions_text
+                impressions = None
+                imp_value = row.get('impressions')
+                if isinstance(imp_value, dict):
+                    pass  # Can't reliably convert text ranges to int
+                elif isinstance(imp_value, (int, float)):
+                    impressions = int(imp_value)
+
+                # Parse reach_estimate similarly
+                reach = None
+                reach_value = row.get('reach_estimate')
+                if isinstance(reach_value, (int, float)):
+                    reach = int(reach_value)
+
                 ad = FacebookAd(
                     id=str(row.get('ad_id', '')),
                     ad_archive_id=str(row.get('ad_archive_id', '')),
@@ -108,8 +122,8 @@ class FacebookService:
                     end_date=row.get('end_date'),
                     currency=row.get('currency'),
                     spend=spend,
-                    impressions=row.get('impressions'),
-                    reach_estimate=row.get('reach_estimate'),
+                    impressions=impressions,
+                    reach_estimate=reach,
                     snapshot=row.get('snapshot') if isinstance(row.get('snapshot'), str) else json.dumps(row.get('snapshot', {})),
                     categories=row.get('categories') if isinstance(row.get('categories'), str) else json.dumps(row.get('categories', [])),
                     publisher_platform=row.get('publisher_platform') if isinstance(row.get('publisher_platform'), str) else json.dumps(row.get('publisher_platform', [])),
@@ -180,6 +194,20 @@ class FacebookService:
                     except (ValueError, TypeError):
                         pass
 
+                # Parse impressions - can be int or dict with impressions_text
+                impressions = None
+                imp_value = row.get('impressions')
+                if isinstance(imp_value, dict):
+                    pass  # Can't reliably convert text ranges to int
+                elif isinstance(imp_value, (int, float)):
+                    impressions = int(imp_value)
+
+                # Parse reach_estimate similarly
+                reach = None
+                reach_value = row.get('reach_estimate')
+                if isinstance(reach_value, (int, float)):
+                    reach = int(reach_value)
+
                 ad = FacebookAd(
                     id=str(row.get('ad_id', '')),
                     ad_archive_id=str(row.get('ad_archive_id', '')),
@@ -191,8 +219,8 @@ class FacebookService:
                     end_date=row.get('end_date'),
                     currency=row.get('currency'),
                     spend=spend,
-                    impressions=row.get('impressions'),
-                    reach_estimate=row.get('reach_estimate'),
+                    impressions=impressions,
+                    reach_estimate=reach,
                     snapshot=row.get('snapshot') if isinstance(row.get('snapshot'), str) else json.dumps(row.get('snapshot', {})),
                     categories=row.get('categories') if isinstance(row.get('categories'), str) else json.dumps(row.get('categories', [])),
                     publisher_platform=row.get('publisher_platform') if isinstance(row.get('publisher_platform'), str) else json.dumps(row.get('publisher_platform', [])),

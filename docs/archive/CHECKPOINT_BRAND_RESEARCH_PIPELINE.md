@@ -1,9 +1,62 @@
 # Checkpoint: Brand Research Pipeline & Template System
 
-**Date**: 2025-12-03
-**Status**: Planning Complete - Ready for Implementation
-**Version**: 2.0.0
+**Date**: 2025-12-03 (Updated: 2025-12-04)
+**Status**: Phase 1 Complete - Testing in Progress
+**Version**: 2.1.0
 **Branch**: `feature/brand-research-pipeline`
+
+---
+
+## Session Progress (2025-12-04)
+
+### Completed
+- **Phase 0**: pydantic-graph verified, `scraped-assets` bucket created, `pipelines/` directory created
+- **Phase 1**: Database migration run (8 tables), AdScrapingService implemented, added to AgentDependencies
+
+### Database Fixes Applied
+The `facebook_ads` table already existed with different schema. Applied these fixes:
+```sql
+ALTER TABLE facebook_ads ADD COLUMN IF NOT EXISTS brand_id UUID;
+ALTER TABLE facebook_ads ADD COLUMN IF NOT EXISTS project_id UUID;
+ALTER TABLE facebook_ads ADD COLUMN IF NOT EXISTS page_id TEXT;
+ALTER TABLE facebook_ads ADD COLUMN IF NOT EXISTS page_name TEXT;
+ALTER TABLE facebook_ads ADD COLUMN IF NOT EXISTS scrape_source TEXT;
+ALTER TABLE facebook_ads ALTER COLUMN platform_id DROP NOT NULL;
+```
+
+### Bug Fixes
+- Fixed `FacebookService` to handle `impressions` as dict (was failing Pydantic validation)
+- Fixed `FacebookService` to handle `reach_estimate` similarly
+
+### Files Created/Modified
+```
+NEW:
+  viraltracker/services/ad_scraping_service.py
+  viraltracker/pipelines/__init__.py
+  sql/migration_brand_research_pipeline.sql
+  product_setup/ONBOARDING_CHECKLIST.md
+  product_setup/templates/brand_data_template.py
+  test_ad_scraping_service.py
+  test_e2e_ad_scraping.py
+
+MODIFIED:
+  viraltracker/agent/dependencies.py
+  viraltracker/services/facebook_service.py
+  docs/README.md
+  product_setup/README.md
+```
+
+### Current Test Status
+Testing with URL: `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=470900729771745`
+- Apify scraping: ✓ Working (10 ads from "Wuffes" page)
+- Page ID/Name captured: ✓ Working
+- Saving to DB: Testing after platform_id fix
+- Asset download: Pending
+
+### Next Steps
+1. Re-run e2e test after platform_id fix
+2. Commit all changes
+3. Proceed to Phase 2A (Brand Research Analysis) or stop
 
 ---
 
