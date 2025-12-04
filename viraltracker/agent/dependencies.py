@@ -30,6 +30,7 @@ from ..services.knowledge_base import DocService
 from ..services.ad_scraping_service import AdScrapingService
 from ..services.brand_research_service import BrandResearchService
 from ..services.template_queue_service import TemplateQueueService
+from ..services.persona_service import PersonaService
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class AgentDependencies(BaseModel):
     ad_scraping: AdScrapingService
     brand_research: BrandResearchService
     template_queue: TemplateQueueService
+    persona: PersonaService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -236,6 +238,10 @@ class AgentDependencies(BaseModel):
         template_queue = TemplateQueueService()
         logger.info("TemplateQueueService initialized")
 
+        # Initialize PersonaService for 4D persona management
+        persona = PersonaService()
+        logger.info("PersonaService initialized")
+
         # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
         docs = None
         if os.getenv("OPENAI_API_KEY"):
@@ -266,6 +272,7 @@ class AgentDependencies(BaseModel):
             ad_scraping=ad_scraping,
             brand_research=brand_research,
             template_queue=template_queue,
+            persona=persona,
             docs=docs,
             project_name=project_name
         )

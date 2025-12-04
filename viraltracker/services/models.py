@@ -852,3 +852,278 @@ class AdCreationResult(BaseModel):
     flagged_count: int = Field(..., description="Number of ads with reviewer disagreement")
     summary: str = Field(..., description="Human-readable summary of workflow results")
     created_at: datetime = Field(default_factory=datetime.now)
+
+
+# ============================================================================
+# 4D Persona Models
+# ============================================================================
+
+from enum import Enum
+
+
+class PersonaType(str, Enum):
+    """Type of persona based on ownership."""
+    OWN_BRAND = "own_brand"
+    PRODUCT_SPECIFIC = "product_specific"
+    COMPETITOR = "competitor"
+
+
+class SourceType(str, Enum):
+    """How the persona was created."""
+    MANUAL = "manual"
+    AI_GENERATED = "ai_generated"
+    COMPETITOR_ANALYSIS = "competitor_analysis"
+    HYBRID = "hybrid"
+
+
+class DesireCategory(str, Enum):
+    """The 10 core human desires (Eugene Schwartz framework)."""
+    SURVIVAL_LIFE_EXTENSION = "survival_life_extension"
+    FOOD_BEVERAGES = "food_beverages"
+    FREEDOM_FROM_FEAR = "freedom_from_fear"
+    SEXUAL_COMPANIONSHIP = "sexual_companionship"
+    COMFORTABLE_LIVING = "comfortable_living"
+    SUPERIORITY_STATUS = "superiority_status"
+    CARE_PROTECTION = "care_protection"
+    SOCIAL_APPROVAL = "social_approval"
+    JUSTICE_FAIRNESS = "justice_fairness"
+    SELF_ACTUALIZATION = "self_actualization"
+
+
+class DesireInstance(BaseModel):
+    """A specific instance of a desire with captured verbiage."""
+    text: str = Field(..., description="The actual language/verbiage capturing this desire")
+    source: str = Field(default="manual", description="Where this came from: ad, review, manual, competitor_ad")
+    source_id: Optional[str] = Field(None, description="ID of source item if from DB")
+
+
+class Demographics(BaseModel):
+    """Demographic profile for persona basics."""
+    age_range: Optional[str] = Field(None, description="e.g., '28-45'")
+    gender: Optional[str] = Field(None, description="male, female, any")
+    location: Optional[str] = Field(None, description="e.g., 'Suburban USA'")
+    income_level: Optional[str] = Field(None, description="e.g., 'Middle to upper-middle class'")
+    education: Optional[str] = Field(None, description="e.g., 'College educated'")
+    occupation: Optional[str] = Field(None, description="e.g., 'Professional, works from home'")
+    family_status: Optional[str] = Field(None, description="e.g., 'Married with young children'")
+
+
+class TransformationMap(BaseModel):
+    """Before/after transformation - the journey from current to desired state."""
+    before: List[str] = Field(default_factory=list, description="Current frustrations, limitations, identity")
+    after: List[str] = Field(default_factory=list, description="Desired outcomes, states, identity")
+
+
+class SocialRelations(BaseModel):
+    """Social dynamics mapping - the 10 relationship types that influence behavior."""
+    admire: List[str] = Field(default_factory=list, description="People they look up to, role models")
+    envy: List[str] = Field(default_factory=list, description="People they secretly want to be like")
+    want_to_impress: List[str] = Field(default_factory=list, description="People they want approval from")
+    love_loyalty: List[str] = Field(default_factory=list, description="People they feel protective of")
+    dislike_animosity: List[str] = Field(default_factory=list, description="People they oppose/dislike")
+    compared_to: List[str] = Field(default_factory=list, description="People they measure themselves against")
+    influence_decisions: List[str] = Field(default_factory=list, description="People who affect their choices")
+    fear_judged_by: List[str] = Field(default_factory=list, description="People whose judgment they fear")
+    want_to_belong: List[str] = Field(default_factory=list, description="Groups they aspire to join")
+    distance_from: List[str] = Field(default_factory=list, description="Groups they want to separate from")
+
+
+class DomainSentiment(BaseModel):
+    """Product-specific outcomes, pain points, or objections organized by type."""
+    emotional: List[str] = Field(default_factory=list, description="Emotional aspects")
+    social: List[str] = Field(default_factory=list, description="Social aspects")
+    functional: List[str] = Field(default_factory=list, description="Functional/practical aspects")
+
+
+class Persona4D(BaseModel):
+    """
+    Complete 4D Persona model.
+
+    The 4 dimensions:
+    1. Demographics & Behavior - Who they are externally
+    2. Psychographics & Desires - What they want internally
+    3. Identity & Social - How they see themselves and relate to others
+    4. Worldview & Domain - How they interpret reality and your product category
+    """
+    id: Optional[UUID] = None
+    name: str = Field(..., description="Descriptive persona name e.g., 'Worried First-Time Dog Mom'")
+    persona_type: PersonaType = Field(..., description="own_brand, product_specific, or competitor")
+    is_primary: bool = Field(default=False, description="Primary persona for this product/brand")
+
+    # Ownership (one of these will typically be set)
+    brand_id: Optional[UUID] = None
+    product_id: Optional[UUID] = None
+    competitor_id: Optional[UUID] = None
+
+    # ========================================
+    # DIMENSION 1: BASICS
+    # ========================================
+    snapshot: Optional[str] = Field(None, description="2-3 sentence big picture description")
+    demographics: Demographics = Field(default_factory=Demographics)
+    behavior_habits: Dict[str, Any] = Field(default_factory=dict, description="Daily routines, media consumption, etc.")
+    digital_presence: Dict[str, Any] = Field(default_factory=dict, description="Platforms, online behavior")
+    purchase_drivers: Dict[str, Any] = Field(default_factory=dict, description="What triggers purchases")
+    cultural_context: Dict[str, Any] = Field(default_factory=dict, description="Cultural background, values")
+    typology_profile: Dict[str, Any] = Field(default_factory=dict, description="MBTI, Enneagram, etc.")
+
+    # ========================================
+    # DIMENSION 2: PSYCHOGRAPHIC MAPPING
+    # ========================================
+    transformation_map: TransformationMap = Field(default_factory=TransformationMap)
+    desires: Dict[str, List[DesireInstance]] = Field(
+        default_factory=dict,
+        description="Core desires by category with verbiage instances"
+    )
+
+    # ========================================
+    # DIMENSION 3: IDENTITY
+    # ========================================
+    self_narratives: List[str] = Field(default_factory=list, description="'Because I am X, therefore I Y'")
+    current_self_image: Optional[str] = Field(None, description="How they see themselves now")
+    past_failures: Dict[str, Any] = Field(default_factory=dict, description="Failed attempts and who they blame")
+    desired_self_image: Optional[str] = Field(None, description="Who they want to become")
+    identity_artifacts: List[str] = Field(default_factory=list, description="Brands/objects tied to desired identity")
+
+    # ========================================
+    # DIMENSION 4: SOCIAL DYNAMICS
+    # ========================================
+    social_relations: SocialRelations = Field(default_factory=SocialRelations)
+
+    # ========================================
+    # DIMENSION 5: WORLDVIEW
+    # ========================================
+    worldview: Optional[str] = Field(None, description="General interpretation of reality")
+    world_stories: Optional[str] = Field(None, description="Heroes/villains, cause/effect narratives")
+    core_values: List[str] = Field(default_factory=list)
+    forces_of_good: List[str] = Field(default_factory=list)
+    forces_of_evil: List[str] = Field(default_factory=list)
+    cultural_zeitgeist: Optional[str] = Field(None, description="The era/moment they believe they're in")
+    allergies: Dict[str, str] = Field(default_factory=dict, description="{trigger: reaction} - messaging turn-offs")
+
+    # ========================================
+    # DIMENSION 6: DOMAIN SENTIMENT (Product-Specific)
+    # ========================================
+    outcomes_jtbd: DomainSentiment = Field(default_factory=DomainSentiment, description="Jobs to be done")
+    pain_points: DomainSentiment = Field(default_factory=DomainSentiment)
+    desired_features: List[str] = Field(default_factory=list)
+    failed_solutions: List[str] = Field(default_factory=list, description="What they've tried that didn't work")
+    buying_objections: DomainSentiment = Field(default_factory=DomainSentiment)
+    familiar_promises: List[str] = Field(default_factory=list, description="Claims they've heard and are skeptical of")
+
+    # ========================================
+    # DIMENSION 7: PURCHASE BEHAVIOR
+    # ========================================
+    pain_symptoms: List[str] = Field(default_factory=list, description="Observable signs of pain points")
+    activation_events: List[str] = Field(default_factory=list, description="What triggers purchase NOW")
+    purchasing_habits: Optional[str] = Field(None, description="How they typically buy")
+    decision_process: Optional[str] = Field(None, description="Steps they go through")
+    current_workarounds: List[str] = Field(default_factory=list, description="Hacks they use instead of buying")
+
+    # ========================================
+    # DIMENSION 8: 3D OBJECTIONS
+    # ========================================
+    emotional_risks: List[str] = Field(default_factory=list, description="What they're afraid of feeling")
+    barriers_to_behavior: List[str] = Field(default_factory=list, description="What stops them from acting")
+
+    # ========================================
+    # META
+    # ========================================
+    source_type: SourceType = Field(default=SourceType.MANUAL)
+    source_data: Dict[str, Any] = Field(default_factory=dict, description="Raw analysis data that generated this")
+    confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "name": "Worried First-Time Dog Mom",
+                "persona_type": "product_specific",
+                "snapshot": "First-time dog owner, 28-40, treats her dog like family. Constantly researches products and worries about making the wrong choice.",
+                "demographics": {
+                    "age_range": "28-40",
+                    "gender": "female",
+                    "income_level": "Middle to upper-middle class"
+                },
+                "desires": {
+                    "care_protection": [
+                        {"text": "I want to give my dog the absolute best", "source": "review"}
+                    ],
+                    "social_approval": [
+                        {"text": "I want the vet to say I'm doing a great job", "source": "manual"}
+                    ]
+                },
+                "pain_points": {
+                    "emotional": ["Worry about making wrong choice", "Guilt when can't afford premium"],
+                    "functional": ["Hard to find products that actually work"]
+                }
+            }
+        }
+    }
+
+
+class PersonaSummary(BaseModel):
+    """Lightweight persona for lists and selections."""
+    id: UUID
+    name: str
+    persona_type: PersonaType
+    is_primary: bool
+    snapshot: Optional[str] = None
+    source_type: SourceType
+
+
+class ProductPersonaLink(BaseModel):
+    """Link between a product and a persona with weight/priority."""
+    id: Optional[UUID] = None
+    product_id: UUID
+    persona_id: UUID
+    is_primary: bool = False
+    weight: float = Field(default=1.0, ge=0.0, le=1.0, description="Weight for multi-persona targeting")
+    notes: Optional[str] = None
+
+
+class CompetitorSummary(BaseModel):
+    """Competitor summary for lists."""
+    id: UUID
+    name: str
+    website_url: Optional[str] = None
+    ads_count: int = 0
+    last_analyzed_at: Optional[datetime] = None
+
+
+class CompetitorAdAnalysisResult(BaseModel):
+    """Result from analyzing a competitor ad."""
+    products_mentioned: List[str] = Field(default_factory=list)
+    benefits_mentioned: List[str] = Field(default_factory=list)
+    pain_points_addressed: List[str] = Field(default_factory=list)
+    desires_appealed: Dict[str, List[str]] = Field(default_factory=dict, description="{desire_category: [instances]}")
+    hooks_extracted: List[Dict[str, Any]] = Field(default_factory=list, description="[{text, type, notes}]")
+    messaging_patterns: List[str] = Field(default_factory=list)
+    awareness_level: Optional[int] = Field(None, ge=1, le=5, description="Eugene Schwartz awareness level 1-5")
+    awareness_level_reasoning: Optional[str] = None
+
+
+class CopyBrief(BaseModel):
+    """Persona data formatted for ad copy generation."""
+    persona_name: str
+    snapshot: Optional[str] = None
+    target_demo: Dict[str, Any] = Field(default_factory=dict)
+
+    # For hooks
+    primary_desires: List[str] = Field(default_factory=list, description="Top desires to appeal to")
+    top_pain_points: List[str] = Field(default_factory=list, description="Key pain points to address")
+
+    # For copy
+    their_language: List[str] = Field(default_factory=list, description="Self-narratives to mirror")
+    transformation: Dict[str, List[str]] = Field(default_factory=dict, description="{before: [], after: []}")
+
+    # For objection handling
+    objections: List[str] = Field(default_factory=list)
+    failed_solutions: List[str] = Field(default_factory=list)
+
+    # For urgency
+    activation_events: List[str] = Field(default_factory=list)
+
+    # Avoid these
+    allergies: Dict[str, str] = Field(default_factory=dict, description="Messaging turn-offs to avoid")

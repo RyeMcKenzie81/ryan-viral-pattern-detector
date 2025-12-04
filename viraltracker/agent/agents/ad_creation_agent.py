@@ -3786,7 +3786,157 @@ async def generate_size_variant(
 
 
 # ============================================================================
+# PERSONA TOOLS (20)
+# ============================================================================
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Ingestion',
+        'platform': 'Facebook',
+        'rate_limit': '30/minute',
+        'use_cases': [
+            'Get persona data for ad copy generation',
+            'Retrieve customer insights for messaging',
+            'Load persona desires, pain points, and language'
+        ],
+        'examples': [
+            'Get persona for this product to write better copy',
+            'What personas are available for this product?',
+            'Use the primary persona for ad generation'
+        ]
+    }
+)
+async def get_persona_for_copy(
+    ctx: RunContext[AgentDependencies],
+    product_id: str,
+    persona_id: Optional[str] = None
+) -> Dict:
+    """
+    Get persona data formatted for ad copy generation.
+
+    This tool retrieves 4D persona data to inform ad copy generation.
+    If persona_id is provided, uses that specific persona.
+    Otherwise returns the primary persona for the product.
+
+    The returned copy brief includes:
+    - Primary desires to appeal to
+    - Pain points to address
+    - Language/verbiage to use (their actual words)
+    - Objections to handle
+    - Activation events for urgency
+    - Allergies (messaging turn-offs to avoid)
+
+    Args:
+        ctx: Run context with AgentDependencies
+        product_id: UUID of the product
+        persona_id: Optional specific persona UUID to use
+
+    Returns:
+        Dictionary with persona data formatted for copy generation:
+        {
+            "persona_name": "Worried First-Time Dog Mom",
+            "snapshot": "2-3 sentence description",
+            "primary_desires": ["I want to give my dog the best"],
+            "top_pain_points": ["Worry about making wrong choice"],
+            "their_language": ["Because I am a responsible owner..."],
+            "transformation": {"before": [...], "after": [...]},
+            "objections": ["What if it doesn't work?"],
+            "activation_events": ["Vet visit", "Bad breath noticed"],
+            "allergies": {"fake urgency": "distrust"}
+        }
+    """
+    from uuid import UUID as UUIDType
+
+    try:
+        if persona_id:
+            copy_brief = ctx.deps.persona.export_for_copy_brief_dict(UUIDType(persona_id))
+        else:
+            persona = ctx.deps.persona.get_primary_persona_for_product(UUIDType(product_id))
+            if not persona:
+                return {
+                    "error": "No persona found for product",
+                    "suggestion": "Create a persona using the Persona Builder UI or generate one with AI"
+                }
+            copy_brief = ctx.deps.persona.export_for_copy_brief_dict(persona.id)
+
+        logger.info(f"Retrieved persona copy brief for product {product_id}")
+        return copy_brief
+
+    except Exception as e:
+        logger.error(f"Failed to get persona: {e}")
+        return {"error": str(e)}
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Ingestion',
+        'platform': 'Facebook',
+        'rate_limit': '30/minute',
+        'use_cases': [
+            'List available personas for a product',
+            'See what personas are linked to a product'
+        ],
+        'examples': [
+            'What personas are available for this product?',
+            'List personas for product X'
+        ]
+    }
+)
+async def list_product_personas(
+    ctx: RunContext[AgentDependencies],
+    product_id: str
+) -> Dict:
+    """
+    List all personas linked to a product.
+
+    This tool returns a list of all personas associated with a product,
+    including which one is marked as primary.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        product_id: UUID of the product
+
+    Returns:
+        Dictionary with list of personas:
+        {
+            "personas": [
+                {
+                    "id": "uuid",
+                    "name": "Worried First-Time Dog Mom",
+                    "is_primary": true,
+                    "snapshot": "Brief description",
+                    "source_type": "ai_generated"
+                }
+            ],
+            "count": 1
+        }
+    """
+    from uuid import UUID as UUIDType
+
+    try:
+        personas = ctx.deps.persona.get_personas_for_product(UUIDType(product_id))
+
+        return {
+            "personas": [
+                {
+                    "id": str(p.id),
+                    "name": p.name,
+                    "is_primary": p.is_primary,
+                    "snapshot": p.snapshot,
+                    "source_type": p.source_type.value if hasattr(p.source_type, 'value') else p.source_type
+                }
+                for p in personas
+            ],
+            "count": len(personas)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list personas: {e}")
+        return {"error": str(e), "personas": [], "count": 0}
+
+
+# ============================================================================
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 19 tools (includes email/slack export, size variants)")
+logger.info("Ad Creation Agent initialized with 21 tools (includes email/slack export, size variants, persona tools)")
