@@ -31,6 +31,14 @@ Welcome to the ViralTracker documentation! Choose your path:
 
 ### Specialized Guides
 - [Hook Analysis Guide](HOOK_ANALYSIS_GUIDE.md) - Statistical analysis methods
+- [Facebook Ads Ingestion](workflows/facebook_ads_ingestion.md) - FB Ad Library scraping
+
+### Product Setup & Onboarding
+- [Onboarding Checklist](../product_setup/ONBOARDING_CHECKLIST.md) - Brand/product onboarding process
+- [Brand Data Template](../product_setup/templates/brand_data_template.py) - Data collection template
+
+### Planned Features
+- [Brand Research Pipeline](archive/CHECKPOINT_BRAND_RESEARCH_PIPELINE.md) - Ad analysis & template system (planning)
 
 ### Historical/Archive
 - [Pydantic AI Refactor](archive/pydantic-ai-refactor/) - Migration history
@@ -38,5 +46,5 @@ Welcome to the ViralTracker documentation! Choose your path:
 
 ---
 
-**Version**: 3.0.0 (Pydantic AI Migration Complete)
-**Last Updated**: 2025-01-24
+**Version**: 3.1.0 (Brand Research Pipeline Planning)
+**Last Updated**: 2025-12-03

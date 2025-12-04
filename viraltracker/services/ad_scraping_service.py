@@ -1,0 +1,446 @@
+"""
+AdScrapingService - Download and store Facebook ad assets.
+
+This service handles:
+- Extracting image/video URLs from FB ad snapshots
+- Downloading assets from Facebook CDN
+- Uploading to Supabase Storage (scraped-assets bucket)
+- Creating scraped_ad_assets records
+- Saving ads to facebook_ads table
+
+Part of the Brand Research Pipeline (Phase 1: Foundation).
+"""
+
+import logging
+import httpx
+import json
+from typing import List, Dict, Optional, Tuple
+from uuid import UUID
+from datetime import datetime
+
+from supabase import Client
+from ..core.database import get_supabase_client
+
+logger = logging.getLogger(__name__)
+
+
+class AdScrapingService:
+    """Service for scraping and storing Facebook ad assets."""
+
+    STORAGE_BUCKET = "scraped-assets"
+
+    def __init__(self, supabase: Optional[Client] = None):
+        """
+        Initialize AdScrapingService.
+
+        Args:
+            supabase: Optional Supabase client. If not provided, creates one.
+        """
+        self.supabase = supabase or get_supabase_client()
+        logger.info("AdScrapingService initialized")
+
+    def extract_asset_urls(self, snapshot: Dict) -> Dict[str, List[str]]:
+        """
+        Extract image and video URLs from FB ad snapshot.
+
+        Args:
+            snapshot: The snapshot JSONB from facebook_ads table
+
+        Returns:
+            {"images": [url1, url2], "videos": [url1]}
+        """
+        images = []
+        videos = []
+
+        # Handle snapshot as string or dict
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse snapshot as JSON")
+                return {"images": [], "videos": []}
+
+        if not snapshot:
+            return {"images": [], "videos": []}
+
+        # Extract from cards array (main ad content)
+        cards = snapshot.get('cards', [])
+        for card in cards:
+            # Video URLs (prefer HD)
+            if card.get('video_hd_url'):
+                videos.append(card['video_hd_url'])
+            elif card.get('video_sd_url'):
+                videos.append(card['video_sd_url'])
+
+            # Image URLs (prefer original/resized over watermarked)
+            if card.get('original_image_url'):
+                images.append(card['original_image_url'])
+            elif card.get('resized_image_url'):
+                images.append(card['resized_image_url'])
+            elif card.get('watermarked_resized_image_url'):
+                images.append(card['watermarked_resized_image_url'])
+
+        # Also check top-level fields
+        if snapshot.get('video_hd_url'):
+            videos.append(snapshot['video_hd_url'])
+        if snapshot.get('original_image_url'):
+            images.append(snapshot['original_image_url'])
+
+        # Deduplicate while preserving order
+        images = list(dict.fromkeys(images))
+        videos = list(dict.fromkeys(videos))
+
+        logger.debug(f"Extracted {len(images)} images, {len(videos)} videos from snapshot")
+        return {"images": images, "videos": videos}
+
+    async def download_asset(self, url: str, timeout: float = 30.0) -> Optional[bytes]:
+        """
+        Download asset from URL.
+
+        Args:
+            url: URL to download from
+            timeout: Request timeout in seconds
+
+        Returns:
+            File bytes or None if failed
+        """
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                logger.debug(f"Downloaded {len(response.content)} bytes from {url[:50]}...")
+                return response.content
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout downloading: {url[:50]}...")
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"HTTP error {e.response.status_code} downloading: {url[:50]}...")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to download {url[:50]}...: {e}")
+            return None
+
+    def _get_mime_type(self, url: str, content: bytes) -> str:
+        """Determine MIME type from URL extension or content."""
+        url_lower = url.lower()
+        if '.mp4' in url_lower or '.mov' in url_lower:
+            return 'video/mp4'
+        elif '.webm' in url_lower:
+            return 'video/webm'
+        elif '.png' in url_lower:
+            return 'image/png'
+        elif '.gif' in url_lower:
+            return 'image/gif'
+        elif '.webp' in url_lower:
+            return 'image/webp'
+        elif '.jpg' in url_lower or '.jpeg' in url_lower:
+            return 'image/jpeg'
+
+        # Check magic bytes
+        if content[:4] == b'\x89PNG':
+            return 'image/png'
+        elif content[:2] == b'\xff\xd8':
+            return 'image/jpeg'
+        elif content[:4] == b'GIF8':
+            return 'image/gif'
+        elif content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+            return 'image/webp'
+        elif content[4:8] == b'ftyp':
+            return 'video/mp4'
+
+        return 'application/octet-stream'
+
+    def _get_extension(self, mime_type: str) -> str:
+        """Get file extension from MIME type."""
+        extensions = {
+            'image/jpeg': '.jpg',
+            'image/png': '.png',
+            'image/gif': '.gif',
+            'image/webp': '.webp',
+            'video/mp4': '.mp4',
+            'video/webm': '.webm',
+        }
+        return extensions.get(mime_type, '')
+
+    def upload_to_storage(
+        self,
+        content: bytes,
+        facebook_ad_id: UUID,
+        asset_index: int,
+        mime_type: str
+    ) -> Optional[str]:
+        """
+        Upload asset to Supabase storage.
+
+        Args:
+            content: File bytes
+            facebook_ad_id: UUID of the facebook_ads record
+            asset_index: Index for multiple assets per ad
+            mime_type: MIME type of the content
+
+        Returns:
+            Storage path or None if failed
+        """
+        try:
+            extension = self._get_extension(mime_type)
+            filename = f"{facebook_ad_id}_{asset_index}{extension}"
+            storage_path = f"{facebook_ad_id}/{filename}"
+
+            self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                storage_path,
+                content,
+                {"content-type": mime_type, "upsert": "true"}
+            )
+
+            full_path = f"{self.STORAGE_BUCKET}/{storage_path}"
+            logger.info(f"Uploaded asset to {full_path}")
+            return full_path
+
+        except Exception as e:
+            logger.error(f"Failed to upload asset: {e}")
+            return None
+
+    def save_facebook_ad(
+        self,
+        ad_data: Dict,
+        brand_id: Optional[UUID] = None,
+        project_id: Optional[UUID] = None,
+        scrape_source: str = "ad_library_search"
+    ) -> Optional[UUID]:
+        """
+        Save a Facebook ad to the database.
+
+        Args:
+            ad_data: Ad data from FacebookService (FacebookAd model dict)
+            brand_id: Optional brand to link
+            project_id: Optional project to link
+            scrape_source: Source identifier
+
+        Returns:
+            UUID of saved record or None if failed
+        """
+        try:
+            # Map from FacebookAd model to database columns
+            record = {
+                "ad_id": ad_data.get("id"),
+                "ad_archive_id": ad_data.get("ad_archive_id"),
+                "page_id": ad_data.get("page_id"),
+                "page_name": ad_data.get("page_name"),
+                "is_active": ad_data.get("is_active", False),
+                "start_date": ad_data.get("start_date"),
+                "end_date": ad_data.get("end_date"),
+                "currency": ad_data.get("currency"),
+                "spend": ad_data.get("spend"),
+                "impressions": ad_data.get("impressions"),
+                "reach_estimate": ad_data.get("reach_estimate"),
+                "snapshot": ad_data.get("snapshot"),
+                "categories": ad_data.get("categories"),
+                "publisher_platform": ad_data.get("publisher_platform"),
+                "political_countries": ad_data.get("political_countries"),
+                "entity_type": ad_data.get("entity_type"),
+                "brand_id": str(brand_id) if brand_id else None,
+                "project_id": str(project_id) if project_id else None,
+                "scrape_source": scrape_source,
+                "scraped_at": datetime.utcnow().isoformat(),
+            }
+
+            # Upsert based on ad_archive_id
+            result = self.supabase.table("facebook_ads").upsert(
+                record,
+                on_conflict="ad_archive_id"
+            ).execute()
+
+            if result.data:
+                ad_id = result.data[0]["id"]
+                logger.info(f"Saved Facebook ad: {ad_id}")
+                return UUID(ad_id)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save Facebook ad: {e}")
+            return None
+
+    def save_asset_record(
+        self,
+        facebook_ad_id: UUID,
+        asset_type: str,
+        storage_path: str,
+        original_url: str,
+        file_size_bytes: int,
+        mime_type: str,
+        brand_id: Optional[UUID] = None,
+        dimensions: Optional[Dict] = None,
+        duration_sec: Optional[float] = None,
+        scrape_source: str = "ad_library_search"
+    ) -> Optional[UUID]:
+        """
+        Save a scraped asset record to the database.
+
+        Args:
+            facebook_ad_id: UUID of the facebook_ads record
+            asset_type: 'image' or 'video'
+            storage_path: Supabase storage path
+            original_url: Original CDN URL
+            file_size_bytes: Size of the file
+            mime_type: MIME type
+            brand_id: Optional brand to link
+            dimensions: Optional {width, height}
+            duration_sec: Optional video duration
+            scrape_source: Source identifier
+
+        Returns:
+            UUID of saved record or None if failed
+        """
+        try:
+            record = {
+                "facebook_ad_id": str(facebook_ad_id),
+                "brand_id": str(brand_id) if brand_id else None,
+                "asset_type": asset_type,
+                "storage_path": storage_path,
+                "original_url": original_url,
+                "file_size_bytes": file_size_bytes,
+                "mime_type": mime_type,
+                "dimensions": dimensions,
+                "duration_sec": duration_sec,
+                "scrape_source": scrape_source,
+            }
+
+            result = self.supabase.table("scraped_ad_assets").insert(record).execute()
+
+            if result.data:
+                asset_id = result.data[0]["id"]
+                logger.info(f"Saved asset record: {asset_id}")
+                return UUID(asset_id)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save asset record: {e}")
+            return None
+
+    async def scrape_and_store_assets(
+        self,
+        facebook_ad_id: UUID,
+        snapshot: Dict,
+        brand_id: Optional[UUID] = None,
+        scrape_source: str = "ad_library_search"
+    ) -> Dict[str, List[UUID]]:
+        """
+        Extract, download, and store all assets from an ad snapshot.
+
+        Args:
+            facebook_ad_id: UUID of the facebook_ads record
+            snapshot: The snapshot data
+            brand_id: Optional brand to link
+            scrape_source: Source identifier
+
+        Returns:
+            {"images": [asset_id1, ...], "videos": [asset_id1, ...]}
+        """
+        result = {"images": [], "videos": []}
+
+        # Extract URLs
+        urls = self.extract_asset_urls(snapshot)
+
+        # Download and store images
+        for i, url in enumerate(urls["images"]):
+            content = await self.download_asset(url)
+            if not content:
+                continue
+
+            mime_type = self._get_mime_type(url, content)
+            storage_path = self.upload_to_storage(
+                content, facebook_ad_id, i, mime_type
+            )
+            if not storage_path:
+                continue
+
+            asset_id = self.save_asset_record(
+                facebook_ad_id=facebook_ad_id,
+                asset_type="image",
+                storage_path=storage_path,
+                original_url=url,
+                file_size_bytes=len(content),
+                mime_type=mime_type,
+                brand_id=brand_id,
+                scrape_source=scrape_source
+            )
+            if asset_id:
+                result["images"].append(asset_id)
+
+        # Download and store videos
+        for i, url in enumerate(urls["videos"]):
+            content = await self.download_asset(url, timeout=60.0)  # Longer timeout for videos
+            if not content:
+                continue
+
+            mime_type = self._get_mime_type(url, content)
+            storage_path = self.upload_to_storage(
+                content, facebook_ad_id, len(urls["images"]) + i, mime_type
+            )
+            if not storage_path:
+                continue
+
+            asset_id = self.save_asset_record(
+                facebook_ad_id=facebook_ad_id,
+                asset_type="video",
+                storage_path=storage_path,
+                original_url=url,
+                file_size_bytes=len(content),
+                mime_type=mime_type,
+                brand_id=brand_id,
+                scrape_source=scrape_source
+            )
+            if asset_id:
+                result["videos"].append(asset_id)
+
+        logger.info(
+            f"Scraped {len(result['images'])} images, {len(result['videos'])} videos "
+            f"for ad {facebook_ad_id}"
+        )
+        return result
+
+    def get_ads_without_assets(
+        self,
+        brand_id: Optional[UUID] = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Get Facebook ads that don't have scraped assets yet.
+
+        Args:
+            brand_id: Optional filter by brand
+            limit: Maximum number to return
+
+        Returns:
+            List of facebook_ads records
+        """
+        try:
+            query = self.supabase.table("facebook_ads").select(
+                "id, ad_archive_id, page_name, snapshot"
+            )
+
+            if brand_id:
+                query = query.eq("brand_id", str(brand_id))
+
+            # Left join to find ads without assets
+            # Note: This is a simplified version - for production, use a proper subquery
+            result = query.limit(limit).execute()
+
+            if not result.data:
+                return []
+
+            # Filter out ads that already have assets
+            ads_with_assets = set()
+            assets_result = self.supabase.table("scraped_ad_assets").select(
+                "facebook_ad_id"
+            ).execute()
+            if assets_result.data:
+                ads_with_assets = {r["facebook_ad_id"] for r in assets_result.data}
+
+            return [ad for ad in result.data if ad["id"] not in ads_with_assets]
+
+        except Exception as e:
+            logger.error(f"Failed to get ads without assets: {e}")
+            return []

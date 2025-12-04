@@ -2,11 +2,19 @@
 
 This folder contains template scripts for adding new products to ViralTracker. Use these as a starting point when onboarding a new brand/product.
 
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [ONBOARDING_CHECKLIST.md](ONBOARDING_CHECKLIST.md) | Complete checklist with all data requirements |
+| [templates/brand_data_template.py](templates/brand_data_template.py) | Data collection template (copy and fill in) |
+
 ## Quick Start
 
-1. **Copy and rename the scripts** for your new product
-2. **Update product details** in each script
-3. **Run in order**: setup → upload images → insert hooks
+1. **Review the [Onboarding Checklist](ONBOARDING_CHECKLIST.md)** to understand all required data
+2. **Copy [brand_data_template.py](templates/brand_data_template.py)** and fill in your brand/product info
+3. **Copy and rename the scripts** for your new product
+4. **Run in order**: setup → upload images → insert hooks
 
 ## Scripts Overview
 

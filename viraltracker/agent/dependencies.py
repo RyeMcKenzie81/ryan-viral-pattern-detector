@@ -27,6 +27,7 @@ from ..services.elevenlabs_service import ElevenLabsService
 from ..services.ffmpeg_service import FFmpegService
 from ..services.audio_production_service import AudioProductionService
 from ..services.knowledge_base import DocService
+from ..services.ad_scraping_service import AdScrapingService
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ class AgentDependencies(BaseModel):
     elevenlabs: ElevenLabsService
     ffmpeg: FFmpegService
     audio_production: AudioProductionService
+    ad_scraping: AdScrapingService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -218,6 +220,10 @@ class AgentDependencies(BaseModel):
         audio_production = AudioProductionService()
         logger.info("AudioProductionService initialized")
 
+        # Initialize AdScrapingService for downloading FB ad assets
+        ad_scraping = AdScrapingService()
+        logger.info("AdScrapingService initialized")
+
         # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
         docs = None
         if os.getenv("OPENAI_API_KEY"):
@@ -245,6 +251,7 @@ class AgentDependencies(BaseModel):
             elevenlabs=elevenlabs,
             ffmpeg=ffmpeg,
             audio_production=audio_production,
+            ad_scraping=ad_scraping,
             docs=docs,
             project_name=project_name
         )
