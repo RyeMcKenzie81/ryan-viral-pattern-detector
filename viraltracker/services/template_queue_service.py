@@ -50,11 +50,13 @@ Analyze the visual content and return a JSON response with the following structu
 }}
 
 AWARENESS LEVEL GUIDE:
-- Level 1 (Unaware): Educational content, story-driven, no direct product mention
-- Level 2 (Problem Aware): Focuses on the problem/pain point, introduces concept of solution
-- Level 3 (Solution Aware): Compares solutions, explains unique mechanism/approach
-- Level 4 (Product Aware): Testimonials, social proof, addresses objections
-- Level 5 (Most Aware): Direct offer, promotional, discount/sale focused
+- Level 1 (Unaware): Educational content, story-driven, no direct product mention, pattern interrupts
+- Level 2 (Problem Aware): Focuses on the problem/pain point, agitates the issue, introduces concept that solutions exist
+- Level 3 (Solution Aware): Uses category nicknames ("Brain Fog Killer") not brand names, listicle hooks ("11 Reasons..."), shows results to differentiate the solution TYPE, explains unique mechanism. Before/after photos used to showcase the solution category, not a specific known product.
+- Level 4 (Product Aware): Mentions specific brand/product BY NAME, named customer testimonials for a KNOWN product, addresses objections about a product the reader has already heard of, retargeting-style ads
+- Level 5 (Most Aware): Direct offer, promotional, discount/sale focused, minimal persuasion, assumes reader is ready to buy
+
+KEY DISTINCTION: Before/after photos showing transformation WITHOUT naming the specific product = Level 3 (differentiating a solution type). Before/after WITH product name and "I used [Brand X]" = Level 4 (building trust for known product).
 
 Return ONLY valid JSON, no additional text."""
 
