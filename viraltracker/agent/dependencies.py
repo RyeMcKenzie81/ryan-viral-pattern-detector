@@ -28,6 +28,7 @@ from ..services.ffmpeg_service import FFmpegService
 from ..services.audio_production_service import AudioProductionService
 from ..services.knowledge_base import DocService
 from ..services.ad_scraping_service import AdScrapingService
+from ..services.brand_research_service import BrandResearchService
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ class AgentDependencies(BaseModel):
     ffmpeg: FFmpegService
     audio_production: AudioProductionService
     ad_scraping: AdScrapingService
+    brand_research: BrandResearchService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -224,6 +226,10 @@ class AgentDependencies(BaseModel):
         ad_scraping = AdScrapingService()
         logger.info("AdScrapingService initialized")
 
+        # Initialize BrandResearchService for AI analysis of brand ads
+        brand_research = BrandResearchService()
+        logger.info("BrandResearchService initialized")
+
         # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
         docs = None
         if os.getenv("OPENAI_API_KEY"):
@@ -252,6 +258,7 @@ class AgentDependencies(BaseModel):
             ffmpeg=ffmpeg,
             audio_production=audio_production,
             ad_scraping=ad_scraping,
+            brand_research=brand_research,
             docs=docs,
             project_name=project_name
         )
