@@ -220,6 +220,22 @@ class AdScrapingService:
             UUID of saved record or None if failed
         """
         try:
+            # Parse snapshot to extract additional fields
+            snapshot_raw = ad_data.get("snapshot")
+            snapshot = {}
+            if snapshot_raw:
+                if isinstance(snapshot_raw, str):
+                    try:
+                        snapshot = json.loads(snapshot_raw)
+                    except json.JSONDecodeError:
+                        pass
+                elif isinstance(snapshot_raw, dict):
+                    snapshot = snapshot_raw
+
+            # Extract body text (nested in body.text)
+            body_obj = snapshot.get("body", {})
+            ad_body = body_obj.get("text") if isinstance(body_obj, dict) else None
+
             # Map from FacebookAd model to database columns
             record = {
                 "ad_id": ad_data.get("id"),
@@ -242,6 +258,17 @@ class AdScrapingService:
                 "project_id": str(project_id) if project_id else None,
                 "scrape_source": scrape_source,
                 "scraped_at": datetime.utcnow().isoformat(),
+                # Extracted fields from snapshot
+                "link_url": snapshot.get("link_url"),
+                "cta_text": snapshot.get("cta_text"),
+                "cta_type": snapshot.get("cta_type"),
+                "ad_title": snapshot.get("title"),
+                "ad_body": ad_body,
+                "caption": snapshot.get("caption"),
+                "link_description": snapshot.get("link_description"),
+                "page_like_count": snapshot.get("page_like_count"),
+                "page_profile_uri": snapshot.get("page_profile_uri"),
+                "display_format": snapshot.get("display_format"),
             }
 
             # Upsert based on ad_archive_id
