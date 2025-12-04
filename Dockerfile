@@ -21,8 +21,12 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p data/raw_apify data/normalized exports downloads audio_production
 
-# Make start script executable
+# Make start scripts executable
 RUN chmod +x start.sh
 
-# Start API server (Railway will set PORT environment variable)
+# Default: Start FastAPI API (override with Railway per-service startCommand)
+# Options for startCommand:
+#   Streamlit: streamlit run viraltracker/ui/app.py --server.port $PORT --server.address 0.0.0.0
+#   FastAPI:   uvicorn viraltracker.api.app:app --host 0.0.0.0 --port $PORT
+#   Cron web:  uvicorn viraltracker.web.app:app --host 0.0.0.0 --port $PORT
 CMD ["bash", "start.sh"]
