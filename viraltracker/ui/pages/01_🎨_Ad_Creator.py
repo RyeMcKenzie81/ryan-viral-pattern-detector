@@ -59,6 +59,10 @@ if 'export_email' not in st.session_state:
     st.session_state.export_email = ""
 if 'export_slack_webhook' not in st.session_state:
     st.session_state.export_slack_webhook = ""
+if 'selected_scraped_template' not in st.session_state:
+    st.session_state.selected_scraped_template = None
+if 'scraped_template_category' not in st.session_state:
+    st.session_state.scraped_template_category = "all"
 
 
 def get_supabase_client():
@@ -156,6 +160,65 @@ def get_existing_templates():
     except Exception as e:
         st.warning(f"Could not load existing templates: {e}")
         return []
+
+
+def get_scraped_templates(category: str = None, limit: int = 50):
+    """Get approved scraped templates from database.
+
+    Args:
+        category: Optional category filter (testimonial, quote_card, etc.)
+        limit: Maximum templates to return
+
+    Returns:
+        List of template records with storage paths
+    """
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_templates(
+            category=category if category != "all" else None,
+            active_only=True,
+            limit=limit
+        )
+    except Exception as e:
+        st.warning(f"Could not load scraped templates: {e}")
+        return []
+
+
+def get_template_categories():
+    """Get list of template categories."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return ["all"] + service.get_template_categories()
+    except Exception:
+        return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
+                "ugc_style", "meme", "carousel_frame", "story_format", "other"]
+
+
+def get_scraped_template_url(storage_path: str) -> str:
+    """Get public URL for scraped template asset."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_asset_preview_url(storage_path)
+    except Exception:
+        return ""
+
+
+def record_template_usage(template_id: str, ad_run_id: str = None):
+    """Record that a scraped template was used."""
+    try:
+        from uuid import UUID
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        service.record_template_usage(
+            template_id=UUID(template_id),
+            ad_run_id=UUID(ad_run_id) if ad_run_id else None
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to record template usage: {e}")
 
 
 def get_signed_url(storage_path: str) -> str:
@@ -601,17 +664,32 @@ else:
 
     st.subheader("3. Reference Ad")
 
+    reference_options = ["Upload New", "Uploaded Templates", "Scraped Template Library"]
+    current_index = 0
+    if st.session_state.reference_source == "Use Existing Template":
+        current_index = 1
+    elif st.session_state.reference_source == "Scraped Template Library":
+        current_index = 2
+
     reference_source = st.radio(
         "Reference ad source",
-        options=["Upload New", "Use Existing Template"],
-        index=0 if st.session_state.reference_source == "Upload New" else 1,
+        options=reference_options,
+        index=current_index,
         horizontal=True,
-        key="reference_source_radio"
+        key="reference_source_radio",
+        help="Upload a new image, use previously uploaded templates, or browse scraped templates from competitors"
     )
-    st.session_state.reference_source = reference_source
+    # Map back for backwards compatibility
+    if reference_source == "Uploaded Templates":
+        st.session_state.reference_source = "Use Existing Template"
+    else:
+        st.session_state.reference_source = reference_source
 
     reference_ad_base64 = None
     reference_filename = None
+
+    # Track selected scraped template ID for usage tracking
+    selected_scraped_template_id = None
 
     if reference_source == "Upload New":
         uploaded_file = st.file_uploader(
@@ -629,7 +707,7 @@ else:
             reference_filename = uploaded_file.name
             uploaded_file.seek(0)  # Reset for potential re-read
 
-    else:
+    elif reference_source == "Uploaded Templates":
         templates = get_existing_templates()
         if templates:
             total_templates = len(templates)
@@ -702,7 +780,111 @@ else:
                 except Exception as e:
                     st.error(f"Failed to load template: {e}")
         else:
-            st.warning("No existing templates found. Please upload a new reference ad.")
+            st.warning("No uploaded templates found. Upload a reference ad first, or use Scraped Template Library.")
+
+    elif reference_source == "Scraped Template Library":
+        # Category filter
+        categories = get_template_categories()
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            selected_category = st.selectbox(
+                "Category",
+                options=categories,
+                index=categories.index(st.session_state.scraped_template_category) if st.session_state.scraped_template_category in categories else 0,
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All Categories",
+                key="scraped_category_filter"
+            )
+            st.session_state.scraped_template_category = selected_category
+
+        # Get scraped templates
+        scraped_templates = get_scraped_templates(
+            category=selected_category if selected_category != "all" else None,
+            limit=50
+        )
+
+        if scraped_templates:
+            st.caption(f"Showing {len(scraped_templates)} templates" +
+                      (f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""))
+
+            # Thumbnail grid - 5 columns
+            cols = st.columns(5)
+            for idx, template in enumerate(scraped_templates):
+                with cols[idx % 5]:
+                    template_id = template.get('id', '')
+                    template_name = template.get('name', 'Unnamed')
+                    storage_path = template.get('storage_path', '')
+                    category = template.get('category', 'other')
+                    times_used = template.get('times_used', 0) or 0
+
+                    is_selected = st.session_state.selected_scraped_template == template_id
+
+                    # Get preview URL
+                    thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+
+                    # Show thumbnail with selection border
+                    if thumb_url:
+                        border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
+                        st.markdown(
+                            f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{template_name}"/>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f'<div style="height:80px;background:#333;border-radius:4px;'
+                            f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
+                            f'{template_name[:10]}...</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    # Show template info
+                    st.caption(f"📁 {category.replace('_', ' ').title()}")
+                    if times_used > 0:
+                        st.caption(f"Used {times_used}x")
+
+                    # Select button
+                    if st.button(
+                        "✓ Selected" if is_selected else "Select",
+                        key=f"scraped_tpl_{idx}",
+                        type="primary" if is_selected else "secondary",
+                        use_container_width=True
+                    ):
+                        st.session_state.selected_scraped_template = template_id
+                        st.rerun()
+
+            # Show selected template preview and load its data
+            if st.session_state.selected_scraped_template:
+                # Find selected template in list
+                selected_tpl = next(
+                    (t for t in scraped_templates if t.get('id') == st.session_state.selected_scraped_template),
+                    None
+                )
+                if selected_tpl:
+                    st.markdown("---")
+                    st.markdown(f"**Selected:** {selected_tpl.get('name', 'Unnamed')}")
+
+                    storage_path = selected_tpl.get('storage_path', '')
+                    if storage_path:
+                        try:
+                            # Download the template image
+                            db = get_supabase_client()
+                            parts = storage_path.split("/", 1)
+                            if len(parts) == 2:
+                                bucket, path = parts
+                                template_data = db.storage.from_(bucket).download(path)
+                                reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
+                                reference_filename = selected_tpl.get('name', 'template.jpg')
+                                selected_scraped_template_id = st.session_state.selected_scraped_template
+
+                                # Larger preview
+                                st.image(template_data, caption="Selected Template", width=300)
+                        except Exception as e:
+                            st.error(f"Failed to load template: {e}")
+        else:
+            st.info("No scraped templates found. Use the Template Queue to approve templates from competitor ads.")
+            if st.button("Go to Template Queue →"):
+                st.switch_page("pages/16_📋_Template_Queue.py")
 
     st.divider()
 
@@ -962,6 +1144,14 @@ else:
                 product_name=prod_name,
                 brand_name=brd_name
             ))
+
+            # Record template usage if a scraped template was used
+            if st.session_state.selected_scraped_template and result:
+                ad_run_id = result.get('ad_run_id')
+                record_template_usage(
+                    template_id=st.session_state.selected_scraped_template,
+                    ad_run_id=ad_run_id
+                )
 
             # Success - store result and show
             st.session_state.workflow_result = result

@@ -1,8 +1,8 @@
 # Checkpoint: Brand Research Pipeline & Template System
 
 **Date**: 2025-12-03 (Updated: 2025-12-04)
-**Status**: Phase 2B Complete - Template Queue
-**Version**: 2.4.0
+**Status**: Phase 3 Complete - Integration
+**Version**: 3.0.0
 **Branch**: `feature/brand-research-pipeline`
 
 ---
@@ -112,6 +112,25 @@ Tested flows:
 - ✓ Archive template
 - ✓ Queue stats update correctly
 - ✓ Templates appear in library after approval
+
+### Phase 3: Integration ✅ COMPLETE
+Implemented:
+- Updated Ad Creator UI with "Scraped Template Library" option
+- Added category filtering for scraped templates
+- Template preview and selection in grid view
+- Template usage tracking (times_used, last_used_at)
+- Links ad_runs to source_template_id
+- Updated onboarding checklist with Phase 0 instructions
+
+Files modified:
+- `viraltracker/ui/pages/01_🎨_Ad_Creator.py` - Added scraped template selection
+- `product_setup/ONBOARDING_CHECKLIST.md` - Added Phase 0 brand research instructions
+
+Ad Creator features:
+- Three reference ad sources: Upload New, Uploaded Templates, Scraped Template Library
+- Category filter for scraped templates (testimonial, quote_card, etc.)
+- Shows template usage stats (Used Nx)
+- Records template usage after ad generation
 
 ---
 
@@ -1745,15 +1764,16 @@ See previous checkpoint for full implementation.
 - [x] Implement ingestion trigger form
 - [x] Test full approve/reject/archive flows
 
-### Phase 3: Integration
+### Phase 3: Integration ✅ COMPLETE
 **Effort**: 1 session
 
-- [ ] Add template selection to Ad Creator
-- [ ] Implement template usage tracking
-- [ ] Update onboarding checklist with Phase 0
-- [ ] Update documentation
+- [x] Add template selection to Ad Creator (Scraped Template Library option)
+- [x] Add category filtering for scraped templates
+- [x] Implement template usage tracking (times_used, last_used_at, source_template_id)
+- [x] Update onboarding checklist with Phase 0 brand research instructions
+- [x] Update checkpoint documentation
 
-**Total Estimated Effort**: 6.5 sessions
+**Total Estimated Effort**: 6.5 sessions ✅ COMPLETE
 
 ---
 
@@ -1942,3 +1962,4 @@ WHERE link_url IS NULL AND snapshot->>'link_url' IS NOT NULL;
 | 2025-12-04 | 2.2.1 | Added future features backlog (comments, landing pages) |
 | 2025-12-04 | 2.3.0 | Extracted 10 fields from snapshot to columns, backfilled 804 ads |
 | 2025-12-04 | 2.4.0 | Phase 2B complete - TemplateQueueService, template_ingestion pipeline, Streamlit UI |
+| 2025-12-04 | 3.0.0 | Phase 3 complete - Ad Creator integration, template usage tracking, onboarding docs |

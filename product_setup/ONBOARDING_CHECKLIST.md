@@ -6,14 +6,78 @@ This checklist covers all data needed to onboard a new brand and product into Vi
 
 ## Overview
 
-Onboarding follows a **3-step process** (with optional Phase 0):
+Onboarding follows a **3-step process** with optional automated research:
 
-**Phase 0: Ad Research (Optional - Coming Soon)**
-> Scrape the brand's existing Facebook ads, analyze with AI, and auto-extract benefits, USPs, hooks, and brand voice. See [Brand Research Pipeline](../docs/archive/CHECKPOINT_BRAND_RESEARCH_PIPELINE.md) for details.
+**Phase 0: Brand Research (Optional but Recommended)**
+> Scrape the brand's existing Facebook ads, analyze with AI, and auto-extract benefits, USPs, hooks, and brand voice. This dramatically speeds up manual data gathering.
 
 1. **Setup Brand & Product** - Create database records with brand/product info
 2. **Upload Images** - Upload product images to Supabase storage
 3. **Insert Hooks** - Add persuasive hooks for ad generation
+
+---
+
+## Phase 0: Brand Research (Optional)
+
+Use this phase to automatically extract brand insights from existing Facebook ads. This helps populate benefits, USPs, hooks, and brand voice automatically.
+
+### Option A: Use Streamlit UI
+
+1. Navigate to **Template Queue** page in the Streamlit app
+2. Go to the **Ingest New** tab
+3. Paste a Facebook Ad Library URL for the brand
+4. Set max ads (recommended: 20-50)
+5. Click "Start Ingestion"
+6. Review scraped templates in the **Pending Review** tab
+7. Approve useful templates for your template library
+
+### Option B: Use Python Script
+
+```python
+import asyncio
+from viraltracker.pipelines import run_brand_onboarding
+
+async def research_brand():
+    result = await run_brand_onboarding(
+        ad_library_url="https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&view_all_page_id=YOUR_PAGE_ID",
+        max_ads=30,
+        analyze_videos=True
+    )
+
+    if result["status"] == "success":
+        # Use extracted data to populate product fields
+        product_data = result["product_data"]
+        print(f"Benefits: {product_data['benefits']}")
+        print(f"USPs: {product_data['unique_selling_points']}")
+        print(f"Target Audience: {product_data['target_audience']}")
+        print(f"Brand Voice: {product_data['brand_voice_notes']}")
+        print(f"Hooks: {product_data['hooks']}")
+
+asyncio.run(research_brand())
+```
+
+### Getting Facebook Ad Library URLs
+
+1. Go to [Facebook Ad Library](https://www.facebook.com/ads/library)
+2. Search for the brand name
+3. Filter by country (e.g., US)
+4. Copy the full URL from your browser
+
+**Example URL:**
+```
+https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=470900729771745
+```
+
+### What Gets Extracted
+
+| Data Type | Description |
+|-----------|-------------|
+| **Benefits** | Product benefits mentioned in ads |
+| **USPs** | Unique selling propositions |
+| **Hooks** | Attention-grabbing opening lines |
+| **Persona Signals** | Target audience characteristics |
+| **Brand Voice** | Tone, style, and personality |
+| **Visual Styles** | Common ad formats and layouts |
 
 ---
 
