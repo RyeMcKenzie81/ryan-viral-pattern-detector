@@ -37,6 +37,8 @@ if 'ingestion_max_ads' not in st.session_state:
     st.session_state.ingestion_max_ads = 20
 if 'ingestion_images_only' not in st.session_state:
     st.session_state.ingestion_images_only = True
+if 'ingestion_result' not in st.session_state:
+    st.session_state.ingestion_result = None  # Store last result for display
 
 
 def get_template_queue_service():
@@ -287,6 +289,34 @@ def render_ingestion_trigger():
     """Render template ingestion trigger form."""
     st.subheader("Ingest New Templates")
 
+    # Display last result if exists
+    if st.session_state.ingestion_result:
+        result = st.session_state.ingestion_result
+        status = result.get("status")
+
+        if status == "awaiting_approval":
+            st.success(
+                f"✅ Queued {result.get('queued_count', 0)} templates for review! "
+                f"({result.get('ads_scraped', 0)} ads scraped, {result.get('assets_downloaded', 0)} assets)"
+            )
+        elif status == "error":
+            st.error(f"Pipeline error: {result.get('error')}")
+        elif status == "no_ads":
+            msg = result.get("message", "No ads found at that URL.")
+            st.warning(f"⚠️ {msg}")
+        elif status == "no_new_ads":
+            st.info("These ads were already scraped. Check the Pending Review tab.")
+        elif status == "no_assets":
+            msg = result.get("message", "No images/videos could be downloaded.")
+            st.warning(f"⚠️ {msg}")
+        else:
+            st.warning(f"Status: {status} - {result.get('message', '')}")
+
+        # Clear button
+        if st.button("Clear message", key="clear_result"):
+            st.session_state.ingestion_result = None
+            st.rerun()
+
     is_running = st.session_state.ingestion_running
 
     with st.form("ingest_templates"):
@@ -344,26 +374,14 @@ def render_ingestion_trigger():
 
             st.session_state.ingestion_running = False
 
+            # Store result for persistent display
+            st.session_state.ingestion_result = result
+            st.cache_data.clear()
+
             if result.get("status") == "awaiting_approval":
-                st.success(
-                    f"✅ Queued {result.get('queued_count', 0)} templates for review! "
-                    f"({result.get('ads_scraped', 0)} ads scraped)"
-                )
-                st.cache_data.clear()
                 st.session_state.ingestion_url = ""  # Clear URL after success
-                st.rerun()
-            elif result.get("status") == "error":
-                st.error(f"Pipeline error: {result.get('error')}")
-            elif result.get("status") == "no_ads":
-                msg = result.get("message", "No ads found at that URL. Check the URL is valid and the page has active ads.")
-                st.warning(f"⚠️ {msg}")
-            elif result.get("status") == "no_new_ads":
-                st.info("These ads were already scraped. Check the Pending Review tab for existing templates.")
-            elif result.get("status") == "no_assets":
-                msg = result.get("message", "Ads were found but no images/videos could be downloaded.")
-                st.warning(f"⚠️ {msg}")
-            else:
-                st.warning(f"Status: {result.get('status')} - {result.get('message', '')}")
+
+            st.rerun()
 
         except Exception as e:
             st.session_state.ingestion_running = False
