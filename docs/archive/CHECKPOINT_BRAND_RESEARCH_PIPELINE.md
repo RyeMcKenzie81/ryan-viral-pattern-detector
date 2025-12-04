@@ -1833,9 +1833,53 @@ Once the pattern is proven, consider migrating:
 
 ---
 
+## Future Features Backlog
+
+### High Priority (for brand/competitor research)
+
+**1. Landing Page Scraping**
+- Extract `link_url` to dedicated column in `facebook_ads`
+- Scrape landing pages for: product info, pricing, testimonials, copy patterns
+- Use for competitor analysis and offer tracking
+- SQL to add column:
+```sql
+ALTER TABLE facebook_ads ADD COLUMN IF NOT EXISTS link_url TEXT;
+-- Backfill from snapshot JSON:
+UPDATE facebook_ads
+SET link_url = snapshot->>'link_url'
+WHERE link_url IS NULL AND snapshot->>'link_url' IS NOT NULL;
+```
+
+**2. Facebook Page Comment Scraping**
+- Scrape comments from brand's Facebook page posts
+- Extract: objections, questions, social proof, pain points
+- Use `apify/facebook-comments-scraper` or similar
+- Analyze with Claude for objection categorization
+
+**3. CTA Analysis**
+- Track `cta_text` patterns across competitors
+- Analyze which CTAs correlate with high engagement
+- Already captured in snapshot, just needs extraction
+
+### Medium Priority
+
+**4. Offer/Pricing Tracking**
+- Monitor landing pages over time for promo changes
+- Track discount patterns, urgency tactics
+- Build competitive intelligence dashboard
+
+**5. Cross-Platform Comment Analysis**
+- Scrape YouTube/TikTok comments on brand content
+- Compare objections across platforms
+- Unified objection taxonomy
+
+---
+
 ## Changelog
 
 | Date | Version | Changes |
 |------|---------|---------|
 | 2025-12-03 | 1.0.0 | Initial checkpoint - planning complete |
 | 2025-12-03 | 2.0.0 | Added Pydantic Graph architecture, detailed implementation plan |
+| 2025-12-04 | 2.2.0 | Phase 2A complete - BrandResearchService, pipeline nodes |
+| 2025-12-04 | 2.2.1 | Added future features backlog (comments, landing pages) |
