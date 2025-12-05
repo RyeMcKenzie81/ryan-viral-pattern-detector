@@ -31,6 +31,8 @@ require_auth()
 # Initialize session state
 if 'research_brand_id' not in st.session_state:
     st.session_state.research_brand_id = None
+if 'research_product_id' not in st.session_state:
+    st.session_state.research_product_id = None
 if 'analysis_running' not in st.session_state:
     st.session_state.analysis_running = False
 if 'suggested_personas' not in st.session_state:
@@ -246,22 +248,43 @@ def synthesize_personas_sync(brand_id: str) -> List[Dict]:
 
 
 def render_brand_selector():
-    """Render brand selector."""
+    """Render brand selector and return (brand_id, product_id)."""
     brands = get_brands()
 
     if not brands:
         st.warning("No brands found. Please create a brand first in Brand Manager.")
-        return None
+        return None, None
 
     brand_options = {b["name"]: b["id"] for b in brands}
 
-    selected_name = st.selectbox(
-        "Select Brand to Research",
-        options=list(brand_options.keys()),
-        index=0
-    )
+    col1, col2 = st.columns(2)
 
-    return brand_options[selected_name]
+    with col1:
+        selected_brand_name = st.selectbox(
+            "Select Brand",
+            options=list(brand_options.keys()),
+            index=0
+        )
+        selected_brand_id = brand_options[selected_brand_name]
+
+    with col2:
+        products = get_products_for_brand(selected_brand_id)
+        if products:
+            product_options = {"All Products (Brand-level)": None}
+            product_options.update({p["name"]: p["id"] for p in products})
+
+            selected_product_name = st.selectbox(
+                "Filter by Product (optional)",
+                options=list(product_options.keys()),
+                index=0,
+                help="Select a product to analyze only ads linking to that product's URLs"
+            )
+            selected_product_id = product_options[selected_product_name]
+        else:
+            st.info("No products defined yet")
+            selected_product_id = None
+
+    return selected_brand_id, selected_product_id
 
 
 def render_stats_section(brand_id: str):
@@ -551,32 +574,43 @@ def render_existing_analyses(brand_id: str):
 
     with tabs[0]:
         if by_type["video_vision"]:
-            for a in by_type["video_vision"][:10]:
+            for i, a in enumerate(by_type["video_vision"][:10]):
                 raw = a.get("raw_response", {})
                 hook = raw.get("hook", {})
-                with st.expander(f"Video: {hook.get('transcript', 'No transcript')[:50]}..."):
-                    st.json(raw)
+                transcript = hook.get("transcript", "No transcript")[:100]
+                st.markdown(f"**Video {i+1}:** {transcript}...")
+                with st.container():
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption("Hook Type")
+                        st.write(hook.get("hook_type", "N/A"))
+                    with col2:
+                        st.caption("Pain Points")
+                        pain = raw.get("pain_points", {})
+                        st.write(pain.get("emotional", [])[:2] if pain else "N/A")
+                st.divider()
         else:
             st.info("No video analyses yet")
 
     with tabs[1]:
         if by_type["image_vision"]:
-            for a in by_type["image_vision"][:10]:
+            for i, a in enumerate(by_type["image_vision"][:10]):
                 raw = a.get("raw_response", {})
                 hooks = raw.get("hooks", [])
-                hook_text = hooks[0].get("text", "") if hooks else "No hook"
-                with st.expander(f"Image: {hook_text[:50]}..."):
-                    st.json(raw)
+                hook_text = hooks[0].get("text", "No hook")[:100] if hooks else "No hook"
+                st.markdown(f"**Image {i+1}:** {hook_text}...")
+                st.divider()
         else:
             st.info("No image analyses yet")
 
     with tabs[2]:
         if by_type["copy_analysis"]:
-            for a in by_type["copy_analysis"][:10]:
+            for i, a in enumerate(by_type["copy_analysis"][:10]):
                 raw = a.get("raw_response", {})
                 hook = raw.get("hook", {})
-                with st.expander(f"Copy: {hook.get('text', 'No hook')[:50]}..."):
-                    st.json(raw)
+                hook_text = hook.get("text", "No hook")[:100]
+                st.markdown(f"**Copy {i+1}:** {hook_text}...")
+                st.divider()
         else:
             st.info("No copy analyses yet")
 
@@ -589,11 +623,16 @@ st.markdown("Analyze ad content to build data-driven 4D customer personas.")
 if st.session_state.review_mode:
     render_persona_review()
 else:
-    # Brand selector
-    selected_brand_id = render_brand_selector()
+    # Brand and product selector
+    selected_brand_id, selected_product_id = render_brand_selector()
 
     if selected_brand_id:
         st.session_state.research_brand_id = selected_brand_id
+        st.session_state.research_product_id = selected_product_id
+
+        # Show product filter status
+        if selected_product_id:
+            st.info(f"Filtering by product - analyses will be linked to this product")
 
         st.divider()
 
