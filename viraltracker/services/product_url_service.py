@@ -281,7 +281,19 @@ class ProductURLService:
         Returns:
             Landing page URL or None
         """
+        import json
+
         snapshot = ad.get('snapshot', {})
+
+        # Handle snapshot as string
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except json.JSONDecodeError:
+                return None
+
+        if not snapshot or not isinstance(snapshot, dict):
+            return None
 
         # Try different fields where URL might be stored
         url = None
@@ -320,11 +332,22 @@ class ProductURLService:
         Returns:
             Stats dict with matched, unmatched, failed counts
         """
-        # Fetch ads to process
-        query = self.supabase.table("facebook_ads")\
-            .select("id, snapshot, brand_id")\
+        # Fetch ad IDs linked to this brand via junction table
+        link_result = self.supabase.table("brand_facebook_ads")\
+            .select("ad_id")\
             .eq("brand_id", str(brand_id))\
-            .limit(limit)
+            .limit(limit)\
+            .execute()
+
+        ad_ids = [r['ad_id'] for r in (link_result.data or [])]
+
+        if not ad_ids:
+            return {"matched": 0, "unmatched": 0, "failed": 0, "total": 0}
+
+        # Fetch the actual ad data
+        query = self.supabase.table("facebook_ads")\
+            .select("id, snapshot")\
+            .in_("id", ad_ids)
 
         if only_unmatched:
             query = query.is_("product_id", "null")
@@ -566,14 +589,23 @@ class ProductURLService:
         Returns:
             Number of ads updated
         """
-        # Get ads that might have this URL
-        # Note: This is a simplified approach - in production you might want to
-        # store normalized_url on the ad for faster querying
+        # Get ad IDs linked to this brand via junction table
+        link_result = self.supabase.table("brand_facebook_ads")\
+            .select("ad_id")\
+            .eq("brand_id", brand_id)\
+            .limit(500)\
+            .execute()
+
+        ad_ids = [r['ad_id'] for r in (link_result.data or [])]
+
+        if not ad_ids:
+            return 0
+
+        # Fetch ads that don't have a product yet
         ads_result = self.supabase.table("facebook_ads")\
             .select("id, snapshot")\
-            .eq("brand_id", brand_id)\
+            .in_("id", ad_ids)\
             .is_("product_id", "null")\
-            .limit(500)\
             .execute()
 
         updated = 0
@@ -616,11 +648,24 @@ class ProductURLService:
         Returns:
             Stats dict with discovered, new, existing counts
         """
-        # Fetch all ads for this brand
-        result = self.supabase.table("facebook_ads")\
-            .select("id, snapshot")\
+        # Fetch ads linked to this brand via junction table
+        # Note: brand_facebook_ads stores the brand-ad relationship
+        link_result = self.supabase.table("brand_facebook_ads")\
+            .select("ad_id")\
             .eq("brand_id", str(brand_id))\
             .limit(limit)\
+            .execute()
+
+        ad_ids = [r['ad_id'] for r in (link_result.data or [])]
+
+        if not ad_ids:
+            logger.info(f"No ads found for brand {brand_id}")
+            return {"discovered": 0, "new": 0, "existing": 0}
+
+        # Fetch the actual ad data
+        result = self.supabase.table("facebook_ads")\
+            .select("id, snapshot")\
+            .in_("id", ad_ids)\
             .execute()
 
         ads = result.data or []
@@ -716,20 +761,30 @@ class ProductURLService:
         Returns:
             Stats dict with counts and percentages
         """
-        # Total ads
-        total_result = self.supabase.table("facebook_ads")\
-            .select("id", count="exact")\
+        # Total ads linked to brand via junction table
+        total_result = self.supabase.table("brand_facebook_ads")\
+            .select("ad_id", count="exact")\
             .eq("brand_id", str(brand_id))\
             .execute()
         total = total_result.count or 0
 
-        # Matched ads
-        matched_result = self.supabase.table("facebook_ads")\
-            .select("id", count="exact")\
-            .eq("brand_id", str(brand_id))\
-            .not_.is_("product_id", "null")\
-            .execute()
-        matched = matched_result.count or 0
+        # Get ad IDs to check matched status
+        if total > 0:
+            link_result = self.supabase.table("brand_facebook_ads")\
+                .select("ad_id")\
+                .eq("brand_id", str(brand_id))\
+                .execute()
+            ad_ids = [r['ad_id'] for r in (link_result.data or [])]
+
+            # Matched ads (have product_id set)
+            matched_result = self.supabase.table("facebook_ads")\
+                .select("id", count="exact")\
+                .in_("id", ad_ids)\
+                .not_.is_("product_id", "null")\
+                .execute()
+            matched = matched_result.count or 0
+        else:
+            matched = 0
 
         # Pending review URLs
         pending_result = self.supabase.table("url_review_queue")\
