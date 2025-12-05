@@ -2,9 +2,10 @@
 BrandResearchService - AI analysis and synthesis for brand research.
 
 This service handles:
-- Image analysis with Claude Vision (extracts hooks, benefits, visual style)
+- Image analysis with Gemini Vision (extracts hooks, benefits, visual style)
 - Video analysis with Gemini (transcripts, storyboards, hooks)
-- Synthesis of insights into brand research summary
+- Copy analysis with Claude (text-based analysis)
+- Synthesis of insights into 4D personas
 - Export to product data format for onboarding
 
 Part of the Brand Research Pipeline (Phase 2A: Analysis).
@@ -280,7 +281,10 @@ class BrandResearchService:
         mime_type: str = "image/jpeg"
     ) -> Dict:
         """
-        Analyze image with Claude Vision.
+        Analyze image with Gemini Vision.
+
+        Uses Gemini instead of Claude Vision to support larger files (up to 20MB)
+        and more lenient mime type handling.
 
         Extracts:
         - Layout/format type
@@ -295,54 +299,56 @@ class BrandResearchService:
             image_base64: Base64 encoded image data
             brand_id: Optional brand to link analysis to
             facebook_ad_id: Optional facebook_ads record to link
-            mime_type: MIME type of the image
+            mime_type: MIME type of the image (used for logging only)
 
         Returns:
             Analysis result dict
         """
-        from anthropic import Anthropic
+        from google import genai
+        from PIL import Image
+        from io import BytesIO
 
-        logger.info(f"Analyzing image asset: {asset_id}")
+        logger.info(f"Analyzing image asset: {asset_id} (using Gemini)")
+
+        # Get API key
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY must be set in environment")
 
         try:
-            anthropic_client = Anthropic()
+            # Initialize Gemini client
+            client = genai.Client(api_key=api_key)
+            model_name = "gemini-2.0-flash-exp"
 
-            message = anthropic_client.messages.create(
-                model="claude-opus-4-5-20251101",
-                max_tokens=4000,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": image_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": IMAGE_ANALYSIS_PROMPT
-                        }
-                    ]
-                }]
+            # Decode base64 to PIL Image
+            # Clean and decode base64 image
+            clean_data = image_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+            # Add padding if necessary
+            missing_padding = len(clean_data) % 4
+            if missing_padding:
+                clean_data += '=' * (4 - missing_padding)
+
+            image_bytes = base64.b64decode(clean_data)
+            image = Image.open(BytesIO(image_bytes))
+
+            logger.info(f"Image decoded: {image.size[0]}x{image.size[1]}, mode={image.mode}")
+
+            # Generate analysis using Gemini
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[image, IMAGE_ANALYSIS_PROMPT]
             )
 
-            analysis_text = message.content[0].text
+            analysis_text = response.text.strip()
 
             # Strip markdown code fences if present
-            analysis_clean = analysis_text.strip()
-            if analysis_clean.startswith('```'):
-                first_newline = analysis_clean.find('\n')
-                last_fence = analysis_clean.rfind('```')
+            if analysis_text.startswith('```'):
+                first_newline = analysis_text.find('\n')
+                last_fence = analysis_text.rfind('```')
                 if first_newline != -1 and last_fence > first_newline:
-                    analysis_clean = analysis_clean[first_newline + 1:last_fence].strip()
+                    analysis_text = analysis_text[first_newline + 1:last_fence].strip()
 
-            analysis_dict = json.loads(analysis_clean)
-
-            # Calculate tokens used (approximate)
-            tokens_used = message.usage.input_tokens + message.usage.output_tokens
+            analysis_dict = json.loads(analysis_text)
 
             # Save to database
             self._save_analysis(
@@ -351,15 +357,16 @@ class BrandResearchService:
                 facebook_ad_id=facebook_ad_id,
                 analysis_type="image_vision",
                 raw_response=analysis_dict,
-                tokens_used=tokens_used
+                tokens_used=0,  # Gemini doesn't report tokens the same way
+                model_used=model_name
             )
 
             logger.info(f"Image analysis complete: format={analysis_dict.get('format_type')}")
             return analysis_dict
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response: {e}")
-            raise ValueError(f"Invalid JSON response from Claude: {e}")
+            logger.error(f"Failed to parse Gemini response: {e}")
+            raise ValueError(f"Invalid JSON response from Gemini: {e}")
         except Exception as e:
             logger.error(f"Image analysis failed: {e}")
             raise
@@ -367,21 +374,25 @@ class BrandResearchService:
     async def analyze_images_batch(
         self,
         asset_ids: List[UUID],
-        brand_id: Optional[UUID] = None
+        brand_id: Optional[UUID] = None,
+        delay_between: float = 2.0
     ) -> List[Dict]:
         """
-        Analyze multiple images, storing results in database.
+        Analyze multiple images using Gemini, storing results in database.
 
         Args:
             asset_ids: List of scraped_ad_assets UUIDs
             brand_id: Optional brand to link analyses to
+            delay_between: Delay between images to avoid rate limits (default: 2s)
 
         Returns:
             List of analysis results
         """
+        import asyncio
+
         results = []
 
-        for asset_id in asset_ids:
+        for i, asset_id in enumerate(asset_ids):
             try:
                 # Get asset from database
                 asset_result = self.supabase.table("scraped_ad_assets").select(
@@ -414,11 +425,19 @@ class BrandResearchService:
                     "analysis": analysis
                 })
 
+                # Delay between images (except for last one)
+                if i < len(asset_ids) - 1:
+                    await asyncio.sleep(delay_between)
+
             except Exception as e:
                 logger.error(f"Failed to analyze asset {asset_id}: {e}")
+                results.append({
+                    "asset_id": str(asset_id),
+                    "error": str(e)
+                })
                 continue
 
-        logger.info(f"Batch analysis complete: {len(results)}/{len(asset_ids)} images analyzed")
+        logger.info(f"Batch image analysis complete: {len([r for r in results if 'analysis' in r])}/{len(asset_ids)} images analyzed")
         return results
 
     async def analyze_video(
@@ -971,7 +990,8 @@ class BrandResearchService:
         facebook_ad_id: Optional[UUID],
         analysis_type: str,
         raw_response: Dict,
-        tokens_used: int = 0
+        tokens_used: int = 0,
+        model_used: str = "gemini-2.0-flash-exp"
     ) -> Optional[UUID]:
         """Save analysis to brand_ad_analysis table."""
         try:
@@ -988,7 +1008,7 @@ class BrandResearchService:
                 "persona_signals": raw_response.get("persona_signals"),
                 "brand_voice_notes": json.dumps(raw_response.get("brand_voice", {})),
                 "visual_analysis": raw_response.get("visual_style"),
-                "model_used": "claude-opus-4-5-20251101",
+                "model_used": model_used,
                 "tokens_used": tokens_used,
                 "cost_usd": tokens_used * 0.00002  # Approximate cost
             }
