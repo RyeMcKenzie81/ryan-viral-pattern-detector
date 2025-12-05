@@ -21,7 +21,26 @@ When a brand has multiple products (e.g., Wonder Paws has Plaque Defense, Omega 
 1. **First Pass**: Extract landing page URLs from ads
 2. **Second Pass**: Match URLs to known products or flag for review
 3. **Third Pass**: Run product-specific AI analysis
-4. **Result**: Product-isolated personas and insights
+4. **Result**: Hierarchical personas (brand-level AND product-level)
+
+### Persona Hierarchy
+```
+Brand (Wonder Paws)
+├── Brand-Level 4D Persona (aggregated insights from ALL products)
+│
+├── Product: Plaque Defense
+│   └── Product-Level 4D Persona (isolated to dental powder ads)
+│
+├── Product: Omega Max 3X
+│   └── Product-Level 4D Persona (isolated to fish oil ads)
+│
+└── Product: Collange
+    └── Product-Level 4D Persona (isolated to collagen ads)
+```
+
+**Use Cases:**
+- **Brand-level persona**: Overall brand messaging, brand voice, cross-product campaigns
+- **Product-level persona**: Product-specific copy, targeted ads, competitive positioning
 
 ---
 
@@ -286,11 +305,35 @@ New Streamlit page: `XX_🎯_Competitors.py`
 
 ### Phase 7: Integration & Synthesis
 
-#### 7.1 Update PersonaService for Product Isolation
+#### 7.1 Update PersonaService for Hierarchical Personas
 ```python
-# Modify _gather_ad_insights() in persona_service.py
+# Modify persona_service.py to support both levels
 
-async def _gather_ad_insights(self, brand_id: UUID, product_id: UUID) -> Dict:
+async def generate_persona(
+    self,
+    brand_id: UUID,
+    product_id: Optional[UUID] = None,  # None = brand-level
+    name: str = "Generated Persona"
+) -> Dict:
+    """
+    Generate 4D persona at brand or product level.
+
+    Args:
+        brand_id: Brand to generate persona for
+        product_id: If provided, generate product-specific persona.
+                   If None, generate brand-level persona (all products).
+        name: Persona name
+    """
+    if product_id:
+        # Product-level: Filter insights to specific product
+        insights = await self._gather_product_insights(brand_id, product_id)
+    else:
+        # Brand-level: Aggregate insights from ALL products
+        insights = await self._gather_brand_insights(brand_id)
+
+    return await self._generate_with_ai(insights, name)
+
+async def _gather_product_insights(self, brand_id: UUID, product_id: UUID) -> Dict:
     """Gather insights FILTERED BY PRODUCT."""
 
     # Get product-specific image analyses
@@ -299,15 +342,42 @@ async def _gather_ad_insights(self, brand_id: UUID, product_id: UUID) -> Dict:
         .eq("product_id", str(product_id))
         .execute()
 
-    # Get brand synthesis BUT filter by product
-    # Option A: Filter brand_research_synthesis by product_id
-    # Option B: Re-synthesize from product-specific ad analyses
-
     # Get Facebook ad analyses for THIS PRODUCT ONLY
     ad_analyses = self.supabase.table("brand_ad_analysis")
         .select("*, facebook_ads!inner(product_id)")
         .eq("facebook_ads.product_id", str(product_id))
         .execute()
+
+    return {"images": images.data, "ad_analyses": ad_analyses.data}
+
+async def _gather_brand_insights(self, brand_id: UUID) -> Dict:
+    """Gather insights from ALL products (brand-level)."""
+
+    # Get all product images for brand
+    images = self.supabase.table("product_images")
+        .select("*, products!inner(brand_id)")
+        .eq("products.brand_id", str(brand_id))
+        .execute()
+
+    # Get all Facebook ad analyses for brand
+    ad_analyses = self.supabase.table("brand_ad_analysis")
+        .select("*, facebook_ads!inner(brand_id)")
+        .eq("facebook_ads.brand_id", str(brand_id))
+        .execute()
+
+    return {"images": images.data, "ad_analyses": ad_analyses.data}
+```
+
+#### 7.1.1 Database Schema for Hierarchical Personas
+```sql
+-- Update personas_4d to support both levels
+ALTER TABLE personas_4d ADD COLUMN IF NOT EXISTS persona_level TEXT
+    DEFAULT 'product' CHECK (persona_level IN ('brand', 'product'));
+
+-- brand_id is required, product_id is optional (null = brand-level)
+-- Existing constraint: product_id can be null for brand-level personas
+
+CREATE INDEX idx_personas_4d_level ON personas_4d(brand_id, persona_level);
 ```
 
 #### 7.2 Update Ad Creation Flow
@@ -488,12 +558,72 @@ async def _gather_ad_insights(self, brand_id: UUID, product_id: UUID) -> Dict:
 
 ---
 
+## Architecture Compliance (CRITICAL)
+
+All implementations MUST follow the pydantic-ai patterns defined in:
+- `/CLAUDE.md` - Development guidelines
+- `/docs/CLAUDE_CODE_GUIDE.md` - Tool development patterns
+- `/docs/ARCHITECTURE.md` - System design
+
+### Three-Layer Architecture
+```
+Agent Layer (PydanticAI) → Tools = thin orchestration, LLM decides when to call
+Service Layer           → Business logic, deterministic preprocessing, reusable
+Interface Layer         → CLI, API, Streamlit UI (all call services)
+```
+
+### Thin Tools Pattern
+```python
+# ✅ CORRECT: Tool calls service
+@agent.tool(metadata=ToolMetadata(...))
+async def match_ad_to_product(ctx: RunContext[AgentDependencies], ad_id: str):
+    """Match a Facebook ad to a product based on landing page URL."""
+    return ctx.deps.product_url.match_ad(UUID(ad_id))
+
+# ❌ WRONG: Business logic in tool
+@agent.tool(...)
+async def match_ad_to_product(ctx: RunContext[AgentDependencies], ad_id: str):
+    url = extract_url_from_snapshot(ad)  # Should be in service!
+    return find_matching_product(url)     # Should be in service!
+```
+
+### Service Registration
+All new services MUST be added to `AgentDependencies`:
+```python
+# viraltracker/agent/dependencies.py
+@dataclass
+class AgentDependencies:
+    # ... existing services ...
+    product_url: ProductURLService
+    ad_video_analysis: AdVideoAnalysisService
+    competitive_analysis: CompetitiveAnalysisService
+```
+
+### UI Pattern (Direct Service Calls)
+Streamlit UI pages call services directly (user-driven flow):
+```python
+# viraltracker/ui/pages/XX_URL_Mapping.py
+def render_url_review():
+    service = get_product_url_service()
+    unmatched = service.get_unmatched_urls(brand_id)
+    # Render UI, handle user actions via service calls
+```
+
+### When to Use pydantic-graph
+- **Use pydantic-graph**: Autonomous AI-driven pipelines (brand onboarding, batch analysis)
+- **Use direct service calls**: User-driven flows (URL review, template approval, manual triggers)
+
+---
+
 ## Related Documents
 
 - `/docs/archive/CHECKPOINT_BRAND_RESEARCH_PIPELINE.md` - Original pipeline plan
 - `/docs/archive/CHECKPOINT_4D_PERSONA_COMPETITIVE_ANALYSIS.md` - 4D persona schema
 - `/docs/reference/4d_persona_framework.md` - 4D framework reference
 - `/viraltracker/analysis/video_analyzer.py` - Existing video analysis code
+- `/CLAUDE.md` - Development guidelines (required reading)
+- `/docs/CLAUDE_CODE_GUIDE.md` - Tool development patterns
+- `/docs/ARCHITECTURE.md` - System architecture
 
 ---
 
