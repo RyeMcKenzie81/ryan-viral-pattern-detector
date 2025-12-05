@@ -1058,6 +1058,101 @@ class BrandResearchService:
             if temp_path and Path(temp_path).exists():
                 Path(temp_path).unlink()
 
+    async def download_assets_for_brand(
+        self,
+        brand_id: UUID,
+        limit: int = 50,
+        include_videos: bool = True,
+        include_images: bool = True
+    ) -> Dict[str, int]:
+        """
+        Download and store assets (videos/images) for a brand's existing ads.
+
+        Uses AdScrapingService to download from URLs in ad snapshots
+        and store in Supabase storage.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum number of ads to process
+            include_videos: Download videos
+            include_images: Download images
+
+        Returns:
+            Dict with counts: {"ads_processed", "videos_downloaded", "images_downloaded"}
+        """
+        from .ad_scraping_service import AdScrapingService
+
+        scraping_service = AdScrapingService()
+
+        # Get ads for brand via junction table
+        link_result = self.supabase.table("brand_facebook_ads").select(
+            "ad_id"
+        ).eq("brand_id", str(brand_id)).limit(limit).execute()
+
+        if not link_result.data:
+            logger.info(f"No ads found for brand: {brand_id}")
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
+
+        ad_ids = [r['ad_id'] for r in link_result.data]
+
+        # Get ads that don't have assets yet
+        existing_assets = self.supabase.table("scraped_ad_assets").select(
+            "facebook_ad_id"
+        ).in_("facebook_ad_id", ad_ids).execute()
+
+        ads_with_assets = {r['facebook_ad_id'] for r in (existing_assets.data or [])}
+        ads_needing_assets = [aid for aid in ad_ids if aid not in ads_with_assets]
+
+        if not ads_needing_assets:
+            logger.info(f"All ads already have assets for brand: {brand_id}")
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
+
+        # Get ad snapshots
+        ads_result = self.supabase.table("facebook_ads").select(
+            "id, snapshot"
+        ).in_("id", ads_needing_assets[:limit]).execute()
+
+        total_videos = 0
+        total_images = 0
+        ads_processed = 0
+
+        for ad in ads_result.data:
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+
+            # Check if has any assets to download
+            urls = scraping_service.extract_asset_urls(snapshot)
+            if not urls.get('videos') and not urls.get('images'):
+                continue
+
+            try:
+                result = await scraping_service.scrape_and_store_assets(
+                    facebook_ad_id=UUID(ad['id']),
+                    snapshot=snapshot,
+                    brand_id=brand_id,
+                    scrape_source="brand_research_backfill"
+                )
+
+                if include_videos:
+                    total_videos += len(result.get('videos', []))
+                if include_images:
+                    total_images += len(result.get('images', []))
+
+                ads_processed += 1
+                logger.info(f"Downloaded assets for ad {ad['id'][:8]}: {len(result.get('videos', []))} videos, {len(result.get('images', []))} images")
+
+            except Exception as e:
+                logger.error(f"Failed to download assets for ad {ad['id']}: {e}")
+                continue
+
+        logger.info(f"Asset download complete: {ads_processed} ads, {total_videos} videos, {total_images} images")
+        return {
+            "ads_processed": ads_processed,
+            "videos_downloaded": total_videos,
+            "images_downloaded": total_images
+        }
+
     def get_video_assets_for_brand(
         self,
         brand_id: UUID,
