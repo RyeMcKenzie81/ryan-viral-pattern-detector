@@ -155,14 +155,7 @@ def get_analysis_stats_for_brand(brand_id: str) -> Dict[str, int]:
 
 def run_async(coro):
     """Run async function in Streamlit context."""
-    import nest_asyncio
-    nest_asyncio.apply()
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    return asyncio.run(coro)
 
 
 def download_assets_sync(brand_id: str, limit: int = 50) -> Dict[str, int]:
