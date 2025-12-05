@@ -575,19 +575,20 @@ def render_existing_analyses(brand_id: str):
     with tabs[0]:
         if by_type["video_vision"]:
             for i, a in enumerate(by_type["video_vision"][:10]):
-                raw = a.get("raw_response", {})
-                hook = raw.get("hook", {})
-                transcript = hook.get("transcript", "No transcript")[:100]
+                raw = a.get("raw_response") or {}
+                hook = raw.get("hook") or {}
+                transcript = (hook.get("transcript") or "No transcript")[:100]
                 st.markdown(f"**Video {i+1}:** {transcript}...")
                 with st.container():
                     col1, col2 = st.columns(2)
                     with col1:
                         st.caption("Hook Type")
-                        st.write(hook.get("hook_type", "N/A"))
+                        st.write(hook.get("hook_type") or "N/A")
                     with col2:
                         st.caption("Pain Points")
-                        pain = raw.get("pain_points", {})
-                        st.write(pain.get("emotional", [])[:2] if pain else "N/A")
+                        pain = raw.get("pain_points") or {}
+                        emotional = pain.get("emotional") or []
+                        st.write(emotional[:2] if emotional else "N/A")
                 st.divider()
         else:
             st.info("No video analyses yet")
@@ -595,9 +596,12 @@ def render_existing_analyses(brand_id: str):
     with tabs[1]:
         if by_type["image_vision"]:
             for i, a in enumerate(by_type["image_vision"][:10]):
-                raw = a.get("raw_response", {})
-                hooks = raw.get("hooks", [])
-                hook_text = hooks[0].get("text", "No hook")[:100] if hooks else "No hook"
+                raw = a.get("raw_response") or {}
+                hooks = raw.get("hooks") or []
+                if hooks and isinstance(hooks[0], dict):
+                    hook_text = (hooks[0].get("text") or "No hook")[:100]
+                else:
+                    hook_text = "No hook"
                 st.markdown(f"**Image {i+1}:** {hook_text}...")
                 st.divider()
         else:
@@ -606,9 +610,9 @@ def render_existing_analyses(brand_id: str):
     with tabs[2]:
         if by_type["copy_analysis"]:
             for i, a in enumerate(by_type["copy_analysis"][:10]):
-                raw = a.get("raw_response", {})
-                hook = raw.get("hook", {})
-                hook_text = hook.get("text", "No hook")[:100]
+                raw = a.get("raw_response") or {}
+                hook = raw.get("hook") or {}
+                hook_text = (hook.get("text") or "No hook")[:100]
                 st.markdown(f"**Copy {i+1}:** {hook_text}...")
                 st.divider()
         else:
