@@ -61,19 +61,43 @@ class ProductURLService:
         Returns:
             Created product record
         """
+        # Generate slug from name
+        slug = self._generate_slug(name)
+
         record = {
             "brand_id": str(brand_id),
             "name": name,
+            "slug": slug,
             "description": description
         }
 
         result = self.supabase.table("products").insert(record).execute()
 
         if result.data:
-            logger.info(f"Created product '{name}' for brand {brand_id}")
+            logger.info(f"Created product '{name}' (slug: {slug}) for brand {brand_id}")
             return result.data[0]
         else:
             raise ValueError(f"Failed to create product: {name}")
+
+    def _generate_slug(self, name: str) -> str:
+        """
+        Generate a URL-safe slug from a name.
+
+        Args:
+            name: Product name
+
+        Returns:
+            URL-safe slug
+        """
+        # Convert to lowercase
+        slug = name.lower()
+        # Replace spaces and special chars with hyphens
+        slug = re.sub(r'[^a-z0-9]+', '-', slug)
+        # Remove leading/trailing hyphens
+        slug = slug.strip('-')
+        # Collapse multiple hyphens
+        slug = re.sub(r'-+', '-', slug)
+        return slug
 
     # ============================================================
     # Product URL Management
