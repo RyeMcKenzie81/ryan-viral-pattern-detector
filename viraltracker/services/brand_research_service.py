@@ -147,6 +147,66 @@ Return ONLY valid JSON (no markdown, no extra text):
 Extract exact quotes where possible. Return ONLY the JSON object."""
 
 
+COPY_ANALYSIS_PROMPT = """Analyze this Facebook ad copy for brand research and customer persona insights.
+
+Ad Copy:
+{ad_copy}
+
+Return ONLY valid JSON:
+
+{
+    "hook": {
+        "text": "The opening hook/first sentence",
+        "hook_type": "curiosity|fear|benefit|social_proof|question|transformation|statistic"
+    },
+    "headline": "Main headline if present",
+    "target_persona": {
+        "age_range": "estimated target age",
+        "gender_focus": "male|female|neutral",
+        "lifestyle": ["lifestyle indicators"],
+        "identity_statements": ["I'm the kind of person who...", "Because I..."]
+    },
+    "desires_appealed_to": {
+        "care_protection": ["caring for loved ones"],
+        "freedom_from_fear": ["relief from worry"],
+        "social_approval": ["being seen as good"],
+        "comfort_convenience": ["making life easier"]
+    },
+    "transformation": {
+        "before": ["problems before product"],
+        "after": ["benefits after product"]
+    },
+    "pain_points": {
+        "emotional": ["guilt, worry, frustration"],
+        "functional": ["practical problems"]
+    },
+    "benefits_outcomes": {
+        "emotional": ["how they'll feel"],
+        "functional": ["practical results"]
+    },
+    "claims_made": ["specific claims with numbers/results"],
+    "objections_handled": ["concerns addressed"],
+    "failed_solutions_mentioned": ["other products that didn't work"],
+    "urgency_triggers": ["limited time, scarcity"],
+    "social_proof": {
+        "type": "testimonial|statistic|authority|none",
+        "details": ["specific proof mentioned"]
+    },
+    "call_to_action": "The CTA phrase",
+    "brand_voice": {
+        "tone": "casual|professional|empathetic|urgent",
+        "key_phrases": ["notable language patterns"]
+    },
+    "worldview": {
+        "values": ["what brand/customer values"],
+        "villains": ["what's bad"],
+        "heroes": ["what's good"]
+    }
+}
+
+Extract exact quotes where possible. Return ONLY valid JSON."""
+
+
 SYNTHESIS_PROMPT = """You are synthesizing brand research from multiple ad analyses.
 
 Given the following ad analyses, create a comprehensive brand research summary.
@@ -544,6 +604,210 @@ class BrandResearchService:
 
         logger.info(f"Batch video analysis complete: {len([r for r in results if 'analysis' in r])}/{len(asset_ids)} videos analyzed")
         return results
+
+    async def analyze_copy(
+        self,
+        ad_id: UUID,
+        ad_copy: str,
+        headline: Optional[str] = None,
+        brand_id: Optional[UUID] = None
+    ) -> Dict:
+        """
+        Analyze ad copy text with Claude.
+
+        Extracts persona signals, pain points, benefits, hooks from ad text.
+
+        Args:
+            ad_id: UUID of the facebook_ads record
+            ad_copy: The ad body text
+            headline: Optional headline text
+            brand_id: Optional brand to link analysis to
+
+        Returns:
+            Analysis result dict
+        """
+        from anthropic import Anthropic
+
+        logger.info(f"Analyzing copy for ad: {ad_id}")
+
+        # Combine headline and body
+        full_copy = ""
+        if headline:
+            full_copy = f"Headline: {headline}\n\n"
+        full_copy += ad_copy
+
+        if not full_copy.strip():
+            logger.warning(f"Empty copy for ad: {ad_id}")
+            return {"error": "Empty ad copy"}
+
+        try:
+            client = Anthropic()
+
+            prompt = COPY_ANALYSIS_PROMPT.format(ad_copy=full_copy)
+
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            # Parse response
+            response_text = message.content[0].text.strip()
+            if response_text.startswith('```'):
+                first_newline = response_text.find('\n')
+                last_fence = response_text.rfind('```')
+                if first_newline != -1 and last_fence > first_newline:
+                    response_text = response_text[first_newline + 1:last_fence].strip()
+
+            analysis_dict = json.loads(response_text)
+
+            # Save to database
+            self._save_copy_analysis(
+                ad_id=ad_id,
+                brand_id=brand_id,
+                raw_response=analysis_dict
+            )
+
+            logger.info(f"Copy analysis complete for ad: {ad_id}")
+            return analysis_dict
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse copy analysis response: {e}")
+            raise ValueError(f"Invalid JSON response: {e}")
+        except Exception as e:
+            logger.error(f"Copy analysis failed: {e}")
+            raise
+
+    async def analyze_copy_batch(
+        self,
+        brand_id: UUID,
+        limit: int = 50,
+        delay_between: float = 1.0
+    ) -> List[Dict]:
+        """
+        Analyze copy for all ads of a brand.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum ads to process
+            delay_between: Delay between API calls
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        # Get ads for brand via junction table
+        link_result = self.supabase.table("brand_facebook_ads").select(
+            "ad_id"
+        ).eq("brand_id", str(brand_id)).limit(limit).execute()
+
+        if not link_result.data:
+            logger.info(f"No ads found for brand: {brand_id}")
+            return []
+
+        ad_ids = [r['ad_id'] for r in link_result.data]
+
+        # Get ads with copy
+        ads_result = self.supabase.table("facebook_ads").select(
+            "id, ad_creative_body, snapshot"
+        ).in_("id", ad_ids).execute()
+
+        # Check which already analyzed
+        analyzed_result = self.supabase.table("brand_ad_analysis").select(
+            "facebook_ad_id"
+        ).in_("facebook_ad_id", ad_ids).eq("analysis_type", "copy_analysis").execute()
+
+        analyzed_ids = {r['facebook_ad_id'] for r in (analyzed_result.data or [])}
+
+        results = []
+        for i, ad in enumerate(ads_result.data):
+            if ad['id'] in analyzed_ids:
+                continue
+
+            ad_copy = ad.get('ad_creative_body', '')
+
+            # Try to get headline from snapshot
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+            headline = snapshot.get('title', '')
+
+            if not ad_copy and not headline:
+                continue
+
+            try:
+                analysis = await self.analyze_copy(
+                    ad_id=UUID(ad['id']),
+                    ad_copy=ad_copy or '',
+                    headline=headline,
+                    brand_id=brand_id
+                )
+                results.append({"ad_id": ad['id'], "analysis": analysis})
+
+                if i < len(ads_result.data) - 1:
+                    await asyncio.sleep(delay_between)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze copy for ad {ad['id']}: {e}")
+                results.append({"ad_id": ad['id'], "error": str(e)})
+
+        logger.info(f"Batch copy analysis complete: {len([r for r in results if 'analysis' in r])}/{len(ads_result.data)} ads analyzed")
+        return results
+
+    def _save_copy_analysis(
+        self,
+        ad_id: UUID,
+        brand_id: Optional[UUID],
+        raw_response: Dict
+    ) -> Optional[UUID]:
+        """Save copy analysis to brand_ad_analysis table."""
+        try:
+            # Extract structured fields
+            hook = raw_response.get("hook", {})
+            hooks_list = [hook] if hook.get("text") else []
+
+            benefits_outcomes = raw_response.get("benefits_outcomes", {})
+            all_benefits = (
+                benefits_outcomes.get("emotional", []) +
+                benefits_outcomes.get("functional", [])
+            )
+            transformation = raw_response.get("transformation", {})
+            all_benefits.extend(transformation.get("after", []))
+
+            pain_points_data = raw_response.get("pain_points", {})
+            all_pain_points = (
+                pain_points_data.get("emotional", []) +
+                pain_points_data.get("functional", [])
+            )
+            all_pain_points.extend(transformation.get("before", []))
+
+            record = {
+                "brand_id": str(brand_id) if brand_id else None,
+                "facebook_ad_id": str(ad_id),
+                "analysis_type": "copy_analysis",
+                "raw_response": raw_response,
+                "extracted_hooks": hooks_list,
+                "extracted_benefits": all_benefits,
+                "extracted_usps": raw_response.get("claims_made", []),
+                "pain_points": all_pain_points,
+                "persona_signals": raw_response.get("target_persona"),
+                "brand_voice_notes": json.dumps(raw_response.get("brand_voice", {})),
+                "model_used": "claude-sonnet-4-20250514",
+                "tokens_used": 0,
+                "cost_usd": 0.0
+            }
+
+            result = self.supabase.table("brand_ad_analysis").insert(record).execute()
+
+            if result.data:
+                logger.info(f"Saved copy analysis for ad: {ad_id}")
+                return UUID(result.data[0]["id"])
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save copy analysis: {e}")
+            return None
 
     async def synthesize_insights(
         self,
