@@ -17,15 +17,16 @@ COMMENT ON COLUMN url_review_queue.notes IS 'Notes about the URL categorization 
 --   pending     - Awaiting review
 --   assigned    - Assigned to a specific product
 --   new_product - Created new product for this URL
---   ignored     - Not relevant (social media, external links)
+--   ignored     - Not relevant (external links, other)
 --   brand_level - Brand-wide URL (homepage, about pages)
 --   collection  - Collection/category page (multiple products)
+--   social      - Social media links (Instagram, TikTok, YouTube, Facebook)
 
 -- Drop existing constraint and recreate with new values
 ALTER TABLE url_review_queue DROP CONSTRAINT IF EXISTS url_review_queue_status_check;
 
 ALTER TABLE url_review_queue ADD CONSTRAINT url_review_queue_status_check
-    CHECK (status IN ('pending', 'assigned', 'new_product', 'ignored', 'brand_level', 'collection'));
+    CHECK (status IN ('pending', 'assigned', 'new_product', 'ignored', 'brand_level', 'collection', 'social'));
 
 -- ============================================================
 -- 3. Add index for status queries

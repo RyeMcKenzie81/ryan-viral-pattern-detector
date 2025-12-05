@@ -297,7 +297,7 @@ else:
                             st.warning("Enter a product name")
                 else:
                     # Standard buttons for existing product or other actions
-                    col_a, col_b, col_c, col_d = st.columns(4)
+                    col_a, col_b, col_c, col_d, col_e = st.columns(5)
                     with col_a:
                         if st.button("✓", key=f"confirm_{url_record['id']}", help="Assign to product"):
                             if selected_option and product_options[selected_option] and product_options[selected_option] != "__new__":
@@ -311,15 +311,19 @@ else:
                             else:
                                 st.warning("Select a product first")
                     with col_b:
-                        if st.button("🏠", key=f"brand_{url_record['id']}", help="Brand-level (homepage, about page)"):
+                        if st.button("🏠", key=f"brand_{url_record['id']}", help="Brand-level (homepage, about)"):
                             service.mark_as_brand_level(url_record['id'])
                             st.rerun()
                     with col_c:
-                        if st.button("📁", key=f"collection_{url_record['id']}", help="Collection page (multiple products)"):
+                        if st.button("📁", key=f"collection_{url_record['id']}", help="Collection page"):
                             service.mark_as_collection(url_record['id'])
                             st.rerun()
                     with col_d:
-                        if st.button("✗", key=f"ignore_{url_record['id']}", help="Ignore (social media, external)"):
+                        if st.button("📱", key=f"social_{url_record['id']}", help="Social media (IG, TikTok, YT)"):
+                            service.mark_as_social(url_record['id'])
+                            st.rerun()
+                    with col_e:
+                        if st.button("✗", key=f"ignore_{url_record['id']}", help="Ignore (external, other)"):
                             service.ignore_url(url_record['id'], ignore_reason="not_relevant")
                             st.rerun()
 
@@ -340,7 +344,8 @@ with st.expander("ℹ️ How URL Mapping Works"):
        - **➕ New Product**: Create a new product and assign the URL to it
        - **🏠 Brand-level**: Homepage, about pages - brand-wide but not product-specific
        - **📁 Collection**: Collection/category pages featuring multiple products
-       - **✗ Ignore**: Skip URLs that aren't relevant (social media links, external sites)
+       - **📱 Social**: Social media profiles (Instagram, TikTok, YouTube, Facebook)
+       - **✗ Ignore**: Skip URLs that aren't relevant (external sites, other)
 
     3. **Bulk Match**: Once URL patterns are configured, "Run Bulk URL Matching" will automatically tag all ads with their products.
 
@@ -353,8 +358,10 @@ with st.expander("ℹ️ How URL Mapping Works"):
     | Collection page | 📁 Collection | `/collections/dental-care` |
     | Homepage | 🏠 Brand-level | `/` |
     | About/Info page | 🏠 Brand-level | `/pages/about-us` |
-    | Social media | ✗ Ignore | `instagram.com/brand` |
-    | External link | ✗ Ignore | `youtube.com/watch?v=...` |
+    | Instagram | 📱 Social | `instagram.com/brand` |
+    | TikTok | 📱 Social | `tiktok.com/@brand` |
+    | YouTube | 📱 Social | `youtube.com/@brand` |
+    | External link | ✗ Ignore | `bit.ly/xyz`, other |
 
     ### Pattern Types
 

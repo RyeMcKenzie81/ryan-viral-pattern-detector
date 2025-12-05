@@ -668,6 +668,31 @@ class ProductURLService:
         logger.info(f"Marked URL as collection: {queue_id}")
         return result.data[0] if result.data else {}
 
+    def mark_as_social(self, queue_id: UUID) -> Dict[str, Any]:
+        """
+        Mark a URL as a social media link.
+
+        Social media links (Instagram, TikTok, YouTube, Facebook) that ads
+        direct to instead of product pages.
+
+        Args:
+            queue_id: Review queue record UUID
+
+        Returns:
+            Updated review queue record
+        """
+        result = self.supabase.table("url_review_queue")\
+            .update({
+                "status": "social",
+                "reviewed_at": datetime.utcnow().isoformat(),
+                "notes": "Social media link"
+            })\
+            .eq("id", str(queue_id))\
+            .execute()
+
+        logger.info(f"Marked URL as social: {queue_id}")
+        return result.data[0] if result.data else {}
+
     def _rematch_ads_for_url(
         self,
         brand_id: str,
