@@ -37,8 +37,25 @@ Welcome to the ViralTracker documentation! Choose your path:
 - [Onboarding Checklist](../product_setup/ONBOARDING_CHECKLIST.md) - Brand/product onboarding process
 - [Brand Data Template](../product_setup/templates/brand_data_template.py) - Data collection template
 
-### Planned Features
-- [Brand Research Pipeline](archive/CHECKPOINT_BRAND_RESEARCH_PIPELINE.md) - Ad analysis & template system (planning)
+### Brand Research Pipeline (Active Development)
+Build 4D customer personas from ad analysis:
+
+| Phase | Status | Checkpoint |
+|-------|--------|------------|
+| Sprint 1: URL Mapping | Complete | [CHECKPOINT_2025-12-04_SPRINT1_URL_MAPPING_COMPLETE.md](CHECKPOINT_2025-12-04_SPRINT1_URL_MAPPING_COMPLETE.md) |
+| Sprint 2: Ad Analysis | Complete | [CHECKPOINT_2025-12-05_SPRINT2_BRAND_RESEARCH_ANALYSIS.md](CHECKPOINT_2025-12-05_SPRINT2_BRAND_RESEARCH_ANALYSIS.md) |
+| Sprint 2: UI & Synthesis | Complete | [CHECKPOINT_2025-12-05_SPRINT2_COMPLETE.md](CHECKPOINT_2025-12-05_SPRINT2_COMPLETE.md) |
+
+**Key Features Implemented:**
+- Video analysis with Gemini (transcripts, hooks, persona signals)
+- Image analysis with Claude Vision
+- Ad copy analysis for messaging patterns
+- Brand Research UI page (`19_🔬_Brand_Research.py`)
+- Persona synthesis with multi-segment detection
+- 4D Persona builder UI (`17_👤_Personas.py`)
+
+**Planning Docs:**
+- [4D Persona Implementation Plan](plans/4D_PERSONA_IMPLEMENTATION_PLAN.md) - Full persona & competitor framework
 
 ### Historical/Archive
 - [Pydantic AI Refactor](archive/pydantic-ai-refactor/) - Migration history
@@ -46,5 +63,5 @@ Welcome to the ViralTracker documentation! Choose your path:
 
 ---
 
-**Version**: 3.1.0 (Brand Research Pipeline Planning)
-**Last Updated**: 2025-12-03
+**Version**: 3.2.0 (Brand Research Pipeline - Sprint 2 Complete)
+**Last Updated**: 2025-12-05
