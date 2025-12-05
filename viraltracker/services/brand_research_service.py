@@ -1475,3 +1475,382 @@ class BrandResearchService:
         except Exception as e:
             logger.error(f"Failed to get video assets: {e}")
             return []
+
+    async def synthesize_to_personas(
+        self,
+        brand_id: UUID,
+        max_personas: int = 3
+    ) -> List[Dict]:
+        """
+        Synthesize all analyses into suggested 4D personas.
+
+        Aggregates video, image, and copy analyses to:
+        1. Detect distinct customer segments/clusters
+        2. Generate 1-3 suggested 4D personas
+        3. Populate all 4D fields from aggregated data
+        4. Include confidence scoring per persona
+
+        Args:
+            brand_id: Brand UUID to synthesize for
+            max_personas: Maximum number of personas to generate (1-3)
+
+        Returns:
+            List of persona dictionaries ready for PersonaService._build_persona_from_ai_response
+        """
+        from anthropic import Anthropic
+
+        logger.info(f"Synthesizing personas for brand: {brand_id}")
+
+        # Get all analyses for brand
+        analyses = self.get_analyses_for_brand(brand_id)
+
+        if not analyses:
+            logger.warning(f"No analyses found for brand: {brand_id}")
+            return []
+
+        # Aggregate data from all analyses
+        aggregated = self._aggregate_analyses(analyses)
+
+        if not aggregated.get("has_data"):
+            logger.warning("Insufficient data for persona synthesis")
+            return []
+
+        # Build synthesis prompt
+        prompt = PERSONA_SYNTHESIS_PROMPT.format(
+            max_personas=max_personas,
+            aggregated_data=json.dumps(aggregated, indent=2, default=str)
+        )
+
+        try:
+            client = Anthropic()
+
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=6000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response_text = message.content[0].text.strip()
+
+            # Strip markdown code fences if present
+            if response_text.startswith('```'):
+                first_newline = response_text.find('\n')
+                last_fence = response_text.rfind('```')
+                if first_newline != -1 and last_fence > first_newline:
+                    response_text = response_text[first_newline + 1:last_fence].strip()
+
+            result = json.loads(response_text)
+            personas = result.get("personas", [])
+
+            logger.info(f"Synthesized {len(personas)} personas for brand: {brand_id}")
+
+            # Save synthesis record
+            self._save_synthesis_record(brand_id, aggregated, personas)
+
+            return personas
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse synthesis response: {e}")
+            raise ValueError(f"Invalid JSON response: {e}")
+        except Exception as e:
+            logger.error(f"Persona synthesis failed: {e}")
+            raise
+
+    def _aggregate_analyses(self, analyses: List[Dict]) -> Dict[str, Any]:
+        """
+        Aggregate data from multiple analyses for synthesis.
+
+        Collects and deduplicates:
+        - Persona signals (demographics, lifestyle)
+        - Pain points (emotional, functional)
+        - Desires by category
+        - Benefits and outcomes
+        - Hooks and messaging patterns
+        - Brand voice characteristics
+        - Transformation signals (before/after)
+        - Objections and failed solutions
+        - Activation events
+
+        Args:
+            analyses: List of analysis records from brand_ad_analysis
+
+        Returns:
+            Aggregated data dictionary
+        """
+        aggregated = {
+            "persona_signals": [],
+            "pain_points": {"emotional": [], "functional": []},
+            "desires": {
+                "care_protection": [],
+                "freedom_from_fear": [],
+                "social_approval": [],
+                "comfort_convenience": [],
+                "superiority_status": [],
+                "self_actualization": []
+            },
+            "benefits": {"emotional": [], "functional": []},
+            "transformation": {"before": [], "after": []},
+            "hooks": [],
+            "brand_voice": [],
+            "objections": [],
+            "failed_solutions": [],
+            "activation_events": [],
+            "testimonials": [],
+            "worldview": {"values": [], "villains": [], "heroes": []},
+            "analysis_counts": {
+                "video": 0,
+                "image": 0,
+                "copy": 0
+            },
+            "has_data": False
+        }
+
+        for analysis in analyses:
+            analysis_type = analysis.get("analysis_type", "")
+            raw = analysis.get("raw_response", {})
+
+            if not raw:
+                continue
+
+            # Count by type
+            if analysis_type == "video_vision":
+                aggregated["analysis_counts"]["video"] += 1
+            elif analysis_type == "image_vision":
+                aggregated["analysis_counts"]["image"] += 1
+            elif analysis_type == "copy_analysis":
+                aggregated["analysis_counts"]["copy"] += 1
+
+            # Extract persona signals
+            persona_signals = raw.get("target_persona") or raw.get("persona_signals")
+            if persona_signals:
+                aggregated["persona_signals"].append(persona_signals)
+
+            # Extract pain points
+            pain_data = raw.get("pain_points", {})
+            if isinstance(pain_data, dict):
+                aggregated["pain_points"]["emotional"].extend(pain_data.get("emotional", []))
+                aggregated["pain_points"]["functional"].extend(pain_data.get("functional", []))
+
+            # Also get pain from transformation "before"
+            transformation = raw.get("transformation", {})
+            if transformation.get("before"):
+                aggregated["transformation"]["before"].extend(transformation["before"])
+            if transformation.get("after"):
+                aggregated["transformation"]["after"].extend(transformation["after"])
+
+            # Extract desires
+            desires_data = raw.get("desires_appealed_to", {})
+            if isinstance(desires_data, dict):
+                for category, items in desires_data.items():
+                    if category in aggregated["desires"] and items:
+                        aggregated["desires"][category].extend(items if isinstance(items, list) else [items])
+
+            # Extract benefits/outcomes
+            benefits_data = raw.get("benefits_outcomes", {})
+            if isinstance(benefits_data, dict):
+                aggregated["benefits"]["emotional"].extend(benefits_data.get("emotional", []))
+                aggregated["benefits"]["functional"].extend(benefits_data.get("functional", []))
+
+            # Extract hooks
+            hooks = raw.get("hooks", []) or raw.get("extracted_hooks", [])
+            if hooks:
+                aggregated["hooks"].extend(hooks if isinstance(hooks, list) else [hooks])
+
+            hook = raw.get("hook", {})
+            if hook and (hook.get("transcript") or hook.get("text")):
+                aggregated["hooks"].append(hook)
+
+            # Extract brand voice
+            brand_voice = raw.get("brand_voice", {})
+            if brand_voice:
+                aggregated["brand_voice"].append(brand_voice)
+
+            # Extract objections
+            objections = raw.get("objections_handled", [])
+            if objections:
+                aggregated["objections"].extend(objections)
+
+            # Extract failed solutions
+            failed = raw.get("failed_solutions_mentioned", [])
+            if failed:
+                aggregated["failed_solutions"].extend(failed)
+
+            # Extract activation events
+            activation = raw.get("activation_events", [])
+            if activation:
+                aggregated["activation_events"].extend(activation)
+
+            # Extract testimonials
+            testimonial = raw.get("testimonial", {})
+            if testimonial and testimonial.get("has_testimonial"):
+                aggregated["testimonials"].append(testimonial)
+
+            # Extract worldview
+            worldview = raw.get("worldview", {})
+            if isinstance(worldview, dict):
+                aggregated["worldview"]["values"].extend(worldview.get("values", []))
+                aggregated["worldview"]["villains"].extend(worldview.get("villains", []))
+                aggregated["worldview"]["heroes"].extend(worldview.get("heroes", []))
+
+            aggregated["has_data"] = True
+
+        # Deduplicate lists
+        for key in ["pain_points", "benefits"]:
+            for subkey in aggregated[key]:
+                aggregated[key][subkey] = list(set(aggregated[key][subkey]))
+
+        for category in aggregated["desires"]:
+            # Flatten if nested and deduplicate
+            flat = []
+            for item in aggregated["desires"][category]:
+                if isinstance(item, list):
+                    flat.extend(item)
+                else:
+                    flat.append(item)
+            aggregated["desires"][category] = list(set(flat))
+
+        aggregated["transformation"]["before"] = list(set(aggregated["transformation"]["before"]))
+        aggregated["transformation"]["after"] = list(set(aggregated["transformation"]["after"]))
+        aggregated["objections"] = list(set(aggregated["objections"]))
+        aggregated["failed_solutions"] = list(set(aggregated["failed_solutions"]))
+        aggregated["activation_events"] = list(set(aggregated["activation_events"]))
+
+        for key in aggregated["worldview"]:
+            aggregated["worldview"][key] = list(set(aggregated["worldview"][key]))
+
+        return aggregated
+
+    def _save_synthesis_record(
+        self,
+        brand_id: UUID,
+        aggregated: Dict,
+        personas: List[Dict]
+    ) -> Optional[UUID]:
+        """Save synthesis record to brand_ad_analysis table."""
+        try:
+            record = {
+                "brand_id": str(brand_id),
+                "analysis_type": "synthesis",
+                "raw_response": {
+                    "aggregated_input": aggregated,
+                    "generated_personas": personas
+                },
+                "extracted_hooks": [],
+                "extracted_benefits": [],
+                "pain_points": [],
+                "persona_signals": {"persona_count": len(personas)},
+                "model_used": "claude-sonnet-4-20250514",
+                "tokens_used": 0,
+                "cost_usd": 0.0
+            }
+
+            result = self.supabase.table("brand_ad_analysis").insert(record).execute()
+
+            if result.data:
+                logger.info(f"Saved synthesis record for brand: {brand_id}")
+                return UUID(result.data[0]["id"])
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save synthesis record: {e}")
+            return None
+
+
+# Persona synthesis prompt
+PERSONA_SYNTHESIS_PROMPT = """You are an expert at building detailed 4D customer personas from advertising data.
+
+Given the aggregated ad analysis data below, identify distinct customer segments and generate {max_personas} persona(s).
+
+AGGREGATED DATA:
+{aggregated_data}
+
+INSTRUCTIONS:
+1. Look for DISTINCT patterns in the data that suggest different customer segments
+2. If the data is homogeneous, generate 1 persona. If you see clear distinctions (e.g., different age groups, different motivations), generate up to {max_personas} personas.
+3. Each persona should be unique and represent a distinct segment
+4. Use the ACTUAL language from the ads - don't make up generic descriptions
+5. Assign a confidence score (0.0-1.0) based on how much supporting data exists
+
+Return JSON with this structure:
+{{
+  "segment_analysis": "Brief explanation of distinct segments found (or why there's only one)",
+  "personas": [
+    {{
+      "name": "Descriptive persona name (e.g., 'Worried Senior Dog Mom')",
+      "snapshot": "2-3 sentence description capturing essence",
+      "confidence_score": 0.85,
+
+      "demographics": {{
+        "age_range": "e.g., 35-55",
+        "gender": "male/female/any",
+        "location": "e.g., Suburban USA",
+        "income_level": "e.g., Middle class",
+        "occupation": "e.g., Professional",
+        "family_status": "e.g., Pet parent"
+      }},
+
+      "transformation_map": {{
+        "before": ["Current state/frustration 1", "Current state 2"],
+        "after": ["Desired outcome 1", "Desired state 2"]
+      }},
+
+      "desires": {{
+        "care_protection": [{{"text": "Specific desire text", "source": "ad_analysis"}}],
+        "freedom_from_fear": [{{"text": "Specific desire", "source": "ad_analysis"}}],
+        "social_approval": [{{"text": "Specific desire", "source": "ad_analysis"}}],
+        "self_actualization": [{{"text": "Specific desire", "source": "ad_analysis"}}]
+      }},
+
+      "self_narratives": [
+        "Because I am X, I do Y",
+        "I'm the kind of person who..."
+      ],
+      "current_self_image": "How they see themselves",
+      "desired_self_image": "Who they want to become",
+      "identity_artifacts": ["Brands/products tied to identity"],
+
+      "social_relations": {{
+        "want_to_impress": ["Who they want to impress"],
+        "fear_judged_by": ["Who they fear judgment from"],
+        "influence_decisions": ["Who influences their decisions"]
+      }},
+
+      "worldview": "Their general worldview",
+      "core_values": ["Value 1", "Value 2"],
+      "forces_of_good": ["What they see as good"],
+      "forces_of_evil": ["What they see as bad/villains"],
+      "allergies": {{
+        "trigger": "reaction that turns them off"
+      }},
+
+      "pain_points": {{
+        "emotional": ["Emotional pain 1", "Emotional pain 2"],
+        "social": ["Social pain"],
+        "functional": ["Functional pain 1"]
+      }},
+
+      "outcomes_jtbd": {{
+        "emotional": ["How they want to feel"],
+        "social": ["How they want to be seen"],
+        "functional": ["What they want to accomplish"]
+      }},
+
+      "failed_solutions": ["What they've tried before"],
+      "buying_objections": {{
+        "emotional": ["Fear of wasting money"],
+        "social": ["Fear of looking foolish"],
+        "functional": ["Will it work?"]
+      }},
+      "familiar_promises": ["Claims they've heard before"],
+
+      "activation_events": ["What triggers purchase NOW"],
+      "decision_process": "How they make decisions",
+      "current_workarounds": ["What they do instead"],
+
+      "emotional_risks": ["What they're afraid of"],
+      "barriers_to_behavior": ["What stops them from acting"]
+    }}
+  ]
+}}
+
+Return ONLY valid JSON, no other text."""
