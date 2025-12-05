@@ -729,7 +729,7 @@ class BrandResearchService:
 
         # Get ads with copy
         ads_result = self.supabase.table("facebook_ads").select(
-            "id, ad_creative_body, snapshot"
+            "id, ad_body, ad_title, snapshot"
         ).in_("id", ad_ids).execute()
 
         # Check which already analyzed
@@ -744,13 +744,15 @@ class BrandResearchService:
             if ad['id'] in analyzed_ids:
                 continue
 
-            ad_copy = ad.get('ad_creative_body', '')
+            ad_copy = ad.get('ad_body', '')
 
-            # Try to get headline from snapshot
-            snapshot = ad.get('snapshot', {})
-            if isinstance(snapshot, str):
-                snapshot = json.loads(snapshot)
-            headline = snapshot.get('title', '')
+            # Get headline from ad_title column, fallback to snapshot
+            headline = ad.get('ad_title', '')
+            if not headline:
+                snapshot = ad.get('snapshot', {})
+                if isinstance(snapshot, str):
+                    snapshot = json.loads(snapshot)
+                headline = snapshot.get('title', '')
 
             if not ad_copy and not headline:
                 continue
