@@ -57,7 +57,7 @@ def get_products_for_brand(brand_id: str):
     """Fetch products for a brand."""
     try:
         db = get_supabase_client()
-        result = db.table("products").select("id, name, code").eq("brand_id", brand_id).order("name").execute()
+        result = db.table("products").select("id, name").eq("brand_id", brand_id).order("name").execute()
         return result.data or []
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
