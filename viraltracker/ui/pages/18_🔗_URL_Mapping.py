@@ -297,7 +297,7 @@ else:
                             st.warning("Enter a product name")
                 else:
                     # Standard buttons for existing product or other actions
-                    col_a, col_b, col_c = st.columns(3)
+                    col_a, col_b, col_c, col_d = st.columns(4)
                     with col_a:
                         if st.button("✓", key=f"confirm_{url_record['id']}", help="Assign to product"):
                             if selected_option and product_options[selected_option] and product_options[selected_option] != "__new__":
@@ -311,11 +311,15 @@ else:
                             else:
                                 st.warning("Select a product first")
                     with col_b:
-                        if st.button("🏢", key=f"brand_{url_record['id']}", help="Mark as brand-level (homepage, collection, etc.)"):
+                        if st.button("🏠", key=f"brand_{url_record['id']}", help="Brand-level (homepage, about page)"):
                             service.mark_as_brand_level(url_record['id'])
                             st.rerun()
                     with col_c:
-                        if st.button("✗", key=f"ignore_{url_record['id']}", help="Ignore (social media, external link, etc.)"):
+                        if st.button("📁", key=f"collection_{url_record['id']}", help="Collection page (multiple products)"):
+                            service.mark_as_collection(url_record['id'])
+                            st.rerun()
+                    with col_d:
+                        if st.button("✗", key=f"ignore_{url_record['id']}", help="Ignore (social media, external)"):
                             service.ignore_url(url_record['id'], ignore_reason="not_relevant")
                             st.rerun()
 
@@ -334,7 +338,8 @@ with st.expander("ℹ️ How URL Mapping Works"):
     2. **Review & Assign**: For each discovered URL, you can:
        - **✓ Assign to Product**: Link URL to an existing product (also adds as matching pattern)
        - **➕ New Product**: Create a new product and assign the URL to it
-       - **🏢 Brand-level**: Mark as brand-wide URL (homepage, collections) - included in brand analysis but not product-specific
+       - **🏠 Brand-level**: Homepage, about pages - brand-wide but not product-specific
+       - **📁 Collection**: Collection/category pages featuring multiple products
        - **✗ Ignore**: Skip URLs that aren't relevant (social media links, external sites)
 
     3. **Bulk Match**: Once URL patterns are configured, "Run Bulk URL Matching" will automatically tag all ads with their products.
@@ -343,11 +348,13 @@ with st.expander("ℹ️ How URL Mapping Works"):
 
     | URL Type | Action | Example |
     |----------|--------|---------|
-    | Product page | Assign to product | `/products/plaque-defense` |
-    | Collection page | Brand-level | `/collections/dental-care` |
-    | Homepage | Brand-level | `/` |
-    | Social media | Ignore | `instagram.com/brand` |
-    | External link | Ignore | `youtube.com/watch?v=...` |
+    | Product page | ✓ Assign to product | `/products/plaque-defense` |
+    | Product landing | ➕ New Product | `/pages/dog-itch-relief` |
+    | Collection page | 📁 Collection | `/collections/dental-care` |
+    | Homepage | 🏠 Brand-level | `/` |
+    | About/Info page | 🏠 Brand-level | `/pages/about-us` |
+    | Social media | ✗ Ignore | `instagram.com/brand` |
+    | External link | ✗ Ignore | `youtube.com/watch?v=...` |
 
     ### Pattern Types
 

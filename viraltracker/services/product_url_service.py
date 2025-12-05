@@ -622,8 +622,8 @@ class ProductURLService:
         """
         Mark a URL as brand-level (applies to whole brand, not specific product).
 
-        Useful for homepages, collection pages, etc. that should be included
-        in brand-level persona analysis but not product-specific analysis.
+        Useful for homepages that should be included in brand-level persona
+        analysis but not product-specific analysis.
 
         Args:
             queue_id: Review queue record UUID
@@ -635,12 +635,37 @@ class ProductURLService:
             .update({
                 "status": "brand_level",
                 "reviewed_at": datetime.utcnow().isoformat(),
-                "notes": "Brand-level URL (not product-specific)"
+                "notes": "Brand-level URL (homepage, about, etc.)"
             })\
             .eq("id", str(queue_id))\
             .execute()
 
         logger.info(f"Marked URL as brand-level: {queue_id}")
+        return result.data[0] if result.data else {}
+
+    def mark_as_collection(self, queue_id: UUID) -> Dict[str, Any]:
+        """
+        Mark a URL as a collection page.
+
+        Collection pages showcase multiple products. Useful for brands that
+        run ads to collection pages rather than individual product pages.
+
+        Args:
+            queue_id: Review queue record UUID
+
+        Returns:
+            Updated review queue record
+        """
+        result = self.supabase.table("url_review_queue")\
+            .update({
+                "status": "collection",
+                "reviewed_at": datetime.utcnow().isoformat(),
+                "notes": "Collection page (multiple products)"
+            })\
+            .eq("id", str(queue_id))\
+            .execute()
+
+        logger.info(f"Marked URL as collection: {queue_id}")
         return result.data[0] if result.data else {}
 
     def _rematch_ads_for_url(
