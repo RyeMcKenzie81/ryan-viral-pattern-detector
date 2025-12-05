@@ -237,9 +237,9 @@ st.subheader("📋 URL Review Queue")
 pending_urls = service.get_review_queue(brand_id, status='pending', limit=20)
 
 if not pending_urls:
-    st.success("No URLs pending review! All ads are matched or you haven't run bulk matching yet.")
+    st.success("No URLs pending review! All ads are matched or you haven't run URL discovery yet.")
 else:
-    st.caption(f"Found {len(pending_urls)} unmatched URLs. Assign them to products or mark as ignored.")
+    st.caption(f"Found {len(pending_urls)} unmatched URLs. Assign them to products, mark as brand-level, or ignore.")
 
     for url_record in pending_urls:
         with st.container():
@@ -258,34 +258,66 @@ else:
                             st.text(f"• {body}..." if body else "• (No text content)")
 
             with col2:
-                # Product assignment dropdown
-                product_options = {"Select product...": None}
+                # Product assignment dropdown with "New Product" option
+                product_options = {"Select action...": None, "➕ New Product": "__new__"}
                 product_options.update({p['name']: p['id'] for p in products})
 
-                selected_product = st.selectbox(
+                selected_option = st.selectbox(
                     "Assign to",
                     options=list(product_options.keys()),
                     key=f"assign_{url_record['id']}",
                     label_visibility="collapsed"
                 )
 
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("✓", key=f"confirm_{url_record['id']}", help="Assign to product"):
-                        if selected_product and product_options[selected_product]:
-                            service.assign_url_to_product(
-                                queue_id=url_record['id'],
-                                product_id=product_options[selected_product],
-                                add_as_pattern=True
-                            )
-                            st.success("Assigned!")
-                            st.rerun()
+                # Show new product name input if "New Product" selected
+                if selected_option == "➕ New Product":
+                    new_product_name = st.text_input(
+                        "Product name",
+                        key=f"new_product_name_{url_record['id']}",
+                        placeholder="e.g., Plaque Defense"
+                    )
+                    if st.button("Create & Assign", key=f"create_{url_record['id']}", type="primary"):
+                        if new_product_name:
+                            try:
+                                # Create product and assign URL
+                                new_product = service.create_product(
+                                    brand_id=brand_id,
+                                    name=new_product_name
+                                )
+                                service.assign_url_to_product(
+                                    queue_id=url_record['id'],
+                                    product_id=new_product['id'],
+                                    add_as_pattern=True
+                                )
+                                st.success(f"Created '{new_product_name}' and assigned URL!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
                         else:
-                            st.warning("Select a product first")
-                with col_b:
-                    if st.button("✗", key=f"ignore_{url_record['id']}", help="Ignore (not a product URL)"):
-                        service.ignore_url(url_record['id'])
-                        st.rerun()
+                            st.warning("Enter a product name")
+                else:
+                    # Standard buttons for existing product or other actions
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        if st.button("✓", key=f"confirm_{url_record['id']}", help="Assign to product"):
+                            if selected_option and product_options[selected_option] and product_options[selected_option] != "__new__":
+                                service.assign_url_to_product(
+                                    queue_id=url_record['id'],
+                                    product_id=product_options[selected_option],
+                                    add_as_pattern=True
+                                )
+                                st.success("Assigned!")
+                                st.rerun()
+                            else:
+                                st.warning("Select a product first")
+                    with col_b:
+                        if st.button("🏢", key=f"brand_{url_record['id']}", help="Mark as brand-level (homepage, collection, etc.)"):
+                            service.mark_as_brand_level(url_record['id'])
+                            st.rerun()
+                    with col_c:
+                        if st.button("✗", key=f"ignore_{url_record['id']}", help="Ignore (social media, external link, etc.)"):
+                            service.ignore_url(url_record['id'], ignore_reason="not_relevant")
+                            st.rerun()
 
             st.markdown("---")
 
@@ -297,29 +329,30 @@ with st.expander("ℹ️ How URL Mapping Works"):
     st.markdown("""
     ### URL Matching Process
 
-    1. **Configure URL Patterns**: Add landing page URLs for each product
-       - `contains`: URL includes the pattern (most flexible)
-       - `prefix`: URL starts with the pattern
-       - `exact`: URL matches exactly
-       - `regex`: Regular expression matching
+    1. **Discover URLs**: Click "Discover URLs from Ads" to scan all scraped ads and find unique landing page URLs.
 
-    2. **Run Bulk Matching**: Click "Run Bulk URL Matching" to:
-       - Extract landing page URLs from all scraped Facebook ads
-       - Match them against your configured patterns
-       - Tag ads with the matched product
-       - Queue unmatched URLs for review
+    2. **Review & Assign**: For each discovered URL, you can:
+       - **✓ Assign to Product**: Link URL to an existing product (also adds as matching pattern)
+       - **➕ New Product**: Create a new product and assign the URL to it
+       - **🏢 Brand-level**: Mark as brand-wide URL (homepage, collections) - included in brand analysis but not product-specific
+       - **✗ Ignore**: Skip URLs that aren't relevant (social media links, external sites)
 
-    3. **Review Queue**: For unmatched URLs:
-       - Assign to an existing product (also adds as a pattern)
-       - Or ignore if it's not a product page (e.g., homepage, about page)
+    3. **Bulk Match**: Once URL patterns are configured, "Run Bulk URL Matching" will automatically tag all ads with their products.
 
-    ### Examples
+    ### URL Categories
 
-    For Wonder Paws Plaque Defense, you might add:
-    - `mywonderpaws.com/products/plaque` (contains)
-    - `mywonderpaws.com/products/wonder-paws-plaque-defense` (contains)
+    | URL Type | Action | Example |
+    |----------|--------|---------|
+    | Product page | Assign to product | `/products/plaque-defense` |
+    | Collection page | Brand-level | `/collections/dental-care` |
+    | Homepage | Brand-level | `/` |
+    | Social media | Ignore | `instagram.com/brand` |
+    | External link | Ignore | `youtube.com/watch?v=...` |
 
-    This will match URLs like:
-    - `https://www.mywonderpaws.com/products/plaque-defense?utm_source=facebook`
-    - `https://mywonderpaws.com/products/wonder-paws-plaque-defense-dental-powder`
+    ### Pattern Types
+
+    - `contains`: URL includes the pattern (most flexible, recommended)
+    - `prefix`: URL starts with the pattern
+    - `exact`: URL matches exactly
+    - `regex`: Regular expression matching
     """)

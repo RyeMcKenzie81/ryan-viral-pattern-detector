@@ -41,6 +41,41 @@ class ProductURLService:
         self.supabase = supabase or get_supabase_client()
 
     # ============================================================
+    # Product Management
+    # ============================================================
+
+    def create_product(
+        self,
+        brand_id: UUID,
+        name: str,
+        description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new product for a brand.
+
+        Args:
+            brand_id: Brand UUID
+            name: Product name
+            description: Optional product description
+
+        Returns:
+            Created product record
+        """
+        record = {
+            "brand_id": str(brand_id),
+            "name": name,
+            "description": description
+        }
+
+        result = self.supabase.table("products").insert(record).execute()
+
+        if result.data:
+            logger.info(f"Created product '{name}' for brand {brand_id}")
+            return result.data[0]
+        else:
+            raise ValueError(f"Failed to create product: {name}")
+
+    # ============================================================
     # Product URL Management
     # ============================================================
 
@@ -551,9 +586,44 @@ class ProductURLService:
         logger.info(f"Assigned URL {queue_record['url']} to product {product_id}")
         return result.data[0] if result.data else {}
 
-    def ignore_url(self, queue_id: UUID) -> Dict[str, Any]:
+    def ignore_url(
+        self,
+        queue_id: UUID,
+        ignore_reason: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Mark a queued URL as ignored (not a product page).
+
+        Args:
+            queue_id: Review queue record UUID
+            ignore_reason: Optional reason/category (e.g., 'homepage', 'social', 'collection', 'other')
+
+        Returns:
+            Updated review queue record
+        """
+        update_data = {
+            "status": "ignored",
+            "reviewed_at": datetime.utcnow().isoformat()
+        }
+
+        # Store reason in notes field if provided
+        if ignore_reason:
+            update_data["notes"] = f"Ignored: {ignore_reason}"
+
+        result = self.supabase.table("url_review_queue")\
+            .update(update_data)\
+            .eq("id", str(queue_id))\
+            .execute()
+
+        logger.info(f"Ignored URL in queue: {queue_id} (reason: {ignore_reason})")
+        return result.data[0] if result.data else {}
+
+    def mark_as_brand_level(self, queue_id: UUID) -> Dict[str, Any]:
+        """
+        Mark a URL as brand-level (applies to whole brand, not specific product).
+
+        Useful for homepages, collection pages, etc. that should be included
+        in brand-level persona analysis but not product-specific analysis.
 
         Args:
             queue_id: Review queue record UUID
@@ -563,13 +633,14 @@ class ProductURLService:
         """
         result = self.supabase.table("url_review_queue")\
             .update({
-                "status": "ignored",
-                "reviewed_at": datetime.utcnow().isoformat()
+                "status": "brand_level",
+                "reviewed_at": datetime.utcnow().isoformat(),
+                "notes": "Brand-level URL (not product-specific)"
             })\
             .eq("id", str(queue_id))\
             .execute()
 
-        logger.info(f"Ignored URL in queue: {queue_id}")
+        logger.info(f"Marked URL as brand-level: {queue_id}")
         return result.data[0] if result.data else {}
 
     def _rematch_ads_for_url(
