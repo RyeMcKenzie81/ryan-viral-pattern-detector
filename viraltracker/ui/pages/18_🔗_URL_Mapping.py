@@ -132,19 +132,37 @@ with col3:
 with col4:
     st.metric("URLs to Review", stats['pending_review_urls'])
 
-# Bulk matching button
-if stats['unmatched_ads'] > 0:
-    if st.button("🔄 Run Bulk URL Matching", disabled=st.session_state.matching_in_progress):
+# Action buttons
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("🔍 Discover URLs from Ads", disabled=st.session_state.matching_in_progress, help="Scan ads and extract all unique URLs for review"):
         st.session_state.matching_in_progress = True
-        with st.spinner("Matching ads to products..."):
+        with st.spinner("Discovering URLs from ads..."):
             try:
-                result = service.bulk_match_ads(brand_id, limit=500)
-                st.success(f"Matched {result['matched']} ads, {result['unmatched']} unmatched, {result['failed']} failed")
+                result = service.discover_urls_from_ads(brand_id, limit=1000)
+                st.success(f"Found {result['discovered']} unique URLs: {result['new']} new, {result['existing']} already in queue")
                 st.session_state.matching_in_progress = False
                 st.rerun()
             except Exception as e:
-                st.error(f"Matching failed: {e}")
+                st.error(f"Discovery failed: {e}")
                 st.session_state.matching_in_progress = False
+
+with col2:
+    if stats['pending_review_urls'] == 0 and stats['configured_patterns'] > 0:
+        if st.button("🔄 Run Bulk URL Matching", disabled=st.session_state.matching_in_progress, help="Match ads to products using configured patterns"):
+            st.session_state.matching_in_progress = True
+            with st.spinner("Matching ads to products..."):
+                try:
+                    result = service.bulk_match_ads(brand_id, limit=500)
+                    st.success(f"Matched {result['matched']} ads, {result['unmatched']} unmatched, {result['failed']} failed")
+                    st.session_state.matching_in_progress = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Matching failed: {e}")
+                    st.session_state.matching_in_progress = False
+    elif stats['pending_review_urls'] > 0:
+        st.info("👆 Assign pending URLs to products first, then run bulk matching")
 
 # ============================================================
 # Product URL Management

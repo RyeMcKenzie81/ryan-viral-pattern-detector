@@ -595,6 +595,114 @@ class ProductURLService:
         return updated
 
     # ============================================================
+    # URL Discovery
+    # ============================================================
+
+    def discover_urls_from_ads(
+        self,
+        brand_id: UUID,
+        limit: int = 1000
+    ) -> Dict[str, Any]:
+        """
+        Discover all unique URLs from scraped ads and add to review queue.
+
+        This is the recommended first step - discover what URLs exist,
+        then assign them to products.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum ads to scan
+
+        Returns:
+            Stats dict with discovered, new, existing counts
+        """
+        # Fetch all ads for this brand
+        result = self.supabase.table("facebook_ads")\
+            .select("id, snapshot")\
+            .eq("brand_id", str(brand_id))\
+            .limit(limit)\
+            .execute()
+
+        ads = result.data or []
+        discovered_urls = {}  # normalized_url -> {url, ad_ids}
+
+        for ad in ads:
+            url = self.extract_url_from_ad(ad)
+            if not url:
+                continue
+
+            normalized = self._normalize_url(url)
+            if not normalized:
+                continue
+
+            if normalized not in discovered_urls:
+                discovered_urls[normalized] = {
+                    "url": url,
+                    "ad_ids": []
+                }
+
+            if len(discovered_urls[normalized]["ad_ids"]) < 5:
+                discovered_urls[normalized]["ad_ids"].append(ad['id'])
+
+        # Add all discovered URLs to review queue
+        stats = {"discovered": len(discovered_urls), "new": 0, "existing": 0}
+
+        for normalized, data in discovered_urls.items():
+            # Check if already in queue or already matched to a product
+            existing = self.supabase.table("url_review_queue")\
+                .select("id")\
+                .eq("brand_id", str(brand_id))\
+                .eq("normalized_url", normalized)\
+                .execute()
+
+            if existing.data:
+                # Update occurrence count
+                stats["existing"] += 1
+                self.supabase.table("url_review_queue")\
+                    .update({
+                        "occurrence_count": len([a for a in ads if self._normalize_url(self.extract_url_from_ad(a) or "") == normalized]),
+                        "sample_ad_ids": data["ad_ids"]
+                    })\
+                    .eq("brand_id", str(brand_id))\
+                    .eq("normalized_url", normalized)\
+                    .execute()
+            else:
+                # Check if URL matches an existing product pattern
+                match = self.match_url_to_product(data["url"], brand_id)
+
+                if match:
+                    # Already has a pattern - mark as assigned
+                    product_id, confidence, _ = match
+                    self.supabase.table("url_review_queue")\
+                        .insert({
+                            "brand_id": str(brand_id),
+                            "url": data["url"],
+                            "normalized_url": normalized,
+                            "sample_ad_ids": data["ad_ids"],
+                            "occurrence_count": 1,
+                            "status": "assigned",
+                            "suggested_product_id": str(product_id),
+                            "suggestion_confidence": confidence
+                        })\
+                        .execute()
+                else:
+                    # New URL - add to pending queue
+                    self.supabase.table("url_review_queue")\
+                        .insert({
+                            "brand_id": str(brand_id),
+                            "url": data["url"],
+                            "normalized_url": normalized,
+                            "sample_ad_ids": data["ad_ids"],
+                            "occurrence_count": 1,
+                            "status": "pending"
+                        })\
+                        .execute()
+                    stats["new"] += 1
+
+        logger.info(f"URL discovery for brand {brand_id}: {stats}")
+        return stats
+
+    # ============================================================
     # Statistics
     # ============================================================
 
