@@ -1384,19 +1384,26 @@ class BrandResearchService:
             "ad_id"
         ).eq("brand_id", str(brand_id)).limit(limit).execute()
 
+        logger.warning(f"DEBUG: brand_id={brand_id}, limit={limit}, linked_ads={len(link_result.data or [])}")
+
         if not link_result.data:
             logger.info(f"No ads found for brand: {brand_id}")
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
 
         ad_ids = [r['ad_id'] for r in link_result.data]
+        logger.warning(f"DEBUG: First 3 ad_ids: {ad_ids[:3]}")
 
         # Get ads that don't have assets yet
         existing_assets = self.supabase.table("scraped_ad_assets").select(
             "facebook_ad_id"
         ).in_("facebook_ad_id", ad_ids).execute()
 
+        logger.warning(f"DEBUG: existing_assets count={len(existing_assets.data or [])}")
+
         ads_with_assets = {r['facebook_ad_id'] for r in (existing_assets.data or [])}
         ads_needing_assets = [aid for aid in ad_ids if aid not in ads_with_assets]
+
+        logger.warning(f"DEBUG: ads_with_assets={len(ads_with_assets)}, ads_needing={len(ads_needing_assets)}")
 
         if not ads_needing_assets:
             logger.info(f"All ads already have assets for brand: {brand_id}")
