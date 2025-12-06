@@ -2,7 +2,7 @@
 
 **Date**: 2025-12-06
 **Branch**: `feature/brand-research-pipeline`
-**Status**: In progress - debugging asset download issue
+**Status**: Complete - asset download issue resolved
 
 ---
 
@@ -64,57 +64,23 @@ Added 6 tabs to display all 4D persona fields:
   - "Downloaded video: X bytes"
   - Warnings when URLs exist but download fails
 
----
+### 7. Asset Download Async Fix (DONE)
+**File**: `viraltracker/ui/pages/19_🔬_Brand_Research.py`
 
-## Current Issue: Asset Downloads Failing
+**Problem**: Asset downloads worked once after server deploy, then returned "0 videos, 0 images from 0 ads" on subsequent clicks.
 
-### Symptoms
-- 38 ads show "need download"
-- Download button shows success quickly ("Downloaded 0 videos, 0 images from 0 ads")
-- Number doesn't decrease
-- First 15 ads downloaded successfully, remaining 38 don't
+**Root Cause**: The Supabase client uses a singleton pattern (`_supabase_client` in `core/database.py`). When `asyncio.run()` completes, it closes the event loop. The singleton client retains stale async connections (httpx) bound to the closed loop, causing silent failures on subsequent calls.
 
-### What We Know
-- URLs ARE extractable (tested locally - all 38 have video URLs)
-- Downloads work locally (tested - 13MB video downloads fine)
-- All ads scraped at same time (not URL expiration)
-- The function returns immediately showing 0 processed
-
-### Likely Cause
-The code thinks these ads already have assets (line 1398-1399):
+**Fix**: Reset the Supabase singleton before each async call in `run_async()`:
 ```python
-existing_assets = self.supabase.table("scraped_ad_assets").select(
-    "facebook_ad_id"
-).in_("facebook_ad_id", ad_ids).execute()
-
-ads_with_assets = {r['facebook_ad_id'] for r in (existing_assets.data or [])}
-ads_needing_assets = [aid for aid in ad_ids if aid not in ads_with_assets]
+def run_async(coro):
+    """Run async function in Streamlit context."""
+    from viraltracker.core.database import reset_supabase_client
+    reset_supabase_client()
+    return asyncio.run(coro)
 ```
 
-Need to verify:
-1. Check if `scraped_ad_assets` has records for these 38 ads
-2. If so, why (maybe partial records from failed uploads?)
-
-### Debug Steps for Next Session
-```python
-# Check what's in scraped_ad_assets for "needing" ads
-from viraltracker.core.database import get_supabase_client
-client = get_supabase_client()
-
-# Get brand ads
-brand_id = 'bc8461a8-232d-4765-8775-c75eaafc5503'  # Wonder Paws
-link_result = client.table('brand_facebook_ads').select('ad_id').eq('brand_id', brand_id).execute()
-ad_ids = [r['ad_id'] for r in link_result.data]
-
-# Check scraped_ad_assets
-assets = client.table('scraped_ad_assets').select('id, facebook_ad_id, storage_path, mime_type').in_('facebook_ad_id', ad_ids).execute()
-print(f"Total asset records: {len(assets.data)}")
-
-# Group by ad
-from collections import Counter
-ad_counts = Counter(a['facebook_ad_id'] for a in assets.data)
-print(f"Ads with assets: {len(ad_counts)}")
-```
+This ensures a fresh client with valid async connections for each operation.
 
 ---
 
@@ -187,16 +153,17 @@ viraltracker/services/ad_scraping_service.py
 viraltracker/ui/pages/19_🔬_Brand_Research.py
 - render_stats_section(): 5 columns with pending counts
 - render_persona_review(): 6 tabs for all 4D fields
+- run_async(): Reset Supabase singleton to fix stale async connections
 ```
 
 ---
 
 ## Next Steps
 
-1. **Debug asset download** - Check why 38 ads think they have assets
-2. **Test copy analysis** - Run with new rate limiting
-3. **Wire up product filtering** - Filter ads by product URL patterns
-4. **Test full persona flow** - Analyze → Synthesize → Approve → Save
+1. **Test copy analysis** - Run with new rate limiting
+2. **Wire up product filtering** - Filter ads by product URL patterns
+3. **Test full persona flow** - Analyze → Synthesize → Approve → Save
+4. **Download remaining assets** - ~25 ads still need asset downloads
 
 ---
 

@@ -163,7 +163,14 @@ def get_analysis_stats_for_brand(brand_id: str) -> Dict[str, int]:
 
 
 def run_async(coro):
-    """Run async function in Streamlit context."""
+    """Run async function in Streamlit context.
+
+    Note: We reset the Supabase singleton before each async run because
+    asyncio.run() creates/closes event loops, which can leave the singleton
+    client in an invalid state with stale async connections.
+    """
+    from viraltracker.core.database import reset_supabase_client
+    reset_supabase_client()
     return asyncio.run(coro)
 
 
