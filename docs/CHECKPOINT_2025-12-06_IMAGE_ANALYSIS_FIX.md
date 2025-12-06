@@ -82,6 +82,38 @@ def run_async(coro):
 
 This ensures a fresh client with valid async connections for each operation.
 
+### 8. Asset Download Limit Bug Fix (DONE)
+**File**: `viraltracker/services/brand_research_service.py`
+
+**Problem**: Download showed "0 ads processed" even though 25+ ads needed assets.
+
+**Root Cause**: The `limit` parameter was applied to the initial `brand_facebook_ads` query, so it only fetched the first N ads - which all happened to already have assets. The ads needing downloads were beyond that first batch.
+
+**Fix**: Fetch ALL ads first, filter to those needing assets, THEN apply limit:
+```python
+# Get ALL ads for brand (no limit here)
+link_result = self.supabase.table("brand_facebook_ads").select("ad_id").eq("brand_id", str(brand_id)).execute()
+# ... filter to ads_needing_assets ...
+# Apply limit AFTER filtering
+ads_to_process = ads_needing_assets[:limit]
+```
+
+### 9. Copy Analysis Fixes (DONE)
+**File**: `viraltracker/services/brand_research_service.py`
+
+Two bugs fixed in `analyze_copy_batch()`:
+
+1. **Same limit bug as asset download** - Applied limit before filtering, missing ads that needed analysis
+2. **Wrong data source** - Was looking for `ad_body`/`ad_title` columns (empty), but copy is stored in `snapshot.body.text` and `snapshot.title`
+
+**Fix**:
+```python
+# Extract copy from snapshot JSON, not columns
+body_data = snapshot.get('body', {})
+ad_copy = body_data.get('text', '') if isinstance(body_data, dict) else ''
+headline = snapshot.get('title', '')
+```
+
 ---
 
 ## Commits This Session
@@ -142,9 +174,9 @@ async def scrape_and_store_assets(facebook_ad_id, snapshot, brand_id, scrape_sou
 viraltracker/services/brand_research_service.py
 - analyze_image(): Claude → Gemini
 - analyze_images_batch(): Added delay_between
-- analyze_copy_batch(): Fixed columns, rate limiting
+- analyze_copy_batch(): Fixed limit bug, extract copy from snapshot JSON
 - _save_analysis(): Added model_used param
-- download_assets_for_brand(): Added logging
+- download_assets_for_brand(): Fixed limit bug (apply after filtering)
 
 viraltracker/services/ad_scraping_service.py
 - extract_asset_urls(): Handle videos/images arrays
@@ -154,16 +186,18 @@ viraltracker/ui/pages/19_🔬_Brand_Research.py
 - render_stats_section(): 5 columns with pending counts
 - render_persona_review(): 6 tabs for all 4D fields
 - run_async(): Reset Supabase singleton to fix stale async connections
+- download_assets_sync(): Cleaned up debug code
 ```
 
 ---
 
-## Next Steps
+## Next Steps for Tomorrow
 
-1. **Test copy analysis** - Run with new rate limiting
-2. **Wire up product filtering** - Filter ads by product URL patterns
-3. **Test full persona flow** - Analyze → Synthesize → Approve → Save
-4. **Download remaining assets** - ~25 ads still need asset downloads
+1. **Test copy analysis** - Should now find ads with copy in snapshot and analyze them
+2. **Run full analysis pipeline** - Download → Analyze Videos → Analyze Images → Analyze Copy → Synthesize
+3. **Test persona synthesis** - Verify personas are generated correctly from all analysis types
+4. **Wire up product filtering** - Filter ads by product URL patterns (for brands with multiple products)
+5. **Test full persona flow** - Analyze → Synthesize → Approve → Save to persona table
 
 ---
 

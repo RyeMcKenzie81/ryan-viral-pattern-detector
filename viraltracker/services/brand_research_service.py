@@ -717,10 +717,10 @@ class BrandResearchService:
         """
         import asyncio
 
-        # Get ads for brand via junction table
+        # Get ALL ads for brand via junction table (no limit - filter after)
         link_result = self.supabase.table("brand_facebook_ads").select(
             "ad_id"
-        ).eq("brand_id", str(brand_id)).limit(limit).execute()
+        ).eq("brand_id", str(brand_id)).execute()
 
         if not link_result.data:
             logger.info(f"No ads found for brand: {brand_id}")
@@ -728,9 +728,9 @@ class BrandResearchService:
 
         ad_ids = [r['ad_id'] for r in link_result.data]
 
-        # Get ads with copy
+        # Get ads with snapshots (copy is stored in snapshot JSON)
         ads_result = self.supabase.table("facebook_ads").select(
-            "id, ad_body, ad_title, snapshot"
+            "id, snapshot"
         ).in_("id", ad_ids).execute()
 
         # Check which already analyzed
@@ -746,22 +746,27 @@ class BrandResearchService:
             if ad['id'] in analyzed_ids:
                 continue
 
-            ad_copy = ad.get('ad_body', '')
+            # Extract copy from snapshot JSON
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
 
-            # Get headline from ad_title column, fallback to snapshot
-            headline = ad.get('ad_title', '')
-            if not headline:
-                snapshot = ad.get('snapshot', {})
-                if isinstance(snapshot, str):
-                    snapshot = json.loads(snapshot)
-                headline = snapshot.get('title', '')
+            # Get body text from snapshot.body.text
+            body_data = snapshot.get('body', {})
+            ad_copy = body_data.get('text', '') if isinstance(body_data, dict) else ''
+
+            # Get headline from snapshot.title
+            headline = snapshot.get('title', '')
 
             if not ad_copy and not headline:
                 continue
 
             ads_to_process.append((ad, ad_copy, headline))
 
-        logger.info(f"Processing {len(ads_to_process)} ads for copy analysis")
+        # Apply limit AFTER filtering to ads that need processing
+        total_needing = len(ads_to_process)
+        ads_to_process = ads_to_process[:limit]
+        logger.info(f"Processing {len(ads_to_process)} of {total_needing} ads for copy analysis (limit={limit})")
 
         for i, (ad, ad_copy, headline) in enumerate(ads_to_process):
             # Delay BEFORE each request (except first) to avoid rate limits
