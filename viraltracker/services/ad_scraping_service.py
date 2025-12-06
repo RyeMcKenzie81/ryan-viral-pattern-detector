@@ -86,6 +86,41 @@ class AdScrapingService:
         if snapshot.get('original_image_url'):
             images.append(snapshot['original_image_url'])
 
+        # Extract from 'videos' array (list of video objects)
+        for video in snapshot.get('videos', []):
+            if isinstance(video, dict):
+                if video.get('video_hd_url'):
+                    videos.append(video['video_hd_url'])
+                elif video.get('video_sd_url'):
+                    videos.append(video['video_sd_url'])
+
+        # Extract from 'images' array (list of image objects or URLs)
+        for image in snapshot.get('images', []):
+            if isinstance(image, dict):
+                if image.get('original_image_url'):
+                    images.append(image['original_image_url'])
+                elif image.get('resized_image_url'):
+                    images.append(image['resized_image_url'])
+            elif isinstance(image, str) and image.startswith('http'):
+                images.append(image)
+
+        # Also check extra_videos and extra_images
+        for video in snapshot.get('extra_videos', []):
+            if isinstance(video, dict):
+                if video.get('video_hd_url'):
+                    videos.append(video['video_hd_url'])
+                elif video.get('video_sd_url'):
+                    videos.append(video['video_sd_url'])
+
+        for image in snapshot.get('extra_images', []):
+            if isinstance(image, dict):
+                if image.get('original_image_url'):
+                    images.append(image['original_image_url'])
+                elif image.get('resized_image_url'):
+                    images.append(image['resized_image_url'])
+            elif isinstance(image, str) and image.startswith('http'):
+                images.append(image)
+
         # Deduplicate while preserving order
         images = list(dict.fromkeys(images))
         videos = list(dict.fromkeys(videos))
