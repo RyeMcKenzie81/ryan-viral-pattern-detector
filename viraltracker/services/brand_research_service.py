@@ -1379,40 +1379,39 @@ class BrandResearchService:
 
         scraping_service = AdScrapingService()
 
-        # Get ads for brand via junction table
+        # Get ALL ads for brand via junction table (no limit here - we filter after)
         link_result = self.supabase.table("brand_facebook_ads").select(
             "ad_id"
-        ).eq("brand_id", str(brand_id)).limit(limit).execute()
-
-        logger.warning(f"DEBUG: brand_id={brand_id}, limit={limit}, linked_ads={len(link_result.data or [])}")
+        ).eq("brand_id", str(brand_id)).execute()
 
         if not link_result.data:
             logger.info(f"No ads found for brand: {brand_id}")
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
 
         ad_ids = [r['ad_id'] for r in link_result.data]
-        logger.warning(f"DEBUG: First 3 ad_ids: {ad_ids[:3]}")
 
-        # Get ads that don't have assets yet
+        # Get ads that already have assets
         existing_assets = self.supabase.table("scraped_ad_assets").select(
             "facebook_ad_id"
         ).in_("facebook_ad_id", ad_ids).execute()
 
-        logger.warning(f"DEBUG: existing_assets count={len(existing_assets.data or [])}")
-
         ads_with_assets = {r['facebook_ad_id'] for r in (existing_assets.data or [])}
         ads_needing_assets = [aid for aid in ad_ids if aid not in ads_with_assets]
 
-        logger.warning(f"DEBUG: ads_with_assets={len(ads_with_assets)}, ads_needing={len(ads_needing_assets)}")
+        logger.info(f"Brand {brand_id}: {len(ad_ids)} total ads, {len(ads_with_assets)} with assets, {len(ads_needing_assets)} needing download")
 
         if not ads_needing_assets:
             logger.info(f"All ads already have assets for brand: {brand_id}")
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
 
+        # Apply limit AFTER filtering to ads that need assets
+        ads_to_process = ads_needing_assets[:limit]
+        logger.info(f"Processing {len(ads_to_process)} ads (limit={limit})")
+
         # Get ad snapshots
         ads_result = self.supabase.table("facebook_ads").select(
             "id, snapshot"
-        ).in_("id", ads_needing_assets[:limit]).execute()
+        ).in_("id", ads_to_process).execute()
 
         total_videos = 0
         total_images = 0
