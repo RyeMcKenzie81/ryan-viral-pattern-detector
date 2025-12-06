@@ -204,3 +204,22 @@ viraltracker/ui/pages/19_🔬_Brand_Research.py
 
 - [Previous Checkpoint](CHECKPOINT_2025-12-05_SPRINT2_TESTING.md)
 - [Roadmap](ROADMAP_REMAINING_FEATURES.md)
+- [4D Persona Implementation Plan](plans/4D_PERSONA_IMPLEMENTATION_PLAN.md)
+- [Architecture Guide](/docs/architecture.md)
+- [Claude Code Guide](/docs/claude_code_guide.md)
+
+---
+
+## Critical Requirements for Next Session
+
+1. **Create checkpoint every ~40K tokens** at `/docs/CHECKPOINT_*.md` documenting:
+   - What was implemented
+   - Method signatures
+   - Database changes
+   - Bugs found/fixed
+   - Next steps
+
+2. **STRICTLY follow pydantic-ai patterns** from `/CLAUDE.md`, `/docs/claude_code_guide.md`, and `/docs/architecture.md`:
+   - Tools = thin wrappers calling services
+   - Services = all business logic in `viraltracker/services/`
+   - No business logic in tools or UI
