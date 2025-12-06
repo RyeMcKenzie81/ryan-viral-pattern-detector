@@ -692,6 +692,7 @@ class BrandResearchService:
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse copy analysis response: {e}")
+            logger.error(f"Raw response was: {response_text[:500]}...")
             raise ValueError(f"Invalid JSON response: {e}")
         except Exception as e:
             logger.error(f"Copy analysis failed: {e}")
@@ -740,7 +741,8 @@ class BrandResearchService:
         analyzed_ids = {r['facebook_ad_id'] for r in (analyzed_result.data or [])}
 
         results = []
-        for i, ad in enumerate(ads_result.data):
+        ads_to_process = []
+        for ad in ads_result.data:
             if ad['id'] in analyzed_ids:
                 continue
 
@@ -757,6 +759,15 @@ class BrandResearchService:
             if not ad_copy and not headline:
                 continue
 
+            ads_to_process.append((ad, ad_copy, headline))
+
+        logger.info(f"Processing {len(ads_to_process)} ads for copy analysis")
+
+        for i, (ad, ad_copy, headline) in enumerate(ads_to_process):
+            # Delay BEFORE each request (except first) to avoid rate limits
+            if i > 0:
+                await asyncio.sleep(delay_between)
+
             try:
                 analysis = await self.analyze_copy(
                     ad_id=UUID(ad['id']),
@@ -765,9 +776,7 @@ class BrandResearchService:
                     brand_id=brand_id
                 )
                 results.append({"ad_id": ad['id'], "analysis": analysis})
-
-                if i < len(ads_result.data) - 1:
-                    await asyncio.sleep(delay_between)
+                logger.info(f"Copy analysis {i+1}/{len(ads_to_process)} complete")
 
             except Exception as e:
                 logger.error(f"Failed to analyze copy for ad {ad['id']}: {e}")
