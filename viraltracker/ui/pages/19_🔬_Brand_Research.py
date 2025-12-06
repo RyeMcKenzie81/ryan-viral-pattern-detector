@@ -470,27 +470,145 @@ def render_persona_review():
                     st.markdown(f"**Demographics:** {demo.get('age_range', 'N/A')}, "
                                f"{demo.get('gender', 'any')}, {demo.get('location', 'N/A')}")
 
-                # Key insights
-                st.markdown("**Key Pain Points:**")
-                pain_points = persona.get('pain_points', {})
-                for pp in pain_points.get('emotional', [])[:3]:
-                    st.markdown(f"- {pp}")
+                # Use tabs for organized display of all 4D fields
+                tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview", "Barriers", "Activation"])
 
-                st.markdown("**Desires:**")
-                desires = persona.get('desires', {})
-                for category, items in list(desires.items())[:3]:
-                    if items:
-                        item = items[0] if isinstance(items[0], str) else items[0].get('text', '')
-                        st.markdown(f"- [{category}] {item}")
+                with tabs[0]:  # Pain & Desires
+                    col_pain, col_desire = st.columns(2)
 
-                st.markdown("**Transformation:**")
-                transformation = persona.get('transformation_map', {})
-                before = transformation.get('before', [])[:2]
-                after = transformation.get('after', [])[:2]
-                for b in before:
-                    st.markdown(f"- Before: {b}")
-                for a in after:
-                    st.markdown(f"- After: {a}")
+                    with col_pain:
+                        st.markdown("**Pain Points:**")
+                        pain_points = persona.get('pain_points', {})
+                        for category in ['emotional', 'social', 'functional']:
+                            items = pain_points.get(category, [])
+                            for pp in items[:3]:
+                                st.markdown(f"- *{category}:* {pp}")
+
+                    with col_desire:
+                        st.markdown("**Desires:**")
+                        desires = persona.get('desires', {})
+                        for category, items in desires.items():
+                            if items:
+                                item = items[0] if isinstance(items[0], str) else items[0].get('text', '')
+                                st.markdown(f"- *{category}:* {item}")
+
+                    st.markdown("**Transformation:**")
+                    transformation = persona.get('transformation_map', {})
+                    col_before, col_after = st.columns(2)
+                    with col_before:
+                        st.markdown("*Before:*")
+                        for b in transformation.get('before', []):
+                            st.markdown(f"- {b}")
+                    with col_after:
+                        st.markdown("*After:*")
+                        for a in transformation.get('after', []):
+                            st.markdown(f"- {a}")
+
+                    st.markdown("**Outcomes (JTBD):**")
+                    outcomes = persona.get('outcomes_jtbd', {})
+                    for category in ['emotional', 'social', 'functional']:
+                        items = outcomes.get(category, [])
+                        for item in items[:2]:
+                            st.markdown(f"- *{category}:* {item}")
+
+                with tabs[1]:  # Identity
+                    st.markdown("**Self-Narratives:**")
+                    narratives = persona.get('self_narratives', [])
+                    for n in narratives:
+                        st.markdown(f"- \"{n}\"")
+
+                    col_curr, col_des = st.columns(2)
+                    with col_curr:
+                        st.markdown("**Current Self-Image:**")
+                        st.write(persona.get('current_self_image', 'N/A'))
+                    with col_des:
+                        st.markdown("**Desired Self-Image:**")
+                        st.write(persona.get('desired_self_image', 'N/A'))
+
+                    st.markdown("**Identity Artifacts:**")
+                    artifacts = persona.get('identity_artifacts', [])
+                    if artifacts:
+                        st.write(", ".join(artifacts))
+                    else:
+                        st.write("N/A")
+
+                with tabs[2]:  # Social
+                    social = persona.get('social_relations', {})
+
+                    st.markdown("**Want to Impress:**")
+                    for item in social.get('want_to_impress', []):
+                        st.markdown(f"- {item}")
+
+                    st.markdown("**Fear Judgment From:**")
+                    for item in social.get('fear_judged_by', []):
+                        st.markdown(f"- {item}")
+
+                    st.markdown("**Influences Their Decisions:**")
+                    for item in social.get('influence_decisions', []):
+                        st.markdown(f"- {item}")
+
+                with tabs[3]:  # Worldview
+                    st.markdown("**Worldview:**")
+                    st.write(persona.get('worldview', 'N/A'))
+
+                    st.markdown("**Core Values:**")
+                    values = persona.get('core_values', [])
+                    if values:
+                        st.write(", ".join(values))
+
+                    col_good, col_evil = st.columns(2)
+                    with col_good:
+                        st.markdown("**Forces of Good:**")
+                        for item in persona.get('forces_of_good', []):
+                            st.markdown(f"- {item}")
+                    with col_evil:
+                        st.markdown("**Forces of Evil:**")
+                        for item in persona.get('forces_of_evil', []):
+                            st.markdown(f"- {item}")
+
+                    st.markdown("**Allergies (Turn-offs):**")
+                    allergies = persona.get('allergies', {})
+                    if isinstance(allergies, dict):
+                        for trigger, reaction in allergies.items():
+                            st.markdown(f"- *{trigger}:* {reaction}")
+                    elif allergies:
+                        st.write(str(allergies))
+
+                with tabs[4]:  # Barriers
+                    st.markdown("**Failed Solutions (What They've Tried):**")
+                    for item in persona.get('failed_solutions', []):
+                        st.markdown(f"- {item}")
+
+                    st.markdown("**Buying Objections:**")
+                    objections = persona.get('buying_objections', {})
+                    for category in ['emotional', 'social', 'functional']:
+                        items = objections.get(category, [])
+                        for obj in items:
+                            st.markdown(f"- *{category}:* {obj}")
+
+                    st.markdown("**Familiar Promises (Claims They've Heard):**")
+                    for item in persona.get('familiar_promises', []):
+                        st.markdown(f"- {item}")
+
+                    st.markdown("**Emotional Risks:**")
+                    for item in persona.get('emotional_risks', []):
+                        st.markdown(f"- {item}")
+
+                    st.markdown("**Barriers to Behavior:**")
+                    for item in persona.get('barriers_to_behavior', []):
+                        st.markdown(f"- {item}")
+
+                with tabs[5]:  # Activation
+                    st.markdown("**Activation Events (What Triggers Purchase):**")
+                    for item in persona.get('activation_events', []):
+                        st.markdown(f"- {item}")
+
+                    st.markdown("**Decision Process:**")
+                    st.write(persona.get('decision_process', 'N/A'))
+
+                    st.markdown("**Current Workarounds:**")
+                    for item in persona.get('current_workarounds', []):
+                        st.markdown(f"- {item}")
 
             with col2:
                 st.markdown("**Actions**")
