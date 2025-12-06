@@ -328,8 +328,10 @@ def render_stats_section(brand_id: str):
 
     with col4:
         st.metric("Copy Analyzed", analysis_stats["copy_analysis"])
-        if analysis_stats["copy_analysis"] == 0 and ad_count > 0:
-            st.caption(f"{ad_count} ads ready")
+        if ad_count > 0:
+            pending = ad_count - analysis_stats["copy_analysis"]
+            if pending > 0:
+                st.caption(f"{pending} pending")
 
     with col5:
         st.metric("Total Analyses", analysis_stats["total"])
