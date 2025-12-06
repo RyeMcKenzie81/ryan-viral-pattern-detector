@@ -155,55 +155,55 @@ Ad Copy:
 
 Return ONLY valid JSON:
 
-{
-    "hook": {
+{{
+    "hook": {{
         "text": "The opening hook/first sentence",
         "hook_type": "curiosity|fear|benefit|social_proof|question|transformation|statistic"
-    },
+    }},
     "headline": "Main headline if present",
-    "target_persona": {
+    "target_persona": {{
         "age_range": "estimated target age",
         "gender_focus": "male|female|neutral",
         "lifestyle": ["lifestyle indicators"],
         "identity_statements": ["I'm the kind of person who...", "Because I..."]
-    },
-    "desires_appealed_to": {
+    }},
+    "desires_appealed_to": {{
         "care_protection": ["caring for loved ones"],
         "freedom_from_fear": ["relief from worry"],
         "social_approval": ["being seen as good"],
         "comfort_convenience": ["making life easier"]
-    },
-    "transformation": {
+    }},
+    "transformation": {{
         "before": ["problems before product"],
         "after": ["benefits after product"]
-    },
-    "pain_points": {
+    }},
+    "pain_points": {{
         "emotional": ["guilt, worry, frustration"],
         "functional": ["practical problems"]
-    },
-    "benefits_outcomes": {
+    }},
+    "benefits_outcomes": {{
         "emotional": ["how they'll feel"],
         "functional": ["practical results"]
-    },
+    }},
     "claims_made": ["specific claims with numbers/results"],
     "objections_handled": ["concerns addressed"],
     "failed_solutions_mentioned": ["other products that didn't work"],
     "urgency_triggers": ["limited time, scarcity"],
-    "social_proof": {
+    "social_proof": {{
         "type": "testimonial|statistic|authority|none",
         "details": ["specific proof mentioned"]
-    },
+    }},
     "call_to_action": "The CTA phrase",
-    "brand_voice": {
+    "brand_voice": {{
         "tone": "casual|professional|empathetic|urgent",
         "key_phrases": ["notable language patterns"]
-    },
-    "worldview": {
+    }},
+    "worldview": {{
         "values": ["what brand/customer values"],
         "villains": ["what's bad"],
         "heroes": ["what's good"]
-    }
-}
+    }}
+}}
 
 Extract exact quotes where possible. Return ONLY valid JSON."""
 
