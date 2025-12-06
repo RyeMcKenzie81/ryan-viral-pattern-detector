@@ -351,16 +351,27 @@ def render_download_section(brand_id: str):
 
             with st.spinner("Downloading assets from ad snapshots..."):
                 try:
+                    import logging
+                    logging.basicConfig(level=logging.INFO)
                     result = download_assets_sync(brand_id, limit)
+                    st.session_state['last_download_result'] = result
                     st.success(
                         f"Downloaded {result['videos_downloaded']} videos, "
                         f"{result['images_downloaded']} images from {result['ads_processed']} ads"
                     )
                 except Exception as e:
+                    import traceback
+                    st.session_state['last_download_error'] = traceback.format_exc()
                     st.error(f"Download failed: {e}")
 
             st.session_state.analysis_running = False
             st.rerun()
+
+    # Show debug info from last run
+    if 'last_download_result' in st.session_state:
+        st.info(f"Last result: {st.session_state['last_download_result']}")
+    if 'last_download_error' in st.session_state:
+        st.code(st.session_state['last_download_error'])
 
 
 def render_analysis_section(brand_id: str):
