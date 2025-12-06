@@ -106,26 +106,33 @@ def get_asset_stats_for_brand(brand_id: str) -> Dict[str, int]:
         ).execute()
 
         if not link_result.data:
-            return {"total": 0, "videos": 0, "images": 0}
+            return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
 
         ad_ids = [r['ad_id'] for r in link_result.data]
+        total_ads = len(ad_ids)
 
         # Get asset counts
         assets_result = db.table("scraped_ad_assets").select(
-            "id, mime_type"
+            "id, mime_type, facebook_ad_id"
         ).in_("facebook_ad_id", ad_ids).execute()
 
         videos = sum(1 for a in assets_result.data if a.get('mime_type', '').startswith('video/'))
         images = sum(1 for a in assets_result.data if a.get('mime_type', '').startswith('image/'))
 
+        # Count ads that have assets downloaded
+        ads_with_assets = len(set(a['facebook_ad_id'] for a in assets_result.data))
+        ads_without_assets = total_ads - ads_with_assets
+
         return {
             "total": len(assets_result.data),
             "videos": videos,
-            "images": images
+            "images": images,
+            "ads_with_assets": ads_with_assets,
+            "ads_without_assets": ads_without_assets
         }
     except Exception as e:
         st.error(f"Failed to get asset stats: {e}")
-        return {"total": 0, "videos": 0, "images": 0}
+        return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
 
 
 def get_analysis_stats_for_brand(brand_id: str) -> Dict[str, int]:
@@ -289,7 +296,7 @@ def render_brand_selector():
 
 def render_stats_section(brand_id: str):
     """Render statistics about the brand's data."""
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     ad_count = get_ad_count_for_brand(brand_id)
     asset_stats = get_asset_stats_for_brand(brand_id)
@@ -297,19 +304,28 @@ def render_stats_section(brand_id: str):
 
     with col1:
         st.metric("Ads Linked", ad_count)
+        if asset_stats.get("ads_without_assets", 0) > 0:
+            st.caption(f"{asset_stats['ads_without_assets']} need download")
 
     with col2:
-        st.metric("Videos Available", asset_stats["videos"])
+        st.metric("Videos", asset_stats["videos"])
         if analysis_stats["video_vision"] > 0:
-            st.caption(f"{analysis_stats['video_vision']} analyzed")
+            unanalyzed = asset_stats["videos"] - analysis_stats["video_vision"]
+            st.caption(f"{analysis_stats['video_vision']} analyzed" + (f", {unanalyzed} pending" if unanalyzed > 0 else ""))
 
     with col3:
-        st.metric("Images Available", asset_stats["images"])
+        st.metric("Images", asset_stats["images"])
         if analysis_stats["image_vision"] > 0:
-            st.caption(f"{analysis_stats['image_vision']} analyzed")
+            unanalyzed = asset_stats["images"] - analysis_stats["image_vision"]
+            st.caption(f"{analysis_stats['image_vision']} analyzed" + (f", {unanalyzed} pending" if unanalyzed > 0 else ""))
 
     with col4:
         st.metric("Copy Analyzed", analysis_stats["copy_analysis"])
+        if analysis_stats["copy_analysis"] == 0 and ad_count > 0:
+            st.caption(f"{ad_count} ads ready")
+
+    with col5:
+        st.metric("Total Analyses", analysis_stats["total"])
 
 
 def render_download_section(brand_id: str):
