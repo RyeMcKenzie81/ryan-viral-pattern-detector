@@ -1422,6 +1422,8 @@ class BrandResearchService:
                 continue
 
             try:
+                logger.info(f"Starting download for ad {ad['id'][:8]}: {len(urls.get('videos', []))} videos, {len(urls.get('images', []))} images to download")
+
                 result = await scraping_service.scrape_and_store_assets(
                     facebook_ad_id=UUID(ad['id']),
                     snapshot=snapshot,
@@ -1435,10 +1437,17 @@ class BrandResearchService:
                     total_images += len(result.get('images', []))
 
                 ads_processed += 1
-                logger.info(f"Downloaded assets for ad {ad['id'][:8]}: {len(result.get('videos', []))} videos, {len(result.get('images', []))} images")
+
+                # Log if nothing was downloaded despite having URLs
+                if len(urls.get('videos', [])) > 0 and len(result.get('videos', [])) == 0:
+                    logger.warning(f"Ad {ad['id'][:8]}: Had {len(urls['videos'])} video URLs but downloaded 0")
+                if len(urls.get('images', [])) > 0 and len(result.get('images', [])) == 0:
+                    logger.warning(f"Ad {ad['id'][:8]}: Had {len(urls['images'])} image URLs but downloaded 0")
+
+                logger.info(f"Completed ad {ad['id'][:8]}: {len(result.get('videos', []))} videos, {len(result.get('images', []))} images stored")
 
             except Exception as e:
-                logger.error(f"Failed to download assets for ad {ad['id']}: {e}")
+                logger.error(f"Failed to download assets for ad {ad['id']}: {e}", exc_info=True)
                 continue
 
         logger.info(f"Asset download complete: {ads_processed} ads, {total_videos} videos, {total_images} images")

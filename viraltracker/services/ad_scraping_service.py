@@ -433,15 +433,19 @@ class AdScrapingService:
 
         # Download and store videos
         for i, url in enumerate(urls["videos"]):
-            content = await self.download_asset(url, timeout=60.0)  # Longer timeout for videos
+            logger.info(f"Downloading video {i+1}/{len(urls['videos'])} for ad {facebook_ad_id}")
+            content = await self.download_asset(url, timeout=120.0)  # Longer timeout for videos
             if not content:
+                logger.warning(f"Failed to download video from: {url[:80]}...")
                 continue
+            logger.info(f"Downloaded video: {len(content)} bytes")
 
             mime_type = self._get_mime_type(url, content)
             storage_path = self.upload_to_storage(
                 content, facebook_ad_id, len(urls["images"]) + i, mime_type
             )
             if not storage_path:
+                logger.warning(f"Failed to upload video to storage for ad {facebook_ad_id}")
                 continue
 
             asset_id = self.save_asset_record(
