@@ -702,7 +702,7 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         limit: int = 50,
-        delay_between: float = 1.0
+        delay_between: float = 2.0
     ) -> List[Dict]:
         """
         Analyze copy for all ads of a brand.
