@@ -176,16 +176,21 @@ def run_async(coro):
 
 def download_assets_sync(brand_id: str, limit: int = 50) -> Dict[str, int]:
     """Download assets for brand (sync wrapper)."""
-    service = get_brand_research_service()
+    from viraltracker.core.database import reset_supabase_client, get_supabase_client
+    from viraltracker.services.brand_research_service import BrandResearchService
+
+    reset_supabase_client()  # Reset before any DB operations
+    service = BrandResearchService(supabase=get_supabase_client())  # Pass fresh client
     return run_async(service.download_assets_for_brand(UUID(brand_id), limit=limit))
 
 
 def analyze_videos_sync(brand_id: str, limit: int = 10) -> List[Dict]:
     """Analyze videos for brand (sync wrapper)."""
-    from viraltracker.core.database import reset_supabase_client
-    reset_supabase_client()  # Reset before any DB operations
+    from viraltracker.core.database import reset_supabase_client, get_supabase_client
+    from viraltracker.services.brand_research_service import BrandResearchService
 
-    service = get_brand_research_service()
+    reset_supabase_client()  # Reset before any DB operations
+    service = BrandResearchService(supabase=get_supabase_client())  # Pass fresh client
 
     # Get unanalyzed video assets
     video_assets = service.get_video_assets_for_brand(UUID(brand_id), only_unanalyzed=True, limit=limit)
@@ -199,12 +204,13 @@ def analyze_videos_sync(brand_id: str, limit: int = 10) -> List[Dict]:
 
 def analyze_images_sync(brand_id: str, limit: int = 20) -> List[Dict]:
     """Analyze images for brand (sync wrapper)."""
-    from viraltracker.core.database import reset_supabase_client
+    from viraltracker.core.database import reset_supabase_client, get_supabase_client
+    from viraltracker.services.brand_research_service import BrandResearchService
+
     reset_supabase_client()  # Reset before any DB operations
+    service = BrandResearchService(supabase=get_supabase_client())  # Pass fresh client
 
-    service = get_brand_research_service()
-
-    # Get unanalyzed image assets
+    # Get unanalyzed image assets (uses fresh client from reset above)
     image_assets = get_image_assets_for_brand(brand_id, only_unanalyzed=True, limit=limit)
 
     if not image_assets:
@@ -257,19 +263,21 @@ def get_image_assets_for_brand(brand_id: str, only_unanalyzed: bool = True, limi
 
 def analyze_copy_sync(brand_id: str, limit: int = 50) -> List[Dict]:
     """Analyze ad copy for brand (sync wrapper)."""
-    from viraltracker.core.database import reset_supabase_client
-    reset_supabase_client()  # Reset before any DB operations
+    from viraltracker.core.database import reset_supabase_client, get_supabase_client
+    from viraltracker.services.brand_research_service import BrandResearchService
 
-    service = get_brand_research_service()
+    reset_supabase_client()  # Reset before any DB operations
+    service = BrandResearchService(supabase=get_supabase_client())  # Pass fresh client
     return run_async(service.analyze_copy_batch(UUID(brand_id), limit=limit))
 
 
 def synthesize_personas_sync(brand_id: str) -> List[Dict]:
     """Synthesize personas from analyses (sync wrapper)."""
-    from viraltracker.core.database import reset_supabase_client
-    reset_supabase_client()  # Reset before any DB operations
+    from viraltracker.core.database import reset_supabase_client, get_supabase_client
+    from viraltracker.services.brand_research_service import BrandResearchService
 
-    service = get_brand_research_service()
+    reset_supabase_client()  # Reset before any DB operations
+    service = BrandResearchService(supabase=get_supabase_client())  # Pass fresh client
     return run_async(service.synthesize_to_personas(UUID(brand_id)))
 
 
