@@ -761,6 +761,12 @@ class BrandResearchService:
             if not ad_copy and not headline:
                 continue
 
+            # Skip dynamic product catalog ads (contain template variables)
+            combined_text = f"{ad_copy} {headline}"
+            if '{{product.' in combined_text or '{{' in combined_text:
+                logger.info(f"Skipping dynamic catalog ad {ad['id']} (contains template variables)")
+                continue
+
             ads_to_process.append((ad, ad_copy, headline))
 
         # Apply limit AFTER filtering to ads that need processing
