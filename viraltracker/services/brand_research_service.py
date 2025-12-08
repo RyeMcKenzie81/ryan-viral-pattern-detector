@@ -2422,13 +2422,46 @@ class BrandResearchService:
             return []
 
     def get_landing_page_stats(self, brand_id: UUID) -> Dict[str, int]:
-        """Get landing page statistics for a brand."""
+        """Get landing page statistics for a brand.
+
+        Returns:
+            Dict with counts:
+            - available: Total URL patterns in product_urls for this brand
+            - total: Landing pages in database (scraped or attempted)
+            - scraped: Successfully scraped pages
+            - analyzed: Pages with AI analysis complete
+            - failed: Failed scrape attempts
+            - pending: Pages pending scrape
+            - to_scrape: Available URLs not yet scraped (available - total)
+            - to_analyze: Scraped pages not yet analyzed
+        """
         try:
+            # Get count of available URLs from product_urls
+            products_result = self.supabase.table("products").select(
+                "id"
+            ).eq("brand_id", str(brand_id)).execute()
+
+            available = 0
+            if products_result.data:
+                product_ids = [p['id'] for p in products_result.data]
+                urls_result = self.supabase.table("product_urls").select(
+                    "id", count="exact"
+                ).in_("product_id", product_ids).execute()
+                available = urls_result.count or 0
+
+            # Get existing landing page stats
             result = self.supabase.table("brand_landing_pages").select(
                 "scrape_status"
             ).eq("brand_id", str(brand_id)).execute()
 
-            stats = {"total": 0, "scraped": 0, "analyzed": 0, "failed": 0, "pending": 0}
+            stats = {
+                "available": available,
+                "total": 0,
+                "scraped": 0,
+                "analyzed": 0,
+                "failed": 0,
+                "pending": 0
+            }
 
             for page in result.data or []:
                 stats["total"] += 1
@@ -2436,11 +2469,18 @@ class BrandResearchService:
                 if status in stats:
                     stats[status] += 1
 
+            # Calculate derived stats
+            stats["to_scrape"] = max(0, available - stats["total"])
+            stats["to_analyze"] = stats["scraped"]  # Scraped but not analyzed
+
             return stats
 
         except Exception as e:
             logger.error(f"Failed to get landing page stats: {e}")
-            return {"total": 0, "scraped": 0, "analyzed": 0, "failed": 0, "pending": 0}
+            return {
+                "available": 0, "total": 0, "scraped": 0, "analyzed": 0,
+                "failed": 0, "pending": 0, "to_scrape": 0, "to_analyze": 0
+            }
 
 
 # Landing page analysis prompt

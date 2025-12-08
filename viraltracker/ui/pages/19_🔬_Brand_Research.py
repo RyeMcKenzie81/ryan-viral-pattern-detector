@@ -382,12 +382,19 @@ def render_stats_section(brand_id: str):
                 st.caption(f"{pending} pending")
 
     with col5:
-        st.metric("Landing Pages", lp_stats["total"])
-        if lp_stats["total"] > 0:
-            analyzed = lp_stats.get("analyzed", 0)
-            scraped = lp_stats.get("scraped", 0)
-            if analyzed > 0 or scraped > 0:
-                st.caption(f"{analyzed} analyzed, {scraped} scraped")
+        available = lp_stats.get("available", 0)
+        scraped = lp_stats.get("scraped", 0)
+        st.metric("Landing Pages", f"{scraped}/{available}")
+        to_scrape = lp_stats.get("to_scrape", 0)
+        analyzed = lp_stats.get("analyzed", 0)
+        to_analyze = lp_stats.get("to_analyze", 0)
+        if to_scrape > 0 or to_analyze > 0:
+            parts = []
+            if to_scrape > 0:
+                parts.append(f"{to_scrape} to scrape")
+            if to_analyze > 0:
+                parts.append(f"{to_analyze} to analyze")
+            st.caption(", ".join(parts))
 
     with col6:
         st.metric("Total Analyses", analysis_stats["total"])
@@ -489,22 +496,37 @@ def render_analysis_section(brand_id: str):
 def render_landing_page_section(brand_id: str):
     """Render landing page scraping and analysis section."""
     st.subheader("3. Landing Pages")
-    st.markdown("Scrape and analyze landing pages from ad link URLs for deeper persona insights.")
+    st.markdown("Scrape and analyze landing pages from URL patterns for deeper persona insights.")
 
     lp_stats = get_landing_page_stats(brand_id)
+    available = lp_stats.get("available", 0)
+    to_scrape = lp_stats.get("to_scrape", 0)
+    scraped = lp_stats.get("scraped", 0)
+    analyzed = lp_stats.get("analyzed", 0)
+    to_analyze = lp_stats.get("to_analyze", 0)
+
+    # Show overall status
+    if available == 0:
+        st.warning("No URL patterns found. Add URLs on the URL Mapping page first.")
+        return
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("**Scrape Landing Pages**")
-        st.caption("Extract content from ad link_urls using FireCrawl")
+        st.caption("Extract content from product URLs using FireCrawl")
 
-        if lp_stats["total"] > 0:
-            st.info(f"{lp_stats['total']} pages scraped, {lp_stats.get('analyzed', 0)} analyzed")
+        if to_scrape > 0:
+            st.info(f"{to_scrape} of {available} URLs ready to scrape")
+        elif scraped > 0:
+            st.success(f"All {available} URLs scraped")
+        else:
+            st.info(f"{available} URLs available")
 
-        scrape_limit = st.number_input("Pages to scrape", 5, 50, 20, key="lp_scrape_limit")
+        scrape_limit = st.number_input("Pages to scrape", 1, 50, min(to_scrape, 20) if to_scrape > 0 else 20, key="lp_scrape_limit")
 
-        if st.button("Scrape Landing Pages", disabled=st.session_state.analysis_running, key="btn_scrape_lp"):
+        btn_disabled = st.session_state.analysis_running or to_scrape == 0
+        if st.button("Scrape Landing Pages", disabled=btn_disabled, key="btn_scrape_lp"):
             st.session_state.analysis_running = True
 
             with st.spinner(f"Scraping up to {scrape_limit} landing pages..."):
@@ -525,15 +547,19 @@ def render_landing_page_section(brand_id: str):
         st.markdown("**Analyze Landing Pages**")
         st.caption("Extract persona signals, copy patterns, objection handling")
 
-        scraped_count = lp_stats.get("scraped", 0)
-        if scraped_count > 0:
-            st.info(f"{scraped_count} pages ready for analysis")
-        else:
+        if to_analyze > 0:
+            st.info(f"{to_analyze} pages ready for analysis ({analyzed} already analyzed)")
+        elif scraped > 0 and analyzed > 0:
+            st.success(f"All {analyzed} scraped pages analyzed")
+        elif scraped == 0:
             st.caption("Scrape pages first")
+        else:
+            st.info(f"{scraped} pages scraped, {analyzed} analyzed")
 
-        analyze_limit = st.number_input("Pages to analyze", 5, 50, 20, key="lp_analyze_limit")
+        analyze_limit = st.number_input("Pages to analyze", 1, 50, min(to_analyze, 20) if to_analyze > 0 else 20, key="lp_analyze_limit")
 
-        if st.button("Analyze Landing Pages", disabled=st.session_state.analysis_running or scraped_count == 0, key="btn_analyze_lp"):
+        btn_disabled = st.session_state.analysis_running or to_analyze == 0
+        if st.button("Analyze Landing Pages", disabled=btn_disabled, key="btn_analyze_lp"):
             st.session_state.analysis_running = True
 
             with st.spinner(f"Analyzing up to {analyze_limit} landing pages..."):
