@@ -2744,9 +2744,16 @@ Return JSON with this structure:
       "identity_artifacts": ["Brands/products tied to identity"],
 
       "social_relations": {{
-        "want_to_impress": ["Who they want to impress"],
+        "admire": ["People they look up to, role models"],
+        "envy": ["People they secretly want to be like"],
+        "want_to_impress": ["Who they want to impress/approval from"],
+        "love_loyalty": ["People they feel protective of"],
+        "dislike_animosity": ["People/groups they oppose"],
+        "compared_to": ["People they measure themselves against"],
+        "influence_decisions": ["Who influences their decisions"],
         "fear_judged_by": ["Who they fear judgment from"],
-        "influence_decisions": ["Who influences their decisions"]
+        "want_to_belong": ["Groups they aspire to join"],
+        "distance_from": ["Groups they want to separate from"]
       }},
 
       "worldview": "Their general worldview",
@@ -2777,12 +2784,14 @@ Return JSON with this structure:
       }},
       "familiar_promises": ["Claims they've heard before"],
 
-      "activation_events": ["What triggers purchase NOW"],
-      "decision_process": "How they make decisions",
-      "current_workarounds": ["What they do instead"],
+      "pain_symptoms": ["Observable signs of pain - what you'd notice about them"],
+      "activation_events": ["What triggers purchase NOW - specific moments"],
+      "purchasing_habits": "How they typically buy (research-heavy, impulse, social proof seeker)",
+      "decision_process": "Steps they go through to make a decision",
+      "current_workarounds": ["What they do instead of buying"],
 
-      "emotional_risks": ["What they're afraid of"],
-      "barriers_to_behavior": ["What stops them from acting"]
+      "emotional_risks": ["What they're afraid of feeling if they buy"],
+      "barriers_to_behavior": ["What stops them from acting on purchase intent"]
     }}
   ]
 }}

@@ -780,7 +780,7 @@ def render_persona_review():
                                f"{demo.get('gender', 'any')}, {demo.get('location', 'N/A')}")
 
                 # Use tabs for organized display of all 4D fields
-                tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview", "Barriers", "Activation"])
+                tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview", "Barriers", "Purchase"])
 
                 with tabs[0]:  # Pain & Desires
                     col_pain, col_desire = st.columns(2)
@@ -844,17 +844,49 @@ def render_persona_review():
                 with tabs[2]:  # Social
                     social = persona.get('social_relations', {})
 
-                    st.markdown("**Want to Impress:**")
-                    for item in social.get('want_to_impress', []):
-                        st.markdown(f"- {item}")
+                    col_pos, col_neg = st.columns(2)
 
-                    st.markdown("**Fear Judgment From:**")
-                    for item in social.get('fear_judged_by', []):
-                        st.markdown(f"- {item}")
+                    with col_pos:
+                        st.markdown("**People They Admire:**")
+                        for item in social.get('admire', []):
+                            st.markdown(f"- {item}")
 
-                    st.markdown("**Influences Their Decisions:**")
-                    for item in social.get('influence_decisions', []):
-                        st.markdown(f"- {item}")
+                        st.markdown("**People They Envy:**")
+                        for item in social.get('envy', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**Want to Impress:**")
+                        for item in social.get('want_to_impress', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**Groups They Want to Join:**")
+                        for item in social.get('want_to_belong', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**People They Protect:**")
+                        for item in social.get('love_loyalty', []):
+                            st.markdown(f"- {item}")
+
+                    with col_neg:
+                        st.markdown("**Fear Judgment From:**")
+                        for item in social.get('fear_judged_by', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**People They Dislike:**")
+                        for item in social.get('dislike_animosity', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**Compare Themselves To:**")
+                        for item in social.get('compared_to', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**Groups They Distance From:**")
+                        for item in social.get('distance_from', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**Influences Their Decisions:**")
+                        for item in social.get('influence_decisions', []):
+                            st.markdown(f"- {item}")
 
                 with tabs[3]:  # Worldview
                     st.markdown("**Worldview:**")
@@ -907,17 +939,28 @@ def render_persona_review():
                     for item in persona.get('barriers_to_behavior', []):
                         st.markdown(f"- {item}")
 
-                with tabs[5]:  # Activation
-                    st.markdown("**Activation Events (What Triggers Purchase):**")
-                    for item in persona.get('activation_events', []):
-                        st.markdown(f"- {item}")
+                with tabs[5]:  # Purchase
+                    col_left, col_right = st.columns(2)
 
-                    st.markdown("**Decision Process:**")
-                    st.write(persona.get('decision_process', 'N/A'))
+                    with col_left:
+                        st.markdown("**Pain Symptoms (Observable Signs):**")
+                        for item in persona.get('pain_symptoms', []):
+                            st.markdown(f"- {item}")
 
-                    st.markdown("**Current Workarounds:**")
-                    for item in persona.get('current_workarounds', []):
-                        st.markdown(f"- {item}")
+                        st.markdown("**Activation Events (What Triggers Purchase):**")
+                        for item in persona.get('activation_events', []):
+                            st.markdown(f"- {item}")
+
+                        st.markdown("**Current Workarounds:**")
+                        for item in persona.get('current_workarounds', []):
+                            st.markdown(f"- {item}")
+
+                    with col_right:
+                        st.markdown("**Purchasing Habits:**")
+                        st.write(persona.get('purchasing_habits', 'N/A'))
+
+                        st.markdown("**Decision Process:**")
+                        st.write(persona.get('decision_process', 'N/A'))
 
             with col2:
                 st.markdown("**Actions**")
