@@ -2063,17 +2063,26 @@ class BrandResearchService:
 
         # Extract unique URLs
         urls_to_scrape = {}  # url -> ad_id mapping
+        logger.info(f"Processing {len(ads_result.data)} ads for link_urls")
+
         for ad in ads_result.data:
             snapshot = ad.get('snapshot', {})
             if isinstance(snapshot, str):
-                snapshot = json.loads(snapshot)
+                try:
+                    snapshot = json.loads(snapshot)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse snapshot for ad {ad['id']}: {e}")
+                    continue
 
-            link_url = snapshot.get('link_url')
+            link_url = snapshot.get('link_url') if isinstance(snapshot, dict) else None
             if link_url and link_url not in urls_to_scrape:
                 # Clean URL (remove tracking params for deduplication)
                 clean_url = self._clean_url(link_url)
                 if clean_url not in urls_to_scrape:
                     urls_to_scrape[clean_url] = ad['id']
+                    logger.debug(f"Found URL: {clean_url[:50]}...")
+
+        logger.info(f"Extracted {len(urls_to_scrape)} unique URLs from {len(ads_result.data)} ads")
 
         if not urls_to_scrape:
             logger.info(f"No link_urls found in ads for brand: {brand_id}")
