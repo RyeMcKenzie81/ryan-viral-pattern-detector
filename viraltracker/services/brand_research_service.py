@@ -2024,10 +2024,10 @@ class BrandResearchService:
         delay_between: float = 2.0
     ) -> Dict[str, Any]:
         """
-        Scrape landing pages from ad link_urls for a brand.
+        Scrape landing pages for a brand using URL patterns from product_urls.
 
         This method:
-        1. Gets unique link_urls from brand's ads
+        1. Gets URL patterns from product_urls table (already deduplicated, linked to products)
         2. Filters out already-scraped URLs
         3. Scrapes each URL with FireCrawl
         4. Stores raw content and extracted data
@@ -2045,48 +2045,38 @@ class BrandResearchService:
 
         logger.info(f"Starting landing page scrape for brand: {brand_id}, limit={limit}")
 
-        # 1. Get ad IDs for brand
-        link_result = self.supabase.table("brand_facebook_ads").select(
-            "ad_id"
+        # 1. Get products for this brand
+        products_result = self.supabase.table("products").select(
+            "id"
         ).eq("brand_id", str(brand_id)).execute()
 
-        if not link_result.data:
-            logger.info(f"No ads found for brand: {brand_id}")
+        if not products_result.data:
+            logger.info(f"No products found for brand: {brand_id}")
             return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
 
-        ad_ids = [r['ad_id'] for r in link_result.data]
+        product_ids = [p['id'] for p in products_result.data]
 
-        # 2. Get unique link_urls from ads
-        ads_result = self.supabase.table("facebook_ads").select(
-            "id, snapshot"
-        ).in_("id", ad_ids).execute()
+        # 2. Get URL patterns from product_urls table
+        urls_result = self.supabase.table("product_urls").select(
+            "url_pattern, product_id"
+        ).in_("product_id", product_ids).execute()
 
-        # Extract unique URLs
-        urls_to_scrape = {}  # url -> ad_id mapping
-        logger.info(f"Processing {len(ads_result.data)} ads for link_urls")
-
-        for ad in ads_result.data:
-            snapshot = ad.get('snapshot', {})
-            if isinstance(snapshot, str):
-                try:
-                    snapshot = json.loads(snapshot)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse snapshot for ad {ad['id']}: {e}")
-                    continue
-
-            link_url = snapshot.get('link_url') if isinstance(snapshot, dict) else None
-            if link_url and link_url not in urls_to_scrape:
-                # Clean URL (remove tracking params for deduplication)
-                clean_url = self._clean_url(link_url)
-                if clean_url not in urls_to_scrape:
-                    urls_to_scrape[clean_url] = ad['id']
-                    logger.debug(f"Found URL: {clean_url[:50]}...")
-
-        logger.info(f"Extracted {len(urls_to_scrape)} unique URLs from {len(ads_result.data)} ads")
-
-        if not urls_to_scrape:
-            logger.info(f"No link_urls found in ads for brand: {brand_id}")
+        if not urls_result.data:
+            logger.info(f"No URL patterns found for brand: {brand_id}")
             return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
+
+        # Build full URLs from patterns (patterns are partial, need https://)
+        urls_to_scrape = {}  # url -> product_id mapping
+        for row in urls_result.data:
+            pattern = row['url_pattern']
+            # Add https:// if not present
+            if not pattern.startswith('http'):
+                full_url = f"https://{pattern}"
+            else:
+                full_url = pattern
+            urls_to_scrape[full_url] = row['product_id']
+
+        logger.info(f"Found {len(urls_to_scrape)} URL patterns for brand")
 
         # 3. Filter out already-scraped URLs
         existing_result = self.supabase.table("brand_landing_pages").select(
@@ -2094,7 +2084,7 @@ class BrandResearchService:
         ).eq("brand_id", str(brand_id)).execute()
 
         existing_urls = {r['url'] for r in (existing_result.data or [])}
-        new_urls = {url: ad_id for url, ad_id in urls_to_scrape.items() if url not in existing_urls}
+        new_urls = {url: product_id for url, product_id in urls_to_scrape.items() if url not in existing_urls}
 
         total_found = len(urls_to_scrape)
         logger.info(f"Found {total_found} unique URLs, {len(new_urls)} need scraping")
@@ -2111,7 +2101,7 @@ class BrandResearchService:
         pages_scraped = 0
         pages_failed = 0
 
-        for i, (url, source_ad_id) in enumerate(urls_to_process):
+        for i, (url, product_id) in enumerate(urls_to_process):
             try:
                 logger.info(f"Scraping {i+1}/{len(urls_to_process)}: {url[:60]}...")
 
@@ -2126,7 +2116,7 @@ class BrandResearchService:
 
                 if not scrape_result.success:
                     logger.warning(f"Failed to scrape {url}: {scrape_result.error}")
-                    self._save_landing_page_error(brand_id, url, source_ad_id, scrape_result.error)
+                    self._save_landing_page_error(brand_id, url, product_id, scrape_result.error)
                     pages_failed += 1
                     continue
 
@@ -2140,11 +2130,11 @@ class BrandResearchService:
                 except Exception as e:
                     logger.warning(f"Structured extraction failed for {url}: {e}")
 
-                # Save to database
+                # Save to database (product_id already known from product_urls table)
                 self._save_landing_page(
                     brand_id=brand_id,
                     url=url,
-                    source_ad_id=source_ad_id,
+                    product_id=product_id,
                     scrape_result=scrape_result,
                     extract_result=extract_result
                 )
@@ -2197,11 +2187,19 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         url: str,
-        source_ad_id: str,
+        product_id: Optional[str],
         scrape_result,
         extract_result
     ) -> Optional[UUID]:
-        """Save scraped landing page to database."""
+        """Save scraped landing page to database.
+
+        Args:
+            brand_id: Brand UUID
+            url: The landing page URL
+            product_id: Product UUID from product_urls table (already matched)
+            scrape_result: FireCrawl scrape result
+            extract_result: FireCrawl structured extraction result
+        """
         try:
             # Extract metadata - may be dict or object
             raw_metadata = scrape_result.metadata
@@ -2221,22 +2219,9 @@ class BrandResearchService:
             if extract_result and extract_result.success and extract_result.data:
                 extracted_data = extract_result.data if isinstance(extract_result.data, dict) else {}
 
-            # Match URL to product using URL patterns
-            product_id = None
-            try:
-                from .product_url_service import ProductURLService
-                url_service = ProductURLService()
-                match = url_service.match_url_to_product(url, brand_id)
-                if match:
-                    product_id = match[0]  # (product_id, confidence, match_type)
-                    logger.info(f"Matched URL to product {product_id} with confidence {match[1]}")
-            except Exception as e:
-                logger.warning(f"URL matching failed: {e}")
-
             record = {
                 "brand_id": str(brand_id),
                 "url": url,
-                "source_ad_id": source_ad_id,
                 "product_id": str(product_id) if product_id else None,
                 "page_title": metadata.get("title") or extracted_data.get("page_title"),
                 "meta_description": metadata.get("description") or extracted_data.get("meta_description"),
@@ -2271,7 +2256,7 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         url: str,
-        source_ad_id: str,
+        product_id: Optional[str],
         error: str
     ) -> None:
         """Save failed landing page scrape."""
@@ -2279,7 +2264,7 @@ class BrandResearchService:
             record = {
                 "brand_id": str(brand_id),
                 "url": url,
-                "source_ad_id": source_ad_id,
+                "product_id": str(product_id) if product_id else None,
                 "scrape_status": "failed",
                 "scrape_error": error,
                 "scraped_at": datetime.utcnow().isoformat()
