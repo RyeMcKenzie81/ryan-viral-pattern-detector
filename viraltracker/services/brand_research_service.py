@@ -2078,13 +2078,27 @@ class BrandResearchService:
 
         logger.info(f"Found {len(urls_to_scrape)} URL patterns for brand")
 
-        # 3. Filter out already-scraped URLs
+        # 3. Filter out successfully scraped URLs (allow retry of failed ones)
         existing_result = self.supabase.table("brand_landing_pages").select(
-            "url"
+            "id, url, scrape_status"
         ).eq("brand_id", str(brand_id)).execute()
 
-        existing_urls = {r['url'] for r in (existing_result.data or [])}
-        new_urls = {url: product_id for url, product_id in urls_to_scrape.items() if url not in existing_urls}
+        # Only skip URLs that were successfully scraped or analyzed
+        scraped_urls = set()
+        failed_ids = []  # Track failed entries to delete before retry
+        for r in (existing_result.data or []):
+            status = r.get('scrape_status')
+            if status in ('scraped', 'analyzed'):
+                scraped_urls.add(r['url'])
+            elif status == 'failed':
+                failed_ids.append(r['id'])
+
+        new_urls = {url: product_id for url, product_id in urls_to_scrape.items() if url not in scraped_urls}
+
+        # Delete failed entries so we can retry them
+        if failed_ids:
+            logger.info(f"Deleting {len(failed_ids)} failed entries for retry")
+            self.supabase.table("brand_landing_pages").delete().in_("id", failed_ids).execute()
 
         total_found = len(urls_to_scrape)
         logger.info(f"Found {total_found} unique URLs, {len(new_urls)} need scraping")
@@ -2470,8 +2484,11 @@ class BrandResearchService:
                     stats[status] += 1
 
             # Calculate derived stats
-            stats["to_scrape"] = max(0, available - stats["total"])
-            stats["to_analyze"] = stats["scraped"]  # Scraped but not analyzed
+            # to_scrape = URLs that haven't been successfully scraped yet
+            # (available minus successfully scraped - failed ones can be retried)
+            stats["to_scrape"] = max(0, available - stats["scraped"])
+            # to_analyze = scraped pages that haven't been analyzed yet
+            stats["to_analyze"] = max(0, stats["scraped"] - stats["analyzed"])
 
             return stats
 
