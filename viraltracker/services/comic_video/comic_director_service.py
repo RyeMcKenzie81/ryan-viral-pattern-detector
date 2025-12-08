@@ -113,6 +113,10 @@ class ComicDirectorService:
         """
         Parse comic JSON layout_recommendation into ComicLayout.
 
+        Supports both:
+        - grid_structure: [{row: 1, columns: 4, panels: [1,2,3,4]}, ...]
+        - panel_arrangement: [["Panel 1", "Panel 2"], ...]
+
         Args:
             comic_json: Full comic JSON with layout_recommendation
 
@@ -121,17 +125,29 @@ class ComicDirectorService:
         """
         layout_rec = comic_json.get("layout_recommendation", {})
 
-        # Parse format (e.g., "3 columns x 5 rows")
-        format_str = layout_rec.get("format", "3 columns x 5 rows")
+        # Parse format (e.g., "4-4-4-3 grid" or "3 columns x 5 rows")
+        format_str = layout_rec.get("format", "4 columns x 4 rows")
         cols, rows = self._parse_format_string(format_str)
 
-        # Parse panel arrangement
-        arrangement = layout_rec.get("panel_arrangement", [])
-        panel_cells = self._parse_arrangement(arrangement, cols)
+        # Try grid_structure first (more explicit format)
+        grid_structure = layout_rec.get("grid_structure", [])
+        if grid_structure:
+            panel_cells = self._parse_grid_structure(grid_structure)
+            # Update rows from actual grid structure
+            rows = len(grid_structure)
+        else:
+            # Fallback to panel_arrangement
+            arrangement = layout_rec.get("panel_arrangement", [])
+            panel_cells = self._parse_arrangement(arrangement, cols)
 
-        # Get canvas dimensions (default to 4K portrait)
-        canvas_width = comic_json.get("canvas_width", 4000)
-        canvas_height = comic_json.get("canvas_height", 6000)
+        # Get canvas dimensions from video_production or defaults
+        video_prod = comic_json.get("video_production", {})
+        canvas_size = video_prod.get("canvas_size", [1080, 1920])
+
+        # For the source image, estimate based on grid
+        # Actual image dimensions will be detected at render time
+        canvas_width = comic_json.get("canvas_width", cols * 1000)
+        canvas_height = comic_json.get("canvas_height", rows * 1000)
 
         layout = ComicLayout(
             grid_cols=cols,
@@ -150,18 +166,74 @@ class ComicDirectorService:
 
         return layout
 
+    def _parse_grid_structure(
+        self,
+        grid_structure: List[Dict[str, Any]]
+    ) -> Dict[int, List[Tuple[int, int]]]:
+        """
+        Parse grid_structure format into panel_cells mapping.
+
+        Args:
+            grid_structure: List of {row, columns, panels} dicts
+
+        Returns:
+            Dict mapping panel_number -> list of (row, col) cells
+        """
+        panel_cells = {}
+
+        for row_data in grid_structure:
+            row_idx = row_data.get("row", 1) - 1  # Convert to 0-indexed
+            panels = row_data.get("panels", [])
+            num_cols = row_data.get("columns", len(panels))
+
+            for col_idx, panel_num in enumerate(panels):
+                if panel_num > 0:
+                    panel_cells[panel_num] = [(row_idx, col_idx)]
+
+        return panel_cells
+
     def _parse_format_string(self, format_str: str) -> Tuple[int, int]:
-        """Parse '3 columns x 5 rows' into (3, 5)."""
+        """
+        Parse layout format string into (columns, rows).
+
+        Supports formats:
+        - '3 columns x 5 rows' -> (3, 5)
+        - '4-4-4-3 grid' -> (4, 4) based on grid_structure
+        - '3x5' -> (3, 5)
+        """
+        format_lower = format_str.lower()
+
         try:
-            # Extract numbers
+            # Handle "4-4-4-3 grid" format (columns per row)
+            if "grid" in format_lower and "-" in format_str:
+                # Parse "4-4-4-3" to get max columns and row count
+                parts = format_str.split()[0].split("-")
+                cols = max(int(p) for p in parts)
+                rows = len(parts)
+                return cols, rows
+
+            # Handle "3 columns x 5 rows" format
+            if "column" in format_lower and "row" in format_lower:
+                nums = re.findall(r'\d+', format_str)
+                if len(nums) >= 2:
+                    return int(nums[0]), int(nums[1])
+
+            # Handle simple "3x5" format
+            if "x" in format_lower:
+                nums = re.findall(r'\d+', format_str)
+                if len(nums) >= 2:
+                    return int(nums[0]), int(nums[1])
+
+            # Fallback: extract any two numbers
             nums = re.findall(r'\d+', format_str)
             if len(nums) >= 2:
                 return int(nums[0]), int(nums[1])
+
         except (ValueError, IndexError):
             pass
 
-        logger.warning(f"Could not parse format '{format_str}', using default 3x5")
-        return 3, 5
+        logger.warning(f"Could not parse format '{format_str}', using default 4x4")
+        return 4, 4
 
     def _parse_arrangement(
         self,
@@ -271,6 +343,11 @@ class ComicDirectorService:
         """
         Infer mood from panel content and comic color_coding.
 
+        Priority:
+        1. Explicit 'mood' field in panel
+        2. color_coding from visual_flow
+        3. Content-based inference from text
+
         Args:
             panel: Single panel dict from comic JSON
             comic_json: Full comic JSON (for visual_flow.color_coding)
@@ -278,44 +355,72 @@ class ComicDirectorService:
         Returns:
             PanelMood enum value
         """
+        # Priority 1: Use explicit mood field if present
+        explicit_mood = panel.get("mood", "").lower()
+        if explicit_mood:
+            mood_map = {
+                "dramatic": PanelMood.DRAMATIC,
+                "positive": PanelMood.POSITIVE,
+                "negative": PanelMood.DANGER,
+                "warning": PanelMood.WARNING,
+                "danger": PanelMood.DANGER,
+                "chaos": PanelMood.CHAOS,
+                "chaotic": PanelMood.CHAOS,
+                "chaotic_positive": PanelMood.CHAOS,  # Treat as chaos with positive color
+                "celebration": PanelMood.CELEBRATION,
+                "hopeful": PanelMood.POSITIVE,
+                "contemplative": PanelMood.NEUTRAL,
+                "neutral": PanelMood.NEUTRAL,
+                "mixed": PanelMood.WARNING,  # Mixed emotions -> warning treatment
+            }
+            if explicit_mood in mood_map:
+                return mood_map[explicit_mood]
+
         panel_type = panel.get("panel_type", "").lower()
         header = panel.get("header_text", "").lower()
         dialogue = panel.get("dialogue", "").lower()
         combined_text = f"{header} {dialogue}"
 
-        # Check panel type first
+        # Check panel type
         if "title" in panel_type or "intro" in panel_type:
             return PanelMood.DRAMATIC
 
         if "outro" in panel_type or "cta" in panel_type:
             return PanelMood.CELEBRATION
 
-        # Check color_coding from visual_flow (if available)
+        # Priority 2: Check color_coding from visual_flow
         visual_flow = comic_json.get("visual_flow", {})
         color_coding = visual_flow.get("color_coding", {})
         panel_num = panel.get("panel_number", 0)
 
-        # Look for mood hints in color_coding
-        for mood_key, panels in color_coding.items():
-            if isinstance(panels, list) and panel_num in panels:
-                mood_lower = mood_key.lower()
-                if "chaos" in mood_lower or "red" in mood_lower:
-                    return PanelMood.CHAOS
-                if "danger" in mood_lower or "negative" in mood_lower:
-                    return PanelMood.DANGER
-                if "warning" in mood_lower or "orange" in mood_lower:
-                    return PanelMood.WARNING
-                if "positive" in mood_lower or "green" in mood_lower or "gold" in mood_lower:
-                    return PanelMood.POSITIVE
-                if "celebration" in mood_lower or "victory" in mood_lower:
-                    return PanelMood.CELEBRATION
+        # Look for this panel in color_coding (handles "panel_1", "panels_2_3" formats)
+        for color_key, color_value in color_coding.items():
+            # Check if this panel number is mentioned in the key
+            key_lower = color_key.lower()
+            panel_str = str(panel_num)
 
-        # Content-based mood detection
-        danger_words = ["crash", "panic", "lose", "lost", "fail", "die", "death", "destroy"]
+            # Handle "panel_1" or "panels_5_6_7" format
+            if f"panel_{panel_str}" in key_lower or f"panels_{panel_str}" in key_lower or f"_{panel_str}_" in key_lower or key_lower.endswith(f"_{panel_str}"):
+                color_lower = color_value.lower() if isinstance(color_value, str) else ""
+                if "chaos" in color_lower or "danger_red" in color_lower:
+                    return PanelMood.CHAOS
+                if "danger" in color_lower or "red" in color_lower:
+                    return PanelMood.DANGER
+                if "warning" in color_lower or "orange" in color_lower:
+                    return PanelMood.WARNING
+                if "celebration" in color_lower or "gold" in color_lower:
+                    return PanelMood.CELEBRATION
+                if "positive" in color_lower or "green" in color_lower:
+                    return PanelMood.POSITIVE
+                if "dramatic" in color_lower or "dark" in color_lower:
+                    return PanelMood.DRAMATIC
+
+        # Priority 3: Content-based mood detection
+        danger_words = ["crash", "panic", "lose", "lost", "fail", "die", "death", "destroy", "poorer"]
         chaos_words = ["crazy", "insane", "hyperinflation", "collapse", "break"]
         warning_words = ["warning", "careful", "risk", "danger"]
-        positive_words = ["win", "gain", "profit", "grow", "success", "value"]
-        celebration_words = ["celebrate", "victory", "win", "subscribe", "thanks"]
+        positive_words = ["win", "gain", "profit", "grow", "success", "value", "high", "smart"]
+        celebration_words = ["celebrate", "victory", "win", "subscribe", "thanks", "own"]
 
         if any(word in combined_text for word in chaos_words):
             return PanelMood.CHAOS

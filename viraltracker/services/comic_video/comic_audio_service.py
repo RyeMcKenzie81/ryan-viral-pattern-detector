@@ -67,25 +67,32 @@ class ComicAudioService:
         """
         Extract speakable text from a comic panel.
 
-        Combines header and dialogue into a single text for voiceover.
+        Priority:
+        1. script_for_audio - pre-formatted TTS text (preferred)
+        2. dialogue - fallback to dialogue text
+        3. header_text + dialogue - legacy fallback
 
         Args:
             panel: Panel dict from comic JSON
 
         Returns:
-            Combined text for TTS
+            Text for TTS
         """
-        parts = []
+        # Prefer script_for_audio if available (pre-formatted for TTS)
+        script = panel.get("script_for_audio", "").strip()
+        if script:
+            return script
 
-        # Add header if present (often the "title" of the panel)
+        # Fallback to dialogue
+        dialogue = panel.get("dialogue", "").strip()
+        if dialogue:
+            return dialogue
+
+        # Legacy fallback: combine header and dialogue
+        parts = []
         header = panel.get("header_text", "").strip()
         if header:
             parts.append(header)
-
-        # Add dialogue
-        dialogue = panel.get("dialogue", "").strip()
-        if dialogue:
-            parts.append(dialogue)
 
         return " ".join(parts)
 
