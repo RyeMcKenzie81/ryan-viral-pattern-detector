@@ -2215,8 +2215,8 @@ class BrandResearchService:
             # Match URL to product using URL patterns
             product_id = None
             try:
-                from .product_url_service import ProductUrlService
-                url_service = ProductUrlService()
+                from .product_url_service import ProductURLService
+                url_service = ProductURLService()
                 match = url_service.match_url_to_product(url, brand_id)
                 if match:
                     product_id = match[0]  # (product_id, confidence, match_type)
