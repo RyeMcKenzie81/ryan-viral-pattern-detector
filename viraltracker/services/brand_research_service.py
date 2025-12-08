@@ -1527,6 +1527,217 @@ class BrandResearchService:
             logger.error(f"Failed to get video assets: {e}")
             return []
 
+    async def analyze_videos_for_brand(
+        self,
+        brand_id: UUID,
+        limit: int = 10,
+        delay_between: float = 5.0
+    ) -> List[Dict]:
+        """
+        Fetch and analyze videos for a brand in one async operation.
+
+        This method combines fetching unanalyzed video assets and analyzing them
+        in a single async context, avoiding event loop issues when called from
+        Streamlit's sync environment via asyncio.run().
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum videos to analyze
+            delay_between: Delay between videos for rate limiting (default: 5s)
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        logger.info(f"Starting video analysis for brand: {brand_id}, limit={limit}")
+
+        # 1. Get ad IDs from junction table
+        link_result = self.supabase.table("brand_facebook_ads").select(
+            "ad_id"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        if not link_result.data:
+            logger.info(f"No ads found for brand: {brand_id}")
+            return []
+
+        ad_ids = [r['ad_id'] for r in link_result.data]
+
+        # 2. Get ALL video assets for these ads (no limit yet)
+        assets_result = self.supabase.table("scraped_ad_assets").select(
+            "id, facebook_ad_id, storage_path, mime_type, file_size_bytes"
+        ).in_("facebook_ad_id", ad_ids).like("mime_type", "video/%").execute()
+
+        if not assets_result.data:
+            logger.info(f"No video assets found for brand: {brand_id}")
+            return []
+
+        video_assets = assets_result.data
+
+        # 3. Filter out already analyzed
+        asset_ids = [a['id'] for a in video_assets]
+        analyzed_result = self.supabase.table("brand_ad_analysis").select(
+            "asset_id"
+        ).in_("asset_id", asset_ids).eq("analysis_type", "video_vision").execute()
+
+        analyzed_ids = {r['asset_id'] for r in (analyzed_result.data or [])}
+        unanalyzed = [a for a in video_assets if a['id'] not in analyzed_ids]
+
+        # 4. Apply limit AFTER filtering
+        total_unanalyzed = len(unanalyzed)
+        videos_to_analyze = unanalyzed[:limit]
+        logger.info(f"Processing {len(videos_to_analyze)} of {total_unanalyzed} unanalyzed videos (limit={limit})")
+
+        if not videos_to_analyze:
+            logger.info("No unanalyzed videos to process")
+            return []
+
+        # 5. Analyze each video
+        results = []
+        for i, asset in enumerate(videos_to_analyze):
+            try:
+                # Check mime type
+                mime_type = asset.get("mime_type", "")
+                if not mime_type.startswith("video/"):
+                    logger.warning(f"Asset {asset['id']} is not a video: {mime_type}")
+                    continue
+
+                # Analyze
+                analysis = await self.analyze_video(
+                    asset_id=UUID(asset["id"]),
+                    storage_path=asset["storage_path"],
+                    brand_id=brand_id,
+                    facebook_ad_id=UUID(asset["facebook_ad_id"]) if asset.get("facebook_ad_id") else None
+                )
+
+                results.append({
+                    "asset_id": str(asset["id"]),
+                    "analysis": analysis
+                })
+
+                logger.info(f"Video analysis {i+1}/{len(videos_to_analyze)} complete")
+
+                # Delay between videos (except for last one)
+                if i < len(videos_to_analyze) - 1:
+                    await asyncio.sleep(delay_between)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze video {asset['id']}: {e}")
+                results.append({
+                    "asset_id": str(asset["id"]),
+                    "error": str(e)
+                })
+                continue
+
+        logger.info(f"Video analysis complete: {len([r for r in results if 'analysis' in r])}/{len(videos_to_analyze)} videos analyzed")
+        return results
+
+    async def analyze_images_for_brand(
+        self,
+        brand_id: UUID,
+        limit: int = 20,
+        delay_between: float = 2.0
+    ) -> List[Dict]:
+        """
+        Fetch and analyze images for a brand in one async operation.
+
+        This method combines fetching unanalyzed image assets and analyzing them
+        in a single async context, avoiding event loop issues when called from
+        Streamlit's sync environment via asyncio.run().
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum images to analyze
+            delay_between: Delay between images for rate limiting (default: 2s)
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        logger.info(f"Starting image analysis for brand: {brand_id}, limit={limit}")
+
+        # 1. Get ad IDs from junction table
+        link_result = self.supabase.table("brand_facebook_ads").select(
+            "ad_id"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        if not link_result.data:
+            logger.info(f"No ads found for brand: {brand_id}")
+            return []
+
+        ad_ids = [r['ad_id'] for r in link_result.data]
+
+        # 2. Get ALL image assets for these ads (no limit yet)
+        assets_result = self.supabase.table("scraped_ad_assets").select(
+            "id, facebook_ad_id, storage_path, mime_type"
+        ).in_("facebook_ad_id", ad_ids).like("mime_type", "image/%").execute()
+
+        if not assets_result.data:
+            logger.info(f"No image assets found for brand: {brand_id}")
+            return []
+
+        image_assets = assets_result.data
+
+        # 3. Filter out already analyzed
+        asset_ids = [a['id'] for a in image_assets]
+        analyzed_result = self.supabase.table("brand_ad_analysis").select(
+            "asset_id"
+        ).in_("asset_id", asset_ids).eq("analysis_type", "image_vision").execute()
+
+        analyzed_ids = {r['asset_id'] for r in (analyzed_result.data or [])}
+        unanalyzed = [a for a in image_assets if a['id'] not in analyzed_ids]
+
+        # 4. Apply limit AFTER filtering
+        total_unanalyzed = len(unanalyzed)
+        images_to_analyze = unanalyzed[:limit]
+        logger.info(f"Processing {len(images_to_analyze)} of {total_unanalyzed} unanalyzed images (limit={limit})")
+
+        if not images_to_analyze:
+            logger.info("No unanalyzed images to process")
+            return []
+
+        # 5. Analyze each image
+        results = []
+        for i, asset in enumerate(images_to_analyze):
+            try:
+                # Download image from storage
+                image_base64 = await self._get_asset_base64(asset["storage_path"])
+                if not image_base64:
+                    logger.warning(f"Failed to download asset: {asset['id']}")
+                    continue
+
+                # Analyze
+                analysis = await self.analyze_image(
+                    asset_id=UUID(asset["id"]),
+                    image_base64=image_base64,
+                    brand_id=brand_id,
+                    facebook_ad_id=UUID(asset["facebook_ad_id"]) if asset.get("facebook_ad_id") else None,
+                    mime_type=asset.get("mime_type", "image/jpeg")
+                )
+
+                results.append({
+                    "asset_id": str(asset["id"]),
+                    "analysis": analysis
+                })
+
+                logger.info(f"Image analysis {i+1}/{len(images_to_analyze)} complete")
+
+                # Delay between images (except for last one)
+                if i < len(images_to_analyze) - 1:
+                    await asyncio.sleep(delay_between)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze image {asset['id']}: {e}")
+                results.append({
+                    "asset_id": str(asset["id"]),
+                    "error": str(e)
+                })
+                continue
+
+        logger.info(f"Image analysis complete: {len([r for r in results if 'analysis' in r])}/{len(images_to_analyze)} images analyzed")
+        return results
+
     async def synthesize_to_personas(
         self,
         brand_id: UUID,

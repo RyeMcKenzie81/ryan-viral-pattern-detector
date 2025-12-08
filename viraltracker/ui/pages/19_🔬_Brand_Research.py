@@ -163,21 +163,8 @@ def get_analysis_stats_for_brand(brand_id: str) -> Dict[str, int]:
 
 
 def run_async(coro):
-    """Run async function in Streamlit context.
-
-    Uses nest_asyncio to allow nested event loops, avoiding issues with
-    asyncio.run() closing the loop and invalidating async connections.
-    """
-    import nest_asyncio
-    nest_asyncio.apply()
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(coro)
+    """Run async function in Streamlit context."""
+    return asyncio.run(coro)
 
 
 def download_assets_sync(brand_id: str, limit: int = 50) -> Dict[str, int]:
@@ -192,33 +179,31 @@ def download_assets_sync(brand_id: str, limit: int = 50) -> Dict[str, int]:
 
 
 def analyze_videos_sync(brand_id: str, limit: int = 10) -> List[Dict]:
-    """Analyze videos for brand (sync wrapper)."""
+    """Analyze videos for brand (sync wrapper).
+
+    Uses analyze_videos_for_brand() which combines fetching and analyzing
+    in one async operation to avoid event loop issues on repeated runs.
+    """
     from viraltracker.services.brand_research_service import BrandResearchService
 
     async def _analyze():
         service = BrandResearchService()
-        # Get unanalyzed video assets inside async context
-        video_assets = service.get_video_assets_for_brand(UUID(brand_id), only_unanalyzed=True, limit=limit)
-        if not video_assets:
-            return []
-        asset_ids = [UUID(v['id']) for v in video_assets]
-        return await service.analyze_videos_batch(asset_ids, UUID(brand_id))
+        return await service.analyze_videos_for_brand(UUID(brand_id), limit=limit)
 
     return run_async(_analyze())
 
 
 def analyze_images_sync(brand_id: str, limit: int = 20) -> List[Dict]:
-    """Analyze images for brand (sync wrapper)."""
+    """Analyze images for brand (sync wrapper).
+
+    Uses analyze_images_for_brand() which combines fetching and analyzing
+    in one async operation to avoid event loop issues on repeated runs.
+    """
     from viraltracker.services.brand_research_service import BrandResearchService
 
     async def _analyze():
         service = BrandResearchService()
-        # Get unanalyzed image assets inside async context
-        image_assets = get_image_assets_for_brand(brand_id, only_unanalyzed=True, limit=limit)
-        if not image_assets:
-            return []
-        asset_ids = [UUID(a['id']) for a in image_assets]
-        return await service.analyze_images_batch(asset_ids, UUID(brand_id))
+        return await service.analyze_images_for_brand(UUID(brand_id), limit=limit)
 
     return run_async(_analyze())
 
