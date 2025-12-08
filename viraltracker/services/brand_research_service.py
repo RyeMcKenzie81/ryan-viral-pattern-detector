@@ -2194,13 +2194,23 @@ class BrandResearchService:
     ) -> Optional[UUID]:
         """Save scraped landing page to database."""
         try:
-            # Extract metadata
-            metadata = scrape_result.metadata or {}
+            # Extract metadata - may be dict or object
+            raw_metadata = scrape_result.metadata
+            if raw_metadata is None:
+                metadata = {}
+            elif isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            else:
+                # Object with attributes
+                metadata = {
+                    "title": getattr(raw_metadata, 'title', None),
+                    "description": getattr(raw_metadata, 'description', None),
+                }
 
             # Build extracted_data from extract_result
             extracted_data = {}
             if extract_result and extract_result.success and extract_result.data:
-                extracted_data = extract_result.data
+                extracted_data = extract_result.data if isinstance(extract_result.data, dict) else {}
 
             # Match URL to product using URL patterns
             product_id = None

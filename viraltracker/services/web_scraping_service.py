@@ -125,13 +125,15 @@ class WebScrapingService:
 
             result = client.scrape(url, **options)
 
+            # FireCrawl returns a Document object, not a dict
+            # Use getattr to safely access attributes
             return ScrapeResult(
                 url=url,
                 success=True,
-                markdown=result.get("markdown"),
-                html=result.get("html"),
-                links=result.get("links"),
-                metadata=result.get("metadata")
+                markdown=getattr(result, 'markdown', None),
+                html=getattr(result, 'html', None),
+                links=getattr(result, 'links', None),
+                metadata=getattr(result, 'metadata', None)
             )
 
         except Exception as e:
@@ -183,13 +185,15 @@ class WebScrapingService:
 
             result = await client.scrape(url, **options)
 
+            # FireCrawl returns a Document object, not a dict
+            # Use getattr to safely access attributes
             return ScrapeResult(
                 url=url,
                 success=True,
-                markdown=result.get("markdown"),
-                html=result.get("html"),
-                links=result.get("links"),
-                metadata=result.get("metadata")
+                markdown=getattr(result, 'markdown', None),
+                html=getattr(result, 'html', None),
+                links=getattr(result, 'links', None),
+                metadata=getattr(result, 'metadata', None)
             )
 
         except Exception as e:
@@ -278,14 +282,27 @@ class WebScrapingService:
 
             results = []
             for item in job.data or []:
-                results.append(ScrapeResult(
-                    url=item.get("url", ""),
-                    success=True,
-                    markdown=item.get("markdown"),
-                    html=item.get("html"),
-                    links=item.get("links"),
-                    metadata=item.get("metadata")
-                ))
+                # Items may be Document objects or dicts
+                if hasattr(item, 'url'):
+                    # Document object
+                    results.append(ScrapeResult(
+                        url=getattr(item, 'url', ''),
+                        success=True,
+                        markdown=getattr(item, 'markdown', None),
+                        html=getattr(item, 'html', None),
+                        links=getattr(item, 'links', None),
+                        metadata=getattr(item, 'metadata', None)
+                    ))
+                else:
+                    # Dict
+                    results.append(ScrapeResult(
+                        url=item.get("url", ""),
+                        success=True,
+                        markdown=item.get("markdown"),
+                        html=item.get("html"),
+                        links=item.get("links"),
+                        metadata=item.get("metadata")
+                    ))
 
             logger.info(f"Async batch scrape complete: {len(results)} results")
             return results
