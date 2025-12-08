@@ -762,9 +762,16 @@ class BrandResearchService:
                 continue
 
             # Skip dynamic product catalog ads (contain template variables)
+            # Save a "skipped" record so they don't keep showing as pending
             combined_text = f"{ad_copy} {headline}"
             if '{{product.' in combined_text or '{{' in combined_text:
                 logger.info(f"Skipping dynamic catalog ad {ad['id']} (contains template variables)")
+                self._save_skipped_analysis(
+                    ad_id=UUID(ad['id']),
+                    brand_id=brand_id,
+                    analysis_type="copy_analysis",
+                    reason="dynamic_catalog_ad"
+                )
                 continue
 
             ads_to_process.append((ad, ad_copy, headline))
@@ -848,6 +855,48 @@ class BrandResearchService:
 
         except Exception as e:
             logger.error(f"Failed to save copy analysis: {e}")
+            return None
+
+    def _save_skipped_analysis(
+        self,
+        ad_id: UUID,
+        brand_id: Optional[UUID],
+        analysis_type: str,
+        reason: str
+    ) -> Optional[UUID]:
+        """Save a record for skipped analysis so it doesn't show as pending."""
+        try:
+            # Check if already exists
+            existing = self.supabase.table("brand_ad_analysis").select("id").eq(
+                "facebook_ad_id", str(ad_id)
+            ).eq("analysis_type", analysis_type).execute()
+
+            if existing.data:
+                return UUID(existing.data[0]["id"])
+
+            record = {
+                "brand_id": str(brand_id) if brand_id else None,
+                "facebook_ad_id": str(ad_id),
+                "analysis_type": analysis_type,
+                "raw_response": {"skipped": True, "reason": reason},
+                "extracted_hooks": [],
+                "extracted_benefits": [],
+                "extracted_usps": [],
+                "pain_points": [],
+                "model_used": "skipped",
+                "tokens_used": 0,
+                "cost_usd": 0.0
+            }
+
+            result = self.supabase.table("brand_ad_analysis").insert(record).execute()
+
+            if result.data:
+                logger.info(f"Saved skipped analysis for ad: {ad_id} (reason: {reason})")
+                return UUID(result.data[0]["id"])
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save skipped analysis: {e}")
             return None
 
     async def synthesize_insights(
