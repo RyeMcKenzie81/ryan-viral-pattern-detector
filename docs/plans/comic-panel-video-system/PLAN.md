@@ -283,21 +283,65 @@ viraltracker/
 
 ---
 
-## Phase 4: BUILD
+## Phase 4: BUILD ✅ COMPLETE
 
-### 4.1 Build Order
+### 4.1 Build Order (All Complete)
 
-1. [ ] **models.py** - All Pydantic models (enums, data classes)
-2. [ ] **Database migration** - New tables
-3. [ ] **comic_audio_service.py** - Audio generation, duration extraction
-4. [ ] **comic_director_service.py** - Camera/effects instruction generation
-5. [ ] **comic_render_service.py** - FFmpeg video rendering
-6. [ ] **comic_video_service.py** - Main orchestration service
-7. [ ] **Streamlit UI page** - Parallel audio+video preview workflow
+1. [x] **models.py** - All Pydantic models (enums, data classes)
+2. [x] **Database migration** - 4 new tables
+3. [x] **comic_audio_service.py** - Audio generation via ElevenLabs
+4. [x] **comic_director_service.py** - Camera/effects instruction generation
+5. [x] **comic_render_service.py** - FFmpeg video rendering
+6. [x] **comic_video_service.py** - Main orchestration service
+7. [x] **Streamlit UI page** - Parallel audio+video preview workflow
 
 ### 4.2 Component Details
 
-*(To be filled in during Phase 4 execution)*
+#### Checkpoint 1: models.py
+- **Commit**: `72b9e49`
+- PanelMood, EffectType, TransitionType, CameraEasing enums
+- ComicLayout, PanelBounds, FocusPoint data classes
+- PanelCamera, PanelEffects, PanelTransition cinematography models
+- PanelInstruction, PanelAudio, ComicVideoProject main models
+- MOOD_EFFECT_PRESETS for Phase 1 FFmpeg effects
+
+#### Checkpoint 2: Database Migration
+- **Commit**: `721df23`
+- **File**: `sql/2025-12-08_comic_video_tables.sql`
+- comic_video_projects, comic_panel_audio, comic_panel_instructions, comic_render_jobs
+
+#### Checkpoint 3: ComicAudioService
+- **Commit**: `ecef6f4`
+- Wraps ElevenLabsService for comic TTS
+- extract_panel_text(), generate_panel_audio(), generate_all_audio()
+- Supabase storage integration
+
+#### Checkpoint 4: ComicDirectorService
+- **Commit**: `402ee53`
+- parse_layout_from_json(), calculate_panel_bounds()
+- infer_panel_mood() from content and color_coding
+- generate_panel_instruction() with camera, effects, transition
+- Rule-based cinematography (Phase 1)
+
+#### Checkpoint 5: ComicRenderService
+- **Commit**: `26ef09a`
+- render_panel_preview(), render_full_video()
+- Ken Burns zoompan filter builder
+- FFmpeg effect filters (vignette, color tint, shake, pulse)
+- Segment-based rendering, audio mixing
+
+#### Checkpoint 6: ComicVideoService
+- **Commit**: `ff9477c`
+- Main orchestration service
+- Project CRUD, layout parsing, audio/instruction generation
+- Panel preview rendering, approval workflow
+- Final video rendering
+
+#### Checkpoint 7: Streamlit UI
+- **Commit**: `b3ed787`
+- **File**: `ui/pages/20_🎬_Comic_Video.py`
+- Upload step, audio generation step, parallel review step
+- Per-panel audio+video preview, approval, final render
 
 ---
 
