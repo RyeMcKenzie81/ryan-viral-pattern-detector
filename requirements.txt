@@ -92,3 +92,4 @@ extra-streamlit-components==0.1.71
 # Email & Notification Dependencies
 resend==2.19.0
 
+nest-asyncio>=1.5.0
