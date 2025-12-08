@@ -383,8 +383,8 @@ def render_stats_section(brand_id: str):
 
     with col5:
         available = lp_stats.get("available", 0)
-        scraped = lp_stats.get("scraped", 0)
-        st.metric("Landing Pages", f"{scraped}/{available}")
+        successfully_scraped = lp_stats.get("successfully_scraped", 0)
+        st.metric("Landing Pages", f"{successfully_scraped}/{available}")
         to_scrape = lp_stats.get("to_scrape", 0)
         analyzed = lp_stats.get("analyzed", 0)
         to_analyze = lp_stats.get("to_analyze", 0)
@@ -395,6 +395,8 @@ def render_stats_section(brand_id: str):
             if to_analyze > 0:
                 parts.append(f"{to_analyze} to analyze")
             st.caption(", ".join(parts))
+        elif successfully_scraped > 0:
+            st.caption(f"{analyzed} analyzed")
 
     with col6:
         st.metric("Total Analyses", analysis_stats["total"])
@@ -501,7 +503,7 @@ def render_landing_page_section(brand_id: str):
     lp_stats = get_landing_page_stats(brand_id)
     available = lp_stats.get("available", 0)
     to_scrape = lp_stats.get("to_scrape", 0)
-    scraped = lp_stats.get("scraped", 0)
+    successfully_scraped = lp_stats.get("successfully_scraped", 0)
     analyzed = lp_stats.get("analyzed", 0)
     to_analyze = lp_stats.get("to_analyze", 0)
 
@@ -518,7 +520,7 @@ def render_landing_page_section(brand_id: str):
 
         if to_scrape > 0:
             st.info(f"{to_scrape} of {available} URLs ready to scrape")
-        elif scraped > 0:
+        elif successfully_scraped > 0:
             st.success(f"All {available} URLs scraped")
         else:
             st.info(f"{available} URLs available")
@@ -557,12 +559,12 @@ def render_landing_page_section(brand_id: str):
 
         if to_analyze > 0:
             st.info(f"{to_analyze} pages ready for analysis ({analyzed} already analyzed)")
-        elif scraped > 0 and analyzed > 0:
+        elif successfully_scraped > 0 and analyzed > 0:
             st.success(f"All {analyzed} scraped pages analyzed")
-        elif scraped == 0:
+        elif successfully_scraped == 0:
             st.caption("Scrape pages first")
         else:
-            st.info(f"{scraped} pages scraped, {analyzed} analyzed")
+            st.info(f"{successfully_scraped} pages scraped, {analyzed} analyzed")
 
         analyze_limit = st.number_input("Pages to analyze", 1, 50, min(to_analyze, 20) if to_analyze > 0 else 20, key="lp_analyze_limit")
 
@@ -580,6 +582,24 @@ def render_landing_page_section(brand_id: str):
 
             st.session_state.analysis_running = False
             st.rerun()
+
+    # Show list of scraped pages
+    if successfully_scraped > 0:
+        with st.expander(f"View {successfully_scraped} scraped landing pages"):
+            pages = get_landing_pages_for_brand(brand_id)
+            for page in pages:
+                status_icon = "✅" if page.get("scrape_status") == "analyzed" else "📄"
+                url = page.get("url", "")
+                title = page.get("page_title") or url.split("/")[-1] or "Untitled"
+                st.markdown(f"{status_icon} **{title}**")
+                st.caption(url)
+
+
+def get_landing_pages_for_brand(brand_id: str) -> list:
+    """Get landing pages for a brand."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+    service = BrandResearchService()
+    return service.get_landing_pages_for_brand(UUID(brand_id))
 
 
 def render_synthesis_section(brand_id: str):

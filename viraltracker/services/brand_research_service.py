@@ -2472,8 +2472,8 @@ class BrandResearchService:
             stats = {
                 "available": available,
                 "total": 0,
-                "scraped": 0,
-                "analyzed": 0,
+                "scraped": 0,      # Pages with 'scraped' status (not yet analyzed)
+                "analyzed": 0,     # Pages with 'analyzed' status
                 "failed": 0,
                 "pending": 0
             }
@@ -2485,11 +2485,14 @@ class BrandResearchService:
                     stats[status] += 1
 
             # Calculate derived stats
+            # successfully_scraped = pages that have content (scraped OR analyzed)
+            successfully_scraped = stats["scraped"] + stats["analyzed"]
             # to_scrape = URLs that haven't been successfully scraped yet
-            # (available minus successfully scraped - failed ones can be retried)
-            stats["to_scrape"] = max(0, available - stats["scraped"])
+            stats["to_scrape"] = max(0, available - successfully_scraped)
             # to_analyze = scraped pages that haven't been analyzed yet
-            stats["to_analyze"] = max(0, stats["scraped"] - stats["analyzed"])
+            stats["to_analyze"] = stats["scraped"]  # Only 'scraped' status needs analysis
+            # For display: total successfully scraped (includes analyzed)
+            stats["successfully_scraped"] = successfully_scraped
 
             return stats
 
