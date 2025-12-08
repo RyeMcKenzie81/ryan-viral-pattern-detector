@@ -2104,7 +2104,8 @@ class BrandResearchService:
         logger.info(f"Found {total_found} unique URLs, {len(new_urls)} need scraping")
 
         if not new_urls:
-            return {"urls_found": total_found, "pages_scraped": 0, "pages_failed": 0}
+            logger.info(f"All {total_found} URLs already scraped, nothing to do")
+            return {"urls_found": total_found, "pages_scraped": 0, "pages_failed": 0, "already_scraped": len(scraped_urls)}
 
         # 4. Apply limit
         urls_to_process = list(new_urls.items())[:limit]

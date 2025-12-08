@@ -532,11 +532,19 @@ def render_landing_page_section(brand_id: str):
             with st.spinner(f"Scraping up to {scrape_limit} landing pages..."):
                 try:
                     result = scrape_landing_pages_sync(brand_id, scrape_limit)
-                    st.success(
-                        f"Found {result['urls_found']} URLs, "
-                        f"scraped {result['pages_scraped']}, "
-                        f"{result['pages_failed']} failed"
-                    )
+                    already = result.get('already_scraped', 0)
+                    if already > 0:
+                        st.warning(f"All {result['urls_found']} URLs already scraped ({already} in database)")
+                    elif result['pages_scraped'] > 0:
+                        st.success(
+                            f"Scraped {result['pages_scraped']} of {result['urls_found']} URLs "
+                            f"({result['pages_failed']} failed)"
+                        )
+                    else:
+                        st.warning(
+                            f"Found {result['urls_found']} URLs but scraped 0 "
+                            f"({result['pages_failed']} failed) - check logs"
+                        )
                 except Exception as e:
                     st.error(f"Landing page scrape failed: {e}")
 
