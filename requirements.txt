@@ -93,3 +93,6 @@ extra-streamlit-components==0.1.71
 resend==2.19.0
 
 nest-asyncio>=1.5.0
+
+# Web Scraping Dependencies
+firecrawl-py>=1.0.0

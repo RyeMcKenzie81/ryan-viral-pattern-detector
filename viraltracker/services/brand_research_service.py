@@ -2017,6 +2017,492 @@ class BrandResearchService:
             logger.error(f"Failed to save synthesis record: {e}")
             return None
 
+    async def scrape_landing_pages_for_brand(
+        self,
+        brand_id: UUID,
+        limit: int = 20,
+        delay_between: float = 2.0
+    ) -> Dict[str, Any]:
+        """
+        Scrape landing pages from ad link_urls for a brand.
+
+        This method:
+        1. Gets unique link_urls from brand's ads
+        2. Filters out already-scraped URLs
+        3. Scrapes each URL with FireCrawl
+        4. Stores raw content and extracted data
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum pages to scrape
+            delay_between: Delay between scrapes for rate limiting
+
+        Returns:
+            Dict with counts: {"urls_found", "pages_scraped", "pages_failed"}
+        """
+        import asyncio
+        from .web_scraping_service import WebScrapingService, LANDING_PAGE_SCHEMA
+
+        logger.info(f"Starting landing page scrape for brand: {brand_id}, limit={limit}")
+
+        # 1. Get ad IDs for brand
+        link_result = self.supabase.table("brand_facebook_ads").select(
+            "ad_id"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        if not link_result.data:
+            logger.info(f"No ads found for brand: {brand_id}")
+            return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
+
+        ad_ids = [r['ad_id'] for r in link_result.data]
+
+        # 2. Get unique link_urls from ads
+        ads_result = self.supabase.table("facebook_ads").select(
+            "id, snapshot"
+        ).in_("id", ad_ids).execute()
+
+        # Extract unique URLs
+        urls_to_scrape = {}  # url -> ad_id mapping
+        for ad in ads_result.data:
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+
+            link_url = snapshot.get('link_url')
+            if link_url and link_url not in urls_to_scrape:
+                # Clean URL (remove tracking params for deduplication)
+                clean_url = self._clean_url(link_url)
+                if clean_url not in urls_to_scrape:
+                    urls_to_scrape[clean_url] = ad['id']
+
+        if not urls_to_scrape:
+            logger.info(f"No link_urls found in ads for brand: {brand_id}")
+            return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
+
+        # 3. Filter out already-scraped URLs
+        existing_result = self.supabase.table("brand_landing_pages").select(
+            "url"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        existing_urls = {r['url'] for r in (existing_result.data or [])}
+        new_urls = {url: ad_id for url, ad_id in urls_to_scrape.items() if url not in existing_urls}
+
+        total_found = len(urls_to_scrape)
+        logger.info(f"Found {total_found} unique URLs, {len(new_urls)} need scraping")
+
+        if not new_urls:
+            return {"urls_found": total_found, "pages_scraped": 0, "pages_failed": 0}
+
+        # 4. Apply limit
+        urls_to_process = list(new_urls.items())[:limit]
+        logger.info(f"Processing {len(urls_to_process)} URLs (limit={limit})")
+
+        # 5. Scrape each URL
+        scraper = WebScrapingService()
+        pages_scraped = 0
+        pages_failed = 0
+
+        for i, (url, source_ad_id) in enumerate(urls_to_process):
+            try:
+                logger.info(f"Scraping {i+1}/{len(urls_to_process)}: {url[:60]}...")
+
+                # Scrape with FireCrawl
+                scrape_result = await scraper.scrape_url_async(
+                    url=url,
+                    formats=["markdown", "links"],
+                    only_main_content=True,
+                    wait_for=1000,  # Wait 1s for JS
+                    timeout=30000
+                )
+
+                if not scrape_result.success:
+                    logger.warning(f"Failed to scrape {url}: {scrape_result.error}")
+                    self._save_landing_page_error(brand_id, url, source_ad_id, scrape_result.error)
+                    pages_failed += 1
+                    continue
+
+                # Try structured extraction
+                extract_result = None
+                try:
+                    extract_result = scraper.extract_structured(
+                        url=url,
+                        schema=LANDING_PAGE_SCHEMA
+                    )
+                except Exception as e:
+                    logger.warning(f"Structured extraction failed for {url}: {e}")
+
+                # Save to database
+                self._save_landing_page(
+                    brand_id=brand_id,
+                    url=url,
+                    source_ad_id=source_ad_id,
+                    scrape_result=scrape_result,
+                    extract_result=extract_result
+                )
+
+                pages_scraped += 1
+                logger.info(f"Scraped page {i+1}/{len(urls_to_process)}")
+
+                # Delay between scrapes (except last)
+                if i < len(urls_to_process) - 1:
+                    await asyncio.sleep(delay_between)
+
+            except Exception as e:
+                logger.error(f"Error scraping {url}: {e}")
+                pages_failed += 1
+                continue
+
+        logger.info(f"Landing page scrape complete: {pages_scraped} scraped, {pages_failed} failed")
+        return {
+            "urls_found": total_found,
+            "pages_scraped": pages_scraped,
+            "pages_failed": pages_failed
+        }
+
+    def _clean_url(self, url: str) -> str:
+        """Clean URL by removing common tracking parameters."""
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        try:
+            parsed = urlparse(url)
+
+            # Parameters to remove
+            tracking_params = {
+                'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+                'fbclid', 'gclid', 'ref', 'mc_cid', 'mc_eid'
+            }
+
+            # Parse and filter query params
+            params = parse_qs(parsed.query)
+            filtered_params = {k: v for k, v in params.items() if k.lower() not in tracking_params}
+
+            # Rebuild URL
+            clean_query = urlencode(filtered_params, doseq=True)
+            clean_parsed = parsed._replace(query=clean_query)
+
+            return urlunparse(clean_parsed)
+        except Exception:
+            return url
+
+    def _save_landing_page(
+        self,
+        brand_id: UUID,
+        url: str,
+        source_ad_id: str,
+        scrape_result,
+        extract_result
+    ) -> Optional[UUID]:
+        """Save scraped landing page to database."""
+        try:
+            # Extract metadata
+            metadata = scrape_result.metadata or {}
+
+            # Build extracted_data from extract_result
+            extracted_data = {}
+            if extract_result and extract_result.success and extract_result.data:
+                extracted_data = extract_result.data
+
+            record = {
+                "brand_id": str(brand_id),
+                "url": url,
+                "source_ad_id": source_ad_id,
+                "page_title": metadata.get("title") or extracted_data.get("page_title"),
+                "meta_description": metadata.get("description") or extracted_data.get("meta_description"),
+                "raw_markdown": scrape_result.markdown,
+                "extracted_data": extracted_data,
+                "product_name": extracted_data.get("product_name"),
+                "pricing": extracted_data.get("pricing", {}),
+                "benefits": extracted_data.get("benefits", []),
+                "features": extracted_data.get("features", []),
+                "testimonials": extracted_data.get("testimonials", []),
+                "social_proof": extracted_data.get("social_proof", []),
+                "call_to_action": extracted_data.get("call_to_action"),
+                "objection_handling": extracted_data.get("objection_handling", []),
+                "guarantee": extracted_data.get("guarantee"),
+                "urgency_elements": extracted_data.get("urgency_elements", []),
+                "scrape_status": "scraped",
+                "scraped_at": datetime.utcnow().isoformat()
+            }
+
+            result = self.supabase.table("brand_landing_pages").insert(record).execute()
+
+            if result.data:
+                logger.info(f"Saved landing page: {url[:50]}...")
+                return UUID(result.data[0]["id"])
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save landing page: {e}")
+            return None
+
+    def _save_landing_page_error(
+        self,
+        brand_id: UUID,
+        url: str,
+        source_ad_id: str,
+        error: str
+    ) -> None:
+        """Save failed landing page scrape."""
+        try:
+            record = {
+                "brand_id": str(brand_id),
+                "url": url,
+                "source_ad_id": source_ad_id,
+                "scrape_status": "failed",
+                "scrape_error": error,
+                "scraped_at": datetime.utcnow().isoformat()
+            }
+
+            self.supabase.table("brand_landing_pages").insert(record).execute()
+
+        except Exception as e:
+            logger.error(f"Failed to save landing page error: {e}")
+
+    async def analyze_landing_pages_for_brand(
+        self,
+        brand_id: UUID,
+        limit: int = 20,
+        delay_between: float = 2.0
+    ) -> List[Dict]:
+        """
+        Analyze scraped landing pages for persona signals.
+
+        This method:
+        1. Gets scraped (but not analyzed) landing pages
+        2. Analyzes each with Claude for persona signals
+        3. Updates the database with analysis results
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum pages to analyze
+            delay_between: Delay between API calls
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+        from anthropic import Anthropic
+
+        logger.info(f"Starting landing page analysis for brand: {brand_id}, limit={limit}")
+
+        # 1. Get scraped but unanalyzed pages
+        pages_result = self.supabase.table("brand_landing_pages").select(
+            "id, url, raw_markdown, extracted_data, page_title"
+        ).eq("brand_id", str(brand_id)).eq("scrape_status", "scraped").limit(limit).execute()
+
+        if not pages_result.data:
+            logger.info(f"No unanalyzed landing pages for brand: {brand_id}")
+            return []
+
+        pages = pages_result.data
+        logger.info(f"Analyzing {len(pages)} landing pages")
+
+        # 2. Analyze each page
+        client = Anthropic()
+        results = []
+
+        for i, page in enumerate(pages):
+            try:
+                # Delay before each request (except first)
+                if i > 0:
+                    await asyncio.sleep(delay_between)
+
+                logger.info(f"Analyzing page {i+1}/{len(pages)}: {page['url'][:50]}...")
+
+                # Build prompt
+                content = page.get('raw_markdown', '')
+                if not content:
+                    logger.warning(f"No content for page: {page['id']}")
+                    continue
+
+                # Truncate if too long (keep under ~100k chars)
+                if len(content) > 80000:
+                    content = content[:80000] + "\n\n[Content truncated...]"
+
+                prompt = LANDING_PAGE_ANALYSIS_PROMPT.format(
+                    page_title=page.get('page_title', 'Unknown'),
+                    url=page['url'],
+                    content=content,
+                    extracted_data=json.dumps(page.get('extracted_data', {}), indent=2)
+                )
+
+                message = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=3000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+                response_text = message.content[0].text.strip()
+
+                # Strip markdown code fences
+                if response_text.startswith('```'):
+                    first_newline = response_text.find('\n')
+                    last_fence = response_text.rfind('```')
+                    if first_newline != -1 and last_fence > first_newline:
+                        response_text = response_text[first_newline + 1:last_fence].strip()
+
+                analysis = json.loads(response_text)
+
+                # Save analysis to database
+                self._update_landing_page_analysis(
+                    page_id=UUID(page['id']),
+                    analysis=analysis
+                )
+
+                results.append({
+                    "page_id": page['id'],
+                    "url": page['url'],
+                    "analysis": analysis
+                })
+
+                logger.info(f"Analyzed page {i+1}/{len(pages)}")
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse analysis for {page['id']}: {e}")
+                results.append({"page_id": page['id'], "error": str(e)})
+            except Exception as e:
+                logger.error(f"Failed to analyze page {page['id']}: {e}")
+                results.append({"page_id": page['id'], "error": str(e)})
+
+        success_count = len([r for r in results if 'analysis' in r])
+        logger.info(f"Landing page analysis complete: {success_count}/{len(pages)} analyzed")
+        return results
+
+    def _update_landing_page_analysis(
+        self,
+        page_id: UUID,
+        analysis: Dict
+    ) -> None:
+        """Update landing page with analysis results."""
+        try:
+            update = {
+                "analysis_raw": analysis,
+                "copy_patterns": analysis.get("copy_patterns", {}),
+                "persona_signals": analysis.get("persona_signals", {}),
+                "scrape_status": "analyzed",
+                "analyzed_at": datetime.utcnow().isoformat(),
+                "model_used": "claude-sonnet-4-20250514"
+            }
+
+            self.supabase.table("brand_landing_pages").update(update).eq(
+                "id", str(page_id)
+            ).execute()
+
+            logger.info(f"Updated analysis for page: {page_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to update landing page analysis: {e}")
+
+    def get_landing_pages_for_brand(self, brand_id: UUID) -> List[Dict]:
+        """Get all landing pages for a brand."""
+        try:
+            result = self.supabase.table("brand_landing_pages").select("*").eq(
+                "brand_id", str(brand_id)
+            ).order("created_at", desc=True).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Failed to get landing pages: {e}")
+            return []
+
+    def get_landing_page_stats(self, brand_id: UUID) -> Dict[str, int]:
+        """Get landing page statistics for a brand."""
+        try:
+            result = self.supabase.table("brand_landing_pages").select(
+                "scrape_status"
+            ).eq("brand_id", str(brand_id)).execute()
+
+            stats = {"total": 0, "scraped": 0, "analyzed": 0, "failed": 0, "pending": 0}
+
+            for page in result.data or []:
+                stats["total"] += 1
+                status = page.get("scrape_status", "pending")
+                if status in stats:
+                    stats[status] += 1
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Failed to get landing page stats: {e}")
+            return {"total": 0, "scraped": 0, "analyzed": 0, "failed": 0, "pending": 0}
+
+
+# Landing page analysis prompt
+LANDING_PAGE_ANALYSIS_PROMPT = """Analyze this landing page for brand research and customer persona insights.
+
+PAGE TITLE: {page_title}
+URL: {url}
+
+EXTRACTED DATA (from structured extraction):
+{extracted_data}
+
+PAGE CONTENT:
+{content}
+
+Analyze this landing page to extract:
+1. Copy patterns and messaging strategies
+2. Persona signals (who is this page targeting?)
+3. Pain points and desires being addressed
+4. Objection handling techniques
+5. Social proof and trust signals
+
+Return JSON:
+{{
+    "copy_patterns": {{
+        "headline_style": "e.g., question, benefit-led, curiosity",
+        "tone": "casual|professional|urgent|empathetic",
+        "key_phrases": ["Notable phrases that could be reused"],
+        "power_words": ["Emotionally charged words used"],
+        "cta_patterns": ["Call-to-action styles used"]
+    }},
+
+    "persona_signals": {{
+        "target_demographics": {{
+            "age_range": "estimated age",
+            "gender_focus": "male|female|neutral",
+            "income_level": "budget|mid|premium|luxury"
+        }},
+        "psychographics": ["Lifestyle and personality traits targeted"],
+        "identity_markers": ["How they see themselves"],
+        "values": ["Core values appealed to"]
+    }},
+
+    "pain_points_addressed": {{
+        "emotional": ["Emotional pains addressed"],
+        "functional": ["Practical problems solved"],
+        "social": ["Social concerns addressed"]
+    }},
+
+    "desires_appealed_to": {{
+        "transformation": ["Before/after states promised"],
+        "outcomes": ["Specific results promised"],
+        "emotional_benefits": ["How they'll feel"]
+    }},
+
+    "objection_handling": [
+        {{
+            "objection": "The concern addressed",
+            "response": "How the page handles it"
+        }}
+    ],
+
+    "social_proof_analysis": {{
+        "types_used": ["testimonial|statistic|logo|badge|etc"],
+        "strength": "weak|moderate|strong",
+        "notable_examples": ["Specific proof points"]
+    }},
+
+    "urgency_scarcity": {{
+        "techniques_used": ["limited time|limited quantity|etc"],
+        "effectiveness": "subtle|moderate|aggressive"
+    }},
+
+    "unique_angles": ["What makes this page's approach unique"],
+
+    "persona_synthesis_notes": "2-3 sentences summarizing the ideal customer this page targets"
+}}
+
+Return ONLY valid JSON."""
+
 
 # Persona synthesis prompt
 PERSONA_SYNTHESIS_PROMPT = """You are an expert at building detailed 4D customer personas from advertising data.

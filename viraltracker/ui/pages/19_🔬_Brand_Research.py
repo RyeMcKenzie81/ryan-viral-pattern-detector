@@ -260,6 +260,43 @@ def analyze_copy_sync(brand_id: str, limit: int = 50) -> List[Dict]:
     return run_async(_analyze())
 
 
+def scrape_landing_pages_sync(brand_id: str, limit: int = 20) -> Dict:
+    """Scrape landing pages for brand (sync wrapper).
+
+    Uses scrape_landing_pages_for_brand() which combines fetching URLs
+    and scraping in one async operation.
+    """
+    from viraltracker.services.brand_research_service import BrandResearchService
+
+    async def _scrape():
+        service = BrandResearchService()
+        return await service.scrape_landing_pages_for_brand(UUID(brand_id), limit=limit)
+
+    return run_async(_scrape())
+
+
+def analyze_landing_pages_sync(brand_id: str, limit: int = 20) -> List[Dict]:
+    """Analyze landing pages for brand (sync wrapper).
+
+    Uses analyze_landing_pages_for_brand() which combines fetching pages
+    and analyzing in one async operation.
+    """
+    from viraltracker.services.brand_research_service import BrandResearchService
+
+    async def _analyze():
+        service = BrandResearchService()
+        return await service.analyze_landing_pages_for_brand(UUID(brand_id), limit=limit)
+
+    return run_async(_analyze())
+
+
+def get_landing_page_stats(brand_id: str) -> Dict[str, int]:
+    """Get landing page statistics for a brand."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+    service = BrandResearchService()
+    return service.get_landing_page_stats(UUID(brand_id))
+
+
 def synthesize_personas_sync(brand_id: str) -> List[Dict]:
     """Synthesize personas from analyses (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
@@ -313,11 +350,12 @@ def render_brand_selector():
 
 def render_stats_section(brand_id: str):
     """Render statistics about the brand's data."""
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     ad_count = get_ad_count_for_brand(brand_id)
     asset_stats = get_asset_stats_for_brand(brand_id)
     analysis_stats = get_analysis_stats_for_brand(brand_id)
+    lp_stats = get_landing_page_stats(brand_id)
 
     with col1:
         st.metric("Ads Linked", ad_count)
@@ -344,6 +382,14 @@ def render_stats_section(brand_id: str):
                 st.caption(f"{pending} pending")
 
     with col5:
+        st.metric("Landing Pages", lp_stats["total"])
+        if lp_stats["total"] > 0:
+            analyzed = lp_stats.get("analyzed", 0)
+            scraped = lp_stats.get("scraped", 0)
+            if analyzed > 0 or scraped > 0:
+                st.caption(f"{analyzed} analyzed, {scraped} scraped")
+
+    with col6:
         st.metric("Total Analyses", analysis_stats["total"])
 
 
@@ -440,9 +486,71 @@ def render_analysis_section(brand_id: str):
             st.rerun()
 
 
+def render_landing_page_section(brand_id: str):
+    """Render landing page scraping and analysis section."""
+    st.subheader("3. Landing Pages")
+    st.markdown("Scrape and analyze landing pages from ad link URLs for deeper persona insights.")
+
+    lp_stats = get_landing_page_stats(brand_id)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Scrape Landing Pages**")
+        st.caption("Extract content from ad link_urls using FireCrawl")
+
+        if lp_stats["total"] > 0:
+            st.info(f"{lp_stats['total']} pages scraped, {lp_stats.get('analyzed', 0)} analyzed")
+
+        scrape_limit = st.number_input("Pages to scrape", 5, 50, 20, key="lp_scrape_limit")
+
+        if st.button("Scrape Landing Pages", disabled=st.session_state.analysis_running, key="btn_scrape_lp"):
+            st.session_state.analysis_running = True
+
+            with st.spinner(f"Scraping up to {scrape_limit} landing pages..."):
+                try:
+                    result = scrape_landing_pages_sync(brand_id, scrape_limit)
+                    st.success(
+                        f"Found {result['urls_found']} URLs, "
+                        f"scraped {result['pages_scraped']}, "
+                        f"{result['pages_failed']} failed"
+                    )
+                except Exception as e:
+                    st.error(f"Landing page scrape failed: {e}")
+
+            st.session_state.analysis_running = False
+            st.rerun()
+
+    with col2:
+        st.markdown("**Analyze Landing Pages**")
+        st.caption("Extract persona signals, copy patterns, objection handling")
+
+        scraped_count = lp_stats.get("scraped", 0)
+        if scraped_count > 0:
+            st.info(f"{scraped_count} pages ready for analysis")
+        else:
+            st.caption("Scrape pages first")
+
+        analyze_limit = st.number_input("Pages to analyze", 5, 50, 20, key="lp_analyze_limit")
+
+        if st.button("Analyze Landing Pages", disabled=st.session_state.analysis_running or scraped_count == 0, key="btn_analyze_lp"):
+            st.session_state.analysis_running = True
+
+            with st.spinner(f"Analyzing up to {analyze_limit} landing pages..."):
+                try:
+                    results = analyze_landing_pages_sync(brand_id, analyze_limit)
+                    success_count = len([r for r in results if 'analysis' in r])
+                    st.success(f"Analyzed {success_count} landing pages")
+                except Exception as e:
+                    st.error(f"Landing page analysis failed: {e}")
+
+            st.session_state.analysis_running = False
+            st.rerun()
+
+
 def render_synthesis_section(brand_id: str):
     """Render persona synthesis section."""
-    st.subheader("3. Synthesize Personas")
+    st.subheader("4. Synthesize Personas")
     st.markdown("Aggregate all analyses to detect customer segments and generate 4D personas.")
 
     analysis_stats = get_analysis_stats_for_brand(brand_id)
@@ -805,6 +913,11 @@ else:
 
         # Analysis section
         render_analysis_section(selected_brand_id)
+
+        st.divider()
+
+        # Landing page section
+        render_landing_page_section(selected_brand_id)
 
         st.divider()
 
