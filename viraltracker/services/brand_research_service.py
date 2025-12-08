@@ -702,7 +702,8 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         limit: int = 50,
-        delay_between: float = 2.0
+        delay_between: float = 2.0,
+        ad_ids: Optional[List[str]] = None
     ) -> List[Dict]:
         """
         Analyze copy for all ads of a brand.
@@ -711,22 +712,28 @@ class BrandResearchService:
             brand_id: Brand UUID
             limit: Maximum ads to process
             delay_between: Delay between API calls
+            ad_ids: Optional list of specific ad IDs to process (for product filtering)
 
         Returns:
             List of analysis results
         """
         import asyncio
 
-        # Get ALL ads for brand via junction table (no limit - filter after)
-        link_result = self.supabase.table("brand_facebook_ads").select(
-            "ad_id"
-        ).eq("brand_id", str(brand_id)).execute()
+        # Use provided ad_ids or get ALL ads for brand via junction table
+        if ad_ids is None:
+            link_result = self.supabase.table("brand_facebook_ads").select(
+                "ad_id"
+            ).eq("brand_id", str(brand_id)).execute()
 
-        if not link_result.data:
-            logger.info(f"No ads found for brand: {brand_id}")
-            return []
+            if not link_result.data:
+                logger.info(f"No ads found for brand: {brand_id}")
+                return []
 
-        ad_ids = [r['ad_id'] for r in link_result.data]
+            ad_ids = [r['ad_id'] for r in link_result.data]
+        else:
+            if not ad_ids:
+                logger.info(f"No ads provided for brand: {brand_id}")
+                return []
 
         # Get ads with snapshots (copy is stored in snapshot JSON)
         ads_result = self.supabase.table("facebook_ads").select(
@@ -1418,7 +1425,8 @@ class BrandResearchService:
         brand_id: UUID,
         limit: int = 50,
         include_videos: bool = True,
-        include_images: bool = True
+        include_images: bool = True,
+        ad_ids: Optional[List[str]] = None
     ) -> Dict[str, int]:
         """
         Download and store assets (videos/images) for a brand's existing ads.
@@ -1431,6 +1439,7 @@ class BrandResearchService:
             limit: Maximum number of ads to process
             include_videos: Download videos
             include_images: Download images
+            ad_ids: Optional list of specific ad IDs to process (for product filtering)
 
         Returns:
             Dict with counts: {"ads_processed", "videos_downloaded", "images_downloaded"}
@@ -1439,16 +1448,21 @@ class BrandResearchService:
 
         scraping_service = AdScrapingService()
 
-        # Get ALL ads for brand via junction table (no limit here - we filter after)
-        link_result = self.supabase.table("brand_facebook_ads").select(
-            "ad_id"
-        ).eq("brand_id", str(brand_id)).execute()
+        # Use provided ad_ids or get all ads for brand via junction table
+        if ad_ids is None:
+            link_result = self.supabase.table("brand_facebook_ads").select(
+                "ad_id"
+            ).eq("brand_id", str(brand_id)).execute()
 
-        if not link_result.data:
-            logger.info(f"No ads found for brand: {brand_id}")
-            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
+            if not link_result.data:
+                logger.info(f"No ads found for brand: {brand_id}")
+                return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
 
-        ad_ids = [r['ad_id'] for r in link_result.data]
+            ad_ids = [r['ad_id'] for r in link_result.data]
+        else:
+            if not ad_ids:
+                logger.info(f"No ads provided for brand: {brand_id}")
+                return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
 
         # Get ads that already have assets
         existing_assets = self.supabase.table("scraped_ad_assets").select(
@@ -1586,7 +1600,8 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         limit: int = 10,
-        delay_between: float = 5.0
+        delay_between: float = 5.0,
+        ad_ids: Optional[List[str]] = None
     ) -> List[Dict]:
         """
         Fetch and analyze videos for a brand in one async operation.
@@ -1599,6 +1614,7 @@ class BrandResearchService:
             brand_id: Brand UUID
             limit: Maximum videos to analyze
             delay_between: Delay between videos for rate limiting (default: 5s)
+            ad_ids: Optional list of specific ad IDs to process (for product filtering)
 
         Returns:
             List of analysis results
@@ -1607,16 +1623,21 @@ class BrandResearchService:
 
         logger.info(f"Starting video analysis for brand: {brand_id}, limit={limit}")
 
-        # 1. Get ad IDs from junction table
-        link_result = self.supabase.table("brand_facebook_ads").select(
-            "ad_id"
-        ).eq("brand_id", str(brand_id)).execute()
+        # 1. Use provided ad_ids or get from junction table
+        if ad_ids is None:
+            link_result = self.supabase.table("brand_facebook_ads").select(
+                "ad_id"
+            ).eq("brand_id", str(brand_id)).execute()
 
-        if not link_result.data:
-            logger.info(f"No ads found for brand: {brand_id}")
-            return []
+            if not link_result.data:
+                logger.info(f"No ads found for brand: {brand_id}")
+                return []
 
-        ad_ids = [r['ad_id'] for r in link_result.data]
+            ad_ids = [r['ad_id'] for r in link_result.data]
+        else:
+            if not ad_ids:
+                logger.info(f"No ads provided for brand: {brand_id}")
+                return []
 
         # 2. Get ALL video assets for these ads (no limit yet)
         assets_result = self.supabase.table("scraped_ad_assets").select(
@@ -1691,7 +1712,8 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         limit: int = 20,
-        delay_between: float = 2.0
+        delay_between: float = 2.0,
+        ad_ids: Optional[List[str]] = None
     ) -> List[Dict]:
         """
         Fetch and analyze images for a brand in one async operation.
@@ -1704,6 +1726,7 @@ class BrandResearchService:
             brand_id: Brand UUID
             limit: Maximum images to analyze
             delay_between: Delay between images for rate limiting (default: 2s)
+            ad_ids: Optional list of specific ad IDs to process (for product filtering)
 
         Returns:
             List of analysis results
@@ -1712,16 +1735,21 @@ class BrandResearchService:
 
         logger.info(f"Starting image analysis for brand: {brand_id}, limit={limit}")
 
-        # 1. Get ad IDs from junction table
-        link_result = self.supabase.table("brand_facebook_ads").select(
-            "ad_id"
-        ).eq("brand_id", str(brand_id)).execute()
+        # 1. Use provided ad_ids or get from junction table
+        if ad_ids is None:
+            link_result = self.supabase.table("brand_facebook_ads").select(
+                "ad_id"
+            ).eq("brand_id", str(brand_id)).execute()
 
-        if not link_result.data:
-            logger.info(f"No ads found for brand: {brand_id}")
-            return []
+            if not link_result.data:
+                logger.info(f"No ads found for brand: {brand_id}")
+                return []
 
-        ad_ids = [r['ad_id'] for r in link_result.data]
+            ad_ids = [r['ad_id'] for r in link_result.data]
+        else:
+            if not ad_ids:
+                logger.info(f"No ads provided for brand: {brand_id}")
+                return []
 
         # 2. Get ALL image assets for these ads (no limit yet)
         assets_result = self.supabase.table("scraped_ad_assets").select(
@@ -2076,7 +2104,8 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         limit: int = 20,
-        delay_between: float = 2.0
+        delay_between: float = 2.0,
+        product_id: Optional[UUID] = None
     ) -> Dict[str, Any]:
         """
         Scrape landing pages for a brand using URL patterns from product_urls.
@@ -2091,6 +2120,7 @@ class BrandResearchService:
             brand_id: Brand UUID
             limit: Maximum pages to scrape
             delay_between: Delay between scrapes for rate limiting
+            product_id: Optional product UUID to filter to specific product
 
         Returns:
             Dict with counts: {"urls_found", "pages_scraped", "pages_failed"}
@@ -2098,18 +2128,21 @@ class BrandResearchService:
         import asyncio
         from .web_scraping_service import WebScrapingService, LANDING_PAGE_SCHEMA
 
-        logger.info(f"Starting landing page scrape for brand: {brand_id}, limit={limit}")
+        logger.info(f"Starting landing page scrape for brand: {brand_id}, limit={limit}, product_id={product_id}")
 
-        # 1. Get products for this brand
-        products_result = self.supabase.table("products").select(
-            "id"
-        ).eq("brand_id", str(brand_id)).execute()
+        # 1. Get products for this brand (or use specific product)
+        if product_id:
+            product_ids = [str(product_id)]
+        else:
+            products_result = self.supabase.table("products").select(
+                "id"
+            ).eq("brand_id", str(brand_id)).execute()
 
-        if not products_result.data:
-            logger.info(f"No products found for brand: {brand_id}")
-            return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
+            if not products_result.data:
+                logger.info(f"No products found for brand: {brand_id}")
+                return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
 
-        product_ids = [p['id'] for p in products_result.data]
+            product_ids = [p['id'] for p in products_result.data]
 
         # 2. Get URL patterns from product_urls table
         urls_result = self.supabase.table("product_urls").select(
@@ -2349,7 +2382,8 @@ class BrandResearchService:
         self,
         brand_id: UUID,
         limit: int = 20,
-        delay_between: float = 2.0
+        delay_between: float = 2.0,
+        product_id: Optional[UUID] = None
     ) -> List[Dict]:
         """
         Analyze scraped landing pages for persona signals.
@@ -2363,6 +2397,7 @@ class BrandResearchService:
             brand_id: Brand UUID
             limit: Maximum pages to analyze
             delay_between: Delay between API calls
+            product_id: Optional product UUID to filter to specific product
 
         Returns:
             List of analysis results
@@ -2370,12 +2405,17 @@ class BrandResearchService:
         import asyncio
         from anthropic import Anthropic
 
-        logger.info(f"Starting landing page analysis for brand: {brand_id}, limit={limit}")
+        logger.info(f"Starting landing page analysis for brand: {brand_id}, limit={limit}, product_id={product_id}")
 
         # 1. Get scraped but unanalyzed pages
-        pages_result = self.supabase.table("brand_landing_pages").select(
+        query = self.supabase.table("brand_landing_pages").select(
             "id, url, raw_markdown, extracted_data, page_title"
-        ).eq("brand_id", str(brand_id)).eq("scrape_status", "scraped").limit(limit).execute()
+        ).eq("brand_id", str(brand_id)).eq("scrape_status", "scraped")
+
+        if product_id:
+            query = query.eq("product_id", str(product_id))
+
+        pages_result = query.limit(limit).execute()
 
         if not pages_result.data:
             logger.info(f"No unanalyzed landing pages for brand: {brand_id}")
@@ -2491,12 +2531,12 @@ class BrandResearchService:
             logger.error(f"Failed to get landing pages: {e}")
             return []
 
-    def get_landing_page_stats(self, brand_id: UUID) -> Dict[str, int]:
-        """Get landing page statistics for a brand.
+    def get_landing_page_stats(self, brand_id: UUID, product_id: Optional[UUID] = None) -> Dict[str, int]:
+        """Get landing page statistics for a brand, optionally filtered by product.
 
         Returns:
             Dict with counts:
-            - available: Total URL patterns in product_urls for this brand
+            - available: Total URL patterns in product_urls for this brand/product
             - total: Landing pages in database (scraped or attempted)
             - scraped: Successfully scraped pages
             - analyzed: Pages with AI analysis complete
@@ -2507,22 +2547,35 @@ class BrandResearchService:
         """
         try:
             # Get count of available URLs from product_urls
-            products_result = self.supabase.table("products").select(
-                "id"
-            ).eq("brand_id", str(brand_id)).execute()
-
-            available = 0
-            if products_result.data:
-                product_ids = [p['id'] for p in products_result.data]
+            if product_id:
+                # Filter to specific product
                 urls_result = self.supabase.table("product_urls").select(
                     "id", count="exact"
-                ).in_("product_id", product_ids).execute()
+                ).eq("product_id", str(product_id)).execute()
                 available = urls_result.count or 0
+            else:
+                # All products for brand
+                products_result = self.supabase.table("products").select(
+                    "id"
+                ).eq("brand_id", str(brand_id)).execute()
+
+                available = 0
+                if products_result.data:
+                    product_ids = [p['id'] for p in products_result.data]
+                    urls_result = self.supabase.table("product_urls").select(
+                        "id", count="exact"
+                    ).in_("product_id", product_ids).execute()
+                    available = urls_result.count or 0
 
             # Get existing landing page stats
-            result = self.supabase.table("brand_landing_pages").select(
+            query = self.supabase.table("brand_landing_pages").select(
                 "scrape_status"
-            ).eq("brand_id", str(brand_id)).execute()
+            ).eq("brand_id", str(brand_id))
+
+            if product_id:
+                query = query.eq("product_id", str(product_id))
+
+            result = query.execute()
 
             stats = {
                 "available": available,

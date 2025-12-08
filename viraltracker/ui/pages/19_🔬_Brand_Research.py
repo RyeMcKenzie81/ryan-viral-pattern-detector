@@ -83,10 +83,73 @@ def get_products_for_brand(brand_id: str):
         return []
 
 
-def get_ad_count_for_brand(brand_id: str) -> int:
-    """Get count of ads linked to a brand."""
+def get_ad_ids_for_product(brand_id: str, product_id: str) -> List[str]:
+    """Get ad IDs that link to a specific product's URLs.
+
+    Matches ads whose link_url contains any of the product's URL patterns.
+    """
     try:
         db = get_supabase_client()
+
+        # Get URL patterns for this product
+        patterns_result = db.table("product_urls").select(
+            "url_pattern"
+        ).eq("product_id", product_id).execute()
+
+        if not patterns_result.data:
+            return []
+
+        patterns = [p['url_pattern'] for p in patterns_result.data]
+
+        # Get all ads for this brand
+        ads_result = db.table("brand_facebook_ads").select(
+            "ad_id"
+        ).eq("brand_id", brand_id).execute()
+
+        if not ads_result.data:
+            return []
+
+        ad_ids = [r['ad_id'] for r in ads_result.data]
+
+        # Get ads with their link_urls
+        facebook_ads = db.table("facebook_ads").select(
+            "id, snapshot"
+        ).in_("id", ad_ids).execute()
+
+        # Filter to ads whose link_url matches a product pattern
+        matching_ad_ids = []
+        for ad in facebook_ads.data or []:
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                import json
+                try:
+                    snapshot = json.loads(snapshot)
+                except:
+                    continue
+
+            link_url = snapshot.get('link_url', '') if isinstance(snapshot, dict) else ''
+            if link_url:
+                for pattern in patterns:
+                    if pattern in link_url:
+                        matching_ad_ids.append(ad['id'])
+                        break
+
+        return matching_ad_ids
+    except Exception as e:
+        import streamlit as st
+        st.error(f"Failed to get ads for product: {e}")
+        return []
+
+
+def get_ad_count_for_brand(brand_id: str, product_id: Optional[str] = None) -> int:
+    """Get count of ads linked to a brand, optionally filtered by product."""
+    try:
+        db = get_supabase_client()
+
+        if product_id:
+            ad_ids = get_ad_ids_for_product(brand_id, product_id)
+            return len(ad_ids)
+
         result = db.table("brand_facebook_ads").select(
             "ad_id", count="exact"
         ).eq("brand_id", brand_id).execute()
@@ -95,20 +158,23 @@ def get_ad_count_for_brand(brand_id: str) -> int:
         return 0
 
 
-def get_asset_stats_for_brand(brand_id: str) -> Dict[str, int]:
-    """Get counts of video/image assets for a brand."""
+def get_asset_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
+    """Get counts of video/image assets for a brand, optionally filtered by product."""
     try:
         db = get_supabase_client()
 
-        # Get ad IDs for brand
-        link_result = db.table("brand_facebook_ads").select("ad_id").eq(
-            "brand_id", brand_id
-        ).execute()
+        # Get ad IDs - filtered by product if specified
+        if product_id:
+            ad_ids = get_ad_ids_for_product(brand_id, product_id)
+        else:
+            link_result = db.table("brand_facebook_ads").select("ad_id").eq(
+                "brand_id", brand_id
+            ).execute()
+            ad_ids = [r['ad_id'] for r in link_result.data] if link_result.data else []
 
-        if not link_result.data:
+        if not ad_ids:
             return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
 
-        ad_ids = [r['ad_id'] for r in link_result.data]
         total_ads = len(ad_ids)
 
         # Get asset counts
@@ -135,14 +201,24 @@ def get_asset_stats_for_brand(brand_id: str) -> Dict[str, int]:
         return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
 
 
-def get_analysis_stats_for_brand(brand_id: str) -> Dict[str, int]:
-    """Get counts of completed analyses for a brand."""
+def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
+    """Get counts of completed analyses for a brand, optionally filtered by product."""
     try:
         db = get_supabase_client()
 
-        result = db.table("brand_ad_analysis").select(
-            "analysis_type"
-        ).eq("brand_id", brand_id).execute()
+        # If filtering by product, get the relevant ad IDs first
+        if product_id:
+            ad_ids = get_ad_ids_for_product(brand_id, product_id)
+            if not ad_ids:
+                return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "total": 0}
+
+            result = db.table("brand_ad_analysis").select(
+                "analysis_type"
+            ).eq("brand_id", brand_id).in_("facebook_ad_id", ad_ids).execute()
+        else:
+            result = db.table("brand_ad_analysis").select(
+                "analysis_type"
+            ).eq("brand_id", brand_id).execute()
 
         stats = {
             "video_vision": 0,
@@ -167,18 +243,25 @@ def run_async(coro):
     return asyncio.run(coro)
 
 
-def download_assets_sync(brand_id: str, limit: int = 50) -> Dict[str, int]:
+def download_assets_sync(brand_id: str, limit: int = 50, product_id: Optional[str] = None) -> Dict[str, int]:
     """Download assets for brand (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
 
+    # If filtering by product, get the specific ad IDs
+    ad_ids = None
+    if product_id:
+        ad_ids = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_ids:
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "errors": 0}
+
     async def _download():
         service = BrandResearchService()
-        return await service.download_assets_for_brand(UUID(brand_id), limit=limit)
+        return await service.download_assets_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_download())
 
 
-def analyze_videos_sync(brand_id: str, limit: int = 10) -> List[Dict]:
+def analyze_videos_sync(brand_id: str, limit: int = 10, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze videos for brand (sync wrapper).
 
     Uses analyze_videos_for_brand() which combines fetching and analyzing
@@ -186,14 +269,21 @@ def analyze_videos_sync(brand_id: str, limit: int = 10) -> List[Dict]:
     """
     from viraltracker.services.brand_research_service import BrandResearchService
 
+    # If filtering by product, get the specific ad IDs
+    ad_ids = None
+    if product_id:
+        ad_ids = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_ids:
+            return []
+
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_videos_for_brand(UUID(brand_id), limit=limit)
+        return await service.analyze_videos_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_analyze())
 
 
-def analyze_images_sync(brand_id: str, limit: int = 20) -> List[Dict]:
+def analyze_images_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze images for brand (sync wrapper).
 
     Uses analyze_images_for_brand() which combines fetching and analyzing
@@ -201,9 +291,16 @@ def analyze_images_sync(brand_id: str, limit: int = 20) -> List[Dict]:
     """
     from viraltracker.services.brand_research_service import BrandResearchService
 
+    # If filtering by product, get the specific ad IDs
+    ad_ids = None
+    if product_id:
+        ad_ids = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_ids:
+            return []
+
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_images_for_brand(UUID(brand_id), limit=limit)
+        return await service.analyze_images_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_analyze())
 
@@ -249,18 +346,25 @@ def get_image_assets_for_brand(brand_id: str, only_unanalyzed: bool = True, limi
         return []
 
 
-def analyze_copy_sync(brand_id: str, limit: int = 50) -> List[Dict]:
+def analyze_copy_sync(brand_id: str, limit: int = 50, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze ad copy for brand (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
 
+    # If filtering by product, get the specific ad IDs
+    ad_ids = None
+    if product_id:
+        ad_ids = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_ids:
+            return []
+
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_copy_batch(UUID(brand_id), limit=limit)
+        return await service.analyze_copy_batch(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_analyze())
 
 
-def scrape_landing_pages_sync(brand_id: str, limit: int = 20) -> Dict:
+def scrape_landing_pages_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> Dict:
     """Scrape landing pages for brand (sync wrapper).
 
     Uses scrape_landing_pages_for_brand() which combines fetching URLs
@@ -270,12 +374,16 @@ def scrape_landing_pages_sync(brand_id: str, limit: int = 20) -> Dict:
 
     async def _scrape():
         service = BrandResearchService()
-        return await service.scrape_landing_pages_for_brand(UUID(brand_id), limit=limit)
+        return await service.scrape_landing_pages_for_brand(
+            UUID(brand_id),
+            limit=limit,
+            product_id=UUID(product_id) if product_id else None
+        )
 
     return run_async(_scrape())
 
 
-def analyze_landing_pages_sync(brand_id: str, limit: int = 20) -> List[Dict]:
+def analyze_landing_pages_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze landing pages for brand (sync wrapper).
 
     Uses analyze_landing_pages_for_brand() which combines fetching pages
@@ -285,16 +393,20 @@ def analyze_landing_pages_sync(brand_id: str, limit: int = 20) -> List[Dict]:
 
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_landing_pages_for_brand(UUID(brand_id), limit=limit)
+        return await service.analyze_landing_pages_for_brand(
+            UUID(brand_id),
+            limit=limit,
+            product_id=UUID(product_id) if product_id else None
+        )
 
     return run_async(_analyze())
 
 
-def get_landing_page_stats(brand_id: str) -> Dict[str, int]:
-    """Get landing page statistics for a brand."""
+def get_landing_page_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
+    """Get landing page statistics for a brand, optionally filtered by product."""
     from viraltracker.services.brand_research_service import BrandResearchService
     service = BrandResearchService()
-    return service.get_landing_page_stats(UUID(brand_id))
+    return service.get_landing_page_stats(UUID(brand_id), UUID(product_id) if product_id else None)
 
 
 def synthesize_personas_sync(brand_id: str) -> List[Dict]:
@@ -348,14 +460,14 @@ def render_brand_selector():
     return selected_brand_id, selected_product_id
 
 
-def render_stats_section(brand_id: str):
-    """Render statistics about the brand's data."""
+def render_stats_section(brand_id: str, product_id: Optional[str] = None):
+    """Render statistics about the brand's data, optionally filtered by product."""
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
-    ad_count = get_ad_count_for_brand(brand_id)
-    asset_stats = get_asset_stats_for_brand(brand_id)
-    analysis_stats = get_analysis_stats_for_brand(brand_id)
-    lp_stats = get_landing_page_stats(brand_id)
+    ad_count = get_ad_count_for_brand(brand_id, product_id)
+    asset_stats = get_asset_stats_for_brand(brand_id, product_id)
+    analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
+    lp_stats = get_landing_page_stats(brand_id, product_id)
 
     with col1:
         st.metric("Ads Linked", ad_count)
@@ -402,7 +514,7 @@ def render_stats_section(brand_id: str):
         st.metric("Total Analyses", analysis_stats["total"])
 
 
-def render_download_section(brand_id: str):
+def render_download_section(brand_id: str, product_id: Optional[str] = None):
     """Render asset download section."""
     st.subheader("1. Download Assets")
     st.markdown("Download video and image assets from linked ads to storage.")
@@ -418,7 +530,7 @@ def render_download_section(brand_id: str):
 
             with st.spinner("Downloading assets from ad snapshots..."):
                 try:
-                    result = download_assets_sync(brand_id, limit)
+                    result = download_assets_sync(brand_id, limit, product_id=product_id)
                     st.success(
                         f"Downloaded {result['videos_downloaded']} videos, "
                         f"{result['images_downloaded']} images from {result['ads_processed']} ads"
@@ -430,7 +542,7 @@ def render_download_section(brand_id: str):
             st.rerun()
 
 
-def render_analysis_section(brand_id: str):
+def render_analysis_section(brand_id: str, product_id: Optional[str] = None):
     """Render analysis controls."""
     st.subheader("2. Analyze Assets")
     st.markdown("Run AI analysis on videos, images, and ad copy to extract persona signals.")
@@ -447,7 +559,7 @@ def render_analysis_section(brand_id: str):
 
             with st.spinner(f"Analyzing up to {video_limit} videos (5-15 sec each)..."):
                 try:
-                    results = analyze_videos_sync(brand_id, video_limit)
+                    results = analyze_videos_sync(brand_id, video_limit, product_id)
                     success_count = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success_count} videos")
                 except Exception as e:
@@ -466,7 +578,7 @@ def render_analysis_section(brand_id: str):
 
             with st.spinner(f"Analyzing up to {image_limit} images..."):
                 try:
-                    results = analyze_images_sync(brand_id, image_limit)
+                    results = analyze_images_sync(brand_id, image_limit, product_id)
                     success_count = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success_count} images")
                 except Exception as e:
@@ -485,7 +597,7 @@ def render_analysis_section(brand_id: str):
 
             with st.spinner(f"Analyzing ad copy from up to {copy_limit} ads..."):
                 try:
-                    results = analyze_copy_sync(brand_id, copy_limit)
+                    results = analyze_copy_sync(brand_id, copy_limit, product_id)
                     success_count = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success_count} ad copy texts")
                 except Exception as e:
@@ -495,12 +607,12 @@ def render_analysis_section(brand_id: str):
             st.rerun()
 
 
-def render_landing_page_section(brand_id: str):
+def render_landing_page_section(brand_id: str, product_id: Optional[str] = None):
     """Render landing page scraping and analysis section."""
     st.subheader("3. Landing Pages")
     st.markdown("Scrape and analyze landing pages from URL patterns for deeper persona insights.")
 
-    lp_stats = get_landing_page_stats(brand_id)
+    lp_stats = get_landing_page_stats(brand_id, product_id)
     available = lp_stats.get("available", 0)
     to_scrape = lp_stats.get("to_scrape", 0)
     successfully_scraped = lp_stats.get("successfully_scraped", 0)
@@ -533,7 +645,7 @@ def render_landing_page_section(brand_id: str):
 
             with st.spinner(f"Scraping up to {scrape_limit} landing pages..."):
                 try:
-                    result = scrape_landing_pages_sync(brand_id, scrape_limit)
+                    result = scrape_landing_pages_sync(brand_id, scrape_limit, product_id=product_id)
                     already = result.get('already_scraped', 0)
                     if already > 0:
                         st.warning(f"All {result['urls_found']} URLs already scraped ({already} in database)")
@@ -574,7 +686,7 @@ def render_landing_page_section(brand_id: str):
 
             with st.spinner(f"Analyzing up to {analyze_limit} landing pages..."):
                 try:
-                    results = analyze_landing_pages_sync(brand_id, analyze_limit)
+                    results = analyze_landing_pages_sync(brand_id, analyze_limit, product_id=product_id)
                     success_count = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success_count} landing pages")
                 except Exception as e:
@@ -602,12 +714,12 @@ def get_landing_pages_for_brand(brand_id: str) -> list:
     return service.get_landing_pages_for_brand(UUID(brand_id))
 
 
-def render_synthesis_section(brand_id: str):
+def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
     """Render persona synthesis section."""
     st.subheader("4. Synthesize Personas")
     st.markdown("Aggregate all analyses to detect customer segments and generate 4D personas.")
 
-    analysis_stats = get_analysis_stats_for_brand(brand_id)
+    analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
 
     if analysis_stats["total"] < 3:
         st.warning("Run at least 3 analyses before synthesizing personas.")
@@ -956,27 +1068,27 @@ else:
         st.divider()
 
         # Stats
-        render_stats_section(selected_brand_id)
+        render_stats_section(selected_brand_id, selected_product_id)
 
         st.divider()
 
         # Download section
-        render_download_section(selected_brand_id)
+        render_download_section(selected_brand_id, selected_product_id)
 
         st.divider()
 
         # Analysis section
-        render_analysis_section(selected_brand_id)
+        render_analysis_section(selected_brand_id, selected_product_id)
 
         st.divider()
 
         # Landing page section
-        render_landing_page_section(selected_brand_id)
+        render_landing_page_section(selected_brand_id, selected_product_id)
 
         st.divider()
 
         # Synthesis section
-        render_synthesis_section(selected_brand_id)
+        render_synthesis_section(selected_brand_id, selected_product_id)
 
         st.divider()
 
