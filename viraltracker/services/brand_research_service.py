@@ -2202,10 +2202,23 @@ class BrandResearchService:
             if extract_result and extract_result.success and extract_result.data:
                 extracted_data = extract_result.data
 
+            # Match URL to product using URL patterns
+            product_id = None
+            try:
+                from .product_url_service import ProductUrlService
+                url_service = ProductUrlService()
+                match = url_service.match_url_to_product(url, brand_id)
+                if match:
+                    product_id = match[0]  # (product_id, confidence, match_type)
+                    logger.info(f"Matched URL to product {product_id} with confidence {match[1]}")
+            except Exception as e:
+                logger.warning(f"URL matching failed: {e}")
+
             record = {
                 "brand_id": str(brand_id),
                 "url": url,
                 "source_ad_id": source_ad_id,
+                "product_id": str(product_id) if product_id else None,
                 "page_title": metadata.get("title") or extracted_data.get("page_title"),
                 "meta_description": metadata.get("description") or extracted_data.get("meta_description"),
                 "raw_markdown": scrape_result.markdown,
@@ -2227,7 +2240,7 @@ class BrandResearchService:
             result = self.supabase.table("brand_landing_pages").insert(record).execute()
 
             if result.data:
-                logger.info(f"Saved landing page: {url[:50]}...")
+                logger.info(f"Saved landing page: {url[:50]}..." + (f" (product: {product_id})" if product_id else ""))
                 return UUID(result.data[0]["id"])
             return None
 
