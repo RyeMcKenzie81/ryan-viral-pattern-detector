@@ -360,12 +360,20 @@ class AmazonReviewService:
         """
         seen_ids = set()
         unique = []
+        missing_id_count = 0
 
         for review in reviews:
             review_id = review.get("reviewId")
-            if review_id and review_id not in seen_ids:
+            if not review_id:
+                missing_id_count += 1
+                continue
+            if review_id not in seen_ids:
                 seen_ids.add(review_id)
                 unique.append(review)
+
+        duplicates = len(reviews) - len(unique) - missing_id_count
+        logger.info(f"Deduplication: {len(reviews)} raw → {len(unique)} unique "
+                   f"({duplicates} duplicates, {missing_id_count} missing reviewId)")
 
         return unique
 
