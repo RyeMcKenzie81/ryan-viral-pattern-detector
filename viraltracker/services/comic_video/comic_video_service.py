@@ -580,6 +580,23 @@ class ComicVideoService:
                 for instr in instructions
             ]
 
+            # Recalculate camera positions from layout to ensure correct coordinates
+            # (stored instructions may have outdated center_x/center_y values)
+            for instr in instructions:
+                try:
+                    bounds = self.director.calculate_panel_bounds(
+                        instr.panel_number,
+                        project.layout
+                    )
+                    instr.camera.center_x = bounds.center_x
+                    instr.camera.center_y = bounds.center_y
+                    logger.debug(
+                        f"Panel {instr.panel_number}: recalculated camera to "
+                        f"({bounds.center_x:.3f}, {bounds.center_y:.3f})"
+                    )
+                except ValueError as e:
+                    logger.warning(f"Could not recalculate bounds for panel {instr.panel_number}: {e}")
+
             # Get aspect ratio from project
             aspect_ratio = project.aspect_ratio
 
