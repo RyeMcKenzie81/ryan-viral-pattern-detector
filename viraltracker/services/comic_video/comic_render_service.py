@@ -577,23 +577,26 @@ class ComicRenderService:
         canvas_w, canvas_h = layout.canvas_width, layout.canvas_height
 
         # Calculate the zoom needed to fill the output with a single panel
-        # Panel width = canvas_width / grid_cols
-        # To fill output_width with panel_width, we need:
-        # zoom = canvas_width / panel_width = grid_cols (approximately)
-
-        # For vertical video (1080x1920) viewing a square-ish panel,
-        # we want the panel width to fill the frame width
         panel_width = canvas_w / layout.grid_cols
         panel_height = canvas_h / layout.grid_rows
 
-        # Base zoom to fit panel width into output width
-        # (we zoom based on width since vertical video is narrower)
-        base_zoom_w = canvas_w / panel_width  # = grid_cols
-        base_zoom_h = canvas_h / panel_height  # = grid_rows
+        # Calculate panel and output aspect ratios
+        panel_aspect = panel_width / panel_height
+        output_aspect = out_w / out_h
 
-        # Use width-based zoom (panel fills width, may crop top/bottom)
+        # Determine zoom based on which dimension is the limiting factor
+        # We want the panel to fit entirely within the output frame
+        if output_aspect > panel_aspect:
+            # Output is wider than panel - height is the constraint
+            # Panel height should fit output height, leaving horizontal margins
+            base_zoom = canvas_h / panel_height  # = grid_rows
+        else:
+            # Output is taller/narrower than panel - width is the constraint
+            # Panel width should fit output width, leaving vertical margins
+            base_zoom = canvas_w / panel_width  # = grid_cols
+
         # Multiply by 0.85 to leave a small margin showing neighboring panels
-        panel_zoom = base_zoom_w * 0.85
+        panel_zoom = base_zoom * 0.85
 
         # Apply camera zoom modifiers (1.0 = panel fills frame, 1.2 = tighter)
         z_start = panel_zoom * camera.start_zoom
@@ -660,7 +663,22 @@ class ComicRenderService:
 
         # Calculate panel zoom (same logic as _build_zoompan_filter)
         panel_width = canvas_w / layout.grid_cols
-        panel_zoom = (canvas_w / panel_width) * 0.85  # = grid_cols * 0.85
+        panel_height = canvas_h / layout.grid_rows
+
+        # Calculate panel and output aspect ratios
+        panel_aspect = panel_width / panel_height
+        output_aspect = out_w / out_h
+
+        # Determine zoom based on which dimension is the limiting factor
+        # We want the panel to fit entirely within the output frame
+        if output_aspect > panel_aspect:
+            # Output is wider than panel - height is the constraint
+            base_zoom = canvas_h / panel_height  # = grid_rows
+        else:
+            # Output is taller/narrower than panel - width is the constraint
+            base_zoom = canvas_w / panel_width  # = grid_cols
+
+        panel_zoom = base_zoom * 0.85
 
         # Current panel positions (in pixels)
         curr_cx = camera.center_x * canvas_w
