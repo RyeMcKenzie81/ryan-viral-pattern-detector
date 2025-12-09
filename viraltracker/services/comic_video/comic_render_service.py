@@ -363,13 +363,16 @@ class ComicRenderService:
 
         # Debug: write camera positions to file for debugging
         debug_file = project_dir / "camera_debug.txt"
+        self._debug_file = debug_file  # Store for use in segment rendering
         with open(debug_file, "w") as f:
-            f.write(f"=== CAMERA POSITIONS FOR ALL PANELS ===\n")
+            f.write(f"=== RENDER DEBUG LOG ===\n")
+            f.write(f"Canvas: {layout.canvas_width}x{layout.canvas_height}\n")
             f.write(f"Layout: {layout.grid_cols}x{layout.grid_rows}, row_cols={layout.row_cols}\n")
             f.write(f"Panel cells: {layout.panel_cells}\n\n")
-            for instr in instructions:
-                f.write(f"Panel {instr.panel_number}: camera=({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})\n")
-            f.write(f"========================================\n")
+            f.write(f"=== INSTRUCTION ORDER (as received) ===\n")
+            for i, instr in enumerate(instructions):
+                f.write(f"  [{i}] Panel {instr.panel_number}: camera=({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})\n")
+            f.write(f"\n")
         logger.info(f"Debug info written to {debug_file}")
 
         # 1. Render each panel segment (with transition to next panel)
@@ -464,6 +467,16 @@ class ComicRenderService:
         content_frames = int((content_duration_ms / 1000) * fps)
         transition_frames = total_frames - content_frames
 
+        # Debug: log segment details
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
+                f.write(f"=== SEGMENT: Panel {instruction.panel_number} ===\n")
+                f.write(f"  Camera: ({instruction.camera.center_x:.4f}, {instruction.camera.center_y:.4f})\n")
+                f.write(f"  Pixel pos: ({instruction.camera.center_x * layout.canvas_width:.1f}, {instruction.camera.center_y * layout.canvas_height:.1f})\n")
+                if next_instruction:
+                    f.write(f"  Next panel {next_instruction.panel_number}: ({next_instruction.camera.center_x:.4f}, {next_instruction.camera.center_y:.4f})\n")
+                f.write(f"  Content frames: {content_frames}, Transition frames: {transition_frames}\n")
+
         # Build zoompan filter with transition
         zoompan_filter = self._build_zoompan_with_transition(
             camera=instruction.camera,
@@ -473,7 +486,8 @@ class ComicRenderService:
             content_frames=content_frames,
             transition_frames=transition_frames,
             output_size=(output_width, output_height),
-            fps=fps
+            fps=fps,
+            panel_number=instruction.panel_number  # Pass for debugging
         )
 
         # Build effects filter (only for content portion)
@@ -700,7 +714,8 @@ class ComicRenderService:
         content_frames: int,
         transition_frames: int,
         output_size: Tuple[int, int],
-        fps: int
+        fps: int,
+        panel_number: int = 0
     ) -> str:
         """
         Build zoompan filter that includes transition to next panel.
@@ -718,6 +733,7 @@ class ComicRenderService:
             transition_frames: Number of frames for transition
             output_size: Output video dimensions
             fps: Frames per second
+            panel_number: Panel number for debugging
         """
         out_w, out_h = output_size
         canvas_w, canvas_h = layout.canvas_width, layout.canvas_height
@@ -754,6 +770,13 @@ class ComicRenderService:
             z_expr = f"'{curr_z_start:.2f}+({curr_z_end - curr_z_start:.2f})*on/{content_frames}'"
             x_expr = f"'{curr_cx:.1f}-iw/zoom/2'"
             y_expr = f"'{curr_cy:.1f}-ih/zoom/2'"
+
+            # Debug: write zoompan details to file
+            if hasattr(self, '_debug_file') and self._debug_file:
+                with open(self._debug_file, "a") as f:
+                    f.write(f"  Zoompan (no transition) for panel {panel_number}:\n")
+                    f.write(f"    curr_cx={curr_cx:.1f}, curr_cy={curr_cy:.1f}\n")
+                    f.write(f"    x_expr: {x_expr}\n\n")
 
             return (
                 f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
@@ -793,6 +816,15 @@ class ComicRenderService:
             f"{curr_cy:.1f}-ih/zoom/2,"
             f"{curr_cy:.1f}+({next_cy - curr_cy:.1f})*(on-{content_frames})/{transition_frames}-ih/zoom/2)'"
         )
+
+        # Debug: write zoompan details to file
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
+                f.write(f"  Zoompan build for panel {panel_number}:\n")
+                f.write(f"    curr_cx={curr_cx:.1f}, curr_cy={curr_cy:.1f}\n")
+                f.write(f"    next_cx={next_cx:.1f}, next_cy={next_cy:.1f}\n")
+                f.write(f"    x_expr: {x_expr}\n")
+                f.write(f"    y_expr: {y_expr}\n\n")
 
         logger.debug(
             f"Zoompan with transition: ({curr_cx:.0f},{curr_cy:.0f}) -> ({next_cx:.0f},{next_cy:.0f}), "

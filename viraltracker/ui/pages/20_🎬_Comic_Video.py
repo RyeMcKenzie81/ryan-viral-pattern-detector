@@ -546,6 +546,13 @@ def render_review_step():
                     positions.append(f"Panel {instr.panel_number}: ({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})")
                 st.text("\n".join(positions))
 
+            # Show render debug log if it exists
+            debug_file = Path(f"comic_video_renders/{project_id}/camera_debug.txt")
+            if debug_file.exists():
+                st.markdown("---")
+                st.markdown("**Render Debug Log:**")
+                st.code(debug_file.read_text(), language="text")
+
         st.divider()
 
         # Status metrics
