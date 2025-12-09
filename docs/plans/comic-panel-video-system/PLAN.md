@@ -458,11 +458,28 @@ Users need ability to:
 │  Comic Video: "Inflation Explained by Raccoons"                 │
 │  15 panels | 4-4-4-3 grid | Audio: ✓ Generated                  │
 ├─────────────────────────────────────────────────────────────────┤
+│  Output Format: [9:16 ▼]  ←── Aspect ratio selector             │
+│                                                                 │
 │  [🎬 Render All Panels]  [✓ Approve All]  [🎥 Render Final]    │
 │                                                                 │
 │  Progress: ████████░░░░░░░░ 8/15 rendered | 5/15 approved      │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+#### Output Aspect Ratios
+
+| Ratio | Resolution | Use Case |
+|-------|------------|----------|
+| **9:16** | 1080×1920 | TikTok, Instagram Reels, YouTube Shorts (default) |
+| **16:9** | 1920×1080 | YouTube, Twitter/X, LinkedIn |
+| **1:1** | 1080×1080 | Instagram Feed, Facebook |
+| **4:5** | 1080×1350 | Instagram Feed (portrait) |
+
+**Behavior:**
+- Changing aspect ratio re-renders all panel previews
+- Ken Burns zoom calculations adjust to new frame dimensions
+- Comic grid image is cropped/positioned to fit new aspect ratio
+- Final video uses selected ratio
 
 **Render All Panels:**
 - Queues all panels for video preview rendering
@@ -506,6 +523,36 @@ Note: `[✓ ☐]` checkbox in top-right for individual panel approval
 ### 5.5.4 Data Model Changes
 
 ```python
+from enum import Enum
+
+class AspectRatio(str, Enum):
+    """Supported output aspect ratios."""
+    VERTICAL = "9:16"      # 1080×1920 - TikTok, Reels, Shorts
+    HORIZONTAL = "16:9"    # 1920×1080 - YouTube, Twitter
+    SQUARE = "1:1"         # 1080×1080 - Instagram Feed
+    PORTRAIT = "4:5"       # 1080×1350 - Instagram Portrait
+
+    @property
+    def dimensions(self) -> tuple[int, int]:
+        """Return (width, height) for this ratio."""
+        return {
+            "9:16": (1080, 1920),
+            "16:9": (1920, 1080),
+            "1:1": (1080, 1080),
+            "4:5": (1080, 1350),
+        }[self.value]
+
+    @property
+    def label(self) -> str:
+        """Human-readable label."""
+        return {
+            "9:16": "Vertical (TikTok/Reels)",
+            "16:9": "Horizontal (YouTube)",
+            "1:1": "Square (Instagram)",
+            "4:5": "Portrait (Instagram)",
+        }[self.value]
+
+
 class PanelOverrides(BaseModel):
     """User overrides for auto-generated panel settings."""
     panel_number: int
@@ -545,7 +592,11 @@ class PanelOverrides(BaseModel):
 ALTER TABLE comic_panel_instructions
 ADD COLUMN IF NOT EXISTS user_overrides JSONB DEFAULT NULL;
 
--- Example stored value:
+-- Add aspect_ratio to comic_video_projects
+ALTER TABLE comic_video_projects
+ADD COLUMN IF NOT EXISTS aspect_ratio TEXT DEFAULT '9:16';
+
+-- Example user_overrides stored value:
 -- {
 --   "vignette_enabled": false,
 --   "camera_end_zoom": 1.3,
@@ -588,16 +639,25 @@ def apply_overrides(
 
 ### 5.5.7 Implementation Order
 
-1. [ ] Add `user_overrides` column to database
-2. [ ] Create `PanelOverrides` model
+1. [ ] Add `user_overrides` and `aspect_ratio` columns to database
+2. [ ] Create `AspectRatio` enum and `PanelOverrides` model
 3. [ ] Add `apply_overrides()` to ComicDirectorService
-4. [ ] Add override UI controls to Streamlit page
-5. [ ] Add "Reset to Auto" functionality
-6. [ ] **Add bulk action buttons:**
+4. [ ] **Update ComicRenderService for aspect ratio support:**
+   - [ ] Accept aspect ratio parameter in render methods
+   - [ ] Calculate output dimensions from AspectRatio enum
+   - [ ] Adjust Ken Burns zoom for different frame sizes
+5. [ ] Add override UI controls to Streamlit page
+6. [ ] **Add aspect ratio selector to UI:**
+   - [ ] Dropdown with 9:16, 16:9, 1:1, 4:5 options
+   - [ ] Re-render previews when ratio changes
+   - [ ] Store selected ratio in project
+7. [ ] Add "Reset to Auto" functionality
+8. [ ] **Add bulk action buttons:**
    - [ ] "Render All Panels" with progress tracking
    - [ ] "Approve All" with confirmation dialog
    - [ ] Progress bar showing rendered/approved counts
-7. [ ] Test with problematic panels (vignette over text)
+9. [ ] Test with problematic panels (vignette over text)
+10. [ ] Test all aspect ratios render correctly
 
 ---
 
