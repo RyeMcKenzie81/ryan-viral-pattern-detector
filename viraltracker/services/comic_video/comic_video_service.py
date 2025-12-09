@@ -572,6 +572,17 @@ class ComicVideoService:
                 panel_nums = [a.panel_number for a in unapproved_audio]
                 raise ValueError(f"Audio not approved for panels: {panel_nums}")
 
+            # Apply user overrides to each instruction
+            instructions = [
+                self.director.apply_overrides(instr, instr.user_overrides)
+                if instr.user_overrides and instr.user_overrides.has_overrides()
+                else instr
+                for instr in instructions
+            ]
+
+            # Get aspect ratio from project
+            aspect_ratio = project.aspect_ratio
+
             # Download comic grid
             grid_path = await self._download_file(
                 project.comic_grid_url,
@@ -605,6 +616,7 @@ class ComicVideoService:
                 instructions=instructions,
                 layout=project.layout,
                 audio_paths=audio_paths,
+                aspect_ratio=aspect_ratio,
                 background_music_path=bg_music_path
             )
 
