@@ -276,17 +276,21 @@ class ComicRenderService:
 
         logger.info(f"Rendering full video with {len(instructions)} panels")
 
-        # 1. Render each panel segment
+        # 1. Render each panel segment (with transition to next panel)
         segment_paths = []
-        for instruction in instructions:
+        for i, instruction in enumerate(instructions):
             panel_num = instruction.panel_number
             audio_path = audio_paths.get(panel_num)
 
+            # Get next instruction for transition target (if not last panel)
+            next_instruction = instructions[i + 1] if i < len(instructions) - 1 else None
+
             segment_path = project_dir / f"segment_{panel_num:02d}.mp4"
 
-            await self._render_segment(
+            await self._render_segment_with_transition(
                 grid_path=comic_grid_path,
                 instruction=instruction,
+                next_instruction=next_instruction,
                 layout=layout,
                 output_path=segment_path,
                 audio_path=audio_path,
@@ -310,28 +314,98 @@ class ComicRenderService:
         logger.info(f"Rendered full video: {final_path}")
         return str(final_path)
 
-    async def _render_segment(
+    async def _render_segment_with_transition(
         self,
         grid_path: Path,
         instruction: PanelInstruction,
+        next_instruction: Optional[PanelInstruction],
         layout: ComicLayout,
         output_path: Path,
         audio_path: Optional[Path],
         output_width: int,
         output_height: int
     ) -> None:
-        """Render a single segment (panel + transition)."""
-        # For now, render just the panel
-        # TODO: Add transition rendering
+        """
+        Render a segment: panel content + transition to next panel.
 
-        cmd = self._build_panel_render_command(
-            grid_path=grid_path,
-            instruction=instruction,
+        The segment consists of:
+        1. Main content: Ken Burns on current panel (synced with audio)
+        2. Transition: Camera moves from current panel to next panel position
+        """
+        fps = self.DEFAULT_FPS
+
+        # Calculate durations
+        content_duration_ms = instruction.duration_ms
+        transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
+
+        # No transition for last panel or CUT transitions
+        if not next_instruction or instruction.transition.transition_type.value == "cut":
+            transition_duration_ms = 0
+
+        total_duration_ms = content_duration_ms + transition_duration_ms
+        total_duration_sec = total_duration_ms / 1000
+        total_frames = int(total_duration_sec * fps)
+
+        content_frames = int((content_duration_ms / 1000) * fps)
+        transition_frames = total_frames - content_frames
+
+        # Build zoompan filter with transition
+        zoompan_filter = self._build_zoompan_with_transition(
+            camera=instruction.camera,
+            next_camera=next_instruction.camera if next_instruction else None,
+            transition=instruction.transition,
             layout=layout,
-            output_path=output_path,
-            audio_path=audio_path,
-            output_width=output_width,
-            output_height=output_height
+            content_frames=content_frames,
+            transition_frames=transition_frames,
+            output_size=(output_width, output_height),
+            fps=fps
+        )
+
+        # Build effects filter (only for content portion)
+        effects_filter = self._build_effects_filter(
+            effects=instruction.effects,
+            duration_ms=content_duration_ms
+        )
+
+        # Combine filters
+        if effects_filter:
+            filter_complex = f"{zoompan_filter},{effects_filter}"
+        else:
+            filter_complex = zoompan_filter
+
+        # Build FFmpeg command
+        cmd = [
+            self._ffmpeg_path,
+            "-y",
+            "-loop", "1",
+            "-i", str(grid_path),
+        ]
+
+        if audio_path and audio_path.exists():
+            cmd.extend(["-i", str(audio_path)])
+
+        cmd.extend([
+            "-filter_complex", filter_complex,
+            "-t", str(total_duration_sec),
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+        ])
+
+        if audio_path and audio_path.exists():
+            cmd.extend([
+                "-c:a", "aac",
+                "-b:a", "128k",
+            ])
+        else:
+            cmd.extend(["-an"])
+
+        cmd.append(str(output_path))
+
+        logger.info(
+            f"Rendering panel {instruction.panel_number}: "
+            f"{content_duration_ms}ms content + {transition_duration_ms}ms transition"
         )
 
         await self._run_ffmpeg(cmd)
@@ -463,6 +537,105 @@ class ComicRenderService:
         logger.debug(
             f"Zoompan: panel at ({camera.center_x:.2f}, {camera.center_y:.2f}), "
             f"zoom {z_start:.1f} -> {z_end:.1f}"
+        )
+
+        return zoompan
+
+    def _build_zoompan_with_transition(
+        self,
+        camera: PanelCamera,
+        next_camera: Optional[PanelCamera],
+        transition: PanelTransition,
+        layout: ComicLayout,
+        content_frames: int,
+        transition_frames: int,
+        output_size: Tuple[int, int],
+        fps: int
+    ) -> str:
+        """
+        Build zoompan filter that includes transition to next panel.
+
+        Structure:
+        - Frames 0 to content_frames: Ken Burns on current panel
+        - Frames content_frames to total: Animate to next panel position
+
+        Args:
+            camera: Current panel camera settings
+            next_camera: Next panel camera settings (None if last panel)
+            transition: Transition settings
+            layout: Comic layout with dimensions
+            content_frames: Number of frames for panel content
+            transition_frames: Number of frames for transition
+            output_size: Output video dimensions
+            fps: Frames per second
+        """
+        out_w, out_h = output_size
+        canvas_w, canvas_h = layout.canvas_width, layout.canvas_height
+        total_frames = content_frames + transition_frames
+
+        # Calculate panel zoom (same logic as _build_zoompan_filter)
+        panel_width = canvas_w / layout.grid_cols
+        panel_zoom = (canvas_w / panel_width) * 0.85  # = grid_cols * 0.85
+
+        # Current panel positions (in pixels)
+        curr_cx = camera.center_x * canvas_w
+        curr_cy = camera.center_y * canvas_h
+        curr_z_start = panel_zoom * camera.start_zoom
+        curr_z_end = panel_zoom * camera.end_zoom
+
+        # If no transition or no next panel, use simple zoompan
+        if transition_frames == 0 or next_camera is None:
+            z_expr = f"'{curr_z_start:.2f}+({curr_z_end - curr_z_start:.2f})*on/{content_frames}'"
+            x_expr = f"'{curr_cx:.1f}-iw/zoom/2'"
+            y_expr = f"'{curr_cy:.1f}-ih/zoom/2'"
+
+            return (
+                f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
+                f":d={total_frames}:s={out_w}x{out_h}:fps={fps}"
+            )
+
+        # Next panel positions
+        next_cx = next_camera.center_x * canvas_w
+        next_cy = next_camera.center_y * canvas_h
+        next_z_start = panel_zoom * next_camera.start_zoom
+
+        # Build expressions with two phases:
+        # Phase 1 (content): on < content_frames - zoom within current panel
+        # Phase 2 (transition): on >= content_frames - animate to next panel
+
+        # Zoom expression:
+        # During content: interpolate curr_z_start -> curr_z_end
+        # During transition: interpolate curr_z_end -> next_z_start
+        z_expr = (
+            f"'if(lt(on,{content_frames}),"
+            f"{curr_z_start:.2f}+({curr_z_end - curr_z_start:.2f})*on/{content_frames},"
+            f"{curr_z_end:.2f}+({next_z_start - curr_z_end:.2f})*(on-{content_frames})/{transition_frames})'"
+        )
+
+        # X position expression:
+        # During content: stay centered on current panel
+        # During transition: interpolate from curr_cx to next_cx
+        x_expr = (
+            f"'if(lt(on,{content_frames}),"
+            f"{curr_cx:.1f}-iw/zoom/2,"
+            f"{curr_cx:.1f}+({next_cx - curr_cx:.1f})*(on-{content_frames})/{transition_frames}-iw/zoom/2)'"
+        )
+
+        # Y position expression (same logic)
+        y_expr = (
+            f"'if(lt(on,{content_frames}),"
+            f"{curr_cy:.1f}-ih/zoom/2,"
+            f"{curr_cy:.1f}+({next_cy - curr_cy:.1f})*(on-{content_frames})/{transition_frames}-ih/zoom/2)'"
+        )
+
+        zoompan = (
+            f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
+            f":d={total_frames}:s={out_w}x{out_h}:fps={fps}"
+        )
+
+        logger.debug(
+            f"Zoompan with transition: ({curr_cx:.0f},{curr_cy:.0f}) -> ({next_cx:.0f},{next_cy:.0f}), "
+            f"{content_frames} content + {transition_frames} transition frames"
         )
 
         return zoompan
