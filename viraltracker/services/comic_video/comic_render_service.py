@@ -417,9 +417,8 @@ class ComicRenderService:
         """
         fps = self.DEFAULT_FPS
 
-        # Get audio delay from user overrides or use default (150ms)
-        # This delay ensures voice starts after camera visually "arrives" at panel
-        audio_delay_ms = 150
+        # Get audio delay from user overrides or use default (0ms for now to debug sync)
+        audio_delay_ms = 0
         if instruction.user_overrides and instruction.user_overrides.audio_delay_ms is not None:
             audio_delay_ms = instruction.user_overrides.audio_delay_ms
 
@@ -428,15 +427,15 @@ class ComicRenderService:
         if audio_path and audio_path.exists():
             actual_audio_ms = await self._get_audio_duration_ms(audio_path)
             if actual_audio_ms:
-                # Content duration = audio delay + actual audio + small buffer
-                # Audio delay at start pushes audio playback forward
-                content_duration_ms = audio_delay_ms + actual_audio_ms + 100
-                logger.debug(
-                    f"Panel {instruction.panel_number}: {audio_delay_ms}ms delay + "
-                    f"{actual_audio_ms}ms audio + 100ms buffer"
+                # Content duration = actual audio + small buffer for breathing room
+                # Keep it simple: video content phase = audio length + tiny buffer
+                content_duration_ms = actual_audio_ms + 100
+                logger.info(
+                    f"Panel {instruction.panel_number}: audio={actual_audio_ms}ms + 100ms buffer"
                 )
             else:
                 content_duration_ms = instruction.duration_ms
+                logger.info(f"Panel {instruction.panel_number}: using stored duration {content_duration_ms}ms")
         else:
             content_duration_ms = instruction.duration_ms
 
@@ -471,12 +470,6 @@ class ComicRenderService:
             duration_ms=content_duration_ms
         )
 
-        # Combine filters
-        if effects_filter:
-            filter_complex = f"{zoompan_filter},{effects_filter}"
-        else:
-            filter_complex = zoompan_filter
-
         # Build FFmpeg command
         cmd = [
             self._ffmpeg_path,
@@ -486,12 +479,43 @@ class ComicRenderService:
         ]
 
         if audio_path and audio_path.exists():
-            # Add audio delay so voice starts after camera settles on panel
-            audio_delay_sec = audio_delay_ms / 1000
-            cmd.extend(["-itsoffset", str(audio_delay_sec), "-i", str(audio_path)])
+            cmd.extend(["-i", str(audio_path)])
+
+        # Build filter complex with video and optional audio delay
+        if audio_path and audio_path.exists():
+            if effects_filter:
+                video_chain = f"[0:v]{zoompan_filter},{effects_filter}[vout]"
+            else:
+                video_chain = f"[0:v]{zoompan_filter}[vout]"
+
+            # Only add audio delay filter if delay > 0
+            if audio_delay_ms > 0:
+                audio_chain = f"[1:a]adelay={audio_delay_ms}|{audio_delay_ms}[aout]"
+                filter_complex = f"{video_chain};{audio_chain}"
+                cmd.extend([
+                    "-filter_complex", filter_complex,
+                    "-map", "[vout]",
+                    "-map", "[aout]",
+                ])
+            else:
+                # No audio delay - simpler filter graph
+                filter_complex = video_chain
+                cmd.extend([
+                    "-filter_complex", filter_complex,
+                    "-map", "[vout]",
+                    "-map", "1:a",
+                ])
+        else:
+            # No audio - just video filters
+            if effects_filter:
+                filter_complex = f"{zoompan_filter},{effects_filter}"
+            else:
+                filter_complex = zoompan_filter
+            cmd.extend([
+                "-filter_complex", filter_complex,
+            ])
 
         cmd.extend([
-            "-filter_complex", filter_complex,
             "-t", str(total_duration_sec),
             "-c:v", "libx264",
             "-preset", "medium",
@@ -511,7 +535,8 @@ class ComicRenderService:
 
         logger.info(
             f"Rendering panel {instruction.panel_number}: "
-            f"{content_duration_ms}ms content + {transition_duration_ms}ms transition, "
+            f"audio={audio_delay_ms}ms delay + actual audio, "
+            f"video={content_duration_ms}ms content + {transition_duration_ms}ms transition = {total_duration_ms}ms total, "
             f"camera=({instruction.camera.center_x:.3f}, {instruction.camera.center_y:.3f})"
             + (f" -> next=({next_instruction.camera.center_x:.3f}, {next_instruction.camera.center_y:.3f})"
                if next_instruction else "")
