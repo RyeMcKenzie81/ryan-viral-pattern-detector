@@ -629,18 +629,45 @@ class AmazonReviewService:
             return None
 
     def _format_reviews_for_prompt(self, reviews: List[Dict]) -> str:
-        """Format reviews for Claude prompt."""
+        """Format reviews for Claude prompt with author attribution."""
         lines = []
         for review in reviews:
             rating = review.get("rating", "?")
             title = review.get("title", "No title")
             body = review.get("body", "No content")
+            author = review.get("author", "Anonymous")
+
+            # Format author as "First L." if possible
+            author_formatted = self._format_author_name(author)
+
             # Truncate long reviews
             if len(body) > 500:
                 body = body[:500] + "..."
-            lines.append(f"[{rating}★] {title}\n{body}\n")
+
+            lines.append(f"[{rating}★] {author_formatted} | {title}\n{body}\n")
 
         return "\n---\n".join(lines)
+
+    def _format_author_name(self, author: str) -> str:
+        """Format author name as 'First L.' for attribution."""
+        if not author or author.lower() in ["anonymous", "a customer", "amazon customer"]:
+            return "Verified Buyer"
+
+        # Clean up the name
+        author = author.strip()
+
+        # If already short enough, return as-is
+        if len(author) <= 15:
+            return author
+
+        # Try to extract first name and last initial
+        parts = author.split()
+        if len(parts) >= 2:
+            first = parts[0]
+            last_initial = parts[-1][0].upper() + "."
+            return f"{first} {last_initial}"
+
+        return author[:15]
 
     def _save_analysis(
         self,
@@ -649,24 +676,54 @@ class AmazonReviewService:
         reviews_count: int,
         analysis: Dict[str, Any]
     ):
-        """Save review analysis to database."""
+        """Save review analysis to database.
+
+        Maps new analysis structure to database columns:
+        - transformation -> transformation_quotes (JSONB with insights + quotes)
+        - pain_points -> pain_points (JSONB with insights + quotes)
+        - desired_features -> desires (JSONB with insights + quotes)
+        - past_failures, buying_objections, familiar_promises -> objections (combined JSONB)
+        - language_patterns -> language_patterns (JSONB)
+        """
         try:
-            # Calculate sentiment distribution from analysis
-            sentiment_dist = analysis.get("sentiment_summary", {})
+            # Extract quotes for legacy TEXT[] columns (for backwards compat)
+            transformation_quotes = [
+                q.get("text", "") for q in
+                analysis.get("transformation", {}).get("quotes", [])
+            ]
+            pain_quotes = [
+                q.get("text", "") for q in
+                analysis.get("pain_points", {}).get("quotes", [])
+            ]
+
+            # Combine objection-related categories
+            combined_objections = {
+                "past_failures": analysis.get("past_failures", {}),
+                "buying_objections": analysis.get("buying_objections", {}),
+                "familiar_promises": analysis.get("familiar_promises", {})
+            }
+
+            # Build purchase triggers from insights
+            triggers = []
+            for cat in ["transformation", "desired_features"]:
+                insights = analysis.get(cat, {}).get("insights", [])
+                triggers.extend(insights[:3])  # Top 3 from each
 
             self.supabase.table("amazon_review_analysis").upsert({
                 "product_id": str(product_id),
                 "brand_id": str(brand_id),
                 "total_reviews_analyzed": reviews_count,
-                "sentiment_distribution": sentiment_dist,
-                "pain_points": analysis.get("pain_points"),
-                "desires": analysis.get("desires"),
-                "language_patterns": analysis.get("language_patterns"),
-                "objections": analysis.get("objections"),
-                "purchase_triggers": analysis.get("purchase_triggers"),
-                "top_positive_quotes": analysis.get("top_quotes", {}).get("positive", []),
-                "top_negative_quotes": analysis.get("top_quotes", {}).get("negative", []),
-                "transformation_quotes": analysis.get("top_quotes", {}).get("transformation", []),
+                "sentiment_distribution": analysis.get("sentiment_summary", {}),
+                # Store full structure in JSONB columns
+                "pain_points": analysis.get("pain_points", {}),
+                "desires": analysis.get("desired_features", {}),
+                "language_patterns": analysis.get("language_patterns", {}),
+                "objections": combined_objections,
+                "purchase_triggers": triggers,
+                # Store transformation with full quotes structure
+                "transformation_quotes": transformation_quotes,
+                "top_positive_quotes": transformation_quotes[:5],  # Best outcomes
+                "top_negative_quotes": pain_quotes[:5],  # Pain points
                 "model_used": "claude-sonnet-4-20250514",
                 "analyzed_at": datetime.utcnow().isoformat()
             }, on_conflict="product_id").execute()
@@ -740,53 +797,76 @@ class AmazonReviewService:
 # Analysis prompt for extracting persona signals from reviews
 REVIEW_ANALYSIS_PROMPT = """Analyze these Amazon reviews to extract customer insights for building advertising personas.
 
+Each review is formatted as:
+[Rating★] Author Name | Title
+Body text
+
 REVIEWS:
 {reviews_text}
 
-Extract the following and return as JSON:
+Extract the following categories. For each category, provide:
+1. "insights" - summarized patterns you observed
+2. "quotes" - 3-5 VERBATIM quotes with the most emotional language, attributed as "Quote text" - First Name L.
+
+Return as JSON:
 
 {{
-    "pain_points": {{
-        "emotional": ["Exact phrases about feelings/frustrations - use their words"],
-        "functional": ["Exact phrases about product issues - use their words"],
-        "social": ["Exact phrases about embarrassment/judgment - use their words"]
+    "transformation": {{
+        "insights": ["Summarized outcomes/results customers experienced"],
+        "quotes": [
+            {{"text": "Exact quote about transformation/results", "author": "Sarah M.", "rating": 5}},
+            {{"text": "Another transformation quote", "author": "John D.", "rating": 5}}
+        ]
     }},
-    "desires": {{
-        "emotional": ["What they hoped to feel - use their words"],
-        "functional": ["What they wanted the product to do - use their words"],
-        "social": ["How they wanted to be perceived - use their words"]
+    "pain_points": {{
+        "insights": ["Summarized problems customers had before"],
+        "quotes": [
+            {{"text": "Exact quote about their pain/frustration", "author": "Mike R.", "rating": 3}},
+            {{"text": "Another pain point quote", "author": "Lisa K.", "rating": 2}}
+        ]
+    }},
+    "desired_features": {{
+        "insights": ["What customers wanted the product to do"],
+        "quotes": [
+            {{"text": "Exact quote about desired features", "author": "Amy T.", "rating": 4}}
+        ]
+    }},
+    "past_failures": {{
+        "insights": ["Other products/solutions that didn't work"],
+        "quotes": [
+            {{"text": "Exact quote about what they tried before", "author": "Chris B.", "rating": 5}}
+        ]
+    }},
+    "buying_objections": {{
+        "insights": ["Concerns or hesitations before buying"],
+        "quotes": [
+            {{"text": "Exact quote about their objection/skepticism", "author": "Karen W.", "rating": 4}}
+        ]
+    }},
+    "familiar_promises": {{
+        "insights": ["Claims they've heard from other brands"],
+        "quotes": [
+            {{"text": "Exact quote referencing other brand promises", "author": "David H.", "rating": 5}}
+        ]
     }},
     "language_patterns": {{
         "positive_phrases": ["Exact phrases customers use when happy"],
         "negative_phrases": ["Exact phrases customers use when upset"],
-        "descriptive_words": ["Common adjectives/adverbs they use"]
-    }},
-    "objections": [
-        {{"objection": "The specific concern", "frequency": "common/occasional/rare"}}
-    ],
-    "purchase_triggers": [
-        "What made them finally decide to buy"
-    ],
-    "transformation_language": {{
-        "before": ["How they describe their situation before the product"],
-        "after": ["How they describe their situation after the product"]
-    }},
-    "top_quotes": {{
-        "positive": ["5 best verbatim positive quotes for ad copy"],
-        "negative": ["5 most important complaints to address"],
-        "transformation": ["5 best before/after transformation quotes"]
+        "power_words": ["Emotionally charged words they use repeatedly"]
     }},
     "sentiment_summary": {{
         "overall": "positive/mixed/negative",
-        "common_praise": ["Top 3 things people love"],
-        "common_complaints": ["Top 3 things people dislike"]
+        "average_rating": 4.5,
+        "total_analyzed": 100
     }}
 }}
 
 CRITICAL INSTRUCTIONS:
-1. Use EXACT customer language - do not paraphrase
-2. These phrases will be used directly in advertising copy
-3. Focus on emotional and authentic language
-4. Capture the specific words customers use to describe their problems and desires
+1. Use EXACT verbatim quotes - do not paraphrase or clean up grammar
+2. Prioritize quotes with EMOTIONAL language (frustration, relief, joy, disappointment)
+3. Extract author's first name and last initial from the review (e.g., "Sarah M.")
+4. If author name is unavailable, use "Verified Buyer" or "Anonymous"
+5. Include 3-5 quotes per category, selecting the most emotionally compelling ones
+6. These quotes will be used directly in advertising copy
 
 Return ONLY valid JSON, no other text."""

@@ -2090,6 +2090,14 @@ class BrandResearchService:
         This adds authentic customer language, quotes, and pain points
         from Amazon reviews to enrich persona synthesis.
 
+        New structure includes attributed quotes for:
+        - transformation (outcomes/results)
+        - pain_points
+        - desired_features
+        - past_failures
+        - buying_objections
+        - familiar_promises
+
         Args:
             aggregated: Existing aggregated data dictionary
             brand_id: Brand UUID to fetch review data for
@@ -2110,42 +2118,92 @@ class BrandResearchService:
 
             logger.info(f"Found {len(result.data)} Amazon review analyses for brand: {brand_id}")
 
+            # Initialize amazon_quotes structure for attributed quotes
+            if "amazon_quotes" not in aggregated:
+                aggregated["amazon_quotes"] = {
+                    "transformation": [],
+                    "pain_points": [],
+                    "desired_features": [],
+                    "past_failures": [],
+                    "buying_objections": [],
+                    "familiar_promises": []
+                }
+
             for analysis in result.data:
                 # Update analysis count
                 reviews_analyzed = analysis.get("total_reviews_analyzed", 0)
                 aggregated["analysis_counts"]["amazon_reviews"] += reviews_analyzed
 
-                # Integrate pain points (emotional, functional, social)
+                # Integrate pain points - new format has {insights: [], quotes: []}
                 pain_points = analysis.get("pain_points", {})
                 if isinstance(pain_points, dict):
-                    for category in ["emotional", "functional", "social"]:
-                        items = pain_points.get(category, [])
-                        if items:
-                            aggregated["pain_points"][category].extend(items)
+                    # Extract insights
+                    insights = pain_points.get("insights", [])
+                    if insights:
+                        aggregated["pain_points"]["functional"].extend(insights)
 
-                # Integrate desires
+                    # Extract attributed quotes
+                    quotes = pain_points.get("quotes", [])
+                    if quotes:
+                        aggregated["amazon_quotes"]["pain_points"].extend(quotes)
+
+                # Integrate desires/desired_features
                 desires = analysis.get("desires", {})
                 if isinstance(desires, dict):
-                    for category in ["emotional", "functional", "social"]:
-                        items = desires.get(category, [])
-                        if items:
-                            # Map to closest desire categories
-                            if category == "emotional":
-                                aggregated["desires"]["freedom_from_fear"].extend(items)
-                            elif category == "functional":
-                                aggregated["desires"]["comfort_convenience"].extend(items)
-                            elif category == "social":
-                                aggregated["desires"]["social_approval"].extend(items)
+                    insights = desires.get("insights", [])
+                    if insights:
+                        aggregated["desires"]["comfort_convenience"].extend(insights)
+
+                    quotes = desires.get("quotes", [])
+                    if quotes:
+                        aggregated["amazon_quotes"]["desired_features"].extend(quotes)
+
+                # Integrate objections (now contains past_failures, buying_objections, familiar_promises)
+                objections = analysis.get("objections", {})
+                if isinstance(objections, dict):
+                    # Past failures
+                    past_failures = objections.get("past_failures", {})
+                    if isinstance(past_failures, dict):
+                        insights = past_failures.get("insights", [])
+                        if insights:
+                            aggregated["failed_solutions"].extend(insights)
+                        quotes = past_failures.get("quotes", [])
+                        if quotes:
+                            aggregated["amazon_quotes"]["past_failures"].extend(quotes)
+
+                    # Buying objections
+                    buying_obj = objections.get("buying_objections", {})
+                    if isinstance(buying_obj, dict):
+                        insights = buying_obj.get("insights", [])
+                        if insights:
+                            aggregated["objections"].extend(insights)
+                        quotes = buying_obj.get("quotes", [])
+                        if quotes:
+                            aggregated["amazon_quotes"]["buying_objections"].extend(quotes)
+
+                    # Familiar promises
+                    familiar = objections.get("familiar_promises", {})
+                    if isinstance(familiar, dict):
+                        quotes = familiar.get("quotes", [])
+                        if quotes:
+                            aggregated["amazon_quotes"]["familiar_promises"].extend(quotes)
 
                 # Integrate language patterns
                 language = analysis.get("language_patterns", {})
                 if isinstance(language, dict):
-                    for key in ["positive_phrases", "negative_phrases", "descriptive_words"]:
+                    for key in ["positive_phrases", "negative_phrases", "power_words"]:
                         items = language.get(key, [])
                         if items:
-                            aggregated["customer_language"][key].extend(items)
+                            target_key = "descriptive_words" if key == "power_words" else key
+                            aggregated["customer_language"][target_key].extend(items)
 
-                # Integrate customer quotes (gold for ad copy)
+                # Integrate transformation quotes (from TEXT[] column for backwards compat)
+                transformation_quotes = analysis.get("transformation_quotes", [])
+                if transformation_quotes:
+                    aggregated["customer_quotes"]["transformation"].extend(transformation_quotes)
+                    aggregated["transformation"]["after"].extend(transformation_quotes)
+
+                # Also check for positive/negative quotes (legacy format)
                 positive_quotes = analysis.get("top_positive_quotes", [])
                 if positive_quotes:
                     aggregated["customer_quotes"]["positive"].extend(positive_quotes)
@@ -2154,22 +2212,6 @@ class BrandResearchService:
                 if negative_quotes:
                     aggregated["customer_quotes"]["negative"].extend(negative_quotes)
 
-                transformation_quotes = analysis.get("transformation_quotes", [])
-                if transformation_quotes:
-                    aggregated["customer_quotes"]["transformation"].extend(transformation_quotes)
-                    # Also add to transformation before/after
-                    aggregated["transformation"]["before"].extend(transformation_quotes)
-                    aggregated["transformation"]["after"].extend(transformation_quotes)
-
-                # Integrate objections
-                objections = analysis.get("objections", [])
-                if objections:
-                    for obj in objections:
-                        if isinstance(obj, dict):
-                            aggregated["objections"].append(obj.get("objection", ""))
-                        elif isinstance(obj, str):
-                            aggregated["objections"].append(obj)
-
                 # Integrate purchase triggers
                 triggers = analysis.get("purchase_triggers", [])
                 if triggers:
@@ -2177,7 +2219,7 @@ class BrandResearchService:
 
                 aggregated["has_data"] = True
 
-            # Deduplicate the new fields
+            # Deduplicate the fields
             for key in aggregated["customer_language"]:
                 aggregated["customer_language"][key] = list(set(aggregated["customer_language"][key]))
 
@@ -2190,6 +2232,17 @@ class BrandResearchService:
                         seen.add(quote)
                         unique.append(quote)
                 aggregated["customer_quotes"][key] = unique[:10]  # Limit to top 10
+
+            # Deduplicate amazon_quotes (by quote text)
+            for key in aggregated["amazon_quotes"]:
+                seen_texts = set()
+                unique = []
+                for quote in aggregated["amazon_quotes"][key]:
+                    text = quote.get("text", "") if isinstance(quote, dict) else str(quote)
+                    if text and text not in seen_texts:
+                        seen_texts.add(text)
+                        unique.append(quote)
+                aggregated["amazon_quotes"][key] = unique[:5]  # Keep top 5 per category
 
             aggregated["purchase_triggers"] = list(set(aggregated["purchase_triggers"]))
 
