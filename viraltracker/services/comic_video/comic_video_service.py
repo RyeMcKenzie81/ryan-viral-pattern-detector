@@ -582,16 +582,18 @@ class ComicVideoService:
 
             # Recalculate camera positions from layout to ensure correct coordinates
             # (stored instructions may have outdated center_x/center_y values)
+            logger.info(f"Layout: {project.layout.grid_cols}x{project.layout.grid_rows}, panel_cells={project.layout.panel_cells}, row_cols={project.layout.row_cols}")
             for instr in instructions:
                 try:
                     bounds = self.director.calculate_panel_bounds(
                         instr.panel_number,
                         project.layout
                     )
+                    old_x, old_y = instr.camera.center_x, instr.camera.center_y
                     instr.camera.center_x = bounds.center_x
                     instr.camera.center_y = bounds.center_y
-                    logger.debug(
-                        f"Panel {instr.panel_number}: recalculated camera to "
+                    logger.info(
+                        f"Panel {instr.panel_number}: camera ({old_x:.3f}, {old_y:.3f}) -> "
                         f"({bounds.center_x:.3f}, {bounds.center_y:.3f})"
                     )
                 except ValueError as e:
