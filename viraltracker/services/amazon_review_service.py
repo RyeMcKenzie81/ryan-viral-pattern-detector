@@ -814,41 +814,41 @@ Return as JSON:
 
 {{
     "transformation": {{
-        "insights": ["Summarized outcomes/results customers experienced"],
+        "insights": ["Summarized outcomes/results customers experienced AFTER using the product"],
         "quotes": [
-            {{"text": "Exact quote about results/transformation", "author": "Sarah M.", "rating": 5}},
+            {{"text": "Exact quote about results/transformation they experienced", "author": "Sarah M.", "rating": 5}},
             {{"text": "Another outcome quote", "author": "John D.", "rating": 5}}
         ]
     }},
     "pain_points": {{
-        "insights": ["Summarized problems/frustrations customers had"],
+        "insights": ["Problems/frustrations customers had BEFORE using this product - the issues that led them to buy"],
         "quotes": [
-            {{"text": "Exact quote about their pain/frustration", "author": "Mike R.", "rating": 3}},
-            {{"text": "Another pain point quote", "author": "Lisa K.", "rating": 2}}
+            {{"text": "Exact quote about the problem they were experiencing BEFORE this product", "author": "Mike R.", "rating": 5}},
+            {{"text": "Another quote about their prior struggle", "author": "Lisa K.", "rating": 4}}
         ]
     }},
     "desired_features": {{
-        "insights": ["What customers wanted/expected the product to do"],
+        "insights": ["What customers wanted/expected the product to do for them"],
         "quotes": [
-            {{"text": "Exact quote about what they wanted", "author": "Amy T.", "rating": 4}}
+            {{"text": "Exact quote about what they were hoping for", "author": "Amy T.", "rating": 4}}
         ]
     }},
     "past_failures": {{
-        "insights": ["Other products/solutions that failed them"],
+        "insights": ["Other products/solutions they tried that failed them"],
         "quotes": [
             {{"text": "Exact quote about what they tried before that didn't work", "author": "Chris B.", "rating": 5}}
         ]
     }},
     "buying_objections": {{
-        "insights": ["Concerns, hesitations, or skepticism before buying"],
+        "insights": ["Concerns, hesitations, or skepticism they had before buying"],
         "quotes": [
-            {{"text": "Exact quote about their initial objection/doubt", "author": "Karen W.", "rating": 4}}
+            {{"text": "Exact quote about their initial objection/doubt before purchasing", "author": "Karen W.", "rating": 4}}
         ]
     }},
     "familiar_promises": {{
-        "insights": ["Claims/promises they've heard from other brands"],
+        "insights": ["Claims/promises they've heard from other brands that didn't deliver"],
         "quotes": [
-            {{"text": "Exact quote mentioning other brands or their promises", "author": "David H.", "rating": 5}}
+            {{"text": "Exact quote mentioning other brands or marketing claims they've seen", "author": "David H.", "rating": 5}}
         ]
     }},
     "language_patterns": {{
@@ -867,8 +867,9 @@ CRITICAL INSTRUCTIONS:
 1. Extract UP TO 10 quotes per category - prioritize the most EMOTIONALLY compelling ones
 2. Use EXACT verbatim quotes - do not paraphrase, clean up grammar, or summarize
 3. Look for quotes with strong emotional language: frustration, relief, joy, disappointment, anger, gratitude, surprise
-4. Extract author's first name and last initial (e.g., "Sarah M.") - use "Verified Buyer" if unavailable
-5. These quotes will be used directly in advertising copy - authenticity is critical
-6. For "familiar_promises" - look for mentions of competitors, other brands, or marketing claims they've seen
+4. For "author" - extract the reviewer's first name and last initial (e.g., "Sarah M."). If no name is available, omit the author field entirely
+5. IMPORTANT for "pain_points": These are problems they had BEFORE using this product, NOT complaints about it
+6. These quotes will be used directly in advertising copy - authenticity is critical
+7. For "familiar_promises" - look for mentions of competitors, other brands, or marketing claims they've seen
 
 Return ONLY valid JSON, no other text."""

@@ -2926,14 +2926,14 @@ CRITICAL - AMAZON CUSTOMER QUOTES:
 If "amazon_quotes" is present in the data, these are REAL customer voices from Amazon reviews. You MUST:
 
 1. Fill the "amazon_testimonials" field with verbatim quotes for ALL 6 categories:
-   - transformation: Quotes about results/outcomes they experienced
-   - pain_points: Quotes about problems/frustrations
+   - transformation: Quotes about results/outcomes they experienced AFTER using the product
+   - pain_points: Quotes about problems they had BEFORE using this product (NOT complaints about it)
    - desired_features: Quotes about what they wanted/expected
    - past_failures: Quotes about other products that failed them
    - buying_objections: Quotes about skepticism/hesitation before buying
    - familiar_promises: Quotes mentioning other brands or their marketing claims
 
-2. Map the input amazon_quotes directly to amazon_testimonials:
+2. COPY ALL quotes from amazon_quotes to amazon_testimonials (up to 10 per category):
    - amazon_quotes.transformation → amazon_testimonials.transformation
    - amazon_quotes.pain_points → amazon_testimonials.pain_points
    - amazon_quotes.desired_features → amazon_testimonials.desired_features
@@ -2943,8 +2943,9 @@ If "amazon_quotes" is present in the data, these are REAL customer voices from A
 
 Each input quote has: {{"text": "quote", "author": "Name L.", "rating": 5}}
 Output as: {{"quote": "exact text", "author": "Name L.", "rating": 5}}
+If author is missing or "Verified Buyer", omit the author field.
 
-Include UP TO 10 quotes per category. These are gold for ad copy - preserve them exactly!
+IMPORTANT: Include ALL quotes from the input (up to 10 per category). These are gold for ad copy!
 
 Return JSON with this structure:
 {{

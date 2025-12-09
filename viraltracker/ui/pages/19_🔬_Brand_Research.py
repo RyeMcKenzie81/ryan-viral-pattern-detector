@@ -1004,10 +1004,14 @@ def render_persona_review():
                             for q in quotes_list:
                                 if isinstance(q, dict):
                                     quote_text = q.get('quote', q.get('text', ''))
-                                    author = q.get('author', 'Verified Buyer')
+                                    author = q.get('author', '')
                                     rating = q.get('rating', '')
                                     rating_stars = '⭐' * int(rating) if rating else ''
-                                    st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
+                                    # Only show author if we have a real name
+                                    if author and author.lower() not in ['verified buyer', 'anonymous', '']:
+                                        st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
+                                    else:
+                                        st.markdown(f"> \"{quote_text}\" {rating_stars}")
                                 else:
                                     st.markdown(f"> \"{q}\"")
 
@@ -1020,8 +1024,8 @@ def render_persona_review():
                             render_quotes(testimonials.get('transformation', []))
                             st.markdown("---")
 
-                            # Pain point quotes
-                            st.markdown("**😣 Pain Points (Problems/Frustrations)**")
+                            # Pain point quotes - problems BEFORE the product
+                            st.markdown("**😣 Pain Points (Problems Before Product)**")
                             render_quotes(testimonials.get('pain_points', []))
                             st.markdown("---")
 
