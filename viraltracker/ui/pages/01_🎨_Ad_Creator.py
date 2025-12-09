@@ -63,12 +63,26 @@ if 'selected_scraped_template' not in st.session_state:
     st.session_state.selected_scraped_template = None
 if 'scraped_template_category' not in st.session_state:
     st.session_state.scraped_template_category = "all"
+if 'selected_persona_id' not in st.session_state:
+    st.session_state.selected_persona_id = None
 
 
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
+
+
+def get_personas_for_product(product_id: str):
+    """Get personas linked to a product for the persona selector."""
+    try:
+        from viraltracker.services.ad_creation_service import AdCreationService
+        from uuid import UUID
+        service = AdCreationService()
+        return service.get_personas_for_product(UUID(product_id))
+    except Exception as e:
+        st.warning(f"Could not load personas: {e}")
+        return []
 
 
 def get_products():
@@ -276,7 +290,8 @@ async def run_workflow(
     export_email: str = None,
     export_slack_webhook: str = None,
     product_name: str = None,
-    brand_name: str = None
+    brand_name: str = None,
+    persona_id: str = None
 ):
     """Run the ad creation workflow with optional export.
 
@@ -295,6 +310,7 @@ async def run_workflow(
         export_slack_webhook: Slack webhook URL (None to use default)
         product_name: Product name for export context
         brand_name: Brand name for export context
+        persona_id: Optional persona UUID for targeted ad copy
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -323,7 +339,8 @@ async def run_workflow(
         color_mode=color_mode,
         brand_colors=brand_colors,
         image_selection_mode=image_selection_mode,
-        selected_image_paths=selected_image_paths
+        selected_image_paths=selected_image_paths,
+        persona_id=persona_id
     )
 
     # Handle exports if configured
@@ -655,6 +672,62 @@ else:
                 st.info("💡 You can optionally select a 2nd image to show product contents or an alternate view.")
             else:
                 st.success(f"✅ {len(selected_image_paths)} images selected - primary + secondary")
+
+    st.divider()
+
+    # ============================================================================
+    # Section 2.5: Target Persona (Optional)
+    # ============================================================================
+
+    st.subheader("Target Persona (Optional)")
+
+    # Fetch personas for selected product
+    personas = get_personas_for_product(selected_product_id) if selected_product_id else []
+
+    if personas:
+        # Build persona options - "None" + all personas
+        persona_options = {"None - Use product defaults": None}
+        for p in personas:
+            snapshot = p.get('snapshot', '')[:50] if p.get('snapshot') else ''
+            label = f"{p['name']}"
+            if snapshot:
+                label += f" ({snapshot}...)"
+            if p.get('is_primary'):
+                label += " ⭐"
+            persona_options[label] = p['id']
+
+        # Get current selection label
+        current_persona_label = "None - Use product defaults"
+        if st.session_state.selected_persona_id:
+            for label, pid in persona_options.items():
+                if pid == st.session_state.selected_persona_id:
+                    current_persona_label = label
+                    break
+
+        selected_persona_label = st.selectbox(
+            "Select a 4D Persona to target",
+            options=list(persona_options.keys()),
+            index=list(persona_options.keys()).index(current_persona_label) if current_persona_label in persona_options else 0,
+            help="Persona data will inform hook selection and copy generation with emotional triggers and customer voice",
+            disabled=st.session_state.workflow_running,
+            key="persona_selector"
+        )
+        st.session_state.selected_persona_id = persona_options[selected_persona_label]
+
+        # Show persona preview if selected
+        if st.session_state.selected_persona_id:
+            selected_persona = next((p for p in personas if p['id'] == st.session_state.selected_persona_id), None)
+            if selected_persona:
+                with st.expander("Persona Preview", expanded=False):
+                    st.markdown(f"**{selected_persona['name']}**")
+                    if selected_persona.get('snapshot'):
+                        st.write(selected_persona['snapshot'])
+
+                    # Show key persona data if available (from the full persona)
+                    st.caption("💡 Persona data will be used to select hooks and generate copy that resonates with this audience's pain points, desires, and language.")
+    else:
+        st.info("No personas available for this product. Create personas in Brand Research to enable persona-targeted ad creation.")
+        st.session_state.selected_persona_id = None
 
     st.divider()
 
@@ -1104,7 +1177,13 @@ else:
     # Run workflow outside form
     if st.session_state.workflow_running and reference_ad_base64:
         # Show progress info
-        st.info(f"🎨 Generating {num_variations} ad variations using **{content_source.replace('_', ' ')}** mode...")
+        persona_msg = ""
+        if st.session_state.selected_persona_id and personas:
+            selected_persona = next((p for p in personas if p['id'] == st.session_state.selected_persona_id), None)
+            if selected_persona:
+                persona_msg = f" targeting **{selected_persona['name']}**"
+
+        st.info(f"🎨 Generating {num_variations} ad variations using **{content_source.replace('_', ' ')}** mode{persona_msg}...")
         st.warning("⏳ **Please wait** - This may take 2-5 minutes. Do not refresh the page.")
 
         try:
@@ -1127,6 +1206,9 @@ else:
             brand_info = selected_product.get('brands', {}) if selected_product else {}
             brd_name = brand_info.get('name', 'Brand') if brand_info else 'Brand'
 
+            # Get persona_id from session state
+            persona_id = st.session_state.selected_persona_id
+
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -1142,7 +1224,8 @@ else:
                 export_email=exp_email,
                 export_slack_webhook=exp_slack,
                 product_name=prod_name,
-                brand_name=brd_name
+                brand_name=brd_name,
+                persona_id=persona_id
             ))
 
             # Record template usage if a scraped template was used

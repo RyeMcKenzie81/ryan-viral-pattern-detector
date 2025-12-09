@@ -747,6 +747,111 @@ class PersonaService:
         brief = self.export_for_copy_brief(persona_id)
         return brief.model_dump()
 
+    def export_for_ad_generation(self, persona_id: UUID) -> Dict[str, Any]:
+        """
+        Export persona data optimized for ad copy generation prompts.
+
+        Returns structured data for injection into hook selection and
+        benefit variation prompts. Includes Amazon testimonials if available.
+
+        Args:
+            persona_id: UUID of the persona to export
+
+        Returns:
+            Dict with keys optimized for ad generation:
+            - persona_name: str
+            - snapshot: str (2-3 sentence description)
+            - pain_points: List[str] (top emotional + functional)
+            - desires: List[str] (flattened with category context)
+            - transformation: Dict[str, List[str]] (before/after)
+            - their_language: List[str] (self_narratives - how they talk)
+            - objections: List[str] (buying objections to address)
+            - failed_solutions: List[str] (what they've tried)
+            - activation_events: List[str] (what triggers purchase)
+            - allergies: Dict[str, str] (what turns them off)
+            - amazon_testimonials: Dict[str, List[Dict]] (if available)
+        """
+        persona = self.get_persona(persona_id)
+        if not persona:
+            raise ValueError(f"Persona not found: {persona_id}")
+
+        # Flatten desires into list of strings with category context
+        desires_flat = []
+        for category, instances in persona.desires.items():
+            for instance in instances:
+                if isinstance(instance, DesireInstance):
+                    desires_flat.append(f"[{category}] {instance.text}")
+                elif isinstance(instance, dict):
+                    desires_flat.append(f"[{category}] {instance.get('text', '')}")
+                else:
+                    desires_flat.append(f"[{category}] {instance}")
+
+        # Combine pain points (emotional + functional are most useful for ads)
+        pain_points = [
+            *[f"[emotional] {p}" for p in persona.pain_points.emotional[:5]],
+            *[f"[functional] {p}" for p in persona.pain_points.functional[:3]],
+            *[f"[social] {p}" for p in persona.pain_points.social[:2]]
+        ]
+
+        # Combine objections
+        objections = [
+            *[f"[emotional] {o}" for o in persona.buying_objections.emotional],
+            *[f"[functional] {o}" for o in persona.buying_objections.functional],
+            *[f"[social] {o}" for o in persona.buying_objections.social]
+        ]
+
+        # Get transformation map
+        transformation = {}
+        if persona.transformation_map:
+            transformation = {
+                "before": persona.transformation_map.before or [],
+                "after": persona.transformation_map.after or []
+            }
+
+        # Get Amazon testimonials if available (stored in persona or linked analysis)
+        amazon_testimonials = {}
+        if hasattr(persona, 'amazon_testimonials') and persona.amazon_testimonials:
+            amazon_testimonials = persona.amazon_testimonials
+        else:
+            # Try to fetch from brand research synthesis
+            try:
+                if persona.brand_id:
+                    synthesis_result = self.supabase.table("amazon_review_analysis").select(
+                        "pain_points, desires, transformation, objections"
+                    ).eq("brand_id", str(persona.brand_id)).limit(1).execute()
+
+                    if synthesis_result.data:
+                        analysis = synthesis_result.data[0]
+                        # Extract quotes from each category
+                        for key in ["pain_points", "desires", "transformation"]:
+                            data = analysis.get(key, {})
+                            if isinstance(data, dict) and "quotes" in data:
+                                amazon_testimonials[key] = data["quotes"]
+
+                        # Handle objections structure
+                        objections_data = analysis.get("objections", {})
+                        if isinstance(objections_data, dict):
+                            for sub_key in ["buying_objections", "past_failures", "familiar_promises"]:
+                                sub_data = objections_data.get(sub_key, {})
+                                if isinstance(sub_data, dict) and "quotes" in sub_data:
+                                    amazon_testimonials[sub_key] = sub_data["quotes"]
+            except Exception as e:
+                logger.warning(f"Failed to fetch Amazon testimonials: {e}")
+
+        return {
+            "persona_name": persona.name,
+            "snapshot": persona.snapshot,
+            "pain_points": pain_points,
+            "desires": desires_flat[:10],  # Top 10 desires
+            "transformation": transformation,
+            "their_language": persona.self_narratives or [],
+            "objections": objections,
+            "failed_solutions": persona.failed_solutions or [],
+            "activation_events": persona.activation_events or [],
+            "allergies": persona.allergies or {},
+            "amazon_testimonials": amazon_testimonials
+        }
+
     # =========================================================================
     # Internal Helpers
     # =========================================================================

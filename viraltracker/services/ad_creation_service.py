@@ -144,6 +144,70 @@ class AdCreationService:
         return AdBriefTemplate(**result.data[0])
 
     # ============================================
+    # PERSONA OPERATIONS
+    # ============================================
+
+    def get_personas_for_product(self, product_id: UUID) -> List[Dict[str, Any]]:
+        """
+        Get all personas linked to a product for UI dropdown.
+
+        Args:
+            product_id: UUID of the product
+
+        Returns:
+            List of persona summaries with id, name, snapshot
+        """
+        try:
+            # Query junction table with persona data
+            result = self.supabase.table("product_personas").select(
+                "persona_id, is_primary, personas_4d(id, name, snapshot, persona_type)"
+            ).eq("product_id", str(product_id)).execute()
+
+            personas = []
+            for row in result.data or []:
+                persona_data = row.get("personas_4d", {})
+                if persona_data:
+                    personas.append({
+                        "id": persona_data.get("id"),
+                        "name": persona_data.get("name"),
+                        "snapshot": persona_data.get("snapshot", ""),
+                        "persona_type": persona_data.get("persona_type"),
+                        "is_primary": row.get("is_primary", False)
+                    })
+
+            # Sort by is_primary (primary first), then name
+            personas.sort(key=lambda p: (not p.get("is_primary", False), p.get("name", "")))
+            return personas
+
+        except Exception as e:
+            logger.error(f"Failed to get personas for product {product_id}: {e}")
+            return []
+
+    def get_persona_for_ad_generation(self, persona_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Get persona data formatted for ad generation prompts.
+
+        Delegates to PersonaService.export_for_ad_generation() for
+        consistent formatting across the codebase.
+
+        Args:
+            persona_id: UUID of the persona
+
+        Returns:
+            Dict with persona data optimized for ad generation, or None if not found
+        """
+        try:
+            from .persona_service import PersonaService
+            persona_service = PersonaService()
+            return persona_service.export_for_ad_generation(persona_id)
+        except ValueError as e:
+            logger.warning(f"Persona not found: {persona_id} - {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get persona for ad generation: {e}")
+            return None
+
+    # ============================================
     # SUPABASE STORAGE OPERATIONS
     # ============================================
 

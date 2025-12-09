@@ -612,7 +612,8 @@ async def select_hooks(
     ad_analysis: Dict,
     product_name: str = "",
     target_audience: str = "",
-    count: int = 10
+    count: int = 10,
+    persona_data: Optional[Dict] = None
 ) -> List[Dict]:
     """
     Select diverse hooks using AI to maximize persuasive variety.
@@ -623,6 +624,7 @@ async def select_hooks(
     - Match the reference ad style and tone
     - Provide maximum coverage of persuasive principles
     - Are clear, understandable, and mention product context
+    - When persona_data is provided, prioritize hooks matching persona's emotional triggers
 
     The AI adapts each hook's text to match the reference ad's style and ensures
     the adapted text makes sense and mentions the product category.
@@ -638,6 +640,8 @@ async def select_hooks(
         product_name: Name of the product (for context)
         target_audience: Product's target audience (e.g., "pet owners", "dog owners")
         count: Number of hooks to select (default: 10)
+        persona_data: Optional 4D persona data with pain_points, desires, their_language,
+            objections, and amazon_testimonials for targeted hook selection
 
     Returns:
         List of selected hook dictionaries with adaptation:
@@ -706,6 +710,35 @@ async def select_hooks(
         Use these best practices to guide your hook selection and adaptation.
         """
 
+        # Build persona section if persona_data is provided
+        persona_section = ""
+        if persona_data:
+            persona_section = f"""
+        **TARGET PERSONA: {persona_data.get('persona_name', 'Unknown')}**
+        {persona_data.get('snapshot', '')}
+
+        **Pain Points (prioritize hooks addressing these):**
+        {json.dumps(persona_data.get('pain_points', [])[:5], indent=2)}
+
+        **Desires (what they want to achieve):**
+        {json.dumps(persona_data.get('desires', [])[:5], indent=2)}
+
+        **Their Language (how they talk - adapt hooks to match):**
+        {json.dumps(persona_data.get('their_language', [])[:3], indent=2)}
+
+        **Objections to Address:**
+        {json.dumps(persona_data.get('objections', [])[:3], indent=2)}
+
+        **Amazon Testimonials (real customer voice - use similar language):**
+        {json.dumps(persona_data.get('amazon_testimonials', {}), indent=2) if persona_data.get('amazon_testimonials') else 'None available'}
+
+        IMPORTANT: Use this persona data to:
+        1. Prioritize hooks that directly address the persona's pain points
+        2. Adapt hook language to match how this persona talks (their_language)
+        3. Select hooks that resonate with their emotional triggers
+        4. Use phrases from Amazon testimonials when adapting hooks
+        """
+
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
@@ -717,6 +750,7 @@ async def select_hooks(
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
         {knowledge_section}
+        {persona_section}
 
         **Available Hooks** ({len(shuffled_hooks)} total):
         {json.dumps(shuffled_hooks, indent=2)}
@@ -2512,7 +2546,8 @@ async def generate_benefit_variations(
     product: Dict,
     template_angle: Dict,
     ad_analysis: Dict,
-    count: int = 5
+    count: int = 5,
+    persona_data: Optional[Dict] = None
 ) -> List[Dict]:
     """
     Generate hook-like variations by applying the template angle to product benefits.
@@ -2521,12 +2556,17 @@ async def generate_benefit_variations(
     product benefits and USPs, creating variations that maintain the template's
     persuasive structure while highlighting different aspects of the product.
 
+    When persona_data is provided, the variations are tailored to resonate with
+    the persona's pain points, desires, and language patterns.
+
     Args:
         ctx: Run context with AgentDependencies
         product: Product dictionary with benefits, unique_selling_points, etc.
         template_angle: Extracted angle from extract_template_angle()
         ad_analysis: Ad analysis dictionary with format details
         count: Number of variations to generate (1-15)
+        persona_data: Optional 4D persona data with pain_points, desires, their_language,
+            transformation, objections, and amazon_testimonials for targeted copy
 
     Returns:
         List of hook-like dictionaries (same structure as select_hooks output):
@@ -2694,6 +2734,33 @@ async def generate_benefit_variations(
 
         Apply these principles when crafting your adapted headlines.
         ''' if knowledge_context else ''}
+
+        {f'''**TARGET PERSONA: {persona_data.get('persona_name', 'Unknown')}**
+        {persona_data.get('snapshot', '')}
+
+        **Persona Pain Points (address these in headlines):**
+        {json.dumps(persona_data.get('pain_points', [])[:5], indent=2)}
+
+        **Persona Desires (what they want to achieve):**
+        {json.dumps(persona_data.get('desires', [])[:5], indent=2)}
+
+        **Transformation (before → after):**
+        Before: {json.dumps(persona_data.get('transformation', {}).get('before', [])[:3])}
+        After: {json.dumps(persona_data.get('transformation', {}).get('after', [])[:3])}
+
+        **Their Language (how the persona talks - match this style):**
+        {json.dumps(persona_data.get('their_language', [])[:3], indent=2)}
+
+        **Amazon Testimonials (real customer voice - use similar language):**
+        {json.dumps(persona_data.get('amazon_testimonials', {}), indent=2) if persona_data.get('amazon_testimonials') else 'None available'}
+
+        PERSONA INTEGRATION RULES:
+        1. Frame headlines around the persona's specific pain points
+        2. Use the transformation language (before → after) for emotional impact
+        3. Match the persona's speaking style from "Their Language"
+        4. If Amazon testimonials are available, borrow phrases for authenticity
+        5. Address their objections implicitly in the headline when possible
+        ''' if persona_data else ''}
 
         **EMOTIONAL BENEFITS (Use these for headlines - they connect with the audience):**
         {json.dumps(headline_content, indent=2)}
@@ -2945,7 +3012,8 @@ async def complete_ad_workflow(
     color_mode: str = "original",
     brand_colors: Optional[Dict] = None,
     image_selection_mode: str = "auto",
-    selected_image_paths: Optional[List[str]] = None
+    selected_image_paths: Optional[List[str]] = None,
+    persona_id: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2954,15 +3022,17 @@ async def complete_ad_workflow(
     1. Creates ad run in database
     2. Uploads reference ad to storage
     3. Fetches product data (and hooks if content_source="hooks")
-    4. Analyzes reference ad (Vision AI)
-    5. Gets content variations:
+    4. Fetches persona data if persona_id provided
+    5. Analyzes reference ad (Vision AI)
+    6. Gets content variations:
        - If content_source="hooks": Selects N diverse hooks from database
        - If content_source="recreate_template": Extracts template angle and
          generates variations from product benefits/USPs
-    6. Generates N ad variations (ONE AT A TIME)
-    7. Dual AI review (Claude + Gemini) for each ad
-    8. Applies OR logic: either reviewer approving = approved
-    9. Returns complete AdCreationResult
+       - Both modes use persona data to inform copy when available
+    7. Generates N ad variations (ONE AT A TIME)
+    8. Dual AI review (Claude + Gemini) for each ad
+    9. Applies OR logic: either reviewer approving = approved
+    10. Returns complete AdCreationResult
 
     **CRITICAL: Dual Review Logic (OR Logic)**
     - If Claude OR Gemini approves → APPROVED
@@ -2985,6 +3055,8 @@ async def complete_ad_workflow(
             - "auto": AI selects best matching 1-2 images (default)
             - "manual": Use user-selected images
         selected_image_paths: List of storage paths when image_selection_mode is "manual" (1-2 images)
+        persona_id: Optional UUID of 4D persona to target. When provided, persona's
+            pain points, desires, and language inform hook selection and copy generation.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3035,6 +3107,8 @@ async def complete_ad_workflow(
 
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
         logger.info(f"Generating {num_variations} ad variations using content_source='{content_source}'")
+        if persona_id:
+            logger.info(f"Using persona: {persona_id}")
 
         # Build parameters dict for tracking
         run_parameters = {
@@ -3043,7 +3117,8 @@ async def complete_ad_workflow(
             "color_mode": color_mode,
             "image_selection_mode": image_selection_mode,
             "selected_image_paths": selected_image_paths,
-            "brand_colors": brand_colors
+            "brand_colors": brand_colors,
+            "persona_id": persona_id
         }
 
         # STAGE 1: Initialize ad run and upload reference ad
@@ -3078,6 +3153,22 @@ async def complete_ad_workflow(
         # STAGE 2: Fetch product data
         logger.info("Stage 2: Fetching product data...")
         product_dict = await get_product_with_images(ctx=ctx, product_id=product_id)
+
+        # STAGE 2b: Fetch persona data (if persona_id provided)
+        persona_data = None
+        if persona_id:
+            logger.info(f"Stage 2b: Fetching persona data for {persona_id}...")
+            try:
+                persona_data = ctx.deps.ad_creation.get_persona_for_ad_generation(UUID(persona_id))
+                if persona_data:
+                    logger.info(f"Loaded persona: {persona_data.get('persona_name', 'Unknown')}")
+                    logger.info(f"  - Pain points: {len(persona_data.get('pain_points', []))}")
+                    logger.info(f"  - Desires: {len(persona_data.get('desires', []))}")
+                    logger.info(f"  - Amazon testimonials: {len(persona_data.get('amazon_testimonials', {}))}")
+                else:
+                    logger.warning(f"Persona not found: {persona_id} - continuing without persona targeting")
+            except Exception as e:
+                logger.warning(f"Failed to load persona {persona_id}: {e} - continuing without persona targeting")
 
         # STAGE 3: Fetch hooks (only if using hooks content source)
         hooks_list = []
@@ -3135,13 +3226,16 @@ async def complete_ad_workflow(
         if content_source == "hooks":
             # Original hooks-based flow
             logger.info(f"Stage 6: Selecting {num_variations} diverse hooks with AI...")
+            if persona_data:
+                logger.info(f"  Using persona '{persona_data.get('persona_name')}' for hook selection")
             selected_hooks = await select_hooks(
                 ctx=ctx,
                 hooks=hooks_list,
                 ad_analysis=ad_analysis,
                 product_name=product_dict.get('name', ''),
                 target_audience=product_dict.get('target_audience', ''),
-                count=num_variations
+                count=num_variations,
+                persona_data=persona_data
             )
         else:
             # Recreate template flow
@@ -3164,12 +3258,15 @@ async def complete_ad_workflow(
 
             # Stage 6b: Generate benefit variations (always needed - product-specific)
             logger.info(f"Stage 6b: Generating {num_variations} benefit variations...")
+            if persona_data:
+                logger.info(f"  Using persona '{persona_data.get('persona_name')}' for benefit variations")
             selected_hooks = await generate_benefit_variations(
                 ctx=ctx,
                 product=product_dict,
                 template_angle=template_angle,
                 ad_analysis=ad_analysis,
-                count=num_variations
+                count=num_variations,
+                persona_data=persona_data
             )
 
         # Save selected hooks/variations to database
