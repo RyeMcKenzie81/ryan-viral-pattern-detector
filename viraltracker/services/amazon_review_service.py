@@ -408,6 +408,46 @@ class AmazonReviewService:
 
         return UUID(result.data[0]["id"]), UUID(brand_id)
 
+    def _parse_rating(self, rating_value: Any) -> Optional[int]:
+        """
+        Parse rating from various formats returned by Apify.
+
+        Handles:
+        - Integer: 5
+        - Float: 5.0
+        - String: "5.0 out of 5 stars", "3.0", "5"
+
+        Args:
+            rating_value: Raw rating value from Apify
+
+        Returns:
+            Integer rating 1-5, or None if unparseable
+        """
+        if rating_value is None:
+            return None
+
+        # Already an int
+        if isinstance(rating_value, int):
+            return rating_value if 1 <= rating_value <= 5 else None
+
+        # Float
+        if isinstance(rating_value, float):
+            return int(rating_value) if 1 <= rating_value <= 5 else None
+
+        # String - try to extract number
+        if isinstance(rating_value, str):
+            # Match patterns like "3.0 out of 5 stars", "5.0", "5"
+            match = re.search(r'(\d+(?:\.\d+)?)', rating_value)
+            if match:
+                try:
+                    rating = float(match.group(1))
+                    return int(rating) if 1 <= rating <= 5 else None
+                except ValueError:
+                    pass
+
+        logger.debug(f"Could not parse rating: {rating_value}")
+        return None
+
     def _save_reviews(
         self,
         reviews: List[Dict],
@@ -450,19 +490,22 @@ class AmazonReviewService:
                     except (ValueError, TypeError):
                         pass
 
+                # Parse rating - can be int, float, or string like "3.0 out of 5 stars"
+                rating = self._parse_rating(review.get("rating"))
+
                 records.append({
                     "amazon_product_url_id": str(amazon_url_id),
                     "product_id": str(product_id),
                     "brand_id": str(brand_id),
                     "review_id": review.get("reviewId"),
                     "asin": asin,
-                    "rating": review.get("rating"),
+                    "rating": rating,
                     "title": review.get("title"),
                     "body": review.get("text"),
                     "author": review.get("author"),
                     "review_date": review_date.isoformat() if review_date else None,
                     "verified_purchase": review.get("verified", False),
-                    "helpful_votes": review.get("numberOfHelpful", 0),
+                    "helpful_votes": review.get("numberOfHelpful", 0) or 0,
                 })
 
             try:
