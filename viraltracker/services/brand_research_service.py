@@ -1866,16 +1866,31 @@ class BrandResearchService:
             aggregated_data=json.dumps(aggregated, indent=2, default=str)
         )
 
+        # Log prompt size for debugging
+        prompt_len = len(prompt)
+        logger.info(f"Synthesis prompt length: {prompt_len} chars")
+
         try:
             client = Anthropic()
 
             message = client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=6000,
+                max_tokens=8000,  # Increased for expanded testimonials
                 messages=[{"role": "user", "content": prompt}]
             )
 
+            # Check for empty response
+            if not message.content:
+                logger.error("Synthesis returned empty content")
+                raise ValueError("Model returned empty response")
+
             response_text = message.content[0].text.strip()
+            logger.info(f"Synthesis response length: {len(response_text)} chars")
+
+            # Log first 500 chars if parsing fails
+            if not response_text:
+                logger.error("Synthesis response text is empty")
+                raise ValueError("Model returned empty text")
 
             # Strip markdown code fences if present
             if response_text.startswith('```'):
@@ -1896,9 +1911,12 @@ class BrandResearchService:
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse synthesis response: {e}")
+            logger.error(f"Response preview: {response_text[:500] if 'response_text' in dir() and response_text else 'EMPTY'}")
             raise ValueError(f"Invalid JSON response: {e}")
         except Exception as e:
-            logger.error(f"Persona synthesis failed: {e}")
+            logger.error(f"Persona synthesis failed: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     def _aggregate_analyses(self, analyses: List[Dict], brand_id: UUID = None) -> Dict[str, Any]:
