@@ -560,6 +560,8 @@ class ComicVideoService:
 
             # Verify all panels approved
             instructions = await self.director.get_all_instructions(project_id)
+            # IMPORTANT: Sort by panel number to ensure correct render order
+            instructions = sorted(instructions, key=lambda x: x.panel_number)
             audio_list = await self.audio.get_all_panel_audio(project_id)
 
             unapproved = [i for i in instructions if not i.is_approved]
