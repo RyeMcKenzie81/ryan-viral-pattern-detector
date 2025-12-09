@@ -595,10 +595,12 @@ class ComicRenderService:
             # Panel width should fit output width, leaving vertical margins
             base_zoom = canvas_w / panel_width  # = grid_cols
 
-        # Multiply by 0.85 to leave a small margin showing neighboring panels
-        panel_zoom = base_zoom * 0.85
+        # Multiply by factor < 1 to zoom OUT and show entire panel with margin
+        # 0.75 means the panel takes up ~75% of frame, showing some neighbors
+        panel_zoom = base_zoom * 0.75
 
-        # Apply camera zoom modifiers (1.0 = panel fills frame, 1.2 = tighter)
+        # Apply camera zoom modifiers (1.0 = panel at 75% of frame, 1.2 = tighter)
+        # Note: start_zoom/end_zoom default to ~0.95-1.0, so effective zoom is reasonable
         z_start = panel_zoom * camera.start_zoom
         z_end = panel_zoom * camera.end_zoom
 
@@ -678,7 +680,8 @@ class ComicRenderService:
             # Output is taller/narrower than panel - width is the constraint
             base_zoom = canvas_w / panel_width  # = grid_cols
 
-        panel_zoom = base_zoom * 0.85
+        # Multiply by factor < 1 to zoom OUT and show entire panel with margin
+        panel_zoom = base_zoom * 0.75
 
         # Current panel positions (in pixels)
         curr_cx = camera.center_x * canvas_w
