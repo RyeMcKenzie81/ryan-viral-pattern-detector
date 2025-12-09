@@ -110,15 +110,23 @@ class ApifyService:
         logger.debug(f"Input: {run_input}")
 
         try:
+            logger.info(f"POST {url} with {len(str(run_input))} bytes")
             response = requests.post(
                 url,
                 headers=self._get_headers(),
                 params=params,
-                json=run_input
+                json=run_input,
+                timeout=30  # Connection timeout
             )
+            logger.info(f"Response status: {response.status_code}")
             response.raise_for_status()
         except requests.HTTPError as e:
-            logger.error(f"Apify API error: {e.response.status_code} - {e.response.text}")
+            error_text = e.response.text if e.response is not None else "No response body"
+            status_code = e.response.status_code if e.response is not None else "Unknown"
+            logger.error(f"Apify API HTTP error: {status_code} - {error_text}")
+            raise
+        except requests.RequestException as e:
+            logger.error(f"Apify API request failed: {type(e).__name__}: {e}")
             raise
 
         run_data = response.json()["data"]
