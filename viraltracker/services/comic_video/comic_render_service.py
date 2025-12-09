@@ -135,6 +135,7 @@ class ComicRenderService:
                 grid_rows=layout.grid_rows,
                 total_panels=layout.total_panels,
                 panel_cells=layout.panel_cells,
+                row_cols=layout.row_cols,  # Important: preserve row column counts
                 canvas_width=actual_width,
                 canvas_height=actual_height
             )
@@ -349,6 +350,7 @@ class ComicRenderService:
                 grid_rows=layout.grid_rows,
                 total_panels=layout.total_panels,
                 panel_cells=layout.panel_cells,
+                row_cols=layout.row_cols,  # Important: preserve row column counts
                 canvas_width=actual_width,
                 canvas_height=actual_height
             )
@@ -358,6 +360,12 @@ class ComicRenderService:
         # This is more reliable than a single complex filter graph
 
         logger.info(f"Rendering full video with {len(instructions)} panels")
+
+        # Debug: print camera positions for all panels
+        print(f"\n=== CAMERA POSITIONS FOR ALL PANELS ===")
+        for instr in instructions:
+            print(f"Panel {instr.panel_number}: camera=({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})")
+        print(f"========================================\n")
 
         # 1. Render each panel segment (with transition to next panel)
         segment_paths = []
