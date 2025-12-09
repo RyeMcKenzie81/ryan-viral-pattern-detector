@@ -808,7 +808,7 @@ def render_persona_review():
                                f"{demo.get('gender', 'any')}, {demo.get('location', 'N/A')}")
 
                 # Use tabs for organized display of all 4D fields
-                tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview", "Barriers", "Purchase"])
+                tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview", "Barriers", "Purchase", "Testimonials"])
 
                 with tabs[0]:  # Pain & Desires
                     col_pain, col_desire = st.columns(2)
@@ -989,6 +989,64 @@ def render_persona_review():
 
                         st.markdown("**Decision Process:**")
                         st.write(persona.get('decision_process', 'N/A'))
+
+                with tabs[6]:  # Testimonials (Amazon customer quotes)
+                    testimonials = persona.get('amazon_testimonials', {})
+
+                    if not testimonials:
+                        st.info("No Amazon testimonials available. Re-analyze Amazon reviews and re-synthesize personas to populate this section.")
+                    else:
+                        # Transformation quotes
+                        st.markdown("**🌟 Transformation (Results/Outcomes):**")
+                        transform_quotes = testimonials.get('transformation', [])
+                        if transform_quotes:
+                            for q in transform_quotes:
+                                if isinstance(q, dict):
+                                    quote_text = q.get('quote', q.get('text', ''))
+                                    author = q.get('author', 'Verified Buyer')
+                                    rating = q.get('rating', '')
+                                    rating_stars = '⭐' * int(rating) if rating else ''
+                                    st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
+                                else:
+                                    st.markdown(f"> \"{q}\"")
+                        else:
+                            st.caption("No transformation quotes")
+
+                        st.markdown("---")
+
+                        # Pain point quotes
+                        st.markdown("**😣 Pain Points (Problems/Frustrations):**")
+                        pain_quotes = testimonials.get('pain_points', [])
+                        if pain_quotes:
+                            for q in pain_quotes:
+                                if isinstance(q, dict):
+                                    quote_text = q.get('quote', q.get('text', ''))
+                                    author = q.get('author', 'Verified Buyer')
+                                    rating = q.get('rating', '')
+                                    rating_stars = '⭐' * int(rating) if rating else ''
+                                    st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
+                                else:
+                                    st.markdown(f"> \"{q}\"")
+                        else:
+                            st.caption("No pain point quotes")
+
+                        st.markdown("---")
+
+                        # Objections overcome quotes
+                        st.markdown("**🤔 Objections Overcome (Skepticism Resolved):**")
+                        objection_quotes = testimonials.get('objections_overcome', [])
+                        if objection_quotes:
+                            for q in objection_quotes:
+                                if isinstance(q, dict):
+                                    quote_text = q.get('quote', q.get('text', ''))
+                                    author = q.get('author', 'Verified Buyer')
+                                    rating = q.get('rating', '')
+                                    rating_stars = '⭐' * int(rating) if rating else ''
+                                    st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
+                                else:
+                                    st.markdown(f"> \"{q}\"")
+                        else:
+                            st.caption("No objection quotes")
 
             with col2:
                 st.markdown("**Actions**")
