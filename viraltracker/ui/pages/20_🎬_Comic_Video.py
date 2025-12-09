@@ -27,7 +27,41 @@ st.set_page_config(
 
 # Authentication
 from viraltracker.ui.auth import require_auth
+from viraltracker.services.comic_video.models import MOOD_EFFECT_PRESETS, PanelMood, EffectType
 require_auth()
+
+
+def get_mood_effects(mood_str: str) -> Dict[str, bool]:
+    """Get which effects a mood preset enables.
+
+    Returns a dict with effect names as keys and whether they're enabled as values.
+    This includes checking for vignette variants (light/heavy).
+    """
+    try:
+        mood = PanelMood(mood_str)
+        preset = MOOD_EFFECT_PRESETS.get(mood)
+        if not preset:
+            return {"vignette": False, "shake": False, "golden_glow": False, "pulse": False, "red_glow": False, "color_tint": False}
+
+        # Check all effects in ambient and triggered
+        all_effects = preset.ambient_effects + preset.triggered_effects
+        effect_types = {e.effect_type for e in all_effects}
+
+        # Vignette includes all variants
+        has_vignette = any(et in effect_types for et in [
+            EffectType.VIGNETTE, EffectType.VIGNETTE_LIGHT, EffectType.VIGNETTE_HEAVY
+        ])
+
+        return {
+            "vignette": has_vignette,
+            "shake": EffectType.SHAKE in effect_types,
+            "golden_glow": EffectType.GOLDEN_GLOW in effect_types,
+            "pulse": EffectType.PULSE in effect_types,
+            "red_glow": EffectType.RED_GLOW in effect_types,
+            "color_tint": preset.color_tint is not None,
+        }
+    except (ValueError, KeyError):
+        return {"vignette": False, "shake": False, "golden_glow": False, "pulse": False, "red_glow": False, "color_tint": False}
 
 # Initialize session state
 if 'comic_project_id' not in st.session_state:
@@ -628,23 +662,21 @@ def render_review_step():
                                 key=f"mood_{panel_num}"
                             )
 
-                            # Effect toggles
+                            # Get effects that the selected mood enables (so checkboxes reflect mood)
+                            mood_effects = get_mood_effects(selected_mood)
+
+                            # Effect toggles - use mood preset as default, allow override
+                            st.caption("Effects (from mood preset, adjust as needed):")
                             col_e1, col_e2 = st.columns(2)
                             with col_e1:
-                                # Check current effect state
-                                has_vignette = any(e.effect_type.value == "vignette" for e in instr.effects.ambient_effects)
-                                has_shake = any(e.effect_type.value == "shake" for e in instr.effects.ambient_effects)
-                                vignette_on = st.checkbox("Vignette", value=has_vignette, key=f"vignette_{panel_num}")
-                                shake_on = st.checkbox("Shake", value=has_shake, key=f"shake_{panel_num}")
+                                vignette_on = st.checkbox("Vignette", value=mood_effects["vignette"], key=f"vignette_{panel_num}")
+                                shake_on = st.checkbox("Shake", value=mood_effects["shake"], key=f"shake_{panel_num}")
                             with col_e2:
-                                has_golden = any(e.effect_type.value == "golden_glow" for e in instr.effects.ambient_effects)
-                                has_pulse = any(e.effect_type.value == "pulse" for e in instr.effects.ambient_effects)
-                                golden_on = st.checkbox("Golden Glow", value=has_golden, key=f"golden_{panel_num}")
-                                pulse_on = st.checkbox("Pulse", value=has_pulse, key=f"pulse_{panel_num}")
+                                golden_on = st.checkbox("Golden Glow", value=mood_effects["golden_glow"], key=f"golden_{panel_num}")
+                                pulse_on = st.checkbox("Pulse", value=mood_effects["pulse"], key=f"pulse_{panel_num}")
 
                             # Color tint
-                            has_tint = instr.effects.color_tint is not None
-                            tint_on = st.checkbox("Color Tint", value=has_tint, key=f"tint_on_{panel_num}")
+                            tint_on = st.checkbox("Color Tint", value=mood_effects["color_tint"], key=f"tint_on_{panel_num}")
                             tint_color = "#FFD700"
                             if tint_on:
                                 tint_color = st.color_picker(
