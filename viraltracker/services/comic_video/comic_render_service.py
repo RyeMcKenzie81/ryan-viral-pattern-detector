@@ -361,11 +361,16 @@ class ComicRenderService:
 
         logger.info(f"Rendering full video with {len(instructions)} panels")
 
-        # Debug: print camera positions for all panels
-        print(f"\n=== CAMERA POSITIONS FOR ALL PANELS ===")
-        for instr in instructions:
-            print(f"Panel {instr.panel_number}: camera=({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})")
-        print(f"========================================\n")
+        # Debug: write camera positions to file for debugging
+        debug_file = project_dir / "camera_debug.txt"
+        with open(debug_file, "w") as f:
+            f.write(f"=== CAMERA POSITIONS FOR ALL PANELS ===\n")
+            f.write(f"Layout: {layout.grid_cols}x{layout.grid_rows}, row_cols={layout.row_cols}\n")
+            f.write(f"Panel cells: {layout.panel_cells}\n\n")
+            for instr in instructions:
+                f.write(f"Panel {instr.panel_number}: camera=({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})\n")
+            f.write(f"========================================\n")
+        logger.info(f"Debug info written to {debug_file}")
 
         # 1. Render each panel segment (with transition to next panel)
         segment_paths = []
