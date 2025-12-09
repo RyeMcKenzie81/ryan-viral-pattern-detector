@@ -406,38 +406,63 @@ class ComicRenderService:
         """
         Build zoompan filter for Ken Burns effect.
 
-        The zoompan filter pans and zooms within a larger image.
+        The zoompan filter zooms into a specific panel on the comic grid.
+
+        Key concept: zoompan's 'z' parameter = output_size / visible_input_size
+        - z=1 means 1:1 (see entire input at output resolution)
+        - z=4 means zoomed in 4x (see 1/4 of input width/height)
+
+        For a 4x4 grid, we need z≈4 to show one panel filling the frame.
         """
         out_w, out_h = output_size
         canvas_w, canvas_h = layout.canvas_width, layout.canvas_height
 
-        # Calculate zoom expressions
-        # zoom = canvas_size / output_size * desired_zoom
-        # A zoom of 1.0 means the panel exactly fills the output frame
-        base_zoom = max(canvas_w / out_w, canvas_h / out_h)
+        # Calculate the zoom needed to fill the output with a single panel
+        # Panel width = canvas_width / grid_cols
+        # To fill output_width with panel_width, we need:
+        # zoom = canvas_width / panel_width = grid_cols (approximately)
 
-        z_start = base_zoom / camera.start_zoom
-        z_end = base_zoom / camera.end_zoom
+        # For vertical video (1080x1920) viewing a square-ish panel,
+        # we want the panel width to fill the frame width
+        panel_width = canvas_w / layout.grid_cols
+        panel_height = canvas_h / layout.grid_rows
+
+        # Base zoom to fit panel width into output width
+        # (we zoom based on width since vertical video is narrower)
+        base_zoom_w = canvas_w / panel_width  # = grid_cols
+        base_zoom_h = canvas_h / panel_height  # = grid_rows
+
+        # Use width-based zoom (panel fills width, may crop top/bottom)
+        # Multiply by 0.85 to leave a small margin showing neighboring panels
+        panel_zoom = base_zoom_w * 0.85
+
+        # Apply camera zoom modifiers (1.0 = panel fills frame, 1.2 = tighter)
+        z_start = panel_zoom * camera.start_zoom
+        z_end = panel_zoom * camera.end_zoom
 
         # Zoom expression: interpolate from start to end over duration
-        # Using on (output frame number) for timing
-        z_expr = f"'{z_start}+({z_end}-{z_start})*on/{duration_frames}'"
+        z_expr = f"'{z_start:.2f}+({z_end - z_start:.2f})*on/{duration_frames}'"
 
-        # Position expressions
-        # x and y are top-left corner of the output frame on the input image
-        # We want to center on camera.center_x, camera.center_y
+        # Position expressions - center on the panel
+        # camera.center_x/y are normalized (0-1) positions on the canvas
         cx_px = camera.center_x * canvas_w
         cy_px = camera.center_y * canvas_h
 
-        # x = center_x - (output_width / 2 / zoom)
-        # Need to account for zoom changing over time
-        x_expr = f"'{cx_px}-(iw/zoom/2)'"
-        y_expr = f"'{cy_px}-(ih/zoom/2)'"
+        # x,y = top-left corner of visible area
+        # To center on (cx, cy): x = cx - visible_width/2 = cx - (out_w/zoom)/2
+        # But zoompan uses input coordinates, so: x = cx - iw/(2*zoom)
+        x_expr = f"'{cx_px:.1f}-iw/zoom/2'"
+        y_expr = f"'{cy_px:.1f}-ih/zoom/2'"
 
         # Build zoompan filter
         zoompan = (
             f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
             f":d={duration_frames}:s={out_w}x{out_h}:fps={fps}"
+        )
+
+        logger.debug(
+            f"Zoompan: panel at ({camera.center_x:.2f}, {camera.center_y:.2f}), "
+            f"zoom {z_start:.1f} -> {z_end:.1f}"
         )
 
         return zoompan
