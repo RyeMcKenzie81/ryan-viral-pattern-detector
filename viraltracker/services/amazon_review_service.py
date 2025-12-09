@@ -28,8 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 # Apify actor for Amazon reviews
-# Use tilde format for actor ID to avoid URL path issues
-AXESSO_ACTOR_ID = "axesso_data~amazon-reviews-scraper"
+AXESSO_ACTOR_ID = "axesso_data/amazon-reviews-scraper"
 
 # Universal keywords that appear across all product categories
 POSITIVE_KEYWORDS = [

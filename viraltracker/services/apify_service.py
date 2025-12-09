@@ -15,7 +15,7 @@ import time
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
-import requests
+from apify_client import ApifyClient
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..core.config import Config
@@ -37,15 +37,12 @@ class ApifyService:
     """
     Generic service for running Apify actors.
 
-    Provides reusable methods for:
-    - Starting actor runs with any input
-    - Polling for completion
-    - Fetching dataset results
-    - Error handling and retries
+    Uses the apify_client library (same as other scrapers in this codebase)
+    for reliable API communication.
 
     Example usage:
         service = ApifyService()
-        result = await service.run_actor(
+        result = service.run_actor(
             actor_id="axesso_data/amazon-reviews-scraper",
             run_input={"asin": "B0DJWSV1J3", "domainCode": "com"},
             timeout=300
@@ -63,167 +60,13 @@ class ApifyService:
         self.apify_token = apify_token or Config.APIFY_TOKEN
         if not self.apify_token:
             logger.warning("APIFY_TOKEN not set - Apify operations will fail")
+            self.client = None
         else:
             # Log token presence (not the actual token)
             logger.info(f"ApifyService initialized with token: {self.apify_token[:8]}...")
-
-        self.base_url = "https://api.apify.com/v2"
-
-    def _get_headers(self) -> Dict[str, str]:
-        """Get authorization headers for Apify API."""
-        return {"Authorization": f"Bearer {self.apify_token}"}
+            self.client = ApifyClient(self.apify_token)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
-    def start_actor_run(
-        self,
-        actor_id: str,
-        run_input: Dict[str, Any],
-        memory_mbytes: int = 1024,
-        timeout_secs: int = 300
-    ) -> str:
-        """
-        Start an Apify actor run.
-
-        Args:
-            actor_id: Actor identifier (e.g., "axesso_data/amazon-reviews-scraper")
-            run_input: Input dictionary for the actor
-            memory_mbytes: Memory allocation in MB (default: 1024)
-            timeout_secs: Actor timeout in seconds (default: 300)
-
-        Returns:
-            Run ID string
-
-        Raises:
-            ValueError: If API token not configured
-            requests.HTTPError: If API call fails
-        """
-        if not self.apify_token:
-            raise ValueError("APIFY_TOKEN not configured - check environment variables")
-
-        url = f"{self.base_url}/acts/{actor_id}/runs"
-        params = {
-            "memory": memory_mbytes,
-            "timeout": timeout_secs
-        }
-
-        logger.info(f"Starting Apify actor: {actor_id}")
-        logger.debug(f"Input: {run_input}")
-
-        try:
-            logger.info(f"POST {url} with {len(str(run_input))} bytes")
-            response = requests.post(
-                url,
-                headers=self._get_headers(),
-                params=params,
-                json=run_input,
-                timeout=30  # Connection timeout
-            )
-            logger.info(f"Response status: {response.status_code}")
-            response.raise_for_status()
-        except requests.HTTPError as e:
-            error_text = e.response.text if e.response is not None else "No response body"
-            status_code = e.response.status_code if e.response is not None else "Unknown"
-            logger.error(f"Apify API HTTP error: {status_code} - {error_text}")
-            raise
-        except requests.RequestException as e:
-            logger.error(f"Apify API request failed: {type(e).__name__}: {e}")
-            raise
-
-        run_data = response.json()["data"]
-        run_id = run_data["id"]
-
-        logger.info(f"Started Apify run: {run_id}")
-        return run_id
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
-    def poll_run_status(
-        self,
-        run_id: str,
-        timeout: int = 600,
-        poll_interval: float = 2.0
-    ) -> Dict[str, Any]:
-        """
-        Poll an Apify run until completion.
-
-        Args:
-            run_id: Apify run ID
-            timeout: Maximum seconds to wait (default: 600)
-            poll_interval: Initial polling interval in seconds (default: 2.0)
-
-        Returns:
-            Dict with run info including datasetId and status
-
-        Raises:
-            TimeoutError: If run doesn't complete within timeout
-            RuntimeError: If run fails
-        """
-        url = f"{self.base_url}/actor-runs/{run_id}"
-        start_time = time.time()
-        wait_time = poll_interval
-
-        logger.info(f"Polling Apify run {run_id}...")
-
-        while time.time() - start_time < timeout:
-            response = requests.get(url, headers=self._get_headers())
-            response.raise_for_status()
-
-            run_data = response.json()["data"]
-            status = run_data["status"]
-
-            if status == "SUCCEEDED":
-                dataset_id = run_data["defaultDatasetId"]
-                logger.info(f"Apify run completed. Dataset ID: {dataset_id}")
-                return {
-                    "run_id": run_id,
-                    "dataset_id": dataset_id,
-                    "status": status
-                }
-
-            if status in ["FAILED", "ABORTED", "TIMED-OUT"]:
-                error_msg = f"Apify run failed with status: {status}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
-
-            logger.debug(f"Run status: {status}. Waiting {wait_time:.1f}s...")
-            time.sleep(wait_time)
-            # Exponential backoff up to 30s
-            wait_time = min(wait_time * 1.5, 30)
-
-        raise TimeoutError(f"Apify run timeout after {timeout}s")
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=8))
-    def fetch_dataset(
-        self,
-        dataset_id: str,
-        limit: Optional[int] = None,
-        offset: int = 0
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch items from an Apify dataset.
-
-        Args:
-            dataset_id: Apify dataset ID
-            limit: Maximum items to fetch (None = all)
-            offset: Starting offset
-
-        Returns:
-            List of item dictionaries
-        """
-        url = f"{self.base_url}/datasets/{dataset_id}/items"
-        params = {"offset": offset}
-        if limit:
-            params["limit"] = limit
-
-        logger.info(f"Fetching dataset {dataset_id}...")
-
-        response = requests.get(url, headers=self._get_headers(), params=params)
-        response.raise_for_status()
-
-        items = response.json()
-        logger.info(f"Fetched {len(items)} items from dataset")
-
-        return items
-
     def run_actor(
         self,
         actor_id: str,
@@ -234,11 +77,10 @@ class ApifyService:
         """
         Run an Apify actor and wait for results.
 
-        Combines start_actor_run, poll_run_status, and fetch_dataset
-        into a single convenient method.
+        Uses the apify_client library for reliable communication.
 
         Args:
-            actor_id: Actor identifier
+            actor_id: Actor identifier (e.g., "axesso_data/amazon-reviews-scraper")
             run_input: Input dictionary for the actor
             timeout: Maximum seconds to wait for completion
             memory_mbytes: Memory allocation in MB
@@ -252,27 +94,41 @@ class ApifyService:
                 {"asin": "B0DJWSV1J3", "domainCode": "com"}
             )
         """
-        # Start the run
-        run_id = self.start_actor_run(
-            actor_id=actor_id,
-            run_input=run_input,
-            memory_mbytes=memory_mbytes,
-            timeout_secs=timeout
-        )
+        if not self.client:
+            raise ValueError("APIFY_TOKEN not configured - check environment variables")
 
-        # Poll for completion
-        run_info = self.poll_run_status(run_id, timeout=timeout)
+        logger.info(f"Starting Apify actor: {actor_id}")
+        logger.debug(f"Input: {run_input}")
 
-        # Fetch results
-        items = self.fetch_dataset(run_info["dataset_id"])
+        try:
+            # Use apify_client library - handles URL encoding automatically
+            run = self.client.actor(actor_id).call(
+                run_input=run_input,
+                timeout_secs=timeout,
+                memory_mbytes=memory_mbytes
+            )
 
-        return ApifyRunResult(
-            run_id=run_id,
-            dataset_id=run_info["dataset_id"],
-            status=run_info["status"],
-            items=items,
-            items_count=len(items)
-        )
+            run_id = run["id"]
+            dataset_id = run["defaultDatasetId"]
+            status = run["status"]
+
+            logger.info(f"Apify run completed: {run_id}, status: {status}")
+
+            # Fetch results from dataset
+            items = list(self.client.dataset(dataset_id).iterate_items())
+            logger.info(f"Fetched {len(items)} items from dataset {dataset_id}")
+
+            return ApifyRunResult(
+                run_id=run_id,
+                dataset_id=dataset_id,
+                status=status,
+                items=items,
+                items_count=len(items)
+            )
+
+        except Exception as e:
+            logger.error(f"Apify actor run failed: {type(e).__name__}: {e}")
+            raise
 
     def run_actor_batch(
         self,
@@ -298,6 +154,8 @@ class ApifyService:
         """
         # For actors that accept an "input" array
         run_input = {"input": batch_inputs}
+
+        logger.info(f"Running batch with {len(batch_inputs)} configs")
 
         return self.run_actor(
             actor_id=actor_id,
