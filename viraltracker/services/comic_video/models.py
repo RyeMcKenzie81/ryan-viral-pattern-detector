@@ -156,7 +156,7 @@ class PanelBounds(BaseModel):
 
 class ComicLayout(BaseModel):
     """Describes the comic grid structure."""
-    grid_cols: int = Field(default=3, ge=1, description="Number of columns")
+    grid_cols: int = Field(default=3, ge=1, description="Max number of columns (for reference)")
     grid_rows: int = Field(default=5, ge=1, description="Number of rows")
     total_panels: int = Field(default=15, ge=1, description="Total panel count")
 
@@ -168,6 +168,14 @@ class ComicLayout(BaseModel):
     panel_cells: Dict[int, List[Tuple[int, int]]] = Field(
         default_factory=dict,
         description="Map of panel number to grid cells occupied"
+    )
+
+    # Per-row column counts (for rows with different panel counts)
+    # Key: row index (0-indexed), Value: number of columns in that row
+    # If not specified for a row, grid_cols is used as default
+    row_cols: Dict[int, int] = Field(
+        default_factory=dict,
+        description="Number of columns per row (for variable-width rows)"
     )
 
     # Canvas dimensions (from comic grid image)

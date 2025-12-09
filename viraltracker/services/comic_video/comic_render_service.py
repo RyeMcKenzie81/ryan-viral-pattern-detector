@@ -417,8 +417,22 @@ class ComicRenderService:
         """
         fps = self.DEFAULT_FPS
 
-        # Calculate durations
-        content_duration_ms = instruction.duration_ms
+        # Get actual audio duration to sync video precisely
+        # This prevents drift from accumulated buffers in stored duration_ms
+        if audio_path and audio_path.exists():
+            actual_audio_ms = await self._get_audio_duration_ms(audio_path)
+            if actual_audio_ms:
+                # Use actual audio duration + small buffer (150ms) for breathing room
+                content_duration_ms = actual_audio_ms + 150
+                logger.debug(
+                    f"Panel {instruction.panel_number}: using actual audio duration "
+                    f"{actual_audio_ms}ms + 150ms buffer"
+                )
+            else:
+                content_duration_ms = instruction.duration_ms
+        else:
+            content_duration_ms = instruction.duration_ms
+
         transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
 
         # No transition for last panel or CUT transitions
@@ -986,6 +1000,48 @@ class ComicRenderService:
             logger.warning(f"Failed to detect image dimensions: {e}")
 
         return None, None
+
+    async def _get_audio_duration_ms(
+        self,
+        audio_path: Path
+    ) -> Optional[int]:
+        """
+        Get audio duration in milliseconds using ffprobe.
+
+        Args:
+            audio_path: Path to audio file
+
+        Returns:
+            Duration in milliseconds or None if detection fails
+        """
+        if not self._ffprobe_path:
+            logger.warning("ffprobe not available, cannot detect audio duration")
+            return None
+
+        cmd = [
+            self._ffprobe_path,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            str(audio_path)
+        ]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+
+            if process.returncode == 0:
+                duration_sec = float(stdout.decode().strip())
+                return int(duration_sec * 1000)
+
+        except Exception as e:
+            logger.warning(f"Failed to detect audio duration: {e}")
+
+        return None
 
     # =========================================================================
     # FFmpeg Execution

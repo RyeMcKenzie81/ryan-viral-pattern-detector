@@ -132,8 +132,9 @@ class ComicDirectorService:
 
         # Try grid_structure first (more explicit format)
         grid_structure = layout_rec.get("grid_structure", [])
+        row_cols = {}
         if grid_structure:
-            panel_cells = self._parse_grid_structure(grid_structure)
+            panel_cells, row_cols = self._parse_grid_structure(grid_structure)
             # Update rows from actual grid structure
             rows = len(grid_structure)
         else:
@@ -155,6 +156,7 @@ class ComicDirectorService:
             grid_rows=rows,
             total_panels=len(panel_cells),
             panel_cells=panel_cells,
+            row_cols=row_cols,
             canvas_width=canvas_width,
             canvas_height=canvas_height
         )
@@ -170,28 +172,34 @@ class ComicDirectorService:
     def _parse_grid_structure(
         self,
         grid_structure: List[Dict[str, Any]]
-    ) -> Dict[int, List[Tuple[int, int]]]:
+    ) -> Tuple[Dict[int, List[Tuple[int, int]]], Dict[int, int]]:
         """
-        Parse grid_structure format into panel_cells mapping.
+        Parse grid_structure format into panel_cells and row_cols mappings.
 
         Args:
             grid_structure: List of {row, columns, panels} dicts
 
         Returns:
-            Dict mapping panel_number -> list of (row, col) cells
+            Tuple of:
+            - Dict mapping panel_number -> list of (row, col) cells
+            - Dict mapping row_index -> number of columns in that row
         """
         panel_cells = {}
+        row_cols = {}
 
         for row_data in grid_structure:
             row_idx = row_data.get("row", 1) - 1  # Convert to 0-indexed
             panels = row_data.get("panels", [])
             num_cols = row_data.get("columns", len(panels))
 
+            # Store the number of columns for this row
+            row_cols[row_idx] = num_cols
+
             for col_idx, panel_num in enumerate(panels):
                 if panel_num > 0:
                     panel_cells[panel_num] = [(row_idx, col_idx)]
 
-        return panel_cells
+        return panel_cells, row_cols
 
     def _parse_format_string(self, format_str: str) -> Tuple[int, int]:
         """
@@ -298,8 +306,14 @@ class ComicDirectorService:
         if not cells:
             raise ValueError(f"Panel {panel_number} not found in layout")
 
-        # Calculate cell dimensions
-        cell_width = layout.canvas_width / layout.grid_cols
+        # Find which row this panel is in
+        panel_row = cells[0][0]
+
+        # Get number of columns for this specific row (or default to grid_cols)
+        row_col_count = layout.row_cols.get(panel_row, layout.grid_cols)
+
+        # Calculate cell dimensions using row-specific column count
+        cell_width = layout.canvas_width / row_col_count
         cell_height = layout.canvas_height / layout.grid_rows
 
         # Find bounding box of all cells this panel occupies
