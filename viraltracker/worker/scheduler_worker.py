@@ -338,7 +338,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
                     color_mode=params.get('color_mode', 'original'),
                     brand_colors=brand_colors_data,
                     image_selection_mode=params.get('image_selection_mode', 'auto'),
-                    selected_image_paths=None  # Auto mode selects best 1-2 images
+                    selected_image_paths=None,  # Auto mode selects best 1-2 images
+                    persona_id=params.get('persona_id')  # Optional persona for targeting
                 )
 
                 if result and result.get('ad_run_id'):

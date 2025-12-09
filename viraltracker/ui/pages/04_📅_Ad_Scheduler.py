@@ -87,6 +87,17 @@ def get_products(brand_id: str = None):
         return []
 
 
+def get_personas_for_product(product_id: str):
+    """Get personas linked to a product for the persona selector."""
+    try:
+        from viraltracker.services.ad_creation_service import AdCreationService
+        from uuid import UUID
+        service = AdCreationService()
+        return service.get_personas_for_product(UUID(product_id))
+    except Exception as e:
+        return []
+
+
 def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str = None):
     """Fetch scheduled jobs with optional filters."""
     try:
@@ -867,6 +878,61 @@ def render_create_schedule():
     st.divider()
 
     # ========================================================================
+    # Section 5.5: Target Persona (Optional)
+    # ========================================================================
+
+    st.subheader("Target Persona (Optional)")
+
+    # Fetch personas for selected product
+    personas = get_personas_for_product(selected_product_id) if selected_product_id else []
+
+    persona_id = None
+    if personas:
+        # Build persona options - "None" + all personas
+        persona_options = {"None - Use product defaults": None}
+        for p in personas:
+            snapshot = p.get('snapshot', '')[:50] if p.get('snapshot') else ''
+            label = f"{p['name']}"
+            if snapshot:
+                label += f" ({snapshot}...)"
+            if p.get('is_primary'):
+                label += " ⭐"
+            persona_options[label] = p['id']
+
+        # Get existing persona_id from job params
+        existing_persona_id = existing_params.get('persona_id')
+
+        # Get current selection label
+        current_persona_label = "None - Use product defaults"
+        if existing_persona_id:
+            for label, pid in persona_options.items():
+                if pid == existing_persona_id:
+                    current_persona_label = label
+                    break
+
+        selected_persona_label = st.selectbox(
+            "Select a 4D Persona to target",
+            options=list(persona_options.keys()),
+            index=list(persona_options.keys()).index(current_persona_label) if current_persona_label in persona_options else 0,
+            help="Persona data will inform hook selection and copy generation with emotional triggers and customer voice"
+        )
+        persona_id = persona_options[selected_persona_label]
+
+        # Show persona preview if selected
+        if persona_id:
+            selected_persona = next((p for p in personas if p['id'] == persona_id), None)
+            if selected_persona:
+                with st.expander("Persona Preview", expanded=False):
+                    st.markdown(f"**{selected_persona['name']}**")
+                    if selected_persona.get('snapshot'):
+                        st.write(selected_persona['snapshot'])
+                    st.caption("Persona data will be used to select hooks and generate copy that resonates with this audience.")
+    else:
+        st.info("No personas available for this product. Create personas in Brand Research to enable persona-targeted ad creation.")
+
+    st.divider()
+
+    # ========================================================================
     # Section 6: Export Destination
     # ========================================================================
 
@@ -937,7 +1003,8 @@ def render_create_schedule():
                     'color_mode': color_mode,
                     'image_selection_mode': image_selection_mode,
                     'export_destination': export_destination,
-                    'export_email': export_email if export_destination in ['email', 'both'] else None
+                    'export_email': export_email if export_destination in ['email', 'both'] else None,
+                    'persona_id': persona_id
                 }
 
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
@@ -1088,7 +1155,7 @@ def render_schedule_detail():
     st.markdown("### Ad Creation Parameters")
     params = job.get('parameters', {})
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"**Variations:** {params.get('num_variations', 'N/A')}")
         st.markdown(f"**Content:** {params.get('content_source', 'N/A')}")
@@ -1099,6 +1166,16 @@ def render_schedule_detail():
         st.markdown(f"**Export:** {params.get('export_destination', 'none')}")
         if params.get('export_email'):
             st.caption(params['export_email'])
+    with col4:
+        persona_id = params.get('persona_id')
+        if persona_id:
+            # Try to get persona name
+            personas = get_personas_for_product(job['product_id'])
+            persona = next((p for p in personas if p['id'] == persona_id), None)
+            persona_name = persona['name'] if persona else persona_id[:8]
+            st.markdown(f"**Persona:** {persona_name}")
+        else:
+            st.markdown("**Persona:** None")
 
     st.divider()
 
