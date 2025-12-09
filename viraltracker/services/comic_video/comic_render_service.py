@@ -420,8 +420,10 @@ class ComicRenderService:
         concat_list = output_path.parent / "concat_list.txt"
         with open(concat_list, "w") as f:
             for path in segment_paths:
+                # Use absolute path to avoid path resolution issues
+                abs_path = path.resolve()
                 # Escape single quotes
-                escaped = str(path).replace("'", "'\\''")
+                escaped = str(abs_path).replace("'", "'\\''")
                 f.write(f"file '{escaped}'\n")
 
         cmd = [
