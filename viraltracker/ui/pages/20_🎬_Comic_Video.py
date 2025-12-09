@@ -612,111 +612,137 @@ def render_review_step():
                     else:
                         st.warning("No audio generated")
 
-                    # Camera & Effects Settings (using checkbox toggle instead of nested expander)
+                    # Camera & Effects Settings (always visible)
                     st.markdown("**📷 Camera & Effects**")
                     if instr:
                         # Check for existing overrides
                         has_overrides = instr.user_overrides and instr.user_overrides.has_overrides()
+                        user_overrides = instr.user_overrides
 
-                        # Show current settings summary
-                        st.caption(f"Zoom: {instr.camera.start_zoom:.1f}→{instr.camera.end_zoom:.1f} | Mood: {instr.mood.value} | Effects: {len(instr.effects.ambient_effects)}")
+                        # Current values (from override or auto)
+                        current_start_zoom = instr.camera.start_zoom
+                        current_end_zoom = instr.camera.end_zoom
+                        current_mood = instr.mood.value
 
-                        # Toggle to show/hide edit controls
-                        show_settings = st.checkbox(
-                            "✏️ Edit Settings" + (" ⚙️" if has_overrides else ""),
-                            key=f"show_settings_{panel_num}"
-                        )
-
-                        if show_settings:
-                            # Current values (from override or auto)
-                            current_start_zoom = instr.camera.start_zoom
-                            current_end_zoom = instr.camera.end_zoom
-                            current_mood = instr.mood.value
-
-                            # Camera settings
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                start_zoom = st.slider(
-                                    "Start Zoom",
-                                    min_value=0.5, max_value=2.0,
-                                    value=float(current_start_zoom),
-                                    step=0.1,
-                                    key=f"start_zoom_{panel_num}"
-                                )
-                            with col_b:
-                                end_zoom = st.slider(
-                                    "End Zoom",
-                                    min_value=0.5, max_value=2.0,
-                                    value=float(current_end_zoom),
-                                    step=0.1,
-                                    key=f"end_zoom_{panel_num}"
-                                )
-
-                            # Mood selector
-                            moods = ["neutral", "positive", "warning", "danger", "chaos", "dramatic", "celebration"]
-                            mood_idx = moods.index(current_mood) if current_mood in moods else 0
-                            selected_mood = st.selectbox(
-                                "Mood",
-                                options=moods,
-                                index=mood_idx,
-                                key=f"mood_{panel_num}"
+                        # Camera settings
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            start_zoom = st.slider(
+                                "Start Zoom",
+                                min_value=0.5, max_value=2.0,
+                                value=float(current_start_zoom),
+                                step=0.1,
+                                key=f"start_zoom_{panel_num}"
+                            )
+                        with col_b:
+                            end_zoom = st.slider(
+                                "End Zoom",
+                                min_value=0.5, max_value=2.0,
+                                value=float(current_end_zoom),
+                                step=0.1,
+                                key=f"end_zoom_{panel_num}"
                             )
 
-                            # Get effects that the selected mood enables (so checkboxes reflect mood)
-                            mood_effects = get_mood_effects(selected_mood)
+                        # Mood selector
+                        moods = ["neutral", "positive", "warning", "danger", "chaos", "dramatic", "celebration"]
+                        mood_idx = moods.index(current_mood) if current_mood in moods else 0
+                        selected_mood = st.selectbox(
+                            "Mood",
+                            options=moods,
+                            index=mood_idx,
+                            key=f"mood_{panel_num}"
+                        )
 
-                            # Effect toggles - use mood preset as default, allow override
-                            st.caption("Effects (from mood preset, adjust as needed):")
-                            col_e1, col_e2 = st.columns(2)
-                            with col_e1:
-                                vignette_on = st.checkbox("Vignette", value=mood_effects["vignette"], key=f"vignette_{panel_num}")
-                                shake_on = st.checkbox("Shake", value=mood_effects["shake"], key=f"shake_{panel_num}")
-                            with col_e2:
-                                golden_on = st.checkbox("Golden Glow", value=mood_effects["golden_glow"], key=f"golden_{panel_num}")
-                                pulse_on = st.checkbox("Pulse", value=mood_effects["pulse"], key=f"pulse_{panel_num}")
+                        # Get effects that the selected mood enables (as baseline)
+                        mood_effects = get_mood_effects(selected_mood)
 
-                            # Color tint
-                            tint_on = st.checkbox("Color Tint", value=mood_effects["color_tint"], key=f"tint_on_{panel_num}")
-                            tint_color = "#FFD700"
-                            if tint_on:
-                                tint_color = st.color_picker(
-                                    "Tint Color",
-                                    value=instr.effects.color_tint or "#FFD700",
-                                    key=f"tint_color_{panel_num}"
+                        # Helper to get effect value: use saved override if set, else mood preset
+                        def get_effect_value(override_attr: str, mood_key: str) -> bool:
+                            if user_overrides and getattr(user_overrides, override_attr, None) is not None:
+                                return getattr(user_overrides, override_attr)
+                            return mood_effects[mood_key]
+
+                        # Effect toggles
+                        st.caption("Effects:")
+                        col_e1, col_e2 = st.columns(2)
+                        with col_e1:
+                            vignette_on = st.checkbox("Vignette", value=get_effect_value("vignette_enabled", "vignette"), key=f"vignette_{panel_num}")
+                            shake_on = st.checkbox("Shake", value=get_effect_value("shake_enabled", "shake"), key=f"shake_{panel_num}")
+                        with col_e2:
+                            golden_on = st.checkbox("Golden Glow", value=get_effect_value("golden_glow_enabled", "golden_glow"), key=f"golden_{panel_num}")
+                            pulse_on = st.checkbox("Pulse", value=get_effect_value("pulse_enabled", "pulse"), key=f"pulse_{panel_num}")
+
+                        # Vignette settings (show when vignette is on)
+                        vignette_intensity = 0.5
+                        vignette_softness = 0.4
+                        if vignette_on:
+                            col_v1, col_v2 = st.columns(2)
+                            with col_v1:
+                                # Get saved value or default
+                                saved_intensity = user_overrides.vignette_intensity if user_overrides and user_overrides.vignette_intensity is not None else 0.5
+                                vignette_intensity = st.slider(
+                                    "Vignette Darkness",
+                                    min_value=0.1, max_value=1.0,
+                                    value=float(saved_intensity),
+                                    step=0.1,
+                                    key=f"vignette_intensity_{panel_num}",
+                                    help="Higher = darker edges"
+                                )
+                            with col_v2:
+                                saved_softness = user_overrides.vignette_softness if user_overrides and user_overrides.vignette_softness is not None else 0.4
+                                vignette_softness = st.slider(
+                                    "Vignette Spread",
+                                    min_value=0.1, max_value=1.0,
+                                    value=float(saved_softness),
+                                    step=0.1,
+                                    key=f"vignette_softness_{panel_num}",
+                                    help="Higher = extends further from edges"
                                 )
 
-                            # Action buttons
-                            col_btn1, col_btn2 = st.columns(2)
-                            with col_btn1:
-                                if st.button("💾 Apply", key=f"apply_{panel_num}"):
-                                    # Save all current settings as overrides
-                                    overrides = {
-                                        "camera_start_zoom": float(start_zoom),
-                                        "camera_end_zoom": float(end_zoom),
-                                        "mood_override": selected_mood,
-                                        "vignette_enabled": vignette_on,
-                                        "shake_enabled": shake_on,
-                                        "golden_glow_enabled": golden_on,
-                                        "pulse_enabled": pulse_on,
-                                        "color_tint_enabled": tint_on,
-                                    }
-                                    if tint_on:
-                                        overrides["color_tint_color"] = tint_color
+                        # Color tint
+                        tint_on = st.checkbox("Color Tint", value=get_effect_value("color_tint_enabled", "color_tint"), key=f"tint_on_{panel_num}")
+                        tint_color = "#FFD700"
+                        if tint_on:
+                            tint_color = st.color_picker(
+                                "Tint Color",
+                                value=instr.effects.color_tint or "#FFD700",
+                                key=f"tint_color_{panel_num}"
+                            )
 
-                                    asyncio.run(save_panel_overrides(project_id, panel_num, overrides))
-                                    st.success("Saved! Re-render to see changes.")
+                        # Action buttons
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            if st.button("💾 Apply", key=f"apply_{panel_num}"):
+                                # Save all current settings as overrides
+                                overrides = {
+                                    "camera_start_zoom": float(start_zoom),
+                                    "camera_end_zoom": float(end_zoom),
+                                    "mood_override": selected_mood,
+                                    "vignette_enabled": vignette_on,
+                                    "vignette_intensity": float(vignette_intensity) if vignette_on else None,
+                                    "vignette_softness": float(vignette_softness) if vignette_on else None,
+                                    "shake_enabled": shake_on,
+                                    "golden_glow_enabled": golden_on,
+                                    "pulse_enabled": pulse_on,
+                                    "color_tint_enabled": tint_on,
+                                }
+                                if tint_on:
+                                    overrides["color_tint_color"] = tint_color
+
+                                asyncio.run(save_panel_overrides(project_id, panel_num, overrides))
+                                st.success("Saved! Re-render to see changes.")
+                                st.rerun()
+
+                        with col_btn2:
+                            if has_overrides:
+                                if st.button("🔄 Reset", key=f"reset_{panel_num}"):
+                                    asyncio.run(clear_panel_overrides(project_id, panel_num))
+                                    st.success("Reset!")
                                     st.rerun()
 
-                            with col_btn2:
-                                if has_overrides:
-                                    if st.button("🔄 Reset", key=f"reset_{panel_num}"):
-                                        asyncio.run(clear_panel_overrides(project_id, panel_num))
-                                        st.success("Reset!")
-                                        st.rerun()
-
-                            # Status indicator
-                            if has_overrides:
-                                st.caption("⚙️ Custom settings active")
+                        # Status indicator
+                        if has_overrides:
+                            st.caption("⚙️ Custom settings active")
                     else:
                         st.info("Generate instructions first")
 
