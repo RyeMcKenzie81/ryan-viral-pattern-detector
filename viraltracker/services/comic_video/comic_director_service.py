@@ -195,9 +195,12 @@ class ComicDirectorService:
             # Store the number of columns for this row
             row_cols[row_idx] = num_cols
 
-            for col_idx, panel_num in enumerate(panels):
+            # Track actual column position (in case panels array has 0s as placeholders)
+            col_idx = 0
+            for panel_num in panels:
                 if panel_num > 0:
                     panel_cells[panel_num] = [(row_idx, col_idx)]
+                col_idx += 1
 
         return panel_cells, row_cols
 

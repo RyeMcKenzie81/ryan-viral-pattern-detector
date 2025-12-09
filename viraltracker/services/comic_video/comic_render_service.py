@@ -502,7 +502,10 @@ class ComicRenderService:
 
         logger.info(
             f"Rendering panel {instruction.panel_number}: "
-            f"{content_duration_ms}ms content + {transition_duration_ms}ms transition"
+            f"{content_duration_ms}ms content + {transition_duration_ms}ms transition, "
+            f"camera=({instruction.camera.center_x:.3f}, {instruction.camera.center_y:.3f})"
+            + (f" -> next=({next_instruction.camera.center_x:.3f}, {next_instruction.camera.center_y:.3f})"
+               if next_instruction else "")
         )
 
         await self._run_ffmpeg(cmd)
