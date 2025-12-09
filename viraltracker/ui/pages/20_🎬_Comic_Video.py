@@ -578,19 +578,28 @@ def render_review_step():
                     else:
                         st.warning("No audio generated")
 
-                    # Camera & Effects Settings (collapsible)
-                    with st.expander("📷 Camera & Effects Settings", expanded=False):
-                        if instr:
-                            # Check for existing overrides
-                            has_overrides = instr.user_overrides and instr.user_overrides.has_overrides()
+                    # Camera & Effects Settings (using checkbox toggle instead of nested expander)
+                    st.markdown("**📷 Camera & Effects**")
+                    if instr:
+                        # Check for existing overrides
+                        has_overrides = instr.user_overrides and instr.user_overrides.has_overrides()
 
+                        # Show current settings summary
+                        st.caption(f"Zoom: {instr.camera.start_zoom:.1f}→{instr.camera.end_zoom:.1f} | Mood: {instr.mood.value} | Effects: {len(instr.effects.ambient_effects)}")
+
+                        # Toggle to show/hide edit controls
+                        show_settings = st.checkbox(
+                            "✏️ Edit Settings" + (" ⚙️" if has_overrides else ""),
+                            key=f"show_settings_{panel_num}"
+                        )
+
+                        if show_settings:
                             # Current values (from override or auto)
                             current_start_zoom = instr.camera.start_zoom
                             current_end_zoom = instr.camera.end_zoom
                             current_mood = instr.mood.value
 
                             # Camera settings
-                            st.markdown("**Camera**")
                             col_a, col_b = st.columns(2)
                             with col_a:
                                 start_zoom = st.slider(
@@ -620,7 +629,6 @@ def render_review_step():
                             )
 
                             # Effect toggles
-                            st.markdown("**Effects**")
                             col_e1, col_e2 = st.columns(2)
                             with col_e1:
                                 # Check current effect state
@@ -637,6 +645,7 @@ def render_review_step():
                             # Color tint
                             has_tint = instr.effects.color_tint is not None
                             tint_on = st.checkbox("Color Tint", value=has_tint, key=f"tint_on_{panel_num}")
+                            tint_color = "#FFD700"
                             if tint_on:
                                 tint_color = st.color_picker(
                                     "Tint Color",
@@ -647,7 +656,7 @@ def render_review_step():
                             # Action buttons
                             col_btn1, col_btn2 = st.columns(2)
                             with col_btn1:
-                                if st.button("💾 Apply Changes", key=f"apply_{panel_num}"):
+                                if st.button("💾 Apply", key=f"apply_{panel_num}"):
                                     overrides = {
                                         "camera_start_zoom": start_zoom if start_zoom != instr.camera.start_zoom else None,
                                         "camera_end_zoom": end_zoom if end_zoom != instr.camera.end_zoom else None,
@@ -663,43 +672,36 @@ def render_review_step():
                                     overrides = {k: v for k, v in overrides.items() if v is not None}
                                     if overrides:
                                         asyncio.run(save_panel_overrides(project_id, panel_num, overrides))
-                                        st.success("Changes saved!")
+                                        st.success("Saved!")
                                         st.rerun()
                                     else:
-                                        st.info("No changes to save")
+                                        st.info("No changes")
 
                             with col_btn2:
                                 if has_overrides:
-                                    if st.button("🔄 Reset to Auto", key=f"reset_{panel_num}"):
+                                    if st.button("🔄 Reset", key=f"reset_{panel_num}"):
                                         asyncio.run(clear_panel_overrides(project_id, panel_num))
-                                        st.success("Reset to auto settings")
+                                        st.success("Reset!")
                                         st.rerun()
 
-                            # Status
+                            # Status indicator
                             if has_overrides:
-                                st.caption("⚙️ Using custom settings")
-                            else:
-                                st.caption("🤖 Using auto-generated settings")
-                        else:
-                            st.info("Generate instructions first")
+                                st.caption("⚙️ Custom settings active")
+                    else:
+                        st.info("Generate instructions first")
 
                 # Dialogue text
                 st.markdown("**💬 Dialogue**")
                 st.caption(panel.get("dialogue", "No dialogue"))
 
                 # Approve button
-                col_app1, col_app2 = st.columns([1, 2])
-                with col_app1:
-                    if not both_approved:
-                        if st.button(f"✅ Approve", key=f"approve_{panel_num}", type="primary"):
-                            with st.spinner("Approving..."):
-                                asyncio.run(approve_panel(project_id, panel_num))
-                                st.rerun()
-                    else:
-                        st.success("✅ Approved")
-                with col_app2:
-                    if instr:
-                        st.caption(f"Zoom: {instr.camera.start_zoom:.1f}→{instr.camera.end_zoom:.1f} | Mood: {instr.mood.value} | Effects: {len(instr.effects.ambient_effects)}")
+                if not both_approved:
+                    if st.button(f"✅ Approve Panel {panel_num}", key=f"approve_{panel_num}", type="primary"):
+                        with st.spinner("Approving..."):
+                            asyncio.run(approve_panel(project_id, panel_num))
+                            st.rerun()
+                else:
+                    st.success("✅ Panel approved")
 
         # Final render section
         st.divider()
