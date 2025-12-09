@@ -118,6 +118,20 @@ class ComicRenderService:
 
         logger.info(f"Rendering preview for panel {panel_number}")
 
+        # Detect actual image dimensions and update layout
+        actual_width, actual_height = await self._get_image_dimensions(comic_grid_path)
+        if actual_width and actual_height:
+            # Update layout with actual dimensions for accurate panel positioning
+            layout = ComicLayout(
+                grid_cols=layout.grid_cols,
+                grid_rows=layout.grid_rows,
+                total_panels=layout.total_panels,
+                panel_cells=layout.panel_cells,
+                canvas_width=actual_width,
+                canvas_height=actual_height
+            )
+            logger.info(f"Using actual image dimensions: {actual_width}x{actual_height}")
+
         # Build FFmpeg command
         cmd = self._build_panel_render_command(
             grid_path=comic_grid_path,
@@ -243,6 +257,19 @@ class ComicRenderService:
 
         project_dir = self.output_base / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
+
+        # Detect actual image dimensions and update layout
+        actual_width, actual_height = await self._get_image_dimensions(comic_grid_path)
+        if actual_width and actual_height:
+            layout = ComicLayout(
+                grid_cols=layout.grid_cols,
+                grid_rows=layout.grid_rows,
+                total_panels=layout.total_panels,
+                panel_cells=layout.panel_cells,
+                canvas_width=actual_width,
+                canvas_height=actual_height
+            )
+            logger.info(f"Using actual image dimensions: {actual_width}x{actual_height}")
 
         # Strategy: Render each panel as a segment, then concatenate
         # This is more reliable than a single complex filter graph
@@ -557,6 +584,55 @@ class ComicRenderService:
             f"eq=brightness='if(lt(t,{duration_sec}),"
             f"{max_brightness}*sin(PI*t/{duration_sec}),0)'"
         )
+
+    # =========================================================================
+    # Image Dimension Detection
+    # =========================================================================
+
+    async def _get_image_dimensions(
+        self,
+        image_path: Path
+    ) -> Tuple[Optional[int], Optional[int]]:
+        """
+        Get image dimensions using ffprobe.
+
+        Args:
+            image_path: Path to image file
+
+        Returns:
+            Tuple of (width, height) or (None, None) if detection fails
+        """
+        if not self._ffprobe_path:
+            logger.warning("ffprobe not available, cannot detect image dimensions")
+            return None, None
+
+        cmd = [
+            self._ffprobe_path,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0:s=x",
+            str(image_path)
+        ]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                output = stdout.decode().strip()
+                if "x" in output:
+                    width, height = output.split("x")
+                    return int(width), int(height)
+
+        except Exception as e:
+            logger.warning(f"Failed to detect image dimensions: {e}")
+
+        return None, None
 
     # =========================================================================
     # FFmpeg Execution
