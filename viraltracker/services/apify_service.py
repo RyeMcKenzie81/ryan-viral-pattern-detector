@@ -63,6 +63,9 @@ class ApifyService:
         self.apify_token = apify_token or Config.APIFY_TOKEN
         if not self.apify_token:
             logger.warning("APIFY_TOKEN not set - Apify operations will fail")
+        else:
+            # Log token presence (not the actual token)
+            logger.info(f"ApifyService initialized with token: {self.apify_token[:8]}...")
 
         self.base_url = "https://api.apify.com/v2"
 
@@ -95,7 +98,7 @@ class ApifyService:
             requests.HTTPError: If API call fails
         """
         if not self.apify_token:
-            raise ValueError("APIFY_TOKEN not configured")
+            raise ValueError("APIFY_TOKEN not configured - check environment variables")
 
         url = f"{self.base_url}/acts/{actor_id}/runs"
         params = {
@@ -106,13 +109,17 @@ class ApifyService:
         logger.info(f"Starting Apify actor: {actor_id}")
         logger.debug(f"Input: {run_input}")
 
-        response = requests.post(
-            url,
-            headers=self._get_headers(),
-            params=params,
-            json=run_input
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                params=params,
+                json=run_input
+            )
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            logger.error(f"Apify API error: {e.response.status_code} - {e.response.text}")
+            raise
 
         run_data = response.json()["data"]
         run_id = run_data["id"]

@@ -293,6 +293,7 @@ class AmazonReviewService:
         )
 
         # Run Apify actor with batch input
+        logger.info(f"Running Apify with {len(configs)} configs for ASIN {asin}")
         try:
             result = self.apify.run_actor_batch(
                 actor_id=AXESSO_ACTOR_ID,
