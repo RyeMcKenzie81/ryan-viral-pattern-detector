@@ -880,6 +880,8 @@ class ComicRenderService:
         """
         Upload rendered video to Supabase Storage.
 
+        Overwrites existing file if it exists.
+
         Returns:
             Storage URL
         """
@@ -887,13 +889,31 @@ class ComicRenderService:
 
         video_data = local_path.read_bytes()
 
-        await asyncio.to_thread(
-            lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
-                storage_path,
-                video_data,
-                {"content-type": "video/mp4"}
+        # Try to upload, if file exists delete and re-upload
+        try:
+            await asyncio.to_thread(
+                lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                    storage_path,
+                    video_data,
+                    {"content-type": "video/mp4"}
+                )
             )
-        )
+        except Exception as e:
+            if "Duplicate" in str(e) or "already exists" in str(e).lower():
+                # Delete existing and re-upload
+                logger.info(f"File exists, replacing: {storage_path}")
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).remove([storage_path])
+                )
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                        storage_path,
+                        video_data,
+                        {"content-type": "video/mp4"}
+                    )
+                )
+            else:
+                raise
 
         logger.info(f"Uploaded video: {storage_path}")
         return f"{self.STORAGE_BUCKET}/{storage_path}"
