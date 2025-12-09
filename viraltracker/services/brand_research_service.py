@@ -2252,7 +2252,7 @@ class BrandResearchService:
                     if text and text not in seen_texts:
                         seen_texts.add(text)
                         unique.append(quote)
-                aggregated["amazon_quotes"][key] = unique[:5]  # Keep top 5 per category
+                aggregated["amazon_quotes"][key] = unique[:10]  # Keep top 10 per category
 
             aggregated["purchase_triggers"] = list(set(aggregated["purchase_triggers"]))
 
@@ -2907,20 +2907,26 @@ INSTRUCTIONS:
 CRITICAL - AMAZON CUSTOMER QUOTES:
 If "amazon_quotes" is present in the data, these are REAL customer voices from Amazon reviews. You MUST:
 
-1. Fill the "amazon_testimonials" field with verbatim quotes organized by category:
+1. Fill the "amazon_testimonials" field with verbatim quotes for ALL 6 categories:
    - transformation: Quotes about results/outcomes they experienced
-   - pain_points: Quotes about problems/frustrations before the product
-   - objections_overcome: Quotes about initial skepticism that was resolved
+   - pain_points: Quotes about problems/frustrations
+   - desired_features: Quotes about what they wanted/expected
+   - past_failures: Quotes about other products that failed them
+   - buying_objections: Quotes about skepticism/hesitation before buying
+   - familiar_promises: Quotes mentioning other brands or their marketing claims
 
-2. Use the exact quote text and author attribution from amazon_quotes:
+2. Map the input amazon_quotes directly to amazon_testimonials:
    - amazon_quotes.transformation → amazon_testimonials.transformation
    - amazon_quotes.pain_points → amazon_testimonials.pain_points
-   - amazon_quotes.buying_objections → amazon_testimonials.objections_overcome
+   - amazon_quotes.desired_features → amazon_testimonials.desired_features
+   - amazon_quotes.past_failures → amazon_testimonials.past_failures
+   - amazon_quotes.buying_objections → amazon_testimonials.buying_objections
+   - amazon_quotes.familiar_promises → amazon_testimonials.familiar_promises
 
 Each input quote has: {{"text": "quote", "author": "Name L.", "rating": 5}}
 Output as: {{"quote": "exact text", "author": "Name L.", "rating": 5}}
 
-Include 3-5 quotes per category. These are gold for ad copy - preserve them exactly!
+Include UP TO 10 quotes per category. These are gold for ad copy - preserve them exactly!
 
 Return JSON with this structure:
 {{
@@ -3003,13 +3009,22 @@ Return JSON with this structure:
 
       "amazon_testimonials": {{
         "transformation": [
-          {{"quote": "Exact customer quote about results", "author": "Sarah M.", "rating": 5}}
+          {{"quote": "Exact customer quote about results/outcomes", "author": "Sarah M.", "rating": 5}}
         ],
         "pain_points": [
-          {{"quote": "Exact customer quote about their problem", "author": "Mike R.", "rating": 3}}
+          {{"quote": "Exact customer quote about their problem/frustration", "author": "Mike R.", "rating": 3}}
         ],
-        "objections_overcome": [
-          {{"quote": "Quote about initial skepticism and resolution", "author": "Lisa K.", "rating": 5}}
+        "desired_features": [
+          {{"quote": "Exact quote about what they wanted", "author": "Amy T.", "rating": 4}}
+        ],
+        "past_failures": [
+          {{"quote": "Exact quote about other products that failed them", "author": "Chris B.", "rating": 5}}
+        ],
+        "buying_objections": [
+          {{"quote": "Exact quote about skepticism/hesitation before buying", "author": "Karen W.", "rating": 4}}
+        ],
+        "familiar_promises": [
+          {{"quote": "Exact quote mentioning other brands or their promises", "author": "David H.", "rating": 5}}
         ]
       }},
 

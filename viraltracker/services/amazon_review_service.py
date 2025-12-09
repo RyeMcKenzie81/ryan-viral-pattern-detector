@@ -806,9 +806,9 @@ Body text
 REVIEWS:
 {reviews_text}
 
-Extract the following categories. For each category, provide:
-1. "insights" - summarized patterns you observed
-2. "quotes" - 3-5 VERBATIM quotes with the most emotional language, attributed as "Quote text" - First Name L.
+Extract the following 6 categories. For each category, provide:
+1. "insights" - 3-5 summarized patterns you observed
+2. "quotes" - UP TO 10 VERBATIM quotes with the most EMOTIONAL language
 
 Return as JSON:
 
@@ -816,45 +816,45 @@ Return as JSON:
     "transformation": {{
         "insights": ["Summarized outcomes/results customers experienced"],
         "quotes": [
-            {{"text": "Exact quote about transformation/results", "author": "Sarah M.", "rating": 5}},
-            {{"text": "Another transformation quote", "author": "John D.", "rating": 5}}
+            {{"text": "Exact quote about results/transformation", "author": "Sarah M.", "rating": 5}},
+            {{"text": "Another outcome quote", "author": "John D.", "rating": 5}}
         ]
     }},
     "pain_points": {{
-        "insights": ["Summarized problems customers had before"],
+        "insights": ["Summarized problems/frustrations customers had"],
         "quotes": [
             {{"text": "Exact quote about their pain/frustration", "author": "Mike R.", "rating": 3}},
             {{"text": "Another pain point quote", "author": "Lisa K.", "rating": 2}}
         ]
     }},
     "desired_features": {{
-        "insights": ["What customers wanted the product to do"],
+        "insights": ["What customers wanted/expected the product to do"],
         "quotes": [
-            {{"text": "Exact quote about desired features", "author": "Amy T.", "rating": 4}}
+            {{"text": "Exact quote about what they wanted", "author": "Amy T.", "rating": 4}}
         ]
     }},
     "past_failures": {{
-        "insights": ["Other products/solutions that didn't work"],
+        "insights": ["Other products/solutions that failed them"],
         "quotes": [
-            {{"text": "Exact quote about what they tried before", "author": "Chris B.", "rating": 5}}
+            {{"text": "Exact quote about what they tried before that didn't work", "author": "Chris B.", "rating": 5}}
         ]
     }},
     "buying_objections": {{
-        "insights": ["Concerns or hesitations before buying"],
+        "insights": ["Concerns, hesitations, or skepticism before buying"],
         "quotes": [
-            {{"text": "Exact quote about their objection/skepticism", "author": "Karen W.", "rating": 4}}
+            {{"text": "Exact quote about their initial objection/doubt", "author": "Karen W.", "rating": 4}}
         ]
     }},
     "familiar_promises": {{
-        "insights": ["Claims they've heard from other brands"],
+        "insights": ["Claims/promises they've heard from other brands"],
         "quotes": [
-            {{"text": "Exact quote referencing other brand promises", "author": "David H.", "rating": 5}}
+            {{"text": "Exact quote mentioning other brands or their promises", "author": "David H.", "rating": 5}}
         ]
     }},
     "language_patterns": {{
-        "positive_phrases": ["Exact phrases customers use when happy"],
-        "negative_phrases": ["Exact phrases customers use when upset"],
-        "power_words": ["Emotionally charged words they use repeatedly"]
+        "positive_phrases": ["Exact emotional phrases when happy"],
+        "negative_phrases": ["Exact emotional phrases when upset"],
+        "power_words": ["Emotionally charged words used repeatedly"]
     }},
     "sentiment_summary": {{
         "overall": "positive/mixed/negative",
@@ -864,11 +864,11 @@ Return as JSON:
 }}
 
 CRITICAL INSTRUCTIONS:
-1. Use EXACT verbatim quotes - do not paraphrase or clean up grammar
-2. Prioritize quotes with EMOTIONAL language (frustration, relief, joy, disappointment)
-3. Extract author's first name and last initial from the review (e.g., "Sarah M.")
-4. If author name is unavailable, use "Verified Buyer" or "Anonymous"
-5. Include 3-5 quotes per category, selecting the most emotionally compelling ones
-6. These quotes will be used directly in advertising copy
+1. Extract UP TO 10 quotes per category - prioritize the most EMOTIONALLY compelling ones
+2. Use EXACT verbatim quotes - do not paraphrase, clean up grammar, or summarize
+3. Look for quotes with strong emotional language: frustration, relief, joy, disappointment, anger, gratitude, surprise
+4. Extract author's first name and last initial (e.g., "Sarah M.") - use "Verified Buyer" if unavailable
+5. These quotes will be used directly in advertising copy - authenticity is critical
+6. For "familiar_promises" - look for mentions of competitors, other brands, or marketing claims they've seen
 
 Return ONLY valid JSON, no other text."""

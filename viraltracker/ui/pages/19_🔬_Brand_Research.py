@@ -996,11 +996,12 @@ def render_persona_review():
                     if not testimonials:
                         st.info("No Amazon testimonials available. Re-analyze Amazon reviews and re-synthesize personas to populate this section.")
                     else:
-                        # Transformation quotes
-                        st.markdown("**🌟 Transformation (Results/Outcomes):**")
-                        transform_quotes = testimonials.get('transformation', [])
-                        if transform_quotes:
-                            for q in transform_quotes:
+                        # Helper function to render quotes
+                        def render_quotes(quotes_list):
+                            if not quotes_list:
+                                st.caption("No quotes in this category")
+                                return
+                            for q in quotes_list:
                                 if isinstance(q, dict):
                                     quote_text = q.get('quote', q.get('text', ''))
                                     author = q.get('author', 'Verified Buyer')
@@ -1009,44 +1010,39 @@ def render_persona_review():
                                     st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
                                 else:
                                     st.markdown(f"> \"{q}\"")
-                        else:
-                            st.caption("No transformation quotes")
 
-                        st.markdown("---")
+                        # Use columns for better layout
+                        col_left, col_right = st.columns(2)
 
-                        # Pain point quotes
-                        st.markdown("**😣 Pain Points (Problems/Frustrations):**")
-                        pain_quotes = testimonials.get('pain_points', [])
-                        if pain_quotes:
-                            for q in pain_quotes:
-                                if isinstance(q, dict):
-                                    quote_text = q.get('quote', q.get('text', ''))
-                                    author = q.get('author', 'Verified Buyer')
-                                    rating = q.get('rating', '')
-                                    rating_stars = '⭐' * int(rating) if rating else ''
-                                    st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
-                                else:
-                                    st.markdown(f"> \"{q}\"")
-                        else:
-                            st.caption("No pain point quotes")
+                        with col_left:
+                            # Transformation quotes
+                            st.markdown("**🌟 Transformation (Results/Outcomes)**")
+                            render_quotes(testimonials.get('transformation', []))
+                            st.markdown("---")
 
-                        st.markdown("---")
+                            # Pain point quotes
+                            st.markdown("**😣 Pain Points (Problems/Frustrations)**")
+                            render_quotes(testimonials.get('pain_points', []))
+                            st.markdown("---")
 
-                        # Objections overcome quotes
-                        st.markdown("**🤔 Objections Overcome (Skepticism Resolved):**")
-                        objection_quotes = testimonials.get('objections_overcome', [])
-                        if objection_quotes:
-                            for q in objection_quotes:
-                                if isinstance(q, dict):
-                                    quote_text = q.get('quote', q.get('text', ''))
-                                    author = q.get('author', 'Verified Buyer')
-                                    rating = q.get('rating', '')
-                                    rating_stars = '⭐' * int(rating) if rating else ''
-                                    st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
-                                else:
-                                    st.markdown(f"> \"{q}\"")
-                        else:
-                            st.caption("No objection quotes")
+                            # Desired features quotes
+                            st.markdown("**✨ Desired Features (What They Wanted)**")
+                            render_quotes(testimonials.get('desired_features', []))
+
+                        with col_right:
+                            # Past failures quotes
+                            st.markdown("**❌ Past Failures (Other Products That Failed)**")
+                            render_quotes(testimonials.get('past_failures', []))
+                            st.markdown("---")
+
+                            # Buying objections quotes
+                            st.markdown("**🤔 Buying Objections (Skepticism/Hesitation)**")
+                            render_quotes(testimonials.get('buying_objections', []))
+                            st.markdown("---")
+
+                            # Familiar promises quotes
+                            st.markdown("**📢 Familiar Promises (Other Brand Claims)**")
+                            render_quotes(testimonials.get('familiar_promises', []))
 
             with col2:
                 st.markdown("**Actions**")
