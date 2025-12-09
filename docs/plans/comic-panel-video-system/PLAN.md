@@ -445,12 +445,43 @@ Users need ability to:
 2. **Toggle individual effects** on/off (vignette, color tint, shake, pulse)
 3. **Adjust effect intensity** (0-100% slider)
 4. **Preview changes** before committing
+5. **Bulk actions** for efficiency:
+   - Render All Panels - generate video previews for all panels at once
+   - Approve All Panels - mark all panels as approved in one click
 
 ### 5.5.3 UI Design
 
+#### Global Actions Bar (Top of Page)
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Panel 3: "The Fed Showed Up"                                   │
+│  Comic Video: "Inflation Explained by Raccoons"                 │
+│  15 panels | 4-4-4-3 grid | Audio: ✓ Generated                  │
+├─────────────────────────────────────────────────────────────────┤
+│  [🎬 Render All Panels]  [✓ Approve All]  [🎥 Render Final]    │
+│                                                                 │
+│  Progress: ████████░░░░░░░░ 8/15 rendered | 5/15 approved      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Render All Panels:**
+- Queues all panels for video preview rendering
+- Shows progress bar with panel count
+- Renders sequentially (FFmpeg resource limits)
+- Can be cancelled mid-way
+- Skips panels that already have renders (unless "Force Re-render" checked)
+
+**Approve All Panels:**
+- Marks all panels as approved in one click
+- Only enabled when all panels have been rendered
+- Confirmation dialog: "Approve all 15 panels?"
+- Enables "Render Final Video" button
+
+#### Per-Panel Controls
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Panel 3: "The Fed Showed Up"                          [✓ ☐]   │
 │  ┌──────────────────────┐  ┌─────────────────────────────────┐ │
 │  │                      │  │ 🎥 Camera Settings              │ │
 │  │   Video Preview      │  │ Start Zoom: [1.0] ─────○─── 2.0 │ │
@@ -469,6 +500,8 @@ Users need ability to:
 │                            └─────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+Note: `[✓ ☐]` checkbox in top-right for individual panel approval
 
 ### 5.5.4 Data Model Changes
 
@@ -560,7 +593,11 @@ def apply_overrides(
 3. [ ] Add `apply_overrides()` to ComicDirectorService
 4. [ ] Add override UI controls to Streamlit page
 5. [ ] Add "Reset to Auto" functionality
-6. [ ] Test with problematic panels (vignette over text)
+6. [ ] **Add bulk action buttons:**
+   - [ ] "Render All Panels" with progress tracking
+   - [ ] "Approve All" with confirmation dialog
+   - [ ] Progress bar showing rendered/approved counts
+7. [ ] Test with problematic panels (vignette over text)
 
 ---
 
