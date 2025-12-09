@@ -6,6 +6,7 @@ This page allows users to:
 - Run bulk URL matching on scraped ads
 - Review and assign unmatched URLs to products
 - View matching statistics
+- Add Amazon product URLs for review scraping
 """
 
 import streamlit as st
@@ -28,6 +29,8 @@ if 'selected_brand_id' not in st.session_state:
     st.session_state.selected_brand_id = None
 if 'matching_in_progress' not in st.session_state:
     st.session_state.matching_in_progress = False
+if 'amazon_scraping' not in st.session_state:
+    st.session_state.amazon_scraping = False
 
 
 def get_supabase_client():
@@ -40,6 +43,12 @@ def get_product_url_service():
     """Get ProductURLService instance."""
     from viraltracker.services.product_url_service import ProductURLService
     return ProductURLService()
+
+
+def get_amazon_review_service():
+    """Get AmazonReviewService instance."""
+    from viraltracker.services.amazon_review_service import AmazonReviewService
+    return AmazonReviewService()
 
 
 def get_brands():
@@ -330,6 +339,150 @@ else:
             st.markdown("---")
 
 # ============================================================
+# Amazon Reviews Section
+# ============================================================
+
+st.markdown("---")
+st.subheader("🛒 Amazon Product Reviews")
+st.caption("Add Amazon product URLs to scrape customer reviews for persona research")
+
+amazon_service = get_amazon_review_service()
+
+# Get existing Amazon URLs for this brand
+amazon_urls = amazon_service.get_amazon_urls_for_brand(brand_id)
+
+# Display existing Amazon URLs with stats
+if amazon_urls:
+    for amz_url in amazon_urls:
+        product_name = amz_url.get('products', {}).get('name', 'Unknown Product') if amz_url.get('products') else 'Unknown Product'
+        with st.container():
+            col1, col2, col3 = st.columns([3, 1, 1])
+
+            with col1:
+                st.markdown(f"**{product_name}**")
+                st.caption(f"ASIN: {amz_url['asin']} | Domain: .{amz_url['domain_code']}")
+
+            with col2:
+                reviews_count = amz_url.get('total_reviews_scraped', 0)
+                last_scraped = amz_url.get('last_scraped_at')
+                if reviews_count > 0:
+                    st.metric("Reviews", reviews_count)
+                else:
+                    st.caption("Not scraped yet")
+
+            with col3:
+                # Get analysis status
+                stats = amazon_service.get_review_stats(amz_url['product_id'])
+
+                if stats.get('has_analysis'):
+                    st.success("✅ Analyzed")
+                elif reviews_count > 0:
+                    if st.button("📊 Analyze", key=f"analyze_amz_{amz_url['id']}", help="Analyze reviews with AI"):
+                        with st.spinner("Analyzing reviews..."):
+                            import asyncio
+                            try:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                result = loop.run_until_complete(
+                                    amazon_service.analyze_reviews_for_product(
+                                        product_id=amz_url['product_id'],
+                                        limit=500
+                                    )
+                                )
+                                loop.close()
+                                if result:
+                                    st.success("Analysis complete!")
+                                    st.rerun()
+                                else:
+                                    st.error("Analysis failed")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                else:
+                    if st.button("🔄 Scrape", key=f"scrape_amz_{amz_url['id']}",
+                                disabled=st.session_state.amazon_scraping,
+                                help="Scrape reviews from Amazon (~$2)"):
+                        st.session_state.amazon_scraping = True
+                        with st.spinner("Scraping Amazon reviews... this may take a few minutes"):
+                            try:
+                                result = amazon_service.scrape_reviews_for_product(
+                                    product_id=amz_url['product_id'],
+                                    amazon_url=amz_url['amazon_url'],
+                                    timeout=900
+                                )
+                                st.success(f"Scraped {result.unique_reviews_count} reviews (cost: ~${result.cost_estimate:.2f})")
+                                st.session_state.amazon_scraping = False
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Scrape failed: {e}")
+                                st.session_state.amazon_scraping = False
+        st.markdown("---")
+else:
+    st.info("No Amazon product URLs added yet. Add one below to start scraping reviews.")
+
+# Add new Amazon URL
+with st.expander("➕ Add Amazon Product URL"):
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        amazon_url_input = st.text_input(
+            "Amazon Product URL",
+            placeholder="https://www.amazon.com/dp/B0DJWSV1J3",
+            help="Paste any Amazon product URL - ASIN will be extracted automatically"
+        )
+
+    with col2:
+        # Product selector
+        product_options_amz = {p['name']: p['id'] for p in products}
+        selected_product_amz = st.selectbox(
+            "Link to Product",
+            options=list(product_options_amz.keys()),
+            key="amazon_product_select"
+        )
+
+    # Preview ASIN extraction
+    if amazon_url_input:
+        asin, domain = amazon_service.parse_amazon_url(amazon_url_input)
+        if asin:
+            st.success(f"✓ Detected ASIN: **{asin}** (amazon.{domain})")
+        else:
+            st.warning("Could not extract ASIN from URL. Please check the URL format.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Add Amazon URL", type="primary"):
+            if amazon_url_input and selected_product_amz:
+                asin, domain = amazon_service.parse_amazon_url(amazon_url_input)
+                if asin:
+                    try:
+                        db = get_supabase_client()
+                        # Check if already exists
+                        existing = db.table("amazon_product_urls").select("id")\
+                            .eq("product_id", product_options_amz[selected_product_amz])\
+                            .eq("asin", asin).execute()
+
+                        if existing.data:
+                            st.warning("This Amazon URL is already added for this product.")
+                        else:
+                            db.table("amazon_product_urls").insert({
+                                "product_id": product_options_amz[selected_product_amz],
+                                "brand_id": brand_id,
+                                "amazon_url": amazon_url_input,
+                                "asin": asin,
+                                "domain_code": domain
+                            }).execute()
+                            st.success(f"Added Amazon URL for {selected_product_amz}!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding URL: {e}")
+                else:
+                    st.error("Invalid Amazon URL. Please check the format.")
+            else:
+                st.warning("Please enter an Amazon URL and select a product.")
+
+    with col2:
+        st.caption("💰 Estimated cost: ~$2 per product")
+
+# ============================================================
 # Help Section
 # ============================================================
 
@@ -369,4 +522,19 @@ with st.expander("ℹ️ How URL Mapping Works"):
     - `prefix`: URL starts with the pattern
     - `exact`: URL matches exactly
     - `regex`: Regular expression matching
+
+    ### Amazon Review Scraping
+
+    Add Amazon product URLs to scrape customer reviews for authentic persona language.
+
+    **Process:**
+    1. Add Amazon URL → ASIN is automatically extracted
+    2. Click "Scrape" → Reviews are collected via Apify (~$2/product)
+    3. Click "Analyze" → AI extracts pain points, desires, and verbatim quotes
+
+    **Why It Matters:**
+    - Reviews contain **authentic customer language** - not marketing speak
+    - Real pain points and desires from actual buyers
+    - Verbatim quotes you can use directly in ad copy
+    - Helps build more accurate 4D personas
     """)

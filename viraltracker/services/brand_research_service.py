@@ -1853,8 +1853,8 @@ class BrandResearchService:
             logger.warning(f"No analyses found for brand: {brand_id}")
             return []
 
-        # Aggregate data from all analyses
-        aggregated = self._aggregate_analyses(analyses)
+        # Aggregate data from all analyses (including Amazon review data)
+        aggregated = self._aggregate_analyses(analyses, brand_id=brand_id)
 
         if not aggregated.get("has_data"):
             logger.warning("Insufficient data for persona synthesis")
@@ -1901,13 +1901,13 @@ class BrandResearchService:
             logger.error(f"Persona synthesis failed: {e}")
             raise
 
-    def _aggregate_analyses(self, analyses: List[Dict]) -> Dict[str, Any]:
+    def _aggregate_analyses(self, analyses: List[Dict], brand_id: UUID = None) -> Dict[str, Any]:
         """
         Aggregate data from multiple analyses for synthesis.
 
         Collects and deduplicates:
         - Persona signals (demographics, lifestyle)
-        - Pain points (emotional, functional)
+        - Pain points (emotional, functional, social)
         - Desires by category
         - Benefits and outcomes
         - Hooks and messaging patterns
@@ -1915,16 +1915,18 @@ class BrandResearchService:
         - Transformation signals (before/after)
         - Objections and failed solutions
         - Activation events
+        - Amazon review insights (customer language, quotes)
 
         Args:
             analyses: List of analysis records from brand_ad_analysis
+            brand_id: Optional brand UUID to fetch Amazon review data
 
         Returns:
             Aggregated data dictionary
         """
         aggregated = {
             "persona_signals": [],
-            "pain_points": {"emotional": [], "functional": []},
+            "pain_points": {"emotional": [], "functional": [], "social": []},
             "desires": {
                 "care_protection": [],
                 "freedom_from_fear": [],
@@ -1942,10 +1944,22 @@ class BrandResearchService:
             "activation_events": [],
             "testimonials": [],
             "worldview": {"values": [], "villains": [], "heroes": []},
+            "customer_language": {
+                "positive_phrases": [],
+                "negative_phrases": [],
+                "descriptive_words": []
+            },
+            "customer_quotes": {
+                "positive": [],
+                "negative": [],
+                "transformation": []
+            },
+            "purchase_triggers": [],
             "analysis_counts": {
                 "video": 0,
                 "image": 0,
-                "copy": 0
+                "copy": 0,
+                "amazon_reviews": 0
             },
             "has_data": False
         }
@@ -2062,6 +2076,128 @@ class BrandResearchService:
 
         for key in aggregated["worldview"]:
             aggregated["worldview"][key] = list(set(aggregated["worldview"][key]))
+
+        # Fetch and integrate Amazon review analysis if brand_id provided
+        if brand_id:
+            aggregated = self._integrate_amazon_review_data(aggregated, brand_id)
+
+        return aggregated
+
+    def _integrate_amazon_review_data(self, aggregated: Dict, brand_id: UUID) -> Dict:
+        """
+        Fetch and integrate Amazon review analysis into aggregated data.
+
+        This adds authentic customer language, quotes, and pain points
+        from Amazon reviews to enrich persona synthesis.
+
+        Args:
+            aggregated: Existing aggregated data dictionary
+            brand_id: Brand UUID to fetch review data for
+
+        Returns:
+            Updated aggregated dictionary with Amazon review insights
+        """
+        try:
+            # Fetch all review analyses for products under this brand
+            result = self.supabase.table("amazon_review_analysis") \
+                .select("*") \
+                .eq("brand_id", str(brand_id)) \
+                .execute()
+
+            if not result.data:
+                logger.debug(f"No Amazon review analyses found for brand: {brand_id}")
+                return aggregated
+
+            logger.info(f"Found {len(result.data)} Amazon review analyses for brand: {brand_id}")
+
+            for analysis in result.data:
+                # Update analysis count
+                reviews_analyzed = analysis.get("total_reviews_analyzed", 0)
+                aggregated["analysis_counts"]["amazon_reviews"] += reviews_analyzed
+
+                # Integrate pain points (emotional, functional, social)
+                pain_points = analysis.get("pain_points", {})
+                if isinstance(pain_points, dict):
+                    for category in ["emotional", "functional", "social"]:
+                        items = pain_points.get(category, [])
+                        if items:
+                            aggregated["pain_points"][category].extend(items)
+
+                # Integrate desires
+                desires = analysis.get("desires", {})
+                if isinstance(desires, dict):
+                    for category in ["emotional", "functional", "social"]:
+                        items = desires.get(category, [])
+                        if items:
+                            # Map to closest desire categories
+                            if category == "emotional":
+                                aggregated["desires"]["freedom_from_fear"].extend(items)
+                            elif category == "functional":
+                                aggregated["desires"]["comfort_convenience"].extend(items)
+                            elif category == "social":
+                                aggregated["desires"]["social_approval"].extend(items)
+
+                # Integrate language patterns
+                language = analysis.get("language_patterns", {})
+                if isinstance(language, dict):
+                    for key in ["positive_phrases", "negative_phrases", "descriptive_words"]:
+                        items = language.get(key, [])
+                        if items:
+                            aggregated["customer_language"][key].extend(items)
+
+                # Integrate customer quotes (gold for ad copy)
+                positive_quotes = analysis.get("top_positive_quotes", [])
+                if positive_quotes:
+                    aggregated["customer_quotes"]["positive"].extend(positive_quotes)
+
+                negative_quotes = analysis.get("top_negative_quotes", [])
+                if negative_quotes:
+                    aggregated["customer_quotes"]["negative"].extend(negative_quotes)
+
+                transformation_quotes = analysis.get("transformation_quotes", [])
+                if transformation_quotes:
+                    aggregated["customer_quotes"]["transformation"].extend(transformation_quotes)
+                    # Also add to transformation before/after
+                    aggregated["transformation"]["before"].extend(transformation_quotes)
+                    aggregated["transformation"]["after"].extend(transformation_quotes)
+
+                # Integrate objections
+                objections = analysis.get("objections", [])
+                if objections:
+                    for obj in objections:
+                        if isinstance(obj, dict):
+                            aggregated["objections"].append(obj.get("objection", ""))
+                        elif isinstance(obj, str):
+                            aggregated["objections"].append(obj)
+
+                # Integrate purchase triggers
+                triggers = analysis.get("purchase_triggers", [])
+                if triggers:
+                    aggregated["purchase_triggers"].extend(triggers)
+
+                aggregated["has_data"] = True
+
+            # Deduplicate the new fields
+            for key in aggregated["customer_language"]:
+                aggregated["customer_language"][key] = list(set(aggregated["customer_language"][key]))
+
+            for key in aggregated["customer_quotes"]:
+                # Keep quotes unique but preserve order (first seen)
+                seen = set()
+                unique = []
+                for quote in aggregated["customer_quotes"][key]:
+                    if quote not in seen:
+                        seen.add(quote)
+                        unique.append(quote)
+                aggregated["customer_quotes"][key] = unique[:10]  # Limit to top 10
+
+            aggregated["purchase_triggers"] = list(set(aggregated["purchase_triggers"]))
+
+            logger.info(f"Integrated Amazon review data: {aggregated['analysis_counts']['amazon_reviews']} reviews")
+
+        except Exception as e:
+            logger.warning(f"Failed to integrate Amazon review data: {e}")
+            # Continue without Amazon data - don't fail synthesis
 
         return aggregated
 

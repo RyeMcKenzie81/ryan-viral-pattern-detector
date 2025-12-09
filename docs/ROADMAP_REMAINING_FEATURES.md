@@ -1,8 +1,8 @@
 # ViralTracker - Remaining Features Roadmap
 
-**Date**: 2025-12-05
+**Date**: 2025-12-08
 **Branch**: `feature/brand-research-pipeline`
-**Status**: Brand Research Pipeline Sprint 2 Complete
+**Status**: Sprint 3 Complete, Sprint 3.5 In Progress
 
 ---
 
@@ -16,18 +16,99 @@
 
 ### Sprint 2: Brand Research Pipeline (Complete)
 - Video analysis with Gemini (transcripts, hooks, persona signals)
-- Image analysis with Claude Vision
+- Image analysis with Gemini Vision
 - Ad copy analysis for messaging patterns
 - Asset download from ad snapshots
 - Persona synthesis with multi-segment detection
 - UI page: `19_🔬_Brand_Research.py`
 - 4D Persona builder: `17_👤_Personas.py`
 
+### Sprint 3: Landing Page Scraping (Complete)
+- WebScrapingService using FireCrawl API
+- Landing page scraping from product URLs
+- Landing page analysis for persona signals
+- Product filtering across all operations
+- Full 4D persona fields (10 social relations, purchase behavior)
+
 ---
 
 ## Remaining Features
 
-### Sprint 3: Landing Page Scraping (High Priority)
+### Sprint 3.5: Amazon Review Scraping (High Priority) ← CURRENT
+
+**Purpose**: Enrich 4D personas with authentic customer language from Amazon reviews.
+
+**Why This Matters**:
+- Ads show what marketers *think* resonates
+- Reviews show what customers *actually* feel and say
+- Real emotional language for hooks and copy
+- Unbiased pain points and desires
+- Authentic objections and purchase triggers
+
+**Tasks**:
+1. Create `AmazonReviewService`
+   - Scrape reviews from Amazon product pages
+   - Extract: rating, title, body, verified purchase, helpful votes
+   - Handle pagination and rate limiting
+   - Store in `amazon_reviews` table
+
+2. Review Analysis with Claude
+   - Extract pain points, desires, language patterns
+   - Categorize by sentiment and topic
+   - Identify common objections and triggers
+   - Pull exact quotes for ad copy
+
+3. UI Integration
+   - Add Amazon URL input to Brand Research or URL Mapping
+   - "Scrape Reviews" button
+   - Display review insights
+   - Include in persona synthesis
+
+4. Integrate into Persona Synthesis
+   - Feed review analysis into persona generation
+   - Weight authentic customer language highly
+   - Extract verbatim quotes for copy briefs
+
+**Database Changes**:
+```sql
+CREATE TABLE amazon_reviews (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id UUID REFERENCES brands(id),
+    product_id UUID REFERENCES products(id),
+    amazon_url TEXT NOT NULL,
+    amazon_asin TEXT,
+
+    -- Review data
+    rating INTEGER,
+    title TEXT,
+    body TEXT,
+    author TEXT,
+    review_date DATE,
+    verified_purchase BOOLEAN,
+    helpful_votes INTEGER,
+
+    -- AI analysis
+    sentiment TEXT,
+    pain_points TEXT[],
+    desires TEXT[],
+    key_phrases TEXT[],
+    analysis_raw JSONB,
+
+    scraped_at TIMESTAMPTZ,
+    analyzed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Challenges**: (to be discussed)
+- Amazon anti-scraping measures
+- Rate limiting
+- Review authenticity filtering
+- ASIN extraction from URLs
+
+---
+
+### Sprint 4: Competitive Analysis Pipeline (Medium Priority)
 
 **Purpose**: Enrich brand research with landing page data from ads.
 
@@ -165,9 +246,11 @@ CREATE TABLE brand_landing_pages (
 ### Services
 | File | Status | Purpose |
 |------|--------|---------|
-| `brand_research_service.py` | ✅ Done | Video/image/copy analysis, synthesis |
+| `brand_research_service.py` | ✅ Done | Video/image/copy/LP analysis, synthesis |
 | `persona_service.py` | ✅ Done | 4D persona CRUD |
 | `product_url_service.py` | ✅ Done | URL-product mapping |
+| `web_scraping_service.py` | ✅ Done | Generic FireCrawl scraping |
+| `amazon_review_service.py` | 🔄 Sprint 3.5 | Amazon review scraping |
 | `competitive_analysis_service.py` | ❌ Not started | Competitor analysis |
 
 ### UI Pages
@@ -189,11 +272,11 @@ CREATE TABLE brand_landing_pages (
 
 | Service | Used For | Status |
 |---------|----------|--------|
-| Gemini API | Video analysis | ✅ Working |
-| Claude Vision | Image analysis | ✅ Working |
+| Gemini API | Video & image analysis | ✅ Working |
 | Anthropic Claude | Copy analysis, synthesis | ✅ Working |
-| FireCrawl | Landing page scraping | ❌ Not integrated |
+| FireCrawl | Landing page scraping | ✅ Working |
 | Supabase Storage | Asset storage | ✅ Working |
+| Amazon Scraper | Review scraping | 🔄 Sprint 3.5 |
 
 ---
 
