@@ -2,7 +2,7 @@
 
 **Branch**: `feature/comic-panel-video-system`
 **Created**: 2025-12-08
-**Status**: Phase 1 - Intake
+**Status**: Phase 5 Complete - Planning Phase 5.5 (Manual Adjustments) & Phase 6 (Particles/SFX)
 
 ---
 
@@ -345,27 +345,605 @@ viraltracker/
 
 ---
 
-## Phase 5: INTEGRATION & TEST
+## Phase 5: INTEGRATION & TEST ✅ COMPLETE
 
-### 5.1 Shared Files to Modify
+### 5.1 Real-World Testing
 
-| File | Change |
-|------|--------|
-| `services/__init__.py` | Export comic_video services |
-| `ui/pages/` | Add Comic Video page |
-| `agent/dependencies.py` | Add services (for future chat routing) |
+Tested with actual comic: "Inflation Explained by Raccoons" (15 panels, 4-4-4-3 grid)
 
-### 5.2 Testing Plan
+#### JSON Format Adaptations
 
-1. **Unit tests** for each service method
-2. **Integration test**: Upload sample comic JSON + grid, generate audio, render preview
-3. **UI test**: Full workflow through Streamlit
+The real comic JSON differed from initial spec. Services updated to handle:
+
+| Field | Expected | Actual | Fix |
+|-------|----------|--------|-----|
+| TTS text | `dialogue` | `script_for_audio` | Priority order in `extract_panel_text()` |
+| Layout | `grid: "4x4"` | `grid_structure: [{row:1, panels:[1,2,3,4]}...]` | Added `_parse_grid_structure()` |
+| Mood | Inferred from keywords | Explicit `mood` field | Priority check in `infer_panel_mood()` |
+| Colors | `panel_1_2: {...}` | `panel_1: {...}`, `panels_5_6_7: {...}` | Updated color_coding parser |
+
+#### Ken Burns Zoom Fix
+
+**Problem**: Camera showed entire canvas instead of zooming into individual panels.
+
+**Root Cause**: Zoom calculation was inverted (`base_zoom / camera.zoom` instead of multiplying).
+
+**Fix** (`comic_render_service.py`):
+```python
+# Calculate zoom to fill output with single panel
+panel_width = canvas_w / layout.grid_cols
+panel_zoom = (canvas_w / panel_width) * 0.85  # = grid_cols * 0.85
+
+z_start = panel_zoom * camera.start_zoom  # e.g., 4 * 0.85 * 1.0 = 3.4x
+z_end = panel_zoom * camera.end_zoom      # e.g., 4 * 0.85 * 1.1 = 3.74x
+```
+
+**Result**: 4-column grid now zooms ~3.4x to show individual panel with slight margin.
+
+#### Panel-to-Panel Transitions
+
+**Problem**: No camera panning between panels after audio finishes.
+
+**Solution**: Two-phase animation in zoompan filter:
+1. **Content phase**: Ken Burns within current panel (duration = audio length)
+2. **Transition phase**: Animate camera to next panel center
+
+**Implementation** (`comic_render_service.py`):
+```python
+def _build_zoompan_with_transition(
+    self, camera, next_camera, transition, layout,
+    content_frames, transition_frames, output_size, fps
+) -> str:
+    # Conditional expressions: if(lt(on,content_frames), content_expr, transition_expr)
+    z_expr = f"'if(lt(on,{content_frames})," \
+             f"{curr_z_start}+({curr_z_end-curr_z_start})*on/{content_frames}," \
+             f"{curr_z_end}+({next_z_start-curr_z_end})*(on-{content_frames})/{transition_frames})'"
+    # Similar for x_expr, y_expr...
+```
+
+#### Bug Fixes
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Wrong panel targeting | Estimated image dimensions | Added `_get_image_dimensions()` using ffprobe |
+| Duplicate concat paths | Relative paths in concat list | Use `path.resolve()` for absolute paths |
+| 409 Duplicate upload error | Re-uploading existing file | Catch error, delete existing, re-upload |
+
+### 5.2 Test Results
+
+All 5 integration tests pass (`scripts/test_comic_video_real.py`):
+- ✅ Parse layout from real JSON (grid_structure format)
+- ✅ Extract panel texts (script_for_audio field)
+- ✅ Infer panel moods (explicit mood field)
+- ✅ Generate panel instructions
+- ✅ Calculate panel bounds
+
+### 5.3 Files Modified in Phase 5
+
+| File | Changes |
+|------|---------|
+| `comic_audio_service.py` | Priority: `script_for_audio` → `dialogue` → legacy |
+| `comic_director_service.py` | `_parse_grid_structure()`, explicit mood handling, color_coding parser |
+| `comic_render_service.py` | Image dimension detection, zoom calculation fix, transition rendering, path fixes, duplicate handling |
+| `test_comic_video_real.py` | Created with real comic JSON data |
 
 ---
 
-## Phase 6: MERGE & CLEANUP
+## Phase 5.5: MANUAL PANEL ADJUSTMENTS (Planned)
 
-*(To be filled in during Phase 6)*
+### 5.5.1 Problem Statement
+
+Auto-generated effects aren't always appropriate:
+- Vignette can obscure panel text
+- Wrong mood inference leads to inappropriate effects
+- Ken Burns direction may not suit panel composition
+
+### 5.5.2 Requirements
+
+Users need ability to:
+1. **Override camera settings** per panel (zoom level, start/end position, easing)
+2. **Toggle individual effects** on/off (vignette, color tint, shake, pulse)
+3. **Adjust effect intensity** (0-100% slider)
+4. **Preview changes** before committing
+
+### 5.5.3 UI Design
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Panel 3: "The Fed Showed Up"                                   │
+│  ┌──────────────────────┐  ┌─────────────────────────────────┐ │
+│  │                      │  │ 🎥 Camera Settings              │ │
+│  │   Video Preview      │  │ Start Zoom: [1.0] ─────○─── 2.0 │ │
+│  │                      │  │ End Zoom:   [1.1] ─────○─── 2.0 │ │
+│  │   [▶ Play]           │  │ Easing: [Ease In-Out ▼]         │ │
+│  │                      │  │ Focus: [Center ▼] Auto/Custom   │ │
+│  └──────────────────────┘  ├─────────────────────────────────┤ │
+│                            │ ✨ Effects                       │ │
+│  Current Mood: DRAMATIC    │ ☑ Vignette      [████░░] 70%    │ │
+│  [Override: ▼ Select]      │ ☐ Color Tint    [██░░░░] 30%    │ │
+│                            │ ☐ Shake         [░░░░░░] 0%     │ │
+│                            │ ☐ Pulse         [░░░░░░] 0%     │ │
+│                            │ ☑ Golden Glow   [███░░░] 50%    │ │
+│                            ├─────────────────────────────────┤ │
+│                            │ [🔄 Reset to Auto] [💾 Apply]   │ │
+│                            └─────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 5.5.4 Data Model Changes
+
+```python
+class PanelOverrides(BaseModel):
+    """User overrides for auto-generated panel settings."""
+    panel_number: int
+
+    # Camera overrides (None = use auto)
+    camera_start_zoom: float | None = None
+    camera_end_zoom: float | None = None
+    camera_easing: CameraEasing | None = None
+    camera_focus_x: float | None = None  # 0.0-1.0 custom focus point
+    camera_focus_y: float | None = None
+
+    # Mood override
+    mood_override: PanelMood | None = None
+
+    # Effect toggles (None = use auto, True/False = force on/off)
+    vignette_enabled: bool | None = None
+    vignette_intensity: float | None = None  # 0.0-1.0
+
+    color_tint_enabled: bool | None = None
+    color_tint_color: str | None = None  # hex color
+    color_tint_opacity: float | None = None
+
+    shake_enabled: bool | None = None
+    shake_intensity: float | None = None
+
+    pulse_enabled: bool | None = None
+    pulse_intensity: float | None = None
+
+    golden_glow_enabled: bool | None = None
+    golden_glow_intensity: float | None = None
+```
+
+### 5.5.5 Database Changes
+
+```sql
+-- Add overrides column to comic_panel_instructions
+ALTER TABLE comic_panel_instructions
+ADD COLUMN IF NOT EXISTS user_overrides JSONB DEFAULT NULL;
+
+-- Example stored value:
+-- {
+--   "vignette_enabled": false,
+--   "camera_end_zoom": 1.3,
+--   "mood_override": "positive"
+-- }
+```
+
+### 5.5.6 Service Changes
+
+```python
+# comic_director_service.py
+def apply_overrides(
+    self,
+    instruction: PanelInstruction,
+    overrides: PanelOverrides
+) -> PanelInstruction:
+    """Apply user overrides to auto-generated instruction."""
+    # Clone instruction
+    updated = instruction.model_copy(deep=True)
+
+    # Apply camera overrides
+    if overrides.camera_start_zoom is not None:
+        updated.camera.start_zoom = overrides.camera_start_zoom
+    if overrides.camera_end_zoom is not None:
+        updated.camera.end_zoom = overrides.camera_end_zoom
+    # ... etc
+
+    # Apply effect overrides
+    if overrides.vignette_enabled is False:
+        updated.effects.ambient_effects = [
+            e for e in updated.effects.ambient_effects
+            if e.effect_type != EffectType.VIGNETTE
+        ]
+    elif overrides.vignette_enabled is True:
+        # Add or update vignette
+        ...
+
+    return updated
+```
+
+### 5.5.7 Implementation Order
+
+1. [ ] Add `user_overrides` column to database
+2. [ ] Create `PanelOverrides` model
+3. [ ] Add `apply_overrides()` to ComicDirectorService
+4. [ ] Add override UI controls to Streamlit page
+5. [ ] Add "Reset to Auto" functionality
+6. [ ] Test with problematic panels (vignette over text)
+
+---
+
+## Phase 6: PARTICLES, SFX & MUSIC
+
+### 6.1 Overview
+
+Add particle overlays, sound effects, and background music to enhance comic videos.
+
+**Prerequisites:** Phase 5 complete (Ken Burns camera, FFmpeg effects, transitions)
+
+### 6.2 Rendering Pipeline (Phase 6)
+
+```
+Panel Image (Ken Burns)
+        ↓
++ Color Effects (Phase 1)
+        ↓
++ Particle Overlay (Phase 6)  ← WebM with alpha
+        ↓
++ Audio Mix (VO + SFX + Music)
+        ↓
+Final Frame
+```
+
+### 6.3 Particle Effects System
+
+#### Required Particle Assets
+
+| Effect | Filename | Use Case | Source |
+|--------|----------|----------|--------|
+| Sparkles | `sparkles.webm` | Positive moments, value, magic | Mixkit, Pixabay |
+| Confetti | `confetti.webm` | Celebration, outro, wins | Mixkit, Pexels |
+| Coins Falling | `coins_falling.webm` | Money scenes, wealth | Pixabay, Videezy |
+| Embers | `embers.webm` | Fire scenes, destruction | Mixkit, Pexels |
+| Dust | `dust.webm` | Atmosphere, subtle life | Pexels, Pixabay |
+| Smoke | `smoke.webm` | Fire aftermath, chaos | Mixkit, Videezy |
+| Rain | `rain.webm` | Sad moments, despair | Pexels, Pixabay |
+| Light Rays | `light_rays.webm` | Hope, revelation, divine | Mixkit, Videezy |
+| Glitch | `glitch.webm` | System break, chaos | Mixkit, Videezy |
+| Bokeh | `bokeh.webm` | Dreamy, positive, soft | Pexels, Pixabay |
+
+#### Asset Requirements
+
+| Property | Requirement |
+|----------|-------------|
+| Format | WebM (preferred) or MOV with ProRes 4444 |
+| Alpha | **Must have transparency** (or use screen blend) |
+| Resolution | 1080x1920 or higher (vertical) |
+| Duration | 5-10 seconds (will loop) |
+| Frame Rate | 30fps |
+
+#### Sourcing Links
+
+**Free (Royalty-Free):**
+- **Mixkit** — https://mixkit.co/free-video-effects/
+- **Pexels** — https://www.pexels.com/search/videos/particles/
+- **Pixabay** — https://pixabay.com/videos/search/particles/
+- **Videezy** — https://www.videezy.com/free-video/particles
+
+### 6.4 Sound Effects via ElevenLabs
+
+Use ElevenLabs Sound Effects API to generate SFX on-demand:
+
+**API Endpoint:** `POST https://api.elevenlabs.io/v1/sound-generation`
+
+#### SFX Generation & Caching Workflow
+
+```
+User requests SFX
+       ↓
+Check sfx_assets table (cached?)
+       ↓
+   ┌───┴───┐
+   Yes      No
+   ↓        ↓
+Return   Generate via ElevenLabs API
+cached      ↓
+URL      Preview in UI
+            ↓
+        User approves?
+        ┌───┴───┐
+        Yes     No
+        ↓       ↓
+      Upload  Regenerate
+      to      with new
+      storage prompt
+        ↓
+      Save to sfx_assets
+      (cached for reuse)
+        ↓
+      Return URL
+```
+
+**Key Features:**
+- Generated SFX are saved to Supabase storage for reuse
+- Once approved, SFX cached in `sfx_assets` table
+- Future requests for same SFX type return cached version
+- User can regenerate with different prompt if not satisfied
+- Saves ElevenLabs API credits on repeat usage
+
+#### SFX Presets
+
+| SFX | Prompt | Duration |
+|-----|--------|----------|
+| cha_ching | "cash register cha-ching, coins, money sound" | 1.0s |
+| sad_trombone | "sad trombone wah wah wah, comedic failure" | 1.5s |
+| whoosh | "fast whoosh swoosh transition sound" | 0.5s |
+| fire_crackle | "fire crackling, campfire burning, flames" | 3.0s |
+| printer_brrr | "money printer printing, mechanical whirring" | 2.0s |
+| alarm | "warning alarm siren, danger alert" | 1.5s |
+| glass_break | "glass shattering, breaking, crash" | 0.8s |
+| crowd_murmur | "crowd murmuring, people talking background" | 4.0s |
+| celebration | "celebration party, cheering, confetti pop" | 2.0s |
+| coin_drop | "coins dropping, metal clinking" | 1.0s |
+| explosion | "explosion boom, impact blast" | 1.5s |
+| record_scratch | "vinyl record scratch, DJ stop" | 0.5s |
+| pop | "pop sound, bubble pop, appear" | 0.3s |
+
+### 6.5 Database Schema (Phase 6)
+
+```sql
+-- Particle effect assets
+CREATE TABLE particle_assets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    effect_type TEXT NOT NULL UNIQUE,
+    file_url TEXT NOT NULL,
+    has_alpha BOOLEAN DEFAULT true,
+    blend_mode TEXT DEFAULT 'over',  -- 'over' (alpha), 'screen', 'add'
+    duration_ms INT NOT NULL,
+    default_opacity FLOAT DEFAULT 0.7,
+    default_scale FLOAT DEFAULT 1.0,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- SFX assets (generated via ElevenLabs, cached for reuse)
+CREATE TABLE sfx_assets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sfx_type TEXT NOT NULL UNIQUE,      -- e.g., 'cha_ching', 'sad_trombone'
+    file_url TEXT NOT NULL,             -- Supabase storage URL
+    duration_ms INT NOT NULL,
+
+    -- Generation info
+    prompt TEXT NOT NULL,               -- ElevenLabs prompt used
+    source TEXT DEFAULT 'elevenlabs',   -- 'elevenlabs', 'manual', 'freesound'
+
+    -- Approval workflow
+    is_approved BOOLEAN DEFAULT false,  -- Only approved SFX cached for reuse
+    approved_at TIMESTAMPTZ,
+    approved_by TEXT,                   -- User who approved
+
+    -- Usage hints
+    default_volume FLOAT DEFAULT 0.8,
+    category TEXT,                      -- 'money', 'emotion', 'action', 'transition'
+
+    -- Stats
+    usage_count INT DEFAULT 0,          -- Track how often used
+
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Index for fast lookup by type
+CREATE INDEX idx_sfx_assets_type ON sfx_assets(sfx_type);
+CREATE INDEX idx_sfx_assets_approved ON sfx_assets(is_approved) WHERE is_approved = true;
+```
+
+### 6.6 Data Models (Phase 6)
+
+```python
+class ParticleEffect(BaseModel):
+    """A particle overlay effect."""
+    effect_type: str  # 'sparkles', 'confetti', etc.
+    start_ms: int = 0
+    duration_ms: int | None = None  # None = full panel
+    opacity: float = 0.7
+    scale: float = 1.0
+    position: str = "full"  # 'full', 'top', 'bottom', 'center'
+    loop: bool = True
+
+class SFXTrigger(BaseModel):
+    """A sound effect trigger."""
+    sfx_type: str
+    trigger_ms: int  # When to play (relative to panel start)
+    volume: float = 0.8
+
+class BackgroundMusic(BaseModel):
+    """Background music configuration."""
+    track_url: str
+    volume: float = 0.3
+    duck_during_vo: bool = True
+    duck_level: float = 0.15
+    fade_in_ms: int = 1000
+    fade_out_ms: int = 2000
+
+class PanelEffectsV2(BaseModel):
+    """Extended effects model for Phase 6."""
+    # Phase 1 effects
+    ambient_effects: list[EffectInstance] = []
+    triggered_effects: list[EffectInstance] = []
+    color_tint: str | None = None
+    tint_opacity: float = 0.0
+
+    # Phase 6 additions
+    particles: list[ParticleEffect] = []
+    sfx: list[SFXTrigger] = []
+```
+
+### 6.7 Effect Presets (Updated)
+
+```python
+MOOD_EFFECT_PRESETS_V2: dict[PanelMood, PanelEffectsV2] = {
+    PanelMood.NEUTRAL: PanelEffectsV2(
+        particles=[ParticleEffect(effect_type="dust", opacity=0.3)]
+    ),
+    PanelMood.POSITIVE: PanelEffectsV2(
+        ambient_effects=[EffectInstance(effect_type=EffectType.GOLDEN_GLOW, intensity=0.3)],
+        particles=[ParticleEffect(effect_type="sparkles", opacity=0.5)],
+        color_tint="#FFD700",
+        tint_opacity=0.1
+    ),
+    PanelMood.DANGER: PanelEffectsV2(
+        ambient_effects=[
+            EffectInstance(effect_type=EffectType.RED_GLOW, intensity=0.4),
+            EffectInstance(effect_type=EffectType.VIGNETTE, intensity=0.5),
+            EffectInstance(effect_type=EffectType.SHAKE, intensity=0.3)
+        ],
+        particles=[ParticleEffect(effect_type="embers", opacity=0.6)],
+        color_tint="#FF0000",
+        tint_opacity=0.15
+    ),
+    PanelMood.CELEBRATION: PanelEffectsV2(
+        ambient_effects=[
+            EffectInstance(effect_type=EffectType.GOLDEN_GLOW, intensity=0.4),
+            EffectInstance(effect_type=EffectType.PULSE, intensity=0.3)
+        ],
+        particles=[
+            ParticleEffect(effect_type="confetti", opacity=0.7),
+            ParticleEffect(effect_type="sparkles", opacity=0.4)
+        ],
+        color_tint="#FFD700",
+        tint_opacity=0.15
+    ),
+    # ... other moods
+}
+
+# Content-triggered particles and SFX
+CONTENT_TRIGGERS_V2: dict[str, dict] = {
+    "fire": {
+        "particles": [ParticleEffect(effect_type="embers", opacity=0.6)],
+        "sfx": [SFXTrigger(sfx_type="fire_crackle", trigger_ms=0)]
+    },
+    "money": {
+        "particles": [ParticleEffect(effect_type="coins_falling", opacity=0.5)],
+        "sfx": [SFXTrigger(sfx_type="cha_ching", trigger_ms=500)]
+    },
+    "print": {
+        "particles": [ParticleEffect(effect_type="coins_falling", opacity=0.6)],
+        "sfx": [SFXTrigger(sfx_type="printer_brrr", trigger_ms=0)]
+    },
+    "break": {
+        "particles": [ParticleEffect(effect_type="glitch", opacity=0.5)],
+        "sfx": [SFXTrigger(sfx_type="glass_break", trigger_ms=0)]
+    },
+    "win": {
+        "particles": [ParticleEffect(effect_type="confetti", opacity=0.6)],
+        "sfx": [SFXTrigger(sfx_type="celebration", trigger_ms=0)]
+    },
+    "sad": {
+        "particles": [],
+        "sfx": [SFXTrigger(sfx_type="sad_trombone", trigger_ms=500)]
+    },
+    # ... other triggers
+}
+```
+
+### 6.8 FFmpeg Implementation
+
+#### Particle Overlay
+
+```python
+def build_particle_overlay_filter(
+    particle: ParticleEffect,
+    particle_asset: dict,
+    panel_duration_ms: int
+) -> tuple[str, str]:
+    """Build FFmpeg filter for particle overlay."""
+    loops_needed = (panel_duration_ms // particle_asset["duration_ms"]) + 1
+    input_args = f'-stream_loop {loops_needed} -i "{particle_asset["file_url"]}"'
+
+    if particle_asset.get("has_alpha", True):
+        blend = f"overlay=0:0:format=auto"
+    else:
+        blend = f"overlay=0:0:format=auto:blend=screen"
+
+    opacity_filter = f"colorchannelmixer=aa={particle.opacity}," if particle.opacity < 1.0 else ""
+    filter_expr = f"{opacity_filter}{blend}"
+
+    return input_args, filter_expr
+```
+
+#### Background Music with Ducking
+
+```python
+def build_music_duck_filter(music: BackgroundMusic, vo_duration_ms: int) -> tuple[str, str]:
+    """Build FFmpeg filter for background music that ducks during voiceover."""
+    input_args = f'-i "{music.track_url}"'
+
+    filter_expr = (
+        f"[music_in]volume={music.volume}[music_vol];"
+        f"[music_vol][vo]sidechaincompress="
+        f"threshold=0.02:ratio=10:attack=50:release=500[music_ducked];"
+        f"[music_ducked]afade=t=in:st=0:d={music.fade_in_ms/1000},"
+        f"afade=t=out:st={vo_duration_ms/1000 - music.fade_out_ms/1000}:d={music.fade_out_ms/1000}"
+        f"[music_final]"
+    )
+
+    return input_args, filter_expr
+```
+
+### 6.9 New Services (Phase 6)
+
+| Service | Purpose |
+|---------|---------|
+| `ComicParticleService` | Manage particle WebM assets |
+| `ElevenLabsSFXService` | Generate SFX via ElevenLabs API |
+| `ComicSFXService` | Manage cached SFX assets |
+| `ComicMusicService` | Background music with ducking |
+
+### 6.10 Files to Create (Phase 6)
+
+```
+services/
+  comic_video/
+    comic_particle_service.py     # Particle asset management
+    elevenlabs_sfx_service.py     # ElevenLabs Sound Effects API
+    comic_sfx_service.py          # SFX asset management & caching
+    comic_music_service.py        # Background music management
+
+sql/
+  2025-XX-XX_comic_video_phase2.sql  # particle_assets, sfx_assets tables
+
+assets/
+  particles/                      # Downloaded particle WebM files
+    sparkles.webm
+    confetti.webm
+    coins_falling.webm
+    embers.webm
+    dust.webm
+```
+
+### 6.11 Implementation Order
+
+1. **Asset Setup**
+   - [ ] Source and download particle videos (5 high-priority)
+   - [ ] Implement ElevenLabsSFXService
+   - [ ] Pre-generate all SFX using ElevenLabs Sound Effects API
+   - [ ] Upload assets to Supabase storage
+   - [ ] Create database tables and seed data
+
+2. **Particle Overlay System**
+   - [ ] Implement ComicParticleService
+   - [ ] Build FFmpeg particle overlay filters
+   - [ ] Update render pipeline to include particles
+   - [ ] Test with single panel
+
+3. **SFX System**
+   - [ ] Integrate ElevenLabsSFXService with render pipeline
+   - [ ] Build FFmpeg audio mixing filters
+   - [ ] Content-triggered SFX detection
+   - [ ] Test audio sync
+
+4. **Background Music**
+   - [ ] Implement ComicMusicService
+   - [ ] Ducking during voiceover
+   - [ ] Full video render tests
+
+---
+
+## Phase 7: MERGE & CLEANUP
+
+*(To be filled in during Phase 7)*
 
 ---
 
@@ -391,3 +969,11 @@ viraltracker/
 | 2025-12-08 | 2 | Architecture decision: Python workflow (user-driven) |
 | 2025-12-08 | 2 | Consolidated to 4 services |
 | 2025-12-08 | 3 | Component inventory and gap analysis |
+| 2025-12-08 | 4 | All services implemented (models, audio, director, render, orchestration, UI) |
+| 2025-12-08 | 5 | Real-world testing with "Inflation Explained by Raccoons" comic |
+| 2025-12-08 | 5 | JSON format adaptations (script_for_audio, grid_structure, explicit mood) |
+| 2025-12-08 | 5 | Ken Burns zoom fix (panel_zoom = grid_cols * 0.85) |
+| 2025-12-08 | 5 | Panel-to-panel transitions with two-phase zoompan animation |
+| 2025-12-08 | 5 | Bug fixes: image dimensions, concat paths, duplicate uploads |
+| 2025-12-08 | 5.5 | Planned: Manual panel adjustments (camera, effects overrides) |
+| 2025-12-08 | 6 | Planned: Particle overlays, SFX via ElevenLabs (with caching), background music |
