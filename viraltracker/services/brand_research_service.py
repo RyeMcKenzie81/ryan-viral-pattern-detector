@@ -2905,16 +2905,22 @@ INSTRUCTIONS:
 5. Assign a confidence score (0.0-1.0) based on how much supporting data exists
 
 CRITICAL - AMAZON CUSTOMER QUOTES:
-If "amazon_quotes" is present in the data, these are REAL customer voices. You MUST embed these verbatim quotes into the relevant persona fields:
-- amazon_quotes.transformation → use in "transformation_map.after" and "outcomes_jtbd"
-- amazon_quotes.pain_points → use in "pain_points" (preserve exact wording)
-- amazon_quotes.desired_features → use in "outcomes_jtbd.functional"
-- amazon_quotes.past_failures → use in "failed_solutions"
-- amazon_quotes.buying_objections → use in "buying_objections"
-- amazon_quotes.familiar_promises → use in "familiar_promises"
+If "amazon_quotes" is present in the data, these are REAL customer voices from Amazon reviews. You MUST:
 
-Each quote has: {{"text": "quote", "author": "Name L.", "rating": 5}}
-Include the author attribution when embedding quotes, e.g.: "My dog's breath is finally bearable" - Sarah M.
+1. Fill the "amazon_testimonials" field with verbatim quotes organized by category:
+   - transformation: Quotes about results/outcomes they experienced
+   - pain_points: Quotes about problems/frustrations before the product
+   - objections_overcome: Quotes about initial skepticism that was resolved
+
+2. Use the exact quote text and author attribution from amazon_quotes:
+   - amazon_quotes.transformation → amazon_testimonials.transformation
+   - amazon_quotes.pain_points → amazon_testimonials.pain_points
+   - amazon_quotes.buying_objections → amazon_testimonials.objections_overcome
+
+Each input quote has: {{"text": "quote", "author": "Name L.", "rating": 5}}
+Output as: {{"quote": "exact text", "author": "Name L.", "rating": 5}}
+
+Include 3-5 quotes per category. These are gold for ad copy - preserve them exactly!
 
 Return JSON with this structure:
 {{
@@ -2994,6 +3000,18 @@ Return JSON with this structure:
         "functional": ["Will it work?"]
       }},
       "familiar_promises": ["Claims they've heard before"],
+
+      "amazon_testimonials": {{
+        "transformation": [
+          {{"quote": "Exact customer quote about results", "author": "Sarah M.", "rating": 5}}
+        ],
+        "pain_points": [
+          {{"quote": "Exact customer quote about their problem", "author": "Mike R.", "rating": 3}}
+        ],
+        "objections_overcome": [
+          {{"quote": "Quote about initial skepticism and resolution", "author": "Lisa K.", "rating": 5}}
+        ]
+      }},
 
       "pain_symptoms": ["Observable signs of pain - what you'd notice about them"],
       "activation_events": ["What triggers purchase NOW - specific moments"],
