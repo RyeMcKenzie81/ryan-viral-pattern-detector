@@ -454,11 +454,13 @@ class ComicRenderService:
         else:
             content_duration_ms = instruction.duration_ms
 
-        transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
+        # TEMP DEBUG: Disable all transitions to test if that's the issue
+        transition_duration_ms = 0
+        # transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
 
         # No transition for last panel or CUT transitions
-        if not next_instruction or instruction.transition.transition_type.value == "cut":
-            transition_duration_ms = 0
+        # if not next_instruction or instruction.transition.transition_type.value == "cut":
+        #     transition_duration_ms = 0
 
         total_duration_ms = content_duration_ms + transition_duration_ms
         total_duration_sec = total_duration_ms / 1000
