@@ -375,7 +375,30 @@ if amazon_urls:
                 stats = amazon_service.get_review_stats(amz_url['product_id'])
 
                 if stats.get('has_analysis'):
-                    st.success("✅ Analyzed")
+                    col_status, col_reanalyze = st.columns([1, 1])
+                    with col_status:
+                        st.success("✅ Analyzed")
+                    with col_reanalyze:
+                        if st.button("🔄", key=f"reanalyze_amz_{amz_url['id']}", help="Re-analyze reviews"):
+                            with st.spinner("Re-analyzing reviews..."):
+                                import asyncio
+                                try:
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    result = loop.run_until_complete(
+                                        amazon_service.analyze_reviews_for_product(
+                                            product_id=amz_url['product_id'],
+                                            limit=500
+                                        )
+                                    )
+                                    loop.close()
+                                    if result:
+                                        st.success("Re-analysis complete!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Re-analysis failed")
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
                 elif reviews_count > 0:
                     if st.button("📊 Analyze", key=f"analyze_amz_{amz_url['id']}", help="Analyze reviews with AI"):
                         with st.spinner("Analyzing reviews..."):
