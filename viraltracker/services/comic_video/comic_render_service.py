@@ -860,34 +860,48 @@ class ComicRenderService:
     def _vignette_filter(
         self,
         intensity: float,
-        softness: Optional[float] = None
+        softness: Optional[float] = None,
+        fade_in_ms: int = 500
     ) -> str:
-        """Build vignette filter.
+        """Build vignette filter with fade-in.
 
         Args:
             intensity: Darkness of vignette edges (0.0-1.0). Higher = darker.
             softness: How far the vignette extends from edges (0.0-1.0).
                      Higher = extends further toward center. None = use default.
+            fade_in_ms: Duration of fade-in effect in milliseconds.
 
         FFmpeg vignette parameters:
         - angle: Controls the vignette spread. PI/4 = subtle, PI/2 = strong
         - The vignette filter darkens edges naturally based on angle
+
+        The fade-in is achieved by using an expression-based alpha blend that
+        gradually increases the vignette strength from 0 to target over fade_in_ms.
         """
         # Softness controls the spread/distance from edges
         # Default to 0.4 (subtle) if not specified
         soft = softness if softness is not None else 0.4
         # Map softness 0-1 to angle range PI*0.25 to PI*0.6
         # Lower angle = tighter to edges, higher = extends toward center
-        angle = 0.25 + (soft * 0.35)
+        base_angle = 0.25 + (soft * 0.35)
 
-        # Intensity now controls a brightness reduction to make it darker
-        # We use the eq filter to darken the vignette output
+        # For fade-in, we animate the angle from a very small value (no vignette)
+        # to the target angle over the fade duration
+        fade_in_sec = fade_in_ms / 1000
+        # Start at PI*0.1 (nearly invisible) and ramp to target angle
+        # Using min(t/fade_duration, 1) to clamp at 1 after fade completes
+        start_angle = 0.1
+        angle_expr = f"PI*({start_angle}+({base_angle}-{start_angle})*min(t/{fade_in_sec},1))"
+
+        # Build the vignette filter with animated angle
+        vignette = f"vignette=angle='{angle_expr}'"
+
+        # Intensity controls additional brightness reduction for darker edges
         if intensity > 0.5:
-            # For high intensity, also reduce brightness
             brightness_reduction = (intensity - 0.5) * 0.3
-            return f"vignette=PI*{angle:.2f},eq=brightness=-{brightness_reduction:.2f}"
+            return f"{vignette},eq=brightness=-{brightness_reduction:.2f}"
         else:
-            return f"vignette=PI*{angle:.2f}"
+            return vignette
 
     def _pulse_filter(self, intensity: float) -> str:
         """Build brightness pulse filter."""
