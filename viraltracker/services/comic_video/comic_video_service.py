@@ -465,6 +465,10 @@ class ComicVideoService:
         if not instruction:
             raise ValueError(f"Instruction not found for panel {panel_number}")
 
+        # Apply user overrides if present
+        if instruction.user_overrides and instruction.user_overrides.has_overrides():
+            instruction = self.director.apply_overrides(instruction, instruction.user_overrides)
+
         # Download comic grid
         grid_path = await self._download_file(
             project.comic_grid_url,
@@ -482,6 +486,9 @@ class ComicVideoService:
                 panel_audio.audio_filename
             )
 
+        # Get aspect ratio from project
+        aspect_ratio = project.aspect_ratio
+
         # Render preview
         preview_path = await self.render.render_panel_preview(
             project_id=project_id,
@@ -489,7 +496,8 @@ class ComicVideoService:
             comic_grid_path=grid_path,
             instruction=instruction,
             layout=project.layout,
-            audio_path=audio_path
+            audio_path=audio_path,
+            aspect_ratio=aspect_ratio
         )
 
         # Upload preview
@@ -869,12 +877,17 @@ class ComicVideoService:
         if row.get("layout"):
             layout = ComicLayout(**row["layout"])
 
+        # Parse aspect ratio
+        aspect_ratio_str = row.get("aspect_ratio", "9:16")
+        aspect_ratio = AspectRatio.from_string(aspect_ratio_str)
+
         return ComicVideoProject(
             project_id=row["id"],
             title=row["title"],
             comic_grid_url=row["comic_grid_url"],
             comic_json=row["comic_json"],
             layout=layout,
+            aspect_ratio=aspect_ratio,
             output_width=row.get("output_width", 1080),
             output_height=row.get("output_height", 1920),
             fps=row.get("fps", 30),

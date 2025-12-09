@@ -657,25 +657,23 @@ def render_review_step():
                             col_btn1, col_btn2 = st.columns(2)
                             with col_btn1:
                                 if st.button("💾 Apply", key=f"apply_{panel_num}"):
+                                    # Save all current settings as overrides
                                     overrides = {
-                                        "camera_start_zoom": start_zoom if start_zoom != instr.camera.start_zoom else None,
-                                        "camera_end_zoom": end_zoom if end_zoom != instr.camera.end_zoom else None,
-                                        "mood_override": selected_mood if selected_mood != instr.mood.value else None,
-                                        "vignette_enabled": vignette_on if vignette_on != has_vignette else None,
-                                        "shake_enabled": shake_on if shake_on != has_shake else None,
-                                        "golden_glow_enabled": golden_on if golden_on != has_golden else None,
-                                        "pulse_enabled": pulse_on if pulse_on != has_pulse else None,
-                                        "color_tint_enabled": tint_on if tint_on != has_tint else None,
-                                        "color_tint_color": tint_color if tint_on else None,
+                                        "camera_start_zoom": float(start_zoom),
+                                        "camera_end_zoom": float(end_zoom),
+                                        "mood_override": selected_mood,
+                                        "vignette_enabled": vignette_on,
+                                        "shake_enabled": shake_on,
+                                        "golden_glow_enabled": golden_on,
+                                        "pulse_enabled": pulse_on,
+                                        "color_tint_enabled": tint_on,
                                     }
-                                    # Filter out None values
-                                    overrides = {k: v for k, v in overrides.items() if v is not None}
-                                    if overrides:
-                                        asyncio.run(save_panel_overrides(project_id, panel_num, overrides))
-                                        st.success("Saved!")
-                                        st.rerun()
-                                    else:
-                                        st.info("No changes")
+                                    if tint_on:
+                                        overrides["color_tint_color"] = tint_color
+
+                                    asyncio.run(save_panel_overrides(project_id, panel_num, overrides))
+                                    st.success("Saved! Re-render to see changes.")
+                                    st.rerun()
 
                             with col_btn2:
                                 if has_overrides:
