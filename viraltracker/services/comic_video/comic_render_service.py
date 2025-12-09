@@ -423,15 +423,14 @@ class ComicRenderService:
             audio_delay_ms = instruction.user_overrides.audio_delay_ms
 
         # Get actual audio duration to sync video precisely
-        # This prevents drift from accumulated buffers in stored duration_ms
+        # Use EXACT audio duration - no buffer to prevent drift accumulation
         if audio_path and audio_path.exists():
             actual_audio_ms = await self._get_audio_duration_ms(audio_path)
             if actual_audio_ms:
-                # Content duration = actual audio + small buffer for breathing room
-                # Keep it simple: video content phase = audio length + tiny buffer
-                content_duration_ms = actual_audio_ms + 100
+                # Content duration = exact audio length (no buffer to prevent cumulative drift)
+                content_duration_ms = actual_audio_ms
                 logger.info(
-                    f"Panel {instruction.panel_number}: audio={actual_audio_ms}ms + 100ms buffer"
+                    f"Panel {instruction.panel_number}: audio={actual_audio_ms}ms (exact)"
                 )
             else:
                 content_duration_ms = instruction.duration_ms
