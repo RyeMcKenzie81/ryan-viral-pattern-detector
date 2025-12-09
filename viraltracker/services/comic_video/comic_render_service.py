@@ -414,11 +414,30 @@ class ComicRenderService:
                 output_height=output_height
             )
 
-            # Debug: verify segment was created
+            # Debug: verify segment was created and extract first frame for visual verification
             if segment_path.exists():
                 size_kb = segment_path.stat().st_size / 1024
                 with open(self._debug_file, "a") as f:
-                    f.write(f"  -> Segment created: {segment_path.name} ({size_kb:.1f} KB)\n\n")
+                    f.write(f"  -> Segment created: {segment_path.name} ({size_kb:.1f} KB)\n")
+
+                # Extract first frame as JPEG for visual verification
+                frame_path = project_dir / f"frame_{panel_num:02d}.jpg"
+                try:
+                    frame_cmd = [
+                        self._ffmpeg_path, "-y",
+                        "-i", str(segment_path),
+                        "-vframes", "1",
+                        "-q:v", "2",
+                        str(frame_path)
+                    ]
+                    await self._run_ffmpeg(frame_cmd)
+                    if frame_path.exists():
+                        frame_kb = frame_path.stat().st_size / 1024
+                        with open(self._debug_file, "a") as f:
+                            f.write(f"  -> First frame: {frame_path.name} ({frame_kb:.1f} KB)\n\n")
+                except Exception as e:
+                    with open(self._debug_file, "a") as f:
+                        f.write(f"  -> Frame extraction failed: {e}\n\n")
             else:
                 with open(self._debug_file, "a") as f:
                     f.write(f"  -> ERROR: Segment NOT created: {segment_path}\n\n")
@@ -535,9 +554,13 @@ class ComicRenderService:
 
         # Build filter complex with video and optional audio delay
         # IMPORTANT: Always add a final scale to ensure consistent output dimensions
-        # The shake effect adds its own scale, so we need to check if it's present
+        # The shake effect uses DEFAULT_OUTPUT dimensions (1080x1920), so we must match that
+        # for ALL segments to ensure they can be concatenated properly
         has_shake_scale = effects_filter and "scale=" in effects_filter
-        final_scale = "" if has_shake_scale else f",scale={output_width}:{output_height}:flags=lanczos"
+        # Use class defaults to match shake filter output (1080x1920 for vertical video)
+        target_width = self.DEFAULT_OUTPUT_WIDTH
+        target_height = self.DEFAULT_OUTPUT_HEIGHT
+        final_scale = "" if has_shake_scale else f",scale={target_width}:{target_height}:flags=lanczos"
 
         if audio_path and audio_path.exists():
             if effects_filter:
