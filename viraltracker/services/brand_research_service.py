@@ -2894,6 +2894,18 @@ INSTRUCTIONS:
 4. Use the ACTUAL language from the ads - don't make up generic descriptions
 5. Assign a confidence score (0.0-1.0) based on how much supporting data exists
 
+CRITICAL - AMAZON CUSTOMER QUOTES:
+If "amazon_quotes" is present in the data, these are REAL customer voices. You MUST embed these verbatim quotes into the relevant persona fields:
+- amazon_quotes.transformation → use in "transformation_map.after" and "outcomes_jtbd"
+- amazon_quotes.pain_points → use in "pain_points" (preserve exact wording)
+- amazon_quotes.desired_features → use in "outcomes_jtbd.functional"
+- amazon_quotes.past_failures → use in "failed_solutions"
+- amazon_quotes.buying_objections → use in "buying_objections"
+- amazon_quotes.familiar_promises → use in "familiar_promises"
+
+Each quote has: {{"text": "quote", "author": "Name L.", "rating": 5}}
+Include the author attribution when embedding quotes, e.g.: "My dog's breath is finally bearable" - Sarah M.
+
 Return JSON with this structure:
 {{
   "segment_analysis": "Brief explanation of distinct segments found (or why there's only one)",
