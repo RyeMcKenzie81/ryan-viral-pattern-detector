@@ -794,13 +794,16 @@ class ComicRenderService:
         filter_str = None
 
         if effect_type == EffectType.VIGNETTE:
-            filter_str = self._vignette_filter(intensity * 0.5)
+            softness = effect.params.get("softness")
+            filter_str = self._vignette_filter(intensity, softness=softness)
 
         elif effect_type == EffectType.VIGNETTE_LIGHT:
-            filter_str = self._vignette_filter(intensity * 0.3)
+            softness = effect.params.get("softness")
+            filter_str = self._vignette_filter(intensity * 0.5, softness=softness)
 
         elif effect_type == EffectType.VIGNETTE_HEAVY:
-            filter_str = self._vignette_filter(intensity * 0.7)
+            softness = effect.params.get("softness")
+            filter_str = self._vignette_filter(intensity, softness=softness or 0.7)
 
         elif effect_type == EffectType.GOLDEN_GLOW:
             filter_str = self._build_color_tint_filter("#FFD700", intensity * 0.2)
@@ -854,11 +857,37 @@ class ComicRenderService:
 
         return f"colorbalance=rs={rs:.3f}:gs={gs:.3f}:bs={bs:.3f}:rm={rs:.3f}:gm={gs:.3f}:bm={bs:.3f}"
 
-    def _vignette_filter(self, intensity: float) -> str:
-        """Build vignette filter."""
-        # angle controls vignette spread (PI/4 to PI/2)
-        angle = 0.4 + (intensity * 0.4)
-        return f"vignette=PI*{angle:.2f}"
+    def _vignette_filter(
+        self,
+        intensity: float,
+        softness: Optional[float] = None
+    ) -> str:
+        """Build vignette filter.
+
+        Args:
+            intensity: Darkness of vignette edges (0.0-1.0). Higher = darker.
+            softness: How far the vignette extends from edges (0.0-1.0).
+                     Higher = extends further toward center. None = use default.
+
+        FFmpeg vignette parameters:
+        - angle: Controls the vignette spread. PI/4 = subtle, PI/2 = strong
+        - The vignette filter darkens edges naturally based on angle
+        """
+        # Softness controls the spread/distance from edges
+        # Default to 0.4 (subtle) if not specified
+        soft = softness if softness is not None else 0.4
+        # Map softness 0-1 to angle range PI*0.25 to PI*0.6
+        # Lower angle = tighter to edges, higher = extends toward center
+        angle = 0.25 + (soft * 0.35)
+
+        # Intensity now controls a brightness reduction to make it darker
+        # We use the eq filter to darken the vignette output
+        if intensity > 0.5:
+            # For high intensity, also reduce brightness
+            brightness_reduction = (intensity - 0.5) * 0.3
+            return f"vignette=PI*{angle:.2f},eq=brightness=-{brightness_reduction:.2f}"
+        else:
+            return f"vignette=PI*{angle:.2f}"
 
     def _pulse_filter(self, intensity: float) -> str:
         """Build brightness pulse filter."""

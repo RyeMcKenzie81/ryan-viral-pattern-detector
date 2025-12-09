@@ -322,7 +322,11 @@ class PanelOverrides(BaseModel):
     )
     vignette_intensity: Optional[float] = Field(
         None, ge=0.0, le=1.0,
-        description="Vignette intensity (None = use default)"
+        description="Vignette darkness/intensity - higher = darker edges (None = use default)"
+    )
+    vignette_softness: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Vignette softness/spread - higher = extends further from edges (None = use default)"
     )
 
     # Color tint

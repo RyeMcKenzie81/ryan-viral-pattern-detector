@@ -942,37 +942,64 @@ class ComicDirectorService:
         def toggle_effect(
             effect_type: EffectType,
             enabled: Optional[bool],
-            intensity: Optional[float]
+            intensity: Optional[float],
+            also_remove: Optional[List[EffectType]] = None,
+            extra_params: Optional[Dict[str, Any]] = None
         ):
-            """Toggle an effect on/off with optional intensity."""
+            """Toggle an effect on/off with optional intensity.
+
+            Args:
+                effect_type: The effect type to add if enabled
+                enabled: Whether to enable the effect
+                intensity: Effect intensity (0.0-1.0)
+                also_remove: Additional effect types to remove (for variants)
+                extra_params: Additional effect-specific parameters
+            """
             if enabled is None and intensity is None:
                 return  # No override, keep as-is
 
-            # Find and remove existing effect of this type
+            # Build list of effect types to remove
+            types_to_remove = {effect_type}
+            if also_remove:
+                types_to_remove.update(also_remove)
+
+            # Find and remove existing effects of these types
             updated.ambient_effects = [
                 e for e in updated.ambient_effects
-                if e.effect_type != effect_type
+                if e.effect_type not in types_to_remove
             ]
             updated.triggered_effects = [
                 e for e in updated.triggered_effects
-                if e.effect_type != effect_type
+                if e.effect_type not in types_to_remove
             ]
 
             # Add effect if enabled (or intensity specified implies enabled)
             if enabled is True or (enabled is None and intensity is not None):
                 effect_intensity = intensity if intensity is not None else 0.5
+                effect_params = extra_params or {}
                 updated.ambient_effects.append(
                     EffectInstance(
                         effect_type=effect_type,
-                        intensity=effect_intensity
+                        intensity=effect_intensity,
+                        params=effect_params
                     )
                 )
 
-        # Apply vignette toggle
+        # All vignette variants to remove when toggling vignette
+        vignette_variants = [EffectType.VIGNETTE_LIGHT, EffectType.VIGNETTE_HEAVY]
+
+        # Build vignette params (softness if specified)
+        vignette_params = {}
+        if overrides.vignette_softness is not None:
+            vignette_params["softness"] = overrides.vignette_softness
+
+        # Apply vignette toggle (removes all vignette variants)
         toggle_effect(
             EffectType.VIGNETTE,
             overrides.vignette_enabled,
-            overrides.vignette_intensity
+            overrides.vignette_intensity,
+            also_remove=vignette_variants,
+            extra_params=vignette_params if vignette_params else None
         )
 
         # Apply shake toggle
