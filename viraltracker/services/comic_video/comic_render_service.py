@@ -361,6 +361,11 @@ class ComicRenderService:
 
         logger.info(f"Rendering full video with {len(instructions)} panels")
 
+        # Clean up any existing segment files to ensure fresh render
+        for old_segment in project_dir.glob("segment_*.mp4"):
+            old_segment.unlink()
+            logger.debug(f"Deleted old segment: {old_segment}")
+
         # Debug: write camera positions to file for debugging
         debug_file = project_dir / "camera_debug.txt"
         self._debug_file = debug_file  # Store for use in segment rendering
@@ -377,12 +382,24 @@ class ComicRenderService:
 
         # 1. Render each panel segment (with transition to next panel)
         segment_paths = []
+
+        # Debug: log iteration order
+        with open(debug_file, "a") as f:
+            f.write(f"=== RENDER LOOP ===\n")
+
         for i, instruction in enumerate(instructions):
             panel_num = instruction.panel_number
             audio_path = audio_paths.get(panel_num)
 
             # Get next instruction for transition target (if not last panel)
             next_instruction = instructions[i + 1] if i < len(instructions) - 1 else None
+
+            # Debug: log loop iteration
+            with open(debug_file, "a") as f:
+                f.write(f"Loop [{i}]: rendering panel {panel_num}")
+                if next_instruction:
+                    f.write(f" (transition to panel {next_instruction.panel_number})")
+                f.write(f"\n")
 
             segment_path = project_dir / f"segment_{panel_num:02d}.mp4"
 
@@ -396,6 +413,15 @@ class ComicRenderService:
                 output_width=output_width,
                 output_height=output_height
             )
+
+            # Debug: verify segment was created
+            if segment_path.exists():
+                size_kb = segment_path.stat().st_size / 1024
+                with open(self._debug_file, "a") as f:
+                    f.write(f"  -> Segment created: {segment_path.name} ({size_kb:.1f} KB)\n\n")
+            else:
+                with open(self._debug_file, "a") as f:
+                    f.write(f"  -> ERROR: Segment NOT created: {segment_path}\n\n")
 
             segment_paths.append(segment_path)
 
@@ -454,13 +480,11 @@ class ComicRenderService:
         else:
             content_duration_ms = instruction.duration_ms
 
-        # TEMP DEBUG: Disable all transitions to test if that's the issue
-        transition_duration_ms = 0
-        # transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
+        transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
 
         # No transition for last panel or CUT transitions
-        # if not next_instruction or instruction.transition.transition_type.value == "cut":
-        #     transition_duration_ms = 0
+        if not next_instruction or instruction.transition.transition_type.value == "cut":
+            transition_duration_ms = 0
 
         total_duration_ms = content_duration_ms + transition_duration_ms
         total_duration_sec = total_duration_ms / 1000
@@ -570,6 +594,21 @@ class ComicRenderService:
                if next_instruction else "")
         )
 
+        # Debug: log the full ffmpeg command (filter_complex especially)
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
+                # Find filter_complex in command
+                try:
+                    fc_idx = cmd.index("-filter_complex")
+                    filter_complex = cmd[fc_idx + 1]
+                    f.write(f"  FFmpeg filter_complex:\n")
+                    # Split by semicolon for readability
+                    parts = filter_complex.split(";")
+                    for part in parts:
+                        f.write(f"    {part}\n")
+                except (ValueError, IndexError):
+                    f.write(f"  (no filter_complex found)\n")
+
         await self._run_ffmpeg(cmd)
 
     async def _concatenate_segments(
@@ -578,6 +617,17 @@ class ComicRenderService:
         output_path: Path
     ) -> None:
         """Concatenate video segments using FFmpeg concat demuxer."""
+        # Debug: log concatenation details
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
+                f.write(f"\n=== CONCATENATION ===\n")
+                f.write(f"Total segments to concatenate: {len(segment_paths)}\n")
+                for i, path in enumerate(segment_paths):
+                    exists = path.exists()
+                    size_kb = path.stat().st_size / 1024 if exists else 0
+                    f.write(f"  [{i}] {path.name}: exists={exists}, size={size_kb:.1f}KB\n")
+                f.write(f"\n")
+
         # Create concat list file
         concat_list = output_path.parent / "concat_list.txt"
         with open(concat_list, "w") as f:
@@ -587,6 +637,14 @@ class ComicRenderService:
                 # Escape single quotes
                 escaped = str(abs_path).replace("'", "'\\''")
                 f.write(f"file '{escaped}'\n")
+
+        # Debug: log concat list contents
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
+                f.write(f"Concat list file contents:\n")
+                with open(concat_list, "r") as cl:
+                    f.write(cl.read())
+                f.write(f"\n")
 
         cmd = [
             self._ffmpeg_path,
@@ -600,8 +658,15 @@ class ComicRenderService:
 
         await self._run_ffmpeg(cmd)
 
-        # Cleanup
-        concat_list.unlink(missing_ok=True)
+        # Debug: log concat result
+        if hasattr(self, '_debug_file') and self._debug_file:
+            if output_path.exists():
+                size_mb = output_path.stat().st_size / (1024 * 1024)
+                with open(self._debug_file, "a") as f:
+                    f.write(f"Concatenation complete: {output_path.name} ({size_mb:.2f}MB)\n\n")
+
+        # Cleanup - keep concat_list.txt for debugging
+        # concat_list.unlink(missing_ok=True)
 
     async def _mix_background_music(
         self,
