@@ -210,7 +210,7 @@ def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None
         if product_id:
             ad_ids = get_ad_ids_for_product(brand_id, product_id)
             if not ad_ids:
-                return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "total": 0}
+                return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "amazon_reviews": 0, "total": 0}
 
             result = db.table("brand_ad_analysis").select(
                 "analysis_type"
@@ -224,6 +224,7 @@ def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None
             "video_vision": 0,
             "image_vision": 0,
             "copy_analysis": 0,
+            "amazon_reviews": 0,
             "total": len(result.data)
         }
 
@@ -232,10 +233,28 @@ def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None
             if analysis_type in stats:
                 stats[analysis_type] += 1
 
+        # Check for Amazon review analyses
+        try:
+            if product_id:
+                amazon_result = db.table("amazon_review_analysis").select(
+                    "total_reviews_analyzed"
+                ).eq("product_id", product_id).execute()
+            else:
+                amazon_result = db.table("amazon_review_analysis").select(
+                    "total_reviews_analyzed"
+                ).eq("brand_id", brand_id).execute()
+
+            if amazon_result.data:
+                for row in amazon_result.data:
+                    stats["amazon_reviews"] += row.get("total_reviews_analyzed", 0)
+                stats["total"] += len(amazon_result.data)  # Count each product analysis
+        except Exception:
+            pass  # Table may not exist yet
+
         return stats
     except Exception as e:
         st.error(f"Failed to get analysis stats: {e}")
-        return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "total": 0}
+        return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "amazon_reviews": 0, "total": 0}
 
 
 def run_async(coro):
@@ -725,9 +744,18 @@ def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
         st.warning("Run at least 3 analyses before synthesizing personas.")
         return
 
-    st.info(f"Ready to synthesize from {analysis_stats['total']} analyses "
-            f"({analysis_stats['video_vision']} videos, {analysis_stats['image_vision']} images, "
-            f"{analysis_stats['copy_analysis']} copy)")
+    # Build analysis summary
+    parts = []
+    if analysis_stats['video_vision'] > 0:
+        parts.append(f"{analysis_stats['video_vision']} videos")
+    if analysis_stats['image_vision'] > 0:
+        parts.append(f"{analysis_stats['image_vision']} images")
+    if analysis_stats['copy_analysis'] > 0:
+        parts.append(f"{analysis_stats['copy_analysis']} copy")
+    if analysis_stats['amazon_reviews'] > 0:
+        parts.append(f"{analysis_stats['amazon_reviews']} Amazon reviews")
+
+    st.info(f"Ready to synthesize from {analysis_stats['total']} analyses ({', '.join(parts)})")
 
     if st.button("Synthesize Personas", type="primary", disabled=st.session_state.analysis_running):
         st.session_state.analysis_running = True
