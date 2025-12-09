@@ -531,6 +531,21 @@ def render_review_step():
                         except Exception as e:
                             st.error(f"Error: {e}")
 
+        # Debug: Show camera positions
+        with st.expander("🔧 Debug: Camera Positions"):
+            st.caption(f"Project ID: {project_id}")
+            if project.layout:
+                st.text(f"Layout: {project.layout.grid_cols}x{project.layout.grid_rows}")
+                st.text(f"Row cols: {project.layout.row_cols}")
+                st.text(f"Panel cells: {project.layout.panel_cells}")
+
+            instructions = asyncio.run(get_instructions(project_id))
+            if instructions:
+                positions = []
+                for instr in sorted(instructions, key=lambda x: x.panel_number):
+                    positions.append(f"Panel {instr.panel_number}: ({instr.camera.center_x:.4f}, {instr.camera.center_y:.4f})")
+                st.text("\n".join(positions))
+
         st.divider()
 
         # Status metrics
