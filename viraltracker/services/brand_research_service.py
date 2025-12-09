@@ -2203,6 +2203,16 @@ class BrandResearchService:
                     aggregated["customer_quotes"]["transformation"].extend(transformation_quotes)
                     aggregated["transformation"]["after"].extend(transformation_quotes)
 
+                # Integrate transformation with full quote structure (JSONB column)
+                transformation = analysis.get("transformation", {})
+                if isinstance(transformation, dict):
+                    insights = transformation.get("insights", [])
+                    if insights:
+                        aggregated["transformation"]["after"].extend(insights)
+                    quotes = transformation.get("quotes", [])
+                    if quotes:
+                        aggregated["amazon_quotes"]["transformation"].extend(quotes)
+
                 # Also check for positive/negative quotes (legacy format)
                 positive_quotes = analysis.get("top_positive_quotes", [])
                 if positive_quotes:

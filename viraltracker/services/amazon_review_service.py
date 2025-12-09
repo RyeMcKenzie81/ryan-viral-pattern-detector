@@ -714,13 +714,15 @@ class AmazonReviewService:
                 "brand_id": str(brand_id),
                 "total_reviews_analyzed": reviews_count,
                 "sentiment_distribution": analysis.get("sentiment_summary", {}),
-                # Store full structure in JSONB columns
+                # Store full structure in JSONB columns (includes quotes with author attribution)
                 "pain_points": analysis.get("pain_points", {}),
                 "desires": analysis.get("desired_features", {}),
                 "language_patterns": analysis.get("language_patterns", {}),
                 "objections": combined_objections,
                 "purchase_triggers": triggers,
-                # Store transformation with full quotes structure
+                # Store full transformation structure with quotes (JSONB)
+                "transformation": analysis.get("transformation", {}),
+                # Legacy TEXT[] columns for backwards compatibility
                 "transformation_quotes": transformation_quotes,
                 "top_positive_quotes": transformation_quotes[:5],  # Best outcomes
                 "top_negative_quotes": pain_quotes[:5],  # Pain points
