@@ -97,6 +97,42 @@ class ProjectStatus(str, Enum):
     FAILED = "failed"                  # Error state
 
 
+class AspectRatio(str, Enum):
+    """Supported output aspect ratios."""
+    VERTICAL = "9:16"      # 1080×1920 - TikTok, Reels, Shorts (default)
+    HORIZONTAL = "16:9"    # 1920×1080 - YouTube, Twitter
+    SQUARE = "1:1"         # 1080×1080 - Instagram Feed
+    PORTRAIT = "4:5"       # 1080×1350 - Instagram Portrait
+
+    @property
+    def dimensions(self) -> Tuple[int, int]:
+        """Return (width, height) for this ratio."""
+        return {
+            "9:16": (1080, 1920),
+            "16:9": (1920, 1080),
+            "1:1": (1080, 1080),
+            "4:5": (1080, 1350),
+        }[self.value]
+
+    @property
+    def label(self) -> str:
+        """Human-readable label."""
+        return {
+            "9:16": "Vertical (TikTok/Reels)",
+            "16:9": "Horizontal (YouTube)",
+            "1:1": "Square (Instagram)",
+            "4:5": "Portrait (Instagram)",
+        }[self.value]
+
+    @classmethod
+    def from_string(cls, value: str) -> "AspectRatio":
+        """Get AspectRatio from string value."""
+        for ratio in cls:
+            if ratio.value == value:
+                return ratio
+        return cls.VERTICAL  # Default
+
+
 # ============================================================================
 # Layout Models
 # ============================================================================
@@ -239,6 +275,112 @@ class PanelTransition(BaseModel):
     )
 
 
+class PanelOverrides(BaseModel):
+    """
+    User overrides for auto-generated panel settings.
+
+    All fields are optional - None means use the auto-generated value.
+    For boolean toggles (effect enabled/disabled):
+    - None = use auto (from mood preset)
+    - True = force on
+    - False = force off
+    """
+    panel_number: int = Field(..., ge=1, description="Panel number this override applies to")
+
+    # Camera overrides
+    camera_start_zoom: Optional[float] = Field(
+        None, ge=0.5, le=3.0,
+        description="Override start zoom level (None = use auto)"
+    )
+    camera_end_zoom: Optional[float] = Field(
+        None, ge=0.5, le=3.0,
+        description="Override end zoom level (None = use auto)"
+    )
+    camera_easing: Optional[CameraEasing] = Field(
+        None,
+        description="Override camera easing (None = use auto)"
+    )
+    camera_focus_x: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Custom focus point X within panel (None = use auto center)"
+    )
+    camera_focus_y: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Custom focus point Y within panel (None = use auto center)"
+    )
+
+    # Mood override
+    mood_override: Optional[PanelMood] = Field(
+        None,
+        description="Override inferred mood (None = use auto)"
+    )
+
+    # Effect toggles and intensities
+    # Vignette
+    vignette_enabled: Optional[bool] = Field(
+        None, description="Force vignette on/off (None = use auto)"
+    )
+    vignette_intensity: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Vignette intensity (None = use default)"
+    )
+
+    # Color tint
+    color_tint_enabled: Optional[bool] = Field(
+        None, description="Force color tint on/off (None = use auto)"
+    )
+    color_tint_color: Optional[str] = Field(
+        None, description="Hex color for tint (e.g., '#FFD700')"
+    )
+    color_tint_opacity: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Color tint opacity (None = use default)"
+    )
+
+    # Shake
+    shake_enabled: Optional[bool] = Field(
+        None, description="Force shake on/off (None = use auto)"
+    )
+    shake_intensity: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Shake intensity (None = use default)"
+    )
+
+    # Pulse
+    pulse_enabled: Optional[bool] = Field(
+        None, description="Force pulse on/off (None = use auto)"
+    )
+    pulse_intensity: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Pulse intensity (None = use default)"
+    )
+
+    # Golden glow
+    golden_glow_enabled: Optional[bool] = Field(
+        None, description="Force golden glow on/off (None = use auto)"
+    )
+    golden_glow_intensity: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Golden glow intensity (None = use default)"
+    )
+
+    # Red glow
+    red_glow_enabled: Optional[bool] = Field(
+        None, description="Force red glow on/off (None = use auto)"
+    )
+    red_glow_intensity: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Red glow intensity (None = use default)"
+    )
+
+    def has_overrides(self) -> bool:
+        """Check if any overrides are set."""
+        for field_name, field_value in self:
+            if field_name != "panel_number" and field_value is not None:
+                return True
+        return False
+
+
 # ============================================================================
 # Panel Instruction & Audio Models
 # ============================================================================
@@ -284,6 +426,12 @@ class PanelInstruction(BaseModel):
         description="Transition to next panel"
     )
 
+    # User overrides (Phase 5.5)
+    user_overrides: Optional[PanelOverrides] = Field(
+        None,
+        description="User overrides for camera/effects (None = use auto-generated)"
+    )
+
     # Approval status
     is_approved: bool = Field(default=False, description="User approved this panel")
 
@@ -318,12 +466,20 @@ class ComicVideoProject(BaseModel):
     )
 
     # Output settings
+    aspect_ratio: AspectRatio = Field(
+        default=AspectRatio.VERTICAL,
+        description="Output aspect ratio (determines dimensions)"
+    )
     output_width: int = Field(default=1080, description="Output video width")
     output_height: int = Field(default=1920, description="Output video height")
     fps: int = Field(default=30, description="Output frame rate")
 
     # Optional
     background_music_url: Optional[str] = Field(None, description="Background music URL")
+
+    def get_output_dimensions(self) -> Tuple[int, int]:
+        """Get output dimensions based on aspect ratio."""
+        return self.aspect_ratio.dimensions
 
     # Status
     status: ProjectStatus = Field(default=ProjectStatus.DRAFT)

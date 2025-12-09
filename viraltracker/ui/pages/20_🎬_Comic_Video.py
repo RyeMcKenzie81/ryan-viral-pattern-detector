@@ -7,6 +7,8 @@ Streamlit interface for:
 - Previewing camera movements and effects per panel
 - Reviewing audio + video together (parallel view)
 - Rendering final vertical video
+
+Phase 5.5: Manual panel adjustments, bulk actions, aspect ratio selection
 """
 
 import streamlit as st
@@ -14,7 +16,7 @@ import asyncio
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 # Page config (must be first)
 st.set_page_config(
@@ -32,6 +34,10 @@ if 'comic_project_id' not in st.session_state:
     st.session_state.comic_project_id = None
 if 'comic_workflow_step' not in st.session_state:
     st.session_state.comic_workflow_step = "upload"  # upload, audio, review, render
+if 'comic_aspect_ratio' not in st.session_state:
+    st.session_state.comic_aspect_ratio = "9:16"  # Default to vertical
+if 'render_all_progress' not in st.session_state:
+    st.session_state.render_all_progress = None
 
 
 def get_service():
@@ -135,6 +141,42 @@ async def get_signed_url(storage_path: str):
     from viraltracker.services.comic_video import ComicAudioService
     service = ComicAudioService()
     return await service.get_audio_url(storage_path)
+
+
+async def render_all_panels(project_id: str, aspect_ratio: str, force_rerender: bool = False):
+    """Render all panel previews."""
+    service = get_service()
+    from viraltracker.services.comic_video.models import AspectRatio
+    ratio = AspectRatio.from_string(aspect_ratio)
+    return await service.render_all_panels(project_id, aspect_ratio=ratio, force_rerender=force_rerender)
+
+
+async def approve_all_panels(project_id: str):
+    """Approve all panels at once."""
+    service = get_service()
+    return await service.approve_all_panels(project_id)
+
+
+async def update_project_aspect_ratio(project_id: str, aspect_ratio: str):
+    """Update project aspect ratio."""
+    service = get_service()
+    return await service.update_aspect_ratio(project_id, aspect_ratio)
+
+
+async def save_panel_overrides(project_id: str, panel_number: int, overrides: dict):
+    """Save panel overrides."""
+    from viraltracker.services.comic_video import ComicDirectorService
+    from viraltracker.services.comic_video.models import PanelOverrides
+    service = ComicDirectorService()
+    panel_overrides = PanelOverrides(panel_number=panel_number, **overrides)
+    return await service.save_overrides(project_id, panel_number, panel_overrides)
+
+
+async def clear_panel_overrides(project_id: str, panel_number: int):
+    """Clear panel overrides (reset to auto)."""
+    from viraltracker.services.comic_video import ComicDirectorService
+    service = ComicDirectorService()
+    return await service.clear_overrides(project_id, panel_number)
 
 
 async def upload_to_storage(file_bytes: bytes, filename: str, project_id: str):
@@ -380,14 +422,91 @@ def render_review_step():
             st.error("Project not found")
             return
 
-        # Status bar
+        # Project info bar
+        st.info(f"**{project.title}** | {summary['total_panels']} panels")
+
+        # Aspect ratio selector and bulk actions
+        st.markdown("### Output Settings & Bulk Actions")
+
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+
+        with col1:
+            # Aspect ratio selector
+            aspect_options = {
+                "9:16": "Vertical (TikTok/Reels)",
+                "16:9": "Horizontal (YouTube)",
+                "1:1": "Square (Instagram)",
+                "4:5": "Portrait (Instagram)"
+            }
+            current_ratio = st.session_state.comic_aspect_ratio
+            new_ratio = st.selectbox(
+                "Output Format",
+                options=list(aspect_options.keys()),
+                format_func=lambda x: aspect_options[x],
+                index=list(aspect_options.keys()).index(current_ratio) if current_ratio in aspect_options else 0,
+                key="aspect_ratio_select"
+            )
+            if new_ratio != current_ratio:
+                st.session_state.comic_aspect_ratio = new_ratio
+                # Update in database
+                asyncio.run(update_project_aspect_ratio(project_id, new_ratio))
+                st.rerun()
+
+        with col2:
+            # Render All button
+            force_rerender = st.checkbox("Force re-render", key="force_rerender")
+            if st.button("🎬 Render All Panels", type="secondary"):
+                with st.spinner("Rendering all panels..."):
+                    try:
+                        progress_bar = st.progress(0)
+                        results = asyncio.run(render_all_panels(
+                            project_id,
+                            st.session_state.comic_aspect_ratio,
+                            force_rerender
+                        ))
+                        progress_bar.progress(100)
+                        successful = len([r for r in results.values() if r])
+                        st.success(f"Rendered {successful}/{len(results)} panels")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        with col3:
+            # Approve All button
+            all_rendered = summary['instructions']['generated'] > 0
+            if st.button("✅ Approve All", type="secondary", disabled=not all_rendered):
+                if all_rendered:
+                    with st.spinner("Approving all panels..."):
+                        try:
+                            asyncio.run(approve_all_panels(project_id))
+                            st.success("All panels approved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        with col4:
+            # Final render button (moved here for visibility)
+            ready = summary["ready_for_final_render"]
+            if st.button("🎥 Render Final", type="primary" if ready else "secondary", disabled=not ready):
+                if ready:
+                    with st.spinner("Rendering final video..."):
+                        try:
+                            final_url = asyncio.run(render_final(project_id))
+                            st.success("Final video rendered!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        st.divider()
+
+        # Status metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Panels", summary["total_panels"])
         with col2:
             st.metric("Audio", f"{summary['audio']['approved']}/{summary['audio']['generated']}")
         with col3:
-            st.metric("Video", f"{summary['instructions']['approved']}/{summary['instructions']['generated']}")
+            st.metric("Video Previews", f"{summary['instructions']['approved']}/{summary['instructions']['generated']}")
         with col4:
             ready = "✅" if summary["ready_for_final_render"] else "❌"
             st.metric("Ready to Render", ready)
@@ -459,25 +578,128 @@ def render_review_step():
                     else:
                         st.warning("No audio generated")
 
-                    st.markdown("**📷 Camera Settings**")
-                    if instr:
-                        st.text(f"Zoom: {instr.camera.start_zoom:.1f} → {instr.camera.end_zoom:.1f}")
-                        st.text(f"Mood: {instr.mood.value}")
-                        st.text(f"Effects: {len(instr.effects.ambient_effects)} ambient")
-                        st.text(f"Transition: {instr.transition.transition_type.value}")
+                    # Camera & Effects Settings (collapsible)
+                    with st.expander("📷 Camera & Effects Settings", expanded=False):
+                        if instr:
+                            # Check for existing overrides
+                            has_overrides = instr.user_overrides and instr.user_overrides.has_overrides()
+
+                            # Current values (from override or auto)
+                            current_start_zoom = instr.camera.start_zoom
+                            current_end_zoom = instr.camera.end_zoom
+                            current_mood = instr.mood.value
+
+                            # Camera settings
+                            st.markdown("**Camera**")
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                start_zoom = st.slider(
+                                    "Start Zoom",
+                                    min_value=0.5, max_value=2.0,
+                                    value=float(current_start_zoom),
+                                    step=0.1,
+                                    key=f"start_zoom_{panel_num}"
+                                )
+                            with col_b:
+                                end_zoom = st.slider(
+                                    "End Zoom",
+                                    min_value=0.5, max_value=2.0,
+                                    value=float(current_end_zoom),
+                                    step=0.1,
+                                    key=f"end_zoom_{panel_num}"
+                                )
+
+                            # Mood selector
+                            moods = ["neutral", "positive", "warning", "danger", "chaos", "dramatic", "celebration"]
+                            mood_idx = moods.index(current_mood) if current_mood in moods else 0
+                            selected_mood = st.selectbox(
+                                "Mood",
+                                options=moods,
+                                index=mood_idx,
+                                key=f"mood_{panel_num}"
+                            )
+
+                            # Effect toggles
+                            st.markdown("**Effects**")
+                            col_e1, col_e2 = st.columns(2)
+                            with col_e1:
+                                # Check current effect state
+                                has_vignette = any(e.effect_type.value == "vignette" for e in instr.effects.ambient_effects)
+                                has_shake = any(e.effect_type.value == "shake" for e in instr.effects.ambient_effects)
+                                vignette_on = st.checkbox("Vignette", value=has_vignette, key=f"vignette_{panel_num}")
+                                shake_on = st.checkbox("Shake", value=has_shake, key=f"shake_{panel_num}")
+                            with col_e2:
+                                has_golden = any(e.effect_type.value == "golden_glow" for e in instr.effects.ambient_effects)
+                                has_pulse = any(e.effect_type.value == "pulse" for e in instr.effects.ambient_effects)
+                                golden_on = st.checkbox("Golden Glow", value=has_golden, key=f"golden_{panel_num}")
+                                pulse_on = st.checkbox("Pulse", value=has_pulse, key=f"pulse_{panel_num}")
+
+                            # Color tint
+                            has_tint = instr.effects.color_tint is not None
+                            tint_on = st.checkbox("Color Tint", value=has_tint, key=f"tint_on_{panel_num}")
+                            if tint_on:
+                                tint_color = st.color_picker(
+                                    "Tint Color",
+                                    value=instr.effects.color_tint or "#FFD700",
+                                    key=f"tint_color_{panel_num}"
+                                )
+
+                            # Action buttons
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                if st.button("💾 Apply Changes", key=f"apply_{panel_num}"):
+                                    overrides = {
+                                        "camera_start_zoom": start_zoom if start_zoom != instr.camera.start_zoom else None,
+                                        "camera_end_zoom": end_zoom if end_zoom != instr.camera.end_zoom else None,
+                                        "mood_override": selected_mood if selected_mood != instr.mood.value else None,
+                                        "vignette_enabled": vignette_on if vignette_on != has_vignette else None,
+                                        "shake_enabled": shake_on if shake_on != has_shake else None,
+                                        "golden_glow_enabled": golden_on if golden_on != has_golden else None,
+                                        "pulse_enabled": pulse_on if pulse_on != has_pulse else None,
+                                        "color_tint_enabled": tint_on if tint_on != has_tint else None,
+                                        "color_tint_color": tint_color if tint_on else None,
+                                    }
+                                    # Filter out None values
+                                    overrides = {k: v for k, v in overrides.items() if v is not None}
+                                    if overrides:
+                                        asyncio.run(save_panel_overrides(project_id, panel_num, overrides))
+                                        st.success("Changes saved!")
+                                        st.rerun()
+                                    else:
+                                        st.info("No changes to save")
+
+                            with col_btn2:
+                                if has_overrides:
+                                    if st.button("🔄 Reset to Auto", key=f"reset_{panel_num}"):
+                                        asyncio.run(clear_panel_overrides(project_id, panel_num))
+                                        st.success("Reset to auto settings")
+                                        st.rerun()
+
+                            # Status
+                            if has_overrides:
+                                st.caption("⚙️ Using custom settings")
+                            else:
+                                st.caption("🤖 Using auto-generated settings")
+                        else:
+                            st.info("Generate instructions first")
 
                 # Dialogue text
                 st.markdown("**💬 Dialogue**")
                 st.caption(panel.get("dialogue", "No dialogue"))
 
                 # Approve button
-                if not both_approved:
-                    if st.button(f"✅ Approve Panel {panel_num}", key=f"approve_{panel_num}", type="primary"):
-                        with st.spinner("Approving..."):
-                            asyncio.run(approve_panel(project_id, panel_num))
-                            st.rerun()
-                else:
-                    st.success("Panel approved!")
+                col_app1, col_app2 = st.columns([1, 2])
+                with col_app1:
+                    if not both_approved:
+                        if st.button(f"✅ Approve", key=f"approve_{panel_num}", type="primary"):
+                            with st.spinner("Approving..."):
+                                asyncio.run(approve_panel(project_id, panel_num))
+                                st.rerun()
+                    else:
+                        st.success("✅ Approved")
+                with col_app2:
+                    if instr:
+                        st.caption(f"Zoom: {instr.camera.start_zoom:.1f}→{instr.camera.end_zoom:.1f} | Mood: {instr.mood.value} | Effects: {len(instr.effects.ambient_effects)}")
 
         # Final render section
         st.divider()

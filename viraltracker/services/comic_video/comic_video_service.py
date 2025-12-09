@@ -22,6 +22,7 @@ from .models import (
     PanelAudio,
     PanelInstruction,
     ComicVideoProject,
+    AspectRatio,
 )
 from .comic_audio_service import ComicAudioService
 from .comic_director_service import ComicDirectorService
@@ -625,6 +626,158 @@ class ComicVideoService:
         except Exception as e:
             await self.update_status(project_id, ProjectStatus.FAILED, str(e))
             raise
+
+    # =========================================================================
+    # Bulk Actions (Phase 5.5)
+    # =========================================================================
+
+    async def render_all_panels(
+        self,
+        project_id: str,
+        aspect_ratio: AspectRatio = AspectRatio.VERTICAL,
+        force_rerender: bool = False
+    ) -> Dict[int, str]:
+        """
+        Render preview videos for all panels.
+
+        Args:
+            project_id: Project UUID
+            aspect_ratio: Output aspect ratio
+            force_rerender: Re-render even if preview exists
+
+        Returns:
+            Dict of panel_number -> preview URL
+        """
+        project = await self.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+
+        instructions = await self.director.get_all_instructions(project_id)
+        if not instructions:
+            raise ValueError("No instructions found. Generate instructions first.")
+
+        # Download comic grid
+        grid_path = await self._download_file(
+            project.comic_grid_url,
+            project_id,
+            "comic_grid.png"
+        )
+
+        # Download all audio files
+        audio_list = await self.audio.get_all_panel_audio(project_id)
+        audio_paths = {}
+        for audio in audio_list:
+            path = await self._download_file(
+                audio.audio_url,
+                project_id,
+                audio.audio_filename
+            )
+            audio_paths[audio.panel_number] = path
+
+        results = {}
+
+        for instruction in instructions:
+            panel_num = instruction.panel_number
+
+            # Skip if already has preview (unless force)
+            if not force_rerender and instruction.preview_url:
+                results[panel_num] = instruction.preview_url
+                continue
+
+            try:
+                audio_path = audio_paths.get(panel_num)
+
+                preview_path = await self.render.render_panel_preview(
+                    project_id=project_id,
+                    panel_number=panel_num,
+                    comic_grid_path=grid_path,
+                    instruction=instruction,
+                    layout=project.layout,
+                    audio_path=audio_path,
+                    aspect_ratio=aspect_ratio
+                )
+
+                # Upload preview
+                preview_url = await self.render.upload_video(
+                    project_id=project_id,
+                    local_path=Path(preview_path),
+                    filename=f"preview_panel_{panel_num:02d}.mp4"
+                )
+
+                # Update instruction with preview URL
+                await asyncio.to_thread(
+                    lambda pn=panel_num, url=preview_url: self.supabase.table("comic_panel_instructions")
+                        .update({"preview_url": url})
+                        .eq("project_id", project_id)
+                        .eq("panel_number", pn)
+                        .execute()
+                )
+
+                results[panel_num] = preview_url
+
+            except Exception as e:
+                logger.error(f"Failed to render panel {panel_num}: {e}")
+                results[panel_num] = None
+
+        logger.info(f"Rendered {len([r for r in results.values() if r])} of {len(instructions)} panels")
+        return results
+
+    async def approve_all_panels(self, project_id: str) -> int:
+        """
+        Approve all panels at once.
+
+        Args:
+            project_id: Project UUID
+
+        Returns:
+            Number of panels approved
+        """
+        instructions = await self.director.get_all_instructions(project_id)
+        audio_list = await self.audio.get_all_panel_audio(project_id)
+
+        approved_count = 0
+
+        for instruction in instructions:
+            if not instruction.is_approved:
+                await self.director.approve_instruction(project_id, instruction.panel_number)
+                approved_count += 1
+
+        for audio in audio_list:
+            if not audio.is_approved:
+                await self.audio.approve_panel_audio(project_id, audio.panel_number)
+
+        logger.info(f"Approved {approved_count} panels for project {project_id}")
+        return approved_count
+
+    async def update_aspect_ratio(
+        self,
+        project_id: str,
+        aspect_ratio: str
+    ) -> None:
+        """
+        Update project aspect ratio.
+
+        Args:
+            project_id: Project UUID
+            aspect_ratio: New aspect ratio (e.g., "9:16", "16:9")
+        """
+        # Validate aspect ratio
+        ratio = AspectRatio.from_string(aspect_ratio)
+        width, height = ratio.dimensions
+
+        await asyncio.to_thread(
+            lambda: self.supabase.table("comic_video_projects")
+                .update({
+                    "aspect_ratio": aspect_ratio,
+                    "output_width": width,
+                    "output_height": height,
+                    "updated_at": datetime.utcnow().isoformat()
+                })
+                .eq("id", project_id)
+                .execute()
+        )
+
+        logger.info(f"Updated aspect ratio to {aspect_ratio} for project {project_id}")
 
     # =========================================================================
     # Helper Methods

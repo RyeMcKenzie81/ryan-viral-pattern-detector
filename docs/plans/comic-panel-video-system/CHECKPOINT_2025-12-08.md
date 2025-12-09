@@ -3,21 +3,21 @@
 ## Status Summary
 
 **Branch:** `feature/comic-panel-video-system`
-**Current Phase:** Phase 5 Complete, Phase 5.5 & 6 Planned
-**Last Commit:** `24de2b6` - Add output aspect ratio selection to Phase 5.5 plan
+**Current Phase:** Phase 5.5 Complete, Phase 6 Planned
+**Last Update:** Phase 5.5 implementation complete
 
 ---
 
-## What's Been Built (Phases 1-5)
+## What's Been Built (Phases 1-5.5)
 
 ### Core Services (All Implemented & Working)
 
 | Service | File | Purpose |
 |---------|------|---------|
-| ComicVideoService | `services/comic_video/comic_video_service.py` | Main orchestration, project CRUD |
+| ComicVideoService | `services/comic_video/comic_video_service.py` | Main orchestration, project CRUD, bulk actions |
 | ComicAudioService | `services/comic_video/comic_audio_service.py` | ElevenLabs TTS for panel voiceover |
-| ComicDirectorService | `services/comic_video/comic_director_service.py` | Camera/effects instruction generation |
-| ComicRenderService | `services/comic_video/comic_render_service.py` | FFmpeg video rendering |
+| ComicDirectorService | `services/comic_video/comic_director_service.py` | Camera/effects generation, override application |
+| ComicRenderService | `services/comic_video/comic_render_service.py` | FFmpeg video rendering, aspect ratio support |
 
 ### Models
 
@@ -28,14 +28,18 @@ Location: `services/comic_video/models.py`
 - `PanelCamera`, `PanelEffects`, `PanelTransition` cinematography models
 - `PanelInstruction`, `PanelAudio`, `ComicVideoProject` main models
 - `MOOD_EFFECT_PRESETS` for Phase 1 FFmpeg effects
+- **NEW: `AspectRatio`** enum with 4 output formats
+- **NEW: `PanelOverrides`** model for user customizations
 
 ### Database Tables
 
-Migration: `sql/2025-12-08_comic_video_tables.sql`
+Migrations:
+- `sql/2025-12-08_comic_video_tables.sql`
+- `sql/2025-12-08_comic_video_phase5_5.sql` (NEW)
 
-- `comic_video_projects` - Project metadata, status, layout
+- `comic_video_projects` - Project metadata, status, layout, **aspect_ratio**
 - `comic_panel_audio` - Audio per panel (URL, duration, voice)
-- `comic_panel_instructions` - Camera/effects per panel (JSONB)
+- `comic_panel_instructions` - Camera/effects per panel (JSONB), **user_overrides**
 - `comic_render_jobs` - Render queue, progress
 
 ### UI
@@ -44,8 +48,69 @@ File: `ui/pages/20_🎬_Comic_Video.py`
 
 - Upload step (comic grid image + JSON)
 - Audio generation step
-- Parallel review step (audio player + video preview per panel)
+- **Enhanced review step:**
+  - Aspect ratio selector (9:16, 16:9, 1:1, 4:5)
+  - Bulk action buttons (Render All, Approve All)
+  - Per-panel camera/effects override controls
+  - Reset to Auto functionality
 - Final render step
+
+---
+
+## Phase 5.5 Implementation (Complete)
+
+### AspectRatio Enum
+
+```python
+class AspectRatio(str, Enum):
+    VERTICAL = "9:16"      # 1080×1920 - TikTok, Reels, Shorts (default)
+    HORIZONTAL = "16:9"    # 1920×1080 - YouTube, Twitter
+    SQUARE = "1:1"         # 1080×1080 - Instagram Feed
+    PORTRAIT = "4:5"       # 1080×1350 - Instagram Portrait
+```
+
+Properties:
+- `.dimensions` → `(width, height)` tuple
+- `.label` → Human-readable label
+- `.from_string(value)` → Parse from string value
+
+### PanelOverrides Model
+
+Supports overriding:
+- **Camera:** start_zoom, end_zoom, easing, focus_x, focus_y
+- **Mood:** Override auto-inferred mood
+- **Effects:** Toggle vignette, shake, pulse, golden_glow, red_glow on/off
+- **Color tint:** Enable/disable, custom color, opacity
+
+All fields are Optional - `None` means use auto-generated value.
+
+### New Methods
+
+**ComicDirectorService:**
+- `apply_overrides(instruction, overrides)` - Apply user overrides to instruction
+- `save_overrides(project_id, panel_number, overrides)` - Save to database
+- `clear_overrides(project_id, panel_number)` - Reset to auto
+
+**ComicVideoService:**
+- `render_all_panels(project_id, aspect_ratio, force_rerender)` - Bulk render
+- `approve_all_panels(project_id)` - Bulk approve
+- `update_aspect_ratio(project_id, aspect_ratio)` - Change output format
+
+**ComicRenderService:**
+- Updated `render_panel_preview()` and `render_full_video()` to accept `AspectRatio`
+- Added `render_all_panels()` for bulk rendering
+
+### UI Controls
+
+- Aspect ratio dropdown selector
+- "Render All Panels" button with force re-render option
+- "Approve All" button
+- Per-panel collapsible settings:
+  - Camera zoom sliders (start/end)
+  - Mood selector dropdown
+  - Effect toggles (vignette, shake, golden glow, pulse)
+  - Color tint picker
+  - "Apply Changes" and "Reset to Auto" buttons
 
 ---
 
@@ -90,24 +155,6 @@ Uses FFmpeg conditional expressions: `if(lt(on,content_frames), content_expr, tr
 
 ## What's Planned (Not Yet Implemented)
 
-### Phase 5.5: Manual Panel Adjustments
-
-**Features:**
-1. Override camera settings per panel (zoom, easing, focus)
-2. Toggle effects on/off (vignette, color tint, shake, pulse)
-3. Adjust effect intensity (0-100% slider)
-4. **Render All Panels** button with progress tracking
-5. **Approve All** button with confirmation dialog
-6. **Aspect ratio selector** (9:16, 16:9, 1:1, 4:5)
-
-**New Models Needed:**
-- `AspectRatio` enum
-- `PanelOverrides` model
-
-**Database Changes:**
-- `user_overrides JSONB` column on `comic_panel_instructions`
-- `aspect_ratio TEXT` column on `comic_video_projects`
-
 ### Phase 6: Particles, SFX & Music
 
 **Features:**
@@ -135,16 +182,17 @@ viraltracker/
 ├── services/
 │   └── comic_video/
 │       ├── __init__.py
-│       ├── models.py                  # All Pydantic models
-│       ├── comic_video_service.py     # Main orchestration
+│       ├── models.py                  # All Pydantic models (incl. AspectRatio, PanelOverrides)
+│       ├── comic_video_service.py     # Main orchestration, bulk actions
 │       ├── comic_audio_service.py     # ElevenLabs TTS
-│       ├── comic_director_service.py  # Camera/effects generation
-│       └── comic_render_service.py    # FFmpeg rendering
+│       ├── comic_director_service.py  # Camera/effects generation, override application
+│       └── comic_render_service.py    # FFmpeg rendering, aspect ratio support
 ├── ui/
 │   └── pages/
-│       └── 20_🎬_Comic_Video.py       # Streamlit UI
+│       └── 20_🎬_Comic_Video.py       # Streamlit UI with Phase 5.5 controls
 ├── sql/
-│   └── 2025-12-08_comic_video_tables.sql
+│   ├── 2025-12-08_comic_video_tables.sql
+│   └── 2025-12-08_comic_video_phase5_5.sql  # NEW: user_overrides, aspect_ratio columns
 ├── scripts/
 │   └── test_comic_video_real.py       # Integration tests
 └── docs/
@@ -168,7 +216,18 @@ Real comic JSON used for testing: "Inflation Explained by Raccoons"
 
 ## Next Steps
 
-1. **Implement Phase 5.5** - Start with AspectRatio enum and bulk action buttons
-2. **Or implement Phase 6** - Start with particle asset sourcing and ElevenLabsSFXService
+1. **Run database migration** for Phase 5.5 columns:
+   ```sql
+   -- Execute sql/2025-12-08_comic_video_phase5_5.sql
+   ```
 
-See `PLAN.md` for detailed implementation order and specifications.
+2. **Test Phase 5.5 features** in UI:
+   - Change aspect ratio and verify preview dimensions
+   - Use bulk render/approve buttons
+   - Adjust per-panel settings and verify re-render
+
+3. **Implement Phase 6** - Start with:
+   - Particle asset sourcing
+   - ElevenLabsSFXService for sound effects API
+
+See `PLAN.md` for detailed Phase 6 specifications.

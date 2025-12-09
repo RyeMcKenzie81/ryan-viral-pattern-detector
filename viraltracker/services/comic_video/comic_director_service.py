@@ -30,6 +30,7 @@ from .models import (
     PanelEffects,
     PanelTransition,
     PanelInstruction,
+    PanelOverrides,
     MOOD_EFFECT_PRESETS,
 )
 from ...core.database import get_supabase_client
@@ -828,6 +829,11 @@ class ComicDirectorService:
 
     def _row_to_instruction(self, row: Dict[str, Any]) -> PanelInstruction:
         """Convert database row to PanelInstruction."""
+        # Parse user_overrides if present
+        user_overrides = None
+        if row.get("user_overrides"):
+            user_overrides = PanelOverrides(**row["user_overrides"])
+
         return PanelInstruction(
             panel_number=row["panel_number"],
             panel_type=row["panel_type"],
@@ -838,6 +844,222 @@ class ComicDirectorService:
             camera=PanelCamera(**row["camera_json"]),
             effects=PanelEffects(**row["effects_json"]),
             transition=PanelTransition(**row["transition_json"]),
+            user_overrides=user_overrides,
             is_approved=row.get("is_approved", False),
             preview_url=row.get("preview_url")
         )
+
+    # =========================================================================
+    # Override Application (Phase 5.5)
+    # =========================================================================
+
+    def apply_overrides(
+        self,
+        instruction: PanelInstruction,
+        overrides: PanelOverrides
+    ) -> PanelInstruction:
+        """
+        Apply user overrides to auto-generated panel instruction.
+
+        Creates a new PanelInstruction with overrides applied. The original
+        instruction is not modified.
+
+        Args:
+            instruction: Original auto-generated instruction
+            overrides: User overrides to apply
+
+        Returns:
+            New PanelInstruction with overrides applied
+        """
+        if not overrides.has_overrides():
+            # No overrides, return original with overrides attached
+            return instruction.model_copy(update={"user_overrides": overrides})
+
+        # Deep copy to avoid modifying original
+        updated = instruction.model_copy(deep=True)
+
+        # Apply mood override first (affects effect preset)
+        if overrides.mood_override is not None:
+            updated.mood = overrides.mood_override
+            # Regenerate effects from new mood preset
+            base_effects = MOOD_EFFECT_PRESETS.get(overrides.mood_override, PanelEffects())
+            updated.effects = PanelEffects(
+                ambient_effects=list(base_effects.ambient_effects),
+                triggered_effects=list(base_effects.triggered_effects),
+                color_tint=base_effects.color_tint,
+                tint_opacity=base_effects.tint_opacity
+            )
+
+        # Apply camera overrides
+        updated.camera = self._apply_camera_overrides(updated.camera, overrides)
+
+        # Apply effect overrides
+        updated.effects = self._apply_effect_overrides(updated.effects, overrides)
+
+        # Store overrides on the instruction
+        updated.user_overrides = overrides
+
+        logger.info(f"Applied overrides to panel {instruction.panel_number}")
+        return updated
+
+    def _apply_camera_overrides(
+        self,
+        camera: PanelCamera,
+        overrides: PanelOverrides
+    ) -> PanelCamera:
+        """Apply camera-related overrides."""
+        updated = camera.model_copy(deep=True)
+
+        if overrides.camera_start_zoom is not None:
+            updated.start_zoom = overrides.camera_start_zoom
+
+        if overrides.camera_end_zoom is not None:
+            updated.end_zoom = overrides.camera_end_zoom
+
+        if overrides.camera_easing is not None:
+            updated.easing = overrides.camera_easing
+
+        # Apply custom focus point if specified
+        if overrides.camera_focus_x is not None or overrides.camera_focus_y is not None:
+            # Use provided values or default to center (0.5)
+            focus_x = overrides.camera_focus_x if overrides.camera_focus_x is not None else 0.5
+            focus_y = overrides.camera_focus_y if overrides.camera_focus_y is not None else 0.5
+
+            # Add or replace focus point
+            updated.focus_points = [FocusPoint(x=focus_x, y=focus_y, hold_ms=0, zoom_boost=0)]
+
+        return updated
+
+    def _apply_effect_overrides(
+        self,
+        effects: PanelEffects,
+        overrides: PanelOverrides
+    ) -> PanelEffects:
+        """Apply effect-related overrides."""
+        updated = effects.model_copy(deep=True)
+
+        # Helper to toggle effect type on/off
+        def toggle_effect(
+            effect_type: EffectType,
+            enabled: Optional[bool],
+            intensity: Optional[float]
+        ):
+            """Toggle an effect on/off with optional intensity."""
+            if enabled is None and intensity is None:
+                return  # No override, keep as-is
+
+            # Find and remove existing effect of this type
+            updated.ambient_effects = [
+                e for e in updated.ambient_effects
+                if e.effect_type != effect_type
+            ]
+            updated.triggered_effects = [
+                e for e in updated.triggered_effects
+                if e.effect_type != effect_type
+            ]
+
+            # Add effect if enabled (or intensity specified implies enabled)
+            if enabled is True or (enabled is None and intensity is not None):
+                effect_intensity = intensity if intensity is not None else 0.5
+                updated.ambient_effects.append(
+                    EffectInstance(
+                        effect_type=effect_type,
+                        intensity=effect_intensity
+                    )
+                )
+
+        # Apply vignette toggle
+        toggle_effect(
+            EffectType.VIGNETTE,
+            overrides.vignette_enabled,
+            overrides.vignette_intensity
+        )
+
+        # Apply shake toggle
+        toggle_effect(
+            EffectType.SHAKE,
+            overrides.shake_enabled,
+            overrides.shake_intensity
+        )
+
+        # Apply pulse toggle
+        toggle_effect(
+            EffectType.PULSE,
+            overrides.pulse_enabled,
+            overrides.pulse_intensity
+        )
+
+        # Apply golden glow toggle
+        toggle_effect(
+            EffectType.GOLDEN_GLOW,
+            overrides.golden_glow_enabled,
+            overrides.golden_glow_intensity
+        )
+
+        # Apply red glow toggle
+        toggle_effect(
+            EffectType.RED_GLOW,
+            overrides.red_glow_enabled,
+            overrides.red_glow_intensity
+        )
+
+        # Apply color tint override
+        if overrides.color_tint_enabled is False:
+            updated.color_tint = None
+            updated.tint_opacity = 0.0
+        elif overrides.color_tint_enabled is True or overrides.color_tint_color is not None:
+            if overrides.color_tint_color is not None:
+                updated.color_tint = overrides.color_tint_color
+            elif updated.color_tint is None:
+                updated.color_tint = "#FFD700"  # Default to gold
+
+            if overrides.color_tint_opacity is not None:
+                updated.tint_opacity = overrides.color_tint_opacity
+            elif updated.tint_opacity == 0.0:
+                updated.tint_opacity = 0.15  # Default opacity
+
+        return updated
+
+    async def save_overrides(
+        self,
+        project_id: str,
+        panel_number: int,
+        overrides: PanelOverrides
+    ) -> None:
+        """
+        Save user overrides to database.
+
+        Args:
+            project_id: Project ID
+            panel_number: Panel number
+            overrides: Overrides to save
+        """
+        await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_instructions")
+                .update({"user_overrides": overrides.model_dump(mode="json")})
+                .eq("project_id", project_id)
+                .eq("panel_number", panel_number)
+                .execute()
+        )
+        logger.info(f"Saved overrides for project {project_id} panel {panel_number}")
+
+    async def clear_overrides(
+        self,
+        project_id: str,
+        panel_number: int
+    ) -> None:
+        """
+        Clear user overrides (reset to auto).
+
+        Args:
+            project_id: Project ID
+            panel_number: Panel number
+        """
+        await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_instructions")
+                .update({"user_overrides": None})
+                .eq("project_id", project_id)
+                .eq("panel_number", panel_number)
+                .execute()
+        )
+        logger.info(f"Cleared overrides for project {project_id} panel {panel_number}")

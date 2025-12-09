@@ -26,7 +26,9 @@ from .models import (
     PanelEffects,
     PanelTransition,
     PanelInstruction,
+    PanelOverrides,
     EffectInstance,
+    AspectRatio,
 )
 from ..ffmpeg_service import FFmpegService
 from ...core.database import get_supabase_client
@@ -88,8 +90,9 @@ class ComicRenderService:
         instruction: PanelInstruction,
         layout: ComicLayout,
         audio_path: Optional[Path] = None,
-        output_width: int = DEFAULT_OUTPUT_WIDTH,
-        output_height: int = DEFAULT_OUTPUT_HEIGHT
+        aspect_ratio: AspectRatio = AspectRatio.VERTICAL,
+        output_width: Optional[int] = None,
+        output_height: Optional[int] = None
     ) -> str:
         """
         Render a single panel preview video.
@@ -101,8 +104,9 @@ class ComicRenderService:
             instruction: Panel instruction with camera/effects
             layout: Comic layout
             audio_path: Optional audio file to include
-            output_width: Output video width
-            output_height: Output video height
+            aspect_ratio: Output aspect ratio (determines dimensions)
+            output_width: Override output width (uses aspect_ratio if None)
+            output_height: Override output height (uses aspect_ratio if None)
 
         Returns:
             Path to rendered preview video
@@ -110,13 +114,17 @@ class ComicRenderService:
         if not self.available:
             raise RuntimeError("FFmpeg not available")
 
+        # Get output dimensions from aspect ratio or overrides
+        if output_width is None or output_height is None:
+            output_width, output_height = aspect_ratio.dimensions
+
         # Create output directory
         project_dir = self.output_base / project_id / "previews"
         project_dir.mkdir(parents=True, exist_ok=True)
 
         output_path = project_dir / f"panel_{panel_number:02d}_preview.mp4"
 
-        logger.info(f"Rendering preview for panel {panel_number}")
+        logger.info(f"Rendering preview for panel {panel_number} at {output_width}x{output_height}")
 
         # Detect actual image dimensions and update layout
         actual_width, actual_height = await self._get_image_dimensions(comic_grid_path)
@@ -148,6 +156,75 @@ class ComicRenderService:
 
         logger.info(f"Rendered preview: {output_path}")
         return str(output_path)
+
+    async def render_all_panels(
+        self,
+        project_id: str,
+        comic_grid_path: Path,
+        instructions: List[PanelInstruction],
+        layout: ComicLayout,
+        audio_paths: Dict[int, Path],
+        aspect_ratio: AspectRatio = AspectRatio.VERTICAL,
+        force_rerender: bool = False,
+        progress_callback: Optional[callable] = None
+    ) -> Dict[int, str]:
+        """
+        Render preview videos for all panels.
+
+        Args:
+            project_id: Project UUID
+            comic_grid_path: Path to comic grid image
+            instructions: All panel instructions
+            layout: Comic layout
+            audio_paths: Map of panel_number -> audio file path
+            aspect_ratio: Output aspect ratio
+            force_rerender: Re-render even if preview exists
+            progress_callback: Optional callback(panel_number, total) for progress
+
+        Returns:
+            Dict of panel_number -> preview path
+        """
+        if not self.available:
+            raise RuntimeError("FFmpeg not available")
+
+        output_width, output_height = aspect_ratio.dimensions
+        results = {}
+        total = len(instructions)
+
+        logger.info(f"Rendering all {total} panels at {output_width}x{output_height}")
+
+        for i, instruction in enumerate(instructions):
+            panel_num = instruction.panel_number
+            audio_path = audio_paths.get(panel_num)
+
+            # Check if preview already exists (unless force_rerender)
+            if not force_rerender and instruction.preview_url:
+                results[panel_num] = instruction.preview_url
+                if progress_callback:
+                    progress_callback(panel_num, total)
+                continue
+
+            try:
+                preview_path = await self.render_panel_preview(
+                    project_id=project_id,
+                    panel_number=panel_num,
+                    comic_grid_path=comic_grid_path,
+                    instruction=instruction,
+                    layout=layout,
+                    audio_path=Path(audio_path) if audio_path else None,
+                    aspect_ratio=aspect_ratio
+                )
+                results[panel_num] = preview_path
+
+                if progress_callback:
+                    progress_callback(panel_num, total)
+
+            except Exception as e:
+                logger.error(f"Failed to render panel {panel_num}: {e}")
+                results[panel_num] = None
+
+        logger.info(f"Rendered {len([r for r in results.values() if r])} of {total} panels")
+        return results
 
     def _build_panel_render_command(
         self,
@@ -232,8 +309,9 @@ class ComicRenderService:
         instructions: List[PanelInstruction],
         layout: ComicLayout,
         audio_paths: Dict[int, Path],
-        output_width: int = DEFAULT_OUTPUT_WIDTH,
-        output_height: int = DEFAULT_OUTPUT_HEIGHT,
+        aspect_ratio: AspectRatio = AspectRatio.VERTICAL,
+        output_width: Optional[int] = None,
+        output_height: Optional[int] = None,
         background_music_path: Optional[Path] = None
     ) -> str:
         """
@@ -245,8 +323,9 @@ class ComicRenderService:
             instructions: All panel instructions
             layout: Comic layout
             audio_paths: Map of panel_number -> audio file path
-            output_width: Output video width
-            output_height: Output video height
+            aspect_ratio: Output aspect ratio (determines dimensions)
+            output_width: Override output width (uses aspect_ratio if None)
+            output_height: Override output height (uses aspect_ratio if None)
             background_music_path: Optional background music
 
         Returns:
@@ -254,6 +333,10 @@ class ComicRenderService:
         """
         if not self.available:
             raise RuntimeError("FFmpeg not available")
+
+        # Get output dimensions from aspect ratio or overrides
+        if output_width is None or output_height is None:
+            output_width, output_height = aspect_ratio.dimensions
 
         project_dir = self.output_base / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -761,7 +844,13 @@ class ComicRenderService:
         amount = intensity * 0.15
         return f"eq=brightness='{amount:.3f}*sin(t*3)'"
 
-    def _shake_filter(self, intensity: float, duration_ms: int) -> str:
+    def _shake_filter(
+        self,
+        intensity: float,
+        duration_ms: int,
+        output_width: int = DEFAULT_OUTPUT_WIDTH,
+        output_height: int = DEFAULT_OUTPUT_HEIGHT
+    ) -> str:
         """Build camera shake filter."""
         # Amplitude in pixels
         amp = int(intensity * 10)
@@ -772,7 +861,7 @@ class ComicRenderService:
             f"crop=iw-{amp*2}:ih-{amp*2}:"
             f"x='{amp}+{amp}*sin(t*{freq})':"
             f"y='{amp}+{amp}*cos(t*{freq*0.7})',"
-            f"scale=1080:1920:flags=lanczos"
+            f"scale={output_width}:{output_height}:flags=lanczos"
         )
 
     def _flash_filter(self, intensity: float, duration_ms: int) -> str:
