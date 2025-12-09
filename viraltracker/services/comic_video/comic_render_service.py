@@ -534,11 +534,16 @@ class ComicRenderService:
             cmd.extend(["-i", str(audio_path)])
 
         # Build filter complex with video and optional audio delay
+        # IMPORTANT: Always add a final scale to ensure consistent output dimensions
+        # The shake effect adds its own scale, so we need to check if it's present
+        has_shake_scale = effects_filter and "scale=" in effects_filter
+        final_scale = "" if has_shake_scale else f",scale={output_width}:{output_height}:flags=lanczos"
+
         if audio_path and audio_path.exists():
             if effects_filter:
-                video_chain = f"[0:v]{zoompan_filter},{effects_filter}[vout]"
+                video_chain = f"[0:v]{zoompan_filter},{effects_filter}{final_scale}[vout]"
             else:
-                video_chain = f"[0:v]{zoompan_filter}[vout]"
+                video_chain = f"[0:v]{zoompan_filter}{final_scale}[vout]"
 
             # Only add audio delay filter if delay > 0
             if audio_delay_ms > 0:
@@ -560,9 +565,9 @@ class ComicRenderService:
         else:
             # No audio - just video filters
             if effects_filter:
-                filter_complex = f"{zoompan_filter},{effects_filter}"
+                filter_complex = f"{zoompan_filter},{effects_filter}{final_scale}"
             else:
-                filter_complex = zoompan_filter
+                filter_complex = f"{zoompan_filter}{final_scale}"
             cmd.extend([
                 "-filter_complex", filter_complex,
             ])
