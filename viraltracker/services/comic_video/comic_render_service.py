@@ -417,16 +417,23 @@ class ComicRenderService:
         """
         fps = self.DEFAULT_FPS
 
+        # Get audio delay from user overrides or use default (150ms)
+        # This delay ensures voice starts after camera visually "arrives" at panel
+        audio_delay_ms = 150
+        if instruction.user_overrides and instruction.user_overrides.audio_delay_ms is not None:
+            audio_delay_ms = instruction.user_overrides.audio_delay_ms
+
         # Get actual audio duration to sync video precisely
         # This prevents drift from accumulated buffers in stored duration_ms
         if audio_path and audio_path.exists():
             actual_audio_ms = await self._get_audio_duration_ms(audio_path)
             if actual_audio_ms:
-                # Use actual audio duration + small buffer (150ms) for breathing room
-                content_duration_ms = actual_audio_ms + 150
+                # Content duration = audio delay + actual audio + small buffer
+                # Audio delay at start pushes audio playback forward
+                content_duration_ms = audio_delay_ms + actual_audio_ms + 100
                 logger.debug(
-                    f"Panel {instruction.panel_number}: using actual audio duration "
-                    f"{actual_audio_ms}ms + 150ms buffer"
+                    f"Panel {instruction.panel_number}: {audio_delay_ms}ms delay + "
+                    f"{actual_audio_ms}ms audio + 100ms buffer"
                 )
             else:
                 content_duration_ms = instruction.duration_ms
@@ -479,7 +486,9 @@ class ComicRenderService:
         ]
 
         if audio_path and audio_path.exists():
-            cmd.extend(["-i", str(audio_path)])
+            # Add audio delay so voice starts after camera settles on panel
+            audio_delay_sec = audio_delay_ms / 1000
+            cmd.extend(["-itsoffset", str(audio_delay_sec), "-i", str(audio_path)])
 
         cmd.extend([
             "-filter_complex", filter_complex,
@@ -635,18 +644,38 @@ class ComicRenderService:
         x_expr = f"'{cx_px:.1f}-iw/zoom/2'"
         y_expr = f"'{cy_px:.1f}-ih/zoom/2'"
 
-        # Build zoompan filter
+        # Calculate intermediate size that preserves source aspect ratio
+        # This prevents stretching the original image
+        source_aspect = canvas_w / canvas_h
+
+        if source_aspect > (out_w / out_h):
+            # Source is wider than output - fit by width, letterbox top/bottom
+            inter_w = out_w
+            inter_h = int(out_w / source_aspect)
+        else:
+            # Source is taller than output - fit by height, pillarbox left/right
+            inter_h = out_h
+            inter_w = int(out_h * source_aspect)
+
+        # Build zoompan filter at intermediate size (preserves aspect ratio)
         zoompan = (
             f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
-            f":d={duration_frames}:s={out_w}x{out_h}:fps={fps}"
+            f":d={duration_frames}:s={inter_w}x{inter_h}:fps={fps}"
+        )
+
+        # Scale to fit output and pad with black to fill remaining space
+        scale_pad = (
+            f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
         )
 
         logger.debug(
             f"Zoompan: panel at ({camera.center_x:.2f}, {camera.center_y:.2f}), "
-            f"zoom {z_start:.1f} -> {z_end:.1f}"
+            f"zoom {z_start:.1f} -> {z_end:.1f}, "
+            f"intermediate {inter_w}x{inter_h} -> output {out_w}x{out_h}"
         )
 
-        return zoompan
+        return f"{zoompan},{scale_pad}"
 
     def _build_zoompan_with_transition(
         self,
@@ -712,10 +741,24 @@ class ComicRenderService:
             x_expr = f"'{curr_cx:.1f}-iw/zoom/2'"
             y_expr = f"'{curr_cy:.1f}-ih/zoom/2'"
 
-            return (
+            # Calculate intermediate size that preserves source aspect ratio
+            source_aspect = canvas_w / canvas_h
+            if source_aspect > (out_w / out_h):
+                inter_w = out_w
+                inter_h = int(out_w / source_aspect)
+            else:
+                inter_h = out_h
+                inter_w = int(out_h * source_aspect)
+
+            zoompan = (
                 f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
-                f":d={total_frames}:s={out_w}x{out_h}:fps={fps}"
+                f":d={total_frames}:s={inter_w}x{inter_h}:fps={fps}"
             )
+            scale_pad = (
+                f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+                f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
+            )
+            return f"{zoompan},{scale_pad}"
 
         # Next panel positions
         next_cx = next_camera.center_x * canvas_w
@@ -751,9 +794,29 @@ class ComicRenderService:
             f"{curr_cy:.1f}+({next_cy - curr_cy:.1f})*(on-{content_frames})/{transition_frames}-ih/zoom/2)'"
         )
 
+        # Calculate intermediate size that preserves source aspect ratio
+        # This prevents stretching the original image
+        source_aspect = canvas_w / canvas_h
+
+        if source_aspect > (out_w / out_h):
+            # Source is wider than output - fit by width, letterbox top/bottom
+            inter_w = out_w
+            inter_h = int(out_w / source_aspect)
+        else:
+            # Source is taller than output - fit by height, pillarbox left/right
+            inter_h = out_h
+            inter_w = int(out_h * source_aspect)
+
+        # Build zoompan filter at intermediate size (preserves aspect ratio)
         zoompan = (
             f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
-            f":d={total_frames}:s={out_w}x{out_h}:fps={fps}"
+            f":d={total_frames}:s={inter_w}x{inter_h}:fps={fps}"
+        )
+
+        # Scale to fit output and pad with black to fill remaining space
+        scale_pad = (
+            f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
         )
 
         logger.debug(
@@ -761,7 +824,7 @@ class ComicRenderService:
             f"{content_frames} content + {transition_frames} transition frames"
         )
 
-        return zoompan
+        return f"{zoompan},{scale_pad}"
 
     def _build_effects_filter(
         self,

@@ -709,6 +709,18 @@ def render_review_step():
                                 key=f"tint_color_{panel_num}"
                             )
 
+                        # Audio timing
+                        st.caption("Timing:")
+                        saved_delay = user_overrides.audio_delay_ms if user_overrides and user_overrides.audio_delay_ms is not None else 150
+                        audio_delay = st.slider(
+                            "Audio Delay (ms)",
+                            min_value=0, max_value=500,
+                            value=int(saved_delay),
+                            step=25,
+                            key=f"audio_delay_{panel_num}",
+                            help="Delay before voice starts. Increase if voice starts before camera arrives at panel."
+                        )
+
                         # Action buttons
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
@@ -725,6 +737,7 @@ def render_review_step():
                                     "golden_glow_enabled": golden_on,
                                     "pulse_enabled": pulse_on,
                                     "color_tint_enabled": tint_on,
+                                    "audio_delay_ms": int(audio_delay),
                                 }
                                 if tint_on:
                                     overrides["color_tint_color"] = tint_color

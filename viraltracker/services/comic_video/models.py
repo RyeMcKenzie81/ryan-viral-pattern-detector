@@ -385,6 +385,12 @@ class PanelOverrides(BaseModel):
         description="Red glow intensity (None = use default)"
     )
 
+    # Audio timing
+    audio_delay_ms: Optional[int] = Field(
+        None, ge=0, le=500,
+        description="Delay before audio starts (ms). Helps sync voice with visual arrival. Default 150ms."
+    )
+
     def has_overrides(self) -> bool:
         """Check if any overrides are set."""
         for field_name, field_value in self:
