@@ -185,6 +185,40 @@ async def render_all_panels(project_id: str, aspect_ratio: str, force_rerender: 
     return await service.render_all_panels(project_id, aspect_ratio=ratio, force_rerender=force_rerender)
 
 
+async def get_multi_speaker_audio(project_id: str, panel_number: int):
+    """Get multi-speaker audio for a panel."""
+    from viraltracker.services.comic_video import ComicAudioService
+    service = ComicAudioService()
+    return await service.get_multi_speaker_audio(project_id, panel_number)
+
+
+async def generate_multi_speaker_audio(project_id: str, panel_number: int, panel: dict):
+    """Generate multi-speaker audio for a panel."""
+    from viraltracker.services.comic_video import ComicAudioService
+    service = ComicAudioService()
+    return await service.generate_multi_speaker_audio(project_id, panel_number, panel)
+
+
+async def update_segment_pause(project_id: str, panel_number: int, segment_index: int, pause_ms: int):
+    """Update pause duration for a segment."""
+    from viraltracker.services.comic_video import ComicAudioService
+    service = ComicAudioService()
+    await service.update_segment_pause(project_id, panel_number, segment_index, pause_ms)
+
+
+async def regenerate_combined_audio(project_id: str, panel_number: int):
+    """Regenerate combined audio with updated pauses."""
+    from viraltracker.services.comic_video import ComicAudioService
+    service = ComicAudioService()
+    return await service.regenerate_combined_audio(project_id, panel_number)
+
+
+def check_panel_has_segments(panel: dict) -> bool:
+    """Check if a panel has multi-speaker segments."""
+    segments = panel.get("segments", [])
+    return len(segments) > 1
+
+
 async def approve_all_panels(project_id: str):
     """Approve all panels at once."""
     service = get_service()

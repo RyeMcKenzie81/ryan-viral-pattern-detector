@@ -434,6 +434,53 @@ class PanelAudio(BaseModel):
     is_approved: bool = Field(default=False, description="User approved this audio")
 
 
+class AudioSegment(BaseModel):
+    """A single speaker segment within a panel's audio."""
+    segment_index: int = Field(..., ge=0, description="Order within the panel (0-indexed)")
+    speaker: str = Field(..., description="Speaker identifier (e.g., 'narrator', 'raccoon')")
+    text: str = Field(..., description="Text spoken by this speaker")
+
+    # Voice settings
+    voice_id: Optional[str] = Field(None, description="ElevenLabs voice ID")
+    voice_name: Optional[str] = Field(None, description="Voice display name")
+
+    # Generated audio
+    audio_url: Optional[str] = Field(None, description="Storage URL for segment audio")
+    duration_ms: int = Field(default=0, ge=0, description="Segment audio duration")
+    pause_after_ms: int = Field(default=300, ge=0, le=2000, description="Pause after this segment")
+
+    # Generation metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MultiSpeakerPanelAudio(BaseModel):
+    """Multi-speaker audio for a panel with customizable pauses."""
+    panel_number: int = Field(..., ge=1, description="Panel number")
+    segments: List[AudioSegment] = Field(default_factory=list, description="Audio segments in order")
+
+    # Combined output
+    combined_audio_url: Optional[str] = Field(None, description="URL of combined audio with pauses")
+    total_duration_ms: int = Field(default=0, ge=0, description="Total duration including pauses")
+
+    # Approval
+    is_approved: bool = Field(default=False, description="User approved this audio")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    def has_all_segments_generated(self) -> bool:
+        """Check if all segments have audio generated."""
+        return all(s.audio_url is not None for s in self.segments)
+
+    def calculate_total_duration(self) -> int:
+        """Calculate total duration including pauses."""
+        if not self.segments:
+            return 0
+        # Sum segment durations + pauses (except last pause)
+        total = sum(s.duration_ms + s.pause_after_ms for s in self.segments[:-1])
+        if self.segments:
+            total += self.segments[-1].duration_ms
+        return total
+
+
 class PanelInstruction(BaseModel):
     """Complete instructions for one panel."""
     panel_number: int = Field(..., ge=1, description="Panel number")

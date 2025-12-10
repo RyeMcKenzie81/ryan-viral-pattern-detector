@@ -14,7 +14,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
 
-from .models import PanelAudio, ComicLayout
+from .models import PanelAudio, ComicLayout, AudioSegment, MultiSpeakerPanelAudio
 from ..elevenlabs_service import ElevenLabsService
 from ..audio_models import VoiceSettings, Character
 from ..ffmpeg_service import FFmpegService
@@ -489,3 +489,567 @@ class ComicAudioService:
             ) if row.get("created_at") else datetime.utcnow(),
             is_approved=row.get("is_approved", False)
         )
+
+    # =========================================================================
+    # Multi-Speaker Audio Generation
+    # =========================================================================
+
+    def extract_panel_segments(self, panel: Dict[str, Any]) -> List[Dict[str, str]]:
+        """
+        Extract speaker segments from a comic panel.
+
+        Looks for a 'segments' array in the panel JSON:
+        [{"speaker": "narrator", "text": "..."}, {"speaker": "raccoon", "text": "..."}]
+
+        Args:
+            panel: Panel dict from comic JSON
+
+        Returns:
+            List of segment dicts with speaker and text, or empty list if single-speaker
+        """
+        segments = panel.get("segments", [])
+        if not segments:
+            return []
+
+        # Validate and clean segments
+        valid_segments = []
+        for seg in segments:
+            speaker = seg.get("speaker", "").strip().lower()
+            text = seg.get("text", "").strip()
+            if speaker and text:
+                valid_segments.append({
+                    "speaker": speaker,
+                    "text": text
+                })
+
+        return valid_segments
+
+    def has_multi_speaker(self, panel: Dict[str, Any]) -> bool:
+        """Check if a panel has multi-speaker segments."""
+        segments = self.extract_panel_segments(panel)
+        return len(segments) > 1
+
+    async def get_voice_for_speaker(
+        self,
+        speaker: str,
+        project_id: Optional[str] = None
+    ) -> tuple[str, str]:
+        """
+        Get voice ID and name for a speaker.
+
+        Supports:
+        - 'narrator' -> Default Rachel voice
+        - 'raccoon' or 'every-coon' -> Load from character_voice_profiles
+        - Other -> Fallback to narrator
+
+        Args:
+            speaker: Speaker identifier
+            project_id: Optional project ID for project-specific voices
+
+        Returns:
+            Tuple of (voice_id, voice_name)
+        """
+        speaker_lower = speaker.lower()
+
+        # Narrator uses default
+        if speaker_lower == "narrator":
+            return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
+
+        # Raccoon/every-coon - look up from database
+        if speaker_lower in ("raccoon", "every-coon"):
+            try:
+                result = await asyncio.to_thread(
+                    lambda: self.supabase.table("character_voice_profiles")
+                        .select("voice_id, voice_name")
+                        .eq("character_name", "every-coon")
+                        .maybe_single()
+                        .execute()
+                )
+                if result.data:
+                    return result.data["voice_id"], result.data.get("voice_name", "Every-Coon")
+            except Exception as e:
+                logger.warning(f"Could not load every-coon voice: {e}")
+
+            # Fallback for raccoon if not found
+            logger.info("Using default voice for raccoon (every-coon not found)")
+            return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
+
+        # Unknown speaker - use narrator
+        logger.info(f"Unknown speaker '{speaker}', using narrator voice")
+        return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
+
+    async def generate_segment_audio(
+        self,
+        project_id: str,
+        panel_number: int,
+        segment: AudioSegment,
+        voice_settings: Optional[VoiceSettings] = None
+    ) -> AudioSegment:
+        """
+        Generate audio for a single speaker segment.
+
+        Args:
+            project_id: Project UUID
+            panel_number: Panel number
+            segment: AudioSegment with speaker and text
+            voice_settings: Optional voice settings
+
+        Returns:
+            Updated AudioSegment with audio_url and duration_ms
+        """
+        if not self.enabled:
+            raise RuntimeError("ElevenLabs service not configured")
+
+        # Get voice for speaker
+        voice_id, voice_name = await self.get_voice_for_speaker(segment.speaker)
+        settings = voice_settings or VoiceSettings()
+
+        # Generate filename
+        filename = f"{panel_number:02d}_seg{segment.segment_index:02d}_{segment.speaker}.mp3"
+
+        # Create output path
+        project_dir = self.output_base / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+        output_path = project_dir / filename
+
+        logger.info(
+            f"Generating segment {segment.segment_index} for panel {panel_number}: "
+            f"{segment.speaker} ({len(segment.text)} chars)"
+        )
+
+        # Generate speech
+        await self.elevenlabs.generate_speech(
+            text=segment.text,
+            voice_id=voice_id,
+            settings=settings,
+            output_path=output_path
+        )
+
+        # Get duration
+        duration_ms = await asyncio.to_thread(
+            self.ffmpeg.get_duration_ms, output_path
+        )
+
+        # Upload to storage
+        audio_url = await self._upload_audio(
+            project_id=project_id,
+            filename=filename,
+            local_path=output_path
+        )
+
+        # Update segment with results
+        updated_segment = segment.model_copy(update={
+            "voice_id": voice_id,
+            "voice_name": voice_name,
+            "audio_url": audio_url,
+            "duration_ms": duration_ms
+        })
+
+        # Save to database
+        await self._save_audio_segment(project_id, panel_number, updated_segment)
+
+        logger.info(
+            f"Generated segment {segment.segment_index}: {duration_ms}ms, "
+            f"uploaded to {audio_url}"
+        )
+
+        return updated_segment
+
+    async def generate_multi_speaker_audio(
+        self,
+        project_id: str,
+        panel_number: int,
+        panel: Dict[str, Any],
+        voice_settings: Optional[VoiceSettings] = None
+    ) -> MultiSpeakerPanelAudio:
+        """
+        Generate all audio segments for a multi-speaker panel.
+
+        Args:
+            project_id: Project UUID
+            panel_number: Panel number
+            panel: Panel dict with segments array
+            voice_settings: Optional voice settings
+
+        Returns:
+            MultiSpeakerPanelAudio with all segments generated
+        """
+        # Extract segments from panel
+        raw_segments = self.extract_panel_segments(panel)
+        if not raw_segments:
+            raise ValueError(f"Panel {panel_number} has no segments")
+
+        # Create AudioSegment objects
+        segments = []
+        for i, seg_data in enumerate(raw_segments):
+            segment = AudioSegment(
+                segment_index=i,
+                speaker=seg_data["speaker"],
+                text=seg_data["text"],
+                pause_after_ms=300  # Default pause
+            )
+            segments.append(segment)
+
+        # Generate audio for each segment
+        generated_segments = []
+        for segment in segments:
+            gen_segment = await self.generate_segment_audio(
+                project_id=project_id,
+                panel_number=panel_number,
+                segment=segment,
+                voice_settings=voice_settings
+            )
+            generated_segments.append(gen_segment)
+
+        # Create multi-speaker audio object
+        multi_audio = MultiSpeakerPanelAudio(
+            panel_number=panel_number,
+            segments=generated_segments,
+            is_approved=False
+        )
+
+        # Combine segments with pauses
+        combined_audio = await self.combine_segments_with_pauses(
+            project_id=project_id,
+            panel_number=panel_number,
+            segments=generated_segments
+        )
+
+        # Update with combined audio info
+        multi_audio = multi_audio.model_copy(update={
+            "combined_audio_url": combined_audio["url"],
+            "total_duration_ms": combined_audio["duration_ms"]
+        })
+
+        # Save to database
+        await self._save_multi_speaker_audio(project_id, multi_audio)
+
+        logger.info(
+            f"Generated multi-speaker audio for panel {panel_number}: "
+            f"{len(generated_segments)} segments, {multi_audio.total_duration_ms}ms total"
+        )
+
+        return multi_audio
+
+    async def combine_segments_with_pauses(
+        self,
+        project_id: str,
+        panel_number: int,
+        segments: List[AudioSegment]
+    ) -> Dict[str, Any]:
+        """
+        Combine audio segments with pauses between them.
+
+        Uses FFmpeg to concatenate segments with silence pauses.
+
+        Args:
+            project_id: Project UUID
+            panel_number: Panel number
+            segments: List of AudioSegment with audio_url set
+
+        Returns:
+            Dict with 'url' and 'duration_ms' of combined audio
+        """
+        if not segments:
+            raise ValueError("No segments to combine")
+
+        project_dir = self.output_base / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download segment audio files locally
+        segment_paths = []
+        for seg in segments:
+            if not seg.audio_url:
+                raise ValueError(f"Segment {seg.segment_index} has no audio URL")
+
+            # Get signed URL for download
+            signed_url = await self.get_audio_url(seg.audio_url)
+
+            # Download to local path
+            local_path = project_dir / f"seg_{seg.segment_index}_temp.mp3"
+            await asyncio.to_thread(
+                self.ffmpeg.download_file, signed_url, local_path
+            )
+            segment_paths.append(local_path)
+
+        # Build pause durations (all except last segment)
+        pauses = [seg.pause_after_ms for seg in segments[:-1]]
+
+        # Combine using FFmpeg
+        output_filename = f"{panel_number:02d}_combined.mp3"
+        output_path = project_dir / output_filename
+
+        await asyncio.to_thread(
+            self._concatenate_with_pauses,
+            segment_paths,
+            pauses,
+            output_path
+        )
+
+        # Get total duration
+        total_duration = await asyncio.to_thread(
+            self.ffmpeg.get_duration_ms, output_path
+        )
+
+        # Upload combined file
+        combined_url = await self._upload_audio(
+            project_id=project_id,
+            filename=output_filename,
+            local_path=output_path
+        )
+
+        # Cleanup temp files
+        for path in segment_paths:
+            try:
+                path.unlink()
+            except Exception:
+                pass
+
+        return {
+            "url": combined_url,
+            "duration_ms": total_duration
+        }
+
+    def _concatenate_with_pauses(
+        self,
+        segment_paths: List[Path],
+        pauses: List[int],
+        output_path: Path
+    ) -> None:
+        """
+        Concatenate audio segments with silence pauses.
+
+        Args:
+            segment_paths: Local paths to segment audio files
+            pauses: Pause durations in ms between segments
+            output_path: Output file path
+        """
+        import subprocess
+
+        if len(segment_paths) == 1:
+            # Single segment, just copy
+            import shutil
+            shutil.copy(segment_paths[0], output_path)
+            return
+
+        # Build FFmpeg filter complex for concatenation with pauses
+        # Format: [0:a][silence1][1:a][silence2]...[n:a]concat
+        inputs = []
+        filter_parts = []
+
+        for i, seg_path in enumerate(segment_paths):
+            inputs.extend(["-i", str(seg_path)])
+
+        # Build filter complex
+        filter_complex = []
+        concat_inputs = []
+
+        for i in range(len(segment_paths)):
+            concat_inputs.append(f"[{i}:a]")
+
+            # Add pause after (except for last segment)
+            if i < len(pauses) and pauses[i] > 0:
+                pause_sec = pauses[i] / 1000
+                # Generate silence
+                filter_complex.append(
+                    f"anullsrc=r=44100:cl=stereo,atrim=0:{pause_sec}[pause{i}]"
+                )
+                concat_inputs.append(f"[pause{i}]")
+
+        # Build concat filter
+        concat_count = len(concat_inputs)
+        filter_complex.append(
+            f"{''.join(concat_inputs)}concat=n={concat_count}:v=0:a=1[out]"
+        )
+
+        full_filter = ";".join(filter_complex)
+
+        # Run FFmpeg
+        cmd = [
+            "ffmpeg", "-y",
+            *inputs,
+            "-filter_complex", full_filter,
+            "-map", "[out]",
+            "-c:a", "libmp3lame",
+            "-q:a", "2",
+            str(output_path)
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg concatenation failed: {result.stderr}")
+
+    # =========================================================================
+    # Multi-Speaker Database Operations
+    # =========================================================================
+
+    async def _save_audio_segment(
+        self,
+        project_id: str,
+        panel_number: int,
+        segment: AudioSegment
+    ) -> None:
+        """Save audio segment to database."""
+        await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_audio_segments").upsert({
+                "project_id": project_id,
+                "panel_number": panel_number,
+                "segment_index": segment.segment_index,
+                "speaker": segment.speaker,
+                "text_content": segment.text,
+                "voice_id": segment.voice_id,
+                "voice_name": segment.voice_name,
+                "audio_url": segment.audio_url,
+                "duration_ms": segment.duration_ms,
+                "pause_after_ms": segment.pause_after_ms
+            }).execute()
+        )
+
+    async def _save_multi_speaker_audio(
+        self,
+        project_id: str,
+        multi_audio: MultiSpeakerPanelAudio
+    ) -> None:
+        """Save multi-speaker audio to database."""
+        await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_multi_speaker_audio").upsert({
+                "project_id": project_id,
+                "panel_number": multi_audio.panel_number,
+                "combined_audio_url": multi_audio.combined_audio_url,
+                "total_duration_ms": multi_audio.total_duration_ms,
+                "is_approved": multi_audio.is_approved
+            }).execute()
+        )
+
+    async def get_multi_speaker_audio(
+        self,
+        project_id: str,
+        panel_number: int
+    ) -> Optional[MultiSpeakerPanelAudio]:
+        """
+        Get multi-speaker audio for a panel.
+
+        Args:
+            project_id: Project UUID
+            panel_number: Panel number
+
+        Returns:
+            MultiSpeakerPanelAudio or None if not found
+        """
+        # Get multi-speaker record
+        result = await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_multi_speaker_audio")
+                .select("*")
+                .eq("project_id", project_id)
+                .eq("panel_number", panel_number)
+                .maybe_single()
+                .execute()
+        )
+
+        if not result.data:
+            return None
+
+        # Get segments
+        segments_result = await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_audio_segments")
+                .select("*")
+                .eq("project_id", project_id)
+                .eq("panel_number", panel_number)
+                .order("segment_index")
+                .execute()
+        )
+
+        segments = [
+            AudioSegment(
+                segment_index=row["segment_index"],
+                speaker=row["speaker"],
+                text=row["text_content"],
+                voice_id=row.get("voice_id"),
+                voice_name=row.get("voice_name"),
+                audio_url=row.get("audio_url"),
+                duration_ms=row.get("duration_ms", 0),
+                pause_after_ms=row.get("pause_after_ms", 300)
+            )
+            for row in segments_result.data
+        ]
+
+        return MultiSpeakerPanelAudio(
+            panel_number=panel_number,
+            segments=segments,
+            combined_audio_url=result.data.get("combined_audio_url"),
+            total_duration_ms=result.data.get("total_duration_ms", 0),
+            is_approved=result.data.get("is_approved", False)
+        )
+
+    async def update_segment_pause(
+        self,
+        project_id: str,
+        panel_number: int,
+        segment_index: int,
+        pause_after_ms: int
+    ) -> None:
+        """
+        Update pause duration for a segment.
+
+        Args:
+            project_id: Project UUID
+            panel_number: Panel number
+            segment_index: Segment index
+            pause_after_ms: New pause duration
+        """
+        await asyncio.to_thread(
+            lambda: self.supabase.table("comic_panel_audio_segments")
+                .update({"pause_after_ms": pause_after_ms})
+                .eq("project_id", project_id)
+                .eq("panel_number", panel_number)
+                .eq("segment_index", segment_index)
+                .execute()
+        )
+        logger.info(
+            f"Updated pause for segment {segment_index} panel {panel_number}: {pause_after_ms}ms"
+        )
+
+    async def regenerate_combined_audio(
+        self,
+        project_id: str,
+        panel_number: int
+    ) -> MultiSpeakerPanelAudio:
+        """
+        Regenerate combined audio with updated pauses.
+
+        Use after updating segment pauses.
+
+        Args:
+            project_id: Project UUID
+            panel_number: Panel number
+
+        Returns:
+            Updated MultiSpeakerPanelAudio
+        """
+        # Get existing multi-speaker audio
+        existing = await self.get_multi_speaker_audio(project_id, panel_number)
+        if not existing:
+            raise ValueError(f"No multi-speaker audio for panel {panel_number}")
+
+        # Recombine with current pause settings
+        combined = await self.combine_segments_with_pauses(
+            project_id=project_id,
+            panel_number=panel_number,
+            segments=existing.segments
+        )
+
+        # Update record
+        updated = existing.model_copy(update={
+            "combined_audio_url": combined["url"],
+            "total_duration_ms": combined["duration_ms"]
+        })
+
+        await self._save_multi_speaker_audio(project_id, updated)
+
+        logger.info(f"Regenerated combined audio for panel {panel_number}")
+        return updated
