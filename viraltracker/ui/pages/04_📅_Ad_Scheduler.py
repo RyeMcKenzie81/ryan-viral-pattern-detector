@@ -995,6 +995,31 @@ def render_create_schedule():
     st.divider()
 
     # ========================================================================
+    # Section 5.7: Additional Instructions (Optional)
+    # ========================================================================
+
+    st.subheader("Additional Instructions (Optional)")
+
+    # Get brand's default ad creation notes
+    brand_ad_notes = ""
+    if selected_product and selected_product.get('brands'):
+        brand_ad_notes = selected_product['brands'].get('ad_creation_notes') or ""
+
+    # Show brand defaults if they exist
+    if brand_ad_notes:
+        st.caption(f"📋 **Brand defaults:** {brand_ad_notes[:100]}{'...' if len(brand_ad_notes) > 100 else ''}")
+
+    additional_instructions = st.text_area(
+        "Additional instructions for scheduled runs",
+        value=existing_params.get('additional_instructions', ''),
+        placeholder="Add any specific instructions for this scheduled job...\n\nExamples:\n- Feature the Brown Sugar flavor prominently\n- Use a summer/outdoor theme\n- Include '20% OFF' badge",
+        height=100,
+        help="These instructions will be combined with the brand's default ad creation notes for every run"
+    )
+
+    st.divider()
+
+    # ========================================================================
     # Section 6: Export Destination
     # ========================================================================
 
@@ -1067,7 +1092,8 @@ def render_create_schedule():
                     'export_destination': export_destination,
                     'export_email': export_email if export_destination in ['email', 'both'] else None,
                     'persona_id': persona_id,
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'additional_instructions': additional_instructions if additional_instructions else None
                 }
 
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
@@ -1250,6 +1276,12 @@ def render_schedule_detail():
             st.markdown(f"**Variant:** {variant_name}")
         else:
             st.markdown("**Variant:** Default")
+
+    # Display additional instructions if set
+    add_instructions = params.get('additional_instructions')
+    if add_instructions:
+        st.markdown("**Additional Instructions:**")
+        st.caption(add_instructions[:200] + ('...' if len(add_instructions) > 200 else ''))
 
     st.divider()
 

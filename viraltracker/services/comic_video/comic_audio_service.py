@@ -253,7 +253,9 @@ class ComicAudioService:
                     multi_audio = await self.generate_multi_speaker_audio(
                         project_id=project_id,
                         panel_number=panel_number,
-                        panel=panel
+                        panel=panel,
+                        narrator_voice_id=voice_id,
+                        narrator_voice_name=voice_name
                     )
                     # Create a PanelAudio from multi-speaker result for compatibility
                     audio = PanelAudio(
@@ -581,28 +583,32 @@ class ComicAudioService:
     async def get_voice_for_speaker(
         self,
         speaker: str,
-        project_id: Optional[str] = None
+        narrator_voice_id: Optional[str] = None,
+        narrator_voice_name: Optional[str] = None
     ) -> tuple[str, str]:
         """
         Get voice ID and name for a speaker.
 
         Supports:
-        - 'narrator' -> Default Rachel voice
+        - 'narrator' -> Uses provided narrator voice or default
         - 'raccoon' or 'every-coon' -> Load from character_voice_profiles
-        - Other -> Fallback to narrator
+        - Other -> Fallback to narrator voice
 
         Args:
             speaker: Speaker identifier
-            project_id: Optional project ID for project-specific voices
+            narrator_voice_id: Voice ID for narrator (from user selection)
+            narrator_voice_name: Voice name for narrator
 
         Returns:
             Tuple of (voice_id, voice_name)
         """
         speaker_lower = speaker.lower()
 
-        # Narrator uses default
+        # Narrator uses user-selected voice or default
         if speaker_lower == "narrator":
-            return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
+            voice_id = narrator_voice_id or self.DEFAULT_VOICE_ID
+            voice_name = narrator_voice_name or self.DEFAULT_VOICE_NAME
+            return voice_id, voice_name
 
         # Raccoon/every-coon - look up from database
         if speaker_lower in ("raccoon", "every-coon"):
@@ -623,15 +629,19 @@ class ComicAudioService:
             logger.info("Using default voice for raccoon (every-coon not found)")
             return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
 
-        # Unknown speaker - use narrator
+        # Unknown speaker - use narrator voice
         logger.info(f"Unknown speaker '{speaker}', using narrator voice")
-        return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
+        voice_id = narrator_voice_id or self.DEFAULT_VOICE_ID
+        voice_name = narrator_voice_name or self.DEFAULT_VOICE_NAME
+        return voice_id, voice_name
 
     async def generate_segment_audio(
         self,
         project_id: str,
         panel_number: int,
         segment: AudioSegment,
+        narrator_voice_id: Optional[str] = None,
+        narrator_voice_name: Optional[str] = None,
         voice_settings: Optional[VoiceSettings] = None
     ) -> AudioSegment:
         """
@@ -641,6 +651,8 @@ class ComicAudioService:
             project_id: Project UUID
             panel_number: Panel number
             segment: AudioSegment with speaker and text
+            narrator_voice_id: Voice ID for narrator segments
+            narrator_voice_name: Voice name for narrator segments
             voice_settings: Optional voice settings
 
         Returns:
@@ -650,7 +662,11 @@ class ComicAudioService:
             raise RuntimeError("ElevenLabs service not configured")
 
         # Get voice for speaker
-        voice_id, voice_name = await self.get_voice_for_speaker(segment.speaker)
+        voice_id, voice_name = await self.get_voice_for_speaker(
+            segment.speaker,
+            narrator_voice_id=narrator_voice_id,
+            narrator_voice_name=narrator_voice_name
+        )
         settings = voice_settings or VoiceSettings()
 
         # Generate filename
@@ -709,6 +725,8 @@ class ComicAudioService:
         project_id: str,
         panel_number: int,
         panel: Dict[str, Any],
+        narrator_voice_id: Optional[str] = None,
+        narrator_voice_name: Optional[str] = None,
         voice_settings: Optional[VoiceSettings] = None
     ) -> MultiSpeakerPanelAudio:
         """
@@ -718,6 +736,8 @@ class ComicAudioService:
             project_id: Project UUID
             panel_number: Panel number
             panel: Panel dict with segments array
+            narrator_voice_id: Voice ID for narrator segments
+            narrator_voice_name: Voice name for narrator segments
             voice_settings: Optional voice settings
 
         Returns:
@@ -746,6 +766,8 @@ class ComicAudioService:
                 project_id=project_id,
                 panel_number=panel_number,
                 segment=segment,
+                narrator_voice_id=narrator_voice_id,
+                narrator_voice_name=narrator_voice_name,
                 voice_settings=voice_settings
             )
             generated_segments.append(gen_segment)

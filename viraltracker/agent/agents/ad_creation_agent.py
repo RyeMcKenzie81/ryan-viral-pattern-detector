@@ -1601,6 +1601,15 @@ async def generate_nano_banana_prompt(
         - If NO offer is listed above, DO NOT add any offer/discount text to the ad
         """
 
+        # Add combined instructions section if available
+        combined_instructions_section = ""
+        if product.get('combined_instructions'):
+            combined_instructions_section = f"""
+        **SPECIAL INSTRUCTIONS (FOLLOW CAREFULLY):**
+        {product.get('combined_instructions')}
+        """
+            instruction_text += combined_instructions_section
+
         # Build reference images list for prompt
         if num_product_images == 1:
             reference_images_text = f"""- Template (Image 1): {reference_ad_path}
@@ -3014,7 +3023,8 @@ async def complete_ad_workflow(
     image_selection_mode: str = "auto",
     selected_image_paths: Optional[List[str]] = None,
     persona_id: Optional[str] = None,
-    variant_id: Optional[str] = None
+    variant_id: Optional[str] = None,
+    additional_instructions: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -3060,6 +3070,8 @@ async def complete_ad_workflow(
             pain points, desires, and language inform hook selection and copy generation.
         variant_id: Optional UUID of product variant (flavor, size, color). When provided,
             variant name and description are used to customize ad copy for that specific variant.
+        additional_instructions: Optional run-specific instructions for ad generation. Combined
+            with brand's ad_creation_notes to guide the AI in creating ads.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3114,6 +3126,8 @@ async def complete_ad_workflow(
             logger.info(f"Using persona: {persona_id}")
         if variant_id:
             logger.info(f"Using variant: {variant_id}")
+        if additional_instructions:
+            logger.info(f"Additional instructions provided: {additional_instructions[:50]}...")
 
         # Build parameters dict for tracking
         run_parameters = {
@@ -3124,7 +3138,8 @@ async def complete_ad_workflow(
             "selected_image_paths": selected_image_paths,
             "brand_colors": brand_colors,
             "persona_id": persona_id,
-            "variant_id": variant_id
+            "variant_id": variant_id,
+            "additional_instructions": additional_instructions
         }
 
         # STAGE 1: Initialize ad run and upload reference ad
@@ -3208,6 +3223,32 @@ async def complete_ad_workflow(
         else:
             product_dict['variant'] = None
             product_dict['display_name'] = product_dict.get('name', 'Product')
+
+        # STAGE 2d: Fetch brand's ad_creation_notes and combine with additional_instructions
+        combined_instructions = ""
+        brand_id = product_dict.get('brand_id')
+        if brand_id:
+            try:
+                from viraltracker.core.database import get_supabase_client
+                db = get_supabase_client()
+                brand_result = db.table("brands").select("ad_creation_notes").eq("id", brand_id).single().execute()
+                if brand_result.data and brand_result.data.get('ad_creation_notes'):
+                    brand_notes = brand_result.data['ad_creation_notes']
+                    logger.info(f"Stage 2d: Loaded brand ad creation notes: {brand_notes[:50]}...")
+                    combined_instructions = brand_notes
+            except Exception as e:
+                logger.warning(f"Failed to load brand ad_creation_notes: {e}")
+
+        # Append run-specific additional instructions
+        if additional_instructions:
+            if combined_instructions:
+                combined_instructions = f"{combined_instructions}\n\n**Run-specific instructions:**\n{additional_instructions}"
+            else:
+                combined_instructions = additional_instructions
+            logger.info(f"Combined instructions ready ({len(combined_instructions)} chars)")
+
+        # Store combined instructions in product_dict for use in prompt generation
+        product_dict['combined_instructions'] = combined_instructions if combined_instructions else None
 
         # STAGE 3: Fetch hooks (only if using hooks content source)
         hooks_list = []

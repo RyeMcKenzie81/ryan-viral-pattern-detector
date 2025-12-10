@@ -340,7 +340,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
                     image_selection_mode=params.get('image_selection_mode', 'auto'),
                     selected_image_paths=None,  # Auto mode selects best 1-2 images
                     persona_id=params.get('persona_id'),  # Optional persona for targeting
-                    variant_id=params.get('variant_id')  # Optional variant (flavor, size, etc.)
+                    variant_id=params.get('variant_id'),  # Optional variant (flavor, size, etc.)
+                    additional_instructions=params.get('additional_instructions')  # Optional run instructions
                 )
 
                 if result and result.get('ad_run_id'):

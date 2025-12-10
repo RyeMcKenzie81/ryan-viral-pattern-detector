@@ -412,13 +412,14 @@ def render_audio_step():
         col1, col2 = st.columns([2, 1])
         with col1:
             voice_id = st.selectbox(
-                "Voice",
+                "Narrator Voice",
                 options=[
                     ("21m00Tcm4TlvDq8ikWAM", "Rachel (Default)"),
                     ("EXAVITQu4vr4xnSDxMaL", "Bella"),
                     ("ErXwobaYiN019PkySvjV", "Antoni"),
                 ],
-                format_func=lambda x: x[1]
+                format_func=lambda x: x[1],
+                help="Voice for narrator. Character voices (e.g., raccoon) use their own voice profiles."
             )[0]
 
         with col2:
