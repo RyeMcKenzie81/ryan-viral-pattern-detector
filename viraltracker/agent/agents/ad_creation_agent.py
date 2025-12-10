@@ -1567,10 +1567,19 @@ async def generate_nano_banana_prompt(
         """
         # If template doesn't have founder elements, founders_section stays empty
 
+        # Build special instructions section FIRST (highest priority)
+        special_instructions_section = ""
+        if product.get('combined_instructions'):
+            special_instructions_section = f"""
+        **⚠️ SPECIAL INSTRUCTIONS - HIGHEST PRIORITY:**
+        {product.get('combined_instructions')}
+        ---
+        """
+
         # Build instruction text
         instruction_text = f"""
         Create Facebook ad variation {prompt_index} for {product.get('name')}.
-
+        {special_instructions_section}
         **Style Guide:**
         - Format: {ad_analysis.get('format_type')}
         - Layout: {ad_analysis.get('layout_structure')}
@@ -1595,20 +1604,13 @@ async def generate_nano_banana_prompt(
         - If offer is provided, use EXACT wording (no hallucination of discounts)
         - Do NOT use any prohibited claims listed above
 
-        **⚠️ OFFER WARNING:**
-        - DO NOT copy offer elements from the reference ad template (e.g., "Free gift", "Buy 1 Get 1")
+        **⚠️ OFFER/CALLOUT WARNING - CRITICAL:**
+        - DO NOT copy offer elements from the reference ad template (e.g., "Free gift", "Buy 1 Get 1", "Bundle and save", "Autoship")
         - ONLY use the offer text provided in "Current Offer" section above
-        - If NO offer is listed above, DO NOT add any offer/discount text to the ad
+        - If NO offer is listed above, DO NOT add any offer/discount/savings text to the ad
+        - DO NOT stack multiple offers or callouts - use ONE offer only
+        - If the reference template has multiple offer badges, pick the ONE that matches our product's offer (or none if we have no offer)
         """
-
-        # Add combined instructions section if available
-        combined_instructions_section = ""
-        if product.get('combined_instructions'):
-            combined_instructions_section = f"""
-        **SPECIAL INSTRUCTIONS (FOLLOW CAREFULLY):**
-        {product.get('combined_instructions')}
-        """
-            instruction_text += combined_instructions_section
 
         # Build reference images list for prompt
         if num_product_images == 1:
