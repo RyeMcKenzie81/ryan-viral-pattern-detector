@@ -374,7 +374,7 @@ class ComicDirectorService:
             PanelMood enum value
         """
         # Priority 1: Use explicit mood field if present
-        explicit_mood = panel.get("mood", "").lower()
+        explicit_mood = (panel.get("mood") or "").lower()
         if explicit_mood:
             mood_map = {
                 "dramatic": PanelMood.DRAMATIC,
@@ -394,9 +394,9 @@ class ComicDirectorService:
             if explicit_mood in mood_map:
                 return mood_map[explicit_mood]
 
-        panel_type = panel.get("panel_type", "").lower()
-        header = panel.get("header_text", "").lower()
-        dialogue = panel.get("dialogue", "").lower()
+        panel_type = (panel.get("panel_type") or "").lower()
+        header = (panel.get("header_text") or "").lower()
+        dialogue = (panel.get("dialogue") or "").lower()
         combined_text = f"{header} {dialogue}"
 
         # Check panel type
@@ -573,7 +573,7 @@ class ComicDirectorService:
         duration_ms: int
     ) -> PanelCamera:
         """Generate camera instructions based on panel content and mood."""
-        panel_type = panel.get("panel_type", "").lower()
+        panel_type = (panel.get("panel_type") or "").lower()
 
         # Default zoom behavior
         start_zoom = 1.0
@@ -652,8 +652,8 @@ class ComicDirectorService:
         panel: Dict[str, Any]
     ) -> List[EffectInstance]:
         """Detect effects to trigger based on dialogue/header keywords."""
-        header = panel.get("header_text", "").lower()
-        dialogue = panel.get("dialogue", "").lower()
+        header = (panel.get("header_text") or "").lower()
+        dialogue = (panel.get("dialogue") or "").lower()
         combined = f"{header} {dialogue}"
 
         triggered = []
@@ -683,8 +683,8 @@ class ComicDirectorService:
                 easing=CameraEasing.LINEAR
             )
 
-        current_type = current_panel.get("panel_type", "").lower()
-        next_type = next_panel.get("panel_type", "").lower()
+        current_type = (current_panel.get("panel_type") or "").lower()
+        next_type = (next_panel.get("panel_type") or "").lower()
 
         # Determine transition type based on context
         transition_type = TransitionType.PAN
