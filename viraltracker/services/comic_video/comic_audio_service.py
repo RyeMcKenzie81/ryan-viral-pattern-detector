@@ -592,13 +592,13 @@ class ComicAudioService:
             try:
                 result = await asyncio.to_thread(
                     lambda: self.supabase.table("character_voice_profiles")
-                        .select("voice_id, voice_name")
-                        .eq("character_name", "every-coon")
+                        .select("voice_id, display_name")
+                        .eq("character", "every-coon")
                         .maybe_single()
                         .execute()
                 )
                 if result.data:
-                    return result.data["voice_id"], result.data.get("voice_name", "Every-Coon")
+                    return result.data["voice_id"], result.data.get("display_name", "Every-Coon")
             except Exception as e:
                 logger.warning(f"Could not load every-coon voice: {e}")
 
