@@ -27,7 +27,7 @@ st.set_page_config(
 
 # Authentication
 from viraltracker.ui.auth import require_auth
-from viraltracker.services.comic_video.models import MOOD_EFFECT_PRESETS, PanelMood, EffectType
+from viraltracker.services.comic_video.models import MOOD_EFFECT_PRESETS, PanelMood, EffectType, TransitionType, CameraEasing
 require_auth()
 
 
@@ -743,6 +743,33 @@ def render_review_step():
                             help="Delay before voice starts. Increase if voice starts before camera arrives at panel."
                         )
 
+                        # Transition controls (for transition TO next panel)
+                        st.caption("Transition to Next Panel:")
+                        transition_types = [t.value for t in TransitionType]
+                        # Get current/saved transition type
+                        current_transition = instr.transition.transition_type.value
+                        if user_overrides and user_overrides.transition_type_override is not None:
+                            current_transition = user_overrides.transition_type_override.value
+                        transition_type = st.selectbox(
+                            "Type",
+                            options=transition_types,
+                            index=transition_types.index(current_transition),
+                            key=f"transition_type_{panel_num}",
+                            help="CUT=instant, PAN=smooth slide, ZOOM_OUT_IN=dramatic pull back, SNAP=fast, GLIDE=elegant, WHIP=very fast, FADE=dissolve"
+                        )
+                        # Get current/saved transition duration
+                        current_duration = instr.transition.duration_ms
+                        if user_overrides and user_overrides.transition_duration_ms is not None:
+                            current_duration = user_overrides.transition_duration_ms
+                        transition_duration = st.slider(
+                            "Duration (ms)",
+                            min_value=0, max_value=2000,
+                            value=int(current_duration),
+                            step=50,
+                            key=f"transition_duration_{panel_num}",
+                            help="How long the transition takes (0 = instant cut)"
+                        )
+
                         # Action buttons
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
@@ -760,6 +787,8 @@ def render_review_step():
                                     "pulse_enabled": pulse_on,
                                     "color_tint_enabled": tint_on,
                                     "audio_delay_ms": int(audio_delay),
+                                    "transition_type_override": transition_type,
+                                    "transition_duration_ms": int(transition_duration),
                                 }
                                 if tint_on:
                                     overrides["color_tint_color"] = tint_color

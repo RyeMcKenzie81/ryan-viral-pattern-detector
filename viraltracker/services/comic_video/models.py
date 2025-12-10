@@ -391,6 +391,20 @@ class PanelOverrides(BaseModel):
         description="Delay before audio starts (ms). Helps sync voice with visual arrival. Default 150ms."
     )
 
+    # Transition overrides
+    transition_type_override: Optional[TransitionType] = Field(
+        None,
+        description="Override auto-generated transition type (None = use auto)"
+    )
+    transition_duration_ms: Optional[int] = Field(
+        None, ge=0, le=2000,
+        description="Override transition duration in ms (None = use auto)"
+    )
+    transition_easing_override: Optional[CameraEasing] = Field(
+        None,
+        description="Override transition easing (None = use auto)"
+    )
+
     def has_overrides(self) -> bool:
         """Check if any overrides are set."""
         for field_name, field_value in self:

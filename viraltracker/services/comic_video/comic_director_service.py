@@ -913,6 +913,9 @@ class ComicDirectorService:
         # Apply effect overrides
         updated.effects = self._apply_effect_overrides(updated.effects, overrides)
 
+        # Apply transition overrides
+        updated.transition = self._apply_transition_overrides(updated.transition, overrides)
+
         # Store overrides on the instruction
         updated.user_overrides = overrides
 
@@ -1061,6 +1064,35 @@ class ComicDirectorService:
                 updated.tint_opacity = overrides.color_tint_opacity
             elif updated.tint_opacity == 0.0:
                 updated.tint_opacity = 0.15  # Default opacity
+
+        return updated
+
+    def _apply_transition_overrides(
+        self,
+        transition: PanelTransition,
+        overrides: PanelOverrides
+    ) -> PanelTransition:
+        """Apply transition-related overrides."""
+        # Check if any transition overrides are set
+        has_transition_overrides = (
+            overrides.transition_type_override is not None or
+            overrides.transition_duration_ms is not None or
+            overrides.transition_easing_override is not None
+        )
+
+        if not has_transition_overrides:
+            return transition
+
+        updated = transition.model_copy(deep=True)
+
+        if overrides.transition_type_override is not None:
+            updated.transition_type = overrides.transition_type_override
+
+        if overrides.transition_duration_ms is not None:
+            updated.duration_ms = overrides.transition_duration_ms
+
+        if overrides.transition_easing_override is not None:
+            updated.easing = overrides.transition_easing_override
 
         return updated
 
