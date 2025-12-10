@@ -523,7 +523,7 @@ def render_review_step():
         with col2:
             # Render All button
             force_rerender = st.checkbox("Force re-render", key="force_rerender")
-            if st.button("🎬 Render All Panels", type="secondary"):
+            if st.button("🎬 Render All Panels", key="render_all_panels_btn", type="secondary"):
                 with st.spinner("Rendering all panels..."):
                     try:
                         progress_bar = st.progress(0)
@@ -542,28 +542,26 @@ def render_review_step():
         with col3:
             # Approve All button
             all_rendered = summary['instructions']['generated'] > 0
-            if st.button("✅ Approve All", type="secondary", disabled=not all_rendered):
-                if all_rendered:
-                    with st.spinner("Approving all panels..."):
-                        try:
-                            asyncio.run(approve_all_panels(project_id))
-                            st.success("All panels approved!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+            if st.button("✅ Approve All", key="approve_all_panels_btn", type="secondary", disabled=not all_rendered):
+                with st.spinner("Approving all panels..."):
+                    try:
+                        asyncio.run(approve_all_panels(project_id))
+                        st.success("All panels approved!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error approving: {e}")
 
         with col4:
             # Final render button (moved here for visibility)
             ready = summary["ready_for_final_render"]
-            if st.button("🎥 Render Final", type="primary" if ready else "secondary", disabled=not ready):
-                if ready:
-                    with st.spinner("Rendering final video..."):
-                        try:
-                            final_url = asyncio.run(render_final(project_id))
-                            st.success("Final video rendered!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+            if st.button("🎥 Render Final", key="render_final_btn", type="primary" if ready else "secondary", disabled=not ready):
+                with st.spinner("Rendering final video..."):
+                    try:
+                        final_url = asyncio.run(render_final(project_id))
+                        st.success("Final video rendered!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
         # Debug: Show camera positions
         with st.expander("🔧 Debug: Camera Positions"):
