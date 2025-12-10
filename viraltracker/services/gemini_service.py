@@ -481,10 +481,10 @@ Generate the article now:"""
                     logger.debug(f"Added {len(reference_images)} reference images")
 
                 # Use dedicated image generation model (not the default text model)
-                # Temperature 0.2 for more consistent, deterministic outputs
+                # Temperature 0.1 for more deterministic outputs (helps with text preservation)
                 image_model = genai.GenerativeModel(
                     "models/gemini-3-pro-image-preview",
-                    generation_config=genai.GenerationConfig(temperature=0.2)
+                    generation_config=genai.GenerationConfig(temperature=0.1)
                 )
                 response = image_model.generate_content(contents)
 
