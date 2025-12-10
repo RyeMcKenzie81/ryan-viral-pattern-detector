@@ -174,6 +174,9 @@ class ComicVideoService:
 
         result = await asyncio.to_thread(lambda: query.execute())
 
+        if not result or not result.data:
+            return []
+
         return [self._row_to_project(row) for row in result.data]
 
     async def update_status(

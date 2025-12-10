@@ -382,6 +382,9 @@ class ComicAudioService:
                 .execute()
         )
 
+        if not result or not result.data:
+            return []
+
         return [self._row_to_panel_audio(row) for row in result.data]
 
     async def approve_panel_audio(
@@ -1033,19 +1036,21 @@ class ComicAudioService:
                 .execute()
         )
 
-        segments = [
-            AudioSegment(
-                segment_index=row["segment_index"],
-                speaker=row["speaker"],
-                text=row["text_content"],
-                voice_id=row.get("voice_id"),
-                voice_name=row.get("voice_name"),
-                audio_url=row.get("audio_url"),
-                duration_ms=row.get("duration_ms", 0),
-                pause_after_ms=row.get("pause_after_ms", 300)
-            )
-            for row in segments_result.data
-        ]
+        segments = []
+        if segments_result and segments_result.data:
+            segments = [
+                AudioSegment(
+                    segment_index=row["segment_index"],
+                    speaker=row["speaker"],
+                    text=row["text_content"],
+                    voice_id=row.get("voice_id"),
+                    voice_name=row.get("voice_name"),
+                    audio_url=row.get("audio_url"),
+                    duration_ms=row.get("duration_ms", 0),
+                    pause_after_ms=row.get("pause_after_ms", 300)
+                )
+                for row in segments_result.data
+            ]
 
         return MultiSpeakerPanelAudio(
             panel_number=panel_number,

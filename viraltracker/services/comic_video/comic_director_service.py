@@ -758,8 +758,9 @@ class ComicDirectorService:
             return audio_duration_ms + 500
 
         # Fallback: estimate from text
-        header = panel.get("header_text", "")
-        dialogue = panel.get("dialogue", "")
+        # Use "or" to handle both missing and null values
+        header = panel.get("header_text") or ""
+        dialogue = panel.get("dialogue") or ""
         total_chars = len(header) + len(dialogue)
 
         # Rough estimate: 150ms per character (average speaking rate)
@@ -810,7 +811,7 @@ class ComicDirectorService:
                 .execute()
         )
 
-        if not result.data:
+        if not result or not result.data:
             return None
 
         return self._row_to_instruction(result.data)
@@ -827,6 +828,9 @@ class ComicDirectorService:
                 .order("panel_number")
                 .execute()
         )
+
+        if not result or not result.data:
+            return []
 
         return [self._row_to_instruction(row) for row in result.data]
 
