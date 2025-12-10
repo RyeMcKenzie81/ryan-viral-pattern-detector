@@ -188,9 +188,14 @@ for i, (tab, product) in enumerate(zip(product_tabs, products)):
         product_id = product['id']
         urls = service.get_product_urls(product_id)
 
+        # Separate regular URLs from fallback URLs
+        regular_urls = [u for u in urls if not u.get('is_fallback')]
+        fallback_urls = [u for u in urls if u.get('is_fallback')]
+
         # Display existing URLs
-        if urls:
-            for url in urls:
+        if regular_urls:
+            st.markdown("**Ad URL Patterns:**")
+            for url in regular_urls:
                 col1, col2, col3 = st.columns([4, 1, 1])
                 with col1:
                     badge = "🏠" if url.get('is_primary') else ""
@@ -235,6 +240,41 @@ for i, (tab, product) in enumerate(zip(product_tabs, products)):
                         st.rerun()
                     else:
                         st.warning("Please enter a URL pattern")
+
+        # Fallback Landing Page section
+        st.markdown("---")
+        st.markdown("**🔬 Fallback Landing Page for Research:**")
+        st.caption("Add a landing page URL to scrape for persona research when there aren't enough ads")
+
+        if fallback_urls:
+            for url in fallback_urls:
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.text(f"🔬 {url['url_pattern']}")
+                with col2:
+                    if st.button("🗑️", key=f"del_fallback_{url['id']}", help="Delete"):
+                        service.delete_product_url(url['id'])
+                        st.rerun()
+        else:
+            with st.expander("➕ Add Fallback Landing Page"):
+                fallback_url = st.text_input(
+                    "Landing Page URL",
+                    key=f"fallback_url_{product_id}",
+                    placeholder="e.g., https://example.com/products/my-product"
+                )
+                if st.button("Add Fallback URL", key=f"add_fallback_{product_id}"):
+                    if fallback_url:
+                        service.add_product_url(
+                            product_id=product_id,
+                            url_pattern=fallback_url,
+                            match_type='exact',
+                            is_primary=False,
+                            is_fallback=True
+                        )
+                        st.success("Fallback landing page added!")
+                        st.rerun()
+                    else:
+                        st.warning("Please enter a URL")
 
 # ============================================================
 # URL Review Queue
