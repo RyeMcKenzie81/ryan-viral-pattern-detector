@@ -54,11 +54,11 @@ def get_brands():
 
 
 def get_products_for_brand(brand_id: str):
-    """Fetch all products for a brand with images from product_images table."""
+    """Fetch all products for a brand with images and variants from product_images table."""
     try:
         db = get_supabase_client()
         result = db.table("products").select(
-            "*, product_images(id, storage_path, image_analysis, analyzed_at, notes, is_main)"
+            "*, product_images(id, storage_path, image_analysis, analyzed_at, notes, is_main), product_variants(id, name, slug, variant_type, description, is_default, is_active, display_order)"
         ).eq("brand_id", brand_id).order("name").execute()
 
         # Supported image formats for Vision AI analysis
@@ -79,10 +79,80 @@ def get_products_for_brand(brand_id: str):
 
             product['product_images'] = images
 
+            # Sort variants by display_order, then name
+            variants = list(product.get('product_variants') or [])
+            variants.sort(key=lambda x: (x.get('display_order', 0), x.get('name', '')))
+            product['product_variants'] = variants
+
         return result.data
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
         return []
+
+
+def get_variants_for_product(product_id: str):
+    """Fetch all variants for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_variants").select("*").eq(
+            "product_id", product_id
+        ).order("display_order").order("name").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch variants: {e}")
+        return []
+
+
+def create_variant(product_id: str, name: str, variant_type: str = "flavor",
+                   description: str = None, is_default: bool = False) -> bool:
+    """Create a new product variant."""
+    try:
+        db = get_supabase_client()
+        slug = name.lower().replace(" ", "-").replace("'", "")
+
+        # Get current max display_order
+        existing = db.table("product_variants").select("display_order").eq(
+            "product_id", product_id
+        ).order("display_order", desc=True).limit(1).execute()
+
+        next_order = (existing.data[0]['display_order'] + 1) if existing.data else 0
+
+        db.table("product_variants").insert({
+            "product_id": product_id,
+            "name": name,
+            "slug": slug,
+            "variant_type": variant_type,
+            "description": description,
+            "is_default": is_default,
+            "is_active": True,
+            "display_order": next_order
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to create variant: {e}")
+        return False
+
+
+def update_variant(variant_id: str, updates: dict) -> bool:
+    """Update a product variant."""
+    try:
+        db = get_supabase_client()
+        db.table("product_variants").update(updates).eq("id", variant_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to update variant: {e}")
+        return False
+
+
+def delete_variant(variant_id: str) -> bool:
+    """Delete a product variant."""
+    try:
+        db = get_supabase_client()
+        db.table("product_variants").delete().eq("id", variant_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete variant: {e}")
+        return False
 
 
 def get_hooks_count(product_id: str) -> int:
@@ -482,7 +552,7 @@ else:
                 st.markdown("---")
 
                 # Details tab
-                tab_details, tab_images, tab_stats = st.tabs(["Details", "Images", "Stats"])
+                tab_details, tab_variants, tab_images, tab_stats = st.tabs(["Details", "Variants", "Images", "Stats"])
 
                 with tab_details:
                     # Product Code (for ad filenames)
@@ -640,6 +710,122 @@ else:
                             if cancelled:
                                 st.session_state[edit_key] = False
                                 st.rerun()
+
+                with tab_variants:
+                    variants = product.get('product_variants', [])
+                    active_variants = [v for v in variants if v.get('is_active', True)]
+
+                    st.markdown(f"**{len(active_variants)} variant(s)**")
+
+                    # Add new variant form
+                    add_variant_key = f"add_variant_{product_id}"
+                    if add_variant_key not in st.session_state:
+                        st.session_state[add_variant_key] = False
+
+                    col_add, col_spacer = st.columns([1, 3])
+                    with col_add:
+                        if st.button("➕ Add Variant", key=f"btn_add_var_{product_id}"):
+                            st.session_state[add_variant_key] = not st.session_state[add_variant_key]
+                            st.rerun()
+
+                    if st.session_state[add_variant_key]:
+                        with st.form(key=f"form_add_var_{product_id}"):
+                            st.markdown("#### Add New Variant")
+
+                            new_var_name = st.text_input(
+                                "Variant Name",
+                                placeholder="e.g., Strawberry, Chocolate, Large",
+                                key=f"new_var_name_{product_id}"
+                            )
+
+                            new_var_type = st.selectbox(
+                                "Variant Type",
+                                options=["flavor", "size", "color", "bundle", "other"],
+                                key=f"new_var_type_{product_id}"
+                            )
+
+                            new_var_desc = st.text_area(
+                                "Description (optional)",
+                                placeholder="What makes this variant unique?",
+                                height=80,
+                                key=f"new_var_desc_{product_id}"
+                            )
+
+                            new_var_default = st.checkbox(
+                                "Set as default variant",
+                                key=f"new_var_default_{product_id}"
+                            )
+
+                            col_submit, col_cancel = st.columns(2)
+                            with col_submit:
+                                submitted = st.form_submit_button("💾 Save", type="primary")
+                            with col_cancel:
+                                cancelled = st.form_submit_button("Cancel")
+
+                            if submitted and new_var_name:
+                                if create_variant(
+                                    product_id=product_id,
+                                    name=new_var_name,
+                                    variant_type=new_var_type,
+                                    description=new_var_desc if new_var_desc else None,
+                                    is_default=new_var_default
+                                ):
+                                    st.success(f"Variant '{new_var_name}' created!")
+                                    st.session_state[add_variant_key] = False
+                                    st.rerun()
+
+                            if cancelled:
+                                st.session_state[add_variant_key] = False
+                                st.rerun()
+
+                    # Display existing variants
+                    if variants:
+                        st.markdown("---")
+                        for var in variants:
+                            var_id = var['id']
+                            var_name = var.get('name', 'Unnamed')
+                            var_type = var.get('variant_type', 'flavor')
+                            is_default = var.get('is_default', False)
+                            is_active = var.get('is_active', True)
+
+                            col_var_name, col_var_type, col_var_actions = st.columns([2, 1, 1])
+
+                            with col_var_name:
+                                status_icon = "⭐" if is_default else ""
+                                active_style = "" if is_active else " *(inactive)*"
+                                st.markdown(f"**{var_name}** {status_icon}{active_style}")
+                                if var.get('description'):
+                                    st.caption(var['description'])
+
+                            with col_var_type:
+                                st.caption(f"Type: {var_type}")
+
+                            with col_var_actions:
+                                col_default, col_toggle, col_delete = st.columns(3)
+
+                                with col_default:
+                                    if not is_default:
+                                        if st.button("⭐", key=f"set_default_{var_id}", help="Set as default"):
+                                            # Clear other defaults first
+                                            for v in variants:
+                                                if v.get('is_default'):
+                                                    update_variant(v['id'], {"is_default": False})
+                                            update_variant(var_id, {"is_default": True})
+                                            st.rerun()
+
+                                with col_toggle:
+                                    toggle_label = "🔴" if is_active else "🟢"
+                                    toggle_help = "Deactivate" if is_active else "Activate"
+                                    if st.button(toggle_label, key=f"toggle_{var_id}", help=toggle_help):
+                                        update_variant(var_id, {"is_active": not is_active})
+                                        st.rerun()
+
+                                with col_delete:
+                                    if st.button("🗑️", key=f"del_var_{var_id}", help="Delete"):
+                                        if delete_variant(var_id):
+                                            st.rerun()
+                    else:
+                        st.info("No variants configured. Add variants for different flavors, sizes, or options.")
 
                 with tab_images:
                     images = product.get('product_images', [])
