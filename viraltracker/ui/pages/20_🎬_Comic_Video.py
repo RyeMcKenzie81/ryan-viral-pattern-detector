@@ -566,6 +566,14 @@ def render_review_step():
         # Debug: Show camera positions
         with st.expander("🔧 Debug: Camera Positions"):
             st.caption(f"Project ID: {project_id}")
+
+            # Show approval status
+            st.markdown("**Approval Status:**")
+            st.text(f"Total panels: {summary['total_panels']}")
+            st.text(f"Audio generated: {summary['audio']['generated']}, approved: {summary['audio']['approved']}")
+            st.text(f"Instructions generated: {summary['instructions']['generated']}, approved: {summary['instructions']['approved']}")
+            st.text(f"Ready for final: {summary['ready_for_final_render']}")
+
             if project.layout:
                 st.text(f"Layout: {project.layout.grid_cols}x{project.layout.grid_rows}")
                 st.text(f"Row cols: {project.layout.row_cols}")
