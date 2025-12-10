@@ -285,8 +285,11 @@ class ComicAudioService:
                         results.append(audio)
 
             except Exception as e:
-                logger.error(f"Failed to generate audio for panel {panel_number}: {e}")
-                # Continue with other panels
+                import traceback
+                logger.error(f"Failed to generate audio for panel {panel_number}: {e}\n{traceback.format_exc()}")
+                # Re-raise for first panel to surface errors during development
+                if panel_number == 1:
+                    raise RuntimeError(f"Panel 1 audio generation failed: {e}") from e
                 continue
 
         logger.info(f"Generated audio for {len(results)} panels")

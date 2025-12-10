@@ -551,7 +551,11 @@ class ComicDirectorService:
                 instructions.append(instruction)
 
             except Exception as e:
-                logger.error(f"Failed to generate instruction for panel {panel_num}: {e}")
+                import traceback
+                logger.error(f"Failed to generate instruction for panel {panel_num}: {e}\n{traceback.format_exc()}")
+                # Re-raise for first panel to surface errors during development
+                if panel_num == 1:
+                    raise RuntimeError(f"Panel 1 instruction generation failed: {e}") from e
                 continue
 
         logger.info(f"Generated instructions for {len(instructions)} panels")
