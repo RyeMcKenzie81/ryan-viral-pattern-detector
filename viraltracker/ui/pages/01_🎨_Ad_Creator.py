@@ -67,6 +67,8 @@ if 'selected_persona_id' not in st.session_state:
     st.session_state.selected_persona_id = None
 if 'selected_variant_id' not in st.session_state:
     st.session_state.selected_variant_id = None
+if 'additional_instructions' not in st.session_state:
+    st.session_state.additional_instructions = ""
 
 
 def get_supabase_client():
@@ -306,7 +308,8 @@ async def run_workflow(
     product_name: str = None,
     brand_name: str = None,
     persona_id: str = None,
-    variant_id: str = None
+    variant_id: str = None,
+    additional_instructions: str = None
 ):
     """Run the ad creation workflow with optional export.
 
@@ -327,6 +330,7 @@ async def run_workflow(
         brand_name: Brand name for export context
         persona_id: Optional persona UUID for targeted ad copy
         variant_id: Optional variant UUID for specific flavor/size
+        additional_instructions: Optional run-specific instructions for ad generation
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -357,7 +361,8 @@ async def run_workflow(
         image_selection_mode=image_selection_mode,
         selected_image_paths=selected_image_paths,
         persona_id=persona_id,
-        variant_id=variant_id
+        variant_id=variant_id,
+        additional_instructions=additional_instructions
     )
 
     # Handle exports if configured
@@ -794,6 +799,34 @@ else:
     else:
         st.info("No variants available for this product. Add variants in Brand Manager if needed.")
         st.session_state.selected_variant_id = None
+
+    st.divider()
+
+    # ============================================================================
+    # Section 2.7: Additional Instructions (Optional)
+    # ============================================================================
+
+    st.subheader("Additional Instructions (Optional)")
+
+    # Get brand's default ad creation notes
+    brand_ad_notes = ""
+    if selected_product and selected_product.get('brands'):
+        brand_ad_notes = selected_product['brands'].get('ad_creation_notes') or ""
+
+    # Show brand defaults if they exist
+    if brand_ad_notes:
+        st.caption(f"📋 **Brand defaults:** {brand_ad_notes[:100]}{'...' if len(brand_ad_notes) > 100 else ''}")
+
+    additional_instructions = st.text_area(
+        "Additional instructions for this run",
+        value=st.session_state.additional_instructions,
+        placeholder="Add any specific instructions for this ad generation run...\n\nExamples:\n- Feature the Brown Sugar flavor prominently\n- Use a summer/outdoor theme\n- Include '20% OFF' badge",
+        height=100,
+        help="These instructions will be combined with the brand's default ad creation notes",
+        disabled=st.session_state.workflow_running,
+        key="additional_instructions_input"
+    )
+    st.session_state.additional_instructions = additional_instructions
 
     st.divider()
 
@@ -1272,9 +1305,10 @@ else:
             brand_info = selected_product.get('brands', {}) if selected_product else {}
             brd_name = brand_info.get('name', 'Brand') if brand_info else 'Brand'
 
-            # Get persona_id and variant_id from session state
+            # Get persona_id, variant_id, and additional_instructions from session state
             persona_id = st.session_state.selected_persona_id
             variant_id = st.session_state.selected_variant_id
+            add_instructions = st.session_state.additional_instructions
 
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
@@ -1293,7 +1327,8 @@ else:
                 product_name=prod_name,
                 brand_name=brd_name,
                 persona_id=persona_id,
-                variant_id=variant_id
+                variant_id=variant_id,
+                additional_instructions=add_instructions
             ))
 
             # Record template usage if a scraped template was used

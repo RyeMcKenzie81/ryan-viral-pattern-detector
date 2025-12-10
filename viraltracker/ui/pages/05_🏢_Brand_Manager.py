@@ -447,6 +447,33 @@ with st.container():
         with st.expander("Brand Guidelines"):
             st.markdown(selected_brand['brand_guidelines'])
 
+    # Ad Creation Notes Section
+    st.markdown("")  # Spacer
+    st.markdown("**Ad Creation Notes**")
+    st.caption("Default instructions for ad generation (e.g., 'white backdrops work best', 'always show product in use')")
+
+    current_ad_creation_notes = selected_brand.get('ad_creation_notes') or ""
+    new_ad_creation_notes = st.text_area(
+        "Ad Creation Notes",
+        value=current_ad_creation_notes,
+        placeholder="Enter default instructions for ad generation...\n\nExamples:\n- White backdrops work best for this brand\n- Always feature the product prominently\n- Use lifestyle imagery when possible",
+        height=120,
+        key="brand_ad_creation_notes",
+        label_visibility="collapsed"
+    )
+
+    if new_ad_creation_notes != current_ad_creation_notes:
+        if st.button("Save Ad Creation Notes", key="save_ad_creation_notes", type="secondary"):
+            try:
+                db = get_supabase_client()
+                db.table("brands").update({
+                    "ad_creation_notes": new_ad_creation_notes
+                }).eq("id", selected_brand_id).execute()
+                st.success("Ad creation notes saved!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
     # Facebook Ad Library Section
     st.markdown("")  # Spacer
     st.markdown("**Facebook Ad Library**")

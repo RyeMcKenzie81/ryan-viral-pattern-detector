@@ -468,6 +468,23 @@ class ComicAudioService:
 
         return result.get("signedURL", "")
 
+    async def _download_audio_file(self, url: str, local_path: Path) -> None:
+        """
+        Download audio file from URL to local path.
+
+        Args:
+            url: URL to download from
+            local_path: Local path to save to
+        """
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            local_path.write_bytes(response.content)
+
+        logger.debug(f"Downloaded audio to {local_path}")
+
     # =========================================================================
     # Database Operations
     # =========================================================================
@@ -799,9 +816,7 @@ class ComicAudioService:
 
             # Download to local path
             local_path = project_dir / f"seg_{seg.segment_index}_temp.mp3"
-            await asyncio.to_thread(
-                self.ffmpeg.download_file, signed_url, local_path
-            )
+            await self._download_audio_file(signed_url, local_path)
             segment_paths.append(local_path)
 
         # Build pause durations (all except last segment)
