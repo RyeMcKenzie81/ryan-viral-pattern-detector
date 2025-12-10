@@ -3013,7 +3013,8 @@ async def complete_ad_workflow(
     brand_colors: Optional[Dict] = None,
     image_selection_mode: str = "auto",
     selected_image_paths: Optional[List[str]] = None,
-    persona_id: Optional[str] = None
+    persona_id: Optional[str] = None,
+    variant_id: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -3057,6 +3058,8 @@ async def complete_ad_workflow(
         selected_image_paths: List of storage paths when image_selection_mode is "manual" (1-2 images)
         persona_id: Optional UUID of 4D persona to target. When provided, persona's
             pain points, desires, and language inform hook selection and copy generation.
+        variant_id: Optional UUID of product variant (flavor, size, color). When provided,
+            variant name and description are used to customize ad copy for that specific variant.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3109,6 +3112,8 @@ async def complete_ad_workflow(
         logger.info(f"Generating {num_variations} ad variations using content_source='{content_source}'")
         if persona_id:
             logger.info(f"Using persona: {persona_id}")
+        if variant_id:
+            logger.info(f"Using variant: {variant_id}")
 
         # Build parameters dict for tracking
         run_parameters = {
@@ -3118,7 +3123,8 @@ async def complete_ad_workflow(
             "image_selection_mode": image_selection_mode,
             "selected_image_paths": selected_image_paths,
             "brand_colors": brand_colors,
-            "persona_id": persona_id
+            "persona_id": persona_id,
+            "variant_id": variant_id
         }
 
         # STAGE 1: Initialize ad run and upload reference ad
@@ -3169,6 +3175,39 @@ async def complete_ad_workflow(
                     logger.warning(f"Persona not found: {persona_id} - continuing without persona targeting")
             except Exception as e:
                 logger.warning(f"Failed to load persona {persona_id}: {e} - continuing without persona targeting")
+
+        # STAGE 2c: Fetch variant data (if variant_id provided)
+        variant_data = None
+        if variant_id:
+            logger.info(f"Stage 2c: Fetching variant data for {variant_id}...")
+            try:
+                from viraltracker.core.database import get_supabase_client
+                db = get_supabase_client()
+                result = db.table("product_variants").select(
+                    "id, name, slug, variant_type, description, differentiators"
+                ).eq("id", variant_id).single().execute()
+                if result.data:
+                    variant_data = result.data
+                    logger.info(f"Loaded variant: {variant_data.get('name', 'Unknown')}")
+                    logger.info(f"  - Type: {variant_data.get('variant_type', 'unknown')}")
+                    if variant_data.get('description'):
+                        logger.info(f"  - Description: {variant_data['description'][:50]}...")
+                else:
+                    logger.warning(f"Variant not found: {variant_id} - continuing without variant targeting")
+            except Exception as e:
+                logger.warning(f"Failed to load variant {variant_id}: {e} - continuing without variant targeting")
+
+        # Enhance product_dict with variant data if available
+        if variant_data:
+            product_dict['variant'] = variant_data
+            # Append variant name to product name for ad copy (e.g., "All-in-One Superfood Shake - Brown Sugar")
+            original_name = product_dict.get('name', 'Product')
+            variant_name = variant_data.get('name', '')
+            product_dict['display_name'] = f"{original_name} - {variant_name}" if variant_name else original_name
+            logger.info(f"Enhanced product with variant: {product_dict['display_name']}")
+        else:
+            product_dict['variant'] = None
+            product_dict['display_name'] = product_dict.get('name', 'Product')
 
         # STAGE 3: Fetch hooks (only if using hooks content source)
         hooks_list = []

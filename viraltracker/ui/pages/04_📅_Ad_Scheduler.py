@@ -98,6 +98,18 @@ def get_personas_for_product(product_id: str):
         return []
 
 
+def get_variants_for_product(product_id: str):
+    """Get variants for a product for the variant selector."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_variants").select(
+            "id, name, slug, variant_type, description, is_default, is_active"
+        ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
 def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str = None):
     """Fetch scheduled jobs with optional filters."""
     try:
@@ -933,6 +945,56 @@ def render_create_schedule():
     st.divider()
 
     # ========================================================================
+    # Section 5.6: Product Variant (Optional)
+    # ========================================================================
+
+    st.subheader("Product Variant (Optional)")
+
+    # Fetch variants for selected product
+    variants = get_variants_for_product(selected_product_id) if selected_product_id else []
+
+    variant_id = None
+    if variants:
+        # Build variant options - "Default" + all variants
+        variant_options = {"Use default variant": None}
+        for v in variants:
+            label = f"{v['name']}"
+            if v.get('is_default'):
+                label += " (default)"
+            if v.get('description'):
+                label += f" - {v['description'][:40]}..."
+            variant_options[label] = v['id']
+
+        # Get existing variant_id from job params
+        existing_variant_id = existing_params.get('variant_id')
+
+        # Get current selection label
+        current_variant_label = "Use default variant"
+        if existing_variant_id:
+            for label, vid in variant_options.items():
+                if vid == existing_variant_id:
+                    current_variant_label = label
+                    break
+
+        selected_variant_label = st.selectbox(
+            "Select a product variant",
+            options=list(variant_options.keys()),
+            index=list(variant_options.keys()).index(current_variant_label) if current_variant_label in variant_options else 0,
+            help="Choose a specific flavor, size, or variant to feature in ads"
+        )
+        variant_id = variant_options[selected_variant_label]
+
+        # Show variant preview if selected
+        if variant_id:
+            selected_variant = next((v for v in variants if v['id'] == variant_id), None)
+            if selected_variant and selected_variant.get('description'):
+                st.caption(f"📦 {selected_variant['description']}")
+    else:
+        st.info("No variants available for this product. Add variants in Brand Manager if needed.")
+
+    st.divider()
+
+    # ========================================================================
     # Section 6: Export Destination
     # ========================================================================
 
@@ -1004,7 +1066,8 @@ def render_create_schedule():
                     'image_selection_mode': image_selection_mode,
                     'export_destination': export_destination,
                     'export_email': export_email if export_destination in ['email', 'both'] else None,
-                    'persona_id': persona_id
+                    'persona_id': persona_id,
+                    'variant_id': variant_id
                 }
 
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
@@ -1176,6 +1239,17 @@ def render_schedule_detail():
             st.markdown(f"**Persona:** {persona_name}")
         else:
             st.markdown("**Persona:** None")
+
+        # Display variant if set
+        variant_id = params.get('variant_id')
+        if variant_id:
+            # Try to get variant name
+            variants = get_variants_for_product(job['product_id'])
+            variant = next((v for v in variants if v['id'] == variant_id), None)
+            variant_name = variant['name'] if variant else variant_id[:8]
+            st.markdown(f"**Variant:** {variant_name}")
+        else:
+            st.markdown("**Variant:** Default")
 
     st.divider()
 

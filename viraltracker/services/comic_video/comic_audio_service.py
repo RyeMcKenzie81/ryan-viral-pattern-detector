@@ -219,43 +219,75 @@ class ComicAudioService:
         """
         Generate audio for all panels in a comic.
 
+        Automatically detects multi-speaker panels (with segments array)
+        and uses appropriate generation method.
+
         Args:
             project_id: Project UUID
             comic_json: Full comic JSON with panels array
-            voice_id: ElevenLabs voice ID
+            voice_id: ElevenLabs voice ID (for single-speaker panels)
             voice_name: Voice display name
 
         Returns:
             List of PanelAudio for each panel
         """
-        # Extract texts
-        panel_texts = self.extract_all_panel_texts(comic_json)
+        panels = comic_json.get("panels", [])
 
-        if not panel_texts:
-            logger.warning("No panel texts found in comic JSON")
+        if not panels:
+            logger.warning("No panels found in comic JSON")
             return []
 
         results = []
 
         # Generate audio for each panel sequentially
         # (ElevenLabs rate limits apply)
-        for panel_number, text in sorted(panel_texts.items()):
+        for panel in panels:
+            panel_number = panel.get("panel_number", 0)
+            if panel_number <= 0:
+                continue
+
             try:
-                audio = await self.generate_panel_audio(
-                    project_id=project_id,
-                    panel_number=panel_number,
-                    text=text,
-                    voice_id=voice_id,
-                    voice_name=voice_name
-                )
-                results.append(audio)
+                # Check if panel has multi-speaker segments
+                if self.has_multi_speaker(panel):
+                    logger.info(f"Panel {panel_number}: Multi-speaker detected, using segment generation")
+                    multi_audio = await self.generate_multi_speaker_audio(
+                        project_id=project_id,
+                        panel_number=panel_number,
+                        panel=panel
+                    )
+                    # Create a PanelAudio from multi-speaker result for compatibility
+                    audio = PanelAudio(
+                        panel_number=panel_number,
+                        audio_url=multi_audio.combined_audio_url or "",
+                        audio_filename=f"{panel_number:02d}_combined.mp3",
+                        duration_ms=multi_audio.total_duration_ms,
+                        voice_id="multi-speaker",
+                        voice_name="Multi-Speaker",
+                        text_content=" | ".join(s.text for s in multi_audio.segments),
+                        is_approved=False
+                    )
+                    # Save to panel audio table for compatibility with existing workflow
+                    await self._save_panel_audio(project_id, audio)
+                    results.append(audio)
+                else:
+                    # Single speaker - use regular generation
+                    text = self.extract_panel_text(panel)
+                    if text:
+                        audio = await self.generate_panel_audio(
+                            project_id=project_id,
+                            panel_number=panel_number,
+                            text=text,
+                            voice_id=voice_id,
+                            voice_name=voice_name
+                        )
+                        results.append(audio)
 
             except Exception as e:
                 logger.error(f"Failed to generate audio for panel {panel_number}: {e}")
                 # Continue with other panels
                 continue
 
-        logger.info(f"Generated audio for {len(results)}/{len(panel_texts)} panels")
+        logger.info(f"Generated audio for {len(results)} panels")
         return results
 
     async def regenerate_panel_audio(

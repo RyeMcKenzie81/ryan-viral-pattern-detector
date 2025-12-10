@@ -65,6 +65,8 @@ if 'scraped_template_category' not in st.session_state:
     st.session_state.scraped_template_category = "all"
 if 'selected_persona_id' not in st.session_state:
     st.session_state.selected_persona_id = None
+if 'selected_variant_id' not in st.session_state:
+    st.session_state.selected_variant_id = None
 
 
 def get_supabase_client():
@@ -82,6 +84,18 @@ def get_personas_for_product(product_id: str):
         return service.get_personas_for_product(UUID(product_id))
     except Exception as e:
         st.warning(f"Could not load personas: {e}")
+        return []
+
+
+def get_variants_for_product(product_id: str):
+    """Get variants for a product for the variant selector."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_variants").select(
+            "id, name, slug, variant_type, description, is_default, is_active"
+        ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
+        return result.data or []
+    except Exception as e:
         return []
 
 
@@ -291,7 +305,8 @@ async def run_workflow(
     export_slack_webhook: str = None,
     product_name: str = None,
     brand_name: str = None,
-    persona_id: str = None
+    persona_id: str = None,
+    variant_id: str = None
 ):
     """Run the ad creation workflow with optional export.
 
@@ -311,6 +326,7 @@ async def run_workflow(
         product_name: Product name for export context
         brand_name: Brand name for export context
         persona_id: Optional persona UUID for targeted ad copy
+        variant_id: Optional variant UUID for specific flavor/size
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -340,7 +356,8 @@ async def run_workflow(
         brand_colors=brand_colors,
         image_selection_mode=image_selection_mode,
         selected_image_paths=selected_image_paths,
-        persona_id=persona_id
+        persona_id=persona_id,
+        variant_id=variant_id
     )
 
     # Handle exports if configured
@@ -728,6 +745,55 @@ else:
     else:
         st.info("No personas available for this product. Create personas in Brand Research to enable persona-targeted ad creation.")
         st.session_state.selected_persona_id = None
+
+    st.divider()
+
+    # ============================================================================
+    # Section 2.6: Product Variant (Optional)
+    # ============================================================================
+
+    st.subheader("Product Variant (Optional)")
+
+    # Fetch variants for selected product
+    variants = get_variants_for_product(selected_product_id) if selected_product_id else []
+
+    if variants:
+        # Build variant options - "Default" + all variants
+        variant_options = {"Use default variant": None}
+        for v in variants:
+            label = f"{v['name']}"
+            if v.get('is_default'):
+                label += " (default)"
+            if v.get('description'):
+                label += f" - {v['description'][:40]}..."
+            variant_options[label] = v['id']
+
+        # Get current selection label
+        current_variant_label = "Use default variant"
+        if st.session_state.selected_variant_id:
+            for label, vid in variant_options.items():
+                if vid == st.session_state.selected_variant_id:
+                    current_variant_label = label
+                    break
+
+        selected_variant_label = st.selectbox(
+            "Select a product variant",
+            options=list(variant_options.keys()),
+            index=list(variant_options.keys()).index(current_variant_label) if current_variant_label in variant_options else 0,
+            help="Choose a specific flavor, size, or variant to feature in ads",
+            disabled=st.session_state.workflow_running,
+            key="variant_selector"
+        )
+        st.session_state.selected_variant_id = variant_options[selected_variant_label]
+
+        # Show variant preview if selected
+        if st.session_state.selected_variant_id:
+            selected_variant = next((v for v in variants if v['id'] == st.session_state.selected_variant_id), None)
+            if selected_variant and selected_variant.get('description'):
+                st.caption(f"📦 {selected_variant['description']}")
+    else:
+        st.info("No variants available for this product. Add variants in Brand Manager if needed.")
+        st.session_state.selected_variant_id = None
 
     st.divider()
 
@@ -1206,8 +1272,9 @@ else:
             brand_info = selected_product.get('brands', {}) if selected_product else {}
             brd_name = brand_info.get('name', 'Brand') if brand_info else 'Brand'
 
-            # Get persona_id from session state
+            # Get persona_id and variant_id from session state
             persona_id = st.session_state.selected_persona_id
+            variant_id = st.session_state.selected_variant_id
 
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
@@ -1225,7 +1292,8 @@ else:
                 export_slack_webhook=exp_slack,
                 product_name=prod_name,
                 brand_name=brd_name,
-                persona_id=persona_id
+                persona_id=persona_id,
+                variant_id=variant_id
             ))
 
             # Record template usage if a scraped template was used
