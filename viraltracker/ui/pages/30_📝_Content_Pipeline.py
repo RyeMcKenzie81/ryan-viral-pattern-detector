@@ -1382,8 +1382,8 @@ def render_audio_tab(project: Dict):
             st.session_state.els_converting = True
             st.rerun()
 
-    # Handle ELS conversion
-    if st.session_state.els_converting and not existing_els:
+    # Handle ELS conversion (both new and regenerate)
+    if st.session_state.els_converting:
         with st.spinner("Converting script to ELS format..."):
             try:
                 result = asyncio.run(run_els_conversion(
