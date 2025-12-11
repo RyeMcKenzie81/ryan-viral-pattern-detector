@@ -1014,6 +1014,42 @@ class CompetitorService:
             "configured_patterns": configured_patterns
         }
 
+    def get_competitor_amazon_stats(self, competitor_id: UUID) -> Dict[str, Any]:
+        """
+        Get Amazon review analysis statistics for a competitor.
+
+        Args:
+            competitor_id: UUID of the competitor
+
+        Returns:
+            Dict with has_analysis, review_count, url_count
+        """
+        competitor_id_str = str(competitor_id)
+
+        # Check if analysis exists
+        analysis_result = self.supabase.table("competitor_amazon_review_analysis").select(
+            "id"
+        ).eq("competitor_id", competitor_id_str).execute()
+        has_analysis = bool(analysis_result.data)
+
+        # Count reviews
+        reviews_result = self.supabase.table("competitor_amazon_reviews").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).execute()
+        review_count = reviews_result.count or 0
+
+        # Count Amazon URLs
+        urls_result = self.supabase.table("competitor_amazon_urls").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).execute()
+        url_count = urls_result.count or 0
+
+        return {
+            "has_analysis": has_analysis,
+            "review_count": review_count,
+            "url_count": url_count
+        }
+
     # =========================================================================
     # AD SCRAPING INTEGRATION
     # =========================================================================
