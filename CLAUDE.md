@@ -266,3 +266,104 @@ logger.error(f"Failed: {e}")            # Errors
 - [ ] Error handling appropriate
 - [ ] Changes committed with descriptive message
 - [ ] Changes pushed to GitHub
+
+---
+
+## Content Pipeline Feature Guidelines
+
+> **Plan Document**: See `docs/plans/trash-panda-content-pipeline/PLAN.md`
+> **Checkpoints**: See `docs/plans/trash-panda-content-pipeline/CHECKPOINT_*.md`
+
+### Pydantic-Graph Pattern (CRITICAL)
+
+Follow existing pattern in `viraltracker/pipelines/`:
+
+```python
+# states.py - State dataclass
+@dataclass
+class ContentPipelineState:
+    # Input params
+    brand_id: UUID
+    # Populated by nodes
+    topics: List[Dict] = field(default_factory=list)
+    # Tracking
+    current_step: str = "pending"
+    error: Optional[str] = None
+
+# nodes/topic_discovery.py - Thin node
+@dataclass
+class TopicDiscoveryNode(BaseNode[ContentPipelineState]):
+    async def run(
+        self,
+        ctx: GraphRunContext[ContentPipelineState, AgentDependencies]
+    ) -> "TopicEvaluationNode":
+        # Delegate to service (THIN!)
+        topics = await ctx.deps.content_pipeline.topic_service.discover_topics(...)
+        ctx.state.topics = topics
+        return TopicEvaluationNode()
+```
+
+### File Structure
+
+```
+viraltracker/services/content_pipeline/
+├── __init__.py
+├── state.py                 # ContentPipelineState dataclass
+├── orchestrator.py          # Graph definition (small!)
+├── nodes/                   # Thin node wrappers
+│   ├── __init__.py
+│   ├── topic_discovery.py
+│   ├── topic_evaluation.py
+│   └── ...
+└── services/                # Business logic (reusable)
+    ├── __init__.py
+    ├── topic_service.py
+    ├── script_service.py
+    └── ...
+```
+
+### User Preferences (MUST FOLLOW)
+
+1. **Checkpoints every ~40K tokens** - Save progress to CHECKPOINT_*.md
+2. **Test and QA as you go** - `python3 -m py_compile` after each file
+3. **Cleanup files as you go** - No debug code, no unused imports
+4. **Ask questions instead of assuming** - When in doubt, ask user
+5. **Make services reusable** - Don't make them too feature-specific
+6. **JSON prompts for images** - Simple JSON structure for Gemini prompts
+7. **MVP first** - Build minimal testable pieces, then expand
+
+### Human Checkpoints Pattern
+
+For steps that pause for human input:
+```python
+# Return End with "awaiting_human" status
+return End({
+    "status": "awaiting_human",
+    "checkpoint": "topic_selection",
+    "data": {...}
+})
+
+# UI checks status and shows approval UI
+# On approval, resume graph from next node
+```
+
+### Models & AI
+
+| Task | Model |
+|------|-------|
+| Topic Discovery | ChatGPT 5.1 (extended thinking) |
+| Scripts, SEO, Comic Audio | Claude Opus 4.5 |
+| Images, Comics, Assets | Gemini 3 Pro Image Preview |
+| Evaluations | Gemini |
+
+### Knowledge Base
+
+- `trash-panda-bible`: Bible + 6 YouTube docs (use RAG - too big to inject)
+- `comic-production`: 20 comic docs (use RAG with tagged chunks)
+
+### Quick Reference
+
+- **Plan**: `docs/plans/trash-panda-content-pipeline/PLAN.md`
+- **Visualization**: `docs/plans/trash-panda-content-pipeline/WORKFLOW_VISUALIZATION.md`
+- **Checkpoints**: `docs/plans/trash-panda-content-pipeline/CHECKPOINT_*.md`
+- **Existing Graph Example**: `viraltracker/pipelines/brand_onboarding.py`

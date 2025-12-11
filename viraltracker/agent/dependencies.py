@@ -32,6 +32,7 @@ from ..services.brand_research_service import BrandResearchService
 from ..services.template_queue_service import TemplateQueueService
 from ..services.persona_service import PersonaService
 from ..services.product_url_service import ProductURLService
+from ..services.content_pipeline.services.content_pipeline_service import ContentPipelineService
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,7 @@ class AgentDependencies(BaseModel):
     template_queue: TemplateQueueService
     persona: PersonaService
     product_url: ProductURLService
+    content_pipeline: ContentPipelineService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -250,6 +252,7 @@ class AgentDependencies(BaseModel):
 
         # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
         docs = None
+        supabase = None
         if os.getenv("OPENAI_API_KEY"):
             try:
                 supabase = get_supabase_client()
@@ -259,6 +262,13 @@ class AgentDependencies(BaseModel):
                 logger.warning(f"DocService initialization failed: {e}")
         else:
             logger.info("DocService skipped (OPENAI_API_KEY not set)")
+
+        # Initialize ContentPipelineService for content pipeline workflow
+        content_pipeline = ContentPipelineService(
+            supabase_client=supabase,
+            docs_service=docs
+        )
+        logger.info("ContentPipelineService initialized")
 
         return cls(
             twitter=twitter,
@@ -280,6 +290,7 @@ class AgentDependencies(BaseModel):
             template_queue=template_queue,
             persona=persona,
             product_url=product_url,
+            content_pipeline=content_pipeline,
             docs=docs,
             project_name=project_name
         )
