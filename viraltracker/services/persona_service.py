@@ -251,10 +251,28 @@ class PersonaService:
         ]
 
     def get_personas_for_competitor(self, competitor_id: UUID) -> List[PersonaSummary]:
-        """Get all personas extracted from a competitor."""
+        """Get all personas extracted from a competitor (competitor-level only, not product-level)."""
         result = self.supabase.table("personas_4d").select(
             "id, name, persona_type, is_primary, snapshot, source_type"
-        ).eq("competitor_id", str(competitor_id)).execute()
+        ).eq("competitor_id", str(competitor_id)).is_("competitor_product_id", "null").execute()
+
+        return [
+            PersonaSummary(
+                id=UUID(p["id"]),
+                name=p["name"],
+                persona_type=PersonaType.COMPETITOR,
+                is_primary=p.get("is_primary", False),
+                snapshot=p.get("snapshot"),
+                source_type=SourceType(p.get("source_type", "competitor_analysis"))
+            )
+            for p in result.data
+        ]
+
+    def get_personas_for_competitor_product(self, competitor_product_id: UUID) -> List[PersonaSummary]:
+        """Get all personas for a specific competitor product."""
+        result = self.supabase.table("personas_4d").select(
+            "id, name, persona_type, is_primary, snapshot, source_type"
+        ).eq("competitor_product_id", str(competitor_product_id)).execute()
 
         return [
             PersonaSummary(
@@ -555,12 +573,260 @@ class PersonaService:
         logger.info(f"Generated persona for product {product_id}: {persona.name}")
         return persona
 
+    async def synthesize_competitor_persona(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Persona4D:
+        """
+        Synthesize a 4D persona from competitor analysis data.
+
+        Gathers insights from:
+        - competitor_amazon_review_analysis
+        - competitor_landing_pages
+        - competitor_ads
+
+        Args:
+            competitor_id: UUID of the competitor
+            brand_id: UUID of the brand tracking this competitor
+            competitor_product_id: Optional - filter to product-level analysis
+
+        Returns:
+            Generated Persona4D (not saved - user reviews first)
+        """
+        # Get competitor info
+        competitor_result = self.supabase.table("competitors").select(
+            "name, website_url, industry"
+        ).eq("id", str(competitor_id)).execute()
+
+        if not competitor_result.data:
+            raise ValueError(f"Competitor not found: {competitor_id}")
+
+        competitor = competitor_result.data[0]
+
+        # Get competitor product info if specified
+        product_info = None
+        if competitor_product_id:
+            product_result = self.supabase.table("competitor_products").select(
+                "name, description"
+            ).eq("id", str(competitor_product_id)).execute()
+            if product_result.data:
+                product_info = product_result.data[0]
+
+        # Gather Amazon review analyses
+        amazon_query = self.supabase.table("competitor_amazon_review_analysis").select(
+            "analysis_data, analysis_summary"
+        ).eq("competitor_id", str(competitor_id))
+
+        if competitor_product_id:
+            amazon_query = amazon_query.eq("competitor_product_id", str(competitor_product_id))
+        else:
+            amazon_query = amazon_query.is_("competitor_product_id", "null")
+
+        amazon_result = amazon_query.execute()
+        amazon_analyses = amazon_result.data or []
+
+        # Gather landing page analyses
+        landing_query = self.supabase.table("competitor_landing_pages").select(
+            "url, analysis_data"
+        ).eq("competitor_id", str(competitor_id))
+
+        if competitor_product_id:
+            landing_query = landing_query.eq("competitor_product_id", str(competitor_product_id))
+        else:
+            landing_query = landing_query.is_("competitor_product_id", "null")
+
+        landing_result = landing_query.limit(10).execute()
+        landing_pages = landing_result.data or []
+
+        # Gather ad analyses (from snapshot_data)
+        ads_query = self.supabase.table("competitor_ads").select(
+            "ad_creative_body, snapshot_data"
+        ).eq("competitor_id", str(competitor_id))
+
+        if competitor_product_id:
+            ads_query = ads_query.eq("competitor_product_id", str(competitor_product_id))
+
+        ads_result = ads_query.limit(20).execute()
+        ads = ads_result.data or []
+
+        # Build synthesis input
+        synthesis_input = {
+            "competitor_name": competitor.get("name"),
+            "competitor_website": competitor.get("website_url"),
+            "industry": competitor.get("industry"),
+            "product_name": product_info.get("name") if product_info else None,
+            "product_description": product_info.get("description") if product_info else None,
+            "amazon_review_insights": [
+                a.get("analysis_summary") or a.get("analysis_data", {})
+                for a in amazon_analyses
+            ],
+            "landing_page_insights": [
+                {
+                    "url": lp.get("url"),
+                    "analysis": lp.get("analysis_data", {})
+                }
+                for lp in landing_pages if lp.get("analysis_data")
+            ],
+            "ad_copy_samples": [
+                ad.get("ad_creative_body")
+                for ad in ads if ad.get("ad_creative_body")
+            ][:10]  # Limit to 10 samples
+        }
+
+        # Check if we have enough data
+        total_sources = (
+            len(synthesis_input["amazon_review_insights"]) +
+            len(synthesis_input["landing_page_insights"]) +
+            len(synthesis_input["ad_copy_samples"])
+        )
+
+        if total_sources == 0:
+            raise ValueError(
+                f"No analysis data found for competitor. "
+                f"Please scrape and analyze Amazon reviews, landing pages, or ads first."
+            )
+
+        # Build prompt for competitor persona synthesis
+        level = "product" if competitor_product_id else "competitor"
+        prompt = f"""You are an expert at reverse-engineering customer personas from competitor marketing.
+
+Given the following competitor analysis data, synthesize a comprehensive 4D persona representing who this competitor is targeting.
+
+COMPETITOR INFO:
+- Name: {competitor.get('name')}
+- Website: {competitor.get('website_url', 'N/A')}
+- Industry: {competitor.get('industry', 'N/A')}
+{f"- Product: {product_info.get('name')}" if product_info else ""}
+{f"- Product Description: {product_info.get('description')}" if product_info else ""}
+
+AMAZON REVIEW INSIGHTS (what customers say):
+{json.dumps(synthesis_input['amazon_review_insights'], indent=2) if synthesis_input['amazon_review_insights'] else 'No Amazon review data available'}
+
+LANDING PAGE INSIGHTS:
+{json.dumps(synthesis_input['landing_page_insights'], indent=2) if synthesis_input['landing_page_insights'] else 'No landing page data available'}
+
+AD COPY SAMPLES (how competitor speaks to customers):
+{json.dumps(synthesis_input['ad_copy_samples'], indent=2) if synthesis_input['ad_copy_samples'] else 'No ad copy available'}
+
+Based on this data, generate a detailed 4D persona for the competitor's target customer.
+This is a {level}-level persona synthesis.
+
+Return JSON with this structure:
+{{
+  "name": "Descriptive persona name that reflects competitor's target",
+  "snapshot": "2-3 sentence description of who competitor targets",
+
+  "demographics": {{
+    "age_range": "e.g., 28-45",
+    "gender": "male/female/any",
+    "location": "e.g., Suburban USA",
+    "income_level": "e.g., Middle to upper-middle class",
+    "education": "e.g., College educated",
+    "occupation": "e.g., Professional",
+    "family_status": "e.g., Married with children"
+  }},
+
+  "transformation_map": {{
+    "before": ["Pain points competitor addresses"],
+    "after": ["Outcomes competitor promises"]
+  }},
+
+  "desires": {{
+    "primary_desire": [
+      {{"text": "What competitor's customers want most", "source": "competitor_analysis"}}
+    ],
+    "emotional_desire": [
+      {{"text": "Emotional outcome they seek", "source": "competitor_analysis"}}
+    ]
+  }},
+
+  "self_narratives": ["How competitor's customers see themselves"],
+  "current_self_image": "Their current identity",
+  "desired_self_image": "Who they want to become",
+  "identity_artifacts": ["Brands/products associated with desired identity"],
+
+  "social_relations": {{
+    "want_to_impress": ["Who they want to impress"],
+    "fear_judged_by": ["Who they fear judgment from"],
+    "influence_decisions": ["Who influences their decisions"]
+  }},
+
+  "worldview": "Their general interpretation of reality",
+  "core_values": ["Value 1", "Value 2"],
+  "allergies": {{
+    "messaging_turnoff_1": "What turns them off in marketing"
+  }},
+
+  "pain_points": {{
+    "emotional": ["Emotional pain points"],
+    "social": ["Social pain points"],
+    "functional": ["Functional pain points"]
+  }},
+
+  "outcomes_jtbd": {{
+    "emotional": ["Emotional outcomes sought"],
+    "social": ["Social outcomes sought"],
+    "functional": ["Functional outcomes sought"]
+  }},
+
+  "failed_solutions": ["Solutions competitor customers have tried before"],
+  "buying_objections": {{
+    "emotional": ["Emotional objections to buying"],
+    "social": ["Social objections"],
+    "functional": ["Functional objections"]
+  }},
+
+  "activation_events": ["What triggers them to buy NOW"],
+  "decision_process": "How they make purchase decisions"
+}}
+
+Return ONLY valid JSON, no other text."""
+
+        # Call Claude for synthesis
+        anthropic = Anthropic()
+        message = anthropic.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        response_text = message.content[0].text
+
+        # Parse response
+        clean_response = response_text.strip()
+        if clean_response.startswith("```"):
+            lines = clean_response.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].strip() == "```":
+                lines = lines[:-1]
+            clean_response = "\n".join(lines)
+        clean_response = clean_response.strip()
+
+        persona_data = json.loads(clean_response)
+
+        # Build Persona4D from response
+        persona = self._build_persona_from_ai_response(
+            persona_data,
+            competitor_id=competitor_id,
+            competitor_product_id=competitor_product_id,
+            brand_id=brand_id,
+            raw_response=response_text
+        )
+
+        level_desc = f"product {competitor_product_id}" if competitor_product_id else f"competitor {competitor_id}"
+        logger.info(f"Synthesized competitor persona for {level_desc}: {persona.name}")
+        return persona
+
     def _build_persona_from_ai_response(
         self,
         data: Dict[str, Any],
         product_id: Optional[UUID] = None,
         brand_id: Optional[UUID] = None,
         competitor_id: Optional[UUID] = None,
+        competitor_product_id: Optional[UUID] = None,
         raw_response: str = ""
     ) -> Persona4D:
         """Build a Persona4D from AI-generated JSON data."""
@@ -627,6 +893,7 @@ class PersonaService:
             brand_id=brand_id,
             product_id=product_id,
             competitor_id=competitor_id,
+            competitor_product_id=competitor_product_id,
 
             # Basics
             snapshot=data.get("snapshot"),
@@ -767,6 +1034,8 @@ class PersonaService:
             data["product_id"] = str(persona.product_id)
         if persona.competitor_id:
             data["competitor_id"] = str(persona.competitor_id)
+        if persona.competitor_product_id:
+            data["competitor_product_id"] = str(persona.competitor_product_id)
 
         # Text fields
         data["snapshot"] = persona.snapshot
@@ -888,6 +1157,7 @@ class PersonaService:
             brand_id=UUID(data["brand_id"]) if data.get("brand_id") else None,
             product_id=UUID(data["product_id"]) if data.get("product_id") else None,
             competitor_id=UUID(data["competitor_id"]) if data.get("competitor_id") else None,
+            competitor_product_id=UUID(data["competitor_product_id"]) if data.get("competitor_product_id") else None,
 
             # Basics
             snapshot=data.get("snapshot"),

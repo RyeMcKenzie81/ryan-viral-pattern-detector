@@ -109,7 +109,8 @@ class ProductURLService:
         url_pattern: str,
         match_type: str = 'contains',
         is_primary: bool = False,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        is_fallback: bool = False
     ) -> Dict[str, Any]:
         """
         Add a URL pattern for a product.
@@ -120,19 +121,26 @@ class ProductURLService:
             match_type: How to match - 'exact', 'prefix', 'contains', 'regex'
             is_primary: Whether this is the primary landing page
             notes: Optional notes about this URL
+            is_fallback: Whether this is a fallback URL for brand research (not from ads)
 
         Returns:
             Created product_url record
         """
-        # Normalize the URL pattern
-        normalized = self._normalize_url(url_pattern)
+        # For fallback URLs, keep the full URL; for patterns, normalize
+        if is_fallback:
+            # Keep full URL for fallback landing pages
+            normalized = url_pattern if url_pattern.startswith('http') else f"https://{url_pattern}"
+        else:
+            # Normalize the URL pattern
+            normalized = self._normalize_url(url_pattern)
 
         record = {
             "product_id": str(product_id),
             "url_pattern": normalized,
             "match_type": match_type,
             "is_primary": is_primary,
-            "notes": notes
+            "notes": notes,
+            "is_fallback": is_fallback
         }
 
         result = self.supabase.table("product_urls").upsert(
@@ -140,7 +148,7 @@ class ProductURLService:
             on_conflict="product_id,url_pattern"
         ).execute()
 
-        logger.info(f"Added URL pattern for product {product_id}: {normalized}")
+        logger.info(f"Added URL pattern for product {product_id}: {normalized} (fallback={is_fallback})")
         return result.data[0] if result.data else {}
 
     def get_product_urls(self, product_id: UUID) -> List[Dict[str, Any]]:

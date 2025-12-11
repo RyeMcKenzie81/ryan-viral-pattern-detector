@@ -2,7 +2,7 @@
 URL Mapping - Product identification for Facebook ads.
 
 This page allows users to:
-- Configure landing page URLs for each product
+- Configure landing page URLs for each product (brand or competitor)
 - Run bulk URL matching on scraped ads
 - Review and assign unmatched URLs to products
 - View matching statistics
@@ -11,6 +11,7 @@ This page allows users to:
 import streamlit as st
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 # Page config
 st.set_page_config(
@@ -28,6 +29,8 @@ if 'selected_brand_id' not in st.session_state:
     st.session_state.selected_brand_id = None
 if 'matching_in_progress' not in st.session_state:
     st.session_state.matching_in_progress = False
+if 'url_mapping_mode' not in st.session_state:
+    st.session_state.url_mapping_mode = "Brand Products"
 
 
 def get_supabase_client():
@@ -40,6 +43,12 @@ def get_product_url_service():
     """Get ProductURLService instance."""
     from viraltracker.services.product_url_service import ProductURLService
     return ProductURLService()
+
+
+def get_competitor_service():
+    """Get CompetitorService instance."""
+    from viraltracker.services.competitor_service import CompetitorService
+    return CompetitorService()
 
 
 def get_brands():
@@ -104,6 +113,172 @@ if selected_brand_name:
     st.session_state.selected_brand_id = brand_id
 else:
     st.stop()
+
+# Mode toggle: Brand Products vs Competitor Products
+st.markdown("---")
+mode_col1, mode_col2 = st.columns([1, 3])
+with mode_col1:
+    mode = st.radio(
+        "Mode",
+        options=["Brand Products", "Competitor Products"],
+        index=0 if st.session_state.url_mapping_mode == "Brand Products" else 1,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    st.session_state.url_mapping_mode = mode
+
+# ============================================================
+# COMPETITOR PRODUCTS MODE
+# ============================================================
+if mode == "Competitor Products":
+    competitor_service = get_competitor_service()
+
+    # Get competitors for this brand
+    competitors = competitor_service.get_competitors_for_brand(UUID(brand_id))
+
+    if not competitors:
+        st.warning("No competitors found for this brand. Add competitors on the Competitors page first.")
+        st.stop()
+
+    # Competitor selector
+    competitor_options = {c['name']: c['id'] for c in competitors}
+    selected_competitor_name = st.selectbox(
+        "Select Competitor",
+        options=list(competitor_options.keys()),
+        index=0
+    )
+
+    if not selected_competitor_name:
+        st.stop()
+
+    competitor_id = UUID(competitor_options[selected_competitor_name])
+
+    # Get competitor products
+    competitor_products = competitor_service.get_competitor_products(competitor_id, include_variants=False)
+
+    if not competitor_products:
+        st.info(f"No products found for {selected_competitor_name}. Add products on the Competitors page first.")
+        st.stop()
+
+    # Statistics Section
+    st.markdown("---")
+    st.subheader("📊 Matching Statistics")
+
+    stats = competitor_service.get_competitor_matching_stats(competitor_id)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Ads", stats['total_ads'])
+    with col2:
+        st.metric("Matched", stats['matched_ads'], delta=f"{stats['match_percentage']}%")
+    with col3:
+        st.metric("Unmatched", stats['unmatched_ads'])
+    with col4:
+        st.metric("URL Patterns", stats['configured_patterns'])
+
+    # Bulk match button
+    if stats['configured_patterns'] > 0 and stats['unmatched_ads'] > 0:
+        if st.button("🔄 Run Bulk URL Matching", disabled=st.session_state.matching_in_progress, help="Match competitor ads to products using configured patterns"):
+            st.session_state.matching_in_progress = True
+            with st.spinner("Matching competitor ads to products..."):
+                try:
+                    result = competitor_service.bulk_match_competitor_ads(competitor_id, limit=500)
+                    st.success(f"Matched {result['matched']} ads, {result['unmatched']} unmatched, {result['failed']} failed")
+                    st.session_state.matching_in_progress = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Matching failed: {e}")
+                    st.session_state.matching_in_progress = False
+    elif stats['configured_patterns'] == 0:
+        st.info("Add URL patterns to products below, then run bulk matching.")
+
+    # Product URL Patterns
+    st.markdown("---")
+    st.subheader("🏷️ Competitor Product URL Patterns")
+
+    product_tabs = st.tabs([p['name'] for p in competitor_products])
+
+    for i, (tab, product) in enumerate(zip(product_tabs, competitor_products)):
+        with tab:
+            product_id = UUID(product['id'])
+            urls = competitor_service.get_competitor_product_urls(product_id)
+
+            # Display existing URLs
+            if urls:
+                for url in urls:
+                    col1, col2, col3 = st.columns([4, 1, 1])
+                    with col1:
+                        badge = "🏠" if url.get('is_primary') else ""
+                        st.text(f"{badge} {url['url_pattern']}")
+                    with col2:
+                        st.caption(url['match_type'])
+                    with col3:
+                        if st.button("🗑️", key=f"comp_del_{url['id']}", help="Delete"):
+                            competitor_service.delete_competitor_product_url(UUID(url['id']))
+                            st.rerun()
+            else:
+                st.info("No URL patterns configured for this product.")
+
+            # Add new URL form
+            with st.expander("➕ Add URL Pattern"):
+                new_url = st.text_input(
+                    "URL Pattern",
+                    key=f"comp_url_{product['id']}",
+                    placeholder="e.g., competitor.com/products/their-product"
+                )
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    match_type = st.selectbox(
+                        "Match Type",
+                        options=['contains', 'prefix', 'exact', 'regex'],
+                        index=0,
+                        key=f"comp_type_{product['id']}",
+                        help="contains: URL includes pattern, prefix: URL starts with, exact: exact match, regex: regular expression"
+                    )
+                with col2:
+                    is_primary = st.checkbox("Primary landing page", key=f"comp_primary_{product['id']}")
+                with col3:
+                    if st.button("Add", key=f"comp_add_{product['id']}"):
+                        if new_url:
+                            competitor_service.add_competitor_product_url(
+                                competitor_product_id=product_id,
+                                url_pattern=new_url,
+                                match_type=match_type,
+                                is_primary=is_primary
+                            )
+                            st.success("URL pattern added!")
+                            st.rerun()
+                        else:
+                            st.warning("Please enter a URL pattern")
+
+    # Help section for competitor mode
+    with st.expander("ℹ️ How Competitor URL Mapping Works"):
+        st.markdown("""
+        ### Competitor URL Matching
+
+        1. **Add URL Patterns**: Configure URL patterns for each competitor product that identify their landing pages.
+
+        2. **Run Bulk Matching**: Click "Run Bulk URL Matching" to automatically tag competitor ads with their products based on URL patterns.
+
+        3. **Pattern Types**:
+           - `contains`: URL includes the pattern (most flexible, recommended)
+           - `prefix`: URL starts with the pattern
+           - `exact`: URL matches exactly
+           - `regex`: Regular expression matching
+
+        ### Example Patterns
+
+        | Product | Pattern | Type |
+        |---------|---------|------|
+        | Competitor Collagen | `competitor.com/products/collagen` | contains |
+        | Competitor Vitamin | `competitor.com/vitamin` | prefix |
+        """)
+
+    st.stop()  # Don't show brand products section when in competitor mode
+
+# ============================================================
+# BRAND PRODUCTS MODE (Original functionality)
+# ============================================================
 
 # Get service and products
 service = get_product_url_service()

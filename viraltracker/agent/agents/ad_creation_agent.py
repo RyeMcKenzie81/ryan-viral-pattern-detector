@@ -612,7 +612,8 @@ async def select_hooks(
     ad_analysis: Dict,
     product_name: str = "",
     target_audience: str = "",
-    count: int = 10
+    count: int = 10,
+    persona_data: Optional[Dict] = None
 ) -> List[Dict]:
     """
     Select diverse hooks using AI to maximize persuasive variety.
@@ -623,6 +624,7 @@ async def select_hooks(
     - Match the reference ad style and tone
     - Provide maximum coverage of persuasive principles
     - Are clear, understandable, and mention product context
+    - When persona_data is provided, prioritize hooks matching persona's emotional triggers
 
     The AI adapts each hook's text to match the reference ad's style and ensures
     the adapted text makes sense and mentions the product category.
@@ -638,6 +640,8 @@ async def select_hooks(
         product_name: Name of the product (for context)
         target_audience: Product's target audience (e.g., "pet owners", "dog owners")
         count: Number of hooks to select (default: 10)
+        persona_data: Optional 4D persona data with pain_points, desires, their_language,
+            objections, and amazon_testimonials for targeted hook selection
 
     Returns:
         List of selected hook dictionaries with adaptation:
@@ -706,6 +710,35 @@ async def select_hooks(
         Use these best practices to guide your hook selection and adaptation.
         """
 
+        # Build persona section if persona_data is provided
+        persona_section = ""
+        if persona_data:
+            persona_section = f"""
+        **TARGET PERSONA: {persona_data.get('persona_name', 'Unknown')}**
+        {persona_data.get('snapshot', '')}
+
+        **Pain Points (prioritize hooks addressing these):**
+        {json.dumps(persona_data.get('pain_points', [])[:5], indent=2)}
+
+        **Desires (what they want to achieve):**
+        {json.dumps(persona_data.get('desires', [])[:5], indent=2)}
+
+        **Their Language (how they talk - adapt hooks to match):**
+        {json.dumps(persona_data.get('their_language', [])[:3], indent=2)}
+
+        **Objections to Address:**
+        {json.dumps(persona_data.get('objections', [])[:3], indent=2)}
+
+        **Amazon Testimonials (real customer voice - use similar language):**
+        {json.dumps(persona_data.get('amazon_testimonials', {}), indent=2) if persona_data.get('amazon_testimonials') else 'None available'}
+
+        IMPORTANT: Use this persona data to:
+        1. Prioritize hooks that directly address the persona's pain points
+        2. Adapt hook language to match how this persona talks (their_language)
+        3. Select hooks that resonate with their emotional triggers
+        4. Use phrases from Amazon testimonials when adapting hooks
+        """
+
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
@@ -717,6 +750,7 @@ async def select_hooks(
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
         {knowledge_section}
+        {persona_section}
 
         **Available Hooks** ({len(shuffled_hooks)} total):
         {json.dumps(shuffled_hooks, indent=2)}
@@ -1283,17 +1317,20 @@ async def generate_nano_banana_prompt(
     reference_ad_path: str,
     product_image_paths: List[str],
     color_mode: str = "original",
-    brand_colors: Optional[Dict] = None
+    brand_colors: Optional[Dict] = None,
+    brand_fonts: Optional[Dict] = None,
+    num_variations: int = 5
 ) -> Dict:
     """
-    Generate Nano Banana Pro 3 prompt for ad image generation.
+    Generate Nano Banana Pro 3 prompt for ad image generation using JSON format.
 
-    This tool constructs a detailed prompt that combines:
+    This tool constructs a structured JSON prompt that combines:
     - Reference ad analysis (format, layout, colors)
     - Selected hook (adapted text)
     - Product information (benefits, target audience)
     - Ad brief instructions (brand guidelines)
     - Technical specifications (canvas size, image paths)
+    - Brand fonts (heading, body)
 
     Supports 1-2 product images:
     - Single image: Standard behavior, product image used as-is
@@ -1311,19 +1348,16 @@ async def generate_nano_banana_prompt(
         product_image_paths: List of storage paths to product images (1-2 images)
         color_mode: "original" (use template colors), "complementary" (AI generates fresh colors), or "brand" (use brand colors)
         brand_colors: Brand color data when color_mode is "brand" (dict with primary, secondary, background, all)
+        brand_fonts: Brand font data (dict with primary, secondary, primary_weights)
+        num_variations: Total number of variations being generated
 
     Returns:
-        Dictionary with Nano Banana prompt:
+        Dictionary with Nano Banana prompt in JSON format:
         {
             "prompt_index": 1,
             "hook": {...selected_hook...},
-            "instruction_text": "Human-readable instructions",
-            "spec": {
-                "canvas": "1080x1080px, background #F5F0E8",
-                "product_images": ["path1", "path2"],
-                "text_elements": {...}
-            },
-            "full_prompt": "Complete prompt text...",
+            "json_prompt": {...structured JSON prompt...},
+            "full_prompt": "JSON stringified prompt",
             "template_reference_path": "reference-ads/...",
             "product_image_paths": ["products/...", "products/..."]
         }
@@ -1331,8 +1365,10 @@ async def generate_nano_banana_prompt(
     Raises:
         ValueError: If required parameters are missing or product_image_paths is empty
     """
+    import json
+
     try:
-        logger.info(f"Generating Nano Banana prompt for variation {prompt_index}")
+        logger.info(f"Generating JSON prompt for variation {prompt_index}")
 
         # Validate inputs
         if prompt_index < 1 or prompt_index > 15:
@@ -1341,274 +1377,227 @@ async def generate_nano_banana_prompt(
         if not product_image_paths or len(product_image_paths) == 0:
             raise ValueError("product_image_paths cannot be empty")
 
-        # Log image count for debugging
         num_product_images = len(product_image_paths)
         logger.info(f"Using {num_product_images} product image(s) for generation")
 
-        # Phase 6: Match benefit/USP to hook for relevant subheadline
-        # Combines both benefits and unique_selling_points for best match
+        # Match benefit/USP to hook for relevant subheadline
         matched_benefit = match_benefit_to_hook(
             selected_hook,
             product.get('benefits', []),
             product.get('unique_selling_points')
         )
 
-        # Handle color mode
+        # Build color configuration
         template_colors = ad_analysis.get('color_palette', ['#F5F0E8'])
         if color_mode == "brand" and brand_colors:
-            # Use official brand colors
-            brand_color_list = brand_colors.get('all', [])
-            primary = brand_colors.get('primary', '#4747C9')
-            secondary = brand_colors.get('secondary', '#FDBE2D')
-            background = brand_colors.get('background', '#F5F5F5')
-            primary_name = brand_colors.get('primary_name', 'Primary')
-            secondary_name = brand_colors.get('secondary_name', 'Secondary')
-
-            colors_for_spec = brand_color_list if brand_color_list else [primary, secondary, background]
-            background_color = background
-            color_instructions = f"Use official brand colors: {primary_name} ({primary}) as primary, {secondary_name} ({secondary}) as accent, and {background} as background. These are the brand's official colors - use them consistently."
+            colors_config = {
+                "mode": "brand",
+                "palette": brand_colors.get('all', [brand_colors.get('primary'), brand_colors.get('secondary'), brand_colors.get('background')]),
+                "primary": {"hex": brand_colors.get('primary', '#4747C9'), "name": brand_colors.get('primary_name', 'Primary')},
+                "secondary": {"hex": brand_colors.get('secondary', '#FDBE2D'), "name": brand_colors.get('secondary_name', 'Secondary')},
+                "background": {"hex": brand_colors.get('background', '#F5F5F5'), "name": brand_colors.get('background_name', 'Background')},
+                "instruction": "Use official brand colors consistently throughout the ad"
+            }
         elif color_mode == "complementary":
-            # AI will generate fresh complementary colors
-            colors_for_spec = ["AI_GENERATE_COMPLEMENTARY"]
-            background_color = "AI_GENERATE_COMPLEMENTARY"
-            color_instructions = "Generate a fresh, eye-catching complementary color scheme that works well for Facebook ads. Create harmonious colors that enhance readability and visual appeal."
+            colors_config = {
+                "mode": "complementary",
+                "palette": None,
+                "instruction": "Generate a fresh, eye-catching complementary color scheme for Facebook ads"
+            }
         else:
-            # Use original template colors (default)
-            colors_for_spec = template_colors
-            background_color = template_colors[0] if template_colors else '#F5F0E8'
-            color_instructions = f"Use the exact colors from reference: {', '.join(template_colors)}"
+            colors_config = {
+                "mode": "original",
+                "palette": template_colors,
+                "instruction": "Use the exact colors from the reference template"
+            }
 
-        # Build product image instructions based on count (1 or 2)
-        if num_product_images == 1:
-            product_image_instructions = "Use uploaded product image EXACTLY - no modifications to product appearance"
-        else:
-            # Two images: primary (hero/packaging) + secondary (contents/lifestyle)
-            product_image_instructions = """**MULTIPLE PRODUCT IMAGES PROVIDED:**
+        # Build fonts configuration
+        fonts_config = None
+        if brand_fonts:
+            fonts_config = {
+                "heading": {
+                    "family": brand_fonts.get('primary', 'System default'),
+                    "weights": brand_fonts.get('primary_weights', []),
+                    "style_notes": brand_fonts.get('primary_style_notes')
+                },
+                "body": {
+                    "family": brand_fonts.get('secondary', 'System default'),
+                    "weights": brand_fonts.get('secondary_weights', []),
+                    "style_notes": brand_fonts.get('secondary_style_notes')
+                }
+            }
 
-**PRIMARY PRODUCT IMAGE (Image 2 in reference list):**
-- This is the main product packaging/hero shot
-- Reproduce EXACTLY - no modifications to product appearance
-- This should be the dominant product representation in the ad
-
-**SECONDARY PRODUCT IMAGE (Image 3 in reference list):**
-- This shows the product contents, interior, or alternate view
-- Use this to show what's inside or provide additional context
-- Incorporate thoughtfully based on ad layout and style
-- If the layout doesn't suit two product views, prioritize the primary image
-- Consider: showing contents spilling out, inset view, or subtle background element"""
-
-        # Build specification object
-        spec = {
-            "canvas": f"{ad_analysis.get('canvas_size', '1080x1080px')}, "
-                     f"background {background_color}",
-            "product_images": product_image_paths,
-            "product_image_instructions": product_image_instructions,
-            "text_elements": {
-                "headline": selected_hook.get('adapted_text'),
-                "subheadline": matched_benefit,  # Phase 6: Use matched benefit instead of first benefit
-                "layout": ad_analysis.get('text_placement', {})
-            },
-            "colors": colors_for_spec,
-            "color_mode": color_mode,
-            "authenticity_markers": ad_analysis.get('authenticity_markers', [])
-        }
-
-        # Phase 6: Build offer and constraints sections
-        offer_section = ""
-        if product.get('current_offer'):
-            offer_section = f"""
-        **Current Offer (USE EXACTLY AS WRITTEN):**
-        "{product.get('current_offer')}"
-        """
-
-        prohibited_section = ""
-        if product.get('prohibited_claims'):
-            prohibited_section = f"""
-        **PROHIBITED CLAIMS (DO NOT USE):**
-        {', '.join(product.get('prohibited_claims', []))}
-        """
-
-        brand_voice_section = ""
-        if product.get('brand_voice_notes'):
-            brand_voice_section = f"""
-        **Brand Voice & Tone:**
-        {product.get('brand_voice_notes')}
-        """
-
-        usp_section = ""
-        if product.get('unique_selling_points'):
-            usp_section = f"""
-        **Unique Selling Points:**
-        {', '.join(product.get('unique_selling_points', []))}
-        """
-
-        disclaimer_section = ""
-        if product.get('required_disclaimers'):
-            disclaimer_section = f"""
-        **Required Disclaimer (MUST INCLUDE):**
-        {product.get('required_disclaimers')}
-        """
-
-        # Product dimensions/scale guidance
-        dimensions_section = ""
-        if product.get('product_dimensions'):
-            dimensions_section = f"""
-        **Product Dimensions & Scale (CRITICAL FOR REALISTIC SIZING):**
-        {product.get('product_dimensions')}
-        - Ensure the product is realistically sized relative to environmental objects (hands, pets, countertops, furniture)
-        - The product should appear proportionally correct in the scene
-        """
-        else:
-            # Default scale guidance when dimensions aren't specified
-            dimensions_section = """
-        **Scale Guidance (CRITICAL FOR REALISTIC SIZING):**
-        - Ensure the product appears realistically sized for its category
-        - Maintain realistic proportions relative to surrounding objects (countertops, hands, pets, furniture)
-        - The product should fit naturally in the scene without appearing oversized or undersized
-        """
-
-        # Social proof section - kept simple for now
-        # NOTE: Avoid using templates with Trustpilot/review badges until we have a better solution
-        social_proof_section = ""
-
-        # Lighting integration section - ensures product matches scene lighting
-        lighting_section = """
-        **LIGHTING & PRODUCT INTEGRATION (CRITICAL):**
-        - Analyze the lighting direction, intensity, and color temperature in the generated scene
-        - Apply MATCHING lighting to the product image (shadows, highlights, ambient light)
-        - Product shadows must fall in the same direction as other scene elements
-        - Match the scene's color temperature on the product (warm/cool tones)
-        - Add appropriate ambient occlusion where product meets surfaces
-        - Ensure specular highlights on product match the scene's light source
-        - The product should look naturally "in" the scene, not "pasted on"
-        - If the scene has soft/diffused lighting, product should too
-        - If the scene has harsh/directional lighting, product should show corresponding shadows
-        """
-
-        # Founders section - for personal signatures or founder mentions
-        founders_section = ""
+        # Build founders configuration
         has_founder_signature = ad_analysis.get('has_founder_signature', False)
         has_founder_mention = ad_analysis.get('has_founder_mention', False)
-
+        founders_config = {
+            "template_has_signature": has_founder_signature,
+            "template_has_mention": has_founder_mention,
+            "product_founders": product.get('founders'),
+            "action": "omit"  # default
+        }
         if (has_founder_signature or has_founder_mention) and product.get('founders'):
-            # Template has founder elements AND product has founder data
-            founders_text = product.get('founders')
-
-            if has_founder_signature:
-                sig_style = ad_analysis.get('founder_signature_style', 'personal sign-off')
-                sig_placement = ad_analysis.get('founder_signature_placement', 'bottom')
-                # Count founders for emphasis
-                founder_count = len([f.strip() for f in founders_text.replace(' and ', ', ').split(',') if f.strip()])
-                founders_section = f"""
-        **FOUNDERS / PERSONAL SIGNATURE (CRITICAL - USE ALL {founder_count} NAMES):**
-        - The reference ad includes a founder signature element
-        - Template style: {sig_style}
-        - Template placement: {sig_placement}
-        - **⚠️ MUST USE ALL {founder_count} FOUNDER NAMES EXACTLY:** "{founders_text}"
-        - This product has {founder_count} founders - include ALL of them, not just some
-        - DO NOT truncate, shorten, or skip any names
-        - DO NOT copy founder names from the reference ad template
-        - Apply similar visual style and placement as the reference
-        - If space is limited, use a smaller font size rather than omitting names
-        """
-            elif has_founder_mention:
-                mention_style = ad_analysis.get('founder_mention_style', 'first-person narrative')
-                founders_section = f"""
-        **FOUNDERS MENTIONED IN AD COPY (USE PRODUCT DATA):**
-        - The reference ad mentions founders in the body text
-        - Template style: {mention_style}
-        - **FOUNDERS TO REFERENCE:** "{founders_text}"
-        - When mentioning founders or using first-person narrative, use the names above
-        - DO NOT copy founder names from the reference ad template
-        """
+            founders_config["action"] = "include"
+            founders_config["signature_style"] = ad_analysis.get('founder_signature_style', 'personal sign-off')
+            founders_config["signature_placement"] = ad_analysis.get('founder_signature_placement', 'bottom')
         elif (has_founder_signature or has_founder_mention) and not product.get('founders'):
-            # Template has founder elements but product doesn't have founder data
-            founders_section = """
-        **⚠️ FOUNDER SIGNATURE/MENTION WARNING:**
-        - The reference template includes founder/personal signature elements
-        - This product has NO founders data configured
-        - DO NOT copy founder names from the reference ad template
-        - DO NOT create fictional founder names
-        - Omit founder signature/personal sign-off elements from your generated ad
-        """
-        # If template doesn't have founder elements, founders_section stays empty
+            founders_config["action"] = "omit_with_warning"
 
-        # Build instruction text
-        instruction_text = f"""
-        Create Facebook ad variation {prompt_index} for {product.get('name')}.
+        # Build image configurations
+        product_images_config = []
+        for i, path in enumerate(product_image_paths):
+            product_images_config.append({
+                "path": path,
+                "role": "primary" if i == 0 else "secondary",
+                "description": "Main product packaging" if i == 0 else "Product contents or alternate view"
+            })
 
-        **Style Guide:**
-        - Format: {ad_analysis.get('format_type')}
-        - Layout: {ad_analysis.get('layout_structure')}
-        - Colors: {color_instructions}
-        - Authenticity: {', '.join(ad_analysis.get('authenticity_markers', []))}
+        # Build the complete JSON prompt
+        json_prompt = {
+            "task": {
+                "action": "create_facebook_ad",
+                "variation_index": prompt_index,
+                "total_variations": num_variations,
+                "product_name": product.get('display_name', product.get('name'))
+            },
 
-        **Hook (Main Headline):**
-        "{selected_hook.get('adapted_text')}"
+            "special_instructions": {
+                "priority": "HIGHEST",
+                "text": product.get('combined_instructions'),
+                "note": "These instructions override all other guidelines when there is a conflict"
+            } if product.get('combined_instructions') else None,
 
-        **Product:**
-        - Name: {product.get('name')}
-        - Primary Benefit (matched to hook): {matched_benefit}
-        - Target: {product.get('target_audience', 'general audience')}
-        {offer_section}{usp_section}{brand_voice_section}{dimensions_section}{lighting_section}{social_proof_section}{founders_section}{prohibited_section}{disclaimer_section}
-        **Product Image Instructions:**
-        {product_image_instructions}
+            "product": {
+                "id": product.get('id'),
+                "name": product.get('name'),
+                "display_name": product.get('display_name', product.get('name')),
+                "target_audience": product.get('target_audience', 'general audience'),
+                "benefits": product.get('benefits', []),
+                "unique_selling_points": product.get('unique_selling_points', []),
+                "current_offer": product.get('current_offer'),
+                "brand_voice_notes": product.get('brand_voice_notes'),
+                "prohibited_claims": product.get('prohibited_claims', []),
+                "required_disclaimers": product.get('required_disclaimers'),
+                "founders": product.get('founders'),
+                "product_dimensions": product.get('product_dimensions'),
+                "variant": product.get('variant')
+            },
 
-        **Critical Requirements:**
-        - Use product image(s) EXACTLY as provided (no hallucination)
-        - Match reference ad layout and style
-        - Maintain brand voice from ad brief
-        - If offer is provided, use EXACT wording (no hallucination of discounts)
-        - Do NOT use any prohibited claims listed above
+            "content": {
+                "headline": {
+                    "text": selected_hook.get('adapted_text'),
+                    "source": "hook",
+                    "hook_id": selected_hook.get('id'),
+                    "persuasion_type": selected_hook.get('persuasion_type')
+                },
+                "subheadline": {
+                    "text": matched_benefit,
+                    "source": "matched_benefit"
+                }
+            },
 
-        **⚠️ OFFER WARNING:**
-        - DO NOT copy offer elements from the reference ad template (e.g., "Free gift", "Buy 1 Get 1")
-        - ONLY use the offer text provided in "Current Offer" section above
-        - If NO offer is listed above, DO NOT add any offer/discount text to the ad
-        """
+            "style": {
+                "format_type": ad_analysis.get('format_type'),
+                "layout_structure": ad_analysis.get('layout_structure'),
+                "canvas_size": ad_analysis.get('canvas_size', '1080x1080px'),
+                "text_placement": ad_analysis.get('text_placement', {}),
+                "colors": colors_config,
+                "fonts": fonts_config,
+                "authenticity_markers": ad_analysis.get('authenticity_markers', [])
+            },
 
-        # Build reference images list for prompt
-        if num_product_images == 1:
-            reference_images_text = f"""- Template (Image 1): {reference_ad_path}
-        - Product (Image 2): {product_image_paths[0]}"""
-        else:
-            reference_images_text = f"""- Template (Image 1): {reference_ad_path}
-        - Primary Product (Image 2): {product_image_paths[0]}
-        - Secondary Product (Image 3): {product_image_paths[1]}"""
+            "images": {
+                "template": {
+                    "path": reference_ad_path,
+                    "role": "style_reference"
+                },
+                "product": product_images_config
+            },
 
-        # Build full prompt
-        full_prompt = f"""
-        {ad_brief_instructions}
+            "template_analysis": {
+                "format_type": ad_analysis.get('format_type'),
+                "layout_structure": ad_analysis.get('layout_structure'),
+                "has_founder_signature": has_founder_signature,
+                "has_founder_mention": has_founder_mention,
+                "detailed_description": ad_analysis.get('detailed_description', '')
+            },
 
-        {instruction_text}
+            "rules": {
+                "product_image": {
+                    "preserve_exactly": True,
+                    "no_modifications": True,
+                    "text_preservation": {
+                        "critical": True,
+                        "requirement": "ALL text on packaging MUST be pixel-perfect legible",
+                        "method": "composite_not_regenerate",
+                        "rejection_condition": "blurry or illegible text"
+                    },
+                    "multi_image_handling": {
+                        "primary_dominant": True,
+                        "secondary_optional": num_product_images > 1,
+                        "secondary_usage": "contents, inset view, or background element"
+                    } if num_product_images > 1 else None
+                },
+                "offers": {
+                    "use_only_provided": True,
+                    "provided_offer": product.get('current_offer'),
+                    "do_not_copy_from_template": True,
+                    "max_count": 1,
+                    "prohibited_template_offers": ["Free gift", "Buy 1 Get 1", "Bundle and save", "Autoship", "BOGO"]
+                },
+                "lighting": {
+                    "match_scene": True,
+                    "shadow_direction": "match_scene_elements",
+                    "color_temperature": "match_scene",
+                    "ambient_occlusion": True,
+                    "requirement": "Product must look naturally IN the scene, not pasted on"
+                },
+                "scale": {
+                    "realistic_sizing": True,
+                    "relative_to": ["hands", "countertops", "furniture", "pets"],
+                    "product_dimensions": product.get('product_dimensions'),
+                    "requirement": "Product must appear proportionally correct"
+                },
+                "founders": founders_config,
+                "prohibited_claims": product.get('prohibited_claims', []),
+                "required_disclaimers": product.get('required_disclaimers')
+            },
 
-        **Technical Specifications:**
-        {spec}
+            "ad_brief": {
+                "instructions": ad_brief_instructions
+            }
+        }
 
-        **Reference Images:**
-        {reference_images_text}
+        # Remove None values for cleaner JSON
+        def remove_none(d):
+            if isinstance(d, dict):
+                return {k: remove_none(v) for k, v in d.items() if v is not None}
+            elif isinstance(d, list):
+                return [remove_none(i) for i in d if i is not None]
+            return d
 
-        {ad_analysis.get('detailed_description', '')}
-        """
+        json_prompt = remove_none(json_prompt)
+
+        # Create full prompt as JSON string
+        full_prompt = json.dumps(json_prompt, indent=2)
 
         prompt_dict = {
             "prompt_index": prompt_index,
             "hook": selected_hook,
-            "instruction_text": instruction_text,
-            "spec": spec,
+            "json_prompt": json_prompt,
             "full_prompt": full_prompt,
             "template_reference_path": reference_ad_path,
             "product_image_paths": product_image_paths
         }
 
-        logger.info(f"Generated prompt for variation {prompt_index}")
+        logger.info(f"Generated JSON prompt for variation {prompt_index} ({len(full_prompt)} chars)")
         return prompt_dict
 
     except ValueError as e:
         logger.error(f"Invalid input: {str(e)}")
         raise
     except Exception as e:
-        logger.error(f"Failed to generate Nano Banana prompt: {str(e)}")
+        logger.error(f"Failed to generate JSON prompt: {str(e)}")
         raise Exception(f"Failed to generate prompt: {str(e)}")
 
 
@@ -1788,11 +1777,12 @@ async def save_generated_ad(
         # Get product_id for structured naming
         product_id = await ctx.deps.ad_creation.get_product_id_for_run(ad_run_uuid)
 
-        # Get canvas size from prompt spec (canvas is a string like "1080x1080px, background #F5F0E8")
+        # Get canvas size from JSON prompt
         canvas_size = None
-        spec = nano_banana_prompt.get('spec', {})
-        if isinstance(spec, dict) and spec.get('canvas'):
-            canvas_size = spec['canvas']
+        json_prompt = nano_banana_prompt.get('json_prompt', {})
+        if isinstance(json_prompt, dict):
+            style = json_prompt.get('style', {})
+            canvas_size = style.get('canvas_size', '1080x1080px')
 
         # Upload to storage with structured naming params
         storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
@@ -1809,7 +1799,7 @@ async def save_generated_ad(
             ad_run_id=ad_run_uuid,
             prompt_index=prompt_index,
             prompt_text=nano_banana_prompt['full_prompt'],
-            prompt_spec=nano_banana_prompt['spec'],
+            prompt_spec=json_prompt,  # Now using json_prompt instead of spec
             hook_id=hook_uuid,
             hook_text=hook['adapted_text'],
             storage_path=storage_path,
@@ -2512,7 +2502,8 @@ async def generate_benefit_variations(
     product: Dict,
     template_angle: Dict,
     ad_analysis: Dict,
-    count: int = 5
+    count: int = 5,
+    persona_data: Optional[Dict] = None
 ) -> List[Dict]:
     """
     Generate hook-like variations by applying the template angle to product benefits.
@@ -2521,12 +2512,17 @@ async def generate_benefit_variations(
     product benefits and USPs, creating variations that maintain the template's
     persuasive structure while highlighting different aspects of the product.
 
+    When persona_data is provided, the variations are tailored to resonate with
+    the persona's pain points, desires, and language patterns.
+
     Args:
         ctx: Run context with AgentDependencies
         product: Product dictionary with benefits, unique_selling_points, etc.
         template_angle: Extracted angle from extract_template_angle()
         ad_analysis: Ad analysis dictionary with format details
         count: Number of variations to generate (1-15)
+        persona_data: Optional 4D persona data with pain_points, desires, their_language,
+            transformation, objections, and amazon_testimonials for targeted copy
 
     Returns:
         List of hook-like dictionaries (same structure as select_hooks output):
@@ -2694,6 +2690,33 @@ async def generate_benefit_variations(
 
         Apply these principles when crafting your adapted headlines.
         ''' if knowledge_context else ''}
+
+        {f'''**TARGET PERSONA: {persona_data.get('persona_name', 'Unknown')}**
+        {persona_data.get('snapshot', '')}
+
+        **Persona Pain Points (address these in headlines):**
+        {json.dumps(persona_data.get('pain_points', [])[:5], indent=2)}
+
+        **Persona Desires (what they want to achieve):**
+        {json.dumps(persona_data.get('desires', [])[:5], indent=2)}
+
+        **Transformation (before → after):**
+        Before: {json.dumps(persona_data.get('transformation', {}).get('before', [])[:3])}
+        After: {json.dumps(persona_data.get('transformation', {}).get('after', [])[:3])}
+
+        **Their Language (how the persona talks - match this style):**
+        {json.dumps(persona_data.get('their_language', [])[:3], indent=2)}
+
+        **Amazon Testimonials (real customer voice - use similar language):**
+        {json.dumps(persona_data.get('amazon_testimonials', {}), indent=2) if persona_data.get('amazon_testimonials') else 'None available'}
+
+        PERSONA INTEGRATION RULES:
+        1. Frame headlines around the persona's specific pain points
+        2. Use the transformation language (before → after) for emotional impact
+        3. Match the persona's speaking style from "Their Language"
+        4. If Amazon testimonials are available, borrow phrases for authenticity
+        5. Address their objections implicitly in the headline when possible
+        ''' if persona_data else ''}
 
         **EMOTIONAL BENEFITS (Use these for headlines - they connect with the audience):**
         {json.dumps(headline_content, indent=2)}
@@ -2945,7 +2968,10 @@ async def complete_ad_workflow(
     color_mode: str = "original",
     brand_colors: Optional[Dict] = None,
     image_selection_mode: str = "auto",
-    selected_image_paths: Optional[List[str]] = None
+    selected_image_paths: Optional[List[str]] = None,
+    persona_id: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    additional_instructions: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2954,15 +2980,17 @@ async def complete_ad_workflow(
     1. Creates ad run in database
     2. Uploads reference ad to storage
     3. Fetches product data (and hooks if content_source="hooks")
-    4. Analyzes reference ad (Vision AI)
-    5. Gets content variations:
+    4. Fetches persona data if persona_id provided
+    5. Analyzes reference ad (Vision AI)
+    6. Gets content variations:
        - If content_source="hooks": Selects N diverse hooks from database
        - If content_source="recreate_template": Extracts template angle and
          generates variations from product benefits/USPs
-    6. Generates N ad variations (ONE AT A TIME)
-    7. Dual AI review (Claude + Gemini) for each ad
-    8. Applies OR logic: either reviewer approving = approved
-    9. Returns complete AdCreationResult
+       - Both modes use persona data to inform copy when available
+    7. Generates N ad variations (ONE AT A TIME)
+    8. Dual AI review (Claude + Gemini) for each ad
+    9. Applies OR logic: either reviewer approving = approved
+    10. Returns complete AdCreationResult
 
     **CRITICAL: Dual Review Logic (OR Logic)**
     - If Claude OR Gemini approves → APPROVED
@@ -2985,6 +3013,12 @@ async def complete_ad_workflow(
             - "auto": AI selects best matching 1-2 images (default)
             - "manual": Use user-selected images
         selected_image_paths: List of storage paths when image_selection_mode is "manual" (1-2 images)
+        persona_id: Optional UUID of 4D persona to target. When provided, persona's
+            pain points, desires, and language inform hook selection and copy generation.
+        variant_id: Optional UUID of product variant (flavor, size, color). When provided,
+            variant name and description are used to customize ad copy for that specific variant.
+        additional_instructions: Optional run-specific instructions for ad generation. Combined
+            with brand's ad_creation_notes to guide the AI in creating ads.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3035,6 +3069,12 @@ async def complete_ad_workflow(
 
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
         logger.info(f"Generating {num_variations} ad variations using content_source='{content_source}'")
+        if persona_id:
+            logger.info(f"Using persona: {persona_id}")
+        if variant_id:
+            logger.info(f"Using variant: {variant_id}")
+        if additional_instructions:
+            logger.info(f"Additional instructions provided: {additional_instructions[:50]}...")
 
         # Build parameters dict for tracking
         run_parameters = {
@@ -3043,7 +3083,10 @@ async def complete_ad_workflow(
             "color_mode": color_mode,
             "image_selection_mode": image_selection_mode,
             "selected_image_paths": selected_image_paths,
-            "brand_colors": brand_colors
+            "brand_colors": brand_colors,
+            "persona_id": persona_id,
+            "variant_id": variant_id,
+            "additional_instructions": additional_instructions
         }
 
         # STAGE 1: Initialize ad run and upload reference ad
@@ -3078,6 +3121,86 @@ async def complete_ad_workflow(
         # STAGE 2: Fetch product data
         logger.info("Stage 2: Fetching product data...")
         product_dict = await get_product_with_images(ctx=ctx, product_id=product_id)
+
+        # STAGE 2b: Fetch persona data (if persona_id provided)
+        persona_data = None
+        if persona_id:
+            logger.info(f"Stage 2b: Fetching persona data for {persona_id}...")
+            try:
+                persona_data = ctx.deps.ad_creation.get_persona_for_ad_generation(UUID(persona_id))
+                if persona_data:
+                    logger.info(f"Loaded persona: {persona_data.get('persona_name', 'Unknown')}")
+                    logger.info(f"  - Pain points: {len(persona_data.get('pain_points', []))}")
+                    logger.info(f"  - Desires: {len(persona_data.get('desires', []))}")
+                    logger.info(f"  - Amazon testimonials: {len(persona_data.get('amazon_testimonials', {}))}")
+                else:
+                    logger.warning(f"Persona not found: {persona_id} - continuing without persona targeting")
+            except Exception as e:
+                logger.warning(f"Failed to load persona {persona_id}: {e} - continuing without persona targeting")
+
+        # STAGE 2c: Fetch variant data (if variant_id provided)
+        variant_data = None
+        if variant_id:
+            logger.info(f"Stage 2c: Fetching variant data for {variant_id}...")
+            try:
+                from viraltracker.core.database import get_supabase_client
+                db = get_supabase_client()
+                result = db.table("product_variants").select(
+                    "id, name, slug, variant_type, description, differentiators"
+                ).eq("id", variant_id).single().execute()
+                if result.data:
+                    variant_data = result.data
+                    logger.info(f"Loaded variant: {variant_data.get('name', 'Unknown')}")
+                    logger.info(f"  - Type: {variant_data.get('variant_type', 'unknown')}")
+                    if variant_data.get('description'):
+                        logger.info(f"  - Description: {variant_data['description'][:50]}...")
+                else:
+                    logger.warning(f"Variant not found: {variant_id} - continuing without variant targeting")
+            except Exception as e:
+                logger.warning(f"Failed to load variant {variant_id}: {e} - continuing without variant targeting")
+
+        # Enhance product_dict with variant data if available
+        if variant_data:
+            product_dict['variant'] = variant_data
+            # Append variant name to product name for ad copy (e.g., "All-in-One Superfood Shake - Brown Sugar")
+            original_name = product_dict.get('name', 'Product')
+            variant_name = variant_data.get('name', '')
+            product_dict['display_name'] = f"{original_name} - {variant_name}" if variant_name else original_name
+            logger.info(f"Enhanced product with variant: {product_dict['display_name']}")
+        else:
+            product_dict['variant'] = None
+            product_dict['display_name'] = product_dict.get('name', 'Product')
+
+        # STAGE 2d: Fetch brand's ad_creation_notes and combine with additional_instructions
+        combined_instructions = ""
+        brand_id = product_dict.get('brand_id')
+        brand_fonts = None  # Will be fetched below
+        if brand_id:
+            try:
+                from viraltracker.core.database import get_supabase_client
+                db = get_supabase_client()
+                brand_result = db.table("brands").select("ad_creation_notes, brand_fonts").eq("id", brand_id).single().execute()
+                if brand_result.data:
+                    if brand_result.data.get('ad_creation_notes'):
+                        brand_notes = brand_result.data['ad_creation_notes']
+                        logger.info(f"Stage 2d: Loaded brand ad creation notes: {brand_notes[:50]}...")
+                        combined_instructions = brand_notes
+                    if brand_result.data.get('brand_fonts'):
+                        brand_fonts = brand_result.data['brand_fonts']
+                        logger.info(f"Stage 2d: Loaded brand fonts: {brand_fonts.get('primary', 'N/A')}")
+            except Exception as e:
+                logger.warning(f"Failed to load brand data: {e}")
+
+        # Append run-specific additional instructions
+        if additional_instructions:
+            if combined_instructions:
+                combined_instructions = f"{combined_instructions}\n\n**Run-specific instructions:**\n{additional_instructions}"
+            else:
+                combined_instructions = additional_instructions
+            logger.info(f"Combined instructions ready ({len(combined_instructions)} chars)")
+
+        # Store combined instructions in product_dict for use in prompt generation
+        product_dict['combined_instructions'] = combined_instructions if combined_instructions else None
 
         # STAGE 3: Fetch hooks (only if using hooks content source)
         hooks_list = []
@@ -3135,13 +3258,16 @@ async def complete_ad_workflow(
         if content_source == "hooks":
             # Original hooks-based flow
             logger.info(f"Stage 6: Selecting {num_variations} diverse hooks with AI...")
+            if persona_data:
+                logger.info(f"  Using persona '{persona_data.get('persona_name')}' for hook selection")
             selected_hooks = await select_hooks(
                 ctx=ctx,
                 hooks=hooks_list,
                 ad_analysis=ad_analysis,
                 product_name=product_dict.get('name', ''),
                 target_audience=product_dict.get('target_audience', ''),
-                count=num_variations
+                count=num_variations,
+                persona_data=persona_data
             )
         else:
             # Recreate template flow
@@ -3164,12 +3290,15 @@ async def complete_ad_workflow(
 
             # Stage 6b: Generate benefit variations (always needed - product-specific)
             logger.info(f"Stage 6b: Generating {num_variations} benefit variations...")
+            if persona_data:
+                logger.info(f"  Using persona '{persona_data.get('persona_name')}' for benefit variations")
             selected_hooks = await generate_benefit_variations(
                 ctx=ctx,
                 product=product_dict,
                 template_angle=template_angle,
                 ad_analysis=ad_analysis,
-                count=num_variations
+                count=num_variations,
+                persona_data=persona_data
             )
 
         # Save selected hooks/variations to database
@@ -3275,7 +3404,9 @@ async def complete_ad_workflow(
                     reference_ad_path=reference_ad_path,
                     product_image_paths=selected_image_paths_final,
                     color_mode=color_mode,
-                    brand_colors=brand_colors
+                    brand_colors=brand_colors,
+                    brand_fonts=brand_fonts,
+                    num_variations=num_variations
                 )
 
                 # Execute generation
@@ -3287,11 +3418,12 @@ async def complete_ad_workflow(
                 # Generate ad_id upfront for structured naming
                 ad_uuid = uuid_module.uuid4()
 
-                # Get canvas size from prompt spec (canvas is a string like "1080x1080px, background #F5F0E8")
+                # Get canvas size from JSON prompt
                 canvas_size = None
-                spec = nano_banana_prompt.get('spec', {})
-                if isinstance(spec, dict) and spec.get('canvas'):
-                    canvas_size = spec['canvas']
+                json_prompt = nano_banana_prompt.get('json_prompt', {})
+                if isinstance(json_prompt, dict):
+                    style = json_prompt.get('style', {})
+                    canvas_size = style.get('canvas_size', '1080x1080px')
 
                 # Upload image to storage with structured naming
                 storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
@@ -3420,7 +3552,7 @@ async def complete_ad_workflow(
                 ad_run_id=UUID(ad_run_id_str),
                 prompt_index=i,
                 prompt_text=nano_banana_prompt['full_prompt'],
-                prompt_spec=nano_banana_prompt['spec'],
+                prompt_spec=nano_banana_prompt.get('json_prompt', {}),
                 hook_id=hook_id,
                 hook_text=selected_hook['adapted_text'],
                 storage_path=storage_path,

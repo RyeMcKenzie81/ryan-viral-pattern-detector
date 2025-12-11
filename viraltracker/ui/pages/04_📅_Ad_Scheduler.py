@@ -87,6 +87,29 @@ def get_products(brand_id: str = None):
         return []
 
 
+def get_personas_for_product(product_id: str):
+    """Get personas linked to a product for the persona selector."""
+    try:
+        from viraltracker.services.ad_creation_service import AdCreationService
+        from uuid import UUID
+        service = AdCreationService()
+        return service.get_personas_for_product(UUID(product_id))
+    except Exception as e:
+        return []
+
+
+def get_variants_for_product(product_id: str):
+    """Get variants for a product for the variant selector."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_variants").select(
+            "id, name, slug, variant_type, description, is_default, is_active"
+        ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
 def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str = None):
     """Fetch scheduled jobs with optional filters."""
     try:
@@ -867,6 +890,136 @@ def render_create_schedule():
     st.divider()
 
     # ========================================================================
+    # Section 5.5: Target Persona (Optional)
+    # ========================================================================
+
+    st.subheader("Target Persona (Optional)")
+
+    # Fetch personas for selected product
+    personas = get_personas_for_product(selected_product_id) if selected_product_id else []
+
+    persona_id = None
+    if personas:
+        # Build persona options - "None" + all personas
+        persona_options = {"None - Use product defaults": None}
+        for p in personas:
+            snapshot = p.get('snapshot', '')[:50] if p.get('snapshot') else ''
+            label = f"{p['name']}"
+            if snapshot:
+                label += f" ({snapshot}...)"
+            if p.get('is_primary'):
+                label += " ⭐"
+            persona_options[label] = p['id']
+
+        # Get existing persona_id from job params
+        existing_persona_id = existing_params.get('persona_id')
+
+        # Get current selection label
+        current_persona_label = "None - Use product defaults"
+        if existing_persona_id:
+            for label, pid in persona_options.items():
+                if pid == existing_persona_id:
+                    current_persona_label = label
+                    break
+
+        selected_persona_label = st.selectbox(
+            "Select a 4D Persona to target",
+            options=list(persona_options.keys()),
+            index=list(persona_options.keys()).index(current_persona_label) if current_persona_label in persona_options else 0,
+            help="Persona data will inform hook selection and copy generation with emotional triggers and customer voice"
+        )
+        persona_id = persona_options[selected_persona_label]
+
+        # Show persona preview if selected
+        if persona_id:
+            selected_persona = next((p for p in personas if p['id'] == persona_id), None)
+            if selected_persona:
+                with st.expander("Persona Preview", expanded=False):
+                    st.markdown(f"**{selected_persona['name']}**")
+                    if selected_persona.get('snapshot'):
+                        st.write(selected_persona['snapshot'])
+                    st.caption("Persona data will be used to select hooks and generate copy that resonates with this audience.")
+    else:
+        st.info("No personas available for this product. Create personas in Brand Research to enable persona-targeted ad creation.")
+
+    st.divider()
+
+    # ========================================================================
+    # Section 5.6: Product Variant (Optional)
+    # ========================================================================
+
+    st.subheader("Product Variant (Optional)")
+
+    # Fetch variants for selected product
+    variants = get_variants_for_product(selected_product_id) if selected_product_id else []
+
+    variant_id = None
+    if variants:
+        # Build variant options - "Default" + all variants
+        variant_options = {"Use default variant": None}
+        for v in variants:
+            label = f"{v['name']}"
+            if v.get('is_default'):
+                label += " (default)"
+            if v.get('description'):
+                label += f" - {v['description'][:40]}..."
+            variant_options[label] = v['id']
+
+        # Get existing variant_id from job params
+        existing_variant_id = existing_params.get('variant_id')
+
+        # Get current selection label
+        current_variant_label = "Use default variant"
+        if existing_variant_id:
+            for label, vid in variant_options.items():
+                if vid == existing_variant_id:
+                    current_variant_label = label
+                    break
+
+        selected_variant_label = st.selectbox(
+            "Select a product variant",
+            options=list(variant_options.keys()),
+            index=list(variant_options.keys()).index(current_variant_label) if current_variant_label in variant_options else 0,
+            help="Choose a specific flavor, size, or variant to feature in ads"
+        )
+        variant_id = variant_options[selected_variant_label]
+
+        # Show variant preview if selected
+        if variant_id:
+            selected_variant = next((v for v in variants if v['id'] == variant_id), None)
+            if selected_variant and selected_variant.get('description'):
+                st.caption(f"📦 {selected_variant['description']}")
+    else:
+        st.info("No variants available for this product. Add variants in Brand Manager if needed.")
+
+    st.divider()
+
+    # ========================================================================
+    # Section 5.7: Additional Instructions (Optional)
+    # ========================================================================
+
+    st.subheader("Additional Instructions (Optional)")
+
+    # Get brand's default ad creation notes
+    brand_ad_notes = ""
+    if selected_product and selected_product.get('brands'):
+        brand_ad_notes = selected_product['brands'].get('ad_creation_notes') or ""
+
+    # Show brand defaults if they exist
+    if brand_ad_notes:
+        st.caption(f"📋 **Brand defaults:** {brand_ad_notes[:100]}{'...' if len(brand_ad_notes) > 100 else ''}")
+
+    additional_instructions = st.text_area(
+        "Additional instructions for scheduled runs",
+        value=existing_params.get('additional_instructions', ''),
+        placeholder="Add any specific instructions for this scheduled job...\n\nExamples:\n- Feature the Brown Sugar flavor prominently\n- Use a summer/outdoor theme\n- Include '20% OFF' badge",
+        height=100,
+        help="These instructions will be combined with the brand's default ad creation notes for every run"
+    )
+
+    st.divider()
+
+    # ========================================================================
     # Section 6: Export Destination
     # ========================================================================
 
@@ -937,7 +1090,10 @@ def render_create_schedule():
                     'color_mode': color_mode,
                     'image_selection_mode': image_selection_mode,
                     'export_destination': export_destination,
-                    'export_email': export_email if export_destination in ['email', 'both'] else None
+                    'export_email': export_email if export_destination in ['email', 'both'] else None,
+                    'persona_id': persona_id,
+                    'variant_id': variant_id,
+                    'additional_instructions': additional_instructions if additional_instructions else None
                 }
 
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
@@ -1088,7 +1244,7 @@ def render_schedule_detail():
     st.markdown("### Ad Creation Parameters")
     params = job.get('parameters', {})
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"**Variations:** {params.get('num_variations', 'N/A')}")
         st.markdown(f"**Content:** {params.get('content_source', 'N/A')}")
@@ -1099,6 +1255,33 @@ def render_schedule_detail():
         st.markdown(f"**Export:** {params.get('export_destination', 'none')}")
         if params.get('export_email'):
             st.caption(params['export_email'])
+    with col4:
+        persona_id = params.get('persona_id')
+        if persona_id:
+            # Try to get persona name
+            personas = get_personas_for_product(job['product_id'])
+            persona = next((p for p in personas if p['id'] == persona_id), None)
+            persona_name = persona['name'] if persona else persona_id[:8]
+            st.markdown(f"**Persona:** {persona_name}")
+        else:
+            st.markdown("**Persona:** None")
+
+        # Display variant if set
+        variant_id = params.get('variant_id')
+        if variant_id:
+            # Try to get variant name
+            variants = get_variants_for_product(job['product_id'])
+            variant = next((v for v in variants if v['id'] == variant_id), None)
+            variant_name = variant['name'] if variant else variant_id[:8]
+            st.markdown(f"**Variant:** {variant_name}")
+        else:
+            st.markdown("**Variant:** Default")
+
+    # Display additional instructions if set
+    add_instructions = params.get('additional_instructions')
+    if add_instructions:
+        st.markdown("**Additional Instructions:**")
+        st.caption(add_instructions[:200] + ('...' if len(add_instructions) > 200 else ''))
 
     st.divider()
 
