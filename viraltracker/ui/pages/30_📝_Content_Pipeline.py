@@ -1602,10 +1602,10 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str):
         if audio_path:
             try:
                 audio_service = get_audio_production_service()
-                audio_url = audio_service.get_audio_url(audio_path)
+                audio_url = asyncio.run(audio_service.get_audio_url(audio_path))
                 st.audio(audio_url)
-            except Exception:
-                st.caption(f"Audio: {audio_path}")
+            except Exception as e:
+                st.caption(f"Audio: {audio_path} ({e})")
         else:
             st.caption("No audio file")
 
@@ -1620,7 +1620,7 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str):
             if st.button("Select", key=f"select_{take_id}"):
                 try:
                     audio_service = get_audio_production_service()
-                    audio_service.select_take(UUID(session_id), beat_id, UUID(take_id))
+                    asyncio.run(audio_service.select_take(session_id, beat_id, UUID(take_id)))
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to select: {e}")
