@@ -1267,7 +1267,7 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
     parse_result = els_parser.parse(els_content)
 
     # Create audio session
-    session = audio_service.create_session(
+    session = await audio_service.create_session(
         video_title=parse_result.video_title,
         project_name=parse_result.project,
         beats=[beat.model_dump() for beat in parse_result.beats],
@@ -1290,8 +1290,8 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
                 output_dir=f"audio_production/{session.session_id}",
                 session_id=session.session_id
             )
-            audio_service.save_take(session.session_id, take)
-            audio_service.select_take(session.session_id, beat.beat_id, take.take_id)
+            await audio_service.save_take(str(session.session_id), take)
+            await audio_service.select_take(str(session.session_id), beat.beat_id, take.take_id)
             results.append({"beat_id": beat.beat_id, "status": "success", "take_id": str(take.take_id)})
         except Exception as e:
             results.append({"beat_id": beat.beat_id, "status": "error", "error": str(e)})
