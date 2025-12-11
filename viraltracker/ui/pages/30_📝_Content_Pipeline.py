@@ -52,6 +52,13 @@ if 'selected_failed_items' not in st.session_state:
     st.session_state.selected_failed_items = set()
 if 'revision_running' not in st.session_state:
     st.session_state.revision_running = False
+# Audio tab state (MVP 3)
+if 'els_converting' not in st.session_state:
+    st.session_state.els_converting = False
+if 'audio_generating' not in st.session_state:
+    st.session_state.audio_generating = False
+if 'current_els' not in st.session_state:
+    st.session_state.current_els = None
 
 
 def get_supabase_client():
@@ -436,7 +443,7 @@ def render_project_detail(project_id: str):
 
     if workflow_state in ['pending', 'topic_discovery', 'topic_evaluation', 'topic_selection']:
         render_topic_selection_view(project)
-    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved']:
+    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved', 'els_ready', 'audio_production', 'audio_complete']:
         render_script_view(project)
     else:
         st.info(f"Workflow state '{workflow_state}' not yet implemented")
@@ -557,8 +564,8 @@ def render_script_view(project: Dict):
 
     st.divider()
 
-    # Tabs for script workflow
-    tab1, tab2, tab3 = st.tabs(["Generate", "Review", "Approve"])
+    # Tabs for script workflow - include Audio tab
+    tab1, tab2, tab3, tab4 = st.tabs(["Generate", "Review", "Approve", "Audio"])
 
     with tab1:
         render_script_generation_tab(project)
@@ -568,6 +575,9 @@ def render_script_view(project: Dict):
 
     with tab3:
         render_script_approval_tab(project)
+
+    with tab4:
+        render_audio_tab(project)
 
 
 def render_script_generation_tab(project: Dict):
@@ -1205,6 +1215,585 @@ def render_script_approval_tab(project: Dict):
                     except Exception as e:
                         st.session_state.revision_running = False
                         st.error(f"Manual revision failed: {e}")
+
+
+# =========================================================================
+# Audio Tab Functions (MVP 3)
+# =========================================================================
+
+def get_audio_production_service():
+    """Get AudioProductionService instance."""
+    from viraltracker.services.audio_production_service import AudioProductionService
+    return AudioProductionService()
+
+
+def get_els_parser_service():
+    """Get ELSParserService instance."""
+    from viraltracker.services.els_parser_service import ELSParserService
+    return ELSParserService()
+
+
+def get_elevenlabs_service():
+    """Get ElevenLabsService instance."""
+    from viraltracker.services.elevenlabs_service import ElevenLabsService
+    return ElevenLabsService()
+
+
+async def run_els_conversion(project_id: str, script_version_id: str, script_data: Dict, brand_id: str):
+    """Convert script to ELS format and save to database."""
+    service = get_script_service()
+
+    # Convert to ELS
+    els_content = service.convert_to_els(script_data)
+
+    # Save to database
+    els_id = await service.save_els_to_db(
+        project_id=UUID(project_id),
+        script_version_id=UUID(script_version_id),
+        els_content=els_content
+    )
+
+    return {"els_id": str(els_id), "els_content": els_content}
+
+
+async def run_audio_generation(project_id: str, els_content: str, els_version_id: str):
+    """Create audio session and generate audio for all beats."""
+    audio_service = get_audio_production_service()
+    els_parser = get_els_parser_service()
+    elevenlabs = get_elevenlabs_service()
+    script_service = get_script_service()
+
+    # Parse ELS
+    parse_result = els_parser.parse(els_content)
+
+    # Create audio session
+    session = await audio_service.create_session(
+        video_title=parse_result.video_title,
+        project_name=parse_result.project,
+        beats=[beat.model_dump() for beat in parse_result.beats],
+        source_els=els_content
+    )
+
+    # Link session to project
+    await script_service.link_audio_session(
+        project_id=UUID(project_id),
+        els_version_id=UUID(els_version_id),
+        audio_session_id=session.session_id
+    )
+
+    # Generate audio for each beat
+    from pathlib import Path
+    from viraltracker.services.ffmpeg_service import FFmpegService
+    ffmpeg = FFmpegService()
+
+    results = []
+    errors = []
+    for beat in parse_result.beats:
+        try:
+            output_path = Path(f"audio_production/{session.session_id}")
+            output_path.mkdir(parents=True, exist_ok=True)
+
+            # Generate audio to local file
+            take = await elevenlabs.generate_beat_audio(
+                beat=beat,
+                output_dir=output_path,
+                session_id=str(session.session_id)
+            )
+
+            local_file = Path(take.audio_path)
+
+            # Get duration using FFmpeg
+            duration_ms = ffmpeg.get_duration_ms(local_file)
+            take.audio_duration_ms = duration_ms
+
+            # Upload to Supabase Storage
+            with open(local_file, 'rb') as f:
+                audio_data = f.read()
+
+            storage_path = await audio_service.upload_audio(
+                session_id=str(session.session_id),
+                filename=local_file.name,
+                audio_data=audio_data
+            )
+
+            # Update take with storage path (not local path)
+            take.audio_path = storage_path
+
+            # Save take and select it
+            await audio_service.save_take(str(session.session_id), take)
+            await audio_service.select_take(str(session.session_id), beat.beat_id, take.take_id)
+
+            # Clean up local file
+            local_file.unlink(missing_ok=True)
+
+            results.append({"beat_id": beat.beat_id, "status": "success", "take_id": str(take.take_id)})
+        except Exception as e:
+            import traceback
+            error_detail = f"{beat.beat_id}: {str(e)}\n{traceback.format_exc()}"
+            errors.append(error_detail)
+            results.append({"beat_id": beat.beat_id, "status": "error", "error": str(e)})
+
+    # If all beats failed, raise with details
+    if errors and len(errors) == len(parse_result.beats):
+        raise Exception(f"All beats failed. First error: {errors[0]}")
+
+    return {
+        "session_id": str(session.session_id),
+        "beat_results": results,
+        "total_beats": len(parse_result.beats),
+        "successful": sum(1 for r in results if r["status"] == "success")
+    }
+
+
+async def regenerate_single_beat(session_id: str, beat_id: str, beat_info: Dict, session: Dict):
+    """Regenerate audio for a single beat."""
+    from pathlib import Path
+    from viraltracker.services.ffmpeg_service import FFmpegService
+    from viraltracker.services.audio_models import ScriptBeat, Pace, Character
+
+    audio_service = get_audio_production_service()
+    elevenlabs = get_elevenlabs_service()
+    ffmpeg = FFmpegService()
+
+    # Convert beat_info dict to ScriptBeat model
+    # Handle character enum
+    char_str = beat_info.get('character', 'every-coon')
+    try:
+        character = Character(char_str)
+    except ValueError:
+        character = Character.EVERY_COON
+
+    # Handle pace enum
+    pace_str = beat_info.get('primary_pace', 'normal')
+    if isinstance(pace_str, str):
+        try:
+            pace = Pace(pace_str.lower())
+        except ValueError:
+            pace = Pace.NORMAL
+    else:
+        pace = Pace.NORMAL
+
+    beat = ScriptBeat(
+        beat_id=beat_id,
+        beat_number=beat_info.get('beat_number', 1),
+        beat_name=beat_info.get('beat_name', beat_id),
+        character=character,
+        lines=[],  # Not used for generation
+        combined_script=beat_info.get('combined_script', '') or beat_info.get('script', ''),
+        primary_direction=beat_info.get('primary_direction', ''),
+        primary_pace=pace,
+        pause_after_ms=beat_info.get('pause_after_ms', 100)
+    )
+
+    output_path = Path(f"audio_production/{session_id}")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Generate audio
+    take = await elevenlabs.generate_beat_audio(
+        beat=beat,
+        output_dir=output_path,
+        session_id=session_id
+    )
+
+    local_file = Path(take.audio_path)
+
+    # Get duration
+    duration_ms = ffmpeg.get_duration_ms(local_file)
+    take.audio_duration_ms = duration_ms
+
+    # Upload to storage
+    with open(local_file, 'rb') as f:
+        audio_data = f.read()
+
+    storage_path = await audio_service.upload_audio(
+        session_id=session_id,
+        filename=local_file.name,
+        audio_data=audio_data
+    )
+
+    take.audio_path = storage_path
+
+    # Save take (don't auto-select, let user choose)
+    await audio_service.save_take(session_id, take)
+
+    # Clean up local file
+    local_file.unlink(missing_ok=True)
+
+    return take
+
+
+def render_audio_tab(project: Dict):
+    """Render the audio production tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved
+    script_approved = workflow_state in ['script_approved', 'els_ready', 'audio_production', 'audio_complete']
+
+    if not script_approved:
+        st.info("Approve your script first before generating audio.")
+        st.caption("The Audio tab becomes available after script approval.")
+        return
+
+    st.markdown("### Audio Production")
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).eq("status", "approved").order("version_number", desc=True).limit(1).execute()
+
+        if not scripts.data:
+            st.warning("No approved script found.")
+            return
+
+        current_script = scripts.data[0]
+        script_content = current_script.get('script_content')
+        script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+
+    except Exception as e:
+        st.error(f"Failed to load script: {e}")
+        return
+
+    # Check for existing ELS
+    try:
+        els_result = db.table("els_versions").select("*").eq(
+            "project_id", project_id
+        ).eq("source_type", "video").order("version_number", desc=True).limit(1).execute()
+        existing_els = els_result.data[0] if els_result.data else None
+    except Exception:
+        existing_els = None
+
+    # Check for existing audio session
+    audio_session_id = project.get('audio_session_id')
+    audio_session = None
+    if audio_session_id:
+        try:
+            session_result = db.table("audio_production_sessions").select("*").eq(
+                "id", audio_session_id
+            ).execute()
+            audio_session = session_result.data[0] if session_result.data else None
+        except Exception:
+            audio_session = None
+
+    # Step 1: ELS Conversion
+    st.markdown("#### Step 1: Convert Script to ELS")
+
+    if existing_els:
+        st.success(f"ELS v{existing_els.get('version_number')} ready")
+
+        # Show ELS content in expander
+        with st.expander("View ELS Script", expanded=False):
+            st.code(existing_els.get('els_content', ''), language='text')
+
+        # Option to regenerate
+        if st.button("Regenerate ELS", help="Create a new ELS version from the current script"):
+            st.session_state.els_converting = True
+            st.rerun()
+
+    else:
+        st.info("Convert your approved script to ELS format for audio production.")
+
+        if st.button("Convert to ELS", type="primary", disabled=st.session_state.els_converting):
+            st.session_state.els_converting = True
+            st.rerun()
+
+    # Handle ELS conversion (both new and regenerate)
+    if st.session_state.els_converting:
+        with st.spinner("Converting script to ELS format..."):
+            try:
+                result = asyncio.run(run_els_conversion(
+                    project_id=project_id,
+                    script_version_id=current_script.get('id'),
+                    script_data=script_data,
+                    brand_id=brand_id
+                ))
+                st.session_state.els_converting = False
+                st.session_state.current_els = result['els_content']
+                st.success("ELS conversion complete!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.els_converting = False
+                st.error(f"ELS conversion failed: {e}")
+
+    # Step 2: Audio Generation
+    st.markdown("#### Step 2: Generate Audio")
+
+    if not existing_els:
+        st.caption("Convert to ELS first before generating audio.")
+        return
+
+    if audio_session:
+        st.success(f"Audio session active: {audio_session.get('status', 'unknown')}")
+
+        # Show beat-by-beat results
+        render_audio_session_details(audio_session, project_id)
+
+    else:
+        st.info("Generate voiceover audio for each beat using ElevenLabs.")
+
+        beat_count = len(script_data.get('beats', []))
+        st.caption(f"This will generate audio for {beat_count} beats.")
+
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button("Generate Audio", type="primary", disabled=st.session_state.audio_generating):
+                st.session_state.audio_generating = True
+                st.rerun()
+
+        with col2:
+            if st.session_state.audio_generating:
+                st.warning("Audio generation in progress...")
+
+    # Handle audio generation
+    if st.session_state.audio_generating and not audio_session:
+        progress_placeholder = st.empty()
+        with progress_placeholder.container():
+            with st.spinner(f"Generating audio... This may take 1-2 minutes."):
+                try:
+                    result = asyncio.run(run_audio_generation(
+                        project_id=project_id,
+                        els_content=existing_els.get('els_content'),
+                        els_version_id=existing_els.get('id')
+                    ))
+                    st.session_state.audio_generating = False
+
+                    if result['successful'] == result['total_beats']:
+                        st.success(f"Audio generated for all {result['total_beats']} beats!")
+                    else:
+                        st.warning(f"Generated {result['successful']}/{result['total_beats']} beats. Some failed.")
+
+                    st.rerun()
+
+                except Exception as e:
+                    st.session_state.audio_generating = False
+                    st.error(f"Audio generation failed: {e}")
+
+
+def render_audio_session_details(session: Dict, project_id: str):
+    """Render the audio session details with playback and take management."""
+    session_id = session.get('id')
+    status = session.get('status', 'unknown')
+
+    # Status indicator with reset option
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        status_colors = {
+            'draft': 'orange',
+            'generating': 'blue',
+            'in_progress': 'green',
+            'completed': 'green',
+            'exported': 'gray'
+        }
+        st.caption(f"Status: :{status_colors.get(status, 'gray')}[{status}]")
+
+    with col2:
+        if st.button("Reset & Regenerate", help="Delete this session and regenerate audio"):
+            try:
+                db = get_supabase_client()
+                # Clear links
+                db.table("content_projects").update({
+                    "audio_session_id": None
+                }).eq("audio_session_id", session_id).execute()
+                db.table("els_versions").update({
+                    "audio_session_id": None
+                }).eq("audio_session_id", session_id).execute()
+                # Delete takes and session
+                db.table("audio_takes").delete().eq("session_id", session_id).execute()
+                db.table("audio_production_sessions").delete().eq("id", session_id).execute()
+                st.session_state.audio_generating = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Reset failed: {e}")
+
+    # Get takes for this session
+    try:
+        db = get_supabase_client()
+        takes_result = db.table("audio_takes").select("*").eq(
+            "session_id", session_id
+        ).order("beat_id").execute()
+        takes = takes_result.data or []
+    except Exception as e:
+        st.error(f"Failed to load takes: {e}")
+        return
+
+    # Get beat info from session's beats_json
+    beats_json = session.get('beats_json', [])
+    beats_by_id = {b.get('beat_id'): b for b in beats_json} if beats_json else {}
+
+    if not takes:
+        st.warning("No audio takes generated yet. Audio generation may have failed.")
+
+        # Get ELS for retry
+        try:
+            db = get_supabase_client()
+            els_result = db.table("els_versions").select("*").eq(
+                "audio_session_id", session_id
+            ).limit(1).execute()
+            existing_els = els_result.data[0] if els_result.data else None
+        except Exception:
+            existing_els = None
+
+        if existing_els and st.button("Retry Audio Generation", type="primary"):
+            st.session_state.audio_generating = True
+            # Clear the session so it can be recreated
+            try:
+                db.table("content_projects").update({
+                    "audio_session_id": None
+                }).eq("audio_session_id", session_id).execute()
+                db.table("els_versions").update({
+                    "audio_session_id": None
+                }).eq("id", existing_els.get('id')).execute()
+                db.table("audio_production_sessions").delete().eq("id", session_id).execute()
+            except Exception as e:
+                st.error(f"Failed to reset session: {e}")
+            st.rerun()
+        return
+
+    # Group takes by beat
+    beats_takes = {}
+    for take in takes:
+        beat_id = take.get('beat_id')
+        if beat_id not in beats_takes:
+            beats_takes[beat_id] = []
+        beats_takes[beat_id].append(take)
+
+    st.markdown("#### Audio Takes")
+    st.caption("Click play to preview. Selected takes will be used for export.")
+
+    # Render each beat's takes
+    for beat_id, beat_takes in beats_takes.items():
+        beat_info = beats_by_id.get(beat_id, {})
+        beat_name = beat_info.get('beat_name', beat_id)
+
+        # Check if regenerating this beat
+        if st.session_state.get(f"regenerating_{beat_id}"):
+            with st.expander(f"**{beat_name}** - Regenerating...", expanded=True):
+                with st.spinner(f"Regenerating {beat_id}..."):
+                    try:
+                        # Regenerate this beat
+                        asyncio.run(regenerate_single_beat(
+                            session_id=session_id,
+                            beat_id=beat_id,
+                            beat_info=beat_info,
+                            session=session
+                        ))
+                        del st.session_state[f"regenerating_{beat_id}"]
+                        st.rerun()
+                    except Exception as e:
+                        del st.session_state[f"regenerating_{beat_id}"]
+                        st.error(f"Regeneration failed: {e}")
+        else:
+            with st.expander(f"**{beat_name}** ({len(beat_takes)} take{'s' if len(beat_takes) > 1 else ''})", expanded=True):
+                # Sort takes by created_at to show oldest first
+                sorted_takes = sorted(beat_takes, key=lambda t: t.get('created_at', ''))
+                for i, take in enumerate(sorted_takes, 1):
+                    render_audio_take(take, session_id, beat_id, beat_info, take_number=i, total_takes=len(sorted_takes))
+
+    st.divider()
+
+    # Completion section
+    st.markdown("#### Complete Audio")
+    selected_count = sum(1 for t in takes if t.get('is_selected'))
+    total_beats = len(beats_takes)
+
+    if selected_count == total_beats:
+        st.success(f"All {total_beats} beats have selected takes. Audio is ready!")
+        st.caption("You can proceed to the next pipeline step, or export audio files for manual use.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Mark Audio Complete", type="primary", help="Proceed to next pipeline step"):
+                try:
+                    db = get_supabase_client()
+                    db.table("content_projects").update({
+                        "workflow_state": "audio_complete"
+                    }).eq("id", project_id).execute()
+                    db.table("audio_production_sessions").update({
+                        "status": "completed"
+                    }).eq("id", session_id).execute()
+                    st.success("Audio marked complete!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+    else:
+        st.warning(f"Select takes for all beats before completing. ({selected_count}/{total_beats} selected)")
+
+
+def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Optional[Dict] = None, take_number: int = 1, total_takes: int = 1):
+    """Render a single audio take with playback controls."""
+    take_id = take.get('id')
+    is_selected = take.get('is_selected', False)
+    duration_ms = take.get('audio_duration_ms', 0)
+    audio_path = take.get('audio_path', '')
+    direction = take.get('direction_used', '')
+
+    # Show take number header
+    if total_takes > 1:
+        st.markdown(f"**Take {take_number}** {'(latest)' if take_number == total_takes else ''}")
+        st.divider()
+
+    # Show beat info only on first take
+    if beat_info and take_number == 1:
+        character = beat_info.get('character', 'every-coon')
+        script_text = beat_info.get('combined_script', '') or beat_info.get('script', '')
+
+        # Character badge
+        char_colors = {
+            'every-coon': 'blue',
+            'boomer': 'orange',
+            'fed': 'gray',
+            'whale': 'violet',
+            'wojak': 'red',
+            'chad': 'green'
+        }
+        st.caption(f":{char_colors.get(character, 'gray')}[{character}]")
+
+        # Script text (truncated)
+        if script_text:
+            display_text = script_text[:200] + "..." if len(script_text) > 200 else script_text
+            st.markdown(f"*\"{display_text}\"*")
+
+        if direction:
+            st.caption(f"Direction: {direction}")
+
+    col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
+
+    with col1:
+        # Audio player
+        if audio_path:
+            try:
+                audio_service = get_audio_production_service()
+                audio_url = asyncio.run(audio_service.get_audio_url(audio_path))
+                st.audio(audio_url)
+            except Exception as e:
+                st.caption(f"Audio: {audio_path} ({e})")
+        else:
+            st.caption("No audio file")
+
+    with col2:
+        duration_sec = duration_ms / 1000 if duration_ms else 0
+        st.caption(f"{duration_sec:.1f}s")
+
+    with col3:
+        if is_selected:
+            st.success("Selected")
+        else:
+            if st.button("Select", key=f"select_{take_id}"):
+                try:
+                    audio_service = get_audio_production_service()
+                    asyncio.run(audio_service.select_take(session_id, beat_id, UUID(take_id)))
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to select: {e}")
+
+    with col4:
+        if st.button("Regen", key=f"regen_{beat_id}_{take_id}", help="Regenerate this beat"):
+            st.session_state[f"regenerating_{beat_id}"] = True
+            st.rerun()
 
 
 # Main app flow
