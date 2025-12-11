@@ -1283,6 +1283,9 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
 
     # Generate audio for each beat
     from pathlib import Path
+    from viraltracker.services.ffmpeg_service import FFmpegService
+    ffmpeg = FFmpegService()
+
     results = []
     errors = []
     for beat in parse_result.beats:
@@ -1290,13 +1293,39 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
             output_path = Path(f"audio_production/{session.session_id}")
             output_path.mkdir(parents=True, exist_ok=True)
 
+            # Generate audio to local file
             take = await elevenlabs.generate_beat_audio(
                 beat=beat,
                 output_dir=output_path,
                 session_id=str(session.session_id)
             )
+
+            local_file = Path(take.audio_path)
+
+            # Get duration using FFmpeg
+            duration_ms = ffmpeg.get_duration_ms(local_file)
+            take.audio_duration_ms = duration_ms
+
+            # Upload to Supabase Storage
+            with open(local_file, 'rb') as f:
+                audio_data = f.read()
+
+            storage_path = await audio_service.upload_audio(
+                session_id=str(session.session_id),
+                filename=local_file.name,
+                audio_data=audio_data
+            )
+
+            # Update take with storage path (not local path)
+            take.audio_path = storage_path
+
+            # Save take and select it
             await audio_service.save_take(str(session.session_id), take)
             await audio_service.select_take(str(session.session_id), beat.beat_id, take.take_id)
+
+            # Clean up local file
+            local_file.unlink(missing_ok=True)
+
             results.append({"beat_id": beat.beat_id, "status": "success", "take_id": str(take.take_id)})
         except Exception as e:
             import traceback
