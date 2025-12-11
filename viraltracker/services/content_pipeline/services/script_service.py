@@ -485,6 +485,158 @@ Keep what's working well and only change what needs to be fixed."""
             raise ValueError(f"Failed to parse LLM response as JSON: {e}")
 
     # =========================================================================
+    # ELS Conversion (MVP 3)
+    # =========================================================================
+
+    # Valid pace values for ELS format
+    VALID_PACES = {"slow", "deliberate", "normal", "quick", "fast", "chaos"}
+
+    # Valid character names for ELS format
+    VALID_CHARACTERS = {"every-coon", "boomer", "fed", "whale", "wojak", "chad"}
+
+    def convert_to_els(
+        self,
+        script_data: Dict[str, Any],
+        project_name: str = "trash-panda"
+    ) -> str:
+        """
+        Convert script data to ELS format for audio production.
+
+        This is a deterministic conversion (no LLM needed) that transforms
+        the structured script beats into the ELS text format expected by
+        the Audio Production system.
+
+        Args:
+            script_data: Script dictionary with beats array
+            project_name: Project identifier (default: trash-panda)
+
+        Returns:
+            ELS-formatted string ready for audio production
+        """
+        lines = []
+
+        # Build META block
+        title = script_data.get("title", "Untitled Video")
+        lines.append("[META]")
+        lines.append(f"video_title: {title}")
+        lines.append(f"project: {project_name}")
+        lines.append("default_character: every-coon")
+        lines.append("default_pace: normal")
+        lines.append("")
+
+        # Process each beat
+        beats = script_data.get("beats", [])
+        for beat in beats:
+            beat_els = self._convert_beat_to_els(beat)
+            lines.append(beat_els)
+            lines.append("")  # Blank line between beats
+
+        return "\n".join(lines)
+
+    def _convert_beat_to_els(self, beat: Dict[str, Any]) -> str:
+        """
+        Convert a single beat to ELS format.
+
+        Args:
+            beat: Beat dictionary with script, character, etc.
+
+        Returns:
+            ELS-formatted string for this beat
+        """
+        lines = []
+
+        # Beat header
+        beat_id = beat.get("beat_id", "unknown")
+        beat_name = beat.get("beat_name", "Unnamed Beat")
+        lines.append(f"[BEAT: {beat_id}]")
+        lines.append(f"name: {beat_name}")
+        lines.append("---")
+
+        # Character (validate and default to every-coon)
+        character = beat.get("character", "every-coon")
+        if character not in self.VALID_CHARACTERS:
+            character = "every-coon"
+        lines.append(f"[CHARACTER: {character}]")
+
+        # Direction (from visual_notes or audio_notes)
+        direction = beat.get("visual_notes") or beat.get("audio_notes") or beat.get("editor_notes")
+        if direction:
+            # Clean up direction - remove newlines, truncate if too long
+            direction = direction.replace("\n", " ").strip()
+            if len(direction) > 200:
+                direction = direction[:197] + "..."
+            lines.append(f"[DIRECTION: {direction}]")
+
+        # Pace (infer from beat context or default to normal)
+        pace = self._infer_pace_from_beat(beat)
+        lines.append(f"[PACE: {pace}]")
+
+        # Script content
+        script = beat.get("script", "")
+        if script:
+            # Process emphasis markers for ELS
+            # *word* = light emphasis (keep as-is)
+            # **word** = strong emphasis (keep as-is, will be converted to UPPERCASE by parser)
+            lines.append(script)
+
+        # Pause (default 100ms between beats)
+        pause_ms = beat.get("pause_ms", 100)
+        lines.append(f"[PAUSE: {pause_ms}ms]")
+
+        lines.append("[END_BEAT]")
+
+        return "\n".join(lines)
+
+    def _infer_pace_from_beat(self, beat: Dict[str, Any]) -> str:
+        """
+        Infer the appropriate pace for a beat based on its context.
+
+        Args:
+            beat: Beat dictionary
+
+        Returns:
+            Pace string (slow, deliberate, normal, quick, fast, chaos)
+        """
+        beat_name = beat.get("beat_name", "").lower()
+        beat_id = beat.get("beat_id", "").lower()
+        editor_notes = (beat.get("editor_notes") or "").lower()
+        audio_notes = (beat.get("audio_notes") or "").lower()
+        combined_notes = f"{editor_notes} {audio_notes}"
+
+        # Check for explicit pace hints in notes
+        if "chaos" in combined_notes or "frantic" in combined_notes:
+            return "chaos"
+        if "fast" in combined_notes or "quick" in combined_notes or "rapid" in combined_notes:
+            return "fast"
+        if "slow" in combined_notes or "deliberate" in combined_notes or "measured" in combined_notes:
+            return "slow"
+
+        # Infer from beat type
+        if "hook" in beat_name or "hook" in beat_id:
+            return "fast"  # Hooks should be punchy
+        if "climax" in beat_name or "chaos" in beat_name:
+            return "chaos"
+        if "setup" in beat_name or "explain" in beat_name:
+            return "normal"
+        if "summary" in beat_name or "recap" in beat_name:
+            return "deliberate"
+        if "cta" in beat_name or "cta" in beat_id:
+            return "normal"
+
+        # Check character for pace hints
+        character = beat.get("character", "")
+        if character == "boomer":
+            return "slow"  # Boomers speak slower
+        if character == "fed":
+            return "deliberate"  # Fed is monotone, measured
+        if character == "wojak":
+            return "fast"  # Wojak is panicked
+        if character == "chad":
+            return "quick"  # Chad is fast-talking
+
+        return "normal"
+
+    # =========================================================================
     # Database Operations
     # =========================================================================
 
@@ -653,4 +805,137 @@ Keep what's working well and only change what needs to be fixed."""
 
         except Exception as e:
             logger.error(f"Failed to approve script: {e}")
+            raise
+
+    async def save_els_to_db(
+        self,
+        project_id: UUID,
+        script_version_id: UUID,
+        els_content: str,
+        source_type: str = "video"
+    ) -> UUID:
+        """
+        Save ELS content to the els_versions table.
+
+        Args:
+            project_id: Content project UUID
+            script_version_id: Source script version UUID
+            els_content: ELS-formatted string
+            source_type: 'video' for main script, 'comic' for comic audio
+
+        Returns:
+            Created els_version UUID
+        """
+        if not self.supabase:
+            logger.warning("Supabase not configured - ELS not saved")
+            return uuid4()
+
+        try:
+            # Get next version number for this project/source_type
+            existing = self.supabase.table("els_versions").select("version_number").eq(
+                "project_id", str(project_id)
+            ).eq(
+                "source_type", source_type
+            ).order("version_number", desc=True).limit(1).execute()
+
+            if existing.data:
+                next_version = existing.data[0]["version_number"] + 1
+            else:
+                next_version = 1
+
+            logger.info(f"Saving ELS version {next_version} for project {project_id}")
+
+            result = self.supabase.table("els_versions").insert({
+                "project_id": str(project_id),
+                "script_version_id": str(script_version_id),
+                "version_number": next_version,
+                "els_content": els_content,
+                "source_type": source_type
+            }).execute()
+
+            if result.data:
+                els_id = UUID(result.data[0]["id"])
+                logger.info(f"Saved ELS version {els_id}")
+
+                # Update project with current ELS version
+                self.supabase.table("content_projects").update({
+                    "current_els_version_id": str(els_id),
+                    "workflow_state": "els_ready"
+                }).eq("id", str(project_id)).execute()
+
+                return els_id
+
+            return uuid4()
+
+        except Exception as e:
+            logger.error(f"Failed to save ELS: {e}")
+            raise
+
+    async def get_els_version(
+        self,
+        project_id: UUID,
+        source_type: str = "video"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the latest ELS version for a project.
+
+        Args:
+            project_id: Content project UUID
+            source_type: 'video' or 'comic'
+
+        Returns:
+            ELS version dictionary or None
+        """
+        if not self.supabase:
+            return None
+
+        try:
+            result = self.supabase.table("els_versions").select("*").eq(
+                "project_id", str(project_id)
+            ).eq(
+                "source_type", source_type
+            ).order("version_number", desc=True).limit(1).execute()
+
+            if result.data:
+                return result.data[0]
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to fetch ELS version: {e}")
+            return None
+
+    async def link_audio_session(
+        self,
+        project_id: UUID,
+        els_version_id: UUID,
+        audio_session_id: UUID
+    ) -> None:
+        """
+        Link an audio production session to the ELS version and project.
+
+        Args:
+            project_id: Content project UUID
+            els_version_id: ELS version UUID
+            audio_session_id: Audio production session UUID
+        """
+        if not self.supabase:
+            logger.warning("Supabase not configured")
+            return
+
+        try:
+            # Update ELS version with audio session
+            self.supabase.table("els_versions").update({
+                "audio_session_id": str(audio_session_id)
+            }).eq("id", str(els_version_id)).execute()
+
+            # Update project with audio session
+            self.supabase.table("content_projects").update({
+                "audio_session_id": str(audio_session_id),
+                "workflow_state": "audio_production"
+            }).eq("id", str(project_id)).execute()
+
+            logger.info(f"Linked audio session {audio_session_id} to project {project_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to link audio session: {e}")
             raise
