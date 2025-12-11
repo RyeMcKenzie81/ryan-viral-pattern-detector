@@ -919,7 +919,12 @@ Public page (no auth).
 - [ ] Asset matching logic
 
 ### Phase 6: Asset Generation
-- [ ] Nano Banano 3 / Gemini integration
+- [ ] **Image Assets**: Gemini 3 Pro for backgrounds, props
+- [ ] **SFX Assets**: ElevenLabs Sound Effects API for missing audio
+  - Parse script for SFX triggers (whale rumble, printer sounds, "WAGMI", etc.)
+  - Check asset library for existing SFX
+  - Generate missing SFX via ElevenLabs
+  - Review and approve generated SFX
 - [ ] Asset generation workflow
 - [ ] Human review checkpoint UI
 - [ ] Asset approval flow
