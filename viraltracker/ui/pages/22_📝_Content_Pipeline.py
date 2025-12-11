@@ -48,6 +48,10 @@ if 'script_review' not in st.session_state:
     st.session_state.script_review = None
 if 'script_generating' not in st.session_state:
     st.session_state.script_generating = False
+if 'selected_failed_items' not in st.session_state:
+    st.session_state.selected_failed_items = set()
+if 'revision_running' not in st.session_state:
+    st.session_state.revision_running = False
 
 
 def get_supabase_client():
@@ -717,10 +721,19 @@ def render_script_review_tab(project: Dict):
                     st.error(f"Review failed: {e}")
 
 
-def render_review_results(review: Dict):
-    """Render review checklist results."""
+def render_review_results(review: Dict, show_checkboxes: bool = False) -> List[Dict]:
+    """Render review checklist results with optional selection checkboxes.
+
+    Args:
+        review: Review data dictionary
+        show_checkboxes: If True, show checkboxes next to failed items for selection
+
+    Returns:
+        List of all failed items (for building revision prompts)
+    """
     overall_score = review.get('overall_score', 0)
     ready = review.get('ready_for_approval', False)
+    failed_items = []
 
     col1, col2 = st.columns(2)
     with col1:
@@ -737,22 +750,93 @@ def render_review_results(review: Dict):
         st.markdown("### Checklist Results")
 
         for category, items in checklist.items():
-            with st.expander(f"**{category.replace('_', ' ').title()}**"):
+            # Count failed items in category
+            category_failed = sum(1 for r in items.values() if not r.get('passed', False))
+            category_label = f"**{category.replace('_', ' ').title()}**"
+            if category_failed > 0:
+                category_label += f" ({category_failed} failed)"
+
+            with st.expander(category_label):
                 for item_name, result in items.items():
                     passed = result.get('passed', False)
                     notes = result.get('notes', '')
                     icon = "✅" if passed else "❌"
-                    st.markdown(f"{icon} **{item_name.replace('_', ' ').title()}**: {notes}")
+
+                    if not passed:
+                        # Track failed item
+                        item_key = f"checklist:{category}:{item_name}"
+                        failed_item = {
+                            "type": "checklist",
+                            "key": item_key,
+                            "category": category,
+                            "item": item_name,
+                            "notes": notes,
+                            "display": f"{category.replace('_', ' ').title()} - {item_name.replace('_', ' ').title()}: {notes}"
+                        }
+                        failed_items.append(failed_item)
+
+                        if show_checkboxes:
+                            # Show checkbox for failed item
+                            col_check, col_text = st.columns([0.1, 0.9])
+                            with col_check:
+                                checked = st.checkbox(
+                                    "",  # Empty label
+                                    key=f"chk_{item_key}",
+                                    value=item_key in st.session_state.selected_failed_items
+                                )
+                                if checked:
+                                    st.session_state.selected_failed_items.add(item_key)
+                                elif item_key in st.session_state.selected_failed_items:
+                                    st.session_state.selected_failed_items.discard(item_key)
+                            with col_text:
+                                st.markdown(f"{icon} **{item_name.replace('_', ' ').title()}**: {notes}")
+                        else:
+                            st.markdown(f"{icon} **{item_name.replace('_', ' ').title()}**: {notes}")
+                    else:
+                        st.markdown(f"{icon} **{item_name.replace('_', ' ').title()}**: {notes}")
 
     # Issues found
     issues = review.get('issues_found', [])
     if issues:
         st.markdown("### Issues Found")
-        for issue in issues:
+        for idx, issue in enumerate(issues):
             severity = issue.get('severity', 'medium')
             color = {"high": "red", "medium": "orange", "low": "blue"}.get(severity, "gray")
-            st.markdown(f":{color}[**{severity.upper()}**] {issue.get('issue', '')}")
-            st.caption(f"Location: {issue.get('location', 'N/A')} | Suggestion: {issue.get('suggestion', '')}")
+            issue_text = issue.get('issue', '')
+            location = issue.get('location', 'N/A')
+            suggestion = issue.get('suggestion', '')
+
+            # Track as failed item
+            item_key = f"issue:{idx}:{issue_text[:30]}"
+            failed_item = {
+                "type": "issue",
+                "key": item_key,
+                "severity": severity,
+                "issue": issue_text,
+                "location": location,
+                "suggestion": suggestion,
+                "display": f"[{severity.upper()}] {issue_text} (Location: {location})"
+            }
+            failed_items.append(failed_item)
+
+            if show_checkboxes:
+                col_check, col_text = st.columns([0.1, 0.9])
+                with col_check:
+                    checked = st.checkbox(
+                        "",  # Empty label
+                        key=f"chk_{item_key}",
+                        value=item_key in st.session_state.selected_failed_items
+                    )
+                    if checked:
+                        st.session_state.selected_failed_items.add(item_key)
+                    elif item_key in st.session_state.selected_failed_items:
+                        st.session_state.selected_failed_items.discard(item_key)
+                with col_text:
+                    st.markdown(f":{color}[**{severity.upper()}**] {issue_text}")
+                    st.caption(f"Location: {location} | Suggestion: {suggestion}")
+            else:
+                st.markdown(f":{color}[**{severity.upper()}**] {issue_text}")
+                st.caption(f"Location: {location} | Suggestion: {suggestion}")
 
     # Improvement suggestions
     suggestions = review.get('improvement_suggestions', [])
@@ -761,10 +845,124 @@ def render_review_results(review: Dict):
         for suggestion in suggestions:
             st.markdown(f"- {suggestion}")
 
+    return failed_items
+
+
+def build_revision_prompt_from_selections(
+    failed_items: List[Dict],
+    selected_keys: set
+) -> str:
+    """Build a revision prompt from selected failed items.
+
+    Args:
+        failed_items: List of all failed item dictionaries
+        selected_keys: Set of selected item keys
+
+    Returns:
+        Formatted revision prompt string
+    """
+    selected_items = [item for item in failed_items if item['key'] in selected_keys]
+
+    if not selected_items:
+        return ""
+
+    prompt_lines = ["Please revise the script to fix the following issues:\n"]
+
+    # Group checklist items by category
+    checklist_items = [i for i in selected_items if i['type'] == 'checklist']
+    issue_items = [i for i in selected_items if i['type'] == 'issue']
+
+    if checklist_items:
+        prompt_lines.append("## Checklist Failures to Fix:")
+        for item in checklist_items:
+            category = item['category'].replace('_', ' ').title()
+            item_name = item['item'].replace('_', ' ').title()
+            notes = item.get('notes', '')
+            prompt_lines.append(f"- **{category} - {item_name}**: {notes}")
+        prompt_lines.append("")
+
+    if issue_items:
+        prompt_lines.append("## Specific Issues to Fix:")
+        for item in issue_items:
+            issue = item.get('issue', '')
+            location = item.get('location', 'Unknown')
+            suggestion = item.get('suggestion', '')
+            prompt_lines.append(f"- **{issue}**")
+            prompt_lines.append(f"  - Location: {location}")
+            if suggestion:
+                prompt_lines.append(f"  - Suggested fix: {suggestion}")
+        prompt_lines.append("")
+
+    return "\n".join(prompt_lines)
+
+
+async def run_script_revision_and_review(
+    project_id: str,
+    script_data: Dict,
+    revision_notes: str,
+    brand_id: str,
+    review_result: Optional[Dict] = None
+) -> Dict:
+    """Run script revision followed by automatic re-review.
+
+    Args:
+        project_id: Project UUID string
+        script_data: Current script data
+        revision_notes: Revision instructions (passed as human_notes)
+        brand_id: Brand UUID string
+        review_result: Optional review result from previous review
+
+    Returns:
+        Dictionary with revised script and new review results
+    """
+    service = get_script_service()
+
+    # Use empty review result if not provided
+    if review_result is None:
+        review_result = {}
+
+    # Revise the script using the correct API signature
+    revised_script = await service.revise_script(
+        original_script=script_data,
+        review_result=review_result,
+        brand_id=UUID(brand_id),
+        human_notes=revision_notes
+    )
+
+    # Save revised script
+    await service.save_script_to_db(
+        project_id=UUID(project_id),
+        script_data=revised_script
+    )
+
+    # Automatically run review on revised script
+    review_result = await service.review_script(
+        script_data=revised_script,
+        brand_id=UUID(brand_id)
+    )
+
+    # Get the latest script version ID to save review
+    db = get_supabase_client()
+    scripts = db.table("script_versions").select("id").eq(
+        "project_id", project_id
+    ).order("version_number", desc=True).limit(1).execute()
+
+    if scripts.data:
+        await service.save_review_to_db(
+            script_version_id=UUID(scripts.data[0]['id']),
+            review_data=review_result
+        )
+
+    return {
+        "revised_script": revised_script,
+        "review_result": review_result
+    }
+
 
 def render_script_approval_tab(project: Dict):
-    """Render the script approval tab."""
+    """Render the script approval tab with interactive revision selection."""
     project_id = project.get('id')
+    brand_id = project.get('brand_id')
     workflow_state = project.get('workflow_state', 'pending')
 
     # Get current script
@@ -783,6 +981,7 @@ def render_script_approval_tab(project: Dict):
 
     current_script = existing_scripts[0]
     status = current_script.get('status', 'draft')
+    version_num = current_script.get('version_number', 1)
 
     if status == 'approved':
         st.success("Script has been approved!")
@@ -795,23 +994,42 @@ def render_script_approval_tab(project: Dict):
         st.info("Complete the review before approving.")
         return
 
-    st.markdown("### Approve or Revise Script")
+    st.markdown(f"### Script v{version_num} - Approve or Revise")
 
-    # Show review summary if available
+    # Show review results with checkboxes
     checklist_results = current_script.get('checklist_results')
+    failed_items = []
+
     if checklist_results:
-        overall_score = checklist_results.get('overall_score', 0) if isinstance(checklist_results, dict) else 0
-        st.metric("Review Score", f"{overall_score}/100")
+        st.markdown("#### Review Results")
+        st.caption("Select failed items to include in targeted revision, or use 'Revise All' to fix everything.")
+        failed_items = render_review_results(checklist_results, show_checkboxes=True)
 
-    col1, col2 = st.columns(2)
+        # Show selection count
+        selected_count = len(st.session_state.selected_failed_items)
+        total_failed = len(failed_items)
+        if total_failed > 0:
+            st.info(f"Selected {selected_count} of {total_failed} failed items")
 
-    with col1:
+    st.divider()
+
+    # Action buttons section
+    st.markdown("#### Actions")
+
+    # Check if revision is running
+    if st.session_state.revision_running:
+        st.warning("Revision in progress...")
+        return
+
+    # Row 1: Approve button
+    col_approve, col_spacer = st.columns([1, 2])
+    with col_approve:
         approval_notes = st.text_area(
             "Approval Notes (optional)",
-            placeholder="Add any notes about this approval..."
+            placeholder="Add any notes about this approval...",
+            key="approval_notes"
         )
-
-        if st.button("Approve Script", type="primary"):
+        if st.button("Approve Script", type="primary", use_container_width=True):
             try:
                 service = get_script_service()
                 asyncio.run(service.approve_script(
@@ -831,32 +1049,149 @@ def render_script_approval_tab(project: Dict):
             except Exception as e:
                 st.error(f"Approval failed: {e}")
 
+    st.divider()
+
+    # Row 2: Revision buttons
+    st.markdown("#### Request Revisions")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Revise Selected button
+        selected_count = len(st.session_state.selected_failed_items)
+        revise_selected_disabled = selected_count == 0
+
+        if st.button(
+            f"Revise Selected ({selected_count})",
+            disabled=revise_selected_disabled,
+            use_container_width=True,
+            help="Revise only the selected failed items"
+        ):
+            # Build revision prompt from selections
+            revision_prompt = build_revision_prompt_from_selections(
+                failed_items,
+                st.session_state.selected_failed_items
+            )
+
+            if revision_prompt:
+                st.session_state.revision_running = True
+
+                # Get script data
+                script_content = current_script.get('script_content')
+                script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+
+                with st.spinner("Revising script and running review... (this may take 60-90 seconds)"):
+                    try:
+                        result = asyncio.run(run_script_revision_and_review(
+                            project_id=project_id,
+                            script_data=script_data,
+                            revision_notes=revision_prompt,
+                            brand_id=brand_id,
+                            review_result=checklist_results
+                        ))
+
+                        # Clear selections
+                        st.session_state.selected_failed_items = set()
+                        st.session_state.revision_running = False
+
+                        new_score = result['review_result'].get('overall_score', 0)
+                        st.success(f"Revision complete! New score: {new_score}/100")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.session_state.revision_running = False
+                        st.error(f"Revision failed: {e}")
+
     with col2:
-        revision_notes = st.text_area(
-            "Revision Notes",
-            placeholder="Describe what changes are needed..."
+        # Revise All button
+        if st.button(
+            "Revise All Failed",
+            disabled=len(failed_items) == 0,
+            use_container_width=True,
+            help="Revise all failed items at once"
+        ):
+            # Build prompt for all failed items
+            all_keys = {item['key'] for item in failed_items}
+            revision_prompt = build_revision_prompt_from_selections(
+                failed_items,
+                all_keys
+            )
+
+            if revision_prompt:
+                st.session_state.revision_running = True
+
+                # Get script data
+                script_content = current_script.get('script_content')
+                script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+
+                with st.spinner("Revising all issues and running review... (this may take 60-90 seconds)"):
+                    try:
+                        result = asyncio.run(run_script_revision_and_review(
+                            project_id=project_id,
+                            script_data=script_data,
+                            revision_notes=revision_prompt,
+                            brand_id=brand_id,
+                            review_result=checklist_results
+                        ))
+
+                        # Clear selections
+                        st.session_state.selected_failed_items = set()
+                        st.session_state.revision_running = False
+
+                        new_score = result['review_result'].get('overall_score', 0)
+                        st.success(f"Revision complete! New score: {new_score}/100")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.session_state.revision_running = False
+                        st.error(f"Revision failed: {e}")
+
+    with col3:
+        # Clear selections button
+        if st.button(
+            "Clear Selections",
+            disabled=selected_count == 0,
+            use_container_width=True
+        ):
+            st.session_state.selected_failed_items = set()
+            st.rerun()
+
+    # Manual revision option (collapsed by default)
+    with st.expander("Manual Revision Notes"):
+        manual_revision_notes = st.text_area(
+            "Custom Revision Notes",
+            placeholder="Describe specific changes you want...",
+            help="Use this for custom revision requests beyond the checklist items"
         )
 
-        if st.button("Request Revision"):
-            if not revision_notes:
+        if st.button("Submit Manual Revision"):
+            if not manual_revision_notes:
                 st.warning("Please provide revision notes")
             else:
-                try:
-                    # Update project to trigger revision
-                    db = get_supabase_client()
-                    workflow_data = project.get('workflow_data', {})
-                    workflow_data['script_revision_notes'] = revision_notes
+                st.session_state.revision_running = True
 
-                    db.table("content_projects").update({
-                        "workflow_state": "script_generation",
-                        "workflow_data": workflow_data
-                    }).eq("id", project_id).execute()
+                # Get script data
+                script_content = current_script.get('script_content')
+                script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
 
-                    st.info("Revision requested. Return to Generate tab to create a new version.")
-                    st.rerun()
+                with st.spinner("Processing manual revision..."):
+                    try:
+                        result = asyncio.run(run_script_revision_and_review(
+                            project_id=project_id,
+                            script_data=script_data,
+                            revision_notes=manual_revision_notes,
+                            brand_id=brand_id,
+                            review_result=checklist_results
+                        ))
 
-                except Exception as e:
-                    st.error(f"Failed to request revision: {e}")
+                        st.session_state.revision_running = False
+                        new_score = result['review_result'].get('overall_score', 0)
+                        st.success(f"Revision complete! New score: {new_score}/100")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.session_state.revision_running = False
+                        st.error(f"Manual revision failed: {e}")
 
 
 # Main app flow
