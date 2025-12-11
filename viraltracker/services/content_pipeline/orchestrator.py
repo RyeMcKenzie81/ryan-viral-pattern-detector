@@ -144,7 +144,7 @@ class TopicSelectionNode(BaseNode[ContentPipelineState]):
     async def run(
         self,
         ctx: GraphRunContext[ContentPipelineState, AgentDependencies]
-    ) -> Union["ScriptGenerationNode", "TopicDiscoveryNode", End]:
+    ) -> Union["TopicDiscoveryNode", End]:
         logger.info("Step 3: Topic Selection (Human Checkpoint)")
         ctx.state.current_step = "topic_selection"
         ctx.state.current_checkpoint = HumanCheckpoint.TOPIC_SELECTION
@@ -160,7 +160,12 @@ class TopicSelectionNode(BaseNode[ContentPipelineState]):
                 ctx.state.selected_topic_id = top_topic.get('id')
                 ctx.state.awaiting_human = False
                 ctx.state.mark_step_complete("topic_selection")
-                return ScriptGenerationNode()
+                # MVP1: Return End with success - Script generation in MVP2
+                return End({
+                    "status": "topic_selected",
+                    "selected_topic": top_topic,
+                    "message": "Topic auto-selected via Quick Approve. Ready for script generation (MVP2)."
+                })
 
         # Otherwise, pause for human input
         if not ctx.state.human_input:
@@ -196,7 +201,12 @@ class TopicSelectionNode(BaseNode[ContentPipelineState]):
             ctx.state.awaiting_human = False
             ctx.state.mark_step_complete("topic_selection")
             logger.info(f"Topic selected: {ctx.state.selected_topic.get('title')}")
-            return ScriptGenerationNode()
+            # MVP1: Return End with success - Script generation in MVP2
+            return End({
+                "status": "topic_selected",
+                "selected_topic": ctx.state.selected_topic,
+                "message": "Topic selected. Ready for script generation (MVP2)."
+            })
 
         return End({"status": "error", "error": "Invalid human input"})
 
