@@ -1282,19 +1282,31 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
     )
 
     # Generate audio for each beat
+    from pathlib import Path
     results = []
+    errors = []
     for beat in parse_result.beats:
         try:
+            output_path = Path(f"audio_production/{session.session_id}")
+            output_path.mkdir(parents=True, exist_ok=True)
+
             take = await elevenlabs.generate_beat_audio(
                 beat=beat,
-                output_dir=f"audio_production/{session.session_id}",
-                session_id=session.session_id
+                output_dir=output_path,
+                session_id=str(session.session_id)
             )
             await audio_service.save_take(str(session.session_id), take)
             await audio_service.select_take(str(session.session_id), beat.beat_id, take.take_id)
             results.append({"beat_id": beat.beat_id, "status": "success", "take_id": str(take.take_id)})
         except Exception as e:
+            import traceback
+            error_detail = f"{beat.beat_id}: {str(e)}\n{traceback.format_exc()}"
+            errors.append(error_detail)
             results.append({"beat_id": beat.beat_id, "status": "error", "error": str(e)})
+
+    # If all beats failed, raise with details
+    if errors and len(errors) == len(parse_result.beats):
+        raise Exception(f"All beats failed. First error: {errors[0]}")
 
     return {
         "session_id": str(session.session_id),
@@ -1482,7 +1494,32 @@ def render_audio_session_details(session: Dict, project_id: str):
         return
 
     if not takes:
-        st.info("No audio takes generated yet.")
+        st.warning("No audio takes generated yet. Audio generation may have failed.")
+
+        # Get ELS for retry
+        try:
+            db = get_supabase_client()
+            els_result = db.table("els_versions").select("*").eq(
+                "audio_session_id", session_id
+            ).limit(1).execute()
+            existing_els = els_result.data[0] if els_result.data else None
+        except Exception:
+            existing_els = None
+
+        if existing_els and st.button("Retry Audio Generation", type="primary"):
+            st.session_state.audio_generating = True
+            # Clear the session so it can be recreated
+            try:
+                db.table("content_projects").update({
+                    "audio_session_id": None
+                }).eq("audio_session_id", session_id).execute()
+                db.table("els_versions").update({
+                    "audio_session_id": None
+                }).eq("id", existing_els.get('id')).execute()
+                db.table("audio_production_sessions").delete().eq("id", session_id).execute()
+            except Exception as e:
+                st.error(f"Failed to reset session: {e}")
+            st.rerun()
         return
 
     # Group takes by beat
