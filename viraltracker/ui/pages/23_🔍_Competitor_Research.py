@@ -245,6 +245,41 @@ def synthesize_persona_sync(competitor_id: str) -> Dict:
         loop.close()
 
 
+def scrape_amazon_reviews_sync(competitor_id: str, amazon_url: str) -> Dict:
+    """Sync wrapper for Amazon review scraping."""
+    from viraltracker.core.database import reset_supabase_client
+    reset_supabase_client()
+
+    service = get_competitor_service()
+    return service.scrape_competitor_amazon_reviews(
+        competitor_id=UUID(competitor_id),
+        amazon_url=amazon_url,
+        include_keywords=True,
+        include_helpful=True
+    )
+
+
+def analyze_amazon_reviews_sync(competitor_id: str, limit: int) -> Optional[Dict]:
+    """Sync wrapper for Amazon review analysis."""
+    from viraltracker.core.database import reset_supabase_client
+    reset_supabase_client()
+
+    service = get_competitor_service()
+
+    async def _run():
+        return await service.analyze_competitor_amazon_reviews(
+            competitor_id=UUID(competitor_id),
+            limit=limit
+        )
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
 # =============================================================================
 # UI Components
 # =============================================================================
@@ -253,7 +288,7 @@ def render_stats_dashboard(competitor: Dict, stats: Dict):
     """Render statistics dashboard."""
     st.subheader("📊 Research Progress")
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
         st.metric("Ads Scraped", stats['ads'])
@@ -285,6 +320,14 @@ def render_stats_dashboard(competitor: Dict, stats: Dict):
         if stats['landing_pages_scraped'] > stats['landing_pages_analyzed']:
             to_analyze = stats['landing_pages_scraped'] - stats['landing_pages_analyzed']
             st.caption(f"{to_analyze} to analyze")
+
+    with col6:
+        amazon_stats = stats.get('amazon', {})
+        reviews = amazon_stats.get('reviews', 0)
+        analyzed = amazon_stats.get('analyzed', False)
+        st.metric("Amazon Reviews", reviews)
+        if reviews > 0:
+            st.caption("✅ Analyzed" if analyzed else "⏳ Not analyzed")
 
 
 def render_scrape_section(competitor: Dict):
@@ -494,9 +537,155 @@ def render_landing_page_section(competitor_id: str, stats: Dict):
             st.rerun()
 
 
+def render_amazon_reviews_section(competitor: Dict, stats: Dict):
+    """Render Amazon review scraping and analysis section."""
+    st.subheader("5. Amazon Reviews")
+    st.markdown("Scrape and analyze competitor product reviews from Amazon.")
+
+    amazon_url = competitor.get('amazon_url')
+    competitor_id = competitor['id']
+    amazon_stats = stats.get('amazon', {})
+
+    if not amazon_url:
+        st.info(
+            "No Amazon URL configured for this competitor. "
+            "Add it on the Competitors page to enable review scraping."
+        )
+        return
+
+    st.caption(f"**Amazon URL:** {amazon_url[:80]}...")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Scrape Reviews**")
+        st.caption("Multi-layer scraping: by star rating, keywords, helpfulness")
+
+        reviews_scraped = amazon_stats.get('reviews', 0)
+        if reviews_scraped > 0:
+            st.success(f"{reviews_scraped} reviews scraped")
+        else:
+            st.info("No reviews scraped yet")
+
+        if st.button(
+            "Scrape Amazon Reviews",
+            disabled=st.session_state.competitor_analysis_running,
+            key="btn_scrape_amazon"
+        ):
+            st.session_state.competitor_analysis_running = True
+
+            with st.spinner("Scraping Amazon reviews (may take 3-5 minutes)..."):
+                try:
+                    result = scrape_amazon_reviews_sync(competitor_id, amazon_url)
+                    st.success(
+                        f"Scraped {result.get('reviews_scraped', 0)} reviews "
+                        f"({result.get('new_reviews', 0)} new)"
+                    )
+                except Exception as e:
+                    st.error(f"Review scraping failed: {e}")
+
+            st.session_state.competitor_analysis_running = False
+            st.rerun()
+
+    with col2:
+        st.markdown("**Analyze Reviews**")
+        st.caption("Extract pain points, desires, language patterns")
+
+        is_analyzed = amazon_stats.get('analyzed', False)
+        if is_analyzed:
+            st.success("Reviews analyzed")
+        elif reviews_scraped > 0:
+            st.info("Ready to analyze")
+        else:
+            st.warning("Scrape reviews first")
+
+        analyze_limit = st.number_input(
+            "Reviews to analyze",
+            50, 500, 300,
+            key="amazon_analyze_limit"
+        )
+
+        btn_disabled = st.session_state.competitor_analysis_running or reviews_scraped == 0
+        if st.button(
+            "Analyze Reviews",
+            disabled=btn_disabled,
+            key="btn_analyze_amazon"
+        ):
+            st.session_state.competitor_analysis_running = True
+
+            with st.spinner(f"Analyzing up to {analyze_limit} reviews (30-60 seconds)..."):
+                try:
+                    result = analyze_amazon_reviews_sync(competitor_id, analyze_limit)
+                    if result:
+                        st.success(f"Analyzed {result.get('total_reviews_analyzed', 0)} reviews")
+                    else:
+                        st.warning("No analysis result returned")
+                except Exception as e:
+                    st.error(f"Review analysis failed: {e}")
+
+            st.session_state.competitor_analysis_running = False
+            st.rerun()
+
+    # Show analysis results if available
+    if amazon_stats.get('analyzed'):
+        service = get_competitor_service()
+        analysis = service.get_competitor_amazon_analysis(UUID(competitor_id))
+
+        if analysis:
+            st.divider()
+            st.markdown("### 📊 Review Analysis Results")
+
+            tabs = st.tabs(["Pain Points", "Desires", "Language", "Quotes"])
+
+            with tabs[0]:
+                pain_points = analysis.get('pain_points', {})
+                if pain_points:
+                    for category, items in pain_points.items():
+                        if items:
+                            st.markdown(f"**{category.replace('_', ' ').title()}:**")
+                            for item in items[:5]:
+                                if isinstance(item, dict):
+                                    st.markdown(f"- {item.get('pain', item.get('text', str(item)))}")
+                                else:
+                                    st.markdown(f"- {item}")
+
+            with tabs[1]:
+                desires = analysis.get('desires', {})
+                if desires:
+                    for category, items in desires.items():
+                        if items:
+                            st.markdown(f"**{category.replace('_', ' ').title()}:**")
+                            for item in items[:5]:
+                                if isinstance(item, dict):
+                                    st.markdown(f"- {item.get('desire', item.get('text', str(item)))}")
+                                else:
+                                    st.markdown(f"- {item}")
+
+            with tabs[2]:
+                patterns = analysis.get('language_patterns', {})
+                if patterns:
+                    for category, items in patterns.items():
+                        if items:
+                            st.markdown(f"**{category.replace('_', ' ').title()}:**")
+                            for item in (items[:5] if isinstance(items, list) else [items]):
+                                st.markdown(f"- {item}")
+
+            with tabs[3]:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Top Positive Quotes:**")
+                    for quote in analysis.get('top_positive_quotes', [])[:5]:
+                        st.markdown(f"> \"{quote}\"")
+
+                with col2:
+                    st.markdown("**Top Negative Quotes:**")
+                    for quote in analysis.get('top_negative_quotes', [])[:5]:
+                        st.markdown(f"> \"{quote}\"")
+
+
 def render_synthesis_section(competitor_id: str, competitor_name: str, stats: Dict):
     """Render persona synthesis section."""
-    st.subheader("5. Synthesize Competitor Persona")
+    st.subheader("6. Synthesize Competitor Persona")
     st.markdown("Generate a 4D persona profile of who this competitor is targeting.")
 
     # Check if we have enough data
@@ -718,6 +907,9 @@ render_analysis_section(competitor_id)
 st.divider()
 
 render_landing_page_section(competitor_id, stats)
+st.divider()
+
+render_amazon_reviews_section(competitor, stats)
 st.divider()
 
 render_synthesis_section(competitor_id, selected_competitor_name, stats)

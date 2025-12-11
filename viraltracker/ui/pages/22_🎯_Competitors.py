@@ -65,6 +65,9 @@ def render_competitor_card(competitor: Dict[str, Any], service):
             if competitor.get('website_url'):
                 st.caption(f"🌐 {competitor['website_url']}")
 
+            if competitor.get('amazon_url'):
+                st.caption(f"📦 Amazon: {competitor['amazon_url'][:50]}...")
+
             if competitor.get('industry'):
                 st.caption(f"📁 {competitor['industry']}")
 
@@ -137,10 +140,16 @@ def render_add_competitor_form(brand_id: str, service):
                 placeholder="https://www.facebook.com/ads/library/?view_all_page_id=123456789",
                 help="URL to their Facebook Ad Library page"
             )
-            industry = st.text_input(
-                "Industry",
-                placeholder="e.g., Health & Wellness, Pet Care"
+            amazon_url = st.text_input(
+                "Amazon Product URL",
+                placeholder="https://www.amazon.com/dp/B0DJWSV1J3",
+                help="Amazon product URL for review scraping"
             )
+
+        industry = st.text_input(
+            "Industry",
+            placeholder="e.g., Health & Wellness, Pet Care"
+        )
 
         notes = st.text_area(
             "Notes",
@@ -160,6 +169,7 @@ def render_add_competitor_form(brand_id: str, service):
                         website_url=website_url or None,
                         facebook_page_id=facebook_page_id or None,
                         ad_library_url=ad_library_url or None,
+                        amazon_url=amazon_url or None,
                         industry=industry or None,
                         notes=notes or None
                     )
@@ -199,10 +209,15 @@ def render_edit_competitor_form(competitor_id: str, service):
                 "Ad Library URL",
                 value=competitor.get('ad_library_url') or ""
             )
-            industry = st.text_input(
-                "Industry",
-                value=competitor.get('industry') or ""
+            amazon_url = st.text_input(
+                "Amazon Product URL",
+                value=competitor.get('amazon_url') or ""
             )
+
+        industry = st.text_input(
+            "Industry",
+            value=competitor.get('industry') or ""
+        )
 
         notes = st.text_area(
             "Notes",
@@ -227,6 +242,7 @@ def render_edit_competitor_form(competitor_id: str, service):
                             "website_url": website_url or None,
                             "facebook_page_id": facebook_page_id or None,
                             "ad_library_url": ad_library_url or None,
+                            "amazon_url": amazon_url or None,
                             "industry": industry or None,
                             "notes": notes or None
                         }
