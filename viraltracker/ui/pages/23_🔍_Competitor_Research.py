@@ -474,6 +474,53 @@ def render_landing_page_section(competitor_id: str, stats: Dict):
     st.subheader("4. Landing Pages")
     st.markdown("Scrape and analyze competitor landing pages for deeper insights.")
 
+    # Manual landing page entry
+    service = get_competitor_service()
+    landing_pages = service.get_competitor_landing_pages(UUID(competitor_id))
+
+    with st.expander("📝 Manage Landing Page URLs", expanded=not landing_pages):
+        st.caption("Add landing page URLs manually, or they'll be extracted from scraped ads.")
+
+        # Show existing URLs
+        if landing_pages:
+            st.markdown("**Current URLs:**")
+            for lp in landing_pages:
+                col_url, col_status, col_delete = st.columns([3, 1, 0.5])
+                with col_url:
+                    st.text(lp['url'][:60] + "..." if len(lp['url']) > 60 else lp['url'])
+                with col_status:
+                    if lp.get('analyzed_at'):
+                        st.caption("✅ Analyzed")
+                    elif lp.get('scraped_at'):
+                        st.caption("📄 Scraped")
+                    else:
+                        st.caption("⏳ Pending")
+                with col_delete:
+                    if st.button("🗑️", key=f"del_lp_{lp['id']}", help="Delete"):
+                        service.delete_competitor_landing_page(UUID(lp['id']))
+                        st.rerun()
+            st.markdown("---")
+
+        # Add new URL
+        new_url = st.text_input(
+            "Add Landing Page URL",
+            placeholder="https://competitor.com/products/their-product",
+            key="new_lp_url"
+        )
+        if st.button("Add URL", key="btn_add_lp_url"):
+            if new_url:
+                try:
+                    result = service.add_manual_landing_page(UUID(competitor_id), new_url)
+                    if result['status'] == 'created':
+                        st.success(f"Added: {new_url}")
+                    else:
+                        st.info("URL already exists")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to add URL: {e}")
+            else:
+                st.warning("Please enter a URL")
+
     col1, col2 = st.columns(2)
 
     with col1:

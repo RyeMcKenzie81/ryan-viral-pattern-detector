@@ -693,6 +693,76 @@ Return JSON with: hook, pain_points, desires, persona_signals, messaging_pattern
     # Landing Page Scraping & Analysis
     # =========================================================================
 
+    def add_manual_landing_page(
+        self,
+        competitor_id: UUID,
+        url: str
+    ) -> Dict[str, Any]:
+        """
+        Add a manual landing page URL for a competitor.
+
+        Args:
+            competitor_id: UUID of the competitor
+            url: Landing page URL to add
+
+        Returns:
+            Dict with the created record or existing record info
+        """
+        # Check if URL already exists
+        existing = self.supabase.table("competitor_landing_pages").select(
+            "id, url"
+        ).eq("competitor_id", str(competitor_id)).eq("url", url).execute()
+
+        if existing.data:
+            return {"status": "exists", "url": url, "id": existing.data[0]['id']}
+
+        # Get brand_id from competitor (optional, for denormalization)
+        competitor = self.get_competitor(competitor_id)
+        if not competitor:
+            raise ValueError(f"Competitor {competitor_id} not found")
+
+        # Insert new record (brand_id and is_manual are optional columns added by migration)
+        insert_data = {
+            "competitor_id": str(competitor_id),
+            "url": url
+        }
+
+        # Add optional fields if migration has been run
+        try:
+            insert_data["brand_id"] = competitor['brand_id']
+            insert_data["is_manual"] = True
+        except Exception:
+            pass  # Columns may not exist yet
+
+        result = self.supabase.table("competitor_landing_pages").insert(insert_data).execute()
+
+        return {"status": "created", "url": url, "id": result.data[0]['id']}
+
+    def get_competitor_landing_pages(
+        self,
+        competitor_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Get all landing pages for a competitor."""
+        result = self.supabase.table("competitor_landing_pages").select(
+            "*"
+        ).eq("competitor_id", str(competitor_id)).order("created_at", desc=True).execute()
+
+        return result.data or []
+
+    def delete_competitor_landing_page(
+        self,
+        landing_page_id: UUID
+    ) -> bool:
+        """Delete a competitor landing page."""
+        try:
+            self.supabase.table("competitor_landing_pages").delete().eq(
+                "id", str(landing_page_id)
+            ).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete landing page {landing_page_id}: {e}")
+            return False
+
     async def scrape_competitor_landing_pages(
         self,
         competitor_id: UUID,
@@ -702,40 +772,68 @@ Return JSON with: hook, pain_points, desires, persona_signals, messaging_pattern
         """
         Scrape landing pages for a competitor.
 
-        If urls not provided, extracts unique URLs from competitor ads.
+        Scrapes both:
+        1. Manually added URLs that haven't been scraped yet
+        2. URLs extracted from competitor ads (if urls param not provided)
         """
         from .web_scraping_service import WebScrapingService
 
-        # Get URLs from ads if not provided
-        if not urls:
+        # Get existing landing pages (to find unscraped manual entries)
+        existing_result = self.supabase.table("competitor_landing_pages").select(
+            "id, url, scraped_at"
+        ).eq("competitor_id", str(competitor_id)).execute()
+
+        existing_pages = existing_result.data or []
+        existing_urls = {r['url'] for r in existing_pages}
+        unscraped_manual = [
+            r for r in existing_pages
+            if r.get('scraped_at') is None
+        ]
+
+        # Get URLs to scrape
+        urls_to_scrape = []
+
+        # First, add unscraped manual entries
+        for page in unscraped_manual[:limit]:
+            urls_to_scrape.append({"url": page['url'], "id": page['id']})
+
+        remaining_limit = limit - len(urls_to_scrape)
+
+        # Then add URLs from ads if not provided and we have room
+        if not urls and remaining_limit > 0:
             ads_result = self.supabase.table("competitor_ads").select(
                 "link_url"
             ).eq("competitor_id", str(competitor_id)).execute()
 
-            urls = list(set(
+            ad_urls = list(set(
                 ad['link_url'] for ad in (ads_result.data or [])
-                if ad.get('link_url')
-            ))[:limit]
+                if ad.get('link_url') and ad['link_url'] not in existing_urls
+            ))[:remaining_limit]
 
-        if not urls:
-            return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
-
-        # Filter out already scraped
-        existing_result = self.supabase.table("competitor_landing_pages").select(
-            "url"
-        ).eq("competitor_id", str(competitor_id)).execute()
-
-        existing_urls = {r['url'] for r in (existing_result.data or [])}
-        urls_to_scrape = [u for u in urls if u not in existing_urls][:limit]
+            for url in ad_urls:
+                urls_to_scrape.append({"url": url, "id": None})  # New URLs need insert
+        elif urls:
+            # Use provided URLs
+            for url in urls:
+                if url not in existing_urls:
+                    urls_to_scrape.append({"url": url, "id": None})
 
         if not urls_to_scrape:
-            return {"urls_found": len(urls), "pages_scraped": 0, "pages_failed": 0, "already_scraped": len(existing_urls)}
+            return {
+                "urls_found": len(existing_urls),
+                "pages_scraped": 0,
+                "pages_failed": 0,
+                "already_scraped": len([p for p in existing_pages if p.get('scraped_at')])
+            }
 
         scraper = WebScrapingService()
         pages_scraped = 0
         pages_failed = 0
 
-        for url in urls_to_scrape:
+        for url_entry in urls_to_scrape:
+            url = url_entry["url"]
+            existing_id = url_entry.get("id")
+
             try:
                 result = await scraper.scrape_url_async(
                     url=url,
@@ -745,14 +843,26 @@ Return JSON with: hook, pain_points, desires, persona_signals, messaging_pattern
                 )
 
                 if result.success:
-                    self.supabase.table("competitor_landing_pages").insert({
-                        "competitor_id": str(competitor_id),
-                        "url": url,
+                    scraped_data = {
                         "page_title": result.metadata.get('title') if result.metadata else None,
                         "meta_description": result.metadata.get('description') if result.metadata else None,
                         "raw_markdown": result.markdown,
                         "scraped_at": datetime.utcnow().isoformat()
-                    }).execute()
+                    }
+
+                    if existing_id:
+                        # Update existing manual entry
+                        self.supabase.table("competitor_landing_pages").update(
+                            scraped_data
+                        ).eq("id", existing_id).execute()
+                    else:
+                        # Insert new entry
+                        scraped_data["competitor_id"] = str(competitor_id)
+                        scraped_data["url"] = url
+                        self.supabase.table("competitor_landing_pages").insert(
+                            scraped_data
+                        ).execute()
+
                     pages_scraped += 1
                 else:
                     pages_failed += 1
@@ -764,7 +874,7 @@ Return JSON with: hook, pain_points, desires, persona_signals, messaging_pattern
                 pages_failed += 1
 
         return {
-            "urls_found": len(urls),
+            "urls_found": len(urls_to_scrape) + len([p for p in existing_pages if p.get('scraped_at')]),
             "pages_scraped": pages_scraped,
             "pages_failed": pages_failed
         }
