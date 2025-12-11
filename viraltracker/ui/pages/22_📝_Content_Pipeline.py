@@ -50,18 +50,30 @@ def get_supabase_client():
     return get_supabase_client()
 
 
+def get_doc_service():
+    """Get DocService instance for knowledge base queries."""
+    import os
+    from viraltracker.services.knowledge_base import DocService
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    return DocService(supabase=get_supabase_client(), openai_api_key=api_key)
+
+
 def get_content_pipeline_service():
     """Get ContentPipelineService instance."""
     from viraltracker.services.content_pipeline.services.content_pipeline_service import ContentPipelineService
     db = get_supabase_client()
-    return ContentPipelineService(supabase_client=db)
+    docs = get_doc_service()
+    return ContentPipelineService(supabase_client=db, docs_service=docs)
 
 
 def get_topic_service():
     """Get TopicDiscoveryService instance."""
     from viraltracker.services.content_pipeline.services.topic_service import TopicDiscoveryService
     db = get_supabase_client()
-    return TopicDiscoveryService(supabase_client=db)
+    docs = get_doc_service()
+    return TopicDiscoveryService(supabase_client=db, docs_service=docs)
 
 
 def get_brands():

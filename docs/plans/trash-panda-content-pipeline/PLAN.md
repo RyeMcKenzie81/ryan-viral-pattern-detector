@@ -958,6 +958,22 @@ Public page (no auth).
 
 ---
 
+## Future Work (Post-MVP)
+
+### Multi-Brand Bible Management
+When adding other brands beyond Trash Panda Economics:
+- Each brand uploads their bible via Brand Settings UI
+- Bible tagged with `{brand-slug}-bible` in Knowledge Base
+- `get_full_bible_content(brand_id)` retrieves complete document for script generation
+- RAG search remains as fallback for Q&A queries
+
+### Full Bible Injection for Script Generation
+- Topic Discovery: Uses RAG search (10 chunks) for general context
+- Script Generation: Should inject FULL bible content (~8K tokens) for quality
+- Implementation: Add `TopicService.get_full_bible_content()` method that fetches complete document
+
+---
+
 ## Human Checkpoints Summary
 
 | # | Checkpoint | Step | Quick Approve? | Actions |
@@ -1006,7 +1022,7 @@ Public page (no auth).
 ## Required Files from User
 
 **Phase 1 (Foundation):**
-1. **Trash Panda Bible** (Google Doc export)
+1. ✅ **Trash Panda Bible** - Ingested into KB (14 chunks, tagged `trash-panda-bible`)
 2. **YouTube Best Practices** (6 files from Claude project, ~3400 lines)
 3. **Core-assets.png** - Character reference image for style consistency
 4. **Character Voice Mappings** - ElevenLabs voice IDs for each character:

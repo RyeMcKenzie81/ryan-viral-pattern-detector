@@ -152,20 +152,23 @@ Return as JSON array matching the input order:
 
         try:
             # Query knowledge base for brand bible documents
+            # Use tags filter to find trash-panda-bible documents
             results = self.docs.search(
-                query="Trash Panda Economics brand voice style guide character bible",
-                collection="trash-panda-bible",
-                limit=5
+                query="Trash Panda Economics brand voice style guide characters hook formulas script rules",
+                limit=10,  # Get more chunks for comprehensive context
+                tags=["trash-panda-bible"]
             )
 
             if not results:
                 logger.warning("No bible documents found - using default context")
                 return self._get_default_context()
 
+            logger.info(f"Found {len(results)} bible chunks (top similarity: {results[0].similarity:.0%})")
+
             # Combine relevant chunks
             context_parts = []
             for result in results:
-                context_parts.append(result.content)
+                context_parts.append(result.chunk_content)
 
             return "\n\n---\n\n".join(context_parts)
 
