@@ -1490,6 +1490,8 @@ class BrandResearchService:
         total_videos = 0
         total_images = 0
         ads_processed = 0
+        ads_skipped_no_urls = 0
+        errors = 0
 
         for ad in ads_result.data:
             snapshot = ad.get('snapshot', {})
@@ -1499,6 +1501,10 @@ class BrandResearchService:
             # Check if has any assets to download
             urls = scraping_service.extract_asset_urls(snapshot)
             if not urls.get('videos') and not urls.get('images'):
+                ads_skipped_no_urls += 1
+                # Log first few skipped ads for debugging
+                if ads_skipped_no_urls <= 3:
+                    logger.warning(f"Ad {ad['id'][:8]} has no downloadable URLs. Snapshot keys: {list(snapshot.keys()) if isinstance(snapshot, dict) else 'not a dict'}")
                 continue
 
             try:
@@ -1528,13 +1534,16 @@ class BrandResearchService:
 
             except Exception as e:
                 logger.error(f"Failed to download assets for ad {ad['id']}: {e}", exc_info=True)
+                errors += 1
                 continue
 
-        logger.info(f"Asset download complete: {ads_processed} ads, {total_videos} videos, {total_images} images")
+        logger.info(f"Asset download complete: {ads_processed} ads processed, {total_videos} videos, {total_images} images. Skipped {ads_skipped_no_urls} ads with no URLs, {errors} errors")
         return {
             "ads_processed": ads_processed,
             "videos_downloaded": total_videos,
-            "images_downloaded": total_images
+            "images_downloaded": total_images,
+            "ads_skipped_no_urls": ads_skipped_no_urls,
+            "errors": errors
         }
 
     def get_video_assets_for_brand(

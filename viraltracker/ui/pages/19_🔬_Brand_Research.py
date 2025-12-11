@@ -550,10 +550,29 @@ def render_download_section(brand_id: str, product_id: Optional[str] = None):
             with st.spinner("Downloading assets from ad snapshots..."):
                 try:
                     result = download_assets_sync(brand_id, limit, product_id=product_id)
-                    st.success(
-                        f"Downloaded {result['videos_downloaded']} videos, "
-                        f"{result['images_downloaded']} images from {result['ads_processed']} ads"
-                    )
+
+                    # Show results with details
+                    if result['videos_downloaded'] > 0 or result['images_downloaded'] > 0:
+                        st.success(
+                            f"Downloaded {result['videos_downloaded']} videos, "
+                            f"{result['images_downloaded']} images from {result['ads_processed']} ads"
+                        )
+                    else:
+                        st.warning(
+                            f"No assets downloaded. Processed {result['ads_processed']} ads."
+                        )
+
+                    # Show additional details
+                    skipped = result.get('ads_skipped_no_urls', 0)
+                    errors = result.get('errors', 0)
+                    if skipped > 0 or errors > 0:
+                        details = []
+                        if skipped > 0:
+                            details.append(f"{skipped} ads had no asset URLs (may need fresh scrape)")
+                        if errors > 0:
+                            details.append(f"{errors} download errors (CDN URLs may have expired)")
+                        st.info(" | ".join(details))
+
                 except Exception as e:
                     st.error(f"Download failed: {e}")
 
