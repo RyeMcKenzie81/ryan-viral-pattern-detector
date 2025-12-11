@@ -565,13 +565,14 @@ Keep what's working well and only change what needs to be fixed."""
             return
 
         try:
+            # Save the full review data (includes overall_score, ready_for_approval, checklist_results)
             self.supabase.table("script_versions").update({
-                "checklist_results": review_data.get("checklist_results"),
+                "checklist_results": review_data,  # Save full review, not just nested checklist
                 "reviewer_notes": json.dumps(review_data.get("issues_found", [])),
                 "improvement_suggestions": review_data.get("improvement_suggestions")
             }).eq("id", str(script_version_id)).execute()
 
-            logger.info(f"Saved review for script {script_version_id}")
+            logger.info(f"Saved review for script {script_version_id} (score: {review_data.get('overall_score')})")
 
         except Exception as e:
             logger.error(f"Failed to save review: {e}")
