@@ -1,0 +1,557 @@
+"""
+Competitive Analysis - Compare your brand vs competitors.
+
+This page allows users to:
+- Compare brand personas vs competitor personas
+- Identify messaging gaps and opportunities
+- Generate competitive positioning insights
+- Find untapped angles and differentiators
+"""
+
+import streamlit as st
+import asyncio
+import json
+from datetime import datetime
+from uuid import UUID
+from typing import Optional, Dict, Any, List
+
+# Page config
+st.set_page_config(
+    page_title="Competitive Analysis",
+    page_icon="📊",
+    layout="wide"
+)
+
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
+# Initialize session state
+if 'competitive_analysis' not in st.session_state:
+    st.session_state.competitive_analysis = None
+if 'analysis_running' not in st.session_state:
+    st.session_state.analysis_running = False
+
+
+def get_supabase_client():
+    """Get Supabase client."""
+    from viraltracker.core.database import get_supabase_client
+    return get_supabase_client()
+
+
+def get_competitor_service():
+    """Get CompetitorService instance."""
+    from viraltracker.services.competitor_service import CompetitorService
+    return CompetitorService()
+
+
+def get_brands():
+    """Fetch all brands."""
+    try:
+        db = get_supabase_client()
+        result = db.table("brands").select("id, name").order("name").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch brands: {e}")
+        return []
+
+
+def get_brand_personas(brand_id: str) -> List[Dict]:
+    """Get personas for a brand (own-brand personas)."""
+    try:
+        db = get_supabase_client()
+        result = db.table("personas_4d").select("*").eq(
+            "brand_id", brand_id
+        ).in_("persona_type", ["own_brand", "product_specific"]).execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch brand personas: {e}")
+        return []
+
+
+def get_competitor_personas(brand_id: str) -> List[Dict]:
+    """Get competitor personas for a brand."""
+    try:
+        db = get_supabase_client()
+        result = db.table("personas_4d").select(
+            "*, competitors(name)"
+        ).eq("brand_id", brand_id).eq("persona_type", "competitor").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch competitor personas: {e}")
+        return []
+
+
+def get_competitors_for_brand(brand_id: str) -> List[Dict]:
+    """Get all competitors for a brand with their stats."""
+    service = get_competitor_service()
+    return service.get_competitors_for_brand(UUID(brand_id))
+
+
+def run_competitive_analysis_sync(
+    brand_name: str,
+    brand_personas: List[Dict],
+    competitor_personas: List[Dict],
+    competitor_amazon_analyses: List[Dict]
+) -> Dict:
+    """Run AI-powered competitive analysis."""
+    from anthropic import Anthropic
+    from viraltracker.core.database import reset_supabase_client
+    reset_supabase_client()
+
+    anthropic = Anthropic()
+
+    # Prepare brand persona summary
+    brand_summary = []
+    for p in brand_personas:
+        brand_summary.append({
+            "name": p.get("name"),
+            "snapshot": p.get("snapshot"),
+            "demographics": p.get("demographics", {}),
+            "pain_points": p.get("pain_points", {}),
+            "desires": p.get("desires", {}),
+            "transformation_map": p.get("transformation_map", {}),
+            "self_narratives": p.get("self_narratives", []),
+            "buying_objections": p.get("buying_objections", {}),
+            "activation_events": p.get("activation_events", [])
+        })
+
+    # Prepare competitor persona summary
+    competitor_summary = []
+    for p in competitor_personas:
+        competitor_name = p.get("competitors", {}).get("name", "Unknown")
+        competitor_summary.append({
+            "competitor_name": competitor_name,
+            "persona_name": p.get("name"),
+            "snapshot": p.get("snapshot"),
+            "demographics": p.get("demographics", {}),
+            "pain_points": p.get("pain_points", {}),
+            "desires": p.get("desires", {}),
+            "transformation_map": p.get("transformation_map", {}),
+            "messaging_patterns": p.get("messaging_patterns", []),
+            "hooks": p.get("hooks", [])
+        })
+
+    # Include Amazon review insights
+    amazon_insights = []
+    for analysis in competitor_amazon_analyses:
+        amazon_insights.append({
+            "competitor_name": analysis.get("competitor_name"),
+            "pain_points": analysis.get("pain_points", {}),
+            "desires": analysis.get("desires", {}),
+            "language_patterns": analysis.get("language_patterns", {}),
+            "top_positive_quotes": analysis.get("top_positive_quotes", [])[:5],
+            "top_negative_quotes": analysis.get("top_negative_quotes", [])[:5]
+        })
+
+    prompt = f"""You are a competitive marketing analyst. Analyze the following data to identify competitive opportunities for {brand_name}.
+
+## YOUR BRAND'S PERSONAS:
+{json.dumps(brand_summary, indent=2)}
+
+## COMPETITOR PERSONAS (extracted from their ads):
+{json.dumps(competitor_summary, indent=2)}
+
+## COMPETITOR AMAZON REVIEW INSIGHTS:
+{json.dumps(amazon_insights, indent=2)}
+
+Based on this analysis, provide a comprehensive competitive analysis in the following JSON format:
+
+{{
+    "executive_summary": "2-3 sentence overview of competitive position and biggest opportunities",
+
+    "persona_overlap": {{
+        "shared_demographics": ["demographics both target"],
+        "shared_pain_points": ["pain points both address"],
+        "shared_desires": ["desires both appeal to"],
+        "overlap_percentage": 0-100
+    }},
+
+    "your_advantages": [
+        {{
+            "advantage": "what you do better",
+            "evidence": "specific evidence from persona data",
+            "messaging_angle": "how to leverage this in ads"
+        }}
+    ],
+
+    "competitor_advantages": [
+        {{
+            "competitor": "competitor name",
+            "advantage": "what they do better",
+            "evidence": "specific evidence",
+            "counter_strategy": "how to compete against this"
+        }}
+    ],
+
+    "untapped_angles": [
+        {{
+            "angle": "messaging angle competitors aren't using",
+            "target_pain_point": "which pain point it addresses",
+            "why_untapped": "why competitors might be missing this",
+            "suggested_hooks": ["3 hook variations to test"]
+        }}
+    ],
+
+    "customer_language_gaps": {{
+        "phrases_competitors_use": ["phrases from competitor ads/reviews you're not using"],
+        "pain_language_to_adopt": ["how customers describe their problems"],
+        "desire_language_to_adopt": ["how customers describe desired outcomes"]
+    }},
+
+    "positioning_recommendations": [
+        {{
+            "recommendation": "strategic positioning recommendation",
+            "rationale": "why this would work",
+            "implementation": "how to implement in messaging"
+        }}
+    ],
+
+    "objection_opportunities": [
+        {{
+            "objection": "customer objection competitors struggle with",
+            "competitor_response": "how competitors handle it (or don't)",
+            "your_opportunity": "how you can address it better"
+        }}
+    ],
+
+    "creative_test_ideas": [
+        {{
+            "concept": "ad creative concept to test",
+            "target_segment": "which persona segment",
+            "differentiation": "how it differs from competitor approach"
+        }}
+    ]
+}}
+
+Return ONLY valid JSON, no markdown formatting."""
+
+    response = anthropic.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    response_text = response.content[0].text.strip()
+
+    # Clean up response
+    if response_text.startswith("```"):
+        response_text = response_text.split("```")[1]
+        if response_text.startswith("json"):
+            response_text = response_text[4:]
+        response_text = response_text.strip()
+
+    return json.loads(response_text)
+
+
+# =============================================================================
+# UI Components
+# =============================================================================
+
+def render_data_status(brand_id: str, brand_personas: List, competitors: List):
+    """Render data status overview."""
+    st.subheader("📋 Data Status")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Your Personas", len(brand_personas))
+        if not brand_personas:
+            st.caption("⚠️ Run Brand Research first")
+
+    with col2:
+        st.metric("Competitors", len(competitors))
+        if not competitors:
+            st.caption("⚠️ Add competitors first")
+
+    # Count competitor personas
+    competitor_personas = get_competitor_personas(brand_id)
+    with col3:
+        st.metric("Competitor Personas", len(competitor_personas))
+        if competitors and not competitor_personas:
+            st.caption("⚠️ Run Competitor Research")
+
+    # Count Amazon analyses
+    service = get_competitor_service()
+    amazon_count = 0
+    for comp in competitors:
+        stats = service.get_competitor_amazon_stats(UUID(comp['id']))
+        if stats.get('has_analysis'):
+            amazon_count += 1
+
+    with col4:
+        st.metric("Amazon Analyses", amazon_count)
+        if competitors and amazon_count == 0:
+            st.caption("📝 Optional but valuable")
+
+
+def render_analysis_section(
+    brand_name: str,
+    brand_id: str,
+    brand_personas: List,
+    competitors: List
+):
+    """Render the analysis trigger section."""
+    st.subheader("🔬 Generate Competitive Analysis")
+
+    # Get competitor data
+    competitor_personas = get_competitor_personas(brand_id)
+    service = get_competitor_service()
+
+    # Get Amazon analyses
+    amazon_analyses = []
+    for comp in competitors:
+        analysis = service.get_competitor_amazon_analysis(UUID(comp['id']))
+        if analysis:
+            analysis['competitor_name'] = comp['name']
+            amazon_analyses.append(analysis)
+
+    # Check readiness
+    ready = len(brand_personas) > 0 and len(competitor_personas) > 0
+
+    if not ready:
+        st.warning(
+            "You need at least one brand persona and one competitor persona to run analysis. "
+            "Complete Brand Research and Competitor Research first."
+        )
+        return
+
+    st.success(
+        f"Ready to analyze! {len(brand_personas)} brand persona(s), "
+        f"{len(competitor_personas)} competitor persona(s), "
+        f"{len(amazon_analyses)} Amazon analysis(es)"
+    )
+
+    if st.button(
+        "Generate Competitive Analysis",
+        type="primary",
+        disabled=st.session_state.analysis_running
+    ):
+        st.session_state.analysis_running = True
+
+        with st.spinner("Analyzing competitive landscape (30-60 seconds)..."):
+            try:
+                result = run_competitive_analysis_sync(
+                    brand_name=brand_name,
+                    brand_personas=brand_personas,
+                    competitor_personas=competitor_personas,
+                    competitor_amazon_analyses=amazon_analyses
+                )
+                st.session_state.competitive_analysis = result
+                st.success("Analysis complete!")
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+
+        st.session_state.analysis_running = False
+        st.rerun()
+
+
+def render_analysis_results(analysis: Dict):
+    """Render the competitive analysis results."""
+    st.divider()
+    st.header("📊 Competitive Analysis Results")
+
+    # Executive Summary
+    st.subheader("Executive Summary")
+    st.info(analysis.get('executive_summary', 'No summary available'))
+
+    # Tabs for different sections
+    tabs = st.tabs([
+        "Overlap",
+        "Advantages",
+        "Untapped Angles",
+        "Language",
+        "Positioning",
+        "Creative Ideas"
+    ])
+
+    with tabs[0]:
+        st.markdown("### Persona Overlap Analysis")
+        overlap = analysis.get('persona_overlap', {})
+
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.metric("Overlap", f"{overlap.get('overlap_percentage', 0)}%")
+
+        with col2:
+            if overlap.get('shared_demographics'):
+                st.markdown("**Shared Demographics:**")
+                for item in overlap['shared_demographics'][:5]:
+                    st.markdown(f"- {item}")
+
+            if overlap.get('shared_pain_points'):
+                st.markdown("**Shared Pain Points:**")
+                for item in overlap['shared_pain_points'][:5]:
+                    st.markdown(f"- {item}")
+
+            if overlap.get('shared_desires'):
+                st.markdown("**Shared Desires:**")
+                for item in overlap['shared_desires'][:5]:
+                    st.markdown(f"- {item}")
+
+    with tabs[1]:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("### Your Advantages ✅")
+            for adv in analysis.get('your_advantages', []):
+                with st.expander(adv.get('advantage', 'Unknown')):
+                    st.markdown(f"**Evidence:** {adv.get('evidence', 'N/A')}")
+                    st.markdown(f"**Messaging Angle:** {adv.get('messaging_angle', 'N/A')}")
+
+        with col2:
+            st.markdown("### Competitor Advantages ⚠️")
+            for adv in analysis.get('competitor_advantages', []):
+                with st.expander(f"{adv.get('competitor', 'Unknown')}: {adv.get('advantage', '')}"):
+                    st.markdown(f"**Evidence:** {adv.get('evidence', 'N/A')}")
+                    st.markdown(f"**Counter Strategy:** {adv.get('counter_strategy', 'N/A')}")
+
+    with tabs[2]:
+        st.markdown("### Untapped Messaging Angles 🎯")
+        st.caption("Angles your competitors aren't leveraging that you could test")
+
+        for angle in analysis.get('untapped_angles', []):
+            with st.expander(angle.get('angle', 'Unknown')):
+                st.markdown(f"**Target Pain Point:** {angle.get('target_pain_point', 'N/A')}")
+                st.markdown(f"**Why Untapped:** {angle.get('why_untapped', 'N/A')}")
+
+                if angle.get('suggested_hooks'):
+                    st.markdown("**Suggested Hooks to Test:**")
+                    for hook in angle['suggested_hooks']:
+                        st.markdown(f"- \"{hook}\"")
+
+    with tabs[3]:
+        st.markdown("### Customer Language Gaps")
+        gaps = analysis.get('customer_language_gaps', {})
+
+        if gaps.get('phrases_competitors_use'):
+            st.markdown("**Phrases Competitors Use (that you might not be):**")
+            for phrase in gaps['phrases_competitors_use'][:10]:
+                st.markdown(f"- \"{phrase}\"")
+
+        if gaps.get('pain_language_to_adopt'):
+            st.markdown("**Pain Language to Adopt:**")
+            for phrase in gaps['pain_language_to_adopt'][:10]:
+                st.markdown(f"- \"{phrase}\"")
+
+        if gaps.get('desire_language_to_adopt'):
+            st.markdown("**Desire Language to Adopt:**")
+            for phrase in gaps['desire_language_to_adopt'][:10]:
+                st.markdown(f"- \"{phrase}\"")
+
+    with tabs[4]:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("### Positioning Recommendations")
+            for rec in analysis.get('positioning_recommendations', []):
+                with st.expander(rec.get('recommendation', 'Unknown')):
+                    st.markdown(f"**Rationale:** {rec.get('rationale', 'N/A')}")
+                    st.markdown(f"**Implementation:** {rec.get('implementation', 'N/A')}")
+
+        with col2:
+            st.markdown("### Objection Opportunities")
+            for opp in analysis.get('objection_opportunities', []):
+                with st.expander(opp.get('objection', 'Unknown')):
+                    st.markdown(f"**How Competitors Handle It:** {opp.get('competitor_response', 'N/A')}")
+                    st.markdown(f"**Your Opportunity:** {opp.get('your_opportunity', 'N/A')}")
+
+    with tabs[5]:
+        st.markdown("### Creative Test Ideas")
+        st.caption("Ad creative concepts to test based on competitive gaps")
+
+        for i, idea in enumerate(analysis.get('creative_test_ideas', []), 1):
+            with st.expander(f"Idea {i}: {idea.get('concept', 'Unknown')[:50]}..."):
+                st.markdown(f"**Full Concept:** {idea.get('concept', 'N/A')}")
+                st.markdown(f"**Target Segment:** {idea.get('target_segment', 'N/A')}")
+                st.markdown(f"**Differentiation:** {idea.get('differentiation', 'N/A')}")
+
+    # Export option
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📥 Export Analysis JSON"):
+            st.download_button(
+                label="Download JSON",
+                data=json.dumps(analysis, indent=2),
+                file_name="competitive_analysis.json",
+                mime="application/json"
+            )
+    with col2:
+        if st.button("🔄 Run New Analysis"):
+            st.session_state.competitive_analysis = None
+            st.rerun()
+
+
+# =============================================================================
+# Main Page
+# =============================================================================
+
+st.title("📊 Competitive Analysis")
+st.caption("Compare your brand vs competitors to find gaps and opportunities")
+
+# Brand selector
+brands = get_brands()
+
+if not brands:
+    st.warning("No brands found. Create a brand first in Brand Manager.")
+    st.stop()
+
+brand_options = {b['name']: b['id'] for b in brands}
+selected_brand_name = st.selectbox(
+    "Select Brand",
+    options=list(brand_options.keys()),
+    index=0
+)
+
+if not selected_brand_name:
+    st.stop()
+
+brand_id = brand_options[selected_brand_name]
+
+st.divider()
+
+# Get data
+brand_personas = get_brand_personas(brand_id)
+competitors = get_competitors_for_brand(brand_id)
+
+# Render sections
+render_data_status(brand_id, brand_personas, competitors)
+st.divider()
+
+render_analysis_section(selected_brand_name, brand_id, brand_personas, competitors)
+
+# Show results if available
+if st.session_state.competitive_analysis:
+    render_analysis_results(st.session_state.competitive_analysis)
+
+# Help section
+with st.expander("ℹ️ How Competitive Analysis Works"):
+    st.markdown("""
+    ### What This Tool Does
+
+    The Competitive Analysis tool uses AI to compare your brand's positioning against competitors,
+    identifying gaps, opportunities, and actionable insights.
+
+    ### Prerequisites
+
+    1. **Brand Personas**: Run Brand Research to generate personas for your brand
+    2. **Competitor Personas**: Add competitors and run Competitor Research to generate their personas
+    3. **Amazon Reviews** (optional): Scrape and analyze competitor Amazon reviews for deeper insights
+
+    ### Analysis Components
+
+    - **Persona Overlap**: How much do you and competitors target the same audience?
+    - **Advantages**: Where you win vs where competitors win
+    - **Untapped Angles**: Messaging opportunities competitors aren't using
+    - **Language Gaps**: Customer language you should adopt
+    - **Positioning**: Strategic recommendations for differentiation
+    - **Creative Ideas**: Ad concepts to test based on competitive gaps
+
+    ### Best Practices
+
+    - Run analysis after completing research on 2-3 key competitors
+    - Include Amazon review analysis for richer customer language data
+    - Re-run analysis periodically as you gather more competitor data
+    - Use the "Untapped Angles" section to generate new ad variations
+    """)
