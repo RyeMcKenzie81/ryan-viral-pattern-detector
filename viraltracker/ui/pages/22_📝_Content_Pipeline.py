@@ -42,6 +42,12 @@ if 'discovery_running' not in st.session_state:
     st.session_state.discovery_running = False
 if 'selected_topic' not in st.session_state:
     st.session_state.selected_topic = None
+if 'current_script' not in st.session_state:
+    st.session_state.current_script = None
+if 'script_review' not in st.session_state:
+    st.session_state.script_review = None
+if 'script_generating' not in st.session_state:
+    st.session_state.script_generating = False
 
 
 def get_supabase_client():
@@ -74,6 +80,14 @@ def get_topic_service():
     db = get_supabase_client()
     docs = get_doc_service()
     return TopicDiscoveryService(supabase_client=db, docs_service=docs)
+
+
+def get_script_service():
+    """Get ScriptGenerationService instance."""
+    from viraltracker.services.content_pipeline.services.script_service import ScriptGenerationService
+    db = get_supabase_client()
+    docs = get_doc_service()
+    return ScriptGenerationService(supabase_client=db, docs_service=docs)
 
 
 def get_brands():
@@ -416,10 +430,10 @@ def render_project_detail(project_id: str):
     # Different views based on workflow state
     workflow_state = project.get('workflow_state', 'pending')
 
-    if workflow_state in ['pending', 'topic_discovery', 'topic_evaluation', 'topic_selection', 'topic_selected']:
+    if workflow_state in ['pending', 'topic_discovery', 'topic_evaluation', 'topic_selection']:
         render_topic_selection_view(project)
-    elif workflow_state in ['script_generation', 'script_review', 'script_approval']:
-        st.info("Script generation not yet implemented (MVP 2)")
+    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved']:
+        render_script_view(project)
     else:
         st.info(f"Workflow state '{workflow_state}' not yet implemented")
 
@@ -487,6 +501,362 @@ def render_topic_selection_view(project: Dict):
                         st.rerun()
                     except Exception as e:
                         st.error(f"Discovery failed: {e}")
+
+
+async def run_script_generation(project_id: str, topic: Dict, brand_id: str):
+    """Run script generation asynchronously."""
+    service = get_script_service()
+
+    # Generate script
+    script_data = await service.generate_script(
+        project_id=UUID(project_id),
+        topic=topic,
+        brand_id=UUID(brand_id)
+    )
+
+    # Save to database
+    await service.save_script_to_db(
+        project_id=UUID(project_id),
+        script_data=script_data
+    )
+
+    return script_data
+
+
+async def run_script_review(script_data: Dict, brand_id: str):
+    """Run script review asynchronously."""
+    service = get_script_service()
+
+    review_result = await service.review_script(
+        script_data=script_data,
+        brand_id=UUID(brand_id)
+    )
+
+    return review_result
+
+
+def render_script_view(project: Dict):
+    """Render the script generation and review interface."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Show selected topic info
+    st.subheader("Selected Topic")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"**{project.get('topic_title', 'Untitled')}**")
+        st.markdown(project.get('topic_description', ''))
+    with col2:
+        if project.get('topic_score'):
+            st.metric("Score", f"{project.get('topic_score')}/100")
+
+    st.divider()
+
+    # Tabs for script workflow
+    tab1, tab2, tab3 = st.tabs(["Generate", "Review", "Approve"])
+
+    with tab1:
+        render_script_generation_tab(project)
+
+    with tab2:
+        render_script_review_tab(project)
+
+    with tab3:
+        render_script_approval_tab(project)
+
+
+def render_script_generation_tab(project: Dict):
+    """Render the script generation tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check for existing scripts
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).order("version_number", desc=True).execute()
+        existing_scripts = scripts.data or []
+    except Exception:
+        existing_scripts = []
+
+    if existing_scripts:
+        st.success(f"Script v{existing_scripts[0].get('version_number')} generated")
+
+        # Show script content
+        script_content = existing_scripts[0].get('script_content')
+        if script_content:
+            try:
+                script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+                render_script_beats(script_data)
+            except Exception as e:
+                st.error(f"Failed to parse script: {e}")
+
+    else:
+        # No script yet - show generation form
+        st.markdown("### Generate Script")
+        st.markdown("Generate a full video script based on the selected topic using Claude Opus 4.5.")
+
+        # Get topic data
+        topic = {
+            "title": project.get('topic_title'),
+            "description": project.get('topic_description'),
+            "hook_options": project.get('hook_options', []),
+            "target_emotion": project.get('workflow_data', {}).get('target_emotion', 'curiosity')
+        }
+
+        if st.button("Generate Script", type="primary", disabled=st.session_state.script_generating):
+            st.session_state.script_generating = True
+
+            with st.spinner("Generating script with Claude Opus 4.5... (this may take 30-60 seconds)"):
+                try:
+                    script_data = asyncio.run(run_script_generation(
+                        project_id=project_id,
+                        topic=topic,
+                        brand_id=brand_id
+                    ))
+                    st.session_state.current_script = script_data
+                    st.session_state.script_generating = False
+
+                    # Update workflow state
+                    db = get_supabase_client()
+                    db.table("content_projects").update({
+                        "workflow_state": "script_review"
+                    }).eq("id", project_id).execute()
+
+                    st.success("Script generated!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.session_state.script_generating = False
+                    st.error(f"Script generation failed: {e}")
+
+
+def render_script_beats(script_data: Dict):
+    """Render the script beats in a readable format."""
+    st.markdown(f"**Title:** {script_data.get('title', 'Untitled')}")
+    st.markdown(f"**Duration:** ~{script_data.get('target_duration_seconds', 180)} seconds")
+    st.markdown(f"**Hook Formula:** {script_data.get('hook_formula_used', 'N/A')}")
+
+    beats = script_data.get('beats', [])
+    if beats:
+        st.markdown("### Script Beats")
+        for beat in beats:
+            with st.expander(f"**{beat.get('beat_name', 'Beat')}** ({beat.get('timestamp_start', '')} - {beat.get('timestamp_end', '')})"):
+                st.markdown(f"**Character:** {beat.get('character', 'narrator')}")
+                st.markdown("**Script:**")
+                st.text(beat.get('script', ''))
+                if beat.get('visual_notes'):
+                    st.markdown(f"**Visuals:** {beat.get('visual_notes')}")
+                if beat.get('audio_notes'):
+                    st.markdown(f"**Audio:** {beat.get('audio_notes')}")
+
+
+def render_script_review_tab(project: Dict):
+    """Render the script review tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).order("version_number", desc=True).execute()
+        existing_scripts = scripts.data or []
+    except Exception:
+        existing_scripts = []
+
+    if not existing_scripts:
+        st.info("No script to review yet. Generate a script first.")
+        return
+
+    current_script = existing_scripts[0]
+
+    # Check for existing review
+    checklist_results = current_script.get('checklist_results')
+
+    if checklist_results:
+        st.success("Script has been reviewed")
+        render_review_results(checklist_results)
+    else:
+        st.markdown("### Review Script Against Bible Checklist")
+        st.markdown("Claude will review the script against the Production Bible checklist items.")
+
+        if st.button("Run Review", type="primary"):
+            with st.spinner("Reviewing script against bible checklist..."):
+                try:
+                    # Get script data
+                    script_content = current_script.get('script_content')
+                    script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+
+                    review_result = asyncio.run(run_script_review(
+                        script_data=script_data,
+                        brand_id=brand_id
+                    ))
+                    st.session_state.script_review = review_result
+
+                    # Save review to database
+                    service = get_script_service()
+                    asyncio.run(service.save_review_to_db(
+                        script_version_id=UUID(current_script.get('id')),
+                        review_data=review_result
+                    ))
+
+                    # Update workflow state
+                    db.table("content_projects").update({
+                        "workflow_state": "script_approval"
+                    }).eq("id", project_id).execute()
+
+                    st.success("Review complete!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Review failed: {e}")
+
+
+def render_review_results(review: Dict):
+    """Render review checklist results."""
+    overall_score = review.get('overall_score', 0)
+    ready = review.get('ready_for_approval', False)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Overall Score", f"{overall_score}/100")
+    with col2:
+        if ready:
+            st.success("Ready for Approval")
+        else:
+            st.warning("Revisions Recommended")
+
+    # Checklist results
+    checklist = review.get('checklist_results', {})
+    if checklist:
+        st.markdown("### Checklist Results")
+
+        for category, items in checklist.items():
+            with st.expander(f"**{category.replace('_', ' ').title()}**"):
+                for item_name, result in items.items():
+                    passed = result.get('passed', False)
+                    notes = result.get('notes', '')
+                    icon = "✅" if passed else "❌"
+                    st.markdown(f"{icon} **{item_name.replace('_', ' ').title()}**: {notes}")
+
+    # Issues found
+    issues = review.get('issues_found', [])
+    if issues:
+        st.markdown("### Issues Found")
+        for issue in issues:
+            severity = issue.get('severity', 'medium')
+            color = {"high": "red", "medium": "orange", "low": "blue"}.get(severity, "gray")
+            st.markdown(f":{color}[**{severity.upper()}**] {issue.get('issue', '')}")
+            st.caption(f"Location: {issue.get('location', 'N/A')} | Suggestion: {issue.get('suggestion', '')}")
+
+    # Improvement suggestions
+    suggestions = review.get('improvement_suggestions', [])
+    if suggestions:
+        st.markdown("### Improvement Suggestions")
+        for suggestion in suggestions:
+            st.markdown(f"- {suggestion}")
+
+
+def render_script_approval_tab(project: Dict):
+    """Render the script approval tab."""
+    project_id = project.get('id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).order("version_number", desc=True).execute()
+        existing_scripts = scripts.data or []
+    except Exception:
+        existing_scripts = []
+
+    if not existing_scripts:
+        st.info("No script to approve yet.")
+        return
+
+    current_script = existing_scripts[0]
+    status = current_script.get('status', 'draft')
+
+    if status == 'approved':
+        st.success("Script has been approved!")
+        st.markdown(f"**Approved at:** {current_script.get('approved_at', 'N/A')}")
+        if current_script.get('human_notes'):
+            st.markdown(f"**Notes:** {current_script.get('human_notes')}")
+        return
+
+    if workflow_state not in ['script_approval', 'script_review']:
+        st.info("Complete the review before approving.")
+        return
+
+    st.markdown("### Approve or Revise Script")
+
+    # Show review summary if available
+    checklist_results = current_script.get('checklist_results')
+    if checklist_results:
+        overall_score = checklist_results.get('overall_score', 0) if isinstance(checklist_results, dict) else 0
+        st.metric("Review Score", f"{overall_score}/100")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        approval_notes = st.text_area(
+            "Approval Notes (optional)",
+            placeholder="Add any notes about this approval..."
+        )
+
+        if st.button("Approve Script", type="primary"):
+            try:
+                service = get_script_service()
+                asyncio.run(service.approve_script(
+                    script_version_id=UUID(current_script.get('id')),
+                    project_id=UUID(project_id),
+                    human_notes=approval_notes
+                ))
+
+                db = get_supabase_client()
+                db.table("content_projects").update({
+                    "workflow_state": "script_approved"
+                }).eq("id", project_id).execute()
+
+                st.success("Script approved!")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Approval failed: {e}")
+
+    with col2:
+        revision_notes = st.text_area(
+            "Revision Notes",
+            placeholder="Describe what changes are needed..."
+        )
+
+        if st.button("Request Revision"):
+            if not revision_notes:
+                st.warning("Please provide revision notes")
+            else:
+                try:
+                    # Update project to trigger revision
+                    db = get_supabase_client()
+                    workflow_data = project.get('workflow_data', {})
+                    workflow_data['script_revision_notes'] = revision_notes
+
+                    db.table("content_projects").update({
+                        "workflow_state": "script_generation",
+                        "workflow_data": workflow_data
+                    }).eq("id", project_id).execute()
+
+                    st.info("Revision requested. Return to Generate tab to create a new version.")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Failed to request revision: {e}")
 
 
 # Main app flow
