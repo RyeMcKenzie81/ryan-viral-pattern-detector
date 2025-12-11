@@ -80,6 +80,63 @@ def get_competitor_products(competitor_id: str) -> List[Dict]:
         return []
 
 
+def scrape_competitor_facebook_ads(
+    ad_library_url: str,
+    competitor_id: str,
+    brand_id: str,
+    max_ads: int = 500
+) -> Dict[str, Any]:
+    """
+    Scrape ads from Facebook Ad Library and save to competitor_ads table.
+
+    Args:
+        ad_library_url: Facebook Ad Library URL to scrape
+        competitor_id: Competitor UUID to link ads to
+        brand_id: Brand UUID (owner of this research)
+        max_ads: Maximum number of ads to scrape
+
+    Returns:
+        Dict with results: {"success": bool, "saved": int, "failed": int, "message": str}
+    """
+    try:
+        from viraltracker.scrapers.facebook_ads import FacebookAdsScraper
+
+        scraper = FacebookAdsScraper()
+
+        # Scrape ads from Ad Library
+        df = scraper.search_ad_library(
+            search_url=ad_library_url,
+            count=max_ads,
+            scrape_details=False,
+            timeout=900  # 15 min timeout for large scrapes
+        )
+
+        if len(df) == 0:
+            return {"success": True, "saved": 0, "failed": 0, "message": "No ads found at this URL"}
+
+        # Convert DataFrame to list of dicts for the competitor service
+        ads_data = df.to_dict('records')
+
+        # Save via competitor service
+        service = get_competitor_service()
+        stats = service.save_competitor_ads_batch(
+            competitor_id=UUID(competitor_id),
+            brand_id=UUID(brand_id),
+            ads=ads_data,
+            scrape_source="ad_library_search"
+        )
+
+        return {
+            "success": True,
+            "saved": stats.get("saved", 0),
+            "failed": stats.get("failed", 0),
+            "message": f"Scraped {len(df)} ads, saved {stats.get('saved', 0)} to database"
+        }
+
+    except Exception as e:
+        return {"success": False, "saved": 0, "failed": 0, "message": str(e)}
+
+
 def get_research_stats(
     competitor_id: str,
     product_id: Optional[str] = None
@@ -296,8 +353,22 @@ with tab_ads:
             )
 
             if st.button("🔍 Scrape Ads from Ad Library", key="scrape_ads"):
-                st.info(f"Ad scraping for {max_ads_to_scrape} ads will be implemented in the ad scraping service.")
-                # TODO: Integrate with ad scraping service - pass max_ads_to_scrape
+                with st.spinner(f"Scraping up to {max_ads_to_scrape} ads from Facebook Ad Library... This may take several minutes."):
+                    result = scrape_competitor_facebook_ads(
+                        ad_library_url=ad_library_url,
+                        competitor_id=selected_competitor_id,
+                        brand_id=selected_brand_id,
+                        max_ads=max_ads_to_scrape
+                    )
+
+                if result["success"]:
+                    if result["saved"] > 0:
+                        st.success(f"✅ {result['message']}")
+                        st.rerun()
+                    else:
+                        st.warning(result["message"])
+                else:
+                    st.error(f"❌ Scraping failed: {result['message']}")
         else:
             st.warning("No Ad Library URL configured for this competitor.")
             st.caption("Add one on the Competitors page.")
