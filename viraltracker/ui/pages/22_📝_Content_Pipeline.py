@@ -780,9 +780,10 @@ def render_review_results(review: Dict, show_checkboxes: bool = False) -> List[D
                             col_check, col_text = st.columns([0.1, 0.9])
                             with col_check:
                                 checked = st.checkbox(
-                                    "",  # Empty label
+                                    "Select",
                                     key=f"chk_{item_key}",
-                                    value=item_key in st.session_state.selected_failed_items
+                                    value=item_key in st.session_state.selected_failed_items,
+                                    label_visibility="collapsed"
                                 )
                                 if checked:
                                     st.session_state.selected_failed_items.add(item_key)
@@ -823,9 +824,10 @@ def render_review_results(review: Dict, show_checkboxes: bool = False) -> List[D
                 col_check, col_text = st.columns([0.1, 0.9])
                 with col_check:
                     checked = st.checkbox(
-                        "",  # Empty label
+                        "Select",
                         key=f"chk_{item_key}",
-                        value=item_key in st.session_state.selected_failed_items
+                        value=item_key in st.session_state.selected_failed_items,
+                        label_visibility="collapsed"
                     )
                     if checked:
                         st.session_state.selected_failed_items.add(item_key)
