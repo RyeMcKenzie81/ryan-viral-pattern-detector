@@ -1456,13 +1456,13 @@ class BrandResearchService:
 
             if not link_result.data:
                 logger.info(f"No ads found for brand: {brand_id}")
-                return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
+                return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "no_ads_linked"}
 
             ad_ids = [r['ad_id'] for r in link_result.data]
         else:
             if not ad_ids:
                 logger.info(f"No ads provided for brand: {brand_id}")
-                return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
+                return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "no_ads_for_product"}
 
         # Get ads that already have assets
         existing_assets = self.supabase.table("scraped_ad_assets").select(
@@ -1476,7 +1476,7 @@ class BrandResearchService:
 
         if not ads_needing_assets:
             logger.info(f"All ads already have assets for brand: {brand_id}")
-            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets", "total_ads": len(ad_ids)}
 
         # Apply limit AFTER filtering to ads that need assets
         ads_to_process = ads_needing_assets[:limit]
