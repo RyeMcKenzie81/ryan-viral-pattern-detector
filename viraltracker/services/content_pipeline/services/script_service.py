@@ -577,7 +577,9 @@ Keep what's working well and only change what needs to be fixed."""
             # Process emphasis markers for ELS
             # *word* = light emphasis (keep as-is)
             # **word** = strong emphasis (keep as-is, will be converted to UPPERCASE by parser)
-            lines.append(script)
+            # Split long lines to stay under 500 char ELS limit
+            script_lines = self._split_long_lines(script, max_length=450)
+            lines.extend(script_lines)
 
         # Pause (default 100ms between beats)
         pause_ms = beat.get("pause_ms", 100)
@@ -635,6 +637,51 @@ Keep what's working well and only change what needs to be fixed."""
             return "quick"  # Chad is fast-talking
 
         return "normal"
+
+    def _split_long_lines(self, text: str, max_length: int = 450) -> List[str]:
+        """
+        Split text into lines that don't exceed max_length.
+
+        Splits at sentence boundaries (. ! ?) when possible,
+        otherwise splits at word boundaries.
+
+        Args:
+            text: Text to split
+            max_length: Maximum characters per line
+
+        Returns:
+            List of lines, each under max_length
+        """
+        if len(text) <= max_length:
+            return [text]
+
+        result = []
+        remaining = text.strip()
+
+        while remaining:
+            if len(remaining) <= max_length:
+                result.append(remaining)
+                break
+
+            # Try to split at sentence boundary
+            split_pos = -1
+            for punct in ['. ', '! ', '? ']:
+                pos = remaining.rfind(punct, 0, max_length)
+                if pos > split_pos:
+                    split_pos = pos + len(punct) - 1  # Include the punctuation
+
+            # If no sentence boundary, split at word boundary
+            if split_pos <= 0:
+                split_pos = remaining.rfind(' ', 0, max_length)
+
+            # If still no good split point, force split
+            if split_pos <= 0:
+                split_pos = max_length
+
+            result.append(remaining[:split_pos].strip())
+            remaining = remaining[split_pos:].strip()
+
+        return result
 
     # =========================================================================
     # Database Operations
