@@ -1224,8 +1224,7 @@ def render_script_approval_tab(project: Dict):
 def get_audio_production_service():
     """Get AudioProductionService instance."""
     from viraltracker.services.audio_production_service import AudioProductionService
-    db = get_supabase_client()
-    return AudioProductionService(supabase=db)
+    return AudioProductionService()
 
 
 def get_els_parser_service():
@@ -1237,8 +1236,7 @@ def get_els_parser_service():
 def get_elevenlabs_service():
     """Get ElevenLabsService instance."""
     from viraltracker.services.elevenlabs_service import ElevenLabsService
-    db = get_supabase_client()
-    return ElevenLabsService(supabase=db)
+    return ElevenLabsService()
 
 
 async def run_els_conversion(project_id: str, script_version_id: str, script_data: Dict, brand_id: str):
