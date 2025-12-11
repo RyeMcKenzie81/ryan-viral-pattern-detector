@@ -1264,7 +1264,7 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
     script_service = get_script_service()
 
     # Parse ELS
-    parse_result = els_parser.parse_els(els_content)
+    parse_result = els_parser.parse(els_content)
 
     # Create audio session
     session = audio_service.create_session(
