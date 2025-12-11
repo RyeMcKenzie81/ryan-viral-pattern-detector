@@ -1594,7 +1594,7 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str):
 
     with col3:
         if is_selected:
-            st.success("Selected", icon="✓")
+            st.success("Selected")
         else:
             if st.button("Select", key=f"select_{take_id}"):
                 try:
