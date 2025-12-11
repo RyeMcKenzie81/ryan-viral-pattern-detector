@@ -163,12 +163,8 @@ class TopicSelectionNode(BaseNode[ContentPipelineState]):
                 ctx.state.selected_topic_id = top_topic.get('id')
                 ctx.state.awaiting_human = False
                 ctx.state.mark_step_complete("topic_selection")
-                # MVP1: Return End with success - Script generation in MVP2
-                return End({
-                    "status": "topic_selected",
-                    "selected_topic": top_topic,
-                    "message": "Topic auto-selected via Quick Approve. Ready for script generation (MVP2)."
-                })
+                # Proceed to script generation
+                return ScriptGenerationNode()
 
         # Otherwise, pause for human input
         if not ctx.state.human_input:
@@ -204,12 +200,8 @@ class TopicSelectionNode(BaseNode[ContentPipelineState]):
             ctx.state.awaiting_human = False
             ctx.state.mark_step_complete("topic_selection")
             logger.info(f"Topic selected: {ctx.state.selected_topic.get('title')}")
-            # MVP1: Return End with success - Script generation in MVP2
-            return End({
-                "status": "topic_selected",
-                "selected_topic": ctx.state.selected_topic,
-                "message": "Topic selected. Ready for script generation (MVP2)."
-            })
+            # Proceed to script generation
+            return ScriptGenerationNode()
 
         return End({"status": "error", "error": "Invalid human input"})
 
@@ -221,8 +213,7 @@ class ScriptGenerationNode(BaseNode[ContentPipelineState]):
 
     Creates script content and storyboard based on:
     - Selected topic
-    - Brand bible context
-    - YouTube best practices from KB
+    - Brand bible context (full injection)
 
     Thin wrapper - delegates to ScriptGenerationService.
     """
@@ -235,19 +226,40 @@ class ScriptGenerationNode(BaseNode[ContentPipelineState]):
         ctx.state.current_step = "script_generation"
 
         try:
-            # Delegate to service
-            script_version = await ctx.deps.content_pipeline.script_service.generate_script(
-                project_id=ctx.state.project_id,
-                topic=ctx.state.selected_topic,
-                revision_notes=ctx.state.script_revision_notes
-            )
+            # Check if this is a revision
+            if ctx.state.script_revision_notes and ctx.state.current_script_data:
+                # Get the latest review result
+                review_result = ctx.state.bible_checklist_results or {}
 
-            ctx.state.script_version_ids.append(script_version['id'])
-            ctx.state.current_script_version_id = script_version['id']
+                # Delegate to revision
+                script_data = await ctx.deps.content_pipeline.script_service.revise_script(
+                    original_script=ctx.state.current_script_data,
+                    review_result=review_result,
+                    brand_id=ctx.state.brand_id,
+                    human_notes=ctx.state.script_revision_notes
+                )
+            else:
+                # New script generation
+                script_data = await ctx.deps.content_pipeline.script_service.generate_script(
+                    project_id=ctx.state.project_id,
+                    topic=ctx.state.selected_topic,
+                    brand_id=ctx.state.brand_id
+                )
+
+            # Store script data in state
+            ctx.state.current_script_data = script_data
+            ctx.state.script_version_ids.append(script_data['id'])
+            ctx.state.current_script_version_id = script_data['id']
             ctx.state.script_revision_notes = None  # Clear after use
             ctx.state.mark_step_complete("script_generation")
 
-            logger.info(f"Generated script version {script_version.get('version_number')}")
+            # Save to database
+            await ctx.deps.content_pipeline.script_service.save_script_to_db(
+                project_id=ctx.state.project_id,
+                script_data=script_data
+            )
+
+            logger.info(f"Generated script version {script_data.get('version_number')}")
             return ScriptReviewNode()
 
         except Exception as e:
@@ -263,7 +275,7 @@ class ScriptReviewNode(BaseNode[ContentPipelineState]):
     Step 5: Review script against bible checklist.
 
     Uses Claude Opus 4.5 to check script against brand bible
-    checklist items. Returns pass/fail for each item.
+    checklist items. Returns pass/fail for each item with scores.
 
     Thin wrapper - delegates to ScriptGenerationService.
     """
@@ -278,14 +290,22 @@ class ScriptReviewNode(BaseNode[ContentPipelineState]):
         try:
             # Delegate to service
             review_result = await ctx.deps.content_pipeline.script_service.review_script(
-                script_version_id=ctx.state.current_script_version_id
+                script_data=ctx.state.current_script_data,
+                brand_id=ctx.state.brand_id
             )
 
             ctx.state.bible_checklist_results = review_result
             ctx.state.mark_step_complete("script_review")
 
-            pass_rate = review_result.get('pass_rate', 0)
-            logger.info(f"Script review complete: {pass_rate}% checklist pass rate")
+            # Save review to database
+            await ctx.deps.content_pipeline.script_service.save_review_to_db(
+                script_version_id=ctx.state.current_script_version_id,
+                review_data=review_result
+            )
+
+            overall_score = review_result.get('overall_score', 0)
+            ready = review_result.get('ready_for_approval', False)
+            logger.info(f"Script review complete: score={overall_score}, ready={ready}")
             return ScriptApprovalNode()
 
         except Exception as e:
@@ -301,7 +321,7 @@ class ScriptApprovalNode(BaseNode[ContentPipelineState]):
     Step 6: HUMAN CHECKPOINT - Approve script or request revisions.
 
     Pauses workflow for human approval. Quick Approve auto-approves
-    if checklist pass rate is 100% and quick_approve_enabled is True.
+    if overall score is 100 and ready_for_approval is True.
 
     Human can:
     - Approve script (proceeds to ELS conversion)
@@ -316,12 +336,22 @@ class ScriptApprovalNode(BaseNode[ContentPipelineState]):
         ctx.state.current_step = "script_approval"
         ctx.state.current_checkpoint = HumanCheckpoint.SCRIPT_APPROVAL
 
-        # Check for Quick Approve
-        pass_rate = ctx.state.bible_checklist_results.get('pass_rate', 0) if ctx.state.bible_checklist_results else 0
-        if ctx.state.is_quick_approve_eligible(HumanCheckpoint.SCRIPT_APPROVAL, pass_rate):
-            logger.info(f"Quick Approve: Auto-approving script with {pass_rate}% pass rate")
+        # Check for Quick Approve (100% score + ready_for_approval)
+        review = ctx.state.bible_checklist_results or {}
+        overall_score = review.get('overall_score', 0)
+        ready = review.get('ready_for_approval', False)
+
+        if ready and ctx.state.is_quick_approve_eligible(HumanCheckpoint.SCRIPT_APPROVAL, overall_score):
+            logger.info(f"Quick Approve: Auto-approving script with score {overall_score}")
             ctx.state.awaiting_human = False
             ctx.state.mark_step_complete("script_approval")
+
+            # Approve in database
+            await ctx.deps.content_pipeline.script_service.approve_script(
+                script_version_id=ctx.state.current_script_version_id,
+                project_id=ctx.state.project_id,
+                human_notes="Auto-approved via Quick Approve"
+            )
             return ELSConversionNode()
 
         # Otherwise, pause for human input
@@ -331,6 +361,7 @@ class ScriptApprovalNode(BaseNode[ContentPipelineState]):
                 "status": "awaiting_human",
                 "checkpoint": "script_approval",
                 "script_version_id": str(ctx.state.current_script_version_id),
+                "script_data": ctx.state.current_script_data,
                 "checklist_results": ctx.state.bible_checklist_results,
                 "message": "Please review and approve the script or request revisions"
             })
@@ -343,6 +374,13 @@ class ScriptApprovalNode(BaseNode[ContentPipelineState]):
             ctx.state.awaiting_human = False
             ctx.state.mark_step_complete("script_approval")
             logger.info("Script approved by human")
+
+            # Approve in database
+            await ctx.deps.content_pipeline.script_service.approve_script(
+                script_version_id=ctx.state.current_script_version_id,
+                project_id=ctx.state.project_id,
+                human_notes=human_input.get("notes")
+            )
             return ELSConversionNode()
 
         if human_input.get("action") == "revise":

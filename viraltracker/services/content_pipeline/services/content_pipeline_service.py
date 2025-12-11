@@ -32,7 +32,8 @@ class ContentPipelineService:
         self,
         supabase_client: Optional[Any] = None,
         docs_service: Optional[Any] = None,
-        topic_service: Optional["TopicDiscoveryService"] = None
+        topic_service: Optional["TopicDiscoveryService"] = None,
+        script_service: Optional["ScriptGenerationService"] = None
     ):
         """
         Initialize the ContentPipelineService.
@@ -41,12 +42,14 @@ class ContentPipelineService:
             supabase_client: Supabase client for database operations
             docs_service: DocService for knowledge base queries
             topic_service: TopicDiscoveryService instance (created if not provided)
+            script_service: ScriptGenerationService instance (created if not provided)
         """
         self.supabase = supabase_client
         self.docs = docs_service
 
         # Import here to avoid circular imports
         from .topic_service import TopicDiscoveryService
+        from .script_service import ScriptGenerationService
 
         # Initialize sub-services
         self.topic_service = topic_service or TopicDiscoveryService(
@@ -54,8 +57,12 @@ class ContentPipelineService:
             docs_service=docs_service
         )
 
-        # Placeholder for future services (MVP 2+)
-        self.script_service = None
+        self.script_service = script_service or ScriptGenerationService(
+            supabase_client=supabase_client,
+            docs_service=docs_service
+        )
+
+        # Placeholder for future services (MVP 3+)
         self.comic_service = None
         self.seo_service = None
         self.thumbnail_service = None

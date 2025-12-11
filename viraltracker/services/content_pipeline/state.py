@@ -125,6 +125,7 @@ class ContentPipelineState:
 
     script_version_ids: List[UUID] = field(default_factory=list)
     current_script_version_id: Optional[UUID] = None
+    current_script_data: Optional[Dict[str, Any]] = None  # Full script content for review/revision
     bible_checklist_results: Optional[Dict[str, Any]] = None
     script_revision_notes: Optional[str] = None
 
