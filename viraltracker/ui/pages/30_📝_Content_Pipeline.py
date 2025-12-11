@@ -1688,38 +1688,42 @@ def render_audio_session_details(session: Dict, project_id: str):
                         st.error(f"Regeneration failed: {e}")
         else:
             with st.expander(f"**{beat_name}** ({len(beat_takes)} take{'s' if len(beat_takes) > 1 else ''})", expanded=True):
-                for take in beat_takes:
-                    render_audio_take(take, session_id, beat_id, beat_info)
+                # Sort takes by created_at to show oldest first
+                sorted_takes = sorted(beat_takes, key=lambda t: t.get('created_at', ''))
+                for i, take in enumerate(sorted_takes, 1):
+                    render_audio_take(take, session_id, beat_id, beat_info, take_number=i, total_takes=len(sorted_takes))
 
     st.divider()
 
-    # Export section
-    st.markdown("#### Export")
+    # Completion section
+    st.markdown("#### Complete Audio")
     selected_count = sum(1 for t in takes if t.get('is_selected'))
     total_beats = len(beats_takes)
 
     if selected_count == total_beats:
-        st.success(f"All {total_beats} beats have selected takes.")
+        st.success(f"All {total_beats} beats have selected takes. Audio is ready!")
+        st.caption("You can proceed to the next pipeline step, or export audio files for manual use.")
 
-        if st.button("Export Selected Takes (ZIP)", type="primary"):
-            with st.spinner("Preparing export..."):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Mark Audio Complete", type="primary", help="Proceed to next pipeline step"):
                 try:
-                    audio_service = get_audio_production_service()
-                    zip_data = audio_service.export_selected_takes_zip(UUID(session_id))
-
-                    st.download_button(
-                        label="Download ZIP",
-                        data=zip_data,
-                        file_name=f"audio_{session_id[:8]}.zip",
-                        mime="application/zip"
-                    )
+                    db = get_supabase_client()
+                    db.table("content_projects").update({
+                        "workflow_state": "audio_complete"
+                    }).eq("id", project_id).execute()
+                    db.table("audio_production_sessions").update({
+                        "status": "completed"
+                    }).eq("id", session_id).execute()
+                    st.success("Audio marked complete!")
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Export failed: {e}")
+                    st.error(f"Failed: {e}")
     else:
-        st.warning(f"Select takes for all beats before exporting. ({selected_count}/{total_beats} selected)")
+        st.warning(f"Select takes for all beats before completing. ({selected_count}/{total_beats} selected)")
 
 
-def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Optional[Dict] = None):
+def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Optional[Dict] = None, take_number: int = 1, total_takes: int = 1):
     """Render a single audio take with playback controls."""
     take_id = take.get('id')
     is_selected = take.get('is_selected', False)
@@ -1727,8 +1731,13 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Opti
     audio_path = take.get('audio_path', '')
     direction = take.get('direction_used', '')
 
-    # Show beat info if available
-    if beat_info:
+    # Show take number header
+    if total_takes > 1:
+        st.markdown(f"**Take {take_number}** {'(latest)' if take_number == total_takes else ''}")
+        st.divider()
+
+    # Show beat info only on first take
+    if beat_info and take_number == 1:
         character = beat_info.get('character', 'every-coon')
         script_text = beat_info.get('combined_script', '') or beat_info.get('script', '')
 
