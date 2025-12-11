@@ -611,9 +611,20 @@ def render_script_generation_tab(project: Dict):
             "target_emotion": project.get('workflow_data', {}).get('target_emotion', 'curiosity')
         }
 
-        if st.button("Generate Script", type="primary", disabled=st.session_state.script_generating):
-            st.session_state.script_generating = True
+        col_gen, col_reset = st.columns([3, 1])
+        with col_gen:
+            generate_clicked = st.button("Generate Script", type="primary", disabled=st.session_state.script_generating)
+        with col_reset:
+            if st.session_state.script_generating:
+                if st.button("Reset", help="Click if generation is stuck"):
+                    st.session_state.script_generating = False
+                    st.rerun()
 
+        if generate_clicked:
+            st.session_state.script_generating = True
+            st.rerun()  # Rerun to show spinner state
+
+        if st.session_state.script_generating and not generate_clicked:
             with st.spinner("Generating script with Claude Opus 4.5... (this may take 30-60 seconds)"):
                 try:
                     script_data = asyncio.run(run_script_generation(
