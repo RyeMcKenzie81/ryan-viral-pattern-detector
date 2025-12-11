@@ -508,6 +508,18 @@ Keep what's working well and only change what needs to be fixed."""
             return UUID(script_data.get("id", str(uuid4())))
 
         try:
+            # Query for the next version number (don't trust passed value)
+            existing = self.supabase.table("script_versions").select("version_number").eq(
+                "project_id", str(project_id)
+            ).order("version_number", desc=True).limit(1).execute()
+
+            if existing.data:
+                next_version = existing.data[0]["version_number"] + 1
+            else:
+                next_version = 1
+
+            logger.info(f"Saving script version {next_version} for project {project_id}")
+
             # Extract content for storage
             script_content = json.dumps({
                 "title": script_data.get("title"),
@@ -520,7 +532,7 @@ Keep what's working well and only change what needs to be fixed."""
 
             result = self.supabase.table("script_versions").insert({
                 "project_id": str(project_id),
-                "version_number": script_data.get("version_number", 1),
+                "version_number": next_version,
                 "script_content": script_content,
                 "storyboard_json": {
                     "beats": script_data.get("beats", []),
