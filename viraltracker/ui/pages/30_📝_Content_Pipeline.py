@@ -1345,6 +1345,83 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
     }
 
 
+async def regenerate_single_beat(session_id: str, beat_id: str, beat_info: Dict, session: Dict):
+    """Regenerate audio for a single beat."""
+    from pathlib import Path
+    from viraltracker.services.ffmpeg_service import FFmpegService
+    from viraltracker.services.audio_models import ScriptBeat, Pace, Character
+
+    audio_service = get_audio_production_service()
+    elevenlabs = get_elevenlabs_service()
+    ffmpeg = FFmpegService()
+
+    # Convert beat_info dict to ScriptBeat model
+    # Handle character enum
+    char_str = beat_info.get('character', 'every-coon')
+    try:
+        character = Character(char_str)
+    except ValueError:
+        character = Character.EVERY_COON
+
+    # Handle pace enum
+    pace_str = beat_info.get('primary_pace', 'normal')
+    if isinstance(pace_str, str):
+        try:
+            pace = Pace(pace_str.lower())
+        except ValueError:
+            pace = Pace.NORMAL
+    else:
+        pace = Pace.NORMAL
+
+    beat = ScriptBeat(
+        beat_id=beat_id,
+        beat_number=beat_info.get('beat_number', 1),
+        beat_name=beat_info.get('beat_name', beat_id),
+        character=character,
+        lines=[],  # Not used for generation
+        combined_script=beat_info.get('combined_script', '') or beat_info.get('script', ''),
+        primary_direction=beat_info.get('primary_direction', ''),
+        primary_pace=pace,
+        pause_after_ms=beat_info.get('pause_after_ms', 100)
+    )
+
+    output_path = Path(f"audio_production/{session_id}")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Generate audio
+    take = await elevenlabs.generate_beat_audio(
+        beat=beat,
+        output_dir=output_path,
+        session_id=session_id
+    )
+
+    local_file = Path(take.audio_path)
+
+    # Get duration
+    duration_ms = ffmpeg.get_duration_ms(local_file)
+    take.audio_duration_ms = duration_ms
+
+    # Upload to storage
+    with open(local_file, 'rb') as f:
+        audio_data = f.read()
+
+    storage_path = await audio_service.upload_audio(
+        session_id=session_id,
+        filename=local_file.name,
+        audio_data=audio_data
+    )
+
+    take.audio_path = storage_path
+
+    # Save take (don't auto-select, let user choose)
+    await audio_service.save_take(session_id, take)
+
+    # Clean up local file
+    local_file.unlink(missing_ok=True)
+
+    return take
+
+
 def render_audio_tab(project: Dict):
     """Render the audio production tab."""
     project_id = project.get('id')
@@ -1543,6 +1620,10 @@ def render_audio_session_details(session: Dict, project_id: str):
         st.error(f"Failed to load takes: {e}")
         return
 
+    # Get beat info from session's beats_json
+    beats_json = session.get('beats_json', [])
+    beats_by_id = {b.get('beat_id'): b for b in beats_json} if beats_json else {}
+
     if not takes:
         st.warning("No audio takes generated yet. Audio generation may have failed.")
 
@@ -1585,9 +1666,30 @@ def render_audio_session_details(session: Dict, project_id: str):
 
     # Render each beat's takes
     for beat_id, beat_takes in beats_takes.items():
-        with st.expander(f"**{beat_id}** ({len(beat_takes)} take{'s' if len(beat_takes) > 1 else ''})", expanded=True):
-            for take in beat_takes:
-                render_audio_take(take, session_id, beat_id)
+        beat_info = beats_by_id.get(beat_id, {})
+        beat_name = beat_info.get('beat_name', beat_id)
+
+        # Check if regenerating this beat
+        if st.session_state.get(f"regenerating_{beat_id}"):
+            with st.expander(f"**{beat_name}** - Regenerating...", expanded=True):
+                with st.spinner(f"Regenerating {beat_id}..."):
+                    try:
+                        # Regenerate this beat
+                        asyncio.run(regenerate_single_beat(
+                            session_id=session_id,
+                            beat_id=beat_id,
+                            beat_info=beat_info,
+                            session=session
+                        ))
+                        del st.session_state[f"regenerating_{beat_id}"]
+                        st.rerun()
+                    except Exception as e:
+                        del st.session_state[f"regenerating_{beat_id}"]
+                        st.error(f"Regeneration failed: {e}")
+        else:
+            with st.expander(f"**{beat_name}** ({len(beat_takes)} take{'s' if len(beat_takes) > 1 else ''})", expanded=True):
+                for take in beat_takes:
+                    render_audio_take(take, session_id, beat_id, beat_info)
 
     st.divider()
 
@@ -1617,14 +1719,39 @@ def render_audio_session_details(session: Dict, project_id: str):
         st.warning(f"Select takes for all beats before exporting. ({selected_count}/{total_beats} selected)")
 
 
-def render_audio_take(take: Dict, session_id: str, beat_id: str):
+def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Optional[Dict] = None):
     """Render a single audio take with playback controls."""
     take_id = take.get('id')
     is_selected = take.get('is_selected', False)
     duration_ms = take.get('audio_duration_ms', 0)
     audio_path = take.get('audio_path', '')
+    direction = take.get('direction_used', '')
 
-    col1, col2, col3 = st.columns([3, 1, 1])
+    # Show beat info if available
+    if beat_info:
+        character = beat_info.get('character', 'every-coon')
+        script_text = beat_info.get('combined_script', '') or beat_info.get('script', '')
+
+        # Character badge
+        char_colors = {
+            'every-coon': 'blue',
+            'boomer': 'orange',
+            'fed': 'gray',
+            'whale': 'violet',
+            'wojak': 'red',
+            'chad': 'green'
+        }
+        st.caption(f":{char_colors.get(character, 'gray')}[{character}]")
+
+        # Script text (truncated)
+        if script_text:
+            display_text = script_text[:200] + "..." if len(script_text) > 200 else script_text
+            st.markdown(f"*\"{display_text}\"*")
+
+        if direction:
+            st.caption(f"Direction: {direction}")
+
+    col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
 
     with col1:
         # Audio player
@@ -1653,6 +1780,11 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str):
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to select: {e}")
+
+    with col4:
+        if st.button("Regen", key=f"regen_{beat_id}_{take_id}", help="Regenerate this beat"):
+            st.session_state[f"regenerating_{beat_id}"] = True
+            st.rerun()
 
 
 # Main app flow
