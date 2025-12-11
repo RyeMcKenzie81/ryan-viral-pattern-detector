@@ -1,22 +1,18 @@
 """
-CompetitorService - Competitor research and analysis.
+CompetitorService - Competitor tracking and analysis.
 
 This service handles:
-- Managing competitors for a brand
-- Scraping competitor ads from Facebook Ad Library
-- Downloading competitor ad assets
-- Analyzing competitor ads (video, image, copy)
-- Scraping and analyzing competitor landing pages
-- Synthesizing competitor personas
-
-Mirrors BrandResearchService patterns for consistency.
+- Competitor CRUD operations
+- Competitor product management (mirroring brand products)
+- Competitor product variants (flavors, sizes, colors)
+- URL pattern matching for linking ads to products
+- Integration with Amazon review scraping and analysis
+- Persona synthesis at competitor or product level
 """
 
 import logging
-import asyncio
-import json
-import httpx
-from typing import List, Dict, Optional, Any
+import re
+from typing import List, Dict, Optional, Any, Tuple
 from uuid import UUID
 from datetime import datetime
 
@@ -26,15 +22,38 @@ from ..core.database import get_supabase_client
 logger = logging.getLogger(__name__)
 
 
+def _generate_slug(name: str) -> str:
+    """
+    Generate URL-safe slug from name.
+
+    Args:
+        name: Product or variant name
+
+    Returns:
+        URL-safe slug (lowercase, hyphens instead of spaces)
+    """
+    slug = name.lower().strip()
+    slug = re.sub(r'[^\w\s-]', '', slug)  # Remove special chars
+    slug = re.sub(r'[-\s]+', '-', slug)    # Replace spaces/multiple hyphens with single hyphen
+    slug = slug.strip('-')                  # Remove leading/trailing hyphens
+    return slug
+
+
 class CompetitorService:
-    """Service for competitor research and analysis."""
+    """Service for competitor tracking and analysis."""
 
     def __init__(self, supabase: Optional[Client] = None):
+        """
+        Initialize CompetitorService.
+
+        Args:
+            supabase: Optional Supabase client. If not provided, creates one.
+        """
         self.supabase = supabase or get_supabase_client()
         logger.info("CompetitorService initialized")
 
     # =========================================================================
-    # Competitor CRUD
+    # COMPETITOR CRUD (existing entity)
     # =========================================================================
 
     def create_competitor(
@@ -44,1510 +63,1223 @@ class CompetitorService:
         website_url: Optional[str] = None,
         facebook_page_id: Optional[str] = None,
         ad_library_url: Optional[str] = None,
-        amazon_url: Optional[str] = None,
         industry: Optional[str] = None,
         notes: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Create a new competitor for a brand."""
-        record = {
+        """
+        Create a new competitor for a brand.
+
+        Args:
+            brand_id: UUID of the brand tracking this competitor
+            name: Competitor name
+            website_url: Competitor's website URL
+            facebook_page_id: Facebook Page ID for Ad Library scraping
+            ad_library_url: Direct Ad Library URL
+            industry: Industry classification
+            notes: Additional notes
+
+        Returns:
+            Created competitor record
+        """
+        data = {
             "brand_id": str(brand_id),
             "name": name,
             "website_url": website_url,
             "facebook_page_id": facebook_page_id,
             "ad_library_url": ad_library_url,
-            "amazon_url": amazon_url,
             "industry": industry,
             "notes": notes
         }
 
-        result = self.supabase.table("competitors").insert(record).execute()
-
-        if result.data:
-            logger.info(f"Created competitor: {name} for brand {brand_id}")
-            return result.data[0]
-
-        raise Exception(f"Failed to create competitor: {name}")
+        result = self.supabase.table("competitors").insert(data).execute()
+        logger.info(f"Created competitor: {name} for brand {brand_id}")
+        return result.data[0] if result.data else {}
 
     def get_competitor(self, competitor_id: UUID) -> Optional[Dict[str, Any]]:
-        """Get a competitor by ID."""
+        """
+        Get a single competitor by ID.
+
+        Args:
+            competitor_id: UUID of the competitor
+
+        Returns:
+            Competitor record or None if not found
+        """
         result = self.supabase.table("competitors").select("*").eq(
             "id", str(competitor_id)
         ).execute()
-
         return result.data[0] if result.data else None
 
     def get_competitors_for_brand(self, brand_id: UUID) -> List[Dict[str, Any]]:
-        """Get all competitors for a brand."""
+        """
+        Get all competitors for a brand.
+
+        Args:
+            brand_id: UUID of the brand
+
+        Returns:
+            List of competitor records ordered by name
+        """
         result = self.supabase.table("competitors").select("*").eq(
             "brand_id", str(brand_id)
         ).order("name").execute()
-
         return result.data or []
 
-    def update_competitor(self, competitor_id: UUID, updates: Dict[str, Any]) -> bool:
-        """Update a competitor."""
-        updates["updated_at"] = datetime.utcnow().isoformat()
+    def update_competitor(
+        self,
+        competitor_id: UUID,
+        updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update a competitor.
 
+        Args:
+            competitor_id: UUID of the competitor
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated competitor record or None
+        """
         result = self.supabase.table("competitors").update(updates).eq(
             "id", str(competitor_id)
         ).execute()
-
         if result.data:
             logger.info(f"Updated competitor: {competitor_id}")
-            return True
-        return False
+        return result.data[0] if result.data else None
 
     def delete_competitor(self, competitor_id: UUID) -> bool:
-        """Delete a competitor and all related data."""
-        # Cascading deletes should handle related tables
+        """
+        Delete a competitor (cascades to products, ads, etc.).
+
+        Args:
+            competitor_id: UUID of the competitor
+
+        Returns:
+            True if deleted successfully
+        """
         result = self.supabase.table("competitors").delete().eq(
             "id", str(competitor_id)
         ).execute()
-
         if result.data:
             logger.info(f"Deleted competitor: {competitor_id}")
             return True
         return False
 
     # =========================================================================
-    # Statistics
+    # COMPETITOR PRODUCT CRUD
     # =========================================================================
 
-    def get_competitor_stats(self, competitor_id: UUID) -> Dict[str, int]:
-        """Get statistics for a competitor."""
-        try:
-            # Count ads
-            ads_result = self.supabase.table("competitor_ads").select(
-                "id", count="exact"
-            ).eq("competitor_id", str(competitor_id)).execute()
-            ads_count = ads_result.count or 0
-
-            # Count assets
-            if ads_count > 0:
-                ad_ids_result = self.supabase.table("competitor_ads").select(
-                    "id"
-                ).eq("competitor_id", str(competitor_id)).execute()
-                ad_ids = [r['id'] for r in ad_ids_result.data or []]
-
-                assets_result = self.supabase.table("competitor_ad_assets").select(
-                    "id, asset_type"
-                ).in_("competitor_ad_id", ad_ids).execute()
-
-                videos = sum(1 for a in (assets_result.data or []) if a.get('asset_type') == 'video')
-                images = sum(1 for a in (assets_result.data or []) if a.get('asset_type') == 'image')
-            else:
-                videos = 0
-                images = 0
-
-            # Count analyses
-            analysis_result = self.supabase.table("competitor_ad_analysis").select(
-                "analysis_type"
-            ).eq("competitor_id", str(competitor_id)).execute()
-
-            analysis_counts = {
-                "video_vision": 0,
-                "image_vision": 0,
-                "copy_analysis": 0
-            }
-            for row in (analysis_result.data or []):
-                atype = row.get("analysis_type", "")
-                if atype in analysis_counts:
-                    analysis_counts[atype] += 1
-
-            # Count landing pages
-            lp_result = self.supabase.table("competitor_landing_pages").select(
-                "id, scraped_at, analyzed_at"
-            ).eq("competitor_id", str(competitor_id)).execute()
-
-            lp_total = len(lp_result.data or [])
-            lp_scraped = sum(1 for lp in (lp_result.data or []) if lp.get('scraped_at'))
-            lp_analyzed = sum(1 for lp in (lp_result.data or []) if lp.get('analyzed_at'))
-
-            # Count Amazon reviews
-            amazon_stats = self.get_competitor_amazon_stats(competitor_id)
-
-            return {
-                "ads": ads_count,
-                "videos": videos,
-                "images": images,
-                "video_analyses": analysis_counts["video_vision"],
-                "image_analyses": analysis_counts["image_vision"],
-                "copy_analyses": analysis_counts["copy_analysis"],
-                "landing_pages": lp_total,
-                "landing_pages_scraped": lp_scraped,
-                "landing_pages_analyzed": lp_analyzed,
-                "amazon_reviews": amazon_stats.get("reviews_in_db", 0),
-                "amazon_reviews_analyzed": amazon_stats.get("reviews_analyzed", 0)
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to get competitor stats: {e}")
-            return {
-                "ads": 0, "videos": 0, "images": 0,
-                "video_analyses": 0, "image_analyses": 0, "copy_analyses": 0,
-                "landing_pages": 0, "landing_pages_scraped": 0, "landing_pages_analyzed": 0,
-                "amazon_reviews": 0, "amazon_reviews_analyzed": 0
-            }
-
-    # =========================================================================
-    # Ad Scraping (from Facebook Ad Library via Apify)
-    # =========================================================================
-
-    async def scrape_competitor_ads(
+    def create_competitor_product(
         self,
         competitor_id: UUID,
-        ad_library_url: str,
-        max_ads: int = 50
+        brand_id: UUID,
+        name: str,
+        description: Optional[str] = None,
+        product_code: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Scrape ads from Facebook Ad Library for a competitor.
-
-        Uses Apify's Facebook Ad Library Scraper.
-
-        Args:
-            competitor_id: Competitor UUID
-            ad_library_url: Facebook Ad Library URL for the competitor
-            max_ads: Maximum ads to scrape
-
-        Returns:
-            Dict with counts: {"ads_scraped", "ads_new", "ads_existing"}
-        """
-        import os
-
-        apify_token = os.environ.get("APIFY_API_TOKEN")
-        if not apify_token:
-            raise ValueError("APIFY_API_TOKEN not set")
-
-        # Extract page ID from Ad Library URL
-        # URL format: https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&view_all_page_id=123456789
-        page_id = None
-        if "view_all_page_id=" in ad_library_url:
-            page_id = ad_library_url.split("view_all_page_id=")[1].split("&")[0]
-        elif "id=" in ad_library_url:
-            page_id = ad_library_url.split("id=")[1].split("&")[0]
-
-        if not page_id:
-            raise ValueError(f"Could not extract page ID from URL: {ad_library_url}")
-
-        logger.info(f"Scraping ads for competitor {competitor_id}, page_id={page_id}")
-
-        # Call Apify Facebook Ad Library Scraper
-        actor_id = "apify/facebook-ads-library-scraper"
-        run_input = {
-            "pageIds": [page_id],
-            "countryCode": "US",
-            "adType": "ALL",
-            "adActiveStatus": "ALL",
-            "maxAds": max_ads
-        }
-
-        async with httpx.AsyncClient(timeout=300) as client:
-            # Start the actor run
-            response = await client.post(
-                f"https://api.apify.com/v2/acts/{actor_id}/runs",
-                headers={"Authorization": f"Bearer {apify_token}"},
-                json=run_input
-            )
-            response.raise_for_status()
-            run_data = response.json()
-            run_id = run_data["data"]["id"]
-
-            logger.info(f"Started Apify run: {run_id}")
-
-            # Poll for completion
-            while True:
-                await asyncio.sleep(5)
-                status_response = await client.get(
-                    f"https://api.apify.com/v2/actor-runs/{run_id}",
-                    headers={"Authorization": f"Bearer {apify_token}"}
-                )
-                status_data = status_response.json()
-                status = status_data["data"]["status"]
-
-                if status == "SUCCEEDED":
-                    break
-                elif status in ["FAILED", "ABORTED", "TIMED-OUT"]:
-                    raise Exception(f"Apify run failed with status: {status}")
-
-                logger.info(f"Apify run status: {status}, waiting...")
-
-            # Get results
-            dataset_id = status_data["data"]["defaultDatasetId"]
-            results_response = await client.get(
-                f"https://api.apify.com/v2/datasets/{dataset_id}/items",
-                headers={"Authorization": f"Bearer {apify_token}"}
-            )
-            ads_data = results_response.json()
-
-        # Save ads to database
-        ads_new = 0
-        ads_existing = 0
-
-        for ad in ads_data:
-            ad_archive_id = ad.get("adArchiveID") or ad.get("id")
-            if not ad_archive_id:
-                continue
-
-            # Check if already exists
-            existing = self.supabase.table("competitor_ads").select("id").eq(
-                "competitor_id", str(competitor_id)
-            ).eq("ad_archive_id", str(ad_archive_id)).execute()
-
-            if existing.data:
-                ads_existing += 1
-                continue
-
-            # Insert new ad
-            record = {
-                "competitor_id": str(competitor_id),
-                "ad_archive_id": str(ad_archive_id),
-                "page_name": ad.get("pageName"),
-                "ad_body": ad.get("adBodyText") or ad.get("bodyText"),
-                "ad_title": ad.get("adTitle") or ad.get("title"),
-                "link_url": ad.get("linkUrl") or ad.get("websiteUrl"),
-                "cta_text": ad.get("ctaText"),
-                "started_running": ad.get("startDate"),
-                "is_active": ad.get("isActive", True),
-                "platforms": ad.get("platforms", []),
-                "snapshot_data": ad  # Store full response
-            }
-
-            self.supabase.table("competitor_ads").insert(record).execute()
-            ads_new += 1
-
-        # Update competitor record
-        self.supabase.table("competitors").update({
-            "last_scraped_at": datetime.utcnow().isoformat(),
-            "ads_count": ads_new + ads_existing
-        }).eq("id", str(competitor_id)).execute()
-
-        logger.info(f"Scraped {ads_new} new ads, {ads_existing} existing for competitor {competitor_id}")
-
-        return {
-            "ads_scraped": len(ads_data),
-            "ads_new": ads_new,
-            "ads_existing": ads_existing
-        }
-
-    # =========================================================================
-    # Asset Download
-    # =========================================================================
-
-    async def download_competitor_assets(
-        self,
-        competitor_id: UUID,
-        limit: int = 50
-    ) -> Dict[str, int]:
-        """
-        Download video/image assets from competitor ads.
-
-        Args:
-            competitor_id: Competitor UUID
-            limit: Maximum ads to process
-
-        Returns:
-            Dict with counts
-        """
-        from ..core.storage import get_storage_client
-
-        # Get ads that need asset download
-        ads_result = self.supabase.table("competitor_ads").select(
-            "id, snapshot_data"
-        ).eq("competitor_id", str(competitor_id)).limit(limit).execute()
-
-        if not ads_result.data:
-            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0}
-
-        # Get ads that already have assets
-        ad_ids = [ad['id'] for ad in ads_result.data]
-        existing_assets = self.supabase.table("competitor_ad_assets").select(
-            "competitor_ad_id"
-        ).in_("competitor_ad_id", ad_ids).execute()
-
-        ads_with_assets = set(r['competitor_ad_id'] for r in (existing_assets.data or []))
-        ads_to_process = [ad for ad in ads_result.data if ad['id'] not in ads_with_assets]
-
-        if not ads_to_process:
-            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets"}
-
-        storage = get_storage_client()
-        videos_downloaded = 0
-        images_downloaded = 0
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            for ad in ads_to_process:
-                snapshot = ad.get('snapshot_data', {})
-                if isinstance(snapshot, str):
-                    try:
-                        snapshot = json.loads(snapshot)
-                    except:
-                        continue
-
-                # Extract asset URLs from snapshot
-                asset_urls = []
-
-                # Video URLs
-                for video in snapshot.get('videos', []):
-                    if isinstance(video, dict) and video.get('videoHD'):
-                        asset_urls.append(('video', video['videoHD']))
-                    elif isinstance(video, dict) and video.get('videoSD'):
-                        asset_urls.append(('video', video['videoSD']))
-                    elif isinstance(video, str):
-                        asset_urls.append(('video', video))
-
-                # Image URLs
-                for image in snapshot.get('images', []):
-                    if isinstance(image, dict) and image.get('originalImageUrl'):
-                        asset_urls.append(('image', image['originalImageUrl']))
-                    elif isinstance(image, dict) and image.get('url'):
-                        asset_urls.append(('image', image['url']))
-                    elif isinstance(image, str):
-                        asset_urls.append(('image', image))
-
-                # Download each asset
-                for asset_type, url in asset_urls:
-                    try:
-                        response = await client.get(url)
-                        if response.status_code != 200:
-                            continue
-
-                        content = response.content
-                        content_type = response.headers.get('content-type', '')
-
-                        # Determine extension
-                        if 'video' in content_type:
-                            ext = 'mp4'
-                            mime = 'video/mp4'
-                        elif 'image' in content_type:
-                            if 'png' in content_type:
-                                ext = 'png'
-                                mime = 'image/png'
-                            else:
-                                ext = 'jpg'
-                                mime = 'image/jpeg'
-                        else:
-                            ext = 'mp4' if asset_type == 'video' else 'jpg'
-                            mime = 'video/mp4' if asset_type == 'video' else 'image/jpeg'
-
-                        # Upload to storage
-                        path = f"competitor-assets/{competitor_id}/{ad['id']}/{asset_type}_{datetime.utcnow().timestamp()}.{ext}"
-                        storage.from_("ad-assets").upload(path, content, {"content-type": mime})
-
-                        # Save record
-                        self.supabase.table("competitor_ad_assets").insert({
-                            "competitor_ad_id": ad['id'],
-                            "asset_type": asset_type,
-                            "storage_path": path,
-                            "original_url": url,
-                            "mime_type": mime,
-                            "file_size": len(content)
-                        }).execute()
-
-                        if asset_type == 'video':
-                            videos_downloaded += 1
-                        else:
-                            images_downloaded += 1
-
-                    except Exception as e:
-                        logger.warning(f"Failed to download asset: {e}")
-                        continue
-
-        return {
-            "ads_processed": len(ads_to_process),
-            "videos_downloaded": videos_downloaded,
-            "images_downloaded": images_downloaded
-        }
-
-    # =========================================================================
-    # Analysis (Video, Image, Copy)
-    # =========================================================================
-
-    async def analyze_competitor_videos(
-        self,
-        competitor_id: UUID,
-        limit: int = 10
-    ) -> List[Dict]:
-        """Analyze competitor video assets with Gemini Vision."""
-        from .gemini_service import GeminiService
-
-        # Get video assets that haven't been analyzed
-        ads_result = self.supabase.table("competitor_ads").select("id").eq(
-            "competitor_id", str(competitor_id)
-        ).execute()
-
-        if not ads_result.data:
-            return []
-
-        ad_ids = [r['id'] for r in ads_result.data]
-
-        assets_result = self.supabase.table("competitor_ad_assets").select(
-            "id, competitor_ad_id, storage_path, mime_type"
-        ).in_("competitor_ad_id", ad_ids).eq("asset_type", "video").execute()
-
-        if not assets_result.data:
-            return []
-
-        # Filter out already analyzed
-        asset_ids = [a['id'] for a in assets_result.data]
-        analyzed_result = self.supabase.table("competitor_ad_analysis").select(
-            "asset_id"
-        ).in_("asset_id", asset_ids).eq("analysis_type", "video_vision").execute()
-
-        analyzed_ids = {r['asset_id'] for r in (analyzed_result.data or [])}
-        assets_to_analyze = [a for a in assets_result.data if a['id'] not in analyzed_ids][:limit]
-
-        if not assets_to_analyze:
-            return []
-
-        gemini = GeminiService()
-        results = []
-
-        for asset in assets_to_analyze:
-            try:
-                analysis = await gemini.analyze_video_for_persona(asset['storage_path'])
-
-                # Save analysis
-                self.supabase.table("competitor_ad_analysis").insert({
-                    "competitor_id": str(competitor_id),
-                    "competitor_ad_id": asset['competitor_ad_id'],
-                    "asset_id": asset['id'],
-                    "analysis_type": "video_vision",
-                    "raw_response": analysis,
-                    "hooks_extracted": analysis.get('hook', []),
-                    "pain_points_addressed": analysis.get('pain_points', {}).get('emotional', []),
-                    "model_used": "gemini-2.0-flash"
-                }).execute()
-
-                results.append({"asset_id": asset['id'], "analysis": analysis})
-
-                await asyncio.sleep(2)  # Rate limiting
-
-            except Exception as e:
-                logger.error(f"Failed to analyze video {asset['id']}: {e}")
-                results.append({"asset_id": asset['id'], "error": str(e)})
-
-        return results
-
-    async def analyze_competitor_images(
-        self,
-        competitor_id: UUID,
-        limit: int = 20
-    ) -> List[Dict]:
-        """Analyze competitor image assets with Gemini Vision."""
-        from .gemini_service import GeminiService
-
-        # Get image assets that haven't been analyzed
-        ads_result = self.supabase.table("competitor_ads").select("id").eq(
-            "competitor_id", str(competitor_id)
-        ).execute()
-
-        if not ads_result.data:
-            return []
-
-        ad_ids = [r['id'] for r in ads_result.data]
-
-        assets_result = self.supabase.table("competitor_ad_assets").select(
-            "id, competitor_ad_id, storage_path, mime_type"
-        ).in_("competitor_ad_id", ad_ids).eq("asset_type", "image").execute()
-
-        if not assets_result.data:
-            return []
-
-        # Filter out already analyzed
-        asset_ids = [a['id'] for a in assets_result.data]
-        analyzed_result = self.supabase.table("competitor_ad_analysis").select(
-            "asset_id"
-        ).in_("asset_id", asset_ids).eq("analysis_type", "image_vision").execute()
-
-        analyzed_ids = {r['asset_id'] for r in (analyzed_result.data or [])}
-        assets_to_analyze = [a for a in assets_result.data if a['id'] not in analyzed_ids][:limit]
-
-        if not assets_to_analyze:
-            return []
-
-        gemini = GeminiService()
-        results = []
-
-        for asset in assets_to_analyze:
-            try:
-                analysis = await gemini.analyze_image_for_persona(asset['storage_path'])
-
-                # Save analysis
-                self.supabase.table("competitor_ad_analysis").insert({
-                    "competitor_id": str(competitor_id),
-                    "competitor_ad_id": asset['competitor_ad_id'],
-                    "asset_id": asset['id'],
-                    "analysis_type": "image_vision",
-                    "raw_response": analysis,
-                    "hooks_extracted": analysis.get('hooks', []),
-                    "benefits_mentioned": analysis.get('benefits', []),
-                    "model_used": "gemini-2.0-flash"
-                }).execute()
-
-                results.append({"asset_id": asset['id'], "analysis": analysis})
-
-                await asyncio.sleep(1)  # Rate limiting
-
-            except Exception as e:
-                logger.error(f"Failed to analyze image {asset['id']}: {e}")
-                results.append({"asset_id": asset['id'], "error": str(e)})
-
-        return results
-
-    async def analyze_competitor_copy(
-        self,
-        competitor_id: UUID,
-        limit: int = 50
-    ) -> List[Dict]:
-        """Analyze competitor ad copy with Claude."""
-        from anthropic import Anthropic
-
-        # Get ads that haven't had copy analyzed
-        ads_result = self.supabase.table("competitor_ads").select(
-            "id, ad_body, ad_title"
-        ).eq("competitor_id", str(competitor_id)).execute()
-
-        if not ads_result.data:
-            return []
-
-        # Filter out already analyzed
-        ad_ids = [a['id'] for a in ads_result.data]
-        analyzed_result = self.supabase.table("competitor_ad_analysis").select(
-            "competitor_ad_id"
-        ).in_("competitor_ad_id", ad_ids).eq("analysis_type", "copy_analysis").execute()
-
-        analyzed_ids = {r['competitor_ad_id'] for r in (analyzed_result.data or [])}
-        ads_to_analyze = [a for a in ads_result.data if a['id'] not in analyzed_ids][:limit]
-
-        if not ads_to_analyze:
-            return []
-
-        anthropic = Anthropic()
-        results = []
-
-        for ad in ads_to_analyze:
-            ad_text = f"{ad.get('ad_title', '')}\n\n{ad.get('ad_body', '')}".strip()
-            if not ad_text or len(ad_text) < 20:
-                continue
-
-            # Skip dynamic catalog ads
-            if "{{product" in ad_text.lower():
-                continue
-
-            try:
-                prompt = f"""Analyze this competitor ad copy for persona and marketing signals.
-
-AD COPY:
-{ad_text}
-
-Extract:
-1. Hook type and text
-2. Pain points addressed
-3. Desires appealed to
-4. Target persona signals (who is this for?)
-5. Key messaging patterns
-6. Awareness level (1-5, where 1=unaware, 5=most aware)
-
-Return JSON with: hook, pain_points, desires, persona_signals, messaging_patterns, awareness_level"""
-
-                message = anthropic.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1500,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-
-                response_text = message.content[0].text
-                # Parse JSON from response
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0]
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0]
-
-                analysis = json.loads(response_text.strip())
-
-                # Save analysis
-                self.supabase.table("competitor_ad_analysis").insert({
-                    "competitor_id": str(competitor_id),
-                    "competitor_ad_id": ad['id'],
-                    "analysis_type": "copy_analysis",
-                    "raw_response": analysis,
-                    "hooks_extracted": [analysis.get('hook', {})],
-                    "pain_points_addressed": analysis.get('pain_points', []),
-                    "desires_appealed": analysis.get('desires', {}),
-                    "messaging_patterns": analysis.get('messaging_patterns', []),
-                    "awareness_level": analysis.get('awareness_level'),
-                    "model_used": "claude-sonnet-4-20250514"
-                }).execute()
-
-                results.append({"ad_id": ad['id'], "analysis": analysis})
-
-                await asyncio.sleep(1)  # Rate limiting
-
-            except Exception as e:
-                logger.error(f"Failed to analyze copy for ad {ad['id']}: {e}")
-                results.append({"ad_id": ad['id'], "error": str(e)})
-
-        return results
-
-    # =========================================================================
-    # Landing Page Scraping & Analysis
-    # =========================================================================
-
-    def add_manual_landing_page(
-        self,
-        competitor_id: UUID,
-        url: str
-    ) -> Dict[str, Any]:
-        """
-        Add a manual landing page URL for a competitor.
+        Create a new product for a competitor.
 
         Args:
             competitor_id: UUID of the competitor
-            url: Landing page URL to add
+            brand_id: UUID of the brand tracking this competitor
+            name: Product name
+            description: Product description
+            product_code: Short reference code (e.g., "WL1")
 
         Returns:
-            Dict with the created record or existing record info
+            Created competitor product record
         """
-        # Check if URL already exists
-        existing = self.supabase.table("competitor_landing_pages").select(
-            "id, url"
-        ).eq("competitor_id", str(competitor_id)).eq("url", url).execute()
+        slug = _generate_slug(name)
 
-        if existing.data:
-            return {"status": "exists", "url": url, "id": existing.data[0]['id']}
-
-        # Get brand_id from competitor (optional, for denormalization)
-        competitor = self.get_competitor(competitor_id)
-        if not competitor:
-            raise ValueError(f"Competitor {competitor_id} not found")
-
-        # Insert new record (brand_id and is_manual are optional columns added by migration)
-        insert_data = {
-            "competitor_id": str(competitor_id),
-            "url": url
-        }
-
-        # Add optional fields if migration has been run
-        try:
-            insert_data["brand_id"] = competitor['brand_id']
-            insert_data["is_manual"] = True
-        except Exception:
-            pass  # Columns may not exist yet
-
-        result = self.supabase.table("competitor_landing_pages").insert(insert_data).execute()
-
-        return {"status": "created", "url": url, "id": result.data[0]['id']}
-
-    def get_competitor_landing_pages(
-        self,
-        competitor_id: UUID
-    ) -> List[Dict[str, Any]]:
-        """Get all landing pages for a competitor."""
-        result = self.supabase.table("competitor_landing_pages").select(
-            "*"
-        ).eq("competitor_id", str(competitor_id)).order("created_at", desc=True).execute()
-
-        return result.data or []
-
-    def delete_competitor_landing_page(
-        self,
-        landing_page_id: UUID
-    ) -> bool:
-        """Delete a competitor landing page."""
-        try:
-            self.supabase.table("competitor_landing_pages").delete().eq(
-                "id", str(landing_page_id)
-            ).execute()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to delete landing page {landing_page_id}: {e}")
-            return False
-
-    async def scrape_competitor_landing_pages(
-        self,
-        competitor_id: UUID,
-        urls: Optional[List[str]] = None,
-        limit: int = 10
-    ) -> Dict[str, int]:
-        """
-        Scrape landing pages for a competitor.
-
-        Scrapes both:
-        1. Manually added URLs that haven't been scraped yet
-        2. URLs extracted from competitor ads (if urls param not provided)
-        """
-        from .web_scraping_service import WebScrapingService
-
-        # Get existing landing pages (to find unscraped manual entries)
-        existing_result = self.supabase.table("competitor_landing_pages").select(
-            "id, url, scraped_at"
-        ).eq("competitor_id", str(competitor_id)).execute()
-
-        existing_pages = existing_result.data or []
-        existing_urls = {r['url'] for r in existing_pages}
-        unscraped_manual = [
-            r for r in existing_pages
-            if r.get('scraped_at') is None
-        ]
-
-        # Get URLs to scrape
-        urls_to_scrape = []
-
-        # First, add unscraped manual entries
-        for page in unscraped_manual[:limit]:
-            urls_to_scrape.append({"url": page['url'], "id": page['id']})
-
-        remaining_limit = limit - len(urls_to_scrape)
-
-        # Then add URLs from ads if not provided and we have room
-        if not urls and remaining_limit > 0:
-            ads_result = self.supabase.table("competitor_ads").select(
-                "link_url"
-            ).eq("competitor_id", str(competitor_id)).execute()
-
-            ad_urls = list(set(
-                ad['link_url'] for ad in (ads_result.data or [])
-                if ad.get('link_url') and ad['link_url'] not in existing_urls
-            ))[:remaining_limit]
-
-            for url in ad_urls:
-                urls_to_scrape.append({"url": url, "id": None})  # New URLs need insert
-        elif urls:
-            # Use provided URLs
-            for url in urls:
-                if url not in existing_urls:
-                    urls_to_scrape.append({"url": url, "id": None})
-
-        if not urls_to_scrape:
-            return {
-                "urls_found": len(existing_urls),
-                "pages_scraped": 0,
-                "pages_failed": 0,
-                "already_scraped": len([p for p in existing_pages if p.get('scraped_at')])
-            }
-
-        scraper = WebScrapingService()
-        pages_scraped = 0
-        pages_failed = 0
-
-        for url_entry in urls_to_scrape:
-            url = url_entry["url"]
-            existing_id = url_entry.get("id")
-
-            try:
-                result = await scraper.scrape_url_async(
-                    url=url,
-                    formats=["markdown"],
-                    only_main_content=True,
-                    timeout=30000
-                )
-
-                if result.success:
-                    scraped_data = {
-                        "page_title": result.metadata.get('title') if result.metadata else None,
-                        "meta_description": result.metadata.get('description') if result.metadata else None,
-                        "raw_markdown": result.markdown,
-                        "scraped_at": datetime.utcnow().isoformat()
-                    }
-
-                    if existing_id:
-                        # Update existing manual entry
-                        self.supabase.table("competitor_landing_pages").update(
-                            scraped_data
-                        ).eq("id", existing_id).execute()
-                    else:
-                        # Insert new entry
-                        scraped_data["competitor_id"] = str(competitor_id)
-                        scraped_data["url"] = url
-                        self.supabase.table("competitor_landing_pages").insert(
-                            scraped_data
-                        ).execute()
-
-                    pages_scraped += 1
-                else:
-                    pages_failed += 1
-
-                await asyncio.sleep(2)  # Rate limiting
-
-            except Exception as e:
-                logger.error(f"Failed to scrape {url}: {e}")
-                pages_failed += 1
-
-        return {
-            "urls_found": len(urls_to_scrape) + len([p for p in existing_pages if p.get('scraped_at')]),
-            "pages_scraped": pages_scraped,
-            "pages_failed": pages_failed
-        }
-
-    async def analyze_competitor_landing_pages(
-        self,
-        competitor_id: UUID,
-        limit: int = 10
-    ) -> List[Dict]:
-        """Analyze scraped competitor landing pages."""
-        from anthropic import Anthropic
-
-        # Get pages that need analysis
-        pages_result = self.supabase.table("competitor_landing_pages").select(
-            "id, url, raw_markdown"
-        ).eq("competitor_id", str(competitor_id)).is_("analyzed_at", "null").limit(limit).execute()
-
-        if not pages_result.data:
-            return []
-
-        anthropic = Anthropic()
-        results = []
-
-        for page in pages_result.data:
-            if not page.get('raw_markdown'):
-                continue
-
-            try:
-                prompt = f"""Analyze this competitor landing page for marketing intelligence.
-
-LANDING PAGE CONTENT:
-{page['raw_markdown'][:8000]}
-
-Extract:
-1. Products mentioned with prices
-2. Offers and promotions
-3. Social proof elements
-4. Guarantees
-5. Unique selling propositions (USPs)
-6. Objection handling
-7. Target persona signals
-
-Return JSON with: products, offers, social_proof, guarantees, usps, objection_handling, persona_signals"""
-
-                message = anthropic.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-
-                response_text = message.content[0].text
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0]
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0]
-
-                analysis = json.loads(response_text.strip())
-
-                # Update page with analysis
-                self.supabase.table("competitor_landing_pages").update({
-                    "products": analysis.get('products', []),
-                    "offers": analysis.get('offers', []),
-                    "social_proof": analysis.get('social_proof', []),
-                    "guarantees": analysis.get('guarantees', []),
-                    "usps": analysis.get('usps', []),
-                    "objection_handling": analysis.get('objection_handling', []),
-                    "analyzed_at": datetime.utcnow().isoformat(),
-                    "model_used": "claude-sonnet-4-20250514"
-                }).eq("id", page['id']).execute()
-
-                results.append({"page_id": page['id'], "analysis": analysis})
-
-                await asyncio.sleep(2)  # Rate limiting
-
-            except Exception as e:
-                logger.error(f"Failed to analyze page {page['id']}: {e}")
-                results.append({"page_id": page['id'], "error": str(e)})
-
-        return results
-
-    # =========================================================================
-    # Persona Synthesis
-    # =========================================================================
-
-    async def synthesize_competitor_persona(
-        self,
-        competitor_id: UUID
-    ) -> Dict[str, Any]:
-        """
-        Synthesize a 4D persona from all competitor analyses.
-
-        Aggregates insights from video, image, copy, and landing page analyses
-        to generate a comprehensive persona of who the competitor is targeting.
-        """
-        from anthropic import Anthropic
-
-        # Gather all analyses
-        analyses_result = self.supabase.table("competitor_ad_analysis").select(
-            "analysis_type, raw_response, hooks_extracted, pain_points_addressed, desires_appealed"
-        ).eq("competitor_id", str(competitor_id)).execute()
-
-        lp_result = self.supabase.table("competitor_landing_pages").select(
-            "products, offers, social_proof, usps, objection_handling"
-        ).eq("competitor_id", str(competitor_id)).not_.is_("analyzed_at", "null").execute()
-
-        if not analyses_result.data and not lp_result.data:
-            raise ValueError("No analyses found for competitor. Run analysis first.")
-
-        # Compile insights
-        all_hooks = []
-        all_pain_points = []
-        all_desires = []
-        all_messaging = []
-
-        for analysis in (analyses_result.data or []):
-            if analysis.get('hooks_extracted'):
-                all_hooks.extend(analysis['hooks_extracted'])
-            if analysis.get('pain_points_addressed'):
-                all_pain_points.extend(analysis['pain_points_addressed'])
-            if analysis.get('desires_appealed'):
-                all_desires.append(analysis['desires_appealed'])
-            raw = analysis.get('raw_response', {})
-            if raw.get('messaging_patterns'):
-                all_messaging.extend(raw['messaging_patterns'])
-
-        lp_insights = {
-            "products": [],
-            "offers": [],
-            "social_proof": [],
-            "usps": [],
-            "objection_handling": []
-        }
-        for lp in (lp_result.data or []):
-            for key in lp_insights:
-                if lp.get(key):
-                    lp_insights[key].extend(lp[key] if isinstance(lp[key], list) else [lp[key]])
-
-        # Get competitor info
-        competitor = self.get_competitor(competitor_id)
-
-        anthropic = Anthropic()
-        prompt = f"""Based on the following analysis of a competitor's marketing, synthesize a detailed 4D persona of their target customer.
-
-COMPETITOR: {competitor.get('name', 'Unknown')}
-
-HOOKS USED IN ADS:
-{json.dumps(all_hooks[:20], indent=2)}
-
-PAIN POINTS ADDRESSED:
-{json.dumps(list(set(all_pain_points))[:15], indent=2)}
-
-DESIRES APPEALED TO:
-{json.dumps(all_desires[:10], indent=2)}
-
-MESSAGING PATTERNS:
-{json.dumps(list(set(all_messaging))[:15], indent=2)}
-
-LANDING PAGE INSIGHTS:
-- Products: {json.dumps(lp_insights['products'][:5], indent=2)}
-- Offers: {json.dumps(lp_insights['offers'][:5], indent=2)}
-- Social Proof: {json.dumps(lp_insights['social_proof'][:5], indent=2)}
-- USPs: {json.dumps(lp_insights['usps'][:10], indent=2)}
-- Objection Handling: {json.dumps(lp_insights['objection_handling'][:5], indent=2)}
-
-Generate a comprehensive 4D persona with:
-1. Name and snapshot description
-2. Demographics
-3. Transformation map (before/after)
-4. Pain points (emotional, social, functional)
-5. Desires by category
-6. Self-narratives and identity
-7. Social relations
-8. Worldview and values
-9. Buying objections
-10. Purchase behavior
-
-Return as JSON matching the Persona4D schema."""
-
-        message = anthropic.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        response_text = message.content[0].text
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0]
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0]
-
-        persona_data = json.loads(response_text.strip())
-
-        # Update competitor with last analyzed timestamp
-        self.supabase.table("competitors").update({
-            "last_analyzed_at": datetime.utcnow().isoformat()
-        }).eq("id", str(competitor_id)).execute()
-
-        return persona_data
-
-    # =========================================================================
-    # Amazon Review Support
-    # =========================================================================
-
-    def scrape_competitor_amazon_reviews(
-        self,
-        competitor_id: UUID,
-        amazon_url: str,
-        include_keywords: bool = True,
-        include_helpful: bool = True,
-        timeout: int = 900
-    ) -> Dict[str, Any]:
-        """
-        Scrape Amazon reviews for a competitor product.
-
-        Delegates to the same Apify actor and scraping strategy used by
-        AmazonReviewService for consistency.
-
-        Args:
-            competitor_id: Competitor UUID
-            amazon_url: Amazon product URL
-            include_keywords: Include keyword filter configs
-            include_helpful: Include helpful-sort configs
-            timeout: Apify run timeout in seconds
-
-        Returns:
-            Dict with scrape results (raw_count, unique_count, saved_count)
-        """
-        from .amazon_review_service import AmazonReviewService
-
-        amazon_service = AmazonReviewService()
-
-        # Parse URL to get ASIN and domain
-        asin, domain = amazon_service.parse_amazon_url(amazon_url)
-        if not asin:
-            return {
-                "success": False,
-                "error": "Could not extract ASIN from URL",
-                "asin": "",
-                "raw_reviews_count": 0,
-                "unique_reviews_count": 0,
-                "reviews_saved": 0
-            }
-
-        # Get competitor's brand_id
-        competitor = self.get_competitor(competitor_id)
-        if not competitor:
-            return {"success": False, "error": "Competitor not found"}
-
-        brand_id = competitor['brand_id']
-
-        # Get or create competitor_amazon_urls record
-        amazon_url_id = self._get_or_create_competitor_amazon_url(
-            competitor_id=competitor_id,
-            brand_id=UUID(brand_id),
-            amazon_url=amazon_url,
-            asin=asin,
-            domain=domain
-        )
-
-        # Build configs using the same strategy as AmazonReviewService
-        configs = amazon_service.build_scrape_configs(
-            asin=asin,
-            domain=domain,
-            include_keywords=include_keywords,
-            include_helpful=include_helpful
-        )
-
-        logger.info(f"Running Apify with {len(configs)} configs for competitor ASIN {asin}")
-
-        # Run Apify actor
-        try:
-            result = amazon_service.apify.run_actor_batch(
-                actor_id="axesso_data/amazon-reviews-scraper",
-                batch_inputs=configs,
-                timeout=timeout,
-                memory_mbytes=2048
-            )
-            raw_reviews = result.items
-            raw_count = len(raw_reviews)
-            logger.info(f"Got {raw_count} raw reviews from Apify")
-
-        except Exception as e:
-            logger.error(f"Apify scrape failed for competitor: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "asin": asin,
-                "raw_reviews_count": 0,
-                "unique_reviews_count": 0,
-                "reviews_saved": 0
-            }
-
-        # Deduplicate using same method
-        unique_reviews = amazon_service._deduplicate_reviews(raw_reviews)
-        unique_count = len(unique_reviews)
-
-        # Save to competitor-specific tables
-        saved_count = self._save_competitor_reviews(
-            reviews=unique_reviews,
-            amazon_url_id=amazon_url_id,
-            competitor_id=competitor_id,
-            brand_id=UUID(brand_id),
-            asin=asin
-        )
-
-        # Update stats
-        self._update_competitor_amazon_stats(
-            amazon_url_id=amazon_url_id,
-            reviews_count=saved_count,
-            cost_estimate=amazon_service.apify.estimate_cost(raw_count)
-        )
-
-        return {
-            "success": True,
-            "asin": asin,
-            "raw_reviews_count": raw_count,
-            "unique_reviews_count": unique_count,
-            "reviews_saved": saved_count,
-            "cost_estimate": amazon_service.apify.estimate_cost(raw_count)
-        }
-
-    def _get_or_create_competitor_amazon_url(
-        self,
-        competitor_id: UUID,
-        brand_id: UUID,
-        amazon_url: str,
-        asin: str,
-        domain: str
-    ) -> UUID:
-        """Get or create competitor_amazon_urls record."""
-        # Check if exists
-        existing = self.supabase.table("competitor_amazon_urls").select(
-            "id"
-        ).eq("competitor_id", str(competitor_id)).eq("asin", asin).execute()
-
-        if existing.data:
-            return UUID(existing.data[0]["id"])
-
-        # Create new record
-        result = self.supabase.table("competitor_amazon_urls").insert({
+        data = {
             "competitor_id": str(competitor_id),
             "brand_id": str(brand_id),
-            "amazon_url": amazon_url,
-            "asin": asin,
-            "domain_code": domain
-        }).execute()
+            "name": name,
+            "slug": slug,
+            "description": description,
+            "product_code": product_code,
+            "is_active": True
+        }
 
-        return UUID(result.data[0]["id"])
+        result = self.supabase.table("competitor_products").insert(data).execute()
+        logger.info(f"Created competitor product: {name} for competitor {competitor_id}")
+        return result.data[0] if result.data else {}
 
-    def _save_competitor_reviews(
+    def get_competitor_product(
         self,
-        reviews: List[Dict],
-        amazon_url_id: UUID,
-        competitor_id: UUID,
-        brand_id: UUID,
-        asin: str
-    ) -> int:
-        """Save competitor reviews to database."""
-        import re
+        product_id: UUID,
+        include_variants: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get a single competitor product by ID.
 
-        if not reviews:
-            return 0
+        Args:
+            product_id: UUID of the competitor product
+            include_variants: Whether to include variants in response
 
-        saved_count = 0
-        batch_size = 100
+        Returns:
+            Competitor product record with optional variants
+        """
+        if include_variants:
+            result = self.supabase.table("competitor_products").select(
+                "*, competitor_product_variants(*)"
+            ).eq("id", str(product_id)).execute()
+        else:
+            result = self.supabase.table("competitor_products").select("*").eq(
+                "id", str(product_id)
+            ).execute()
 
-        for i in range(0, len(reviews), batch_size):
-            batch = reviews[i:i + batch_size]
-            records = []
-
-            for review in batch:
-                # Parse date
-                review_date = None
-                date_str = review.get("date")
-                if date_str:
-                    try:
-                        review_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
-                    except (ValueError, TypeError):
-                        pass
-
-                # Parse rating
-                rating = self._parse_rating(review.get("rating"))
-
-                records.append({
-                    "competitor_amazon_url_id": str(amazon_url_id),
-                    "competitor_id": str(competitor_id),
-                    "brand_id": str(brand_id),
-                    "review_id": review.get("reviewId"),
-                    "asin": asin,
-                    "rating": rating,
-                    "title": review.get("title"),
-                    "body": review.get("text"),
-                    "author": review.get("author"),
-                    "review_date": review_date.isoformat() if review_date else None,
-                    "verified_purchase": review.get("verified", False),
-                    "helpful_votes": review.get("numberOfHelpful", 0) or 0,
-                })
-
-            try:
-                result = self.supabase.table("competitor_amazon_reviews").upsert(
-                    records,
-                    on_conflict="review_id,asin"
-                ).execute()
-                saved_count += len(result.data)
-            except Exception as e:
-                logger.error(f"Error saving competitor review batch: {e}")
-
-        logger.info(f"Saved {saved_count} competitor reviews to database")
-        return saved_count
-
-    def _parse_rating(self, rating_value: Any) -> Optional[int]:
-        """Parse rating from various formats (mirrors AmazonReviewService)."""
-        import re
-
-        if rating_value is None:
+        if not result.data:
             return None
 
-        if isinstance(rating_value, int):
-            return rating_value if 1 <= rating_value <= 5 else None
+        product = result.data[0]
 
-        if isinstance(rating_value, float):
-            return int(rating_value) if 1 <= rating_value <= 5 else None
+        # Sort variants by display_order if present
+        if include_variants and product.get("competitor_product_variants"):
+            product["competitor_product_variants"] = sorted(
+                product["competitor_product_variants"],
+                key=lambda v: (v.get("display_order", 0), v.get("name", ""))
+            )
 
-        if isinstance(rating_value, str):
-            match = re.search(r'(\d+(?:\.\d+)?)', rating_value)
-            if match:
-                try:
-                    rating = float(match.group(1))
-                    return int(rating) if 1 <= rating <= 5 else None
-                except ValueError:
-                    pass
+        return product
+
+    def get_competitor_products(
+        self,
+        competitor_id: UUID,
+        include_variants: bool = True,
+        active_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all products for a competitor.
+
+        Args:
+            competitor_id: UUID of the competitor
+            include_variants: Whether to include variants
+            active_only: Whether to filter to active products only
+
+        Returns:
+            List of competitor products with optional variants
+        """
+        query = self.supabase.table("competitor_products")
+
+        if include_variants:
+            query = query.select("*, competitor_product_variants(*)")
+        else:
+            query = query.select("*")
+
+        query = query.eq("competitor_id", str(competitor_id))
+
+        if active_only:
+            query = query.eq("is_active", True)
+
+        query = query.order("name")
+
+        result = query.execute()
+        products = result.data or []
+
+        # Sort variants by display_order if present
+        if include_variants:
+            for product in products:
+                if product.get("competitor_product_variants"):
+                    product["competitor_product_variants"] = sorted(
+                        product["competitor_product_variants"],
+                        key=lambda v: (v.get("display_order", 0), v.get("name", ""))
+                    )
+
+        return products
+
+    def update_competitor_product(
+        self,
+        product_id: UUID,
+        updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update a competitor product.
+
+        Args:
+            product_id: UUID of the competitor product
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated product record or None
+        """
+        # Regenerate slug if name is being updated
+        if "name" in updates and "slug" not in updates:
+            updates["slug"] = _generate_slug(updates["name"])
+
+        result = self.supabase.table("competitor_products").update(updates).eq(
+            "id", str(product_id)
+        ).execute()
+
+        if result.data:
+            logger.info(f"Updated competitor product: {product_id}")
+        return result.data[0] if result.data else None
+
+    def delete_competitor_product(self, product_id: UUID) -> bool:
+        """
+        Delete a competitor product (cascades to variants, URLs, etc.).
+
+        Args:
+            product_id: UUID of the competitor product
+
+        Returns:
+            True if deleted successfully
+        """
+        result = self.supabase.table("competitor_products").delete().eq(
+            "id", str(product_id)
+        ).execute()
+
+        if result.data:
+            logger.info(f"Deleted competitor product: {product_id}")
+            return True
+        return False
+
+    # =========================================================================
+    # COMPETITOR PRODUCT VARIANT CRUD
+    # =========================================================================
+
+    def create_competitor_product_variant(
+        self,
+        competitor_product_id: UUID,
+        name: str,
+        variant_type: str = "flavor",
+        description: Optional[str] = None,
+        sku: Optional[str] = None,
+        differentiators: Optional[Dict[str, Any]] = None,
+        price: Optional[float] = None,
+        compare_at_price: Optional[float] = None,
+        is_default: bool = False,
+        display_order: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Create a new variant for a competitor product.
+
+        Args:
+            competitor_product_id: UUID of the competitor product
+            name: Variant name (e.g., "Strawberry", "Large")
+            variant_type: Type of variant (flavor, size, color, bundle, other)
+            description: Variant description
+            sku: Optional SKU/product code
+            differentiators: JSON object with variant-specific attributes
+            price: Price if known
+            compare_at_price: Original price for comparison
+            is_default: Whether this is the default/hero variant
+            display_order: Sort order for display
+
+        Returns:
+            Created variant record
+        """
+        slug = _generate_slug(name)
+
+        data = {
+            "competitor_product_id": str(competitor_product_id),
+            "name": name,
+            "slug": slug,
+            "variant_type": variant_type,
+            "description": description,
+            "sku": sku,
+            "differentiators": differentiators or {},
+            "price": price,
+            "compare_at_price": compare_at_price,
+            "is_active": True,
+            "is_default": is_default,
+            "display_order": display_order
+        }
+
+        result = self.supabase.table("competitor_product_variants").insert(data).execute()
+        logger.info(f"Created variant: {name} for product {competitor_product_id}")
+        return result.data[0] if result.data else {}
+
+    def get_competitor_product_variants(
+        self,
+        competitor_product_id: UUID,
+        active_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all variants for a competitor product.
+
+        Args:
+            competitor_product_id: UUID of the competitor product
+            active_only: Whether to filter to active variants only
+
+        Returns:
+            List of variants ordered by display_order then name
+        """
+        query = self.supabase.table("competitor_product_variants").select("*").eq(
+            "competitor_product_id", str(competitor_product_id)
+        )
+
+        if active_only:
+            query = query.eq("is_active", True)
+
+        result = query.execute()
+        variants = result.data or []
+
+        # Sort by display_order, then name
+        variants.sort(key=lambda v: (v.get("display_order", 0), v.get("name", "")))
+
+        return variants
+
+    def update_competitor_product_variant(
+        self,
+        variant_id: UUID,
+        updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update a competitor product variant.
+
+        Args:
+            variant_id: UUID of the variant
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated variant record or None
+        """
+        # Regenerate slug if name is being updated
+        if "name" in updates and "slug" not in updates:
+            updates["slug"] = _generate_slug(updates["name"])
+
+        result = self.supabase.table("competitor_product_variants").update(updates).eq(
+            "id", str(variant_id)
+        ).execute()
+
+        if result.data:
+            logger.info(f"Updated variant: {variant_id}")
+        return result.data[0] if result.data else None
+
+    def delete_competitor_product_variant(self, variant_id: UUID) -> bool:
+        """
+        Delete a competitor product variant.
+
+        Args:
+            variant_id: UUID of the variant
+
+        Returns:
+            True if deleted successfully
+        """
+        result = self.supabase.table("competitor_product_variants").delete().eq(
+            "id", str(variant_id)
+        ).execute()
+
+        if result.data:
+            logger.info(f"Deleted variant: {variant_id}")
+            return True
+        return False
+
+    def set_default_variant(
+        self,
+        competitor_product_id: UUID,
+        variant_id: UUID
+    ) -> bool:
+        """
+        Set a variant as the default for a product (unsets others).
+
+        Args:
+            competitor_product_id: UUID of the product
+            variant_id: UUID of the variant to set as default
+
+        Returns:
+            True if successful
+        """
+        # Unset all defaults for this product
+        self.supabase.table("competitor_product_variants").update(
+            {"is_default": False}
+        ).eq("competitor_product_id", str(competitor_product_id)).execute()
+
+        # Set the new default
+        result = self.supabase.table("competitor_product_variants").update(
+            {"is_default": True}
+        ).eq("id", str(variant_id)).execute()
+
+        if result.data:
+            logger.info(f"Set default variant: {variant_id} for product {competitor_product_id}")
+            return True
+        return False
+
+    # =========================================================================
+    # COMPETITOR PRODUCT URL PATTERN METHODS
+    # =========================================================================
+
+    def add_competitor_product_url(
+        self,
+        competitor_product_id: UUID,
+        url_pattern: str,
+        match_type: str = "contains",
+        is_primary: bool = False,
+        is_fallback: bool = False,
+        notes: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a URL pattern for a competitor product.
+
+        Args:
+            competitor_product_id: UUID of the competitor product
+            url_pattern: URL pattern to match
+            match_type: How to match (exact, prefix, contains, regex)
+            is_primary: Whether this is the primary landing page
+            is_fallback: Whether this is a fallback for research
+            notes: Additional notes
+
+        Returns:
+            Created URL pattern record
+        """
+        # Normalize the URL pattern
+        normalized = self._normalize_url(url_pattern)
+
+        data = {
+            "competitor_product_id": str(competitor_product_id),
+            "url_pattern": normalized,
+            "match_type": match_type,
+            "is_primary": is_primary,
+            "is_fallback": is_fallback,
+            "notes": notes
+        }
+
+        result = self.supabase.table("competitor_product_urls").upsert(
+            data, on_conflict="competitor_product_id,url_pattern"
+        ).execute()
+
+        logger.info(f"Added URL pattern for product {competitor_product_id}: {normalized}")
+        return result.data[0] if result.data else {}
+
+    def get_competitor_product_urls(
+        self,
+        competitor_product_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all URL patterns for a competitor product.
+
+        Args:
+            competitor_product_id: UUID of the competitor product
+
+        Returns:
+            List of URL pattern records
+        """
+        result = self.supabase.table("competitor_product_urls").select("*").eq(
+            "competitor_product_id", str(competitor_product_id)
+        ).order("is_primary", desc=True).execute()
+        return result.data or []
+
+    def delete_competitor_product_url(self, url_id: UUID) -> bool:
+        """
+        Delete a competitor product URL pattern.
+
+        Args:
+            url_id: UUID of the URL pattern record
+
+        Returns:
+            True if deleted successfully
+        """
+        result = self.supabase.table("competitor_product_urls").delete().eq(
+            "id", str(url_id)
+        ).execute()
+
+        if result.data:
+            logger.info(f"Deleted URL pattern: {url_id}")
+            return True
+        return False
+
+    def match_url_to_competitor_product(
+        self,
+        url: str,
+        competitor_id: UUID
+    ) -> Optional[Tuple[UUID, float, str]]:
+        """
+        Match a URL to a competitor product using configured patterns.
+
+        Args:
+            url: URL to match
+            competitor_id: UUID of the competitor to search within
+
+        Returns:
+            Tuple of (product_id, confidence_score, match_type) or None
+        """
+        # Normalize the input URL
+        normalized_url = self._normalize_url(url)
+
+        # Get all products for this competitor
+        products = self.get_competitor_products(competitor_id, include_variants=False)
+
+        best_match: Optional[Tuple[UUID, float, str]] = None
+        best_confidence = 0.0
+
+        for product in products:
+            product_id = UUID(product["id"])
+
+            # Get URL patterns for this product
+            patterns = self.get_competitor_product_urls(product_id)
+
+            for pattern in patterns:
+                confidence = self._check_pattern_match(
+                    normalized_url,
+                    pattern["url_pattern"],
+                    pattern["match_type"]
+                )
+
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_match = (product_id, confidence, pattern["match_type"])
+
+        if best_match and best_confidence >= 0.5:
+            logger.debug(f"Matched URL to product: {best_match[0]} (confidence: {best_match[1]:.2f})")
+            return best_match
 
         return None
 
-    def _update_competitor_amazon_stats(
-        self,
-        amazon_url_id: UUID,
-        reviews_count: int,
-        cost_estimate: float
-    ):
-        """Update competitor_amazon_urls with scrape statistics."""
-        try:
-            self.supabase.table("competitor_amazon_urls").update({
-                "last_scraped_at": datetime.utcnow().isoformat(),
-                "total_reviews_scraped": reviews_count,
-                "scrape_cost_estimate": cost_estimate
-            }).eq("id", str(amazon_url_id)).execute()
-        except Exception as e:
-            logger.error(f"Error updating competitor amazon stats: {e}")
-
-    async def analyze_competitor_amazon_reviews(
-        self,
-        competitor_id: UUID,
-        limit: int = 500
-    ) -> Optional[Dict[str, Any]]:
+    def _normalize_url(self, url: str) -> str:
         """
-        Analyze stored competitor reviews with Claude to extract persona signals.
+        Normalize URL for matching.
 
-        Uses the same analysis prompt as AmazonReviewService for consistency.
+        Removes:
+        - Protocol (http/https)
+        - www. prefix
+        - Trailing slashes
+        - Tracking parameters (utm_*, fbclid, gclid, ref, source)
 
         Args:
-            competitor_id: Competitor UUID
-            limit: Maximum reviews to analyze
+            url: URL to normalize
 
         Returns:
-            Analysis results dictionary or None if no reviews
+            Normalized URL
         """
-        from anthropic import Anthropic
-        from .amazon_review_service import REVIEW_ANALYSIS_PROMPT
-        import re
+        from urllib.parse import urlparse, parse_qs, urlencode
 
-        # Fetch reviews
-        result = self.supabase.table("competitor_amazon_reviews").select(
-            "rating, title, body, author"
-        ).eq("competitor_id", str(competitor_id)).limit(limit).execute()
+        # Handle empty input
+        if not url:
+            return ""
 
-        if not result.data:
-            logger.info(f"No reviews found for competitor {competitor_id}")
-            return None
-
-        reviews = result.data
-        logger.info(f"Analyzing {len(reviews)} reviews for competitor {competitor_id}")
-
-        # Format reviews for prompt
-        reviews_text = self._format_reviews_for_prompt(reviews)
-
-        # Get competitor info
-        competitor = self.get_competitor(competitor_id)
-        brand_id = competitor['brand_id']
-
-        # Call Claude for analysis
-        client = Anthropic()
+        # Add protocol if missing for parsing
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
 
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                messages=[{
-                    "role": "user",
-                    "content": REVIEW_ANALYSIS_PROMPT.format(reviews_text=reviews_text)
-                }]
-            )
+            parsed = urlparse(url)
 
-            # Parse response
-            analysis_text = response.content[0].text
+            # Remove www. prefix
+            netloc = parsed.netloc.lower()
+            if netloc.startswith('www.'):
+                netloc = netloc[4:]
 
-            # Extract JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', analysis_text)
-            if json_match:
-                analysis = json.loads(json_match.group())
+            # Remove tracking params
+            tracking_params = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_term',
+                             'utm_content', 'fbclid', 'gclid', 'ref', 'source', 'mc_cid',
+                             'mc_eid', '_ga', '_gid'}
+
+            if parsed.query:
+                params = parse_qs(parsed.query, keep_blank_values=True)
+                filtered_params = {k: v for k, v in params.items()
+                                 if k.lower() not in tracking_params}
+                query = urlencode(filtered_params, doseq=True) if filtered_params else ""
             else:
-                logger.error("Could not parse analysis JSON")
-                return None
+                query = ""
 
-            # Save analysis to database
-            self._save_competitor_review_analysis(
-                competitor_id=competitor_id,
-                brand_id=UUID(brand_id),
-                reviews_count=len(reviews),
-                analysis=analysis
-            )
+            # Reconstruct URL without protocol
+            path = parsed.path.rstrip('/')
+            result = netloc + path
+            if query:
+                result += '?' + query
 
-            return analysis
+            return result
 
-        except Exception as e:
-            logger.error(f"Error analyzing competitor reviews: {e}")
-            return None
+        except Exception:
+            return url.lower().strip('/')
 
-    def _format_reviews_for_prompt(self, reviews: List[Dict]) -> str:
-        """Format reviews for Claude prompt with author attribution."""
-        lines = []
-        for review in reviews:
-            rating = review.get("rating", "?")
-            title = review.get("title", "No title")
-            body = review.get("body", "No content")
-            author = review.get("author", "Anonymous")
+    def _check_pattern_match(
+        self,
+        url: str,
+        pattern: str,
+        match_type: str
+    ) -> float:
+        """
+        Check if URL matches pattern and return confidence score.
 
-            # Format author
-            author_formatted = self._format_author_name(author)
+        Args:
+            url: Normalized URL to check
+            pattern: Pattern to match against
+            match_type: Type of match (exact, prefix, contains, regex)
 
-            # Truncate long reviews
-            if len(body) > 500:
-                body = body[:500] + "..."
+        Returns:
+            Confidence score 0.0-1.0
+        """
+        if match_type == "exact":
+            return 1.0 if url == pattern else 0.0
 
-            lines.append(f"[{rating}★] {author_formatted} | {title}\n{body}\n")
+        elif match_type == "prefix":
+            if url.startswith(pattern):
+                return 0.95
+            return 0.0
 
-        return "\n---\n".join(lines)
+        elif match_type == "contains":
+            if pattern in url:
+                # Higher confidence for longer patterns (more specific)
+                confidence = 0.5 + (len(pattern) / len(url)) * 0.4
+                return min(confidence, 0.9)
+            return 0.0
 
-    def _format_author_name(self, author: str) -> str:
-        """Format author name as 'First L.' for attribution."""
-        if not author or author.lower() in ["anonymous", "a customer", "amazon customer"]:
-            return "Verified Buyer"
+        elif match_type == "regex":
+            try:
+                if re.search(pattern, url):
+                    return 0.85
+            except re.error:
+                logger.warning(f"Invalid regex pattern: {pattern}")
+            return 0.0
 
-        author = author.strip()
-        if len(author) <= 15:
-            return author
+        return 0.0
 
-        parts = author.split()
-        if len(parts) >= 2:
-            first = parts[0]
-            last_initial = parts[-1][0].upper() + "."
-            return f"{first} {last_initial}"
+    # =========================================================================
+    # COMPETITOR AD MATCHING METHODS
+    # =========================================================================
 
-        return author[:15]
-
-    def _save_competitor_review_analysis(
+    def bulk_match_competitor_ads(
         self,
         competitor_id: UUID,
-        brand_id: UUID,
-        reviews_count: int,
-        analysis: Dict[str, Any]
-    ):
-        """Save competitor review analysis to database."""
-        try:
-            # Extract quotes for legacy columns
-            transformation_quotes = [
-                q.get("text", "") for q in
-                analysis.get("transformation", {}).get("quotes", [])
-            ]
-            pain_quotes = [
-                q.get("text", "") for q in
-                analysis.get("pain_points", {}).get("quotes", [])
-            ]
+        limit: int = 500,
+        only_unmatched: bool = True
+    ) -> Dict[str, int]:
+        """
+        Match competitor ads to products via URL patterns.
 
-            # Combine objection categories
-            combined_objections = {
-                "past_failures": analysis.get("past_failures", {}),
-                "buying_objections": analysis.get("buying_objections", {}),
-                "familiar_promises": analysis.get("familiar_promises", {})
-            }
+        Args:
+            competitor_id: UUID of the competitor
+            limit: Maximum ads to process
+            only_unmatched: Only process ads without product assignments
 
-            # Build purchase triggers
-            triggers = []
-            for cat in ["transformation", "desired_features"]:
-                insights = analysis.get(cat, {}).get("insights", [])
-                triggers.extend(insights[:3])
+        Returns:
+            Stats dict: {matched, unmatched, failed, total}
+        """
+        # Get competitor ads
+        query = self.supabase.table("competitor_ads").select(
+            "id, link_url, snapshot_data"
+        ).eq("competitor_id", str(competitor_id))
 
-            self.supabase.table("competitor_amazon_review_analysis").upsert({
-                "competitor_id": str(competitor_id),
-                "brand_id": str(brand_id),
-                "total_reviews_analyzed": reviews_count,
-                "sentiment_distribution": analysis.get("sentiment_summary", {}),
-                "pain_points": analysis.get("pain_points", {}),
-                "desires": analysis.get("desired_features", {}),
-                "language_patterns": analysis.get("language_patterns", {}),
-                "objections": combined_objections,
-                "purchase_triggers": triggers,
-                "transformation": analysis.get("transformation", {}),
-                "transformation_quotes": transformation_quotes,
-                "top_positive_quotes": transformation_quotes[:5],
-                "top_negative_quotes": pain_quotes[:5],
-                "model_used": "claude-sonnet-4-20250514",
-                "analyzed_at": datetime.utcnow().isoformat()
-            }, on_conflict="competitor_id").execute()
+        if only_unmatched:
+            query = query.is_("competitor_product_id", "null")
 
-            logger.info(f"Saved competitor review analysis for {competitor_id}")
+        query = query.limit(limit)
+        result = query.execute()
+        ads = result.data or []
 
-        except Exception as e:
-            logger.error(f"Error saving competitor review analysis: {e}")
+        stats = {"matched": 0, "unmatched": 0, "failed": 0, "total": len(ads)}
 
-    def get_competitor_amazon_stats(self, competitor_id: UUID) -> Dict[str, Any]:
-        """Get Amazon review statistics for a competitor."""
-        # Get amazon URL info
-        url_result = self.supabase.table("competitor_amazon_urls").select(
-            "id, asin, last_scraped_at, total_reviews_scraped, scrape_cost_estimate"
-        ).eq("competitor_id", str(competitor_id)).execute()
+        for ad in ads:
+            try:
+                # Extract URL from ad
+                url = self._extract_url_from_ad(ad)
+                if not url:
+                    stats["unmatched"] += 1
+                    continue
 
-        # Get review count
-        review_result = self.supabase.table("competitor_amazon_reviews").select(
-            "id", count="exact"
-        ).eq("competitor_id", str(competitor_id)).execute()
+                # Try to match to product
+                match = self.match_url_to_competitor_product(url, competitor_id)
 
-        # Check if analysis exists
-        analysis_result = self.supabase.table("competitor_amazon_review_analysis").select(
-            "analyzed_at, total_reviews_analyzed"
-        ).eq("competitor_id", str(competitor_id)).execute()
+                if match:
+                    product_id, confidence, match_method = match
 
-        url_data = url_result.data[0] if url_result.data else {}
-        analysis_data = analysis_result.data[0] if analysis_result.data else {}
+                    # Update ad with product assignment
+                    self.supabase.table("competitor_ads").update({
+                        "competitor_product_id": str(product_id),
+                        "product_match_confidence": confidence,
+                        "product_match_method": "url"
+                    }).eq("id", ad["id"]).execute()
 
-        return {
-            "has_amazon_url": bool(url_result.data),
-            "asin": url_data.get("asin"),
-            "reviews_scraped": url_data.get("total_reviews_scraped", 0),
-            "reviews_in_db": review_result.count or 0,
-            "last_scraped": url_data.get("last_scraped_at"),
-            "cost_estimate": url_data.get("scrape_cost_estimate", 0),
-            "has_analysis": bool(analysis_result.data),
-            "analyzed_at": analysis_data.get("analyzed_at"),
-            "reviews_analyzed": analysis_data.get("total_reviews_analyzed", 0)
-        }
+                    stats["matched"] += 1
+                else:
+                    stats["unmatched"] += 1
 
-    def get_competitor_amazon_analysis(self, competitor_id: UUID) -> Optional[Dict[str, Any]]:
-        """Get the full Amazon review analysis for a competitor.
+            except Exception as e:
+                logger.error(f"Failed to match ad {ad['id']}: {e}")
+                stats["failed"] += 1
+
+        logger.info(f"Bulk match complete for competitor {competitor_id}: {stats}")
+        return stats
+
+    def manually_assign_ad_to_product(
+        self,
+        ad_id: UUID,
+        competitor_product_id: UUID
+    ) -> bool:
+        """
+        Manually assign a competitor ad to a product.
+
+        Args:
+            ad_id: UUID of the competitor ad
+            competitor_product_id: UUID of the competitor product
+
+        Returns:
+            True if successful
+        """
+        result = self.supabase.table("competitor_ads").update({
+            "competitor_product_id": str(competitor_product_id),
+            "product_match_confidence": 1.0,
+            "product_match_method": "manual"
+        }).eq("id", str(ad_id)).execute()
+
+        if result.data:
+            logger.info(f"Manually assigned ad {ad_id} to product {competitor_product_id}")
+            return True
+        return False
+
+    def get_competitor_ads_by_product(
+        self,
+        competitor_product_id: UUID,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get competitor ads for a specific product.
+
+        Args:
+            competitor_product_id: UUID of the competitor product
+            limit: Maximum ads to return
+
+        Returns:
+            List of competitor ad records
+        """
+        result = self.supabase.table("competitor_ads").select("*").eq(
+            "competitor_product_id", str(competitor_product_id)
+        ).order("started_running", desc=True).limit(limit).execute()
+        return result.data or []
+
+    def _extract_url_from_ad(self, ad: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract landing page URL from competitor ad.
+
+        Args:
+            ad: Competitor ad record with link_url and/or snapshot_data
+
+        Returns:
+            Extracted URL or None
+        """
+        import json
+
+        # First try direct link_url
+        if ad.get("link_url"):
+            return ad["link_url"]
+
+        # Try snapshot_data
+        snapshot = ad.get("snapshot_data")
+        if not snapshot:
+            return None
+
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except json.JSONDecodeError:
+                return None
+
+        # Try various fields
+        url = snapshot.get("link_url")
+        if url:
+            return url
+
+        # Try cards (carousel ads)
+        cards = snapshot.get("cards", [])
+        if cards and isinstance(cards, list):
+            for card in cards:
+                if card.get("link_url"):
+                    return card["link_url"]
+
+        # Try cta_link
+        url = snapshot.get("cta_link")
+        if url:
+            return url
+
+        return None
+
+    # =========================================================================
+    # STATISTICS METHODS
+    # =========================================================================
+
+    def get_competitor_stats(self, competitor_id: UUID) -> Dict[str, Any]:
+        """
+        Get statistics for a competitor.
 
         Args:
             competitor_id: UUID of the competitor
 
         Returns:
-            Full analysis dict with pain_points, desires, language_patterns, quotes, etc.
-            Returns None if no analysis exists.
+            Dict with counts for ads, products, analyses, etc.
         """
-        result = self.supabase.table("competitor_amazon_review_analysis").select(
-            "*"
-        ).eq("competitor_id", str(competitor_id)).execute()
+        competitor_id_str = str(competitor_id)
 
-        if not result.data:
+        # Get counts from various tables
+        ads_result = self.supabase.table("competitor_ads").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).execute()
+
+        products_result = self.supabase.table("competitor_products").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).eq("is_active", True).execute()
+
+        landing_pages_result = self.supabase.table("competitor_landing_pages").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).execute()
+
+        amazon_urls_result = self.supabase.table("competitor_amazon_urls").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).execute()
+
+        return {
+            "ads": ads_result.count or 0,
+            "products": products_result.count or 0,
+            "landing_pages": landing_pages_result.count or 0,
+            "amazon_urls": amazon_urls_result.count or 0
+        }
+
+    def get_competitor_product_stats(self, product_id: UUID) -> Dict[str, Any]:
+        """
+        Get statistics for a competitor product.
+
+        Args:
+            product_id: UUID of the competitor product
+
+        Returns:
+            Dict with counts for ads, URLs, landing pages linked to this product
+        """
+        product_id_str = str(product_id)
+
+        # Get counts
+        ads_result = self.supabase.table("competitor_ads").select(
+            "id", count="exact"
+        ).eq("competitor_product_id", product_id_str).execute()
+
+        urls_result = self.supabase.table("competitor_product_urls").select(
+            "id", count="exact"
+        ).eq("competitor_product_id", product_id_str).execute()
+
+        variants_result = self.supabase.table("competitor_product_variants").select(
+            "id", count="exact"
+        ).eq("competitor_product_id", product_id_str).eq("is_active", True).execute()
+
+        amazon_result = self.supabase.table("competitor_amazon_urls").select(
+            "id", count="exact"
+        ).eq("competitor_product_id", product_id_str).execute()
+
+        landing_pages_result = self.supabase.table("competitor_landing_pages").select(
+            "id", count="exact"
+        ).eq("competitor_product_id", product_id_str).execute()
+
+        return {
+            "ads": ads_result.count or 0,
+            "url_patterns": urls_result.count or 0,
+            "variants": variants_result.count or 0,
+            "amazon_urls": amazon_result.count or 0,
+            "landing_pages": landing_pages_result.count or 0
+        }
+
+    def get_competitor_matching_stats(self, competitor_id: UUID) -> Dict[str, Any]:
+        """
+        Get URL matching statistics for a competitor (similar to brand ProductURLService).
+
+        Args:
+            competitor_id: UUID of the competitor
+
+        Returns:
+            Dict with total_ads, matched_ads, unmatched_ads, match_percentage, configured_patterns
+        """
+        competitor_id_str = str(competitor_id)
+
+        # Total ads for this competitor
+        total_result = self.supabase.table("competitor_ads").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).execute()
+        total_ads = total_result.count or 0
+
+        # Matched ads (have competitor_product_id)
+        matched_result = self.supabase.table("competitor_ads").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id_str).not_.is_(
+            "competitor_product_id", "null"
+        ).execute()
+        matched_ads = matched_result.count or 0
+
+        # Unmatched ads
+        unmatched_ads = total_ads - matched_ads
+
+        # Match percentage
+        match_percentage = round((matched_ads / total_ads * 100), 1) if total_ads > 0 else 0
+
+        # Configured URL patterns (across all products for this competitor)
+        products = self.get_competitor_products(competitor_id, include_variants=False)
+        configured_patterns = 0
+        for product in products:
+            urls = self.get_competitor_product_urls(UUID(product["id"]))
+            configured_patterns += len(urls)
+
+        return {
+            "total_ads": total_ads,
+            "matched_ads": matched_ads,
+            "unmatched_ads": unmatched_ads,
+            "match_percentage": match_percentage,
+            "configured_patterns": configured_patterns
+        }
+
+    # =========================================================================
+    # AD SCRAPING INTEGRATION
+    # =========================================================================
+
+    def save_competitor_ad(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        ad_data: Dict[str, Any],
+        scrape_source: str = "ad_library_search"
+    ) -> Optional[UUID]:
+        """
+        Save a scraped Facebook ad to the competitor_ads table.
+
+        Args:
+            competitor_id: UUID of the competitor
+            brand_id: UUID of the brand tracking this competitor
+            ad_data: Ad data dict (from FacebookService or similar)
+            scrape_source: Source identifier
+
+        Returns:
+            UUID of saved record or None if failed
+        """
+        import json
+        from datetime import datetime
+
+        try:
+            # Parse snapshot to extract additional fields
+            snapshot_raw = ad_data.get("snapshot")
+            snapshot = {}
+            if snapshot_raw:
+                if isinstance(snapshot_raw, str):
+                    try:
+                        snapshot = json.loads(snapshot_raw)
+                    except json.JSONDecodeError:
+                        pass
+                elif isinstance(snapshot_raw, dict):
+                    snapshot = snapshot_raw
+
+            record = {
+                "competitor_id": str(competitor_id),
+                "brand_id": str(brand_id),
+                "ad_archive_id": ad_data.get("ad_archive_id"),
+                "page_id": ad_data.get("page_id"),
+                "page_name": ad_data.get("page_name"),
+                "is_active": ad_data.get("is_active", False),
+                "started_running": ad_data.get("start_date"),
+                "stopped_running": ad_data.get("end_date"),
+                "ad_creative_body": snapshot.get("body", {}).get("text") if isinstance(snapshot.get("body"), dict) else None,
+                "link_url": snapshot.get("link_url"),
+                "cta_text": snapshot.get("cta_text"),
+                "snapshot_data": snapshot_raw,
+                "scrape_source": scrape_source,
+                "scraped_at": datetime.utcnow().isoformat()
+            }
+
+            # Upsert based on ad_archive_id
+            result = self.supabase.table("competitor_ads").upsert(
+                record,
+                on_conflict="competitor_id,ad_archive_id"
+            ).execute()
+
+            if result.data:
+                ad_id = result.data[0]["id"]
+                logger.info(f"Saved competitor ad: {ad_id}")
+                return UUID(ad_id)
+
             return None
 
-        return result.data[0]
+        except Exception as e:
+            logger.error(f"Failed to save competitor ad: {e}")
+            return None
 
+    def save_competitor_ads_batch(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        ads: List[Dict[str, Any]],
+        scrape_source: str = "ad_library_search"
+    ) -> Dict[str, int]:
+        """
+        Save multiple competitor ads in batch.
 
-# Convenience function
-def get_competitor_service() -> CompetitorService:
-    """Get a CompetitorService instance."""
-    return CompetitorService()
+        Args:
+            competitor_id: UUID of the competitor
+            brand_id: UUID of the brand
+            ads: List of ad data dicts
+            scrape_source: Source identifier
+
+        Returns:
+            Stats dict: {saved, failed, total}
+        """
+        stats = {"saved": 0, "failed": 0, "total": len(ads)}
+
+        for ad_data in ads:
+            result = self.save_competitor_ad(
+                competitor_id=competitor_id,
+                brand_id=brand_id,
+                ad_data=ad_data,
+                scrape_source=scrape_source
+            )
+            if result:
+                stats["saved"] += 1
+            else:
+                stats["failed"] += 1
+
+        logger.info(f"Batch save complete: {stats}")
+        return stats
+
+    # =========================================================================
+    # LANDING PAGE SCRAPING
+    # =========================================================================
+
+    async def scrape_and_save_landing_page(
+        self,
+        url: str,
+        competitor_id: UUID,
+        brand_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Optional[UUID]:
+        """
+        Scrape a landing page and save to competitor_landing_pages.
+
+        Args:
+            url: URL to scrape
+            competitor_id: UUID of the competitor
+            brand_id: UUID of the brand
+            competitor_product_id: Optional product to associate
+
+        Returns:
+            UUID of saved record or None if failed
+        """
+        from datetime import datetime
+
+        try:
+            # Import web scraping service
+            from .web_scraping_service import WebScrapingService
+
+            scraper = WebScrapingService()
+            result = await scraper.scrape_url_async(
+                url=url,
+                formats=["markdown", "html"],
+                only_main_content=True
+            )
+
+            if not result.success:
+                logger.error(f"Failed to scrape {url}: {result.error}")
+                return None
+
+            # Save to database
+            record = {
+                "competitor_id": str(competitor_id),
+                "brand_id": str(brand_id),
+                "url": url,
+                "is_manual": False,
+                "scraped_content": result.markdown,
+                "scraped_html": result.html,
+                "scraped_at": datetime.utcnow().isoformat()
+            }
+
+            if competitor_product_id:
+                record["competitor_product_id"] = str(competitor_product_id)
+
+            db_result = self.supabase.table("competitor_landing_pages").upsert(
+                record,
+                on_conflict="competitor_id,url"
+            ).execute()
+
+            if db_result.data:
+                page_id = db_result.data[0]["id"]
+                logger.info(f"Saved landing page: {page_id}")
+                return UUID(page_id)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to scrape landing page {url}: {e}")
+            return None
+
+    async def analyze_landing_page(
+        self,
+        landing_page_id: UUID
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Analyze a scraped landing page using AI.
+
+        Args:
+            landing_page_id: UUID of the landing page record
+
+        Returns:
+            Analysis data dict or None if failed
+        """
+        from datetime import datetime
+        from anthropic import Anthropic
+
+        try:
+            # Get landing page content
+            result = self.supabase.table("competitor_landing_pages").select(
+                "id, url, scraped_content"
+            ).eq("id", str(landing_page_id)).execute()
+
+            if not result.data or not result.data[0].get("scraped_content"):
+                logger.error(f"Landing page {landing_page_id} has no scraped content")
+                return None
+
+            page = result.data[0]
+            content = page["scraped_content"]
+
+            # Analyze with Claude
+            anthropic = Anthropic()
+            prompt = f"""Analyze this competitor landing page content and extract key marketing elements.
+
+URL: {page['url']}
+
+CONTENT:
+{content[:8000]}
+
+Extract and return JSON with:
+{{
+  "headline": "Main headline/hero text",
+  "value_proposition": "Core value proposition",
+  "target_audience": "Who the page targets",
+  "key_benefits": ["Benefit 1", "Benefit 2", ...],
+  "features": ["Feature 1", "Feature 2", ...],
+  "social_proof": ["Testimonial/stat 1", ...],
+  "objection_handling": ["FAQ/objection 1", ...],
+  "call_to_action": "Primary CTA text",
+  "urgency_elements": ["Urgency element 1", ...],
+  "pricing_info": "Price or pricing model if visible",
+  "trust_signals": ["Trust signal 1", ...],
+  "pain_points_addressed": ["Pain point 1", ...],
+  "emotional_triggers": ["Emotional trigger 1", ...]
+}}
+
+Return ONLY valid JSON."""
+
+            message = anthropic.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response_text = message.content[0].text
+
+            # Parse response
+            import json
+            clean_response = response_text.strip()
+            if clean_response.startswith("```"):
+                lines = clean_response.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                clean_response = "\n".join(lines)
+
+            analysis_data = json.loads(clean_response)
+
+            # Update database
+            self.supabase.table("competitor_landing_pages").update({
+                "analysis_data": analysis_data,
+                "analyzed_at": datetime.utcnow().isoformat()
+            }).eq("id", str(landing_page_id)).execute()
+
+            logger.info(f"Analyzed landing page: {landing_page_id}")
+            return analysis_data
+
+        except Exception as e:
+            logger.error(f"Failed to analyze landing page {landing_page_id}: {e}")
+            return None

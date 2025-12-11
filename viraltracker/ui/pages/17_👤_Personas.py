@@ -295,7 +295,8 @@ def render_persona_editor(persona_id: str):
         "5. Worldview",
         "6. Domain",
         "7. Purchase",
-        "8. Objections"
+        "8. Objections",
+        "9. Testimonials"
     ])
 
     updated_persona = {}
@@ -637,6 +638,69 @@ def render_persona_editor(persona_id: str):
                 height=150
             ).split("\n")
             updated_persona["barriers_to_behavior"] = [x.strip() for x in updated_persona["barriers_to_behavior"] if x.strip()]
+
+    # Tab 9: Testimonials (from Amazon Reviews)
+    with tabs[8]:
+        st.subheader("Customer Voice & Testimonials")
+        st.caption("Real customer language from Amazon reviews - gold for ad copy")
+
+        # Get testimonials from persona's amazon_testimonials field
+        testimonials = persona.amazon_testimonials if hasattr(persona, 'amazon_testimonials') and persona.amazon_testimonials else {}
+
+        if testimonials:
+            # Helper function to render quotes
+            def render_quotes(quotes_list, color="blue"):
+                if not quotes_list:
+                    st.caption("No quotes in this category")
+                    return
+                for q in quotes_list[:10]:  # Limit to 10
+                    if isinstance(q, dict):
+                        quote_text = q.get('quote', q.get('text', ''))
+                        author = q.get('author', '')
+                        rating = q.get('rating', '')
+                        rating_stars = '⭐' * int(rating) if rating and str(rating).isdigit() else ''
+                        if author and author.lower() not in ['verified buyer', 'anonymous', '']:
+                            st.markdown(f"> \"{quote_text}\" — *{author}* {rating_stars}")
+                        else:
+                            st.markdown(f"> \"{quote_text}\" {rating_stars}")
+                    else:
+                        st.markdown(f"> \"{q}\"")
+
+            col_left, col_right = st.columns(2)
+
+            with col_left:
+                st.markdown("**🌟 Transformation (Results/Outcomes)**")
+                render_quotes(testimonials.get('transformation', []))
+                st.markdown("---")
+
+                st.markdown("**😣 Pain Points (Problems Before Product)**")
+                render_quotes(testimonials.get('pain_points', []))
+                st.markdown("---")
+
+                st.markdown("**✨ Desired Features**")
+                render_quotes(testimonials.get('desired_features', []))
+
+            with col_right:
+                st.markdown("**❌ Past Failures (Other Products)**")
+                render_quotes(testimonials.get('past_failures', []))
+                st.markdown("---")
+
+                st.markdown("**🤔 Buying Objections (Skepticism)**")
+                render_quotes(testimonials.get('buying_objections', []))
+                st.markdown("---")
+
+                st.markdown("**📢 Familiar Promises (Other Brand Claims)**")
+                render_quotes(testimonials.get('familiar_promises', []))
+
+        else:
+            st.info("No Amazon testimonials available for this persona.")
+            st.markdown("""
+            **To populate this tab:**
+            1. Go to **URL Mapping** page
+            2. Add Amazon product URLs for this brand's products
+            3. Scrape and analyze the reviews
+            4. Re-synthesize the persona to include review insights
+            """)
 
     # Save button
     st.divider()

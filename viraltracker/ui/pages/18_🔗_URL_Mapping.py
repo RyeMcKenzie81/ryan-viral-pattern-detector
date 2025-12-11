@@ -2,16 +2,16 @@
 URL Mapping - Product identification for Facebook ads.
 
 This page allows users to:
-- Configure landing page URLs for each product
+- Configure landing page URLs for each product (brand or competitor)
 - Run bulk URL matching on scraped ads
 - Review and assign unmatched URLs to products
 - View matching statistics
-- Add Amazon product URLs for review scraping
 """
 
 import streamlit as st
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 # Page config
 st.set_page_config(
@@ -29,8 +29,8 @@ if 'selected_brand_id' not in st.session_state:
     st.session_state.selected_brand_id = None
 if 'matching_in_progress' not in st.session_state:
     st.session_state.matching_in_progress = False
-if 'amazon_scraping' not in st.session_state:
-    st.session_state.amazon_scraping = False
+if 'url_mapping_mode' not in st.session_state:
+    st.session_state.url_mapping_mode = "Brand Products"
 
 
 def get_supabase_client():
@@ -45,10 +45,10 @@ def get_product_url_service():
     return ProductURLService()
 
 
-def get_amazon_review_service():
-    """Get AmazonReviewService instance."""
-    from viraltracker.services.amazon_review_service import AmazonReviewService
-    return AmazonReviewService()
+def get_competitor_service():
+    """Get CompetitorService instance."""
+    from viraltracker.services.competitor_service import CompetitorService
+    return CompetitorService()
 
 
 def get_brands():
@@ -113,6 +113,172 @@ if selected_brand_name:
     st.session_state.selected_brand_id = brand_id
 else:
     st.stop()
+
+# Mode toggle: Brand Products vs Competitor Products
+st.markdown("---")
+mode_col1, mode_col2 = st.columns([1, 3])
+with mode_col1:
+    mode = st.radio(
+        "Mode",
+        options=["Brand Products", "Competitor Products"],
+        index=0 if st.session_state.url_mapping_mode == "Brand Products" else 1,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    st.session_state.url_mapping_mode = mode
+
+# ============================================================
+# COMPETITOR PRODUCTS MODE
+# ============================================================
+if mode == "Competitor Products":
+    competitor_service = get_competitor_service()
+
+    # Get competitors for this brand
+    competitors = competitor_service.get_competitors_for_brand(UUID(brand_id))
+
+    if not competitors:
+        st.warning("No competitors found for this brand. Add competitors on the Competitors page first.")
+        st.stop()
+
+    # Competitor selector
+    competitor_options = {c['name']: c['id'] for c in competitors}
+    selected_competitor_name = st.selectbox(
+        "Select Competitor",
+        options=list(competitor_options.keys()),
+        index=0
+    )
+
+    if not selected_competitor_name:
+        st.stop()
+
+    competitor_id = UUID(competitor_options[selected_competitor_name])
+
+    # Get competitor products
+    competitor_products = competitor_service.get_competitor_products(competitor_id, include_variants=False)
+
+    if not competitor_products:
+        st.info(f"No products found for {selected_competitor_name}. Add products on the Competitors page first.")
+        st.stop()
+
+    # Statistics Section
+    st.markdown("---")
+    st.subheader("📊 Matching Statistics")
+
+    stats = competitor_service.get_competitor_matching_stats(competitor_id)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Ads", stats['total_ads'])
+    with col2:
+        st.metric("Matched", stats['matched_ads'], delta=f"{stats['match_percentage']}%")
+    with col3:
+        st.metric("Unmatched", stats['unmatched_ads'])
+    with col4:
+        st.metric("URL Patterns", stats['configured_patterns'])
+
+    # Bulk match button
+    if stats['configured_patterns'] > 0 and stats['unmatched_ads'] > 0:
+        if st.button("🔄 Run Bulk URL Matching", disabled=st.session_state.matching_in_progress, help="Match competitor ads to products using configured patterns"):
+            st.session_state.matching_in_progress = True
+            with st.spinner("Matching competitor ads to products..."):
+                try:
+                    result = competitor_service.bulk_match_competitor_ads(competitor_id, limit=500)
+                    st.success(f"Matched {result['matched']} ads, {result['unmatched']} unmatched, {result['failed']} failed")
+                    st.session_state.matching_in_progress = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Matching failed: {e}")
+                    st.session_state.matching_in_progress = False
+    elif stats['configured_patterns'] == 0:
+        st.info("Add URL patterns to products below, then run bulk matching.")
+
+    # Product URL Patterns
+    st.markdown("---")
+    st.subheader("🏷️ Competitor Product URL Patterns")
+
+    product_tabs = st.tabs([p['name'] for p in competitor_products])
+
+    for i, (tab, product) in enumerate(zip(product_tabs, competitor_products)):
+        with tab:
+            product_id = UUID(product['id'])
+            urls = competitor_service.get_competitor_product_urls(product_id)
+
+            # Display existing URLs
+            if urls:
+                for url in urls:
+                    col1, col2, col3 = st.columns([4, 1, 1])
+                    with col1:
+                        badge = "🏠" if url.get('is_primary') else ""
+                        st.text(f"{badge} {url['url_pattern']}")
+                    with col2:
+                        st.caption(url['match_type'])
+                    with col3:
+                        if st.button("🗑️", key=f"comp_del_{url['id']}", help="Delete"):
+                            competitor_service.delete_competitor_product_url(UUID(url['id']))
+                            st.rerun()
+            else:
+                st.info("No URL patterns configured for this product.")
+
+            # Add new URL form
+            with st.expander("➕ Add URL Pattern"):
+                new_url = st.text_input(
+                    "URL Pattern",
+                    key=f"comp_url_{product['id']}",
+                    placeholder="e.g., competitor.com/products/their-product"
+                )
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    match_type = st.selectbox(
+                        "Match Type",
+                        options=['contains', 'prefix', 'exact', 'regex'],
+                        index=0,
+                        key=f"comp_type_{product['id']}",
+                        help="contains: URL includes pattern, prefix: URL starts with, exact: exact match, regex: regular expression"
+                    )
+                with col2:
+                    is_primary = st.checkbox("Primary landing page", key=f"comp_primary_{product['id']}")
+                with col3:
+                    if st.button("Add", key=f"comp_add_{product['id']}"):
+                        if new_url:
+                            competitor_service.add_competitor_product_url(
+                                competitor_product_id=product_id,
+                                url_pattern=new_url,
+                                match_type=match_type,
+                                is_primary=is_primary
+                            )
+                            st.success("URL pattern added!")
+                            st.rerun()
+                        else:
+                            st.warning("Please enter a URL pattern")
+
+    # Help section for competitor mode
+    with st.expander("ℹ️ How Competitor URL Mapping Works"):
+        st.markdown("""
+        ### Competitor URL Matching
+
+        1. **Add URL Patterns**: Configure URL patterns for each competitor product that identify their landing pages.
+
+        2. **Run Bulk Matching**: Click "Run Bulk URL Matching" to automatically tag competitor ads with their products based on URL patterns.
+
+        3. **Pattern Types**:
+           - `contains`: URL includes the pattern (most flexible, recommended)
+           - `prefix`: URL starts with the pattern
+           - `exact`: URL matches exactly
+           - `regex`: Regular expression matching
+
+        ### Example Patterns
+
+        | Product | Pattern | Type |
+        |---------|---------|------|
+        | Competitor Collagen | `competitor.com/products/collagen` | contains |
+        | Competitor Vitamin | `competitor.com/vitamin` | prefix |
+        """)
+
+    st.stop()  # Don't show brand products section when in competitor mode
+
+# ============================================================
+# BRAND PRODUCTS MODE (Original functionality)
+# ============================================================
 
 # Get service and products
 service = get_product_url_service()
@@ -188,14 +354,9 @@ for i, (tab, product) in enumerate(zip(product_tabs, products)):
         product_id = product['id']
         urls = service.get_product_urls(product_id)
 
-        # Separate regular URLs from fallback URLs
-        regular_urls = [u for u in urls if not u.get('is_fallback')]
-        fallback_urls = [u for u in urls if u.get('is_fallback')]
-
         # Display existing URLs
-        if regular_urls:
-            st.markdown("**Ad URL Patterns:**")
-            for url in regular_urls:
+        if urls:
+            for url in urls:
                 col1, col2, col3 = st.columns([4, 1, 1])
                 with col1:
                     badge = "🏠" if url.get('is_primary') else ""
@@ -240,41 +401,6 @@ for i, (tab, product) in enumerate(zip(product_tabs, products)):
                         st.rerun()
                     else:
                         st.warning("Please enter a URL pattern")
-
-        # Fallback Landing Page section
-        st.markdown("---")
-        st.markdown("**🔬 Fallback Landing Page for Research:**")
-        st.caption("Add a landing page URL to scrape for persona research when there aren't enough ads")
-
-        if fallback_urls:
-            for url in fallback_urls:
-                col1, col2 = st.columns([5, 1])
-                with col1:
-                    st.text(f"🔬 {url['url_pattern']}")
-                with col2:
-                    if st.button("🗑️", key=f"del_fallback_{url['id']}", help="Delete"):
-                        service.delete_product_url(url['id'])
-                        st.rerun()
-        else:
-            with st.expander("➕ Add Fallback Landing Page"):
-                fallback_url = st.text_input(
-                    "Landing Page URL",
-                    key=f"fallback_url_{product_id}",
-                    placeholder="e.g., https://example.com/products/my-product"
-                )
-                if st.button("Add Fallback URL", key=f"add_fallback_{product_id}"):
-                    if fallback_url:
-                        service.add_product_url(
-                            product_id=product_id,
-                            url_pattern=fallback_url,
-                            match_type='exact',
-                            is_primary=False,
-                            is_fallback=True
-                        )
-                        st.success("Fallback landing page added!")
-                        st.rerun()
-                    else:
-                        st.warning("Please enter a URL")
 
 # ============================================================
 # URL Review Queue
@@ -379,173 +505,6 @@ else:
             st.markdown("---")
 
 # ============================================================
-# Amazon Reviews Section
-# ============================================================
-
-st.markdown("---")
-st.subheader("🛒 Amazon Product Reviews")
-st.caption("Add Amazon product URLs to scrape customer reviews for persona research")
-
-amazon_service = get_amazon_review_service()
-
-# Get existing Amazon URLs for this brand
-amazon_urls = amazon_service.get_amazon_urls_for_brand(brand_id)
-
-# Display existing Amazon URLs with stats
-if amazon_urls:
-    for amz_url in amazon_urls:
-        product_name = amz_url.get('products', {}).get('name', 'Unknown Product') if amz_url.get('products') else 'Unknown Product'
-        with st.container():
-            col1, col2, col3 = st.columns([3, 1, 1])
-
-            with col1:
-                st.markdown(f"**{product_name}**")
-                st.caption(f"ASIN: {amz_url['asin']} | Domain: .{amz_url['domain_code']}")
-
-            with col2:
-                reviews_count = amz_url.get('total_reviews_scraped', 0)
-                last_scraped = amz_url.get('last_scraped_at')
-                if reviews_count > 0:
-                    st.metric("Reviews", reviews_count)
-                else:
-                    st.caption("Not scraped yet")
-
-            with col3:
-                # Get analysis status
-                stats = amazon_service.get_review_stats(amz_url['product_id'])
-
-                if stats.get('has_analysis'):
-                    col_status, col_reanalyze = st.columns([1, 1])
-                    with col_status:
-                        st.success("✅ Analyzed")
-                    with col_reanalyze:
-                        if st.button("🔄", key=f"reanalyze_amz_{amz_url['id']}", help="Re-analyze reviews"):
-                            with st.spinner("Re-analyzing reviews..."):
-                                import asyncio
-                                try:
-                                    loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(loop)
-                                    result = loop.run_until_complete(
-                                        amazon_service.analyze_reviews_for_product(
-                                            product_id=amz_url['product_id'],
-                                            limit=500
-                                        )
-                                    )
-                                    loop.close()
-                                    if result:
-                                        st.success("Re-analysis complete!")
-                                        st.rerun()
-                                    else:
-                                        st.error("Re-analysis failed")
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
-                elif reviews_count > 0:
-                    if st.button("📊 Analyze", key=f"analyze_amz_{amz_url['id']}", help="Analyze reviews with AI"):
-                        with st.spinner("Analyzing reviews..."):
-                            import asyncio
-                            try:
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                result = loop.run_until_complete(
-                                    amazon_service.analyze_reviews_for_product(
-                                        product_id=amz_url['product_id'],
-                                        limit=500
-                                    )
-                                )
-                                loop.close()
-                                if result:
-                                    st.success("Analysis complete!")
-                                    st.rerun()
-                                else:
-                                    st.error("Analysis failed")
-                            except Exception as e:
-                                st.error(f"Error: {e}")
-                else:
-                    if st.button("🔄 Scrape", key=f"scrape_amz_{amz_url['id']}",
-                                disabled=st.session_state.amazon_scraping,
-                                help="Scrape reviews from Amazon (~$2)"):
-                        st.session_state.amazon_scraping = True
-                        with st.spinner("Scraping Amazon reviews... this may take a few minutes"):
-                            try:
-                                result = amazon_service.scrape_reviews_for_product(
-                                    product_id=amz_url['product_id'],
-                                    amazon_url=amz_url['amazon_url'],
-                                    timeout=900
-                                )
-                                st.success(f"Scraped {result.unique_reviews_count} reviews (cost: ~${result.cost_estimate:.2f})")
-                                st.session_state.amazon_scraping = False
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Scrape failed: {e}")
-                                st.session_state.amazon_scraping = False
-        st.markdown("---")
-else:
-    st.info("No Amazon product URLs added yet. Add one below to start scraping reviews.")
-
-# Add new Amazon URL
-with st.expander("➕ Add Amazon Product URL"):
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        amazon_url_input = st.text_input(
-            "Amazon Product URL",
-            placeholder="https://www.amazon.com/dp/B0DJWSV1J3",
-            help="Paste any Amazon product URL - ASIN will be extracted automatically"
-        )
-
-    with col2:
-        # Product selector
-        product_options_amz = {p['name']: p['id'] for p in products}
-        selected_product_amz = st.selectbox(
-            "Link to Product",
-            options=list(product_options_amz.keys()),
-            key="amazon_product_select"
-        )
-
-    # Preview ASIN extraction
-    if amazon_url_input:
-        asin, domain = amazon_service.parse_amazon_url(amazon_url_input)
-        if asin:
-            st.success(f"✓ Detected ASIN: **{asin}** (amazon.{domain})")
-        else:
-            st.warning("Could not extract ASIN from URL. Please check the URL format.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Add Amazon URL", type="primary"):
-            if amazon_url_input and selected_product_amz:
-                asin, domain = amazon_service.parse_amazon_url(amazon_url_input)
-                if asin:
-                    try:
-                        db = get_supabase_client()
-                        # Check if already exists
-                        existing = db.table("amazon_product_urls").select("id")\
-                            .eq("product_id", product_options_amz[selected_product_amz])\
-                            .eq("asin", asin).execute()
-
-                        if existing.data:
-                            st.warning("This Amazon URL is already added for this product.")
-                        else:
-                            db.table("amazon_product_urls").insert({
-                                "product_id": product_options_amz[selected_product_amz],
-                                "brand_id": brand_id,
-                                "amazon_url": amazon_url_input,
-                                "asin": asin,
-                                "domain_code": domain
-                            }).execute()
-                            st.success(f"Added Amazon URL for {selected_product_amz}!")
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Error adding URL: {e}")
-                else:
-                    st.error("Invalid Amazon URL. Please check the format.")
-            else:
-                st.warning("Please enter an Amazon URL and select a product.")
-
-    with col2:
-        st.caption("💰 Estimated cost: ~$2 per product")
-
-# ============================================================
 # Help Section
 # ============================================================
 
@@ -585,19 +544,4 @@ with st.expander("ℹ️ How URL Mapping Works"):
     - `prefix`: URL starts with the pattern
     - `exact`: URL matches exactly
     - `regex`: Regular expression matching
-
-    ### Amazon Review Scraping
-
-    Add Amazon product URLs to scrape customer reviews for authentic persona language.
-
-    **Process:**
-    1. Add Amazon URL → ASIN is automatically extracted
-    2. Click "Scrape" → Reviews are collected via Apify (~$2/product)
-    3. Click "Analyze" → AI extracts pain points, desires, and verbatim quotes
-
-    **Why It Matters:**
-    - Reviews contain **authentic customer language** - not marketing speak
-    - Real pain points and desires from actual buyers
-    - Verbatim quotes you can use directly in ad copy
-    - Helps build more accurate 4D personas
     """)

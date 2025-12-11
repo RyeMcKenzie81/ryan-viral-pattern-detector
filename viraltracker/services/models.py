@@ -954,6 +954,7 @@ class Persona4D(BaseModel):
     brand_id: Optional[UUID] = None
     product_id: Optional[UUID] = None
     competitor_id: Optional[UUID] = None
+    competitor_product_id: Optional[UUID] = Field(None, description="For product-level competitor personas")
 
     # ========================================
     # DIMENSION 1: BASICS
