@@ -1472,15 +1472,36 @@ def render_audio_session_details(session: Dict, project_id: str):
     session_id = session.get('id')
     status = session.get('status', 'unknown')
 
-    # Status indicator
-    status_colors = {
-        'draft': 'orange',
-        'generating': 'blue',
-        'in_progress': 'green',
-        'completed': 'green',
-        'exported': 'gray'
-    }
-    st.caption(f"Status: :{status_colors.get(status, 'gray')}[{status}]")
+    # Status indicator with reset option
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        status_colors = {
+            'draft': 'orange',
+            'generating': 'blue',
+            'in_progress': 'green',
+            'completed': 'green',
+            'exported': 'gray'
+        }
+        st.caption(f"Status: :{status_colors.get(status, 'gray')}[{status}]")
+
+    with col2:
+        if st.button("Reset & Regenerate", help="Delete this session and regenerate audio"):
+            try:
+                db = get_supabase_client()
+                # Clear links
+                db.table("content_projects").update({
+                    "audio_session_id": None
+                }).eq("audio_session_id", session_id).execute()
+                db.table("els_versions").update({
+                    "audio_session_id": None
+                }).eq("audio_session_id", session_id).execute()
+                # Delete takes and session
+                db.table("audio_takes").delete().eq("session_id", session_id).execute()
+                db.table("audio_production_sessions").delete().eq("id", session_id).execute()
+                st.session_state.audio_generating = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Reset failed: {e}")
 
     # Get takes for this session
     try:
