@@ -914,11 +914,13 @@ Public page (no auth).
 - [x] Beat regeneration with take numbering
 - [x] Mark Audio Complete button
 
-### Phase 5: Asset Management (MVP 4) 🚧 IN PROGRESS
-- [ ] AssetManagementService
-- [ ] Script parsing for assets
-- [ ] Asset library UI
-- [ ] Asset matching logic
+### Phase 5: Asset Management (MVP 4) ✅ COMPLETE
+- [x] AssetManagementService (Gemini-powered extraction)
+- [x] Script parsing for assets (visual_notes → characters, props, backgrounds, effects)
+- [x] Asset library UI (browse, filter, view)
+- [x] Asset matching logic (match requirements against comic_assets)
+- [x] File upload to Supabase Storage (single + batch)
+- [x] JSON bulk import
 
 ### Phase 6: Asset Generation
 - [ ] **Image Assets**: Gemini 3 Pro for backgrounds, props
