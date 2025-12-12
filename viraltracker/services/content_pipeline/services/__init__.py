@@ -9,10 +9,12 @@ from .topic_service import TopicDiscoveryService
 from .script_service import ScriptGenerationService
 from .content_pipeline_service import ContentPipelineService
 from .asset_service import AssetManagementService
+from .asset_generation_service import AssetGenerationService
 
 __all__ = [
     "TopicDiscoveryService",
     "ScriptGenerationService",
     "ContentPipelineService",
     "AssetManagementService",
+    "AssetGenerationService",
 ]

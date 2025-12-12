@@ -64,6 +64,11 @@ if 'asset_extracting' not in st.session_state:
     st.session_state.asset_extracting = False
 if 'extracted_assets' not in st.session_state:
     st.session_state.extracted_assets = []
+# Asset generation state (MVP 5)
+if 'asset_generating' not in st.session_state:
+    st.session_state.asset_generating = False
+if 'generation_progress' not in st.session_state:
+    st.session_state.generation_progress = 0
 
 
 def get_supabase_client():
@@ -106,6 +111,20 @@ def get_asset_service():
     db = get_supabase_client()
     gemini = get_gemini_service()
     return AssetManagementService(supabase_client=db, gemini_service=gemini)
+
+
+def get_asset_generation_service():
+    """Get AssetGenerationService instance."""
+    from viraltracker.services.content_pipeline.services.asset_generation_service import AssetGenerationService
+    import os
+    db = get_supabase_client()
+    gemini = get_gemini_service()
+    elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
+    return AssetGenerationService(
+        supabase_client=db,
+        gemini_service=gemini,
+        elevenlabs_api_key=elevenlabs_key
+    )
 
 
 def get_topic_service():
@@ -1893,15 +1912,23 @@ def render_assets_tab(project: Dict):
         existing_requirements = []
 
     # Sub-tabs for asset workflow
-    asset_tab1, asset_tab2, asset_tab3 = st.tabs(["Extract", "Library", "Upload"])
+    asset_tab1, asset_tab2, asset_tab3, asset_tab4, asset_tab5 = st.tabs([
+        "Extract", "Generate", "Review", "Library", "Upload"
+    ])
 
     with asset_tab1:
         render_asset_extraction(project_id, brand_id, current_script, script_data, existing_requirements)
 
     with asset_tab2:
-        render_asset_library(brand_id)
+        render_asset_generation(project_id, brand_id, existing_requirements)
 
     with asset_tab3:
+        render_asset_review(project_id, brand_id, existing_requirements)
+
+    with asset_tab4:
+        render_asset_library(brand_id)
+
+    with asset_tab5:
         render_asset_upload(brand_id)
 
 
@@ -2011,6 +2038,218 @@ def render_asset_extraction(project_id: str, brand_id: str, current_script: Dict
             except Exception as e:
                 st.session_state.asset_extracting = False
                 st.error(f"Asset extraction failed: {e}")
+
+
+def render_asset_generation(project_id: str, brand_id: str, existing_requirements: List[Dict]):
+    """Render the asset generation interface."""
+    st.markdown("### Generate Missing Assets")
+
+    # Filter for assets that need generation
+    needed = [r for r in existing_requirements if r.get('status') == 'needed']
+    generating = [r for r in existing_requirements if r.get('status') == 'generating']
+    failed = [r for r in existing_requirements if r.get('status') == 'generation_failed']
+
+    if not needed and not generating and not failed:
+        if not existing_requirements:
+            st.info("Extract assets from your script first (Extract tab).")
+        else:
+            st.success("All assets are matched or generated! Check the Review tab for generated assets.")
+        return
+
+    # Summary
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Need Generation", len(needed))
+    with col2:
+        st.metric("Currently Generating", len(generating))
+    with col3:
+        st.metric("Failed", len(failed))
+
+    st.divider()
+
+    # Show assets needing generation
+    if needed:
+        st.markdown("#### Assets to Generate")
+        for req in needed:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
+                    desc = req.get('asset_description', '')[:150]
+                    if desc:
+                        st.caption(desc + "..." if len(req.get('asset_description', '')) > 150 else desc)
+                with col2:
+                    st.caption(f":orange[Needed]")
+
+        st.divider()
+
+        # Generate button
+        if st.button(
+            f"Generate {len(needed)} Assets",
+            type="primary",
+            disabled=st.session_state.asset_generating,
+            help="Generate missing assets using Gemini AI"
+        ):
+            st.session_state.asset_generating = True
+            st.rerun()
+
+    # Handle generation
+    if st.session_state.asset_generating and needed:
+        st.warning("Generating assets... This may take several minutes. Do not close this page.")
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        try:
+            service = get_asset_generation_service()
+
+            # Generate batch
+            result = asyncio.run(service.generate_batch(
+                requirements=needed,
+                brand_id=UUID(brand_id),
+                project_id=UUID(project_id),
+                delay_between=3.0  # Rate limiting
+            ))
+
+            st.session_state.asset_generating = False
+
+            success_count = len(result.get('successful', []))
+            fail_count = len(result.get('failed', []))
+
+            if success_count > 0:
+                st.success(f"Generated {success_count} assets successfully!")
+            if fail_count > 0:
+                st.warning(f"{fail_count} assets failed to generate. You can retry them.")
+
+            st.rerun()
+
+        except Exception as e:
+            st.session_state.asset_generating = False
+            st.error(f"Generation failed: {e}")
+
+    # Show failed generations with retry option
+    if failed:
+        st.markdown("#### Failed Generations")
+        for req in failed:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{req.get('asset_name', 'Unknown')}**")
+                with col2:
+                    if st.button("Retry", key=f"retry_{req.get('id')}"):
+                        # Reset status to needed
+                        db = get_supabase_client()
+                        db.table("project_asset_requirements").update(
+                            {"status": "needed"}
+                        ).eq("id", req.get('id')).execute()
+                        st.rerun()
+
+
+def render_asset_review(project_id: str, brand_id: str, existing_requirements: List[Dict]):
+    """Render the asset review/approval interface."""
+    st.markdown("### Review Generated Assets")
+
+    # Filter for assets pending review
+    generated = [r for r in existing_requirements if r.get('status') == 'generated']
+    approved = [r for r in existing_requirements if r.get('status') == 'approved']
+    rejected = [r for r in existing_requirements if r.get('status') == 'rejected']
+
+    if not generated:
+        if approved or rejected:
+            st.success(f"All generated assets have been reviewed! ({len(approved)} approved, {len(rejected)} rejected)")
+        else:
+            st.info("No assets pending review. Generate missing assets first (Generate tab).")
+        return
+
+    st.info(f"{len(generated)} assets ready for review")
+
+    # Bulk actions
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Approve All", type="primary"):
+            service = get_asset_generation_service()
+            for req in generated:
+                asyncio.run(service.approve_asset(
+                    requirement_id=UUID(req.get('id')),
+                    add_to_library=True,
+                    brand_id=UUID(brand_id)
+                ))
+            st.success(f"Approved {len(generated)} assets!")
+            st.rerun()
+    with col2:
+        if st.button("Reject All"):
+            service = get_asset_generation_service()
+            for req in generated:
+                asyncio.run(service.reject_asset(
+                    requirement_id=UUID(req.get('id')),
+                    rejection_reason="Bulk rejected"
+                ))
+            st.warning(f"Rejected {len(generated)} assets")
+            st.rerun()
+
+    st.divider()
+
+    # Individual review
+    st.markdown("#### Review Each Asset")
+
+    for req in generated:
+        req_id = req.get('id')
+        name = req.get('asset_name', 'Unknown')
+        asset_type = req.get('asset_type', 'prop')
+        image_url = req.get('generated_image_url', '')
+
+        with st.container():
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.markdown(f"**{name}** ({asset_type})")
+
+                # Show generated image
+                if image_url:
+                    st.image(image_url, width=300)
+                else:
+                    st.warning("No image URL available")
+
+                # Description
+                desc = req.get('asset_description', '')
+                if desc:
+                    with st.expander("Description"):
+                        st.write(desc)
+
+            with col2:
+                st.markdown("**Actions:**")
+
+                # Approve
+                if st.button("Approve", key=f"approve_{req_id}", type="primary"):
+                    service = get_asset_generation_service()
+                    asyncio.run(service.approve_asset(
+                        requirement_id=UUID(req_id),
+                        add_to_library=True,
+                        brand_id=UUID(brand_id)
+                    ))
+                    st.success(f"Approved '{name}'")
+                    st.rerun()
+
+                # Reject
+                if st.button("Reject", key=f"reject_{req_id}"):
+                    service = get_asset_generation_service()
+                    asyncio.run(service.reject_asset(
+                        requirement_id=UUID(req_id),
+                        rejection_reason="Manual rejection"
+                    ))
+                    st.warning(f"Rejected '{name}'")
+                    st.rerun()
+
+                # Regenerate
+                if st.button("Regenerate", key=f"regen_{req_id}"):
+                    db = get_supabase_client()
+                    db.table("project_asset_requirements").update(
+                        {"status": "needed", "generated_image_url": None}
+                    ).eq("id", req_id).execute()
+                    st.info(f"Queued '{name}' for regeneration")
+                    st.rerun()
+
+            st.divider()
 
 
 def render_requirement_list(requirements: List[Dict], project_id: str):

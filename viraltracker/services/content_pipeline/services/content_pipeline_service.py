@@ -33,9 +33,11 @@ class ContentPipelineService:
         supabase_client: Optional[Any] = None,
         docs_service: Optional[Any] = None,
         gemini_service: Optional[Any] = None,
+        elevenlabs_api_key: Optional[str] = None,
         topic_service: Optional["TopicDiscoveryService"] = None,
         script_service: Optional["ScriptGenerationService"] = None,
-        asset_service: Optional["AssetManagementService"] = None
+        asset_service: Optional["AssetManagementService"] = None,
+        asset_generation_service: Optional["AssetGenerationService"] = None
     ):
         """
         Initialize the ContentPipelineService.
@@ -44,9 +46,11 @@ class ContentPipelineService:
             supabase_client: Supabase client for database operations
             docs_service: DocService for knowledge base queries
             gemini_service: GeminiService for AI-powered operations
+            elevenlabs_api_key: ElevenLabs API key for SFX generation
             topic_service: TopicDiscoveryService instance (created if not provided)
             script_service: ScriptGenerationService instance (created if not provided)
             asset_service: AssetManagementService instance (created if not provided)
+            asset_generation_service: AssetGenerationService instance (created if not provided)
         """
         self.supabase = supabase_client
         self.docs = docs_service
@@ -56,6 +60,7 @@ class ContentPipelineService:
         from .topic_service import TopicDiscoveryService
         from .script_service import ScriptGenerationService
         from .asset_service import AssetManagementService
+        from .asset_generation_service import AssetGenerationService
 
         # Initialize sub-services
         self.topic_service = topic_service or TopicDiscoveryService(
@@ -71,6 +76,12 @@ class ContentPipelineService:
         self.asset_service = asset_service or AssetManagementService(
             supabase_client=supabase_client,
             gemini_service=gemini_service
+        )
+
+        self.asset_generation_service = asset_generation_service or AssetGenerationService(
+            supabase_client=supabase_client,
+            gemini_service=gemini_service,
+            elevenlabs_api_key=elevenlabs_api_key
         )
 
         # Placeholder for future services
