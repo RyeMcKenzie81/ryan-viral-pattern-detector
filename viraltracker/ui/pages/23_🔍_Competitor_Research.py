@@ -372,6 +372,147 @@ with tab_ads:
         st.warning("No Ad Library URL configured for this competitor.")
         st.caption("Add one on the Competitors page.")
 
+    # -------------------------------------------------------------------------
+    # ASSET DOWNLOAD & ANALYSIS
+    # -------------------------------------------------------------------------
+    st.markdown("---")
+    st.markdown("### 📥 Download & Analyze Assets")
+
+    # Get stats from BrandResearchService (reused for competitors)
+    from viraltracker.services.brand_research_service import BrandResearchService
+    research_service = BrandResearchService()
+
+    asset_stats = research_service.get_competitor_asset_stats(UUID(selected_competitor_id))
+    analysis_stats = research_service.get_competitor_analysis_stats(UUID(selected_competitor_id))
+
+    # Stats display
+    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+    with col_s1:
+        st.metric("Ads Scraped", asset_stats.get('total_ads', 0))
+    with col_s2:
+        videos = asset_stats.get('videos', 0)
+        analyzed_v = analysis_stats.get('video_vision', 0)
+        st.metric("Videos", f"{analyzed_v}/{videos}" if videos > 0 else "0")
+        if videos > 0 and analyzed_v < videos:
+            st.caption(f"{videos - analyzed_v} to analyze")
+    with col_s3:
+        images = asset_stats.get('images', 0)
+        analyzed_i = analysis_stats.get('image_vision', 0)
+        st.metric("Images", f"{analyzed_i}/{images}" if images > 0 else "0")
+        if images > 0 and analyzed_i < images:
+            st.caption(f"{images - analyzed_i} to analyze")
+    with col_s4:
+        total_ads = asset_stats.get('total_ads', 0)
+        analyzed_c = analysis_stats.get('copy_analysis', 0)
+        st.metric("Copy Analyzed", f"{analyzed_c}/{total_ads}" if total_ads > 0 else "0")
+    with col_s5:
+        st.metric("Total Analyses", analysis_stats.get('total', 0))
+
+    # Download section
+    st.markdown("#### 1. Download Assets")
+    st.caption("Download videos and images from scraped ad snapshots")
+
+    ads_without = asset_stats.get('ads_without_assets', 0)
+    if ads_without > 0:
+        st.info(f"{ads_without} ads need asset download")
+
+    col_dl1, col_dl2 = st.columns([2, 1])
+    with col_dl1:
+        download_limit = st.slider("Max ads to process", 10, 100, 50, key="dl_limit")
+    with col_dl2:
+        if st.button("📥 Download Assets", key="download_assets"):
+            with st.spinner(f"Downloading assets from up to {download_limit} ads..."):
+                try:
+                    def run_download():
+                        import asyncio
+                        return asyncio.run(research_service.download_assets_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=download_limit
+                        ))
+                    result = run_download()
+
+                    reason = result.get('reason')
+                    if reason == 'no_ads':
+                        st.warning("No ads to process. Scrape ads first.")
+                    elif reason == 'all_have_assets':
+                        st.success(f"All {result.get('total_ads', 0)} ads already have assets.")
+                    elif result['videos_downloaded'] > 0 or result['images_downloaded'] > 0:
+                        st.success(
+                            f"Downloaded {result['videos_downloaded']} videos, "
+                            f"{result['images_downloaded']} images from {result['ads_processed']} ads"
+                        )
+                        st.rerun()
+                    else:
+                        st.warning(f"No assets downloaded. {result.get('ads_skipped_no_urls', 0)} ads had no asset URLs.")
+                except Exception as e:
+                    st.error(f"Download failed: {e}")
+
+    # Analysis section
+    st.markdown("#### 2. Analyze Assets")
+    st.caption("Run AI analysis to extract hooks, messaging, and persona signals")
+
+    col_a1, col_a2, col_a3 = st.columns(3)
+
+    with col_a1:
+        st.markdown("**Video Analysis**")
+        st.caption("Transcripts, hooks, persona signals")
+        video_limit = st.number_input("Videos to analyze", 1, 20, 5, key="video_lim")
+        if st.button("Analyze Videos", key="analyze_videos", disabled=asset_stats.get('videos', 0) == 0):
+            with st.spinner(f"Analyzing up to {video_limit} videos (5-15 sec each)..."):
+                try:
+                    def run_video_analysis():
+                        import asyncio
+                        return asyncio.run(research_service.analyze_videos_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=video_limit
+                        ))
+                    results = run_video_analysis()
+                    success = len([r for r in results if 'analysis' in r])
+                    st.success(f"Analyzed {success} videos")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Video analysis failed: {e}")
+
+    with col_a2:
+        st.markdown("**Image Analysis**")
+        st.caption("Visual style, hooks, copy")
+        image_limit = st.number_input("Images to analyze", 1, 50, 20, key="image_lim")
+        if st.button("Analyze Images", key="analyze_images", disabled=asset_stats.get('images', 0) == 0):
+            with st.spinner(f"Analyzing up to {image_limit} images..."):
+                try:
+                    def run_image_analysis():
+                        import asyncio
+                        return asyncio.run(research_service.analyze_images_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=image_limit
+                        ))
+                    results = run_image_analysis()
+                    success = len([r for r in results if 'analysis' in r])
+                    st.success(f"Analyzed {success} images")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Image analysis failed: {e}")
+
+    with col_a3:
+        st.markdown("**Copy Analysis**")
+        st.caption("Headlines, hooks, messaging")
+        copy_limit = st.number_input("Ads to analyze", 1, 100, 50, key="copy_lim")
+        if st.button("Analyze Copy", key="analyze_copy", disabled=asset_stats.get('total_ads', 0) == 0):
+            with st.spinner(f"Analyzing copy from up to {copy_limit} ads..."):
+                try:
+                    def run_copy_analysis():
+                        import asyncio
+                        return asyncio.run(research_service.analyze_copy_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=copy_limit
+                        ))
+                    results = run_copy_analysis()
+                    success = len([r for r in results if 'analysis' in r])
+                    st.success(f"Analyzed {success} ad copies")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Copy analysis failed: {e}")
+
     # URL Review Queue
     st.markdown("---")
     st.markdown("### 📋 URL Review Queue")

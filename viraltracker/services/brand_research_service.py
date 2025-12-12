@@ -2837,6 +2837,511 @@ class BrandResearchService:
                 "failed": 0, "pending": 0, "to_scrape": 0, "to_analyze": 0
             }
 
+    # =========================================================================
+    # COMPETITOR RESEARCH METHODS
+    # Reuse the same AI analysis logic but with competitor tables
+    # =========================================================================
+
+    def _save_competitor_analysis(
+        self,
+        competitor_id: UUID,
+        competitor_ad_id: Optional[UUID],
+        asset_id: Optional[UUID],
+        analysis_type: str,
+        raw_response: Dict,
+        tokens_used: int = 0,
+        model_used: str = "gemini-2.0-flash-exp"
+    ) -> Optional[UUID]:
+        """Save analysis to competitor_ad_analysis table."""
+        try:
+            record = {
+                "competitor_id": str(competitor_id),
+                "competitor_ad_id": str(competitor_ad_id) if competitor_ad_id else None,
+                "asset_id": str(asset_id) if asset_id else None,
+                "analysis_type": analysis_type,
+                "raw_response": raw_response,
+                "benefits_mentioned": raw_response.get("benefits_mentioned", []),
+                "pain_points_addressed": raw_response.get("pain_points_addressed", []),
+                "desires_appealed": raw_response.get("desires_appealed_to", {}),
+                "hooks_extracted": raw_response.get("hooks", []),
+                "messaging_patterns": raw_response.get("brand_voice", {}).get("key_phrases", []),
+                "model_used": model_used,
+                "tokens_used": tokens_used,
+                "cost_usd": tokens_used * 0.00002
+            }
+
+            result = self.supabase.table("competitor_ad_analysis").insert(record).execute()
+
+            if result.data:
+                return UUID(result.data[0]["id"])
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save competitor analysis: {e}")
+            return None
+
+    async def download_assets_for_competitor(
+        self,
+        competitor_id: UUID,
+        limit: int = 50,
+        include_videos: bool = True,
+        include_images: bool = True
+    ) -> Dict[str, int]:
+        """
+        Download and store assets (videos/images) for a competitor's ads.
+
+        Args:
+            competitor_id: Competitor UUID
+            limit: Maximum number of ads to process
+            include_videos: Download videos
+            include_images: Download images
+
+        Returns:
+            Dict with counts: {"ads_processed", "videos_downloaded", "images_downloaded"}
+        """
+        from .ad_scraping_service import AdScrapingService
+
+        scraping_service = AdScrapingService()
+
+        # Get competitor ads
+        ads_result = self.supabase.table("competitor_ads").select(
+            "id, snapshot_data"
+        ).eq("competitor_id", str(competitor_id)).limit(limit * 2).execute()
+
+        if not ads_result.data:
+            logger.info(f"No ads found for competitor: {competitor_id}")
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "no_ads"}
+
+        ad_ids = [ad['id'] for ad in ads_result.data]
+
+        # Get ads that already have assets
+        existing_assets = self.supabase.table("competitor_ad_assets").select(
+            "competitor_ad_id"
+        ).in_("competitor_ad_id", ad_ids).execute()
+
+        ads_with_assets = {r['competitor_ad_id'] for r in (existing_assets.data or [])}
+        ads_needing_assets = [ad for ad in ads_result.data if ad['id'] not in ads_with_assets]
+
+        logger.info(f"Competitor {competitor_id}: {len(ad_ids)} total ads, {len(ads_with_assets)} with assets, {len(ads_needing_assets)} needing download")
+
+        if not ads_needing_assets:
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets", "total_ads": len(ad_ids)}
+
+        ads_to_process = ads_needing_assets[:limit]
+
+        stats = {
+            "ads_processed": 0,
+            "videos_downloaded": 0,
+            "images_downloaded": 0,
+            "errors": 0,
+            "ads_skipped_no_urls": 0
+        }
+
+        for ad in ads_to_process:
+            ad_id = ad['id']
+            snapshot = ad.get('snapshot_data', {})
+
+            # Handle snapshot as string
+            if isinstance(snapshot, str):
+                try:
+                    snapshot = json.loads(snapshot)
+                except json.JSONDecodeError:
+                    snapshot = {}
+
+            # Extract URLs using existing service
+            urls = scraping_service.extract_asset_urls(snapshot)
+
+            if not urls['images'] and not urls['videos']:
+                stats["ads_skipped_no_urls"] += 1
+                continue
+
+            stats["ads_processed"] += 1
+
+            # Download and store images
+            if include_images:
+                for url in urls['images'][:3]:  # Limit images per ad
+                    try:
+                        content = await scraping_service.download_asset(url)
+                        if content:
+                            # Determine mime type
+                            mime_type = "image/jpeg"
+                            if url.lower().endswith('.png'):
+                                mime_type = "image/png"
+                            elif url.lower().endswith('.webp'):
+                                mime_type = "image/webp"
+
+                            # Upload to storage
+                            storage_path = f"competitors/{competitor_id}/{ad_id}/image_{stats['images_downloaded']}.jpg"
+                            self.supabase.storage.from_("scraped-assets").upload(
+                                storage_path,
+                                content,
+                                {"content-type": mime_type}
+                            )
+
+                            # Save record
+                            self.supabase.table("competitor_ad_assets").insert({
+                                "competitor_ad_id": ad_id,
+                                "asset_type": "image",
+                                "storage_path": f"scraped-assets/{storage_path}",
+                                "original_url": url,
+                                "mime_type": mime_type,
+                                "file_size": len(content)
+                            }).execute()
+
+                            stats["images_downloaded"] += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to download image: {e}")
+                        stats["errors"] += 1
+
+            # Download and store videos
+            if include_videos:
+                for url in urls['videos'][:1]:  # Limit to 1 video per ad
+                    try:
+                        content = await scraping_service.download_asset(url, timeout=60.0)
+                        if content:
+                            mime_type = "video/mp4"
+
+                            storage_path = f"competitors/{competitor_id}/{ad_id}/video_{stats['videos_downloaded']}.mp4"
+                            self.supabase.storage.from_("scraped-assets").upload(
+                                storage_path,
+                                content,
+                                {"content-type": mime_type}
+                            )
+
+                            self.supabase.table("competitor_ad_assets").insert({
+                                "competitor_ad_id": ad_id,
+                                "asset_type": "video",
+                                "storage_path": f"scraped-assets/{storage_path}",
+                                "original_url": url,
+                                "mime_type": mime_type,
+                                "file_size": len(content)
+                            }).execute()
+
+                            stats["videos_downloaded"] += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to download video: {e}")
+                        stats["errors"] += 1
+
+        logger.info(f"Competitor asset download complete: {stats}")
+        return stats
+
+    async def analyze_videos_for_competitor(
+        self,
+        competitor_id: UUID,
+        limit: int = 10
+    ) -> List[Dict]:
+        """
+        Analyze video assets for a competitor.
+
+        Args:
+            competitor_id: Competitor UUID
+            limit: Maximum videos to analyze
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        # Get video assets that haven't been analyzed
+        assets_result = self.supabase.table("competitor_ad_assets").select(
+            "id, competitor_ad_id, storage_path, mime_type"
+        ).eq("asset_type", "video").execute()
+
+        if not assets_result.data:
+            logger.info(f"No video assets for competitor: {competitor_id}")
+            return []
+
+        # Filter to this competitor's ads
+        ad_ids_result = self.supabase.table("competitor_ads").select("id").eq(
+            "competitor_id", str(competitor_id)
+        ).execute()
+        valid_ad_ids = {ad['id'] for ad in (ad_ids_result.data or [])}
+
+        video_assets = [a for a in assets_result.data if a['competitor_ad_id'] in valid_ad_ids]
+
+        # Check which are already analyzed
+        if video_assets:
+            asset_ids = [a['id'] for a in video_assets]
+            analyzed_result = self.supabase.table("competitor_ad_analysis").select(
+                "asset_id"
+            ).in_("asset_id", asset_ids).eq("analysis_type", "video_vision").execute()
+            analyzed_ids = {r['asset_id'] for r in (analyzed_result.data or [])}
+            video_assets = [a for a in video_assets if a['id'] not in analyzed_ids]
+
+        video_assets = video_assets[:limit]
+        logger.info(f"Analyzing {len(video_assets)} videos for competitor {competitor_id}")
+
+        results = []
+        for i, asset in enumerate(video_assets):
+            try:
+                # Reuse existing analyze_video method
+                analysis = await self.analyze_video(
+                    asset_id=UUID(asset['id']),
+                    storage_path=asset['storage_path'],
+                    brand_id=None,
+                    facebook_ad_id=None
+                )
+
+                # Save to competitor table
+                self._save_competitor_analysis(
+                    competitor_id=competitor_id,
+                    competitor_ad_id=UUID(asset['competitor_ad_id']),
+                    asset_id=UUID(asset['id']),
+                    analysis_type="video_vision",
+                    raw_response=analysis
+                )
+
+                results.append({"asset_id": asset['id'], "analysis": analysis})
+
+                if i < len(video_assets) - 1:
+                    await asyncio.sleep(5.0)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze video {asset['id']}: {e}")
+                results.append({"asset_id": asset['id'], "error": str(e)})
+
+        return results
+
+    async def analyze_images_for_competitor(
+        self,
+        competitor_id: UUID,
+        limit: int = 20
+    ) -> List[Dict]:
+        """
+        Analyze image assets for a competitor.
+
+        Args:
+            competitor_id: Competitor UUID
+            limit: Maximum images to analyze
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        # Get image assets
+        assets_result = self.supabase.table("competitor_ad_assets").select(
+            "id, competitor_ad_id, storage_path, mime_type"
+        ).eq("asset_type", "image").execute()
+
+        if not assets_result.data:
+            logger.info(f"No image assets for competitor: {competitor_id}")
+            return []
+
+        # Filter to this competitor's ads
+        ad_ids_result = self.supabase.table("competitor_ads").select("id").eq(
+            "competitor_id", str(competitor_id)
+        ).execute()
+        valid_ad_ids = {ad['id'] for ad in (ad_ids_result.data or [])}
+
+        image_assets = [a for a in assets_result.data if a['competitor_ad_id'] in valid_ad_ids]
+
+        # Check which are already analyzed
+        if image_assets:
+            asset_ids = [a['id'] for a in image_assets]
+            analyzed_result = self.supabase.table("competitor_ad_analysis").select(
+                "asset_id"
+            ).in_("asset_id", asset_ids).eq("analysis_type", "image_vision").execute()
+            analyzed_ids = {r['asset_id'] for r in (analyzed_result.data or [])}
+            image_assets = [a for a in image_assets if a['id'] not in analyzed_ids]
+
+        image_assets = image_assets[:limit]
+        logger.info(f"Analyzing {len(image_assets)} images for competitor {competitor_id}")
+
+        results = []
+        for i, asset in enumerate(image_assets):
+            try:
+                # Download image
+                image_base64 = await self._get_asset_base64(asset['storage_path'])
+                if not image_base64:
+                    continue
+
+                # Reuse existing analyze_image method
+                analysis = await self.analyze_image(
+                    asset_id=UUID(asset['id']),
+                    image_base64=image_base64,
+                    brand_id=None,
+                    facebook_ad_id=None,
+                    mime_type=asset.get('mime_type', 'image/jpeg')
+                )
+
+                # Save to competitor table
+                self._save_competitor_analysis(
+                    competitor_id=competitor_id,
+                    competitor_ad_id=UUID(asset['competitor_ad_id']),
+                    asset_id=UUID(asset['id']),
+                    analysis_type="image_vision",
+                    raw_response=analysis
+                )
+
+                results.append({"asset_id": asset['id'], "analysis": analysis})
+
+                if i < len(image_assets) - 1:
+                    await asyncio.sleep(2.0)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze image {asset['id']}: {e}")
+                results.append({"asset_id": asset['id'], "error": str(e)})
+
+        return results
+
+    async def analyze_copy_for_competitor(
+        self,
+        competitor_id: UUID,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Analyze ad copy for a competitor.
+
+        Args:
+            competitor_id: Competitor UUID
+            limit: Maximum ads to analyze
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        # Get competitor ads with copy
+        ads_result = self.supabase.table("competitor_ads").select(
+            "id, ad_body, ad_title, cta_text, snapshot_data"
+        ).eq("competitor_id", str(competitor_id)).execute()
+
+        if not ads_result.data:
+            logger.info(f"No ads for competitor: {competitor_id}")
+            return []
+
+        # Check which are already analyzed
+        ad_ids = [ad['id'] for ad in ads_result.data]
+        analyzed_result = self.supabase.table("competitor_ad_analysis").select(
+            "competitor_ad_id"
+        ).in_("competitor_ad_id", ad_ids).eq("analysis_type", "copy_analysis").execute()
+        analyzed_ids = {r['competitor_ad_id'] for r in (analyzed_result.data or [])}
+
+        ads_to_analyze = [ad for ad in ads_result.data if ad['id'] not in analyzed_ids]
+        ads_to_analyze = ads_to_analyze[:limit]
+
+        logger.info(f"Analyzing copy for {len(ads_to_analyze)} ads, competitor {competitor_id}")
+
+        results = []
+        for i, ad in enumerate(ads_to_analyze):
+            try:
+                # Build copy text
+                copy_parts = []
+                if ad.get('ad_title'):
+                    copy_parts.append(f"HEADLINE: {ad['ad_title']}")
+                if ad.get('ad_body'):
+                    copy_parts.append(f"BODY: {ad['ad_body']}")
+                if ad.get('cta_text'):
+                    copy_parts.append(f"CTA: {ad['cta_text']}")
+
+                # Also check snapshot for additional copy
+                snapshot = ad.get('snapshot_data', {})
+                if isinstance(snapshot, str):
+                    try:
+                        snapshot = json.loads(snapshot)
+                    except:
+                        snapshot = {}
+
+                if isinstance(snapshot, dict):
+                    body = snapshot.get('body', {})
+                    if isinstance(body, dict) and body.get('text'):
+                        if body['text'] not in str(copy_parts):
+                            copy_parts.append(f"SNAPSHOT BODY: {body['text']}")
+
+                if not copy_parts:
+                    continue
+
+                ad_copy = "\n".join(copy_parts)
+
+                # Reuse existing analyze_copy method
+                analysis = await self.analyze_copy(ad_copy)
+
+                # Save to competitor table
+                self._save_competitor_analysis(
+                    competitor_id=competitor_id,
+                    competitor_ad_id=UUID(ad['id']),
+                    asset_id=None,
+                    analysis_type="copy_analysis",
+                    raw_response=analysis
+                )
+
+                results.append({"ad_id": ad['id'], "analysis": analysis})
+
+                if i < len(ads_to_analyze) - 1:
+                    await asyncio.sleep(1.0)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze copy for ad {ad['id']}: {e}")
+                results.append({"ad_id": ad['id'], "error": str(e)})
+
+        return results
+
+    def get_competitor_asset_stats(self, competitor_id: UUID) -> Dict[str, int]:
+        """Get asset statistics for a competitor."""
+        try:
+            # Get ad count
+            ads_result = self.supabase.table("competitor_ads").select(
+                "id", count="exact"
+            ).eq("competitor_id", str(competitor_id)).execute()
+            total_ads = ads_result.count or 0
+
+            # Get ad IDs
+            ad_ids_result = self.supabase.table("competitor_ads").select("id").eq(
+                "competitor_id", str(competitor_id)
+            ).execute()
+            ad_ids = [ad['id'] for ad in (ad_ids_result.data or [])]
+
+            if not ad_ids:
+                return {"total_ads": 0, "videos": 0, "images": 0, "ads_with_assets": 0}
+
+            # Get asset counts
+            assets_result = self.supabase.table("competitor_ad_assets").select(
+                "id, asset_type, competitor_ad_id"
+            ).in_("competitor_ad_id", ad_ids).execute()
+
+            videos = sum(1 for a in (assets_result.data or []) if a.get('asset_type') == 'video')
+            images = sum(1 for a in (assets_result.data or []) if a.get('asset_type') == 'image')
+            ads_with_assets = len(set(a['competitor_ad_id'] for a in (assets_result.data or [])))
+
+            return {
+                "total_ads": total_ads,
+                "videos": videos,
+                "images": images,
+                "ads_with_assets": ads_with_assets,
+                "ads_without_assets": total_ads - ads_with_assets
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get competitor asset stats: {e}")
+            return {"total_ads": 0, "videos": 0, "images": 0, "ads_with_assets": 0}
+
+    def get_competitor_analysis_stats(self, competitor_id: UUID) -> Dict[str, int]:
+        """Get analysis statistics for a competitor."""
+        try:
+            result = self.supabase.table("competitor_ad_analysis").select(
+                "analysis_type"
+            ).eq("competitor_id", str(competitor_id)).execute()
+
+            stats = {
+                "video_vision": 0,
+                "image_vision": 0,
+                "copy_analysis": 0,
+                "landing_page": 0,
+                "total": len(result.data or [])
+            }
+
+            for row in (result.data or []):
+                atype = row.get("analysis_type", "")
+                if atype in stats:
+                    stats[atype] += 1
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Failed to get competitor analysis stats: {e}")
+            return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "total": 0}
+
 
 # Landing page analysis prompt
 LANDING_PAGE_ANALYSIS_PROMPT = """Analyze this landing page for brand research and customer persona insights.
