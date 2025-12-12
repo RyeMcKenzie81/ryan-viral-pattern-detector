@@ -3126,7 +3126,8 @@ class BrandResearchService:
     async def analyze_videos_for_competitor(
         self,
         competitor_id: UUID,
-        limit: int = 10
+        limit: int = 10,
+        force_reanalyze: bool = False
     ) -> List[Dict]:
         """
         Analyze video assets for a competitor.
@@ -3134,6 +3135,7 @@ class BrandResearchService:
         Args:
             competitor_id: Competitor UUID
             limit: Maximum videos to analyze
+            force_reanalyze: If True, re-analyze videos that already have analyses
 
         Returns:
             List of analysis results
@@ -3157,8 +3159,8 @@ class BrandResearchService:
 
         video_assets = [a for a in assets_result.data if a['competitor_ad_id'] in valid_ad_ids]
 
-        # Check which are already analyzed
-        if video_assets:
+        # Check which are already analyzed (unless force_reanalyze)
+        if video_assets and not force_reanalyze:
             asset_ids = [a['id'] for a in video_assets]
             analyzed_result = self.supabase.table("competitor_ad_analysis").select(
                 "asset_id"
@@ -3167,6 +3169,14 @@ class BrandResearchService:
             video_assets = [a for a in video_assets if a['id'] not in analyzed_ids]
 
         video_assets = video_assets[:limit]
+
+        # If force_reanalyze, delete existing analyses for these assets
+        if force_reanalyze and video_assets:
+            asset_ids = [a['id'] for a in video_assets]
+            self.supabase.table("competitor_ad_analysis").delete().in_(
+                "asset_id", asset_ids
+            ).eq("analysis_type", "video_vision").execute()
+            logger.info(f"Deleted existing video analyses for re-analysis")
         logger.info(f"Analyzing {len(video_assets)} videos for competitor {competitor_id}")
 
         results = []
@@ -3203,7 +3213,8 @@ class BrandResearchService:
     async def analyze_images_for_competitor(
         self,
         competitor_id: UUID,
-        limit: int = 20
+        limit: int = 20,
+        force_reanalyze: bool = False
     ) -> List[Dict]:
         """
         Analyze image assets for a competitor.
@@ -3211,6 +3222,7 @@ class BrandResearchService:
         Args:
             competitor_id: Competitor UUID
             limit: Maximum images to analyze
+            force_reanalyze: If True, re-analyze images that already have analyses
 
         Returns:
             List of analysis results
@@ -3234,8 +3246,8 @@ class BrandResearchService:
 
         image_assets = [a for a in assets_result.data if a['competitor_ad_id'] in valid_ad_ids]
 
-        # Check which are already analyzed
-        if image_assets:
+        # Check which are already analyzed (unless force_reanalyze)
+        if image_assets and not force_reanalyze:
             asset_ids = [a['id'] for a in image_assets]
             analyzed_result = self.supabase.table("competitor_ad_analysis").select(
                 "asset_id"
@@ -3244,6 +3256,14 @@ class BrandResearchService:
             image_assets = [a for a in image_assets if a['id'] not in analyzed_ids]
 
         image_assets = image_assets[:limit]
+
+        # If force_reanalyze, delete existing analyses for these assets
+        if force_reanalyze and image_assets:
+            asset_ids = [a['id'] for a in image_assets]
+            self.supabase.table("competitor_ad_analysis").delete().in_(
+                "asset_id", asset_ids
+            ).eq("analysis_type", "image_vision").execute()
+            logger.info(f"Deleted existing image analyses for re-analysis")
         logger.info(f"Analyzing {len(image_assets)} images for competitor {competitor_id}")
 
         results = []
@@ -3286,7 +3306,8 @@ class BrandResearchService:
     async def analyze_copy_for_competitor(
         self,
         competitor_id: UUID,
-        limit: int = 50
+        limit: int = 50,
+        force_reanalyze: bool = False
     ) -> List[Dict]:
         """
         Analyze ad copy for a competitor.
@@ -3294,6 +3315,7 @@ class BrandResearchService:
         Args:
             competitor_id: Competitor UUID
             limit: Maximum ads to analyze
+            force_reanalyze: If True, re-analyze ads that already have copy analyses
 
         Returns:
             List of analysis results
@@ -3309,15 +3331,26 @@ class BrandResearchService:
             logger.info(f"No ads for competitor: {competitor_id}")
             return []
 
-        # Check which are already analyzed
+        # Check which are already analyzed (unless force_reanalyze)
         ad_ids = [ad['id'] for ad in ads_result.data]
-        analyzed_result = self.supabase.table("competitor_ad_analysis").select(
-            "competitor_ad_id"
-        ).in_("competitor_ad_id", ad_ids).eq("analysis_type", "copy_analysis").execute()
-        analyzed_ids = {r['competitor_ad_id'] for r in (analyzed_result.data or [])}
+        if not force_reanalyze:
+            analyzed_result = self.supabase.table("competitor_ad_analysis").select(
+                "competitor_ad_id"
+            ).in_("competitor_ad_id", ad_ids).eq("analysis_type", "copy_analysis").execute()
+            analyzed_ids = {r['competitor_ad_id'] for r in (analyzed_result.data or [])}
+            ads_to_analyze = [ad for ad in ads_result.data if ad['id'] not in analyzed_ids]
+        else:
+            ads_to_analyze = ads_result.data
 
-        ads_to_analyze = [ad for ad in ads_result.data if ad['id'] not in analyzed_ids]
         ads_to_analyze = ads_to_analyze[:limit]
+
+        # If force_reanalyze, delete existing analyses for these ads
+        if force_reanalyze and ads_to_analyze:
+            ad_ids_to_delete = [ad['id'] for ad in ads_to_analyze]
+            self.supabase.table("competitor_ad_analysis").delete().in_(
+                "competitor_ad_id", ad_ids_to_delete
+            ).eq("analysis_type", "copy_analysis").execute()
+            logger.info(f"Deleted existing copy analyses for re-analysis")
 
         logger.info(f"Analyzing copy for {len(ads_to_analyze)} ads, competitor {competitor_id}")
 

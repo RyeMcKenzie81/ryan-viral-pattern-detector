@@ -466,6 +466,8 @@ with tab_ads:
         st.markdown("**Video Analysis**")
         st.caption("Transcripts, hooks, persona signals")
         video_limit = st.number_input("Videos to analyze", 1, 20, 5, key="video_lim")
+        reanalyze_videos = st.checkbox("Re-analyze existing", key="reanalyze_videos",
+                                       help="Re-run analysis on videos that were already analyzed (uses new prompts)")
         if st.button("Analyze Videos", key="analyze_videos", disabled=asset_stats.get('videos', 0) == 0):
             with st.spinner(f"Analyzing up to {video_limit} videos (5-15 sec each)..."):
                 try:
@@ -476,7 +478,8 @@ with tab_ads:
                             service = BrandResearchService()
                             return await service.analyze_videos_for_competitor(
                                 UUID(selected_competitor_id),
-                                limit=video_limit
+                                limit=video_limit,
+                                force_reanalyze=reanalyze_videos
                             )
                         return asyncio.run(_analyze())
                     results = run_video_analysis()
@@ -490,6 +493,8 @@ with tab_ads:
         st.markdown("**Image Analysis**")
         st.caption("Visual style, hooks, copy")
         image_limit = st.number_input("Images to analyze", 1, 50, 20, key="image_lim")
+        reanalyze_images = st.checkbox("Re-analyze existing", key="reanalyze_images",
+                                       help="Re-run analysis on images that were already analyzed (uses new prompts)")
         if st.button("Analyze Images", key="analyze_images", disabled=asset_stats.get('images', 0) == 0):
             with st.spinner(f"Analyzing up to {image_limit} images..."):
                 try:
@@ -500,7 +505,8 @@ with tab_ads:
                             service = BrandResearchService()
                             return await service.analyze_images_for_competitor(
                                 UUID(selected_competitor_id),
-                                limit=image_limit
+                                limit=image_limit,
+                                force_reanalyze=reanalyze_images
                             )
                         return asyncio.run(_analyze())
                     results = run_image_analysis()
@@ -514,6 +520,8 @@ with tab_ads:
         st.markdown("**Copy Analysis**")
         st.caption("Headlines, hooks, messaging")
         copy_limit = st.number_input("Ads to analyze", 1, 100, 50, key="copy_lim")
+        reanalyze_copy = st.checkbox("Re-analyze existing", key="reanalyze_copy",
+                                     help="Re-run analysis on ads that were already analyzed (uses new prompts)")
         if st.button("Analyze Copy", key="analyze_copy", disabled=asset_stats.get('total_ads', 0) == 0):
             with st.spinner(f"Analyzing copy from up to {copy_limit} ads..."):
                 try:
@@ -524,7 +532,8 @@ with tab_ads:
                             service = BrandResearchService()
                             return await service.analyze_copy_for_competitor(
                                 UUID(selected_competitor_id),
-                                limit=copy_limit
+                                limit=copy_limit,
+                                force_reanalyze=reanalyze_copy
                             )
                         return asyncio.run(_analyze())
                     results = run_copy_analysis()
@@ -635,6 +644,32 @@ with tab_ads:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Matching failed: {e}")
+
+    # Show matched landing pages by product
+    st.markdown("---")
+    st.markdown("### 🔗 Landing Pages by Product")
+    st.caption("Landing page URLs discovered from ads, grouped by product")
+
+    if products:
+        # Get ads with their link_urls grouped by product
+        db = get_supabase_client()
+        for product in products:
+            # Get unique link_urls for this product's ads
+            ads_result = db.table("competitor_ads").select(
+                "link_url"
+            ).eq("competitor_id", selected_competitor_id).eq(
+                "competitor_product_id", product['id']
+            ).not_.is_("link_url", "null").execute()
+
+            if ads_result.data:
+                # Get unique URLs
+                unique_urls = list(set(ad['link_url'] for ad in ads_result.data if ad.get('link_url')))
+                if unique_urls:
+                    with st.expander(f"**{product['name']}** ({len(unique_urls)} landing pages)"):
+                        for url in sorted(unique_urls):
+                            st.markdown(f"- [{url}]({url})")
+    else:
+        st.info("No products defined. Create products to see landing page mappings.")
 
 # ----------------------------------------------------------------------------
 # LANDING PAGES TAB
