@@ -416,10 +416,13 @@ with tab_ads:
     if ads_without > 0:
         st.info(f"{ads_without} ads need asset download")
 
-    col_dl1, col_dl2 = st.columns([2, 1])
+    col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
     with col_dl1:
         download_limit = st.slider("Max ads to process", 10, 100, 50, key="dl_limit")
     with col_dl2:
+        force_redownload = st.checkbox("Force re-download", key="force_dl",
+                                       help="Delete existing assets and re-download (use if previous downloads failed)")
+    with col_dl3:
         if st.button("📥 Download Assets", key="download_assets"):
             with st.spinner(f"Downloading assets from up to {download_limit} ads..."):
                 try:
@@ -427,7 +430,8 @@ with tab_ads:
                         import asyncio
                         return asyncio.run(research_service.download_assets_for_competitor(
                             UUID(selected_competitor_id),
-                            limit=download_limit
+                            limit=download_limit,
+                            force_redownload=force_redownload
                         ))
                     result = run_download()
 
