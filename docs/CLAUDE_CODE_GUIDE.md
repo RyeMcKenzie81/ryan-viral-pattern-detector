@@ -784,6 +784,41 @@ from ..tools_registered import my_tool  # Import tools
 # Don't import agents! Only dependencies and models.
 ```
 
+### Pitfall 6: Stale Service Instances in Streamlit Async Operations
+
+When calling async service methods from Streamlit UI buttons, creating a service instance outside the async function causes stale connection issues on repeated clicks.
+
+**❌ Wrong:**
+```python
+# Service created OUTSIDE - gets stale after first async call
+from viraltracker.services.brand_research_service import BrandResearchService
+research_service = BrandResearchService()
+
+if st.button("Download Assets"):
+    def run_download():
+        import asyncio
+        return asyncio.run(research_service.download_assets(...))  # STALE on 2nd click!
+    result = run_download()
+```
+
+**✅ Correct:**
+```python
+if st.button("Download Assets"):
+    def run_download():
+        import asyncio
+        # Create service INSIDE async function - fresh connection each time
+        async def _download():
+            from viraltracker.services.brand_research_service import BrandResearchService
+            service = BrandResearchService()  # Fresh instance!
+            return await service.download_assets(...)
+        return asyncio.run(_download())
+    result = run_download()
+```
+
+**Why this happens:** The Supabase client inside the service maintains connection state. After `asyncio.run()` completes, the event loop closes but the service instance persists with a stale connection. Creating a fresh service inside the async function ensures a new connection each time.
+
+**Applies to:** Any Streamlit button that calls async service methods repeatedly (downloads, analysis, scraping, etc.)
+
 ---
 
 ## Migration Guide
