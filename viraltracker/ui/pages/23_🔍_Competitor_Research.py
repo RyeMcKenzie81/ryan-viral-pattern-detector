@@ -428,11 +428,16 @@ with tab_ads:
                 try:
                     def run_download():
                         import asyncio
-                        return asyncio.run(research_service.download_assets_for_competitor(
-                            UUID(selected_competitor_id),
-                            limit=download_limit,
-                            force_redownload=force_redownload
-                        ))
+                        # Create service INSIDE async to avoid stale connection issues
+                        async def _download():
+                            from viraltracker.services.brand_research_service import BrandResearchService
+                            service = BrandResearchService()
+                            return await service.download_assets_for_competitor(
+                                UUID(selected_competitor_id),
+                                limit=download_limit,
+                                force_redownload=force_redownload
+                            )
+                        return asyncio.run(_download())
                     result = run_download()
 
                     reason = result.get('reason')
@@ -466,10 +471,14 @@ with tab_ads:
                 try:
                     def run_video_analysis():
                         import asyncio
-                        return asyncio.run(research_service.analyze_videos_for_competitor(
-                            UUID(selected_competitor_id),
-                            limit=video_limit
-                        ))
+                        async def _analyze():
+                            from viraltracker.services.brand_research_service import BrandResearchService
+                            service = BrandResearchService()
+                            return await service.analyze_videos_for_competitor(
+                                UUID(selected_competitor_id),
+                                limit=video_limit
+                            )
+                        return asyncio.run(_analyze())
                     results = run_video_analysis()
                     success = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success} videos")
@@ -486,10 +495,14 @@ with tab_ads:
                 try:
                     def run_image_analysis():
                         import asyncio
-                        return asyncio.run(research_service.analyze_images_for_competitor(
-                            UUID(selected_competitor_id),
-                            limit=image_limit
-                        ))
+                        async def _analyze():
+                            from viraltracker.services.brand_research_service import BrandResearchService
+                            service = BrandResearchService()
+                            return await service.analyze_images_for_competitor(
+                                UUID(selected_competitor_id),
+                                limit=image_limit
+                            )
+                        return asyncio.run(_analyze())
                     results = run_image_analysis()
                     success = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success} images")
@@ -506,10 +519,14 @@ with tab_ads:
                 try:
                     def run_copy_analysis():
                         import asyncio
-                        return asyncio.run(research_service.analyze_copy_for_competitor(
-                            UUID(selected_competitor_id),
-                            limit=copy_limit
-                        ))
+                        async def _analyze():
+                            from viraltracker.services.brand_research_service import BrandResearchService
+                            service = BrandResearchService()
+                            return await service.analyze_copy_for_competitor(
+                                UUID(selected_competitor_id),
+                                limit=copy_limit
+                            )
+                        return asyncio.run(_analyze())
                     results = run_copy_analysis()
                     success = len([r for r in results if 'analysis' in r])
                     st.success(f"Analyzed {success} ad copies")

@@ -1487,3 +1487,103 @@ Return ONLY valid JSON."""
         except Exception as e:
             logger.error(f"Failed to analyze landing page {landing_page_id}: {e}")
             return None
+
+    # ================================================================
+    # Product-Level Analysis Methods (for Competitive Comparison)
+    # ================================================================
+
+    def get_competitor_analyses_by_product(
+        self,
+        competitor_product_id: UUID,
+        analysis_types: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all ad analyses for a specific competitor product.
+
+        Args:
+            competitor_product_id: UUID of the competitor product
+            analysis_types: Optional list to filter by type (e.g., ['video_vision', 'image_vision', 'copy_analysis'])
+
+        Returns:
+            List of analysis records with raw_response data
+        """
+        try:
+            product_id_str = str(competitor_product_id)
+
+            # Get ads for this product
+            ads_result = self.supabase.table("competitor_ads").select(
+                "id"
+            ).eq("competitor_product_id", product_id_str).execute()
+
+            if not ads_result.data:
+                logger.info(f"No ads found for competitor product: {competitor_product_id}")
+                return []
+
+            ad_ids = [str(ad["id"]) for ad in ads_result.data]
+
+            # Get analyses for those ads
+            query = self.supabase.table("competitor_ad_analysis").select(
+                "id, competitor_ad_id, analysis_type, raw_response, created_at"
+            ).in_("competitor_ad_id", ad_ids)
+
+            if analysis_types:
+                query = query.in_("analysis_type", analysis_types)
+
+            result = query.execute()
+
+            logger.info(
+                f"Found {len(result.data or [])} analyses for competitor product {competitor_product_id}"
+            )
+            return result.data or []
+
+        except Exception as e:
+            logger.error(f"Failed to get competitor analyses by product: {e}")
+            return []
+
+    def get_brand_analyses_by_product(
+        self,
+        product_id: UUID,
+        analysis_types: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all ad analyses for a specific brand product.
+
+        Args:
+            product_id: UUID of the brand product
+            analysis_types: Optional list to filter by type (e.g., ['video_vision', 'image_vision', 'copy_analysis'])
+
+        Returns:
+            List of analysis records with raw_response data
+        """
+        try:
+            product_id_str = str(product_id)
+
+            # Get facebook_ads for this product
+            ads_result = self.supabase.table("facebook_ads").select(
+                "id"
+            ).eq("product_id", product_id_str).execute()
+
+            if not ads_result.data:
+                logger.info(f"No ads found for brand product: {product_id}")
+                return []
+
+            ad_ids = [str(ad["id"]) for ad in ads_result.data]
+
+            # Get analyses for those ads
+            query = self.supabase.table("brand_ad_analysis").select(
+                "id, facebook_ad_id, analysis_type, raw_response, created_at"
+            ).in_("facebook_ad_id", ad_ids)
+
+            if analysis_types:
+                query = query.in_("analysis_type", analysis_types)
+
+            result = query.execute()
+
+            logger.info(
+                f"Found {len(result.data or [])} analyses for brand product {product_id}"
+            )
+            return result.data or []
+
+        except Exception as e:
+            logger.error(f"Failed to get brand analyses by product: {e}")
+            return []
