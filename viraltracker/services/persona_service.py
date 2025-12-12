@@ -744,6 +744,9 @@ LANDING PAGE INSIGHTS:
 AD COPY SAMPLES (how competitor speaks to customers):
 {json.dumps(synthesis_input['ad_copy_samples'], indent=2) if synthesis_input['ad_copy_samples'] else 'No ad copy available'}
 
+AD AI ANALYSES (extracted insights from videos, images, copy):
+{json.dumps(synthesis_input.get('ad_ai_analyses', {}), indent=2) if synthesis_input.get('ad_ai_analyses') else 'No AI analyses available'}
+
 Based on this data, generate a detailed 4D persona for the competitor's target customer.
 This is a {level}-level persona synthesis.
 
@@ -813,8 +816,13 @@ Return JSON with this structure:
   }},
 
   "activation_events": ["What triggers them to buy NOW"],
-  "decision_process": "How they make purchase decisions"
+  "decision_process": "How they make purchase decisions",
+
+  "confidence_score": 0.85,
+  "data_quality_notes": "Brief note on data strengths/gaps"
 }}
+
+IMPORTANT: confidence_score must be a float between 0.0 and 1.0 indicating your confidence in this persona based on the quality and quantity of the input data. Higher scores (0.8+) for rich data, lower (0.4-0.6) for sparse data.
 
 Return ONLY valid JSON, no other text."""
 

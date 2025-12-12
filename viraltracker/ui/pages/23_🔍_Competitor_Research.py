@@ -934,6 +934,10 @@ with tab_persona:
     else:
         st.caption(f"Will synthesize persona for: {competitor['name']} (all products)")
 
+    # Initialize session state for preview persona
+    if 'competitor_persona_preview' not in st.session_state:
+        st.session_state.competitor_persona_preview = None
+
     if st.button("🧠 Synthesize Persona", type="primary"):
         with st.spinner("Synthesizing persona from collected data..."):
             try:
@@ -945,22 +949,148 @@ with tab_persona:
                 if persona_level == "Product-level" and selected_product_id:
                     comp_product_id = UUID(selected_product_id)
 
-                # Run synthesis
+                # Run synthesis - store in session state for preview (don't save yet)
                 persona = asyncio.run(persona_service.synthesize_competitor_persona(
                     competitor_id=UUID(selected_competitor_id),
                     brand_id=UUID(selected_brand_id),
                     competitor_product_id=comp_product_id
                 ))
 
-                # Save the persona
-                persona_id = persona_service.create_persona(persona)
-                st.success(f"Persona created: {persona.name}")
+                # Store for preview
+                st.session_state.competitor_persona_preview = persona
+                st.success(f"Persona synthesized: {persona.name} - Review below and save if satisfied")
                 st.rerun()
 
             except ValueError as e:
                 st.warning(str(e))
             except Exception as e:
                 st.error(f"Synthesis failed: {e}")
+
+    # Show preview persona if just synthesized
+    if st.session_state.competitor_persona_preview:
+        preview = st.session_state.competitor_persona_preview
+
+        st.markdown("---")
+        st.markdown("### 🆕 New Persona (Preview)")
+        st.warning("This persona has not been saved yet. Review and click Save to keep it.")
+
+        # Header with confidence
+        col_header, col_conf, col_actions = st.columns([2, 1, 1])
+        with col_header:
+            st.markdown(f"## {preview.name}")
+        with col_conf:
+            confidence = preview.confidence_score or 0
+            if confidence:
+                st.metric("Confidence", f"{confidence:.0%}")
+            else:
+                st.metric("Confidence", "N/A")
+        with col_actions:
+            col_save, col_discard = st.columns(2)
+            with col_save:
+                if st.button("✅ Save", type="primary", key="save_preview"):
+                    from viraltracker.services.persona_service import PersonaService
+                    persona_service = PersonaService()
+                    persona_id = persona_service.create_persona(preview)
+                    st.session_state.competitor_persona_preview = None
+                    st.success(f"Persona saved!")
+                    st.rerun()
+            with col_discard:
+                if st.button("❌ Discard", key="discard_preview"):
+                    st.session_state.competitor_persona_preview = None
+                    st.rerun()
+
+        if preview.snapshot:
+            st.info(preview.snapshot)
+
+        # Demographics summary
+        if preview.demographics:
+            demo = preview.demographics
+            demo_parts = []
+            if hasattr(demo, 'age_range') and demo.age_range:
+                demo_parts.append(demo.age_range)
+            if hasattr(demo, 'gender') and demo.gender and demo.gender != 'any':
+                demo_parts.append(demo.gender)
+            if hasattr(demo, 'location') and demo.location:
+                demo_parts.append(demo.location)
+            if hasattr(demo, 'income_level') and demo.income_level:
+                demo_parts.append(demo.income_level)
+            if demo_parts:
+                st.markdown(f"**Demographics:** {', '.join(demo_parts)}")
+
+        # Tabbed preview
+        tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview"])
+
+        with tabs[0]:
+            col_pain, col_desire = st.columns(2)
+            with col_pain:
+                st.markdown("#### Pain Points")
+                if preview.pain_points:
+                    for category in ['emotional', 'social', 'functional']:
+                        items = getattr(preview.pain_points, category, [])
+                        if items:
+                            st.markdown(f"**{category.title()}:**")
+                            for pp in items[:3]:
+                                st.markdown(f"- {pp}")
+            with col_desire:
+                st.markdown("#### Desires")
+                if preview.desires:
+                    for category, instances in preview.desires.items():
+                        if instances:
+                            st.markdown(f"**{category.replace('_', ' ').title()}:**")
+                            for inst in instances[:2]:
+                                text = inst.text if hasattr(inst, 'text') else str(inst)
+                                st.markdown(f"- {text}")
+
+            if preview.transformation_map:
+                st.markdown("#### Transformation")
+                col_b, col_a = st.columns(2)
+                with col_b:
+                    st.markdown("**Before:**")
+                    for b in (preview.transformation_map.before or [])[:3]:
+                        st.markdown(f"- {b}")
+                with col_a:
+                    st.markdown("**After:**")
+                    for a in (preview.transformation_map.after or [])[:3]:
+                        st.markdown(f"- {a}")
+
+        with tabs[1]:
+            if preview.self_narratives:
+                st.markdown("#### Self-Narratives")
+                for n in preview.self_narratives[:4]:
+                    st.markdown(f'- "{n}"')
+            col_c, col_d = st.columns(2)
+            with col_c:
+                st.markdown("**Current Self-Image:**")
+                st.write(preview.current_self_image or "N/A")
+            with col_d:
+                st.markdown("**Desired Self-Image:**")
+                st.write(preview.desired_self_image or "N/A")
+
+        with tabs[2]:
+            if preview.social_relations:
+                col_pos, col_neg = st.columns(2)
+                with col_pos:
+                    for label, attr in [("Want to Impress", "want_to_impress"), ("Protect", "love_loyalty")]:
+                        items = getattr(preview.social_relations, attr, [])
+                        if items:
+                            st.markdown(f"**{label}:**")
+                            for item in items[:3]:
+                                st.markdown(f"- {item}")
+                with col_neg:
+                    for label, attr in [("Fear Judgment From", "fear_judged_by"), ("Distance From", "distance_from")]:
+                        items = getattr(preview.social_relations, attr, [])
+                        if items:
+                            st.markdown(f"**{label}:**")
+                            for item in items[:3]:
+                                st.markdown(f"- {item}")
+
+        with tabs[3]:
+            if preview.worldview:
+                st.markdown("#### Worldview")
+                st.write(preview.worldview)
+            if preview.core_values:
+                st.markdown("**Core Values:**")
+                st.write(", ".join(preview.core_values[:5]))
 
     # Show existing persona if any
     try:
@@ -978,7 +1108,7 @@ with tab_persona:
 
         if persona_result.data:
             st.markdown("---")
-            st.markdown("### Existing Persona")
+            st.markdown("### 💾 Saved Persona")
             persona = persona_result.data[0]
 
             # Header with name and confidence
