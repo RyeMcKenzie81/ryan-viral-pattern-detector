@@ -615,8 +615,10 @@ class PersonaService:
                 product_info = product_result.data[0]
 
         # Gather Amazon review analyses
+        # Table has specific columns: pain_points, desires, language_patterns, etc.
         amazon_query = self.supabase.table("competitor_amazon_review_analysis").select(
-            "analysis_data, analysis_summary"
+            "pain_points, desires, language_patterns, objections, transformation, "
+            "transformation_quotes, top_positive_quotes, top_negative_quotes, purchase_triggers"
         ).eq("competitor_id", str(competitor_id))
 
         if competitor_product_id:
@@ -651,6 +653,12 @@ class PersonaService:
         ads_result = ads_query.limit(20).execute()
         ads = ads_result.data or []
 
+        # Gather AI analyses from competitor_ad_analysis (video, image, copy)
+        ad_analysis_result = self.supabase.table("competitor_ad_analysis").select(
+            "analysis_type, raw_response"
+        ).eq("competitor_id", str(competitor_id)).limit(30).execute()
+        ad_analyses = ad_analysis_result.data or []
+
         # Build synthesis input
         synthesis_input = {
             "competitor_name": competitor.get("name"),
@@ -659,7 +667,15 @@ class PersonaService:
             "product_name": product_info.get("name") if product_info else None,
             "product_description": product_info.get("description") if product_info else None,
             "amazon_review_insights": [
-                a.get("analysis_summary") or a.get("analysis_data", {})
+                {
+                    "pain_points": a.get("pain_points", {}),
+                    "desires": a.get("desires", {}),
+                    "language_patterns": a.get("language_patterns", {}),
+                    "objections": a.get("objections", {}),
+                    "transformation": a.get("transformation", {}),
+                    "top_quotes": (a.get("top_positive_quotes") or [])[:3] + (a.get("top_negative_quotes") or [])[:3],
+                    "purchase_triggers": a.get("purchase_triggers", [])
+                }
                 for a in amazon_analyses
             ],
             "landing_page_insights": [
@@ -672,14 +688,32 @@ class PersonaService:
             "ad_copy_samples": [
                 ad.get("ad_creative_body")
                 for ad in ads if ad.get("ad_creative_body")
-            ][:10]  # Limit to 10 samples
+            ][:10],  # Limit to 10 samples
+            "ad_ai_analyses": {
+                "video_analyses": [
+                    a.get("raw_response", {})
+                    for a in ad_analyses if a.get("analysis_type") == "video_vision"
+                ][:5],
+                "image_analyses": [
+                    a.get("raw_response", {})
+                    for a in ad_analyses if a.get("analysis_type") == "image_vision"
+                ][:10],
+                "copy_analyses": [
+                    a.get("raw_response", {})
+                    for a in ad_analyses if a.get("analysis_type") == "copy_analysis"
+                ][:10]
+            }
         }
 
         # Check if we have enough data
+        ad_ai = synthesis_input["ad_ai_analyses"]
         total_sources = (
             len(synthesis_input["amazon_review_insights"]) +
             len(synthesis_input["landing_page_insights"]) +
-            len(synthesis_input["ad_copy_samples"])
+            len(synthesis_input["ad_copy_samples"]) +
+            len(ad_ai["video_analyses"]) +
+            len(ad_ai["image_analyses"]) +
+            len(ad_ai["copy_analyses"])
         )
 
         if total_sources == 0:
