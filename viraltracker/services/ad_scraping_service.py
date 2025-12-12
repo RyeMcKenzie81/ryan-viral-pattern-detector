@@ -540,11 +540,13 @@ class AdScrapingService:
             storage_path = f"competitors/{competitor_id}/{competitor_ad_id}/asset_{i}.{mime_type.split('/')[-1]}"
 
             try:
+                # Use upsert to overwrite if file exists in storage
                 self.supabase.storage.from_("scraped-assets").upload(
                     storage_path,
                     content,
-                    {"content-type": mime_type}
+                    {"content-type": mime_type, "upsert": "true"}
                 )
+                logger.info(f"Uploaded image to storage: {storage_path}")
 
                 # Save to competitor_ad_assets table
                 record = {
@@ -556,10 +558,18 @@ class AdScrapingService:
                     "mime_type": mime_type,
                 }
 
-                db_result = self.supabase.table("competitor_ad_assets").insert(record).execute()
-                if db_result.data:
-                    result["images"].append(UUID(db_result.data[0]["id"]))
-                    logger.debug(f"Saved competitor image asset: {storage_path}")
+                try:
+                    db_result = self.supabase.table("competitor_ad_assets").insert(record).execute()
+                    if db_result.data:
+                        result["images"].append(UUID(db_result.data[0]["id"]))
+                except Exception as db_err:
+                    # Record might already exist, that's OK - file is uploaded
+                    if "duplicate" in str(db_err).lower() or "already exists" in str(db_err).lower():
+                        logger.debug(f"DB record already exists for {storage_path}, file uploaded successfully")
+                        # Still count as success since file is there
+                        result["images"].append(competitor_ad_id)  # Use ad ID as placeholder
+                    else:
+                        raise db_err
 
             except Exception as e:
                 logger.warning(f"Failed to store competitor image: {e}")
@@ -577,11 +587,13 @@ class AdScrapingService:
             storage_path = f"competitors/{competitor_id}/{competitor_ad_id}/video_{i}.{mime_type.split('/')[-1]}"
 
             try:
+                # Use upsert to overwrite if file exists in storage
                 self.supabase.storage.from_("scraped-assets").upload(
                     storage_path,
                     content,
-                    {"content-type": mime_type}
+                    {"content-type": mime_type, "upsert": "true"}
                 )
+                logger.info(f"Uploaded video to storage: {storage_path}")
 
                 record = {
                     "competitor_ad_id": str(competitor_ad_id),
@@ -592,10 +604,17 @@ class AdScrapingService:
                     "mime_type": mime_type,
                 }
 
-                db_result = self.supabase.table("competitor_ad_assets").insert(record).execute()
-                if db_result.data:
-                    result["videos"].append(UUID(db_result.data[0]["id"]))
-                    logger.debug(f"Saved competitor video asset: {storage_path}")
+                try:
+                    db_result = self.supabase.table("competitor_ad_assets").insert(record).execute()
+                    if db_result.data:
+                        result["videos"].append(UUID(db_result.data[0]["id"]))
+                except Exception as db_err:
+                    # Record might already exist, that's OK - file is uploaded
+                    if "duplicate" in str(db_err).lower() or "already exists" in str(db_err).lower():
+                        logger.debug(f"DB record already exists for {storage_path}, file uploaded successfully")
+                        result["videos"].append(competitor_ad_id)  # Use ad ID as placeholder
+                    else:
+                        raise db_err
 
             except Exception as e:
                 logger.warning(f"Failed to store competitor video: {e}")
