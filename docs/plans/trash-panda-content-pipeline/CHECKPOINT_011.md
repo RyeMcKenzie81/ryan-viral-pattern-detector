@@ -1,8 +1,8 @@
-# Checkpoint 011 - MVP 4 Complete (Asset Management)
+# Checkpoint 011 - MVP 4 Complete + Assets Imported
 
-**Date:** 2025-12-11
+**Date:** 2025-12-12
 **Branch:** `feature/trash-panda-content-pipeline`
-**Status:** MVP 4 Complete, Ready for Asset Import + MVP 5
+**Status:** MVP 4 Complete, 45 Assets Imported, Ready for MVP 5
 
 ---
 
@@ -94,16 +94,26 @@ project_asset_requirements (id, project_id, asset_id, asset_name, asset_type, st
 
 ## Next Session: Asset Import + MVP 5
 
-### Before MVP 5 - Import Existing Assets
+### Assets Imported (Completed 2025-12-12)
 
-User has 20-50 local image files to import. Use the **Batch File Upload** feature:
+**45 assets imported** via `scripts/upload_trash_panda_assets.py`:
 
-1. Go to Content Pipeline → select project → Assets tab → Upload → Batch File Upload
-2. Select asset type (likely "character" for main cast first)
-3. Check "Mark All as Core Assets" if these are core characters
-4. Add tags like "main-cast, imported"
-5. Select files and click "Upload All Files"
-6. Repeat for other asset types (props, backgrounds)
+**Characters (10 - all CORE):**
+- whale, boomer-facing-right, thechad, mini-raccoon-thief, core-assets (expression sheet)
+- the-gov-fed, bull, the-bag-holder, bear, degenerate
+
+**Backgrounds (6):**
+- the-landfill-the-central-bank, the-suburbs-the-boomer-zone, the-moon-surface-to-the-moon!
+- the-dark-alley-the-stock-market, the-stock-chart-grid-the-terminal-background, the-dumpster-area-the-store
+
+**Props (29):**
+- Food/commodities: the-pizza-blue-chip-stock, the-apple-core-mid-cap, the-fish-bone-junk-stock, tiny-candy-bar-modern
+- Currency: the-stack-small-wealth, the-single-cap-the-coin, the-bank-bag, dividends-the-reward
+- Tech: the-terminal-the-computer, the-phone-the-app, the-moon-rocket, the-dumpster-fire
+- Charts/UI: the-rug-pull-the-crash, the-moon-shot-parabolic-move, the-buy-button, the-sell-button, the-bubble-economic-bubble, the-crab-market-sideways, the-god-candle-massive-pump
+- Other props: magnifying-glass, tiny-violin, mini-grocery-cart, mini-dumpster-cereal-box-shaped, the-bag-asset, etc.
+
+**Excluded:** Green/Red candlestick charts (too complex for beginner audience)
 
 ### MVP 5: Phase 6 - Asset Generation
 
