@@ -128,32 +128,67 @@ class AdScrapingService:
         logger.debug(f"Extracted {len(images)} images, {len(videos)} videos from snapshot")
         return {"images": images, "videos": videos}
 
-    async def download_asset(self, url: str, timeout: float = 30.0) -> Optional[bytes]:
+    async def download_asset(self, url: str, timeout: float = 30.0, max_retries: int = 3) -> Optional[bytes]:
         """
-        Download asset from URL.
+        Download asset from URL with retry logic.
 
         Args:
             url: URL to download from
             timeout: Request timeout in seconds
+            max_retries: Maximum number of retry attempts
 
         Returns:
             File bytes or None if failed
         """
-        try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                logger.debug(f"Downloaded {len(response.content)} bytes from {url[:50]}...")
-                return response.content
-        except httpx.TimeoutException:
-            logger.warning(f"Timeout downloading: {url[:50]}...")
-            return None
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"HTTP error {e.response.status_code} downloading: {url[:50]}...")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to download {url[:50]}...: {e}")
-            return None
+        import asyncio
+
+        # Headers to mimic browser request (FB CDN blocks non-browser requests)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,video/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "cross-site",
+        }
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    headers=headers
+                ) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    logger.debug(f"Downloaded {len(response.content)} bytes from {url[:50]}...")
+                    return response.content
+            except httpx.TimeoutException:
+                last_error = "timeout"
+                logger.warning(f"Timeout (attempt {attempt+1}/{max_retries}) downloading: {url[:80]}...")
+            except httpx.HTTPStatusError as e:
+                last_error = f"HTTP {e.response.status_code}"
+                logger.warning(f"HTTP error {e.response.status_code} (attempt {attempt+1}/{max_retries}) downloading: {url[:80]}...")
+                # Don't retry on 4xx errors (except 429)
+                if 400 <= e.response.status_code < 500 and e.response.status_code != 429:
+                    break
+            except httpx.ConnectError as e:
+                last_error = f"connection error: {e}"
+                logger.warning(f"Connection error (attempt {attempt+1}/{max_retries}) downloading: {url[:80]}... - {e}")
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Failed (attempt {attempt+1}/{max_retries}) to download {url[:80]}...: {e}")
+
+            # Exponential backoff before retry
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # 1s, 2s, 4s
+                await asyncio.sleep(wait_time)
+
+        logger.error(f"All {max_retries} attempts failed for {url[:80]}... Last error: {last_error}")
+        return None
 
     def _get_mime_type(self, url: str, content: bytes) -> str:
         """Determine MIME type from URL extension or content."""

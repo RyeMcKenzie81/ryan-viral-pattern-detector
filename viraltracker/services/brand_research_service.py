@@ -2953,9 +2953,13 @@ class BrandResearchService:
 
             if not urls['images'] and not urls['videos']:
                 stats["ads_skipped_no_urls"] += 1
+                # Log first few to help debug
+                if stats["ads_skipped_no_urls"] <= 3:
+                    logger.info(f"Ad {ad_id} has no asset URLs. Snapshot keys: {list(snapshot.keys()) if snapshot else 'empty'}")
                 continue
 
             stats["ads_processed"] += 1
+            logger.info(f"Processing ad {ad_id}: {len(urls['images'])} images, {len(urls['videos'])} videos")
 
             # Download and store images
             if include_images:
