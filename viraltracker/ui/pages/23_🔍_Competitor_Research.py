@@ -327,6 +327,10 @@ tab_ads, tab_landing, tab_amazon, tab_persona = st.tabs([
     "👤 Persona"
 ])
 
+# Initialize pipeline results in session state
+if 'pipeline_results' not in st.session_state:
+    st.session_state.pipeline_results = None
+
 # ----------------------------------------------------------------------------
 # ADS TAB
 # ----------------------------------------------------------------------------
@@ -335,7 +339,7 @@ with tab_ads:
     # FULL RESEARCH PIPELINE
     # -------------------------------------------------------------------------
     st.markdown("### 🚀 Full Research Pipeline")
-    st.caption("Run all research steps automatically: Download assets → Analyze videos/images/copy → Scrape landing pages")
+    st.caption("Run all research steps automatically: Download assets → Analyze videos/images/copy")
 
     with st.expander("⚙️ Pipeline Settings", expanded=False):
         col_p1, col_p2 = st.columns(2)
@@ -358,6 +362,48 @@ with tab_ads:
                 help="Re-run analysis on assets that were already analyzed"
             )
 
+    # Show previous results if they exist
+    if st.session_state.pipeline_results:
+        prev = st.session_state.pipeline_results
+        with st.expander(f"📋 Last Pipeline Run: {prev.get('timestamp', 'Unknown')}", expanded=True):
+            # Status banner
+            if prev.get('status') == 'success':
+                st.success(f"✅ Pipeline completed successfully")
+            elif prev.get('status') == 'partial':
+                st.warning(f"⚠️ Pipeline completed with some errors")
+            else:
+                st.error(f"❌ Pipeline failed: {prev.get('error', 'Unknown error')}")
+
+            # Results summary
+            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            with col_r1:
+                dl = prev.get('download', {})
+                st.metric("Downloads", f"{dl.get('videos', 0)} vid / {dl.get('images', 0)} img")
+                if dl.get('errors', 0) > 0:
+                    st.caption(f"⚠️ {dl.get('errors', 0)} failed")
+            with col_r2:
+                st.metric("Videos Analyzed", prev.get('videos_analyzed', 0))
+                if prev.get('video_errors', 0) > 0:
+                    st.caption(f"⚠️ {prev.get('video_errors', 0)} failed")
+            with col_r3:
+                st.metric("Images Analyzed", prev.get('images_analyzed', 0))
+                if prev.get('image_errors', 0) > 0:
+                    st.caption(f"⚠️ {prev.get('image_errors', 0)} failed")
+            with col_r4:
+                st.metric("Copy Analyzed", prev.get('copy_analyzed', 0))
+                if prev.get('copy_errors', 0) > 0:
+                    st.caption(f"⚠️ {prev.get('copy_errors', 0)} failed")
+
+            # Detailed log
+            if prev.get('log'):
+                st.markdown("**Log:**")
+                for msg in prev['log']:
+                    st.text(msg)
+
+            if st.button("Clear Results", key="clear_results"):
+                st.session_state.pipeline_results = None
+                st.rerun()
+
     if st.button("▶️ Run Full Research Pipeline", key="run_pipeline", type="primary"):
         progress_container = st.container()
         with progress_container:
@@ -366,9 +412,24 @@ with tab_ads:
             results_log = st.empty()
 
             log_messages = []
+            pipeline_result = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'competitor_id': selected_competitor_id,
+                'competitor_name': selected_competitor_name,
+                'status': 'running',
+                'log': [],
+                'download': {'videos': 0, 'images': 0, 'errors': 0},
+                'videos_analyzed': 0,
+                'video_errors': 0,
+                'images_analyzed': 0,
+                'image_errors': 0,
+                'copy_analyzed': 0,
+                'copy_errors': 0,
+            }
 
             def log(msg):
                 log_messages.append(f"• {msg}")
+                pipeline_result['log'].append(msg)
                 results_log.markdown("\n".join(log_messages))
 
             try:
@@ -394,7 +455,15 @@ with tab_ads:
                 elif dl_result.get('reason') == 'no_ads':
                     log("Assets: No ads to process")
                 else:
-                    log(f"Assets: Downloaded {dl_result.get('videos_downloaded', 0)} videos, {dl_result.get('images_downloaded', 0)} images")
+                    vids = dl_result.get('videos_downloaded', 0)
+                    imgs = dl_result.get('images_downloaded', 0)
+                    skipped = dl_result.get('ads_skipped_no_urls', 0)
+                    pipeline_result['download']['videos'] = vids
+                    pipeline_result['download']['images'] = imgs
+                    pipeline_result['download']['errors'] = skipped
+                    log(f"Assets: Downloaded {vids} videos, {imgs} images")
+                    if skipped > 0:
+                        log(f"Assets: ⚠️ {skipped} ads had no downloadable URLs (may be expired)")
 
                 progress_bar.progress(20, text="Assets downloaded")
 
@@ -416,7 +485,10 @@ with tab_ads:
 
                 video_results = run_video_analysis()
                 video_success = len([r for r in video_results if 'analysis' in r])
-                log(f"Videos: Analyzed {video_success} videos")
+                video_errors = len([r for r in video_results if 'error' in r])
+                pipeline_result['videos_analyzed'] = video_success
+                pipeline_result['video_errors'] = video_errors
+                log(f"Videos: Analyzed {video_success} videos" + (f" ({video_errors} errors)" if video_errors else ""))
 
                 progress_bar.progress(45, text="Videos analyzed")
 
@@ -438,7 +510,10 @@ with tab_ads:
 
                 image_results = run_image_analysis()
                 image_success = len([r for r in image_results if 'analysis' in r])
-                log(f"Images: Analyzed {image_success} images")
+                image_errors = len([r for r in image_results if 'error' in r])
+                pipeline_result['images_analyzed'] = image_success
+                pipeline_result['image_errors'] = image_errors
+                log(f"Images: Analyzed {image_success} images" + (f" ({image_errors} errors)" if image_errors else ""))
 
                 progress_bar.progress(70, text="Images analyzed")
 
@@ -460,18 +535,40 @@ with tab_ads:
 
                 copy_results = run_copy_analysis()
                 copy_success = len([r for r in copy_results if 'analysis' in r])
-                log(f"Copy: Analyzed {copy_success} ad copies")
+                copy_errors = len([r for r in copy_results if 'error' in r])
+                pipeline_result['copy_analyzed'] = copy_success
+                pipeline_result['copy_errors'] = copy_errors
+                log(f"Copy: Analyzed {copy_success} ad copies" + (f" ({copy_errors} errors)" if copy_errors else ""))
 
                 progress_bar.progress(100, text="Pipeline complete!")
-                status_text.success("✅ Research pipeline complete!")
+
+                # Determine final status
+                total_errors = (pipeline_result['download']['errors'] +
+                               pipeline_result['video_errors'] +
+                               pipeline_result['image_errors'] +
+                               pipeline_result['copy_errors'])
+
+                if total_errors > 0:
+                    pipeline_result['status'] = 'partial'
+                    status_text.warning("⚠️ Pipeline completed with some errors - see details above")
+                else:
+                    pipeline_result['status'] = 'success'
+                    status_text.success("✅ Research pipeline complete!")
 
                 # Summary
                 log("")
                 log(f"**Summary:** {video_success} videos, {image_success} images, {copy_success} copies analyzed")
+                if total_errors > 0:
+                    log(f"**Errors:** {total_errors} total failures")
 
             except Exception as e:
+                pipeline_result['status'] = 'failed'
+                pipeline_result['error'] = str(e)
                 status_text.error(f"❌ Pipeline failed: {e}")
                 log(f"Error: {e}")
+
+            # Save results to session state
+            st.session_state.pipeline_results = pipeline_result
 
     st.markdown("---")
     st.markdown("### Ad Scraping")
