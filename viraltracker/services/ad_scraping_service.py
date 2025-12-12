@@ -502,6 +502,110 @@ class AdScrapingService:
         )
         return result
 
+    async def scrape_and_store_competitor_assets(
+        self,
+        competitor_ad_id: UUID,
+        competitor_id: UUID,
+        snapshot: Dict,
+        scrape_source: str = "competitor_research"
+    ) -> Dict[str, List[UUID]]:
+        """
+        Extract, download, and store all assets from a competitor ad snapshot.
+
+        Mirrors scrape_and_store_assets but stores to competitor_ad_assets table.
+
+        Args:
+            competitor_ad_id: UUID of the competitor_ads record
+            competitor_id: UUID of the competitor
+            snapshot: The snapshot_data
+            scrape_source: Source identifier
+
+        Returns:
+            {"images": [asset_id1, ...], "videos": [asset_id1, ...]}
+        """
+        result = {"images": [], "videos": []}
+
+        # Extract URLs
+        urls = self.extract_asset_urls(snapshot)
+
+        logger.info(f"Competitor ad {str(competitor_ad_id)[:8]}: found {len(urls['images'])} images, {len(urls['videos'])} videos")
+
+        # Download and store images
+        for i, url in enumerate(urls["images"][:5]):  # Limit to 5 images per ad
+            content = await self.download_asset(url)
+            if not content:
+                continue
+
+            mime_type = self._get_mime_type(url, content)
+            storage_path = f"competitors/{competitor_id}/{competitor_ad_id}/asset_{i}.{mime_type.split('/')[-1]}"
+
+            try:
+                self.supabase.storage.from_("scraped-assets").upload(
+                    storage_path,
+                    content,
+                    {"content-type": mime_type}
+                )
+
+                # Save to competitor_ad_assets table
+                record = {
+                    "competitor_ad_id": str(competitor_ad_id),
+                    "asset_type": "image",
+                    "storage_path": f"scraped-assets/{storage_path}",
+                    "original_url": url,
+                    "file_size": len(content),
+                    "mime_type": mime_type,
+                }
+
+                db_result = self.supabase.table("competitor_ad_assets").insert(record).execute()
+                if db_result.data:
+                    result["images"].append(UUID(db_result.data[0]["id"]))
+                    logger.debug(f"Saved competitor image asset: {storage_path}")
+
+            except Exception as e:
+                logger.warning(f"Failed to store competitor image: {e}")
+
+        # Download and store videos
+        for i, url in enumerate(urls["videos"][:2]):  # Limit to 2 videos per ad
+            logger.info(f"Downloading video {i+1}/{len(urls['videos'])} for competitor ad {str(competitor_ad_id)[:8]}")
+            content = await self.download_asset(url, timeout=120.0)
+            if not content:
+                logger.warning(f"Failed to download video from: {url[:80]}...")
+                continue
+            logger.info(f"Downloaded video: {len(content)} bytes")
+
+            mime_type = self._get_mime_type(url, content)
+            storage_path = f"competitors/{competitor_id}/{competitor_ad_id}/video_{i}.{mime_type.split('/')[-1]}"
+
+            try:
+                self.supabase.storage.from_("scraped-assets").upload(
+                    storage_path,
+                    content,
+                    {"content-type": mime_type}
+                )
+
+                record = {
+                    "competitor_ad_id": str(competitor_ad_id),
+                    "asset_type": "video",
+                    "storage_path": f"scraped-assets/{storage_path}",
+                    "original_url": url,
+                    "file_size": len(content),
+                    "mime_type": mime_type,
+                }
+
+                db_result = self.supabase.table("competitor_ad_assets").insert(record).execute()
+                if db_result.data:
+                    result["videos"].append(UUID(db_result.data[0]["id"]))
+                    logger.debug(f"Saved competitor video asset: {storage_path}")
+
+            except Exception as e:
+                logger.warning(f"Failed to store competitor video: {e}")
+
+        logger.info(
+            f"Scraped {len(result['images'])} images, {len(result['videos'])} videos "
+            f"for competitor ad {str(competitor_ad_id)[:8]}"
+        )
+        return result
+
     def get_ads_without_assets(
         self,
         brand_id: Optional[UUID] = None,

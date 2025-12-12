@@ -2928,6 +2928,7 @@ class BrandResearchService:
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets", "total_ads": len(ad_ids)}
 
         ads_to_process = ads_needing_assets[:limit]
+        logger.info(f"Processing {len(ads_to_process)} competitor ads for asset download")
 
         stats = {
             "ads_processed": 0,
@@ -2948,83 +2949,40 @@ class BrandResearchService:
                 except json.JSONDecodeError:
                     snapshot = {}
 
-            # Extract URLs using existing service
+            # Check if has URLs before processing
             urls = scraping_service.extract_asset_urls(snapshot)
-
             if not urls['images'] and not urls['videos']:
                 stats["ads_skipped_no_urls"] += 1
-                # Log first few to help debug
                 if stats["ads_skipped_no_urls"] <= 3:
-                    logger.info(f"Ad {ad_id} has no asset URLs. Snapshot keys: {list(snapshot.keys()) if snapshot else 'empty'}")
+                    logger.info(f"Ad {ad_id[:8]} has no asset URLs. Snapshot keys: {list(snapshot.keys()) if snapshot else 'empty'}")
                 continue
 
-            stats["ads_processed"] += 1
-            logger.info(f"Processing ad {ad_id}: {len(urls['images'])} images, {len(urls['videos'])} videos")
+            try:
+                # Use the same pattern as brand side - delegate to AdScrapingService
+                result = await scraping_service.scrape_and_store_competitor_assets(
+                    competitor_ad_id=UUID(ad_id),
+                    competitor_id=competitor_id,
+                    snapshot=snapshot,
+                    scrape_source="competitor_research"
+                )
 
-            # Download and store images
-            if include_images:
-                for url in urls['images'][:3]:  # Limit images per ad
-                    try:
-                        content = await scraping_service.download_asset(url)
-                        if content:
-                            # Determine mime type
-                            mime_type = "image/jpeg"
-                            if url.lower().endswith('.png'):
-                                mime_type = "image/png"
-                            elif url.lower().endswith('.webp'):
-                                mime_type = "image/webp"
+                if include_images:
+                    stats["images_downloaded"] += len(result.get('images', []))
+                if include_videos:
+                    stats["videos_downloaded"] += len(result.get('videos', []))
 
-                            # Upload to storage
-                            storage_path = f"competitors/{competitor_id}/{ad_id}/image_{stats['images_downloaded']}.jpg"
-                            self.supabase.storage.from_("scraped-assets").upload(
-                                storage_path,
-                                content,
-                                {"content-type": mime_type}
-                            )
+                stats["ads_processed"] += 1
 
-                            # Save record
-                            self.supabase.table("competitor_ad_assets").insert({
-                                "competitor_ad_id": ad_id,
-                                "asset_type": "image",
-                                "storage_path": f"scraped-assets/{storage_path}",
-                                "original_url": url,
-                                "mime_type": mime_type,
-                                "file_size": len(content)
-                            }).execute()
+                # Log if nothing was downloaded despite having URLs
+                if len(urls.get('videos', [])) > 0 and len(result.get('videos', [])) == 0:
+                    logger.warning(f"Ad {ad_id[:8]}: Had {len(urls['videos'])} video URLs but downloaded 0")
+                if len(urls.get('images', [])) > 0 and len(result.get('images', [])) == 0:
+                    logger.warning(f"Ad {ad_id[:8]}: Had {len(urls['images'])} image URLs but downloaded 0")
 
-                            stats["images_downloaded"] += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to download image: {e}")
-                        stats["errors"] += 1
-
-            # Download and store videos
-            if include_videos:
-                for url in urls['videos'][:1]:  # Limit to 1 video per ad
-                    try:
-                        content = await scraping_service.download_asset(url, timeout=60.0)
-                        if content:
-                            mime_type = "video/mp4"
-
-                            storage_path = f"competitors/{competitor_id}/{ad_id}/video_{stats['videos_downloaded']}.mp4"
-                            self.supabase.storage.from_("scraped-assets").upload(
-                                storage_path,
-                                content,
-                                {"content-type": mime_type}
-                            )
-
-                            self.supabase.table("competitor_ad_assets").insert({
-                                "competitor_ad_id": ad_id,
-                                "asset_type": "video",
-                                "storage_path": f"scraped-assets/{storage_path}",
-                                "original_url": url,
-                                "mime_type": mime_type,
-                                "file_size": len(content)
-                            }).execute()
-
-                            stats["videos_downloaded"] += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to download video: {e}")
-                        stats["errors"] += 1
+            except Exception as e:
+                logger.error(f"Failed to download assets for competitor ad {ad_id}: {e}", exc_info=True)
+                stats["errors"] += 1
+                continue
 
         logger.info(f"Competitor asset download complete: {stats}")
         return stats
