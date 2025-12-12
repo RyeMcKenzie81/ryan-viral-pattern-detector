@@ -981,24 +981,164 @@ with tab_persona:
             st.markdown("### Existing Persona")
             persona = persona_result.data[0]
 
-            # Display persona summary
-            st.markdown(f"**Name:** {persona.get('name', 'Unnamed')}")
-            st.caption(f"Created: {persona.get('created_at', 'Unknown')}")
+            # Header with name and confidence
+            col_header, col_conf = st.columns([3, 1])
+            with col_header:
+                st.markdown(f"## {persona.get('name', 'Unnamed')}")
+                st.caption(f"Created: {persona.get('created_at', 'Unknown')}")
+            with col_conf:
+                confidence = persona.get('confidence_score', 0)
+                if confidence:
+                    st.metric("Confidence", f"{confidence:.0%}")
 
             if persona.get('snapshot'):
-                st.markdown(f"*{persona['snapshot']}*")
+                st.info(persona['snapshot'])
 
-            if persona.get('demographics'):
-                with st.expander("Demographics"):
-                    st.json(persona['demographics'])
+            # Demographics summary
+            demo = persona.get('demographics', {})
+            if demo:
+                demo_parts = []
+                if demo.get('age_range'):
+                    demo_parts.append(demo['age_range'])
+                if demo.get('gender') and demo.get('gender') != 'any':
+                    demo_parts.append(demo['gender'])
+                if demo.get('location'):
+                    demo_parts.append(demo['location'])
+                if demo.get('income_level'):
+                    demo_parts.append(demo['income_level'])
+                if demo_parts:
+                    st.markdown(f"**Demographics:** {', '.join(demo_parts)}")
 
-            if persona.get('pain_points'):
-                with st.expander("Pain Points"):
-                    st.json(persona['pain_points'])
+            # Tabbed display like Brand Research
+            tabs = st.tabs(["Pain & Desires", "Identity", "Social", "Worldview", "Barriers", "Purchase"])
 
-            if persona.get('desires'):
-                with st.expander("Desires"):
-                    st.json(persona['desires'])
+            with tabs[0]:  # Pain & Desires
+                col_pain, col_desire = st.columns(2)
+
+                with col_pain:
+                    st.markdown("#### Pain Points")
+                    pain_points = persona.get('pain_points', {})
+                    for category in ['emotional', 'social', 'functional']:
+                        items = pain_points.get(category, [])
+                        if items:
+                            st.markdown(f"**{category.title()}:**")
+                            for pp in items[:4]:
+                                st.markdown(f"- {pp}")
+
+                with col_desire:
+                    st.markdown("#### Desires")
+                    desires = persona.get('desires', {})
+                    for category, items in desires.items():
+                        if items:
+                            st.markdown(f"**{category.replace('_', ' ').title()}:**")
+                            for item in items[:3]:
+                                text = item if isinstance(item, str) else item.get('text', str(item))
+                                st.markdown(f"- {text}")
+
+                # Transformation
+                transformation = persona.get('transformation_map', {})
+                if transformation:
+                    st.markdown("#### Transformation")
+                    col_before, col_after = st.columns(2)
+                    with col_before:
+                        st.markdown("**Before:**")
+                        for b in transformation.get('before', [])[:4]:
+                            st.markdown(f"- {b}")
+                    with col_after:
+                        st.markdown("**After:**")
+                        for a in transformation.get('after', [])[:4]:
+                            st.markdown(f"- {a}")
+
+            with tabs[1]:  # Identity
+                st.markdown("#### Self-Narratives")
+                narratives = persona.get('self_narratives', [])
+                for n in narratives[:5]:
+                    st.markdown(f'- "{n}"')
+
+                col_curr, col_des = st.columns(2)
+                with col_curr:
+                    st.markdown("**Current Self-Image:**")
+                    st.write(persona.get('current_self_image', 'N/A'))
+                with col_des:
+                    st.markdown("**Desired Self-Image:**")
+                    st.write(persona.get('desired_self_image', 'N/A'))
+
+                artifacts = persona.get('identity_artifacts', [])
+                if artifacts:
+                    st.markdown("**Identity Artifacts:**")
+                    st.write(", ".join(artifacts[:8]))
+
+            with tabs[2]:  # Social
+                social = persona.get('social_relations', {})
+                col_pos, col_neg = st.columns(2)
+
+                with col_pos:
+                    for label, key in [("Admire", "admire"), ("Want to Impress", "want_to_impress"),
+                                       ("Want to Belong", "want_to_belong"), ("Protect", "love_loyalty")]:
+                        items = social.get(key, [])
+                        if items:
+                            st.markdown(f"**{label}:**")
+                            for item in items[:3]:
+                                st.markdown(f"- {item}")
+
+                with col_neg:
+                    for label, key in [("Fear Judgment From", "fear_judged_by"), ("Dislike", "dislike_animosity"),
+                                       ("Compare To", "compared_to"), ("Distance From", "distance_from")]:
+                        items = social.get(key, [])
+                        if items:
+                            st.markdown(f"**{label}:**")
+                            for item in items[:3]:
+                                st.markdown(f"- {item}")
+
+            with tabs[3]:  # Worldview
+                if persona.get('worldview'):
+                    st.markdown("#### Worldview")
+                    st.write(persona.get('worldview'))
+
+                values = persona.get('core_values', [])
+                if values:
+                    st.markdown("**Core Values:**")
+                    st.write(", ".join(values[:6]))
+
+                beliefs = persona.get('beliefs_assumptions', [])
+                if beliefs:
+                    st.markdown("**Beliefs:**")
+                    for b in beliefs[:4]:
+                        st.markdown(f"- {b}")
+
+            with tabs[4]:  # Barriers
+                barriers = persona.get('purchase_barriers', {})
+                for category in ['trust', 'risk', 'inertia', 'complexity']:
+                    items = barriers.get(category, [])
+                    if items:
+                        st.markdown(f"**{category.title()} Barriers:**")
+                        for item in items[:3]:
+                            st.markdown(f"- {item}")
+
+                objections = persona.get('objections', [])
+                if objections:
+                    st.markdown("**Common Objections:**")
+                    for obj in objections[:4]:
+                        st.markdown(f"- {obj}")
+
+            with tabs[5]:  # Purchase
+                triggers = persona.get('activation_events', [])
+                if triggers:
+                    st.markdown("**Activation Events:**")
+                    for t in triggers[:4]:
+                        st.markdown(f"- {t}")
+
+                failed = persona.get('failed_solutions', [])
+                if failed:
+                    st.markdown("**Failed Solutions:**")
+                    for f in failed[:4]:
+                        st.markdown(f"- {f}")
+
+                messaging = persona.get('messaging_themes', [])
+                if messaging:
+                    st.markdown("**Messaging Themes:**")
+                    for m in messaging[:4]:
+                        st.markdown(f"- {m}")
 
     except Exception as e:
         pass  # No persona yet
