@@ -331,6 +331,149 @@ tab_ads, tab_landing, tab_amazon, tab_persona = st.tabs([
 # ADS TAB
 # ----------------------------------------------------------------------------
 with tab_ads:
+    # -------------------------------------------------------------------------
+    # FULL RESEARCH PIPELINE
+    # -------------------------------------------------------------------------
+    st.markdown("### 🚀 Full Research Pipeline")
+    st.caption("Run all research steps automatically: Download assets → Analyze videos/images/copy → Scrape landing pages")
+
+    with st.expander("⚙️ Pipeline Settings", expanded=False):
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            pipeline_download_limit = st.number_input(
+                "Max ads to download assets from", 10, 200, 100, key="pipeline_dl_limit"
+            )
+            pipeline_video_limit = st.number_input(
+                "Max videos to analyze", 1, 50, 20, key="pipeline_video_limit"
+            )
+            pipeline_image_limit = st.number_input(
+                "Max images to analyze", 1, 100, 50, key="pipeline_image_limit"
+            )
+        with col_p2:
+            pipeline_copy_limit = st.number_input(
+                "Max ads for copy analysis", 1, 200, 100, key="pipeline_copy_limit"
+            )
+            pipeline_reanalyze = st.checkbox(
+                "Re-analyze existing", key="pipeline_reanalyze",
+                help="Re-run analysis on assets that were already analyzed"
+            )
+
+    if st.button("▶️ Run Full Research Pipeline", key="run_pipeline", type="primary"):
+        progress_container = st.container()
+        with progress_container:
+            progress_bar = st.progress(0, text="Starting pipeline...")
+            status_text = st.empty()
+            results_log = st.empty()
+
+            log_messages = []
+
+            def log(msg):
+                log_messages.append(f"• {msg}")
+                results_log.markdown("\n".join(log_messages))
+
+            try:
+                # Step 1: Download Assets (20%)
+                status_text.info("📥 Step 1/4: Downloading assets...")
+                progress_bar.progress(5, text="Downloading assets...")
+
+                def run_download():
+                    import asyncio
+                    async def _download():
+                        from viraltracker.services.brand_research_service import BrandResearchService
+                        service = BrandResearchService()
+                        return await service.download_assets_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=pipeline_download_limit,
+                            force_redownload=False
+                        )
+                    return asyncio.run(_download())
+
+                dl_result = run_download()
+                if dl_result.get('reason') == 'all_have_assets':
+                    log(f"Assets: All {dl_result.get('total_ads', 0)} ads already have assets")
+                elif dl_result.get('reason') == 'no_ads':
+                    log("Assets: No ads to process")
+                else:
+                    log(f"Assets: Downloaded {dl_result.get('videos_downloaded', 0)} videos, {dl_result.get('images_downloaded', 0)} images")
+
+                progress_bar.progress(20, text="Assets downloaded")
+
+                # Step 2: Analyze Videos (40%)
+                status_text.info("🎬 Step 2/4: Analyzing videos...")
+                progress_bar.progress(25, text="Analyzing videos...")
+
+                def run_video_analysis():
+                    import asyncio
+                    async def _analyze():
+                        from viraltracker.services.brand_research_service import BrandResearchService
+                        service = BrandResearchService()
+                        return await service.analyze_videos_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=pipeline_video_limit,
+                            force_reanalyze=pipeline_reanalyze
+                        )
+                    return asyncio.run(_analyze())
+
+                video_results = run_video_analysis()
+                video_success = len([r for r in video_results if 'analysis' in r])
+                log(f"Videos: Analyzed {video_success} videos")
+
+                progress_bar.progress(45, text="Videos analyzed")
+
+                # Step 3: Analyze Images (60%)
+                status_text.info("🖼️ Step 3/4: Analyzing images...")
+                progress_bar.progress(50, text="Analyzing images...")
+
+                def run_image_analysis():
+                    import asyncio
+                    async def _analyze():
+                        from viraltracker.services.brand_research_service import BrandResearchService
+                        service = BrandResearchService()
+                        return await service.analyze_images_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=pipeline_image_limit,
+                            force_reanalyze=pipeline_reanalyze
+                        )
+                    return asyncio.run(_analyze())
+
+                image_results = run_image_analysis()
+                image_success = len([r for r in image_results if 'analysis' in r])
+                log(f"Images: Analyzed {image_success} images")
+
+                progress_bar.progress(70, text="Images analyzed")
+
+                # Step 4: Analyze Copy (80%)
+                status_text.info("📝 Step 4/4: Analyzing ad copy...")
+                progress_bar.progress(75, text="Analyzing copy...")
+
+                def run_copy_analysis():
+                    import asyncio
+                    async def _analyze():
+                        from viraltracker.services.brand_research_service import BrandResearchService
+                        service = BrandResearchService()
+                        return await service.analyze_copy_for_competitor(
+                            UUID(selected_competitor_id),
+                            limit=pipeline_copy_limit,
+                            force_reanalyze=pipeline_reanalyze
+                        )
+                    return asyncio.run(_analyze())
+
+                copy_results = run_copy_analysis()
+                copy_success = len([r for r in copy_results if 'analysis' in r])
+                log(f"Copy: Analyzed {copy_success} ad copies")
+
+                progress_bar.progress(100, text="Pipeline complete!")
+                status_text.success("✅ Research pipeline complete!")
+
+                # Summary
+                log("")
+                log(f"**Summary:** {video_success} videos, {image_success} images, {copy_success} copies analyzed")
+
+            except Exception as e:
+                status_text.error(f"❌ Pipeline failed: {e}")
+                log(f"Error: {e}")
+
+    st.markdown("---")
     st.markdown("### Ad Scraping")
 
     ad_library_url = competitor.get('ad_library_url')
