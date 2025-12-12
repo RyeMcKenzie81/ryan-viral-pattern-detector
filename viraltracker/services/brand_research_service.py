@@ -3254,8 +3254,27 @@ class BrandResearchService:
 
                 ad_copy = "\n".join(copy_parts)
 
-                # Reuse existing analyze_copy method
-                analysis = await self.analyze_copy(ad_copy)
+                # Call Claude directly (don't use analyze_copy which saves to brand table)
+                from anthropic import Anthropic
+                client = Anthropic()
+
+                prompt = COPY_ANALYSIS_PROMPT.format(ad_copy=ad_copy)
+
+                message = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+                # Parse response
+                response_text = message.content[0].text.strip()
+                if response_text.startswith('```'):
+                    first_newline = response_text.find('\n')
+                    last_fence = response_text.rfind('```')
+                    if first_newline != -1 and last_fence > first_newline:
+                        response_text = response_text[first_newline + 1:last_fence].strip()
+
+                analysis = json.loads(response_text)
 
                 # Save to competitor table
                 self._save_competitor_analysis(
