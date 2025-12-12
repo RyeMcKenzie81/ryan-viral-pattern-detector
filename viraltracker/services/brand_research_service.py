@@ -387,7 +387,8 @@ class BrandResearchService:
         image_base64: str,
         brand_id: Optional[UUID] = None,
         facebook_ad_id: Optional[UUID] = None,
-        mime_type: str = "image/jpeg"
+        mime_type: str = "image/jpeg",
+        skip_save: bool = False
     ) -> Dict:
         """
         Analyze image with Gemini Vision.
@@ -409,6 +410,7 @@ class BrandResearchService:
             brand_id: Optional brand to link analysis to
             facebook_ad_id: Optional facebook_ads record to link
             mime_type: MIME type of the image (used for logging only)
+            skip_save: If True, don't save to brand_ad_analysis (for competitor use)
 
         Returns:
             Analysis result dict
@@ -459,16 +461,17 @@ class BrandResearchService:
 
             analysis_dict = json.loads(analysis_text)
 
-            # Save to database
-            self._save_analysis(
-                asset_id=asset_id,
-                brand_id=brand_id,
-                facebook_ad_id=facebook_ad_id,
-                analysis_type="image_vision",
-                raw_response=analysis_dict,
-                tokens_used=0,  # Gemini doesn't report tokens the same way
-                model_used=model_name
-            )
+            # Save to database (skip for competitor analysis - they save separately)
+            if not skip_save:
+                self._save_analysis(
+                    asset_id=asset_id,
+                    brand_id=brand_id,
+                    facebook_ad_id=facebook_ad_id,
+                    analysis_type="image_vision",
+                    raw_response=analysis_dict,
+                    tokens_used=0,  # Gemini doesn't report tokens the same way
+                    model_used=model_name
+                )
 
             logger.info(f"Image analysis complete: format={analysis_dict.get('format_type')}")
             return analysis_dict
@@ -554,7 +557,8 @@ class BrandResearchService:
         asset_id: UUID,
         storage_path: str,
         brand_id: Optional[UUID] = None,
-        facebook_ad_id: Optional[UUID] = None
+        facebook_ad_id: Optional[UUID] = None,
+        skip_save: bool = False
     ) -> Dict:
         """
         Analyze video with Gemini.
@@ -573,6 +577,7 @@ class BrandResearchService:
             storage_path: Storage path of the video (bucket/path format)
             brand_id: Optional brand to link analysis to
             facebook_ad_id: Optional facebook_ads record to link
+            skip_save: If True, don't save to brand_ad_analysis (for competitor use)
 
         Returns:
             Analysis result dict
@@ -641,14 +646,15 @@ class BrandResearchService:
             except Exception as e:
                 logger.warning(f"Failed to delete Gemini file: {e}")
 
-            # Save to database
-            self._save_video_analysis(
-                asset_id=asset_id,
-                brand_id=brand_id,
-                facebook_ad_id=facebook_ad_id,
-                raw_response=analysis_dict,
-                model_used=model_name
-            )
+            # Save to database (skip for competitor analysis - they save separately)
+            if not skip_save:
+                self._save_video_analysis(
+                    asset_id=asset_id,
+                    brand_id=brand_id,
+                    facebook_ad_id=facebook_ad_id,
+                    raw_response=analysis_dict,
+                    model_used=model_name
+                )
 
             logger.info(f"Video analysis complete: format={analysis_dict.get('video_style', {}).get('format')}")
             return analysis_dict
@@ -3182,12 +3188,13 @@ class BrandResearchService:
         results = []
         for i, asset in enumerate(video_assets):
             try:
-                # Reuse existing analyze_video method
+                # Reuse existing analyze_video method (skip_save=True because we save to competitor table)
                 analysis = await self.analyze_video(
                     asset_id=UUID(asset['id']),
                     storage_path=asset['storage_path'],
                     brand_id=None,
-                    facebook_ad_id=None
+                    facebook_ad_id=None,
+                    skip_save=True
                 )
 
                 # Save to competitor table
@@ -3274,13 +3281,14 @@ class BrandResearchService:
                 if not image_base64:
                     continue
 
-                # Reuse existing analyze_image method
+                # Reuse existing analyze_image method (skip_save=True because we save to competitor table)
                 analysis = await self.analyze_image(
                     asset_id=UUID(asset['id']),
                     image_base64=image_base64,
                     brand_id=None,
                     facebook_ad_id=None,
-                    mime_type=asset.get('mime_type', 'image/jpeg')
+                    mime_type=asset.get('mime_type', 'image/jpeg'),
+                    skip_save=True
                 )
 
                 # Save to competitor table
