@@ -484,6 +484,305 @@ def render_analysis_results(analysis: Dict):
 
 
 # =============================================================================
+# Product-Level Ad Analysis Comparison
+# =============================================================================
+
+def get_brand_products(brand_id: str) -> List[Dict]:
+    """Get products for a brand."""
+    try:
+        db = get_supabase_client()
+        result = db.table("products").select("id, name").eq("brand_id", brand_id).execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch products: {e}")
+        return []
+
+
+def get_competitor_products(competitor_id: str) -> List[Dict]:
+    """Get products for a competitor."""
+    service = get_competitor_service()
+    return service.get_competitor_products(UUID(competitor_id))
+
+
+def render_product_comparison_section(brand_id: str, competitors: List[Dict]):
+    """Render product-level ad analysis comparison."""
+    st.subheader("🎯 Product-Level Ad Comparison")
+    st.caption("Compare advertising strategies at the product level using AI-extracted ad analysis data")
+
+    # Check if we have the new advertising_structure fields
+    st.info("💡 This compares `advertising_structure` data extracted from ad analyses. Re-analyze ads to populate this data for existing ads.")
+
+    # Product selectors
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Your Product**")
+        brand_products = get_brand_products(brand_id)
+        if not brand_products:
+            st.warning("No products found. Add products in Brand Manager.")
+            return
+
+        brand_product_options = {p['name']: p['id'] for p in brand_products}
+        selected_brand_product = st.selectbox(
+            "Select your product",
+            options=list(brand_product_options.keys()),
+            key="brand_product_select"
+        )
+        brand_product_id = brand_product_options.get(selected_brand_product) if selected_brand_product else None
+
+    with col2:
+        st.markdown("**Competitor Product**")
+        if not competitors:
+            st.warning("No competitors found.")
+            return
+
+        competitor_options = {c['name']: c['id'] for c in competitors}
+        selected_competitor = st.selectbox(
+            "Select competitor",
+            options=list(competitor_options.keys()),
+            key="competitor_select"
+        )
+        competitor_id = competitor_options.get(selected_competitor) if selected_competitor else None
+
+        if competitor_id:
+            competitor_products = get_competitor_products(competitor_id)
+            if competitor_products:
+                comp_product_options = {p['name']: p['id'] for p in competitor_products}
+                selected_comp_product = st.selectbox(
+                    "Select their product",
+                    options=list(comp_product_options.keys()),
+                    key="comp_product_select"
+                )
+                comp_product_id = comp_product_options.get(selected_comp_product) if selected_comp_product else None
+            else:
+                st.caption("No products mapped for this competitor")
+                comp_product_id = None
+        else:
+            comp_product_id = None
+
+    # Compare button
+    if brand_product_id and comp_product_id:
+        if st.button("🔍 Compare Products", type="primary"):
+            with st.spinner("Building comparison..."):
+                try:
+                    comparison = build_comparison(brand_product_id, comp_product_id)
+                    if comparison:
+                        st.session_state.product_comparison = comparison
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Comparison failed: {e}")
+
+    # Show comparison results
+    if 'product_comparison' in st.session_state and st.session_state.product_comparison:
+        render_comparison_results(st.session_state.product_comparison)
+
+
+def build_comparison(brand_product_id: str, competitor_product_id: str) -> Optional[Dict]:
+    """Build product comparison using comparison_utils."""
+    from viraltracker.services.comparison_utils import build_product_comparison, calculate_gaps
+
+    service = get_competitor_service()
+
+    # Get analyses for both products
+    brand_analyses = service.get_brand_analyses_by_product(UUID(brand_product_id))
+    competitor_analyses = service.get_competitor_analyses_by_product(UUID(competitor_product_id))
+
+    if not brand_analyses and not competitor_analyses:
+        st.warning("No ad analyses found for either product. Run ad analysis first.")
+        return None
+
+    comparison = build_product_comparison(brand_analyses, competitor_analyses)
+    comparison["gaps"] = calculate_gaps(comparison)
+
+    return comparison
+
+
+def render_comparison_results(comparison: Dict):
+    """Render the comparison results."""
+    st.divider()
+    st.markdown("### 📊 Comparison Results")
+
+    brand = comparison["brand"]
+    competitor = comparison["competitor"]
+
+    # Overview metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Your Analyses", brand["total_analyses"])
+        st.caption(f"{brand['with_ad_structure']} with ad structure")
+    with col2:
+        st.metric("Their Analyses", competitor["total_analyses"])
+        st.caption(f"{competitor['with_ad_structure']} with ad structure")
+    with col3:
+        st.metric("Your Ad Angles", len(brand["advertising_angles"]))
+    with col4:
+        st.metric("Their Ad Angles", len(competitor["advertising_angles"]))
+
+    # Tabs for different comparisons
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Awareness Levels", "Ad Angles", "Emotional Drivers", "Objections", "Gaps & Insights"
+    ])
+
+    with tab1:
+        render_awareness_comparison(brand, competitor)
+
+    with tab2:
+        render_angles_comparison(brand, competitor)
+
+    with tab3:
+        render_emotional_drivers_comparison(brand, competitor)
+
+    with tab4:
+        render_objections_comparison(brand, competitor)
+
+    with tab5:
+        render_gaps_insights(comparison.get("gaps", {}))
+
+
+def render_awareness_comparison(brand: Dict, competitor: Dict):
+    """Render awareness level comparison."""
+    st.markdown("#### Awareness Level Distribution")
+    st.caption("Which awareness stages are being targeted (Schwartz spectrum)")
+
+    levels = ["unaware", "problem_aware", "solution_aware", "product_aware", "most_aware"]
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Your Product**")
+        for level in levels:
+            count = brand["awareness_levels"].get(level, 0)
+            if count > 0:
+                st.write(f"• {level.replace('_', ' ').title()}: **{count}**")
+
+    with col2:
+        st.markdown("**Competitor**")
+        for level in levels:
+            count = competitor["awareness_levels"].get(level, 0)
+            if count > 0:
+                st.write(f"• {level.replace('_', ' ').title()}: **{count}**")
+
+
+def render_angles_comparison(brand: Dict, competitor: Dict):
+    """Render advertising angles comparison."""
+    st.markdown("#### Advertising Angles Used")
+
+    all_angles = set(brand["advertising_angles"].keys()) | set(competitor["advertising_angles"].keys())
+
+    if not all_angles:
+        st.info("No advertising angle data available. Re-analyze ads to extract this.")
+        return
+
+    # Build comparison table
+    data = []
+    for angle in sorted(all_angles):
+        brand_count = brand["advertising_angles"].get(angle, 0)
+        comp_count = competitor["advertising_angles"].get(angle, 0)
+        diff = brand_count - comp_count
+
+        if diff > 0:
+            note = "✅ Your strength"
+        elif diff < 0:
+            note = "⚠️ They use more"
+        else:
+            note = "—"
+
+        data.append({
+            "Angle": angle.replace("_", " ").title(),
+            "You": brand_count,
+            "Them": comp_count,
+            "Note": note
+        })
+
+    st.table(data)
+
+
+def render_emotional_drivers_comparison(brand: Dict, competitor: Dict):
+    """Render emotional drivers comparison."""
+    st.markdown("#### Emotional Drivers")
+    st.caption("What emotions are being leveraged in messaging")
+
+    all_drivers = set(brand["emotional_drivers"].keys()) | set(competitor["emotional_drivers"].keys())
+
+    if not all_drivers:
+        st.info("No emotional driver data available.")
+        return
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Your Product**")
+        for driver, count in sorted(brand["emotional_drivers"].items(), key=lambda x: -x[1]):
+            st.write(f"• {driver.title()}: **{count}**")
+
+    with col2:
+        st.markdown("**Competitor**")
+        for driver, count in sorted(competitor["emotional_drivers"].items(), key=lambda x: -x[1]):
+            st.write(f"• {driver.title()}: **{count}**")
+
+
+def render_objections_comparison(brand: Dict, competitor: Dict):
+    """Render objections addressed comparison."""
+    st.markdown("#### Objections Addressed")
+    st.caption("What concerns are being preemptively handled in ads")
+
+    all_objections = set(brand["objections"].keys()) | set(competitor["objections"].keys())
+
+    if not all_objections:
+        st.info("No objection data available.")
+        return
+
+    for objection in sorted(all_objections):
+        brand_data = brand["objections"].get(objection, {"count": 0})
+        comp_data = competitor["objections"].get(objection, {"count": 0})
+
+        brand_check = "✅" if brand_data["count"] > 0 else "❌"
+        comp_check = "✅" if comp_data["count"] > 0 else "❌"
+
+        st.write(f"**{objection}** — You: {brand_check} ({brand_data['count']}) | Them: {comp_check} ({comp_data['count']})")
+
+
+def render_gaps_insights(gaps: Dict):
+    """Render gaps and insights."""
+    st.markdown("#### 💡 Gaps & Opportunities")
+
+    has_gaps = False
+
+    if gaps.get("awareness_gaps"):
+        has_gaps = True
+        st.markdown("**Awareness Level Gaps**")
+        for gap in gaps["awareness_gaps"]:
+            st.warning(f"📊 {gap['insight']} (You: {gap['brand_count']}, Them: {gap['competitor_count']})")
+
+    if gaps.get("angle_gaps"):
+        has_gaps = True
+        st.markdown("**Advertising Angle Gaps**")
+        for gap in gaps["angle_gaps"]:
+            st.warning(f"🎯 {gap['insight']}")
+
+    if gaps.get("benefit_gaps"):
+        has_gaps = True
+        st.markdown("**Benefit Gaps**")
+        for gap in gaps["benefit_gaps"]:
+            st.warning(f"✨ {gap['insight']}")
+
+    if gaps.get("objection_gaps"):
+        has_gaps = True
+        st.markdown("**Objection Handling Gaps**")
+        for gap in gaps["objection_gaps"]:
+            st.warning(f"🛡️ {gap['insight']}")
+
+    if gaps.get("emotional_driver_gaps"):
+        has_gaps = True
+        st.markdown("**Emotional Driver Gaps**")
+        for gap in gaps["emotional_driver_gaps"]:
+            st.warning(f"❤️ {gap['insight']}")
+
+    if not has_gaps:
+        st.success("No significant gaps detected! Your coverage is similar to competitor.")
+
+
+# =============================================================================
 # Main Page
 # =============================================================================
 
@@ -524,6 +823,10 @@ render_analysis_section(selected_brand_name, brand_id, brand_personas, competito
 # Show results if available
 if st.session_state.competitive_analysis:
     render_analysis_results(st.session_state.competitive_analysis)
+
+# Product-level ad comparison section
+st.divider()
+render_product_comparison_section(brand_id, competitors)
 
 # Help section
 with st.expander("ℹ️ How Competitive Analysis Works"):
