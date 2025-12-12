@@ -393,7 +393,8 @@ with tab_ads:
                 col_url, col_assign = st.columns([3, 2])
 
                 with col_url:
-                    st.markdown(f"**{url_data['url'][:60]}{'...' if len(url_data['url']) > 60 else ''}**")
+                    full_url = url_data['url']
+                    st.markdown(f"[{full_url}]({full_url})")
                     st.caption(f"Found in {url_data['ad_count']} ads")
 
                 with col_assign:
