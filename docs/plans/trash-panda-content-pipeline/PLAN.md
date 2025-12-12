@@ -922,16 +922,14 @@ Public page (no auth).
 - [x] File upload to Supabase Storage (single + batch)
 - [x] JSON bulk import
 
-### Phase 6: Asset Generation
-- [ ] **Image Assets**: `gemini-3-pro-image-preview` for backgrounds, props
-- [ ] **SFX Assets**: ElevenLabs Sound Effects API for missing audio
-  - Parse script for SFX triggers (whale rumble, printer sounds, "WAGMI", etc.)
-  - Check asset library for existing SFX
-  - Generate missing SFX via ElevenLabs
-  - Review and approve generated SFX
-- [ ] Asset generation workflow
-- [ ] Human review checkpoint UI
-- [ ] Asset approval flow
+### Phase 6: Asset Generation (MVP 5) ✅ COMPLETE
+- [x] **Image Assets**: `gemini-3-pro-image-preview` for backgrounds, props
+- [x] **SFX Assets**: ElevenLabs Sound Effects API for missing audio
+  - [x] Parse script for SFX triggers
+  - [x] Generate missing SFX via ElevenLabs
+- [x] **Human Review UI**: Approve/Reject/Regenerate workflow
+- [x] **Batch Generation**: Rate-limited batch processing with progress tracking
+- [x] **Asset Approval Flow**: Auto-add approved assets to library
 
 ### Phase 7: Editor Handoff
 - [ ] EditorHandoffService
