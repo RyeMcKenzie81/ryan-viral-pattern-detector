@@ -388,7 +388,7 @@ with tab_ads:
     else:
         st.caption(f"Found {len(unmatched_urls)} unique unmatched URLs")
 
-        for url_data in unmatched_urls:
+        for idx, url_data in enumerate(unmatched_urls):
             with st.container():
                 col_url, col_assign = st.columns([3, 2])
 
@@ -401,7 +401,8 @@ with tab_ads:
                     product_options = {"Select...": None, "➕ New Product": "__new__"}
                     product_options.update({p['name']: p['id'] for p in products})
 
-                    url_key = url_data['url'][:20].replace('/', '_').replace('.', '_')
+                    # Use index for unique key
+                    url_key = f"url_{idx}"
                     selected_option = st.selectbox(
                         "Assign to",
                         options=list(product_options.keys()),
