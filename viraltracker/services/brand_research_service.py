@@ -3011,40 +3011,49 @@ class BrandResearchService:
 
         scraping_service = AdScrapingService()
 
-        # Get competitor ads
-        ads_result = self.supabase.table("competitor_ads").select(
-            "id, snapshot_data"
-        ).eq("competitor_id", str(competitor_id)).limit(limit * 2).execute()
+        # Get ALL competitor ad IDs first (like brand side does)
+        all_ads_result = self.supabase.table("competitor_ads").select(
+            "id"
+        ).eq("competitor_id", str(competitor_id)).execute()
 
-        if not ads_result.data:
+        if not all_ads_result.data:
             logger.info(f"No ads found for competitor: {competitor_id}")
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "no_ads"}
 
-        ad_ids = [ad['id'] for ad in ads_result.data]
+        all_ad_ids = [ad['id'] for ad in all_ads_result.data]
 
-        # If force redownload, delete existing asset records for these ads
+        # If force redownload, delete existing asset records for ALL ads
         if force_redownload:
-            logger.info(f"Force redownload: clearing existing assets for {len(ad_ids)} ads")
+            logger.info(f"Force redownload: clearing existing assets for {len(all_ad_ids)} ads")
             self.supabase.table("competitor_ad_assets").delete().in_(
-                "competitor_ad_id", ad_ids
+                "competitor_ad_id", all_ad_ids
             ).execute()
             ads_with_assets = set()
         else:
             # Get ads that already have VALID assets (with storage_path)
             existing_assets = self.supabase.table("competitor_ad_assets").select(
                 "competitor_ad_id, storage_path"
-            ).in_("competitor_ad_id", ad_ids).not_.is_("storage_path", "null").execute()
+            ).in_("competitor_ad_id", all_ad_ids).not_.is_("storage_path", "null").execute()
 
             ads_with_assets = {r['competitor_ad_id'] for r in (existing_assets.data or []) if r.get('storage_path')}
 
-        ads_needing_assets = [ad for ad in ads_result.data if ad['id'] not in ads_with_assets]
+        # Filter to ads needing assets BEFORE applying limit
+        ad_ids_needing_assets = [aid for aid in all_ad_ids if aid not in ads_with_assets]
 
-        logger.info(f"Competitor {competitor_id}: {len(ad_ids)} total ads, {len(ads_with_assets)} with valid assets, {len(ads_needing_assets)} needing download")
+        logger.info(f"Competitor {competitor_id}: {len(all_ad_ids)} total ads, {len(ads_with_assets)} with valid assets, {len(ad_ids_needing_assets)} needing download")
 
-        if not ads_needing_assets:
-            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets", "total_ads": len(ad_ids)}
+        if not ad_ids_needing_assets:
+            return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets", "total_ads": len(all_ad_ids)}
 
-        ads_to_process = ads_needing_assets[:limit]
+        # Apply limit AFTER filtering to ads that need assets (like brand side)
+        ad_ids_to_process = ad_ids_needing_assets[:limit]
+
+        # Now fetch snapshot data only for ads we're going to process
+        ads_result = self.supabase.table("competitor_ads").select(
+            "id, snapshot_data"
+        ).in_("id", ad_ids_to_process).execute()
+
+        ads_to_process = ads_result.data or []
         logger.info(f"Processing {len(ads_to_process)} competitor ads for asset download")
 
         stats = {
