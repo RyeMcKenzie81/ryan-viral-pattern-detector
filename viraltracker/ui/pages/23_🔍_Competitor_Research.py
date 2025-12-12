@@ -422,6 +422,7 @@ with tab_ads:
                                     # Create product
                                     new_product = service.create_competitor_product(
                                         competitor_id=UUID(selected_competitor_id),
+                                        brand_id=UUID(selected_brand_id),
                                         name=new_product_name
                                     )
                                     # Assign ads to product
