@@ -1098,6 +1098,17 @@ class CompetitorService:
         """
         import json
         from datetime import datetime
+        import pandas as pd
+
+        def serialize_value(val):
+            """Convert non-serializable types to strings."""
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return None
+            if isinstance(val, pd.Timestamp):
+                return val.isoformat()
+            if isinstance(val, datetime):
+                return val.isoformat()
+            return val
 
         try:
             # Parse snapshot to extract additional fields
@@ -1118,9 +1129,9 @@ class CompetitorService:
                 "ad_archive_id": ad_data.get("ad_archive_id"),
                 "page_id": ad_data.get("page_id"),
                 "page_name": ad_data.get("page_name"),
-                "is_active": ad_data.get("is_active", False),
-                "started_running": ad_data.get("start_date"),
-                "stopped_running": ad_data.get("end_date"),
+                "is_active": bool(ad_data.get("is_active", False)),
+                "started_running": serialize_value(ad_data.get("start_date")),
+                "stopped_running": serialize_value(ad_data.get("end_date")),
                 "ad_creative_body": snapshot.get("body", {}).get("text") if isinstance(snapshot.get("body"), dict) else None,
                 "link_url": snapshot.get("link_url"),
                 "cta_text": snapshot.get("cta_text"),
