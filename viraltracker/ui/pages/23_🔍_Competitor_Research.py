@@ -331,17 +331,15 @@ tab_ads, tab_landing, tab_amazon, tab_persona = st.tabs([
 # ADS TAB
 # ----------------------------------------------------------------------------
 with tab_ads:
-    st.markdown("### Ad Scraping & Matching")
+    st.markdown("### Ad Scraping")
 
-    col_scrape, col_match = st.columns(2)
+    ad_library_url = competitor.get('ad_library_url')
 
-    with col_scrape:
-        st.markdown("**Scrape Ads**")
-        ad_library_url = competitor.get('ad_library_url')
+    if ad_library_url:
+        st.caption(f"[Ad Library URL]({ad_library_url})")
 
-        if ad_library_url:
-            st.caption(f"[Ad Library URL]({ad_library_url})")
-
+        col_input, col_btn = st.columns([2, 1])
+        with col_input:
             max_ads_to_scrape = st.number_input(
                 "Max ads to scrape",
                 min_value=10,
@@ -351,7 +349,8 @@ with tab_ads:
                 key="max_ads_scrape",
                 help="Maximum number of ads to scrape from the Ad Library"
             )
-
+        with col_btn:
+            st.markdown("")  # Spacer
             if st.button("🔍 Scrape Ads from Ad Library", key="scrape_ads"):
                 with st.spinner(f"Scraping up to {max_ads_to_scrape} ads from Facebook Ad Library... This may take several minutes."):
                     result = scrape_competitor_facebook_ads(
@@ -369,29 +368,108 @@ with tab_ads:
                         st.warning(result["message"])
                 else:
                     st.error(f"❌ Scraping failed: {result['message']}")
+    else:
+        st.warning("No Ad Library URL configured for this competitor.")
+        st.caption("Add one on the Competitors page.")
+
+    # URL Review Queue
+    st.markdown("---")
+    st.markdown("### 📋 URL Review Queue")
+    st.caption("Assign URLs from scraped ads to products. Create new products as needed.")
+
+    service = get_competitor_service()
+    unmatched_urls = service.get_unmatched_competitor_ad_urls(UUID(selected_competitor_id), limit=30)
+
+    if not unmatched_urls:
+        if stats.get('ads', 0) > 0:
+            st.success("All ad URLs have been assigned to products!")
         else:
-            st.warning("No Ad Library URL configured for this competitor.")
-            st.caption("Add one on the Competitors page.")
+            st.info("Scrape ads first to discover URLs.")
+    else:
+        st.caption(f"Found {len(unmatched_urls)} unique unmatched URLs")
 
-    with col_match:
-        st.markdown("**Match Ads to Products**")
-        st.caption("Use URL patterns to link ads to products")
+        for url_data in unmatched_urls:
+            with st.container():
+                col_url, col_assign = st.columns([3, 2])
 
-        if products:
-            if st.button("🔗 Run Bulk Matching", key="bulk_match"):
-                with st.spinner("Matching ads to products..."):
+                with col_url:
+                    st.markdown(f"**{url_data['url'][:60]}{'...' if len(url_data['url']) > 60 else ''}**")
+                    st.caption(f"Found in {url_data['ad_count']} ads")
+
+                with col_assign:
+                    # Product assignment dropdown with "New Product" option
+                    product_options = {"Select...": None, "➕ New Product": "__new__"}
+                    product_options.update({p['name']: p['id'] for p in products})
+
+                    url_key = url_data['url'][:20].replace('/', '_').replace('.', '_')
+                    selected_option = st.selectbox(
+                        "Assign to",
+                        options=list(product_options.keys()),
+                        key=f"assign_{url_key}",
+                        label_visibility="collapsed"
+                    )
+
+                    if selected_option == "➕ New Product":
+                        new_product_name = st.text_input(
+                            "Product name",
+                            key=f"new_prod_{url_key}",
+                            placeholder="e.g., Competitor Product"
+                        )
+                        if st.button("Create & Assign", key=f"create_{url_key}", type="primary"):
+                            if new_product_name:
+                                try:
+                                    # Create product
+                                    new_product = service.create_competitor_product(
+                                        competitor_id=UUID(selected_competitor_id),
+                                        name=new_product_name
+                                    )
+                                    # Assign ads to product
+                                    result = service.assign_competitor_ads_to_product(
+                                        competitor_id=UUID(selected_competitor_id),
+                                        url_pattern=url_data['url'],
+                                        competitor_product_id=UUID(new_product['id']),
+                                        match_type="exact"
+                                    )
+                                    st.success(f"Created '{new_product_name}' and matched {result['matched']} ads!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                            else:
+                                st.warning("Enter a product name")
+                    elif selected_option and product_options[selected_option]:
+                        if st.button("✓ Assign", key=f"confirm_{url_key}"):
+                            try:
+                                result = service.assign_competitor_ads_to_product(
+                                    competitor_id=UUID(selected_competitor_id),
+                                    url_pattern=url_data['url'],
+                                    competitor_product_id=UUID(product_options[selected_option]),
+                                    match_type="exact"
+                                )
+                                st.success(f"Matched {result['matched']} ads!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+
+                st.markdown("---")
+
+    # Bulk matching section (if products and patterns exist)
+    if products:
+        matching_stats = service.get_competitor_matching_stats(UUID(selected_competitor_id))
+        if matching_stats['configured_patterns'] > 0 and matching_stats['unmatched_ads'] > 0:
+            st.markdown("### 🔄 Bulk URL Matching")
+            st.caption(f"{matching_stats['configured_patterns']} URL patterns configured")
+            if st.button("Run Bulk Matching", key="bulk_match"):
+                with st.spinner("Matching ads to products using configured patterns..."):
                     try:
-                        service = get_competitor_service()
                         result = service.bulk_match_competitor_ads(UUID(selected_competitor_id))
                         st.success(
                             f"Matched: {result['matched']} | "
                             f"Unmatched: {result['unmatched']} | "
                             f"Total: {result['total']}"
                         )
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Matching failed: {e}")
-        else:
-            st.info("Add products first to enable ad matching.")
 
 # ----------------------------------------------------------------------------
 # LANDING PAGES TAB

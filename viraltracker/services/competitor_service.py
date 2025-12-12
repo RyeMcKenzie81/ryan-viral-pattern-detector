@@ -1073,6 +1073,140 @@ class CompetitorService:
             logger.error(f"Failed to get competitor Amazon analysis: {e}")
             return None
 
+    def get_unmatched_competitor_ad_urls(
+        self,
+        competitor_id: UUID,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Get unique URLs from competitor ads that aren't matched to a product.
+
+        Args:
+            competitor_id: UUID of the competitor
+            limit: Max URLs to return
+
+        Returns:
+            List of dicts with url, ad_count, sample_ad_ids
+        """
+        competitor_id_str = str(competitor_id)
+
+        try:
+            # Get all unmatched ads with their link_url
+            result = self.supabase.table("competitor_ads").select(
+                "id, link_url"
+            ).eq(
+                "competitor_id", competitor_id_str
+            ).is_(
+                "competitor_product_id", "null"
+            ).not_.is_(
+                "link_url", "null"
+            ).execute()
+
+            if not result.data:
+                return []
+
+            # Group by URL
+            url_groups = {}
+            for ad in result.data:
+                url = ad.get('link_url', '').strip()
+                if not url:
+                    continue
+                # Normalize URL (remove trailing slash, lowercase domain)
+                if url not in url_groups:
+                    url_groups[url] = {'url': url, 'ad_ids': []}
+                url_groups[url]['ad_ids'].append(ad['id'])
+
+            # Convert to list and sort by occurrence count
+            url_list = []
+            for url, data in url_groups.items():
+                url_list.append({
+                    'url': url,
+                    'ad_count': len(data['ad_ids']),
+                    'sample_ad_ids': data['ad_ids'][:3]
+                })
+
+            # Sort by ad_count descending
+            url_list.sort(key=lambda x: x['ad_count'], reverse=True)
+
+            return url_list[:limit]
+
+        except Exception as e:
+            logger.error(f"Failed to get unmatched competitor ad URLs: {e}")
+            return []
+
+    def assign_competitor_ads_to_product(
+        self,
+        competitor_id: UUID,
+        url_pattern: str,
+        competitor_product_id: UUID,
+        match_type: str = "contains"
+    ) -> Dict[str, int]:
+        """
+        Assign all competitor ads with a matching URL to a product.
+
+        Args:
+            competitor_id: UUID of the competitor
+            url_pattern: URL pattern to match
+            competitor_product_id: UUID of the product to assign
+            match_type: How to match (contains, exact, prefix)
+
+        Returns:
+            Dict with matched count
+        """
+        competitor_id_str = str(competitor_id)
+        product_id_str = str(competitor_product_id)
+
+        try:
+            # Get all unmatched ads for this competitor
+            result = self.supabase.table("competitor_ads").select(
+                "id, link_url"
+            ).eq(
+                "competitor_id", competitor_id_str
+            ).is_(
+                "competitor_product_id", "null"
+            ).execute()
+
+            if not result.data:
+                return {"matched": 0}
+
+            # Find matching ads
+            matching_ids = []
+            for ad in result.data:
+                link_url = ad.get('link_url', '') or ''
+                matched = False
+
+                if match_type == "exact":
+                    matched = link_url == url_pattern
+                elif match_type == "prefix":
+                    matched = link_url.startswith(url_pattern)
+                else:  # contains (default)
+                    matched = url_pattern in link_url
+
+                if matched:
+                    matching_ids.append(ad['id'])
+
+            # Update matching ads
+            if matching_ids:
+                self.supabase.table("competitor_ads").update({
+                    "competitor_product_id": product_id_str,
+                    "product_match_method": "manual"
+                }).in_("id", matching_ids).execute()
+
+            # Also add the URL pattern to product_urls for future matching
+            self.add_competitor_product_url(
+                competitor_product_id=competitor_product_id,
+                url_pattern=url_pattern,
+                match_type=match_type,
+                is_primary=True
+            )
+
+            logger.info(f"Assigned {len(matching_ids)} ads to product {product_id_str}")
+            return {"matched": len(matching_ids)}
+
+        except Exception as e:
+            logger.error(f"Failed to assign competitor ads to product: {e}")
+            return {"matched": 0, "error": str(e)}
+
     # =========================================================================
     # AD SCRAPING INTEGRATION
     # =========================================================================
