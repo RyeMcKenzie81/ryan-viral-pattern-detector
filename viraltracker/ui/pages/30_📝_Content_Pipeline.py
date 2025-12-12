@@ -59,6 +59,11 @@ if 'audio_generating' not in st.session_state:
     st.session_state.audio_generating = False
 if 'current_els' not in st.session_state:
     st.session_state.current_els = None
+# Assets tab state (MVP 4)
+if 'asset_extracting' not in st.session_state:
+    st.session_state.asset_extracting = False
+if 'extracted_assets' not in st.session_state:
+    st.session_state.extracted_assets = []
 
 
 def get_supabase_client():
@@ -77,12 +82,30 @@ def get_doc_service():
     return DocService(supabase=get_supabase_client(), openai_api_key=api_key)
 
 
+def get_gemini_service():
+    """Get GeminiService instance."""
+    from viraltracker.services.gemini_service import GeminiService
+    try:
+        return GeminiService()
+    except ValueError:
+        return None
+
+
 def get_content_pipeline_service():
     """Get ContentPipelineService instance."""
     from viraltracker.services.content_pipeline.services.content_pipeline_service import ContentPipelineService
     db = get_supabase_client()
     docs = get_doc_service()
-    return ContentPipelineService(supabase_client=db, docs_service=docs)
+    gemini = get_gemini_service()
+    return ContentPipelineService(supabase_client=db, docs_service=docs, gemini_service=gemini)
+
+
+def get_asset_service():
+    """Get AssetManagementService instance."""
+    from viraltracker.services.content_pipeline.services.asset_service import AssetManagementService
+    db = get_supabase_client()
+    gemini = get_gemini_service()
+    return AssetManagementService(supabase_client=db, gemini_service=gemini)
 
 
 def get_topic_service():
@@ -564,8 +587,8 @@ def render_script_view(project: Dict):
 
     st.divider()
 
-    # Tabs for script workflow - include Audio tab
-    tab1, tab2, tab3, tab4 = st.tabs(["Generate", "Review", "Approve", "Audio"])
+    # Tabs for script workflow - include Audio and Assets tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets"])
 
     with tab1:
         render_script_generation_tab(project)
@@ -578,6 +601,9 @@ def render_script_view(project: Dict):
 
     with tab4:
         render_audio_tab(project)
+
+    with tab5:
+        render_assets_tab(project)
 
 
 def render_script_generation_tab(project: Dict):
@@ -1794,6 +1820,436 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Opti
         if st.button("Regen", key=f"regen_{beat_id}_{take_id}", help="Regenerate this beat"):
             st.session_state[f"regenerating_{beat_id}"] = True
             st.rerun()
+
+
+# =========================================================================
+# Assets Tab Functions (MVP 4)
+# =========================================================================
+
+async def run_asset_extraction(script_version_id: str, script_data: Dict, brand_id: str):
+    """Run asset extraction using Gemini AI."""
+    service = get_asset_service()
+
+    # Extract requirements from script
+    requirements = await service.extract_requirements(
+        script_version_id=UUID(script_version_id),
+        script_data=script_data
+    )
+
+    # Match against existing library
+    matched, unmatched = service.match_existing_assets(
+        requirements=requirements,
+        brand_id=UUID(brand_id)
+    )
+
+    return {"matched": matched, "unmatched": unmatched, "all": matched + unmatched}
+
+
+def render_assets_tab(project: Dict):
+    """Render the assets management tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved (assets require an approved script)
+    script_approved = workflow_state in [
+        'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+        'asset_extraction', 'asset_matching', 'asset_generation', 'asset_review'
+    ]
+
+    if not script_approved:
+        st.info("Approve your script first before extracting assets.")
+        st.caption("The Assets tab becomes available after script approval.")
+        return
+
+    st.markdown("### Visual Asset Management")
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).eq("status", "approved").order("version_number", desc=True).limit(1).execute()
+
+        if not scripts.data:
+            st.warning("No approved script found.")
+            return
+
+        current_script = scripts.data[0]
+        script_content = current_script.get('script_content')
+        script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+
+    except Exception as e:
+        st.error(f"Failed to load script: {e}")
+        return
+
+    # Check for existing asset requirements
+    try:
+        req_result = db.table("project_asset_requirements").select(
+            "*, comic_assets(*)"
+        ).eq("project_id", project_id).order("asset_type").execute()
+        existing_requirements = req_result.data or []
+    except Exception:
+        existing_requirements = []
+
+    # Sub-tabs for asset workflow
+    asset_tab1, asset_tab2, asset_tab3 = st.tabs(["Extract", "Library", "Upload"])
+
+    with asset_tab1:
+        render_asset_extraction(project_id, brand_id, current_script, script_data, existing_requirements)
+
+    with asset_tab2:
+        render_asset_library(brand_id)
+
+    with asset_tab3:
+        render_asset_upload(brand_id)
+
+
+def render_asset_extraction(project_id: str, brand_id: str, current_script: Dict, script_data: Dict, existing_requirements: List[Dict]):
+    """Render the asset extraction interface."""
+
+    if existing_requirements:
+        st.success(f"Found {len(existing_requirements)} asset requirements")
+
+        # Summary stats
+        service = get_asset_service()
+        summary = service.get_asset_summary(existing_requirements)
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Assets", summary['total'])
+        with col2:
+            st.metric("Matched", summary['by_status']['matched'])
+        with col3:
+            st.metric("Needed", summary['by_status']['needed'])
+        with col4:
+            st.metric("Generated", summary['by_status']['generated'])
+
+        st.divider()
+
+        # Group by type
+        st.markdown("#### Assets by Type")
+
+        # Characters
+        characters = [r for r in existing_requirements if r.get('asset_type') == 'character']
+        if characters:
+            with st.expander(f"Characters ({len(characters)})", expanded=True):
+                render_requirement_list(characters, project_id)
+
+        # Props
+        props = [r for r in existing_requirements if r.get('asset_type') == 'prop']
+        if props:
+            with st.expander(f"Props ({len(props)})", expanded=False):
+                render_requirement_list(props, project_id)
+
+        # Backgrounds
+        backgrounds = [r for r in existing_requirements if r.get('asset_type') == 'background']
+        if backgrounds:
+            with st.expander(f"Backgrounds ({len(backgrounds)})", expanded=False):
+                render_requirement_list(backgrounds, project_id)
+
+        # Effects
+        effects = [r for r in existing_requirements if r.get('asset_type') == 'effect']
+        if effects:
+            with st.expander(f"Effects ({len(effects)})", expanded=False):
+                render_requirement_list(effects, project_id)
+
+        st.divider()
+
+        # Re-extraction option
+        if st.button("Re-Extract Assets", help="Clear and re-extract assets from script"):
+            with st.spinner("Clearing existing requirements..."):
+                try:
+                    service = get_asset_service()
+                    asyncio.run(service.clear_requirements(UUID(project_id)))
+                    st.session_state.asset_extracting = True
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to clear: {e}")
+
+    else:
+        st.info("Extract visual assets from your approved script using Gemini AI.")
+        st.caption("This will identify characters, props, backgrounds, and effects from the script's visual notes.")
+
+        # Show preview of visual notes
+        beats = script_data.get('beats', [])
+        notes_count = sum(1 for b in beats if b.get('visual_notes'))
+        st.caption(f"Found {notes_count} beats with visual notes.")
+
+        if st.button("Extract Assets", type="primary", disabled=st.session_state.asset_extracting):
+            st.session_state.asset_extracting = True
+            st.rerun()
+
+    # Handle extraction
+    if st.session_state.asset_extracting:
+        with st.spinner("Extracting assets with Gemini AI... This may take 15-30 seconds."):
+            try:
+                result = asyncio.run(run_asset_extraction(
+                    script_version_id=current_script.get('id'),
+                    script_data=script_data,
+                    brand_id=brand_id
+                ))
+
+                # Save to database
+                service = get_asset_service()
+                all_requirements = result['all']
+
+                if all_requirements:
+                    asyncio.run(service.save_requirements(
+                        project_id=UUID(project_id),
+                        requirements=all_requirements
+                    ))
+
+                st.session_state.asset_extracting = False
+                st.session_state.extracted_assets = all_requirements
+
+                matched_count = len(result['matched'])
+                unmatched_count = len(result['unmatched'])
+                st.success(f"Extracted {len(all_requirements)} assets! ({matched_count} matched, {unmatched_count} need generation)")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.asset_extracting = False
+                st.error(f"Asset extraction failed: {e}")
+
+
+def render_requirement_list(requirements: List[Dict], project_id: str):
+    """Render a list of asset requirements."""
+    for req in requirements:
+        status = req.get('status', 'needed')
+        name = req.get('asset_name', 'Unknown')
+        description = req.get('asset_description', '')[:100]
+
+        # Status badge
+        status_colors = {
+            'matched': 'green',
+            'needed': 'orange',
+            'generating': 'blue',
+            'generated': 'violet',
+            'approved': 'green',
+            'rejected': 'red'
+        }
+        status_icons = {
+            'matched': '✅',
+            'needed': '🔸',
+            'generating': '⏳',
+            'generated': '🖼️',
+            'approved': '✓',
+            'rejected': '✗'
+        }
+
+        col1, col2, col3 = st.columns([3, 1, 1])
+
+        with col1:
+            st.markdown(f"**{name}**")
+            if description:
+                st.caption(description + "..." if len(req.get('asset_description', '')) > 100 else description)
+
+            # Show matched asset if exists
+            if req.get('comic_assets'):
+                matched_asset = req['comic_assets']
+                if matched_asset.get('image_url'):
+                    st.image(matched_asset['image_url'], width=100)
+
+        with col2:
+            color = status_colors.get(status, 'gray')
+            icon = status_icons.get(status, '•')
+            st.markdown(f":{color}[{icon} {status}]")
+
+        with col3:
+            # Script references
+            refs = req.get('script_reference')
+            if refs:
+                try:
+                    ref_list = json.loads(refs) if isinstance(refs, str) else refs
+                    if ref_list:
+                        st.caption(f"Beats: {', '.join(ref_list[:3])}")
+                except Exception:
+                    pass
+
+        st.divider()
+
+
+def render_asset_library(brand_id: str):
+    """Render the asset library browser."""
+    st.markdown("#### Asset Library")
+
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        filter_type = st.selectbox(
+            "Filter by Type",
+            options=["All", "character", "prop", "background", "effect"],
+            key="asset_library_filter_type"
+        )
+    with col2:
+        core_only = st.checkbox("Core Assets Only", key="asset_library_core_only")
+
+    # Fetch assets
+    service = get_asset_service()
+    asset_type = None if filter_type == "All" else filter_type
+    assets = asyncio.run(service.get_asset_library(
+        brand_id=UUID(brand_id),
+        asset_type=asset_type,
+        core_only=core_only
+    ))
+
+    if not assets:
+        st.info("No assets in library yet. Upload assets or generate them from scripts.")
+        return
+
+    st.caption(f"Showing {len(assets)} assets")
+
+    # Display in grid
+    cols = st.columns(4)
+    for idx, asset in enumerate(assets):
+        col_idx = idx % 4
+        with cols[col_idx]:
+            with st.container():
+                # Image or placeholder
+                if asset.get('image_url'):
+                    st.image(asset['image_url'], use_container_width=True)
+                else:
+                    st.markdown("🖼️ *No image*")
+
+                # Name and type
+                st.markdown(f"**{asset.get('name', 'Unknown')}**")
+
+                # Type badge
+                asset_type = asset.get('asset_type', 'unknown')
+                type_colors = {
+                    'character': 'blue',
+                    'prop': 'orange',
+                    'background': 'green',
+                    'effect': 'violet'
+                }
+                st.caption(f":{type_colors.get(asset_type, 'gray')}[{asset_type}]")
+
+                # Core asset badge
+                if asset.get('is_core_asset'):
+                    st.caption("⭐ Core Asset")
+
+                # Tags
+                tags = asset.get('tags', [])
+                if tags:
+                    st.caption(f"Tags: {', '.join(tags[:3])}")
+
+
+def render_asset_upload(brand_id: str):
+    """Render the asset upload interface."""
+    st.markdown("#### Upload New Asset")
+
+    with st.form("asset_upload_form"):
+        name = st.text_input(
+            "Asset Name",
+            placeholder="e.g., every-coon-happy",
+            help="Use lowercase with hyphens"
+        )
+
+        asset_type = st.selectbox(
+            "Asset Type",
+            options=["character", "prop", "background", "effect"]
+        )
+
+        description = st.text_area(
+            "Description",
+            placeholder="Visual description of the asset...",
+            help="Describe the asset for future generation prompts"
+        )
+
+        tags_input = st.text_input(
+            "Tags (comma-separated)",
+            placeholder="raccoon, happy, excited",
+            help="Add searchable tags"
+        )
+
+        is_core = st.checkbox(
+            "Mark as Core Asset",
+            help="Core assets are always available for matching"
+        )
+
+        image_url = st.text_input(
+            "Image URL (optional)",
+            placeholder="https://example.com/asset.png",
+            help="Direct URL to asset image"
+        )
+
+        prompt_template = st.text_area(
+            "Prompt Template (optional)",
+            placeholder="[character] in [pose], flat vector style...",
+            help="Template for generating variations"
+        )
+
+        submitted = st.form_submit_button("Add Asset")
+
+        if submitted:
+            if not name:
+                st.error("Asset name is required")
+            else:
+                try:
+                    service = get_asset_service()
+                    tags = [t.strip() for t in tags_input.split(',') if t.strip()] if tags_input else []
+
+                    asset_id = asyncio.run(service.upload_asset(
+                        brand_id=UUID(brand_id),
+                        name=name,
+                        asset_type=asset_type,
+                        description=description,
+                        tags=tags,
+                        image_url=image_url if image_url else None,
+                        prompt_template=prompt_template if prompt_template else None,
+                        is_core_asset=is_core
+                    ))
+
+                    st.success(f"Asset '{name}' added successfully!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Failed to add asset: {e}")
+
+    st.divider()
+
+    # Bulk import section
+    st.markdown("#### Bulk Import")
+    st.caption("Import multiple assets from a JSON file or paste JSON data.")
+
+    json_data = st.text_area(
+        "Paste JSON Array",
+        placeholder='[{"name": "asset-1", "type": "character", "description": "..."}]',
+        help="Array of asset objects with name, type, description, tags (optional)"
+    )
+
+    if st.button("Import Assets"):
+        if not json_data:
+            st.warning("Please paste JSON data to import")
+        else:
+            try:
+                assets_to_import = json.loads(json_data)
+                if not isinstance(assets_to_import, list):
+                    st.error("JSON must be an array of asset objects")
+                else:
+                    service = get_asset_service()
+                    imported = 0
+                    for asset in assets_to_import:
+                        try:
+                            asyncio.run(service.upload_asset(
+                                brand_id=UUID(brand_id),
+                                name=asset.get('name', ''),
+                                asset_type=asset.get('type', 'prop'),
+                                description=asset.get('description', ''),
+                                tags=asset.get('tags', []),
+                                image_url=asset.get('image_url'),
+                                is_core_asset=asset.get('is_core', False)
+                            ))
+                            imported += 1
+                        except Exception as e:
+                            st.warning(f"Failed to import '{asset.get('name')}': {e}")
+
+                    st.success(f"Imported {imported} of {len(assets_to_import)} assets")
+                    st.rerun()
+
+            except json.JSONDecodeError as e:
+                st.error(f"Invalid JSON: {e}")
 
 
 # Main app flow
