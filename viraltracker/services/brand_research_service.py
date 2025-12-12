@@ -53,6 +53,41 @@ Extract the following information and return as JSON:
         }
     ],
 
+    "advertising_structure": {
+        "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
+        "messaging_angles": [
+            {
+                "benefit": "The core benefit being communicated",
+                "angle": "How the benefit is framed/dimensionalized",
+                "framing": "The actual words/approach used",
+                "emotional_driver": "freedom|relief|pride|fear|guilt|love|status|security|belonging|achievement"
+            }
+        ],
+        "benefits_highlighted": [
+            {
+                "benefit": "Specific outcome promised",
+                "specificity": "high|medium|low",
+                "proof_provided": "What proof/evidence if any (null if none)",
+                "timeframe": "When results expected if mentioned (null if not)"
+            }
+        ],
+        "features_mentioned": [
+            {
+                "feature": "Product attribute/ingredient/spec",
+                "positioning": "How it's positioned",
+                "differentiation": true
+            }
+        ],
+        "objections_addressed": [
+            {
+                "objection": "The concern being addressed",
+                "response": "How the ad addresses it",
+                "method": "feature_highlight|social_proof|guarantee|testimonial|demonstration"
+            }
+        ]
+    },
+
     "benefits_mentioned": ["List of product benefits explicitly or implicitly shown"],
     "usps_mentioned": ["Unique selling propositions visible"],
     "pain_points_addressed": ["Customer pain points addressed"],
@@ -99,6 +134,42 @@ Return ONLY valid JSON (no markdown, no extra text):
         "duration_sec": 0,
         "production_quality": "raw|polished|professional"
     },
+
+    "advertising_structure": {
+        "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
+        "messaging_angles": [
+            {
+                "benefit": "The core benefit being communicated",
+                "angle": "How the benefit is framed/dimensionalized",
+                "framing": "The actual words/approach used",
+                "emotional_driver": "freedom|relief|pride|fear|guilt|love|status|security|belonging|achievement"
+            }
+        ],
+        "benefits_highlighted": [
+            {
+                "benefit": "Specific outcome promised",
+                "specificity": "high|medium|low",
+                "proof_provided": "What proof/evidence if any (null if none)",
+                "timeframe": "When results expected if mentioned (null if not)"
+            }
+        ],
+        "features_mentioned": [
+            {
+                "feature": "Product attribute/ingredient/spec",
+                "positioning": "How it's positioned",
+                "differentiation": true
+            }
+        ],
+        "objections_addressed": [
+            {
+                "objection": "The concern being addressed",
+                "response": "How the ad addresses it",
+                "method": "feature_highlight|social_proof|guarantee|testimonial|demonstration"
+            }
+        ]
+    },
+
     "target_persona": {
         "age_range": "estimated target age",
         "gender_focus": "male|female|neutral",
@@ -161,6 +232,42 @@ Return ONLY valid JSON:
         "hook_type": "curiosity|fear|benefit|social_proof|question|transformation|statistic"
     }},
     "headline": "Main headline if present",
+
+    "advertising_structure": {{
+        "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
+        "messaging_angles": [
+            {{
+                "benefit": "The core benefit being communicated",
+                "angle": "How the benefit is framed/dimensionalized",
+                "framing": "The actual words/approach used",
+                "emotional_driver": "freedom|relief|pride|fear|guilt|love|status|security|belonging|achievement"
+            }}
+        ],
+        "benefits_highlighted": [
+            {{
+                "benefit": "Specific outcome promised",
+                "specificity": "high|medium|low",
+                "proof_provided": "What proof/evidence if any (null if none)",
+                "timeframe": "When results expected if mentioned (null if not)"
+            }}
+        ],
+        "features_mentioned": [
+            {{
+                "feature": "Product attribute/ingredient/spec",
+                "positioning": "How it's positioned",
+                "differentiation": true
+            }}
+        ],
+        "objections_addressed": [
+            {{
+                "objection": "The concern being addressed",
+                "response": "How the ad addresses it",
+                "method": "feature_highlight|social_proof|guarantee|testimonial|demonstration"
+            }}
+        ]
+    }},
+
     "target_persona": {{
         "age_range": "estimated target age",
         "gender_focus": "male|female|neutral",
