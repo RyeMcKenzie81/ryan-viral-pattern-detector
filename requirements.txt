@@ -96,4 +96,7 @@ nest-asyncio>=1.5.0
 
 # Web Scraping Dependencies
 firecrawl-py>=1.0.0
-logfire>=0.50.0
+
+# Note: logfire removed due to OpenTelemetry dependency conflicts with pydantic-ai-slim
+# The observability.py module handles missing logfire gracefully (no-op stub)
+# Re-add later with pinned versions after testing locally
