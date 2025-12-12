@@ -49,7 +49,15 @@ def aggregate_awareness_levels(structures: List[Dict[str, Any]]) -> Dict[str, in
     Returns:
         Dict mapping awareness_level to count
     """
-    levels = [s.get("awareness_level") for s in structures if s.get("awareness_level")]
+    levels = []
+    for s in structures:
+        level = s.get("awareness_level")
+        if level:
+            # Handle both string and list cases
+            if isinstance(level, list):
+                levels.extend(level)
+            else:
+                levels.append(level)
     return dict(Counter(levels))
 
 
@@ -63,7 +71,15 @@ def aggregate_advertising_angles(structures: List[Dict[str, Any]]) -> Dict[str, 
     Returns:
         Dict mapping advertising_angle to count
     """
-    angles = [s.get("advertising_angle") for s in structures if s.get("advertising_angle")]
+    angles = []
+    for s in structures:
+        angle = s.get("advertising_angle")
+        if angle:
+            # Handle both string and list cases (AI sometimes returns multiple angles)
+            if isinstance(angle, list):
+                angles.extend(angle)
+            else:
+                angles.append(angle)
     return dict(Counter(angles))
 
 
