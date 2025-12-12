@@ -39,6 +39,10 @@ from viraltracker.agent import agent, AgentDependencies
 from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult
 from viraltracker.core.database import get_supabase_client
 
+# Initialize Logfire for observability (if LOGFIRE_TOKEN is set)
+from viraltracker.core.observability import setup_logfire
+setup_logfire()
+
 
 # ============================================================================
 # Download Format Converters

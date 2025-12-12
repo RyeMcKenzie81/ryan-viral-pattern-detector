@@ -25,8 +25,10 @@ from datetime import datetime
 from supabase import Client
 from ..core.database import get_supabase_client
 from ..core.config import Config
+from ..core.observability import get_logfire
 
 logger = logging.getLogger(__name__)
+logfire = get_logfire()
 
 
 # Analysis prompts
@@ -3008,6 +3010,14 @@ class BrandResearchService:
             Dict with counts: {"ads_processed", "videos_downloaded", "images_downloaded"}
         """
         from .ad_scraping_service import AdScrapingService
+
+        # Log operation start for observability
+        logfire.info(
+            "download_assets_for_competitor started",
+            competitor_id=str(competitor_id),
+            limit=limit,
+            force_redownload=force_redownload
+        )
 
         scraping_service = AdScrapingService()
 
