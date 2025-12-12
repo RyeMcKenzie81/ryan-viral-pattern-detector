@@ -11,11 +11,15 @@ Part of the Trash Panda Content Pipeline (MVP 4).
 
 import logging
 import json
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID, uuid4
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Storage bucket for comic assets
+COMIC_ASSETS_BUCKET = "comic-assets"
 
 
 class AssetManagementService:
@@ -612,6 +616,139 @@ Return valid JSON:
         except Exception as e:
             logger.error(f"Failed to delete asset: {e}")
             return False
+
+    # =========================================================================
+    # FILE UPLOAD METHODS
+    # =========================================================================
+
+    async def upload_asset_file(
+        self,
+        brand_id: UUID,
+        file_data: bytes,
+        filename: str,
+        content_type: str = "image/png"
+    ) -> str:
+        """
+        Upload an asset image file to Supabase Storage.
+
+        Args:
+            brand_id: Brand UUID (used for storage path organization)
+            file_data: Raw file bytes
+            filename: Original filename
+            content_type: MIME type (default: image/png)
+
+        Returns:
+            Storage path (e.g., "comic-assets/brand-uuid/filename.png")
+        """
+        if not self.supabase:
+            raise ValueError("Supabase not configured - cannot upload file")
+
+        # Normalize filename
+        safe_filename = filename.lower().replace(" ", "-").replace("_", "-")
+
+        # Build storage path
+        storage_path = f"{brand_id}/{safe_filename}"
+
+        try:
+            await asyncio.to_thread(
+                lambda: self.supabase.storage.from_(COMIC_ASSETS_BUCKET).upload(
+                    storage_path,
+                    file_data,
+                    {"content-type": content_type}
+                )
+            )
+
+            logger.info(f"Uploaded asset file: {COMIC_ASSETS_BUCKET}/{storage_path}")
+            return f"{COMIC_ASSETS_BUCKET}/{storage_path}"
+
+        except Exception as e:
+            logger.error(f"Failed to upload asset file: {e}")
+            raise
+
+    async def get_asset_url(self, storage_path: str, expires_in: int = 3600) -> str:
+        """
+        Get a signed URL for an asset file.
+
+        Args:
+            storage_path: Storage path (e.g., "comic-assets/brand-uuid/file.png")
+            expires_in: URL expiration in seconds (default: 1 hour)
+
+        Returns:
+            Signed URL for the asset
+        """
+        if not self.supabase:
+            return ""
+
+        try:
+            # Parse bucket and path
+            parts = storage_path.split("/", 1)
+            bucket = parts[0]
+            path = parts[1] if len(parts) > 1 else storage_path
+
+            result = await asyncio.to_thread(
+                lambda: self.supabase.storage.from_(bucket).create_signed_url(path, expires_in)
+            )
+
+            return result.get("signedURL", "")
+
+        except Exception as e:
+            logger.error(f"Failed to get asset URL: {e}")
+            return ""
+
+    async def upload_asset_with_file(
+        self,
+        brand_id: UUID,
+        name: str,
+        asset_type: str,
+        file_data: bytes,
+        filename: str,
+        content_type: str = "image/png",
+        description: str = "",
+        tags: List[str] = None,
+        is_core_asset: bool = False
+    ) -> UUID:
+        """
+        Upload an asset with its image file in one operation.
+
+        Combines file upload to storage with database record creation.
+
+        Args:
+            brand_id: Brand UUID
+            name: Asset name
+            asset_type: character|prop|background|effect
+            file_data: Raw image bytes
+            filename: Original filename
+            content_type: MIME type
+            description: Visual description
+            tags: Searchable tags
+            is_core_asset: Whether this is a core/main asset
+
+        Returns:
+            Created asset UUID
+        """
+        # Upload file first
+        storage_path = await self.upload_asset_file(
+            brand_id=brand_id,
+            file_data=file_data,
+            filename=filename,
+            content_type=content_type
+        )
+
+        # Get public URL
+        image_url = await self.get_asset_url(storage_path)
+
+        # Create database record
+        asset_id = await self.upload_asset(
+            brand_id=brand_id,
+            name=name,
+            asset_type=asset_type,
+            description=description,
+            tags=tags,
+            image_url=image_url,
+            is_core_asset=is_core_asset
+        )
+
+        return asset_id
 
     # =========================================================================
     # HELPER METHODS

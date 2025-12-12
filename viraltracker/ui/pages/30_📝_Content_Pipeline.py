@@ -2137,13 +2137,29 @@ def render_asset_library(brand_id: str):
 
 def render_asset_upload(brand_id: str):
     """Render the asset upload interface."""
-    st.markdown("#### Upload New Asset")
+
+    # Sub-tabs for different upload methods
+    upload_tab1, upload_tab2, upload_tab3 = st.tabs(["Single Upload", "Batch File Upload", "JSON Import"])
+
+    with upload_tab1:
+        render_single_asset_upload(brand_id)
+
+    with upload_tab2:
+        render_batch_file_upload(brand_id)
+
+    with upload_tab3:
+        render_json_import(brand_id)
+
+
+def render_single_asset_upload(brand_id: str):
+    """Render single asset upload form with file upload support."""
+    st.markdown("#### Upload Single Asset")
 
     with st.form("asset_upload_form"):
         name = st.text_input(
             "Asset Name",
             placeholder="e.g., every-coon-happy",
-            help="Use lowercase with hyphens"
+            help="Use lowercase with hyphens. If uploading a file, name will default to filename."
         )
 
         asset_type = st.selectbox(
@@ -2168,58 +2184,197 @@ def render_asset_upload(brand_id: str):
             help="Core assets are always available for matching"
         )
 
-        image_url = st.text_input(
-            "Image URL (optional)",
-            placeholder="https://example.com/asset.png",
-            help="Direct URL to asset image"
+        # File upload
+        uploaded_file = st.file_uploader(
+            "Upload Image File",
+            type=["png", "jpg", "jpeg", "webp"],
+            help="Upload image file directly (PNG, JPG, WEBP)"
         )
 
-        prompt_template = st.text_area(
-            "Prompt Template (optional)",
-            placeholder="[character] in [pose], flat vector style...",
-            help="Template for generating variations"
+        # OR URL input
+        image_url = st.text_input(
+            "OR Image URL",
+            placeholder="https://example.com/asset.png",
+            help="Alternatively, provide a direct URL to the image"
         )
 
         submitted = st.form_submit_button("Add Asset")
 
         if submitted:
-            if not name:
-                st.error("Asset name is required")
-            else:
-                try:
-                    service = get_asset_service()
-                    tags = [t.strip() for t in tags_input.split(',') if t.strip()] if tags_input else []
+            service = get_asset_service()
+            tags = [t.strip() for t in tags_input.split(',') if t.strip()] if tags_input else []
 
-                    asset_id = asyncio.run(service.upload_asset(
+            try:
+                if uploaded_file:
+                    # File upload flow
+                    file_data = uploaded_file.read()
+                    filename = uploaded_file.name
+                    asset_name = name if name else filename.rsplit('.', 1)[0]
+
+                    # Determine content type
+                    content_type = uploaded_file.type or "image/png"
+
+                    asset_id = asyncio.run(service.upload_asset_with_file(
                         brand_id=UUID(brand_id),
-                        name=name,
+                        name=asset_name,
                         asset_type=asset_type,
+                        file_data=file_data,
+                        filename=filename,
+                        content_type=content_type,
                         description=description,
                         tags=tags,
-                        image_url=image_url if image_url else None,
-                        prompt_template=prompt_template if prompt_template else None,
                         is_core_asset=is_core
                     ))
 
-                    st.success(f"Asset '{name}' added successfully!")
+                    st.success(f"Asset '{asset_name}' uploaded successfully!")
                     st.rerun()
 
+                elif image_url:
+                    # URL flow
+                    if not name:
+                        st.error("Asset name is required when using URL")
+                    else:
+                        asset_id = asyncio.run(service.upload_asset(
+                            brand_id=UUID(brand_id),
+                            name=name,
+                            asset_type=asset_type,
+                            description=description,
+                            tags=tags,
+                            image_url=image_url,
+                            is_core_asset=is_core
+                        ))
+
+                        st.success(f"Asset '{name}' added successfully!")
+                        st.rerun()
+                else:
+                    st.error("Please upload a file or provide an image URL")
+
+            except Exception as e:
+                st.error(f"Failed to add asset: {e}")
+
+
+def render_batch_file_upload(brand_id: str):
+    """Render batch file upload interface."""
+    st.markdown("#### Batch File Upload")
+    st.caption("Upload multiple image files at once. Asset names will be derived from filenames.")
+
+    # Default settings for batch
+    col1, col2 = st.columns(2)
+    with col1:
+        default_type = st.selectbox(
+            "Default Asset Type",
+            options=["character", "prop", "background", "effect"],
+            key="batch_default_type"
+        )
+    with col2:
+        default_core = st.checkbox(
+            "Mark All as Core Assets",
+            key="batch_default_core"
+        )
+
+    default_tags = st.text_input(
+        "Default Tags (comma-separated)",
+        placeholder="imported, batch",
+        help="Tags to apply to all uploaded assets",
+        key="batch_default_tags"
+    )
+
+    # Multi-file uploader
+    uploaded_files = st.file_uploader(
+        "Select Image Files",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        help="Select multiple PNG, JPG, or WEBP files"
+    )
+
+    if uploaded_files:
+        st.info(f"Selected {len(uploaded_files)} files")
+
+        # Preview selected files
+        with st.expander("Preview Selected Files", expanded=False):
+            cols = st.columns(4)
+            for idx, f in enumerate(uploaded_files[:12]):  # Show first 12
+                with cols[idx % 4]:
+                    st.caption(f.name)
+
+        if st.button("Upload All Files", type="primary"):
+            service = get_asset_service()
+            tags = [t.strip() for t in default_tags.split(',') if t.strip()] if default_tags else []
+
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            successful = 0
+            failed = 0
+
+            for idx, uploaded_file in enumerate(uploaded_files):
+                try:
+                    status_text.text(f"Uploading {uploaded_file.name}...")
+
+                    file_data = uploaded_file.read()
+                    filename = uploaded_file.name
+                    asset_name = filename.rsplit('.', 1)[0]
+                    content_type = uploaded_file.type or "image/png"
+
+                    asyncio.run(service.upload_asset_with_file(
+                        brand_id=UUID(brand_id),
+                        name=asset_name,
+                        asset_type=default_type,
+                        file_data=file_data,
+                        filename=filename,
+                        content_type=content_type,
+                        tags=tags,
+                        is_core_asset=default_core
+                    ))
+
+                    successful += 1
+
                 except Exception as e:
-                    st.error(f"Failed to add asset: {e}")
+                    st.warning(f"Failed to upload '{uploaded_file.name}': {e}")
+                    failed += 1
 
-    st.divider()
+                progress_bar.progress((idx + 1) / len(uploaded_files))
 
-    # Bulk import section
-    st.markdown("#### Bulk Import")
-    st.caption("Import multiple assets from a JSON file or paste JSON data.")
+            status_text.empty()
+            progress_bar.empty()
+
+            if failed == 0:
+                st.success(f"Successfully uploaded all {successful} assets!")
+            else:
+                st.warning(f"Uploaded {successful} assets, {failed} failed")
+
+            st.rerun()
+
+
+def render_json_import(brand_id: str):
+    """Render JSON import interface."""
+    st.markdown("#### JSON Import")
+    st.caption("Import assets from JSON data. Best for assets with URLs already hosted.")
+
+    st.markdown("""
+    **Expected JSON format:**
+    ```json
+    [
+        {
+            "name": "asset-name",
+            "type": "character|prop|background|effect",
+            "description": "Visual description",
+            "tags": ["tag1", "tag2"],
+            "image_url": "https://example.com/image.png",
+            "is_core": false
+        }
+    ]
+    ```
+    """)
 
     json_data = st.text_area(
         "Paste JSON Array",
         placeholder='[{"name": "asset-1", "type": "character", "description": "..."}]',
-        help="Array of asset objects with name, type, description, tags (optional)"
+        help="Array of asset objects",
+        height=200
     )
 
-    if st.button("Import Assets"):
+    if st.button("Import from JSON"):
         if not json_data:
             st.warning("Please paste JSON data to import")
         else:
