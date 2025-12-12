@@ -1050,6 +1050,29 @@ class CompetitorService:
             "url_count": url_count
         }
 
+    def get_competitor_amazon_analysis(self, competitor_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Get the Amazon review analysis for a competitor.
+
+        Args:
+            competitor_id: UUID of the competitor
+
+        Returns:
+            Analysis dict if exists, None otherwise
+        """
+        try:
+            result = self.supabase.table("competitor_amazon_review_analysis").select(
+                "*"
+            ).eq("competitor_id", str(competitor_id)).execute()
+
+            if result.data and len(result.data) > 0:
+                return result.data[0]
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get competitor Amazon analysis: {e}")
+            return None
+
     # =========================================================================
     # AD SCRAPING INTEGRATION
     # =========================================================================
