@@ -923,7 +923,7 @@ Public page (no auth).
 - [x] JSON bulk import
 
 ### Phase 6: Asset Generation
-- [ ] **Image Assets**: Gemini 3 Pro for backgrounds, props
+- [ ] **Image Assets**: `gemini-3-pro-image-preview` for backgrounds, props
 - [ ] **SFX Assets**: ElevenLabs Sound Effects API for missing audio
   - Parse script for SFX triggers (whale rumble, printer sounds, "WAGMI", etc.)
   - Check asset library for existing SFX

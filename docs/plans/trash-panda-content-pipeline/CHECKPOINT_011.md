@@ -108,7 +108,7 @@ User has 20-50 local image files to import. Use the **Batch File Upload** featur
 ### MVP 5: Phase 6 - Asset Generation
 
 **Image Assets:**
-- [ ] Gemini 3 Pro integration for generating backgrounds, props
+- [ ] `gemini-3-pro-image-preview` integration for generating backgrounds, props
 - [ ] Generate missing assets identified from script extraction
 - [ ] Batch generation with progress tracking
 
