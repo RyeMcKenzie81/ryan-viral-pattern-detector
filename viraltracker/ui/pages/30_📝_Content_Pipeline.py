@@ -2986,7 +2986,7 @@ def render_sfx_generate(project_id: str, brand_id: str, existing_sfx: List[Dict]
                         "Duration",
                         min_value=0.5,
                         max_value=22.0,
-                        value=sfx.get('duration_seconds', 2.0),
+                        value=float(sfx.get('duration_seconds', 2.0)),
                         step=0.5,
                         key=f"dur_{sfx.get('id')}"
                     )
@@ -3189,7 +3189,7 @@ def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
                     "New duration",
                     min_value=0.5,
                     max_value=22.0,
-                    value=sfx.get('duration_seconds', 2.0),
+                    value=float(sfx.get('duration_seconds', 2.0)),
                     step=0.5,
                     key=f"new_dur_{sfx.get('id')}"
                 )
