@@ -532,6 +532,11 @@ class EditorHandoffService:
             assets_by_beat = {}
 
             for req in requirements:
+                # Only include approved or matched assets (not generated, needed, failed, etc.)
+                status = req.get("status", "")
+                if status not in ("approved", "matched"):
+                    continue
+
                 # Parse script_reference (JSON array of beat IDs)
                 refs = req.get("script_reference", "[]")
                 if isinstance(refs, str):
