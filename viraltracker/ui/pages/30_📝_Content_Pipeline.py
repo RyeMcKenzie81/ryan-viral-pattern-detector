@@ -3079,19 +3079,19 @@ async def generate_single_sfx(sfx: Dict, brand_id: str, duration: float):
             duration_seconds=duration
         )
 
-        # Save to storage
+        # Save to storage (use audio-production bucket)
         import base64
         audio_bytes = base64.b64decode(result['audio_base64'])
         storage_path = f"{brand_id}/sfx/{sfx.get('sfx_name', 'unknown')}.mp3"
 
-        db.storage.from_("audio-files").upload(
+        db.storage.from_("audio-production").upload(
             storage_path,
             audio_bytes,
             {"content-type": "audio/mpeg", "upsert": "true"}
         )
 
         # Get public URL
-        audio_url = db.storage.from_("audio-files").get_public_url(storage_path)
+        audio_url = db.storage.from_("audio-production").get_public_url(storage_path)
 
         # Update database
         db.table("project_sfx_requirements").update({
