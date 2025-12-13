@@ -37,13 +37,18 @@ For each asset, classify it as:
 - character: Named characters (Every-Coon, Fed, Boomer, Whale, Wojak, Chad, etc.)
 - prop: Objects, items, tools (money, printer, charts, dumpster, etc.)
 - background: Scene backgrounds, environments (street, office, bank, etc.)
-- effect: Visual effects, overlays, animations (glow, shake, explosion, etc.)
+- effect: ONLY custom visual effects that need to be drawn (NOT standard editor effects)
 
 IMPORTANT RULES:
 1. Deduplicate - if an asset appears multiple times, list it once with all beat references
 2. Use lowercase-hyphenated names (e.g., "every-coon", "money-printer", "wall-street")
 3. For characters, include their expression/pose variations as separate entries
 4. Group similar props (e.g., "pile-of-money" and "stack-of-bills" → "pile-of-money")
+5. DO NOT include effects that are standard in video editors (After Effects, Premiere):
+   - Skip: flashing lights, sparkles, glows, shakes, zooms, fades, transitions
+   - Skip: tears, sweat drops, motion blur, lens flare, explosions, fire
+   - Skip: any effect that can be done with built-in editor tools
+   - ONLY include truly custom drawn effects specific to this animation
 
 <visual_notes>
 {visual_notes}
