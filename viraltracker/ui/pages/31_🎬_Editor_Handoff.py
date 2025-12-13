@@ -221,34 +221,63 @@ def render_beat_card(beat):
                     st.audio(audio_url)
                     duration_sec = beat.audio_duration_ms / 1000 if beat.audio_duration_ms else 0
                     st.caption(f"Duration: {duration_sec:.1f}s")
+                    # Download audio button
+                    st.markdown(f"[Download Audio]({audio_url})")
                 else:
                     st.caption("Audio available (loading...)")
             else:
                 st.caption("No audio")
 
-        # Assets section
+        # Assets section - organized by type
         if beat.assets:
             st.markdown("**Assets:**")
-            asset_cols = st.columns(min(len(beat.assets), 4))
-            for idx, asset in enumerate(beat.assets):
-                with asset_cols[idx % len(asset_cols)]:
-                    image_url = get_asset_url(asset.get("image_url", ""))
-                    if image_url:
-                        st.image(image_url, caption=asset.get("name", "Asset"), width=120)
-                    else:
-                        st.markdown(
-                            f"""
-                            <div style="
-                                background: #eee;
-                                padding: 10px;
-                                border-radius: 4px;
-                                text-align: center;
-                            ">
-                                {asset.get("name", "Asset")}
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
+
+            # Group assets by type
+            asset_groups = {
+                'background': [],
+                'character': [],
+                'prop': [],
+                'effect': []
+            }
+            for asset in beat.assets:
+                asset_type = asset.get('type', 'prop').lower()
+                if asset_type in asset_groups:
+                    asset_groups[asset_type].append(asset)
+                else:
+                    asset_groups['prop'].append(asset)
+
+            # Render each group with a header
+            type_labels = {
+                'background': '🏞️ Backgrounds',
+                'character': '👤 Characters',
+                'prop': '🔧 Props',
+                'effect': '✨ Effects'
+            }
+
+            for asset_type, label in type_labels.items():
+                assets_of_type = asset_groups.get(asset_type, [])
+                if assets_of_type:
+                    st.markdown(f"**{label}:**")
+                    asset_cols = st.columns(min(len(assets_of_type), 4))
+                    for idx, asset in enumerate(assets_of_type):
+                        with asset_cols[idx % len(asset_cols)]:
+                            image_url = get_asset_url(asset.get("image_url", ""))
+                            if image_url:
+                                st.image(image_url, caption=asset.get("name", "Asset"), width=120)
+                            else:
+                                st.markdown(
+                                    f"""
+                                    <div style="
+                                        background: #eee;
+                                        padding: 10px;
+                                        border-radius: 4px;
+                                        text-align: center;
+                                    ">
+                                        {asset.get("name", "Asset")}
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
 
         # SFX section
         if beat.sfx:

@@ -1547,7 +1547,10 @@ def render_audio_tab(project: Dict):
     workflow_state = project.get('workflow_state', 'pending')
 
     # Check if script is approved
-    script_approved = workflow_state in ['script_approved', 'els_ready', 'audio_production', 'audio_complete']
+    script_approved = workflow_state in [
+        'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+        'handoff_ready', 'handoff_generated'
+    ]
 
     if not script_approved:
         st.info("Approve your script first before generating audio.")
@@ -1946,7 +1949,8 @@ def render_assets_tab(project: Dict):
     # Check if script is approved (assets require an approved script)
     script_approved = workflow_state in [
         'script_approved', 'els_ready', 'audio_production', 'audio_complete',
-        'asset_extraction', 'asset_matching', 'asset_generation', 'asset_review'
+        'asset_extraction', 'asset_matching', 'asset_generation', 'asset_review',
+        'handoff_ready', 'handoff_generated'
     ]
 
     if not script_approved:
