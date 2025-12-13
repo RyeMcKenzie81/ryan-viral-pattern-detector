@@ -19,12 +19,16 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Default style suffix for Trash Panda assets
-DEFAULT_STYLE_SUFFIX = (
-    "flat vector cartoon art, minimal design, thick black outlines, "
-    "simple geometric shapes, style of Cyanide and Happiness, 2D, high contrast, "
-    "clean white or transparent background"
+# Default style for Trash Panda assets - based on Cyanide & Happiness / Brewstew
+TRASH_PANDA_ART_STYLE = (
+    "Style similar to 'Cyanide and Happiness' or 'Brewstew'. "
+    "Large, smooth, pill-shaped heads with soft 3D shading and gradients, "
+    "simple rectangular bodies, and thick black stick-figure limbs. "
+    "Clean vector aesthetic. 2D, high contrast."
 )
+
+# Legacy alias
+DEFAULT_STYLE_SUFFIX = TRASH_PANDA_ART_STYLE
 
 # ElevenLabs Sound Effects API endpoint
 ELEVENLABS_SFX_URL = "https://api.elevenlabs.io/v1/sound-generation"
@@ -136,6 +140,8 @@ class AssetGenerationService:
         """
         Build an optimized prompt for asset generation.
 
+        Uses detailed prompts based on Cyanide & Happiness / Brewstew style.
+
         Args:
             asset_name: Asset name
             asset_type: Asset type
@@ -145,28 +151,65 @@ class AssetGenerationService:
         Returns:
             Formatted prompt string
         """
-        # Type-specific prefixes
-        type_prefixes = {
-            "character": "A cartoon character: ",
-            "prop": "A cartoon object/prop: ",
-            "background": "A cartoon scene background: ",
-            "effect": "A visual effect overlay: "
-        }
-
-        prefix = type_prefixes.get(asset_type, "")
-
-        # Build prompt
-        prompt = f"{prefix}{description}. {style_suffix}"
-
-        # Add specific instructions based on type
         if asset_type == "character":
-            prompt += " Full body visible, centered composition, expressive pose."
-        elif asset_type == "prop":
-            prompt += " Single object, centered, clean isolation."
+            # Character asset sheet for 2D puppet animation
+            prompt = f"""A character asset sheet for 2D puppet animation. {style_suffix}
+
+The Subject: {description}
+
+The Layout:
+- Row 1 (Heads): Four large floating heads showing distinct expressions.
+  - Expression A: Neutral/Cool (default expression)
+  - Expression B: Screaming/Panic (mouth wide open)
+  - Expression C: Sad/Crying (tears streaming down)
+  - Expression D: Excited/Manic (wide eyes, big smile)
+- Row 2 (Bodies):
+  - Body A: Standard body/torso
+  - Limbs: Detached thick black stick arms and legs shown nearby for rigging.
+
+Background is plain white for easy cropping."""
+
         elif asset_type == "background":
-            prompt += " Wide scene, no characters, suitable for layering."
+            # 16:9 background scene
+            prompt = f"""A 16:9 widescreen background scene for 2D animation. {style_suffix}
+
+The Scene: {description}
+
+Requirements:
+- Wide cinematic composition (16:9 aspect ratio)
+- No characters in the scene
+- Suitable for layering animated characters on top
+- Clean, detailed environment
+- Consistent lighting throughout"""
+
+        elif asset_type == "prop":
+            # Single prop on white background
+            prompt = f"""A single prop/object for 2D animation. {style_suffix}
+
+The Object: {description}
+
+Requirements:
+- Single object, centered composition
+- Plain white background for easy cropping
+- Clean edges, suitable for cutout
+- Consistent with cartoon animation style
+- No shadows on background"""
+
         elif asset_type == "effect":
-            prompt += " Transparent background, suitable for overlay."
+            # Visual effect overlay
+            prompt = f"""A visual effect overlay for 2D animation. {style_suffix}
+
+The Effect: {description}
+
+Requirements:
+- Transparent or easily removable background
+- Suitable for overlaying on video
+- Clean vector style
+- High contrast for visibility"""
+
+        else:
+            # Fallback for unknown types
+            prompt = f"{description}. {style_suffix}"
 
         return prompt
 
