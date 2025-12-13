@@ -377,7 +377,7 @@ Requirements:
             result = await self.generate_asset_image(
                 asset_name=asset_name,
                 asset_type=asset_type,
-                description=gen_description
+                description=description
             )
 
             # Save to storage
