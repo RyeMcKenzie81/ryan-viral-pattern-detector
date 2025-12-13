@@ -247,13 +247,14 @@ Requirements:
             req_id = req.get("id")
             asset_name = req.get("asset_name", req.get("name", "unknown"))
             asset_type = req.get("asset_type", req.get("type", "prop"))
+            # Always use asset_description - _build_image_prompt creates the full prompt
             description = req.get("asset_description", req.get("description", ""))
-            suggested_prompt = req.get("suggested_prompt", "")
 
-            # Use suggested_prompt if available, otherwise use description
-            gen_description = suggested_prompt if suggested_prompt else description
+            if not description:
+                # Fallback to asset name if no description
+                description = asset_name.replace("-", " ").replace("_", " ")
 
-            if not gen_description:
+            if not description:
                 logger.warning(f"Skipping '{asset_name}' - no description")
                 failed.append({
                     "requirement_id": req_id,
@@ -275,7 +276,7 @@ Requirements:
                 result = await self.generate_asset_image(
                     asset_name=asset_name,
                     asset_type=asset_type,
-                    description=gen_description
+                    description=description
                 )
 
                 # Save to storage
@@ -353,13 +354,14 @@ Requirements:
         req_id = requirement.get("id")
         asset_name = requirement.get("asset_name", requirement.get("name", "unknown"))
         asset_type = requirement.get("asset_type", requirement.get("type", "prop"))
+        # Always use asset_description as the subject - _build_image_prompt will create the full prompt
         description = requirement.get("asset_description", requirement.get("description", ""))
-        suggested_prompt = requirement.get("suggested_prompt", "")
 
-        # Use suggested_prompt if available, otherwise use description
-        gen_description = suggested_prompt if suggested_prompt else description
+        if not description:
+            # Fallback to asset name if no description
+            description = asset_name.replace("-", " ").replace("_", " ")
 
-        if not gen_description:
+        if not description:
             return {"success": False, "error": "No description provided"}
 
         try:

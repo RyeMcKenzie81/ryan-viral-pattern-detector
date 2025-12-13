@@ -160,6 +160,59 @@ def get_handoff_service():
     )
 
 
+def _build_prompt_preview(asset_name: str, asset_type: str, description: str) -> str:
+    """Build a preview of the prompt that will be used for generation."""
+    style = (
+        "Style similar to 'Cyanide and Happiness' or 'Brewstew'. "
+        "Large, smooth, pill-shaped heads with soft 3D shading and gradients, "
+        "simple rectangular bodies, and thick black stick-figure limbs. "
+        "Clean vector aesthetic. 2D, high contrast."
+    )
+
+    if asset_type == "character":
+        return f"""A character asset sheet for 2D puppet animation. {style}
+
+The Subject: {description}
+
+The Layout:
+- Row 1 (Heads): Four large floating heads showing distinct expressions.
+- Row 2 (Bodies): Standard body/torso + detached limbs for rigging.
+
+Background is plain white for easy cropping."""
+
+    elif asset_type == "background":
+        return f"""A 16:9 widescreen background scene for 2D animation. {style}
+
+The Scene: {description}
+
+Requirements:
+- Wide cinematic composition (16:9 aspect ratio)
+- No characters in the scene
+- Suitable for layering animated characters on top"""
+
+    elif asset_type == "prop":
+        return f"""A single prop/object for 2D animation. {style}
+
+The Object: {description}
+
+Requirements:
+- Single object, centered composition
+- Plain white background for easy cropping
+- Clean edges, suitable for cutout"""
+
+    elif asset_type == "effect":
+        return f"""A visual effect overlay for 2D animation. {style}
+
+The Effect: {description}
+
+Requirements:
+- Transparent or easily removable background
+- Suitable for overlaying on video"""
+
+    else:
+        return f"{description}. {style}"
+
+
 def get_brands():
     """Fetch all brands."""
     try:
@@ -2095,14 +2148,17 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
                 col1, col2, col3 = st.columns([3, 1, 1])
                 with col1:
                     st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
-                    desc = req.get('asset_description', '')[:150]
+                    desc = req.get('asset_description', '')
                     if desc:
-                        st.caption(desc + "..." if len(req.get('asset_description', '')) > 150 else desc)
-                    # Show the prompt that will be used
-                    prompt = req.get('suggested_prompt', '')
-                    if prompt:
-                        with st.expander("View prompt", expanded=False):
-                            st.code(prompt, language=None)
+                        st.caption(desc[:150] + "..." if len(desc) > 150 else desc)
+                    # Show preview of the actual prompt that will be built
+                    with st.expander("View prompt preview", expanded=False):
+                        preview_prompt = _build_prompt_preview(
+                            req.get('asset_name', 'unknown'),
+                            req.get('asset_type', 'prop'),
+                            desc or req.get('asset_name', '').replace('-', ' ')
+                        )
+                        st.code(preview_prompt, language=None)
                 with col2:
                     st.caption(f":orange[Needed]")
                 with col3:
