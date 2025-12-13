@@ -69,6 +69,11 @@ if 'asset_generating' not in st.session_state:
     st.session_state.asset_generating = False
 if 'generation_progress' not in st.session_state:
     st.session_state.generation_progress = 0
+# SFX tab state
+if 'sfx_extracting' not in st.session_state:
+    st.session_state.sfx_extracting = False
+if 'sfx_generating' not in st.session_state:
+    st.session_state.sfx_generating = False
 # Handoff tab state (MVP 6)
 if 'handoff_generating' not in st.session_state:
     st.session_state.handoff_generating = False
@@ -676,8 +681,8 @@ def render_script_view(project: Dict):
 
     st.divider()
 
-    # Tabs for script workflow - include Audio, Assets, and Handoff tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets", "Handoff"])
+    # Tabs for script workflow - include Audio, Assets, SFX, and Handoff tabs
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets", "SFX", "Handoff"])
 
     with tab1:
         render_script_generation_tab(project)
@@ -695,6 +700,9 @@ def render_script_view(project: Dict):
         render_assets_tab(project)
 
     with tab6:
+        render_sfx_tab(project)
+
+    with tab7:
         render_handoff_tab(project)
 
 
@@ -2783,6 +2791,419 @@ def render_json_import(brand_id: str):
 
             except json.JSONDecodeError as e:
                 st.error(f"Invalid JSON: {e}")
+
+
+# =========================================================================
+# SFX Tab Functions
+# =========================================================================
+
+def render_sfx_tab(project: Dict):
+    """Render the sound effects management tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved
+    script_approved = workflow_state in [
+        'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+        'handoff_ready', 'handoff_generated'
+    ]
+
+    st.markdown("### Sound Effects (SFX)")
+
+    if not script_approved:
+        st.info("Approve your script first before extracting SFX.")
+        st.caption("The SFX tab becomes available after script approval.")
+        return
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).eq("is_approved", True).order("version_number", desc=True).limit(1).execute()
+
+        if not scripts.data:
+            st.warning("No approved script found.")
+            return
+
+        current_script = scripts.data[0]
+        script_content = current_script.get("content", {})
+        if isinstance(script_content, str):
+            import json
+            script_content = json.loads(script_content)
+
+    except Exception as e:
+        st.error(f"Failed to load script: {e}")
+        return
+
+    # Load existing SFX requirements
+    try:
+        sfx_result = db.table("project_sfx_requirements").select("*").eq(
+            "project_id", project_id
+        ).execute()
+        existing_sfx = sfx_result.data or []
+    except Exception:
+        existing_sfx = []
+
+    # Sub-tabs for SFX workflow
+    sfx_tab1, sfx_tab2, sfx_tab3 = st.tabs(["Extract", "Generate", "Review"])
+
+    with sfx_tab1:
+        render_sfx_extract(project_id, script_content, existing_sfx)
+
+    with sfx_tab2:
+        render_sfx_generate(project_id, brand_id, existing_sfx)
+
+    with sfx_tab3:
+        render_sfx_review(project_id, existing_sfx)
+
+
+def render_sfx_extract(project_id: str, script_content: Dict, existing_sfx: List[Dict]):
+    """Render the SFX extraction interface."""
+    st.markdown("#### Extract SFX from Script")
+
+    if existing_sfx:
+        st.success(f"Found {len(existing_sfx)} existing SFX requirements")
+
+        # Show summary by status
+        status_counts = {}
+        for sfx in existing_sfx:
+            status = sfx.get('status', 'needed')
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        cols = st.columns(len(status_counts))
+        for idx, (status, count) in enumerate(status_counts.items()):
+            with cols[idx]:
+                st.metric(status.title(), count)
+
+    st.caption("Extract sound effect cues from your script's audio and visual notes.")
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        if st.button(
+            "Extract SFX from Script",
+            type="primary" if not existing_sfx else "secondary",
+            disabled=st.session_state.sfx_extracting
+        ):
+            st.session_state.sfx_extracting = True
+            st.rerun()
+
+    with col2:
+        if existing_sfx:
+            if st.button("Clear & Re-extract", help="Clear existing SFX and extract fresh"):
+                db = get_supabase_client()
+                db.table("project_sfx_requirements").delete().eq(
+                    "project_id", project_id
+                ).execute()
+                st.session_state.sfx_extracting = True
+                st.rerun()
+
+    # Handle extraction
+    if st.session_state.sfx_extracting:
+        with st.spinner("Extracting SFX requirements from script..."):
+            try:
+                service = get_asset_generation_service()
+                sfx_requirements = asyncio.run(service.extract_sfx_from_script(script_content))
+
+                # Save to database
+                db = get_supabase_client()
+                for sfx in sfx_requirements:
+                    db.table("project_sfx_requirements").insert({
+                        "project_id": project_id,
+                        "sfx_name": sfx.get("name", "unknown"),
+                        "description": sfx.get("description", ""),
+                        "script_reference": sfx.get("beat_references", []),
+                        "duration_seconds": 2.0,
+                        "status": "needed"
+                    }).execute()
+
+                st.session_state.sfx_extracting = False
+                st.success(f"Extracted {len(sfx_requirements)} SFX requirements!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.sfx_extracting = False
+                st.error(f"Extraction failed: {e}")
+
+    # Show existing SFX list
+    if existing_sfx:
+        st.divider()
+        st.markdown("#### Extracted SFX")
+        for sfx in existing_sfx:
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.markdown(f"**{sfx.get('sfx_name', 'Unknown')}**")
+                    st.caption(sfx.get('description', '')[:100] + "..." if len(sfx.get('description', '')) > 100 else sfx.get('description', ''))
+                with col2:
+                    status = sfx.get('status', 'needed')
+                    status_colors = {'needed': 'orange', 'generating': 'blue', 'generated': 'violet', 'approved': 'green', 'rejected': 'red', 'skipped': 'gray'}
+                    st.markdown(f":{status_colors.get(status, 'gray')}[{status}]")
+                with col3:
+                    duration = sfx.get('duration_seconds', 2.0)
+                    st.caption(f"{duration}s")
+
+
+def render_sfx_generate(project_id: str, brand_id: str, existing_sfx: List[Dict]):
+    """Render the SFX generation interface."""
+    st.markdown("#### Generate Sound Effects")
+
+    # Filter for SFX that need generation
+    needed = [s for s in existing_sfx if s.get('status') == 'needed']
+    generating = [s for s in existing_sfx if s.get('status') == 'generating']
+    failed = [s for s in existing_sfx if s.get('status') == 'rejected']
+
+    if not needed and not generating and not failed:
+        if not existing_sfx:
+            st.info("Extract SFX from your script first (Extract tab).")
+        else:
+            st.success("All SFX have been generated! Check the Review tab.")
+        return
+
+    # Summary
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Need Generation", len(needed))
+    with col2:
+        st.metric("Generating", len(generating))
+    with col3:
+        st.metric("Failed/Rejected", len(failed))
+
+    st.divider()
+
+    # Show SFX needing generation
+    if needed:
+        st.markdown("#### SFX to Generate")
+        for sfx in needed:
+            with st.container():
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    st.markdown(f"**{sfx.get('sfx_name', 'Unknown')}**")
+                    st.caption(sfx.get('description', '')[:80])
+                with col2:
+                    duration = st.number_input(
+                        "Duration",
+                        min_value=0.5,
+                        max_value=22.0,
+                        value=sfx.get('duration_seconds', 2.0),
+                        step=0.5,
+                        key=f"dur_{sfx.get('id')}"
+                    )
+                with col3:
+                    if st.button("Generate", key=f"gen_sfx_{sfx.get('id')}", disabled=st.session_state.sfx_generating):
+                        with st.spinner(f"Generating {sfx.get('sfx_name')}..."):
+                            try:
+                                asyncio.run(generate_single_sfx(sfx, brand_id, duration))
+                                st.success(f"Generated!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed: {e}")
+                with col4:
+                    if st.button("Skip", key=f"skip_sfx_{sfx.get('id')}", help="Editor will handle"):
+                        db = get_supabase_client()
+                        db.table("project_sfx_requirements").update(
+                            {"status": "skipped"}
+                        ).eq("id", sfx.get('id')).execute()
+                        st.rerun()
+
+        st.divider()
+
+        # Batch generate button
+        if st.button(
+            f"Generate All {len(needed)} SFX",
+            type="primary",
+            disabled=st.session_state.sfx_generating
+        ):
+            st.session_state.sfx_generating = True
+            st.rerun()
+
+    # Handle batch generation
+    if st.session_state.sfx_generating and needed:
+        st.warning("Generating SFX... This may take a while.")
+        progress_bar = st.progress(0)
+
+        try:
+            total = len(needed)
+            for idx, sfx in enumerate(needed):
+                progress_bar.progress((idx + 1) / total)
+                asyncio.run(generate_single_sfx(sfx, brand_id, sfx.get('duration_seconds', 2.0)))
+
+            st.session_state.sfx_generating = False
+            st.success(f"Generated {total} SFX!")
+            st.rerun()
+
+        except Exception as e:
+            st.session_state.sfx_generating = False
+            st.error(f"Generation failed: {e}")
+
+    # Show failed/rejected with retry option
+    if failed:
+        st.markdown("#### Failed/Rejected SFX")
+        if st.button(f"Retry All {len(failed)} Failed"):
+            db = get_supabase_client()
+            for sfx in failed:
+                db.table("project_sfx_requirements").update(
+                    {"status": "needed"}
+                ).eq("id", sfx.get('id')).execute()
+            st.rerun()
+
+        for sfx in failed:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{sfx.get('sfx_name', 'Unknown')}**")
+                with col2:
+                    if st.button("Retry", key=f"retry_sfx_{sfx.get('id')}"):
+                        db = get_supabase_client()
+                        db.table("project_sfx_requirements").update(
+                            {"status": "needed"}
+                        ).eq("id", sfx.get('id')).execute()
+                        st.rerun()
+
+
+async def generate_single_sfx(sfx: Dict, brand_id: str, duration: float):
+    """Generate a single SFX and save to storage."""
+    db = get_supabase_client()
+    sfx_id = sfx.get('id')
+
+    # Update status to generating
+    db.table("project_sfx_requirements").update(
+        {"status": "generating"}
+    ).eq("id", sfx_id).execute()
+
+    try:
+        service = get_asset_generation_service()
+        result = await service.generate_sfx(
+            description=sfx.get('description', ''),
+            duration_seconds=duration
+        )
+
+        # Save to storage
+        import base64
+        audio_bytes = base64.b64decode(result['audio_base64'])
+        storage_path = f"{brand_id}/sfx/{sfx.get('sfx_name', 'unknown')}.mp3"
+
+        db.storage.from_("audio-files").upload(
+            storage_path,
+            audio_bytes,
+            {"content-type": "audio/mpeg", "upsert": "true"}
+        )
+
+        # Get public URL
+        audio_url = db.storage.from_("audio-files").get_public_url(storage_path)
+
+        # Update database
+        db.table("project_sfx_requirements").update({
+            "status": "generated",
+            "generated_audio_url": audio_url.rstrip("?") if audio_url else "",
+            "storage_path": storage_path,
+            "duration_seconds": duration
+        }).eq("id", sfx_id).execute()
+
+    except Exception as e:
+        db.table("project_sfx_requirements").update({
+            "status": "rejected",
+            "rejection_reason": str(e)
+        }).eq("id", sfx_id).execute()
+        raise
+
+
+def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
+    """Render the SFX review/approval interface."""
+    st.markdown("#### Review Generated SFX")
+
+    # Filter for generated SFX
+    generated = [s for s in existing_sfx if s.get('status') == 'generated']
+    approved = [s for s in existing_sfx if s.get('status') == 'approved']
+
+    if not generated:
+        if approved:
+            st.success(f"All SFX have been reviewed! ({len(approved)} approved)")
+        else:
+            st.info("No SFX pending review. Generate SFX first (Generate tab).")
+        return
+
+    st.info(f"{len(generated)} SFX ready for review")
+
+    # Bulk actions
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Approve All", type="primary"):
+            db = get_supabase_client()
+            for sfx in generated:
+                db.table("project_sfx_requirements").update(
+                    {"status": "approved"}
+                ).eq("id", sfx.get('id')).execute()
+            st.success(f"Approved {len(generated)} SFX!")
+            st.rerun()
+    with col2:
+        if st.button("Reject All & Regenerate"):
+            db = get_supabase_client()
+            for sfx in generated:
+                db.table("project_sfx_requirements").update({
+                    "status": "needed",
+                    "generated_audio_url": None,
+                    "storage_path": None
+                }).eq("id", sfx.get('id')).execute()
+            st.warning(f"Rejected {len(generated)} SFX - they'll appear in Generate tab")
+            st.rerun()
+
+    st.divider()
+
+    # Individual review
+    for sfx in generated:
+        with st.container():
+            st.markdown(f"### {sfx.get('sfx_name', 'Unknown')}")
+            st.caption(sfx.get('description', ''))
+
+            # Audio player
+            audio_url = sfx.get('generated_audio_url')
+            if audio_url:
+                st.audio(audio_url)
+                st.caption(f"Duration: {sfx.get('duration_seconds', 0)}s")
+
+            # Action buttons
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("Approve", key=f"approve_sfx_{sfx.get('id')}", type="primary"):
+                    db = get_supabase_client()
+                    db.table("project_sfx_requirements").update(
+                        {"status": "approved"}
+                    ).eq("id", sfx.get('id')).execute()
+                    st.success(f"Approved!")
+                    st.rerun()
+            with col2:
+                if st.button("Reject & Redo", key=f"reject_sfx_{sfx.get('id')}"):
+                    db = get_supabase_client()
+                    db.table("project_sfx_requirements").update({
+                        "status": "needed",
+                        "generated_audio_url": None,
+                        "storage_path": None
+                    }).eq("id", sfx.get('id')).execute()
+                    st.info(f"Sent back to Generate tab")
+                    st.rerun()
+            with col3:
+                # Adjust duration and regenerate
+                new_duration = st.number_input(
+                    "New duration",
+                    min_value=0.5,
+                    max_value=22.0,
+                    value=sfx.get('duration_seconds', 2.0),
+                    step=0.5,
+                    key=f"new_dur_{sfx.get('id')}"
+                )
+                if st.button("Regenerate", key=f"regen_sfx_{sfx.get('id')}"):
+                    db = get_supabase_client()
+                    db.table("project_sfx_requirements").update({
+                        "status": "needed",
+                        "duration_seconds": new_duration,
+                        "generated_audio_url": None,
+                        "storage_path": None
+                    }).eq("id", sfx.get('id')).execute()
+                    st.rerun()
+
+            st.divider()
 
 
 # =========================================================================
