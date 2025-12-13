@@ -2251,11 +2251,10 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
     # Filter for assets pending review
     generated = [r for r in existing_requirements if r.get('status') == 'generated']
     approved = [r for r in existing_requirements if r.get('status') == 'approved']
-    rejected = [r for r in existing_requirements if r.get('status') == 'rejected']
 
     if not generated:
-        if approved or rejected:
-            st.success(f"All generated assets have been reviewed! ({len(approved)} approved, {len(rejected)} rejected)")
+        if approved:
+            st.success(f"All generated assets have been reviewed! ({len(approved)} approved)")
         else:
             st.info("No assets pending review. Generate missing assets first (Generate tab).")
         return
@@ -2276,14 +2275,14 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
             st.success(f"Approved {len(generated)} assets!")
             st.rerun()
     with col2:
-        if st.button("Reject All"):
+        if st.button("Reject All & Regenerate"):
             service = get_asset_generation_service()
             for req in generated:
                 asyncio.run(service.reject_asset(
                     requirement_id=UUID(req.get('id')),
                     rejection_reason="Bulk rejected"
                 ))
-            st.warning(f"Rejected {len(generated)} assets")
+            st.warning(f"Rejected {len(generated)} assets - they'll appear in Generate tab")
             st.rerun()
 
     st.divider()
@@ -2329,23 +2328,14 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
                     st.success(f"Approved '{name}'")
                     st.rerun()
 
-                # Reject
-                if st.button("Reject", key=f"reject_{req_id}"):
+                # Reject & Regenerate (resets to 'needed' status)
+                if st.button("Reject & Redo", key=f"reject_{req_id}"):
                     service = get_asset_generation_service()
                     asyncio.run(service.reject_asset(
                         requirement_id=UUID(req_id),
                         rejection_reason="Manual rejection"
                     ))
-                    st.warning(f"Rejected '{name}'")
-                    st.rerun()
-
-                # Regenerate
-                if st.button("Regenerate", key=f"regen_{req_id}"):
-                    db = get_supabase_client()
-                    db.table("project_asset_requirements").update(
-                        {"status": "needed", "generated_image_url": None}
-                    ).eq("id", req_id).execute()
-                    st.info(f"Queued '{name}' for regeneration")
+                    st.info(f"'{name}' sent back to Generate tab")
                     st.rerun()
 
             st.divider()
@@ -2365,7 +2355,7 @@ def render_requirement_list(requirements: List[Dict], project_id: str):
             'generating': 'blue',
             'generated': 'violet',
             'approved': 'green',
-            'rejected': 'red'
+            'generation_failed': 'red'
         }
         status_icons = {
             'matched': '✅',
@@ -2373,7 +2363,7 @@ def render_requirement_list(requirements: List[Dict], project_id: str):
             'generating': '⏳',
             'generated': '🖼️',
             'approved': '✓',
-            'rejected': '✗'
+            'generation_failed': '✗'
         }
 
         col1, col2, col3 = st.columns([3, 1, 1])

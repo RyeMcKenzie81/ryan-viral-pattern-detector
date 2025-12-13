@@ -762,7 +762,10 @@ Requirements:
         rejection_reason: str = ""
     ) -> None:
         """
-        Reject a generated asset.
+        Reject a generated asset and reset it for regeneration.
+
+        Sets status back to 'needed' and clears the generated image
+        so the asset shows up in the Generate tab again.
 
         Args:
             requirement_id: Requirement UUID to reject
@@ -773,11 +776,12 @@ Requirements:
 
         try:
             self.supabase.table("project_asset_requirements").update({
-                "status": "rejected",
+                "status": "needed",
+                "generated_image_url": None,
                 "rejection_reason": rejection_reason
             }).eq("id", str(requirement_id)).execute()
 
-            logger.info(f"Asset {requirement_id} rejected: {rejection_reason}")
+            logger.info(f"Asset {requirement_id} rejected and reset for regeneration: {rejection_reason}")
 
         except Exception as e:
             logger.error(f"Failed to reject asset: {e}")
