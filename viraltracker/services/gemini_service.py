@@ -402,7 +402,8 @@ Generate the article now:"""
         prompt: str,
         reference_images: list = None,
         max_retries: int = 3,
-        return_metadata: bool = False
+        return_metadata: bool = False,
+        temperature: float = 0.4
     ) -> str | dict:
         """
         Generate an image using Gemini 3 Pro Image Preview API.
@@ -415,6 +416,7 @@ Generate the article now:"""
             reference_images: Optional list of base64-encoded reference images (up to 14)
             max_retries: Maximum retries on rate limit errors
             return_metadata: If True, return dict with image and generation metadata
+            temperature: Generation temperature (0.0-1.0). Lower = more deterministic. Default 0.4.
 
         Returns:
             If return_metadata=False: Base64-encoded generated image (string)
@@ -481,10 +483,10 @@ Generate the article now:"""
                     logger.debug(f"Added {len(reference_images)} reference images")
 
                 # Use dedicated image generation model (not the default text model)
-                # Temperature 0.1 for more deterministic outputs (helps with text preservation)
+                # Temperature controls randomness - lower = more deterministic
                 image_model = genai.GenerativeModel(
                     "models/gemini-3-pro-image-preview",
-                    generation_config=genai.GenerationConfig(temperature=0.1)
+                    generation_config=genai.GenerationConfig(temperature=temperature)
                 )
                 response = image_model.generate_content(contents)
 

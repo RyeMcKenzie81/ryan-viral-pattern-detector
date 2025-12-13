@@ -183,7 +183,7 @@ Requirements:
 - Consistent lighting throughout"""
 
         elif asset_type == "prop":
-            # Single prop on white background
+            # Single prop on white background - NO characters
             prompt = f"""A single prop/object for 2D animation. {style_suffix}
 
 The Object: {description}
@@ -193,7 +193,9 @@ Requirements:
 - Plain white background for easy cropping
 - Clean edges, suitable for cutout
 - Consistent with cartoon animation style
-- No shadows on background"""
+- No shadows on background
+- NO characters, NO people, NO stick figures, NO hands holding the object
+- Just the object itself, isolated"""
 
         elif asset_type == "effect":
             # Visual effect overlay on green screen - NO characters
