@@ -445,12 +445,12 @@ Requirements:
             filename = f"{asset_name}-generated.png"
             storage_path = f"{brand_id}/generated/{filename}"
 
-            # Upload to storage
+            # Upload to storage (upsert=true to overwrite if exists)
             await asyncio.to_thread(
                 lambda: self.supabase.storage.from_("comic-assets").upload(
                     storage_path,
                     image_bytes,
-                    {"content-type": "image/png"}
+                    {"content-type": "image/png", "upsert": "true"}
                 )
             )
 
