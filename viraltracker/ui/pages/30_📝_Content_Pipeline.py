@@ -2821,14 +2821,14 @@ def render_sfx_tab(project: Dict):
         db = get_supabase_client()
         scripts = db.table("script_versions").select("*").eq(
             "project_id", project_id
-        ).eq("is_approved", True).order("version_number", desc=True).limit(1).execute()
+        ).eq("status", "approved").order("version_number", desc=True).limit(1).execute()
 
         if not scripts.data:
             st.warning("No approved script found.")
             return
 
         current_script = scripts.data[0]
-        script_content = current_script.get("content", {})
+        script_content = current_script.get("script_content", {})
         if isinstance(script_content, str):
             import json
             script_content = json.loads(script_content)
