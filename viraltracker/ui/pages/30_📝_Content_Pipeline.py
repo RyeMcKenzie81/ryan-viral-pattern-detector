@@ -2229,6 +2229,19 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
     # Show failed generations with retry option
     if failed:
         st.markdown("#### Failed Generations")
+
+        # Retry All Failed button
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button(f"Retry All {len(failed)} Failed", type="primary"):
+                db = get_supabase_client()
+                for req in failed:
+                    db.table("project_asset_requirements").update(
+                        {"status": "needed"}
+                    ).eq("id", req.get('id')).execute()
+                st.success(f"Reset {len(failed)} assets to 'needed' - they'll generate with the next batch")
+                st.rerun()
+
         for req in failed:
             with st.container():
                 col1, col2 = st.columns([3, 1])
