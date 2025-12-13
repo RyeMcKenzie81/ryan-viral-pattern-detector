@@ -69,6 +69,9 @@ if 'asset_generating' not in st.session_state:
     st.session_state.asset_generating = False
 if 'generation_progress' not in st.session_state:
     st.session_state.generation_progress = 0
+# Handoff tab state (MVP 6)
+if 'handoff_generating' not in st.session_state:
+    st.session_state.handoff_generating = False
 
 
 def get_supabase_client():
@@ -141,6 +144,20 @@ def get_script_service():
     db = get_supabase_client()
     docs = get_doc_service()
     return ScriptGenerationService(supabase_client=db, docs_service=docs)
+
+
+def get_handoff_service():
+    """Get EditorHandoffService instance."""
+    from viraltracker.services.content_pipeline.services.handoff_service import EditorHandoffService
+    from viraltracker.services.audio_production_service import AudioProductionService
+    db = get_supabase_client()
+    audio_service = AudioProductionService()
+    asset_service = get_asset_service()
+    return EditorHandoffService(
+        supabase_client=db,
+        audio_service=audio_service,
+        asset_service=asset_service
+    )
 
 
 def get_brands():
@@ -606,8 +623,8 @@ def render_script_view(project: Dict):
 
     st.divider()
 
-    # Tabs for script workflow - include Audio and Assets tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets"])
+    # Tabs for script workflow - include Audio, Assets, and Handoff tabs
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets", "Handoff"])
 
     with tab1:
         render_script_generation_tab(project)
@@ -623,6 +640,9 @@ def render_script_view(project: Dict):
 
     with tab5:
         render_assets_tab(project)
+
+    with tab6:
+        render_handoff_tab(project)
 
 
 def render_script_generation_tab(project: Dict):
@@ -2072,23 +2092,46 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
         st.markdown("#### Assets to Generate")
         for req in needed:
             with st.container():
-                col1, col2 = st.columns([3, 1])
+                col1, col2, col3 = st.columns([3, 1, 1])
                 with col1:
                     st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
                     desc = req.get('asset_description', '')[:150]
                     if desc:
                         st.caption(desc + "..." if len(req.get('asset_description', '')) > 150 else desc)
+                    # Show the prompt that will be used
+                    prompt = req.get('suggested_prompt', '')
+                    if prompt:
+                        with st.expander("View prompt", expanded=False):
+                            st.code(prompt, language=None)
                 with col2:
                     st.caption(f":orange[Needed]")
+                with col3:
+                    # Individual generate button
+                    if st.button("Generate", key=f"gen_single_{req.get('id')}", disabled=st.session_state.asset_generating):
+                        with st.spinner(f"Generating {req.get('asset_name')}..."):
+                            try:
+                                service = get_asset_generation_service()
+                                result = asyncio.run(service.generate_single(
+                                    requirement=req,
+                                    brand_id=UUID(brand_id),
+                                    project_id=UUID(project_id)
+                                ))
+                                if result.get('success'):
+                                    st.success(f"Generated {req.get('asset_name')}!")
+                                else:
+                                    st.error(f"Failed: {result.get('error', 'Unknown error')}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Generation failed: {e}")
 
         st.divider()
 
-        # Generate button
+        # Batch generate button
         if st.button(
-            f"Generate {len(needed)} Assets",
+            f"Generate All {len(needed)} Assets",
             type="primary",
             disabled=st.session_state.asset_generating,
-            help="Generate missing assets using Gemini AI"
+            help="Generate all missing assets using Gemini AI (with rate limiting)"
         ):
             st.session_state.asset_generating = True
             st.rerun()
@@ -2644,6 +2687,159 @@ def render_json_import(brand_id: str):
 
             except json.JSONDecodeError as e:
                 st.error(f"Invalid JSON: {e}")
+
+
+# =========================================================================
+# Handoff Tab Functions (MVP 6)
+# =========================================================================
+
+def render_handoff_tab(project: Dict):
+    """Render the editor handoff tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved and audio is complete
+    audio_complete = workflow_state in ['audio_complete', 'handoff_ready', 'handoff_generated']
+
+    st.markdown("### Editor Handoff")
+
+    if not audio_complete:
+        st.info("Complete audio production before generating handoff.")
+        st.caption("The Handoff tab becomes available after audio is marked complete.")
+
+        # Show progress
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            script_approved = workflow_state in [
+                'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+                'handoff_ready', 'handoff_generated'
+            ]
+            if script_approved:
+                st.success("Script approved")
+            else:
+                st.warning("Script pending")
+
+        with col2:
+            if audio_complete:
+                st.success("Audio complete")
+            else:
+                st.warning("Audio pending")
+
+        with col3:
+            st.warning("Handoff pending")
+        return
+
+    st.caption("Generate a shareable handoff package for your video editor.")
+
+    # Check for existing handoffs
+    service = get_handoff_service()
+    try:
+        existing_handoffs = asyncio.run(service.get_project_handoffs(UUID(project_id)))
+    except Exception as e:
+        existing_handoffs = []
+        st.warning(f"Could not load existing handoffs: {e}")
+
+    if existing_handoffs:
+        st.success(f"Found {len(existing_handoffs)} existing handoff(s)")
+
+        # Show most recent handoff
+        latest = existing_handoffs[0]
+        latest_id = latest.get('id')
+        created = latest.get('created_at', '')[:16].replace('T', ' ')
+
+        st.markdown(f"**Latest Handoff:** {created}")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            # View handoff page
+            handoff_url = f"/Editor_Handoff?id={latest_id}"
+            if st.button("View Handoff Page", type="primary", use_container_width=True):
+                st.markdown(f"[Open Handoff Page]({handoff_url})")
+                st.info(f"Share this URL with your editor:\n\n`{handoff_url}`")
+
+        with col2:
+            # Download ZIP
+            if st.button("Download ZIP", use_container_width=True):
+                with st.spinner("Generating ZIP file..."):
+                    try:
+                        zip_data = asyncio.run(service.generate_zip(UUID(latest_id)))
+                        project_title = project.get('topic_title', 'project').replace(' ', '-').lower()
+                        st.download_button(
+                            label="Click to Download",
+                            data=zip_data,
+                            file_name=f"{project_title}-handoff.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to generate ZIP: {e}")
+
+        with col3:
+            # Copy link
+            st.code(f"?id={latest_id}", language=None)
+            st.caption("Copy this URL")
+
+        st.divider()
+
+        # Show handoff summary
+        metadata = latest.get('metadata', {})
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Beats", metadata.get('beat_count', 0))
+        with col2:
+            st.metric("Script Version", f"v{metadata.get('script_version', 1)}")
+        with col3:
+            has_audio = "Yes" if metadata.get('has_audio') else "No"
+            st.metric("Has Audio", has_audio)
+        with col4:
+            st.metric("Status", metadata.get('workflow_state', 'unknown'))
+
+        st.divider()
+
+        # Regenerate option
+        with st.expander("Regenerate Handoff"):
+            st.caption("Create a new handoff package with the latest project data.")
+            if st.button("Regenerate Handoff", disabled=st.session_state.handoff_generating):
+                st.session_state.handoff_generating = True
+                st.rerun()
+
+    else:
+        # No existing handoffs - show generation UI
+        st.info("Generate a handoff package for your video editor.")
+        st.markdown("""
+        The handoff package includes:
+        - Beat-by-beat breakdown with script text
+        - Audio files for each beat
+        - Visual assets and SFX
+        - ZIP download with all files
+        - Shareable URL for your editor
+        """)
+
+        if st.button("Generate Handoff Package", type="primary", disabled=st.session_state.handoff_generating):
+            st.session_state.handoff_generating = True
+            st.rerun()
+
+    # Handle handoff generation
+    if st.session_state.handoff_generating:
+        with st.spinner("Generating handoff package... This may take a moment."):
+            try:
+                package = asyncio.run(service.generate_handoff(UUID(project_id)))
+                st.session_state.handoff_generating = False
+
+                # Update workflow state
+                db = get_supabase_client()
+                db.table("content_projects").update({
+                    "workflow_state": "handoff_generated"
+                }).eq("id", project_id).execute()
+
+                st.success(f"Handoff generated! {len(package.beats)} beats packaged.")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.handoff_generating = False
+                st.error(f"Failed to generate handoff: {e}")
 
 
 # Main app flow

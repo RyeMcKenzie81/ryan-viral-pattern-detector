@@ -665,16 +665,15 @@ Return valid JSON:
             logger.error(f"Failed to upload asset file: {e}")
             raise
 
-    async def get_asset_url(self, storage_path: str, expires_in: int = 3600) -> str:
+    async def get_asset_url(self, storage_path: str) -> str:
         """
-        Get a signed URL for an asset file.
+        Get a permanent public URL for an asset file.
 
         Args:
             storage_path: Storage path (e.g., "comic-assets/brand-uuid/file.png")
-            expires_in: URL expiration in seconds (default: 1 hour)
 
         Returns:
-            Signed URL for the asset
+            Public URL for the asset (never expires)
         """
         if not self.supabase:
             return ""
@@ -685,11 +684,11 @@ Return valid JSON:
             bucket = parts[0]
             path = parts[1] if len(parts) > 1 else storage_path
 
-            result = await asyncio.to_thread(
-                lambda: self.supabase.storage.from_(bucket).create_signed_url(path, expires_in)
-            )
+            # Use public URL (never expires) instead of signed URL
+            public_url = self.supabase.storage.from_(bucket).get_public_url(path)
 
-            return result.get("signedURL", "")
+            # Remove trailing ? if present
+            return public_url.rstrip("?") if public_url else ""
 
         except Exception as e:
             logger.error(f"Failed to get asset URL: {e}")

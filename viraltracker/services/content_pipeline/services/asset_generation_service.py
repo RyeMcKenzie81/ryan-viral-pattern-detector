@@ -288,6 +288,85 @@ class AssetGenerationService:
             "total_time_ms": total_time_ms
         }
 
+    async def generate_single(
+        self,
+        requirement: Dict[str, Any],
+        brand_id: UUID,
+        project_id: UUID
+    ) -> Dict[str, Any]:
+        """
+        Generate a single asset image.
+
+        Args:
+            requirement: Asset requirement dict
+            brand_id: Brand UUID for saving assets
+            project_id: Project UUID for updating requirements
+
+        Returns:
+            Dict with success status, image_url or error
+        """
+        self._ensure_gemini()
+
+        req_id = requirement.get("id")
+        asset_name = requirement.get("asset_name", requirement.get("name", "unknown"))
+        asset_type = requirement.get("asset_type", requirement.get("type", "prop"))
+        description = requirement.get("asset_description", requirement.get("description", ""))
+        suggested_prompt = requirement.get("suggested_prompt", "")
+
+        # Use suggested_prompt if available, otherwise use description
+        gen_description = suggested_prompt if suggested_prompt else description
+
+        if not gen_description:
+            return {"success": False, "error": "No description provided"}
+
+        try:
+            logger.info(f"Generating single asset: '{asset_name}'...")
+
+            # Update status to 'generating'
+            if req_id and self.supabase:
+                self.supabase.table("project_asset_requirements").update(
+                    {"status": "generating"}
+                ).eq("id", str(req_id)).execute()
+
+            # Generate image
+            result = await self.generate_asset_image(
+                asset_name=asset_name,
+                asset_type=asset_type,
+                description=gen_description
+            )
+
+            # Save to storage
+            image_url = await self._save_generated_image(
+                brand_id=brand_id,
+                asset_name=asset_name,
+                image_base64=result["image_base64"]
+            )
+
+            # Update requirement with generated image
+            if req_id and self.supabase:
+                self.supabase.table("project_asset_requirements").update({
+                    "status": "generated",
+                    "generated_image_url": image_url
+                }).eq("id", str(req_id)).execute()
+
+            logger.info(f"Successfully generated '{asset_name}'")
+            return {
+                "success": True,
+                "image_url": image_url,
+                "generation_time_ms": result["generation_time_ms"]
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to generate '{asset_name}': {e}")
+
+            # Update status to failed
+            if req_id and self.supabase:
+                self.supabase.table("project_asset_requirements").update({
+                    "status": "generation_failed"
+                }).eq("id", str(req_id)).execute()
+
+            return {"success": False, "error": str(e)}
+
     async def _save_generated_image(
         self,
         brand_id: UUID,
@@ -326,15 +405,11 @@ class AssetGenerationService:
                 )
             )
 
-            # Get signed URL (1 year expiry for generated assets)
-            result = await asyncio.to_thread(
-                lambda: self.supabase.storage.from_("comic-assets").create_signed_url(
-                    storage_path,
-                    60 * 60 * 24 * 365  # 1 year
-                )
-            )
+            # Get public URL (never expires)
+            public_url = self.supabase.storage.from_("comic-assets").get_public_url(storage_path)
 
-            return result.get("signedURL", "")
+            # Remove trailing ? if present
+            return public_url.rstrip("?") if public_url else ""
 
         except Exception as e:
             logger.error(f"Failed to save generated image: {e}")
