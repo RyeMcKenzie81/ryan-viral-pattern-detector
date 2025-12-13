@@ -2121,22 +2121,28 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
     needed = [r for r in existing_requirements if r.get('status') == 'needed']
     generating = [r for r in existing_requirements if r.get('status') == 'generating']
     failed = [r for r in existing_requirements if r.get('status') == 'generation_failed']
+    skipped = [r for r in existing_requirements if r.get('status') == 'skipped']
 
     if not needed and not generating and not failed:
         if not existing_requirements:
             st.info("Extract assets from your script first (Extract tab).")
         else:
-            st.success("All assets are matched or generated! Check the Review tab for generated assets.")
+            msg = "All assets are matched or generated! Check the Review tab for generated assets."
+            if skipped:
+                msg += f" ({len(skipped)} skipped for editor)"
+            st.success(msg)
         return
 
     # Summary
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Need Generation", len(needed))
     with col2:
         st.metric("Currently Generating", len(generating))
     with col3:
         st.metric("Failed", len(failed))
+    with col4:
+        st.metric("Skipped", len(skipped))
 
     st.divider()
 
@@ -2145,7 +2151,7 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
         st.markdown("#### Assets to Generate")
         for req in needed:
             with st.container():
-                col1, col2, col3 = st.columns([3, 1, 1])
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                 with col1:
                     st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
                     desc = req.get('asset_description', '')
@@ -2179,6 +2185,14 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Generation failed: {e}")
+                with col4:
+                    # Skip button - editor will handle
+                    if st.button("Skip", key=f"skip_{req.get('id')}", help="Editor will create this asset"):
+                        db = get_supabase_client()
+                        db.table("project_asset_requirements").update(
+                            {"status": "skipped"}
+                        ).eq("id", req.get('id')).execute()
+                        st.rerun()
 
         st.divider()
 
@@ -2250,6 +2264,23 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
                 with col2:
                     if st.button("Retry", key=f"retry_{req.get('id')}"):
                         # Reset status to needed
+                        db = get_supabase_client()
+                        db.table("project_asset_requirements").update(
+                            {"status": "needed"}
+                        ).eq("id", req.get('id')).execute()
+                        st.rerun()
+
+    # Show skipped assets with unskip option
+    if skipped:
+        st.markdown("#### Skipped (Editor Will Handle)")
+        st.caption("These assets won't be generated - the editor will create them.")
+        for req in skipped:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
+                with col2:
+                    if st.button("Unskip", key=f"unskip_{req.get('id')}"):
                         db = get_supabase_client()
                         db.table("project_asset_requirements").update(
                             {"status": "needed"}
@@ -2368,7 +2399,8 @@ def render_requirement_list(requirements: List[Dict], project_id: str):
             'generating': 'blue',
             'generated': 'violet',
             'approved': 'green',
-            'generation_failed': 'red'
+            'generation_failed': 'red',
+            'skipped': 'gray'
         }
         status_icons = {
             'matched': '✅',
@@ -2376,7 +2408,8 @@ def render_requirement_list(requirements: List[Dict], project_id: str):
             'generating': '⏳',
             'generated': '🖼️',
             'approved': '✓',
-            'generation_failed': '✗'
+            'generation_failed': '✗',
+            'skipped': '⏭️'
         }
 
         col1, col2, col3 = st.columns([3, 1, 1])
@@ -2762,6 +2795,27 @@ def render_handoff_tab(project: Dict):
     audio_complete = workflow_state in ['audio_complete', 'handoff_ready', 'handoff_generated']
 
     st.markdown("### Editor Handoff")
+
+    # Check asset status and warn about ungenerated assets
+    db = get_supabase_client()
+    asset_reqs = db.table("project_asset_requirements").select("*").eq(
+        "project_id", project_id
+    ).execute().data or []
+
+    needed = [r for r in asset_reqs if r.get('status') == 'needed']
+    failed = [r for r in asset_reqs if r.get('status') == 'generation_failed']
+    skipped = [r for r in asset_reqs if r.get('status') == 'skipped']
+
+    if needed or failed:
+        with st.expander(f"Asset Warning: {len(needed) + len(failed)} assets not generated", expanded=True):
+            if needed:
+                st.warning(f"**{len(needed)} assets still need generation:** {', '.join(r.get('asset_name', '?') for r in needed[:5])}{'...' if len(needed) > 5 else ''}")
+            if failed:
+                st.error(f"**{len(failed)} assets failed generation:** {', '.join(r.get('asset_name', '?') for r in failed[:5])}{'...' if len(failed) > 5 else ''}")
+            st.caption("You can still generate handoff - the editor will need to create these assets.")
+
+    if skipped:
+        st.info(f"{len(skipped)} assets marked for editor to create: {', '.join(r.get('asset_name', '?') for r in skipped[:5])}{'...' if len(skipped) > 5 else ''}")
 
     if not audio_complete:
         st.info("Complete audio production before generating handoff.")
