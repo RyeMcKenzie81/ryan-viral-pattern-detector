@@ -196,16 +196,17 @@ Requirements:
 - No shadows on background"""
 
         elif asset_type == "effect":
-            # Visual effect overlay
-            prompt = f"""A visual effect overlay for 2D animation. {style_suffix}
+            # Visual effect overlay on green screen
+            prompt = f"""A visual effect for 2D animation on a green screen background. {style_suffix}
 
 The Effect: {description}
 
 Requirements:
-- Transparent or easily removable background
-- Suitable for overlaying on video
-- Clean vector style
-- High contrast for visibility"""
+- Bright green chroma key background (#00FF00) for easy keying
+- Effect should be centered in frame
+- Clean vector style with bold lines
+- High contrast for visibility
+- No green in the effect itself"""
 
         else:
             # Fallback for unknown types
