@@ -3705,14 +3705,14 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
             revision_notes = st.text_area(
                 "Revision Notes (optional)",
                 placeholder="Add specific guidance for the revision, e.g., 'Make the punchline sharper' or 'The hook needs more punch'",
-                key="revision_notes"
+                key="comic_revision_notes_input"
             )
 
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("Revise Comic", type="primary", disabled=st.session_state.get('comic_revising', False)):
                     st.session_state.comic_revising = True
-                    st.session_state.revision_notes = revision_notes
+                    st.session_state.comic_revision_notes = revision_notes  # Store in different key
                     st.rerun()
             with col2:
                 if st.button("Re-evaluate", type="secondary"):
@@ -3871,7 +3871,7 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
                 )
 
                 # Get revision notes
-                revision_notes = st.session_state.get('revision_notes', '')
+                revision_notes = st.session_state.get('comic_revision_notes', '')
 
                 # Revise the comic
                 service = get_comic_service()
@@ -3890,7 +3890,7 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
                 ))
 
                 st.session_state.comic_revising = False
-                st.session_state.revision_notes = ''
+                st.session_state.comic_revision_notes = ''
                 st.session_state.current_comic = revised_script.to_dict()
                 st.session_state.comic_evaluation = None  # Clear old evaluation
                 st.success(f"Created revised comic v{revised_script.version_number}! Please evaluate the new version.")
