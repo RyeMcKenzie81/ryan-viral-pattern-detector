@@ -946,7 +946,7 @@ Return ONLY the JSON, no other text."""
             new_version = comic_script.version_number + 1
 
             revised_script = ComicScript(
-                id=str(uuid.uuid4()),
+                id=str(uuid4()),
                 project_id=comic_script.project_id,
                 version_number=new_version,
                 title=revised_data.get("title", comic_script.title),
