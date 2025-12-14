@@ -165,6 +165,82 @@ def get_handoff_service():
     )
 
 
+def get_script_data_for_project(project_id: str) -> Optional[Dict]:
+    """Load the approved script data for a project."""
+    try:
+        db = get_supabase_client()
+        result = db.table("script_versions").select(
+            "script_content"
+        ).eq("project_id", project_id).eq("status", "approved").order(
+            "version_number", desc=True
+        ).limit(1).execute()
+
+        if not result.data:
+            return None
+
+        script_content = result.data[0].get("script_content")
+        if isinstance(script_content, str):
+            return json.loads(script_content)
+        return script_content
+    except Exception:
+        return None
+
+
+def get_beat_context(script_data: Optional[Dict], script_reference: Any) -> str:
+    """
+    Get context about how an asset/SFX is used based on beat references.
+
+    Args:
+        script_data: The script data with beats array
+        script_reference: JSON array of beat IDs (or string/list)
+
+    Returns:
+        Formatted string describing usage context
+    """
+    if not script_data:
+        return ""
+
+    # Parse script_reference if it's a string
+    beat_ids = script_reference
+    if isinstance(script_reference, str):
+        try:
+            beat_ids = json.loads(script_reference)
+        except:
+            beat_ids = []
+
+    if not beat_ids:
+        return ""
+
+    # Build a lookup map of beats by beat_id
+    beats = script_data.get("beats", [])
+    beat_map = {b.get("beat_id"): b for b in beats}
+
+    # Gather context from referenced beats
+    contexts = []
+    for beat_id in beat_ids[:3]:  # Limit to first 3 beats for brevity
+        beat = beat_map.get(beat_id)
+        if beat:
+            beat_name = beat.get("beat_name", beat_id)
+            visual = beat.get("visual_notes", "")
+            script = beat.get("script", "")[:100]  # First 100 chars of dialogue
+            audio = beat.get("audio_notes", "")
+
+            context_parts = [f"**{beat_name}**"]
+            if visual:
+                context_parts.append(f"Visual: {visual[:150]}")
+            if script:
+                context_parts.append(f"Script: \"{script}...\"")
+            if audio:
+                context_parts.append(f"Audio: {audio[:100]}")
+
+            contexts.append(" | ".join(context_parts))
+
+    if len(beat_ids) > 3:
+        contexts.append(f"...and {len(beat_ids) - 3} more beats")
+
+    return "\n".join(contexts)
+
+
 def _build_prompt_preview(asset_name: str, asset_type: str, description: str) -> str:
     """Build a preview of the prompt that will be used for generation."""
     style = (
@@ -2315,6 +2391,9 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
             st.info("No assets pending review. Generate missing assets first (Generate tab).")
         return
 
+    # Load script data once for context lookup
+    script_data = get_script_data_for_project(project_id)
+
     st.info(f"{len(generated)} assets ready for review")
 
     # Bulk actions
@@ -2369,6 +2448,14 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
                 if desc:
                     with st.expander("Description"):
                         st.write(desc)
+
+                # Show usage context from script
+                script_ref = req.get('script_reference')
+                if script_ref and script_data:
+                    context = get_beat_context(script_data, script_ref)
+                    if context:
+                        with st.expander("📍 Used in these scenes", expanded=True):
+                            st.markdown(context)
 
             with col2:
                 st.markdown("**Actions:**")
@@ -3126,6 +3213,9 @@ def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
             st.info("No SFX pending review. Generate SFX first (Generate tab).")
         return
 
+    # Load script data once for context lookup
+    script_data = get_script_data_for_project(project_id)
+
     st.info(f"{len(generated)} SFX ready for review")
 
     # Bulk actions
@@ -3158,6 +3248,14 @@ def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
         with st.container():
             st.markdown(f"### {sfx.get('sfx_name', 'Unknown')}")
             st.caption(sfx.get('description', ''))
+
+            # Show usage context from script
+            script_ref = sfx.get('script_reference')
+            if script_ref and script_data:
+                context = get_beat_context(script_data, script_ref)
+                if context:
+                    with st.expander("📍 Used in these scenes", expanded=True):
+                        st.markdown(context)
 
             # Audio player
             audio_url = sfx.get('generated_audio_url')
