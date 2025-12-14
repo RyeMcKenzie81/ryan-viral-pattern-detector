@@ -116,6 +116,19 @@ def render_handoff_page(handoff_id: str):
 
     st.divider()
 
+    # Full Script section
+    with st.expander("📜 **Full Script & Storyboard**", expanded=False):
+        for beat in package.beats:
+            st.markdown(f"**Beat {beat.beat_number}: {beat.beat_name}** ({beat.character})")
+            st.markdown(f"> {beat.script_text}")
+            if beat.visual_notes:
+                st.caption(f"📍 Visual: {beat.visual_notes}")
+            if hasattr(beat, 'audio_notes') and beat.audio_notes:
+                st.caption(f"🎵 Audio: {beat.audio_notes}")
+            st.markdown("---")
+
+    st.divider()
+
     # Download buttons
     col_download, col_link = st.columns([1, 2])
     with col_download:
@@ -290,22 +303,27 @@ def render_beat_card(beat):
                                     unsafe_allow_html=True
                                 )
 
-        # SFX section with audio playback
+        # SFX section with audio playback and download
         if beat.sfx:
-            st.markdown("**SFX:**")
+            st.markdown("**SFX / Music:**")
             for sfx in beat.sfx:
                 sfx_name = sfx.get("name", "Sound Effect")
                 sfx_duration = sfx.get("duration_seconds", 2.0)
                 sfx_url = sfx.get("audio_url")
 
-                col_sfx_name, col_sfx_player = st.columns([1, 2])
+                col_sfx_name, col_sfx_player, col_sfx_download = st.columns([2, 3, 1])
                 with col_sfx_name:
-                    st.markdown(f"🔊 **{sfx_name}** ({sfx_duration}s)")
+                    # Show if it's music or SFX based on name
+                    icon = "🎵" if "music" in sfx_name.lower() else "🔊"
+                    st.markdown(f"{icon} **{sfx_name}** ({sfx_duration}s)")
                 with col_sfx_player:
                     if sfx_url:
                         st.audio(sfx_url)
                     else:
                         st.caption("Audio not available")
+                with col_sfx_download:
+                    if sfx_url:
+                        st.markdown(f"[Download]({sfx_url})")
 
         st.divider()
 
