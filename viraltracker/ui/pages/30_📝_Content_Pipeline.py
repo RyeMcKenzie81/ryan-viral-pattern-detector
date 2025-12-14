@@ -2906,15 +2906,17 @@ def render_sfx_extract(project_id: str, script_content: Dict, existing_sfx: List
                 service = get_asset_generation_service()
                 sfx_requirements = asyncio.run(service.extract_sfx_from_script(script_content))
 
-                # Save to database
+                # Save to database with smart duration from extraction
                 db = get_supabase_client()
                 for sfx in sfx_requirements:
+                    # Use duration from extraction (music cues are longer)
+                    duration = sfx.get("duration_seconds", 2.0)
                     db.table("project_sfx_requirements").insert({
                         "project_id": project_id,
                         "sfx_name": sfx.get("name", "unknown"),
                         "description": sfx.get("description", ""),
                         "script_reference": sfx.get("beat_references", []),
-                        "duration_seconds": 2.0,
+                        "duration_seconds": duration,
                         "status": "needed"
                     }).execute()
 
@@ -3129,7 +3131,7 @@ def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
     # Bulk actions
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Approve All", type="primary"):
+        if st.button("Approve All", type="primary", key="sfx_approve_all_btn"):
             db = get_supabase_client()
             for sfx in generated:
                 db.table("project_sfx_requirements").update(
@@ -3138,7 +3140,7 @@ def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
             st.success(f"Approved {len(generated)} SFX!")
             st.rerun()
     with col2:
-        if st.button("Reject All & Regenerate"):
+        if st.button("Reject All & Regenerate", key="sfx_reject_all_btn"):
             db = get_supabase_client()
             for sfx in generated:
                 db.table("project_sfx_requirements").update({

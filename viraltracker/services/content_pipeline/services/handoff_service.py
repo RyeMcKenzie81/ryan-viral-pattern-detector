@@ -37,6 +37,8 @@ class HandoffBeat:
     sfx: List[Dict[str, Any]] = field(default_factory=list)
     timestamp_start: str = ""
     timestamp_end: str = ""
+    audio_notes: str = ""  # Music and SFX cues from script
+    editor_notes: str = ""  # Pacing and style guidance
 
 
 @dataclass
@@ -126,6 +128,9 @@ class EditorHandoffService:
         # Load assets
         assets_by_beat = await self._load_assets_by_beat(project_id, script_data)
 
+        # Load SFX from project_sfx_requirements table
+        sfx_by_beat = await self._load_sfx_by_beat(project_id)
+
         # Build handoff beats
         beats = []
         total_duration = 0
@@ -151,12 +156,11 @@ class EditorHandoffService:
 
             total_duration += audio_duration_ms
 
-            # Get assets for this beat
+            # Get visual assets for this beat (includes all types: background, character, prop, effect)
             beat_assets = assets_by_beat.get(beat_id, [])
 
-            # Separate SFX from visual assets
-            visual_assets = [a for a in beat_assets if a.get("asset_type") != "effect"]
-            sfx_assets = [a for a in beat_assets if a.get("asset_type") == "effect"]
+            # Get SFX for this beat from project_sfx_requirements
+            beat_sfx = sfx_by_beat.get(beat_id, [])
 
             handoff_beat = HandoffBeat(
                 beat_id=beat_id,
@@ -168,10 +172,12 @@ class EditorHandoffService:
                 audio_url=audio_url,
                 audio_storage_path=audio_storage_path,
                 audio_duration_ms=audio_duration_ms,
-                assets=visual_assets,
-                sfx=sfx_assets,
+                assets=beat_assets,
+                sfx=beat_sfx,
                 timestamp_start=beat_data.get("timestamp_start", ""),
-                timestamp_end=beat_data.get("timestamp_end", "")
+                timestamp_end=beat_data.get("timestamp_end", ""),
+                audio_notes=beat_data.get("audio_notes", ""),
+                editor_notes=beat_data.get("editor_notes", "")
             )
             beats.append(handoff_beat)
 
@@ -574,6 +580,61 @@ class EditorHandoffService:
             logger.error(f"Failed to load assets: {e}")
             return {}
 
+    async def _load_sfx_by_beat(
+        self,
+        project_id: UUID
+    ) -> Dict[str, List[Dict]]:
+        """
+        Load approved SFX organized by beat reference.
+
+        Args:
+            project_id: Project UUID
+
+        Returns:
+            Dictionary mapping beat_id to list of SFX dicts
+        """
+        try:
+            # Get approved SFX from project_sfx_requirements
+            result = self.supabase.table("project_sfx_requirements").select(
+                "*"
+            ).eq("project_id", str(project_id)).eq("status", "approved").execute()
+
+            sfx_list = result.data or []
+
+            # Build mapping from beat_id to SFX
+            sfx_by_beat = {}
+
+            for sfx in sfx_list:
+                # Parse script_reference (JSON array of beat IDs)
+                refs = sfx.get("script_reference", [])
+                if isinstance(refs, str):
+                    try:
+                        refs = json.loads(refs)
+                    except:
+                        refs = []
+
+                sfx_info = {
+                    "id": sfx.get("id"),
+                    "name": sfx.get("sfx_name"),
+                    "description": sfx.get("description"),
+                    "duration_seconds": sfx.get("duration_seconds", 2.0),
+                    "audio_url": sfx.get("generated_audio_url"),
+                    "storage_path": sfx.get("storage_path"),
+                    "status": sfx.get("status")
+                }
+
+                # Add to each referenced beat
+                for beat_id in refs:
+                    if beat_id not in sfx_by_beat:
+                        sfx_by_beat[beat_id] = []
+                    sfx_by_beat[beat_id].append(sfx_info)
+
+            return sfx_by_beat
+
+        except Exception as e:
+            logger.error(f"Failed to load SFX: {e}")
+            return {}
+
     # =========================================================================
     # PERSISTENCE
     # =========================================================================
@@ -596,7 +657,9 @@ class EditorHandoffService:
                     "assets": b.assets,
                     "sfx": b.sfx,
                     "timestamp_start": b.timestamp_start,
-                    "timestamp_end": b.timestamp_end
+                    "timestamp_end": b.timestamp_end,
+                    "audio_notes": b.audio_notes,
+                    "editor_notes": b.editor_notes
                 }
                 for b in package.beats
             ]
@@ -645,7 +708,9 @@ class EditorHandoffService:
                 assets=b.get("assets", []),
                 sfx=b.get("sfx", []),
                 timestamp_start=b.get("timestamp_start", ""),
-                timestamp_end=b.get("timestamp_end", "")
+                timestamp_end=b.get("timestamp_end", ""),
+                audio_notes=b.get("audio_notes", ""),
+                editor_notes=b.get("editor_notes", "")
             )
             beats.append(beat)
 

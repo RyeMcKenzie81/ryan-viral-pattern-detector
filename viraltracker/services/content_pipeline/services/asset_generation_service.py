@@ -537,6 +537,7 @@ Requirements:
         Extract SFX requirements from a script.
 
         Looks for SFX cues in beat audio_notes and visual_notes.
+        Intelligently sets duration based on SFX type (music = longer).
 
         Args:
             script_data: Script JSON data
@@ -546,11 +547,28 @@ Requirements:
                 - name: SFX name
                 - description: What sound to generate
                 - beat_references: Which beats need this SFX
+                - duration_seconds: Suggested duration
         """
         sfx_requirements = []
-        sfx_keywords = [
-            "sound", "sfx", "audio", "noise", "rumble", "crash",
-            "ding", "buzz", "whoosh", "boom", "splash", "click"
+
+        # Keywords that indicate short SFX (1-3 seconds)
+        short_sfx_keywords = [
+            "ding", "buzz", "whoosh", "boom", "splash", "click",
+            "beep", "pop", "snap", "thud", "crash", "bang"
+        ]
+
+        # Keywords that indicate medium SFX (3-8 seconds)
+        medium_sfx_keywords = [
+            "sound", "sfx", "audio", "noise", "rumble", "alarm",
+            "siren", "horn", "ring", "chime"
+        ]
+
+        # Keywords that indicate music/longer SFX (10-22 seconds)
+        music_keywords = [
+            "music", "song", "tune", "melody", "beat", "rhythm",
+            "soundtrack", "theme", "jingle", "background music",
+            "dramatic", "suspense", "tension", "celebration",
+            "montage", "transition"
         ]
 
         beats = script_data.get("beats", [])
@@ -562,17 +580,37 @@ Requirements:
 
             combined = f"{audio_notes} {visual_notes}"
 
-            # Look for SFX keywords
-            for keyword in sfx_keywords:
-                if keyword in combined:
-                    # Extract context around the keyword
-                    sfx_requirements.append({
-                        "name": f"sfx-{beat_id}",
-                        "description": combined[:200],
-                        "beat_references": [beat_id],
-                        "source": "audio_notes" if keyword in audio_notes else "visual_notes"
-                    })
-                    break  # Only one SFX per beat
+            # Determine duration based on SFX type
+            duration = 2.0  # Default
+            sfx_type = "sfx"
+
+            # Check for music first (longer duration)
+            is_music = any(kw in combined for kw in music_keywords)
+            if is_music:
+                duration = 15.0  # Music should be longer
+                sfx_type = "music"
+
+            # Check for short SFX
+            elif any(kw in combined for kw in short_sfx_keywords):
+                duration = 2.0
+                sfx_type = "short"
+
+            # Check for medium SFX
+            elif any(kw in combined for kw in medium_sfx_keywords):
+                duration = 5.0
+                sfx_type = "medium"
+
+            # Only add if we found any SFX-related keywords
+            all_keywords = short_sfx_keywords + medium_sfx_keywords + music_keywords
+            if any(kw in combined for kw in all_keywords):
+                sfx_requirements.append({
+                    "name": f"{sfx_type}-{beat_id}",
+                    "description": combined[:200],
+                    "beat_references": [beat_id],
+                    "source": "audio_notes" if any(kw in audio_notes for kw in all_keywords) else "visual_notes",
+                    "duration_seconds": duration,
+                    "sfx_type": sfx_type
+                })
 
         # Deduplicate similar descriptions
         unique_sfx = self._deduplicate_sfx(sfx_requirements)

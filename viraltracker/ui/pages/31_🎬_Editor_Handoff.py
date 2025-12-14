@@ -207,10 +207,20 @@ def render_beat_card(beat):
                 unsafe_allow_html=True
             )
 
-            # Visual notes
+            # Visual notes (storyboard)
             if beat.visual_notes:
-                st.markdown("**Visual Notes:**")
+                st.markdown("**Visual Notes (Storyboard):**")
                 st.info(beat.visual_notes)
+
+            # Audio notes (music/SFX cues from script)
+            if hasattr(beat, 'audio_notes') and beat.audio_notes:
+                st.markdown("**Audio Notes:**")
+                st.caption(beat.audio_notes)
+
+            # Editor notes (pacing and style guidance)
+            if hasattr(beat, 'editor_notes') and beat.editor_notes:
+                st.markdown("**Editor Notes:**")
+                st.caption(beat.editor_notes)
 
         with col_media:
             # Audio player
@@ -240,7 +250,8 @@ def render_beat_card(beat):
                 'effect': []
             }
             for asset in beat.assets:
-                asset_type = asset.get('type', 'prop').lower()
+                # Use 'asset_type' key (from handoff service) or fall back to 'type'
+                asset_type = (asset.get('asset_type') or asset.get('type') or 'prop').lower()
                 if asset_type in asset_groups:
                     asset_groups[asset_type].append(asset)
                 else:
@@ -279,12 +290,22 @@ def render_beat_card(beat):
                                     unsafe_allow_html=True
                                 )
 
-        # SFX section
+        # SFX section with audio playback
         if beat.sfx:
             st.markdown("**SFX:**")
             for sfx in beat.sfx:
                 sfx_name = sfx.get("name", "Sound Effect")
-                st.markdown(f"🔊 {sfx_name}")
+                sfx_duration = sfx.get("duration_seconds", 2.0)
+                sfx_url = sfx.get("audio_url")
+
+                col_sfx_name, col_sfx_player = st.columns([1, 2])
+                with col_sfx_name:
+                    st.markdown(f"🔊 **{sfx_name}** ({sfx_duration}s)")
+                with col_sfx_player:
+                    if sfx_url:
+                        st.audio(sfx_url)
+                    else:
+                        st.caption("Audio not available")
 
         st.divider()
 
