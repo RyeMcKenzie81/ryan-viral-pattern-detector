@@ -1,0 +1,1001 @@
+"""
+Comic Service - Business logic for comic condensation, evaluation, and generation.
+
+Uses Claude Opus 4.5 to:
+1. Condense full video scripts to 4-12 panel comic format
+2. Evaluate comic scripts for clarity, humor, and flow
+3. Generate revision suggestions based on KB patterns
+
+Uses comic-production KB for:
+- Planning: blueprint, 4-panel structure, patterns
+- Evaluation: checklist, troubleshooting, dialogue rules
+- Revision: repair patterns, before/after examples
+
+Part of the Trash Panda Content Pipeline (Phase 8).
+"""
+
+import os
+import logging
+import json
+from typing import List, Dict, Any, Optional, Tuple
+from uuid import UUID, uuid4
+from datetime import datetime
+from enum import Enum
+from dataclasses import dataclass, field
+
+import anthropic
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Enums and Configuration
+# =============================================================================
+
+class AspectRatio(str, Enum):
+    """Supported comic aspect ratios."""
+    VERTICAL_9_16 = "9:16"      # TikTok, Reels, Shorts
+    LANDSCAPE_16_9 = "16:9"     # YouTube, Twitter
+    SQUARE_1_1 = "1:1"          # Instagram feed
+    PORTRAIT_4_5 = "4:5"        # Instagram portrait
+
+
+class EmotionalPayoff(str, Enum):
+    """Comic emotional payoff types from KB."""
+    AHA = "AHA"    # Cognitive insight
+    HA = "HA!"     # Humor
+    OOF = "OOF"    # Relatable sting
+
+
+@dataclass
+class GridLayout:
+    """Comic grid layout configuration."""
+    cols: int
+    rows: int
+    aspect_ratio: AspectRatio
+
+    @property
+    def max_panels(self) -> int:
+        return self.cols * self.rows
+
+    @classmethod
+    def for_aspect_ratio(cls, aspect_ratio: AspectRatio, panel_count: int) -> "GridLayout":
+        """
+        Get optimal grid layout for aspect ratio and panel count.
+
+        Args:
+            aspect_ratio: Target aspect ratio
+            panel_count: Number of panels (1-12)
+
+        Returns:
+            GridLayout with optimal cols/rows
+        """
+        layouts = {
+            AspectRatio.VERTICAL_9_16: [
+                (1, 4), (1, 6), (2, 4), (2, 6), (3, 4)  # Vertical stacking
+            ],
+            AspectRatio.LANDSCAPE_16_9: [
+                (4, 1), (4, 2), (4, 3), (3, 2), (3, 3)  # Horizontal flow
+            ],
+            AspectRatio.SQUARE_1_1: [
+                (2, 2), (3, 3), (4, 3), (3, 4), (2, 3)
+            ],
+            AspectRatio.PORTRAIT_4_5: [
+                (2, 3), (2, 4), (3, 4), (2, 5), (3, 3)
+            ]
+        }
+
+        # Find best fit for panel count
+        options = layouts.get(aspect_ratio, [(2, 2)])
+        for cols, rows in options:
+            if cols * rows >= panel_count:
+                return cls(cols=cols, rows=rows, aspect_ratio=aspect_ratio)
+
+        # Fallback to last option
+        cols, rows = options[-1]
+        return cls(cols=cols, rows=rows, aspect_ratio=aspect_ratio)
+
+
+@dataclass
+class ComicConfig:
+    """Configuration for comic condensation."""
+    panel_count: Optional[int] = None  # None = AI suggests
+    aspect_ratio: AspectRatio = AspectRatio.VERTICAL_9_16
+    target_platform: str = "instagram"
+    emotional_payoff: Optional[EmotionalPayoff] = None  # None = AI picks
+
+
+@dataclass
+class ComicPanel:
+    """Single comic panel data."""
+    panel_number: int
+    panel_type: str  # HOOK, BUILD, TWIST, PUNCHLINE
+    dialogue: str
+    visual_description: str
+    character: str
+    expression: str
+    background: Optional[str] = None
+    props: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "panel_number": self.panel_number,
+            "panel_type": self.panel_type,
+            "dialogue": self.dialogue,
+            "visual_description": self.visual_description,
+            "character": self.character,
+            "expression": self.expression,
+            "background": self.background,
+            "props": self.props
+        }
+
+
+@dataclass
+class ComicScript:
+    """Complete comic script data."""
+    id: str
+    project_id: str
+    version_number: int
+
+    # Content
+    title: str
+    premise: str
+    emotional_payoff: EmotionalPayoff
+    panels: List[ComicPanel]
+
+    # Layout
+    grid_layout: GridLayout
+
+    # Metadata
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    status: str = "draft"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "version_number": self.version_number,
+            "title": self.title,
+            "premise": self.premise,
+            "emotional_payoff": self.emotional_payoff.value,
+            "panels": [p.to_dict() for p in self.panels],
+            "grid_layout": {
+                "cols": self.grid_layout.cols,
+                "rows": self.grid_layout.rows,
+                "aspect_ratio": self.grid_layout.aspect_ratio.value
+            },
+            "created_at": self.created_at,
+            "status": self.status
+        }
+
+
+@dataclass
+class ComicEvaluation:
+    """Comic script evaluation results."""
+    clarity_score: int  # 0-100
+    humor_score: int    # 0-100
+    flow_score: int     # 0-100
+    overall_score: int  # 0-100
+
+    clarity_notes: str
+    humor_notes: str
+    flow_notes: str
+
+    issues: List[Dict[str, str]]
+    suggestions: List[str]
+
+    ready_for_approval: bool
+    quick_approve_eligible: bool  # All scores > 85
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "clarity_score": self.clarity_score,
+            "humor_score": self.humor_score,
+            "flow_score": self.flow_score,
+            "overall_score": self.overall_score,
+            "clarity_notes": self.clarity_notes,
+            "humor_notes": self.humor_notes,
+            "flow_notes": self.flow_notes,
+            "issues": self.issues,
+            "suggestions": self.suggestions,
+            "ready_for_approval": self.ready_for_approval,
+            "quick_approve_eligible": self.quick_approve_eligible
+        }
+
+
+# =============================================================================
+# Comic Service
+# =============================================================================
+
+class ComicService:
+    """
+    Service for comic condensation, evaluation, and generation.
+
+    Takes approved video scripts and condenses them to shareable comic format.
+    Uses comic-production KB for best practices and quality assessment.
+    """
+
+    # Claude Opus 4.5 model ID
+    DEFAULT_MODEL = "claude-opus-4-5-20251101"
+
+    # KB document tags for targeted retrieval
+    KB_PLANNING_TAGS = [
+        "overview", "planning", "4-panel", "fundamentals",
+        "emotional-patterns", "gag-patterns"
+    ]
+    KB_EVALUATION_TAGS = [
+        "evaluation", "scoring", "troubleshooting", "dialogue", "clarity"
+    ]
+    KB_REVISION_TAGS = [
+        "repair", "revision", "improvement", "critique", "rewriting"
+    ]
+
+    # Condensation prompt
+    CONDENSATION_PROMPT = """You are condensing a full video script into a shareable comic format for "Trash Panda Economics".
+
+<comic_best_practices>
+{kb_context}
+</comic_best_practices>
+
+<full_script>
+{script_content}
+</full_script>
+
+<storyboard>
+{storyboard_json}
+</storyboard>
+
+<config>
+Target Platform: {target_platform}
+Aspect Ratio: {aspect_ratio}
+Panel Count: {panel_count_instruction}
+Emotional Payoff Goal: {emotional_payoff_instruction}
+</config>
+
+<available_assets>
+Characters: {available_characters}
+Backgrounds: {available_backgrounds}
+Props: {available_props}
+</available_assets>
+
+TASK: Condense this video script into a {panel_count_instruction}-panel comic that:
+1. Captures the core message in a single "screenshot-worthy" format
+2. Follows the 4-panel structure: HOOK → BUILD → TWIST → PUNCHLINE
+3. Uses minimal dialogue (one-breath test: readable in one breath)
+4. Prioritizes relatability over cleverness
+5. Delivers a clear {emotional_payoff_instruction} payoff
+
+OUTPUT FORMAT (JSON):
+{{
+    "suggested_panel_count": 4,
+    "panel_count_reasoning": "Why this count works best",
+    "title": "Comic title",
+    "premise": "One-sentence premise",
+    "emotional_payoff": "AHA|HA!|OOF",
+    "panels": [
+        {{
+            "panel_number": 1,
+            "panel_type": "HOOK|BUILD|TWIST|PUNCHLINE",
+            "dialogue": "Short dialogue (max 15 words)",
+            "visual_description": "What we see",
+            "character": "character name from available_assets",
+            "expression": "emotion/expression",
+            "background": "background name from available_assets or null",
+            "props": ["prop names from available_assets"]
+        }}
+    ],
+    "grid_layout": {{
+        "cols": 2,
+        "rows": 2,
+        "reasoning": "Why this layout works for the platform"
+    }}
+}}
+
+CRITICAL RULES:
+- Each panel MUST add new information or emotion
+- Final panel MUST be the strongest beat
+- Dialogue must pass the one-breath test
+- Use characters and assets from the available_assets list
+- For {aspect_ratio}, optimize panel flow (vertical for 9:16, horizontal for 16:9)"""
+
+    # Evaluation prompt
+    EVALUATION_PROMPT = """You are evaluating a comic script for "Trash Panda Economics".
+
+<evaluation_guidelines>
+{kb_context}
+</evaluation_guidelines>
+
+<comic_script>
+{comic_script}
+</comic_script>
+
+Evaluate this comic against the quality checklist.
+
+SCORING DIMENSIONS (0-100):
+
+1. CLARITY (3-Second Test)
+   - Is the premise instantly understood?
+   - Does each panel add new information?
+   - Is the text readable at a glance?
+
+2. HUMOR (Emotional Payoff)
+   - Does it deliver a clear AHA/HA!/OOF moment?
+   - Is there a strong twist or punchline?
+   - Is it relatable and shareable?
+
+3. FLOW (Structure)
+   - Does it follow HOOK → BUILD → TWIST → PUNCHLINE?
+   - Is the final panel the strongest?
+   - Is pacing appropriate?
+
+OUTPUT FORMAT (JSON):
+{{
+    "clarity_score": 85,
+    "clarity_notes": "Assessment of clarity",
+    "humor_score": 80,
+    "humor_notes": "Assessment of humor/payoff",
+    "flow_score": 90,
+    "flow_notes": "Assessment of structure/flow",
+    "overall_score": 85,
+    "issues": [
+        {{
+            "severity": "high|medium|low",
+            "category": "clarity|humor|flow",
+            "issue": "Description",
+            "panel": 2,
+            "suggestion": "How to fix"
+        }}
+    ],
+    "suggestions": [
+        "General improvement 1",
+        "General improvement 2"
+    ],
+    "ready_for_approval": true
+}}
+
+THRESHOLDS:
+- Quick Approve: ALL scores > 85
+- Ready for Approval: Overall > 70, no high-severity issues
+- Needs Revision: Any score < 60 or high-severity issues"""
+
+    def __init__(
+        self,
+        anthropic_api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        supabase_client: Optional[Any] = None,
+        docs_service: Optional[Any] = None
+    ):
+        """
+        Initialize the ComicService.
+
+        Args:
+            anthropic_api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
+            model: Model to use (defaults to claude-opus-4-5-20251101)
+            supabase_client: Supabase client for database operations
+            docs_service: DocService for knowledge base queries
+        """
+        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+
+        if not api_key:
+            logger.warning("ANTHROPIC_API_KEY not set - comic generation will fail")
+            self.client = None
+        else:
+            self.client = anthropic.Anthropic(api_key=api_key)
+
+        self.model = model or self.DEFAULT_MODEL
+        self.supabase = supabase_client
+        self.docs = docs_service
+
+    def _ensure_client(self) -> None:
+        """Raise error if Anthropic client not configured."""
+        if not self.client:
+            raise ValueError(
+                "Anthropic client not configured. Set ANTHROPIC_API_KEY environment variable."
+            )
+
+    # =========================================================================
+    # Knowledge Base Helpers
+    # =========================================================================
+
+    async def _get_kb_context(self, tags: List[str]) -> str:
+        """
+        Fetch KB documents by tags for targeted context.
+
+        Args:
+            tags: List of tags to search for
+
+        Returns:
+            Combined content from matching documents
+        """
+        if not self.docs:
+            logger.warning("DocService not configured - using minimal KB context")
+            return self._get_minimal_kb_context()
+
+        try:
+            # Search for documents with comic-production collection tag
+            results = self.docs.search(
+                query=" ".join(tags),
+                limit=5,
+                tags=["comic-production"]
+            )
+
+            if not results:
+                logger.warning("No KB documents found - using minimal context")
+                return self._get_minimal_kb_context()
+
+            # Combine chunk content
+            context_parts = []
+            for r in results:
+                context_parts.append(f"## {r.title}\n{r.chunk_content}")
+
+            combined = "\n\n".join(context_parts)
+            logger.info(f"Retrieved {len(results)} KB chunks for context ({len(combined)} chars)")
+            return combined
+
+        except Exception as e:
+            logger.error(f"Failed to fetch KB context: {e}")
+            return self._get_minimal_kb_context()
+
+    async def _get_planning_context(self) -> str:
+        """Get KB context for comic planning/condensation."""
+        return await self._get_kb_context(self.KB_PLANNING_TAGS)
+
+    async def _get_evaluation_context(self) -> str:
+        """Get KB context for comic evaluation."""
+        return await self._get_kb_context(self.KB_EVALUATION_TAGS)
+
+    async def _get_revision_context(self) -> str:
+        """Get KB context for comic revision."""
+        return await self._get_kb_context(self.KB_REVISION_TAGS)
+
+    def _get_minimal_kb_context(self) -> str:
+        """Minimal fallback KB context for testing."""
+        return """# Comic Best Practices (Minimal)
+
+## 4-Panel Structure
+- HOOK: Introduce premise instantly
+- BUILD: Escalate conflict/emotion
+- TWIST: Subvert expectations
+- PUNCHLINE: Deliver emotional payoff
+
+## Key Rules
+- One emotional payoff per comic (AHA/HA!/OOF)
+- 3-second clarity - premise understood instantly
+- One-breath test - dialogue readable in one breath
+- Final panel is strongest beat
+- Prioritize relatability over cleverness
+
+## Emotional Types
+- AHA = Cognitive insight
+- HA! = Humor/comedy
+- OOF = Relatable sting/self-own"""
+
+    # =========================================================================
+    # Asset Helpers
+    # =========================================================================
+
+    async def _get_available_assets(self, project_id: UUID) -> Dict[str, List[str]]:
+        """
+        Get available assets for a project (from video path).
+
+        Args:
+            project_id: Content project UUID
+
+        Returns:
+            Dict with characters, backgrounds, props lists
+        """
+        if not self.supabase:
+            return {
+                "characters": ["every-coon", "boomer", "fed", "whale", "wojak", "chad"],
+                "backgrounds": ["simple office", "trading floor", "home kitchen"],
+                "props": []
+            }
+
+        try:
+            # Get approved assets from project_asset_requirements
+            result = self.supabase.table("project_asset_requirements").select(
+                "asset_name, asset_id, comic_assets(name, asset_type)"
+            ).eq("project_id", str(project_id)).eq("status", "approved").execute()
+
+            characters = []
+            backgrounds = []
+            props = []
+
+            for req in result.data or []:
+                asset_type = None
+                name = req.get("asset_name")
+
+                if req.get("comic_assets"):
+                    asset_type = req["comic_assets"].get("asset_type")
+                    name = req["comic_assets"].get("name") or name
+
+                if asset_type == "character" or "coon" in (name or "").lower():
+                    characters.append(name)
+                elif asset_type == "background":
+                    backgrounds.append(name)
+                elif asset_type == "prop":
+                    props.append(name)
+
+            # Add default characters if none found
+            if not characters:
+                characters = ["every-coon", "boomer", "fed", "whale", "wojak", "chad"]
+
+            return {
+                "characters": list(set(characters)),
+                "backgrounds": list(set(backgrounds)),
+                "props": list(set(props))
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to fetch assets: {e}")
+            return {
+                "characters": ["every-coon", "boomer", "fed", "whale", "wojak", "chad"],
+                "backgrounds": [],
+                "props": []
+            }
+
+    # =========================================================================
+    # Core Methods
+    # =========================================================================
+
+    async def condense_to_comic(
+        self,
+        project_id: UUID,
+        script_data: Dict[str, Any],
+        config: Optional[ComicConfig] = None
+    ) -> ComicScript:
+        """
+        Condense a full video script to comic format.
+
+        Uses comic-production KB for planning best practices.
+
+        Args:
+            project_id: Content project UUID
+            script_data: Full script dictionary with beats
+            config: Optional comic configuration
+
+        Returns:
+            ComicScript with condensed panels
+        """
+        self._ensure_client()
+
+        config = config or ComicConfig()
+        logger.info(f"Condensing script to {config.panel_count or 'AI-suggested'}-panel comic")
+
+        # Get KB context for planning
+        kb_context = await self._get_planning_context()
+
+        # Get available assets
+        assets = await self._get_available_assets(project_id)
+
+        # Prepare script content
+        script_content = self._format_script_for_condensation(script_data)
+        storyboard_json = json.dumps(script_data.get("storyboard_json", {}), indent=2)
+
+        # Build panel count instruction
+        if config.panel_count:
+            panel_count_instruction = str(config.panel_count)
+        else:
+            panel_count_instruction = "4-8 (suggest optimal based on content)"
+
+        # Build emotional payoff instruction
+        if config.emotional_payoff:
+            emotional_payoff_instruction = config.emotional_payoff.value
+        else:
+            emotional_payoff_instruction = "best fit (AHA for insight, HA! for humor, OOF for relatable sting)"
+
+        # Build prompt
+        prompt = self.CONDENSATION_PROMPT.format(
+            kb_context=kb_context,
+            script_content=script_content,
+            storyboard_json=storyboard_json,
+            target_platform=config.target_platform,
+            aspect_ratio=config.aspect_ratio.value,
+            panel_count_instruction=panel_count_instruction,
+            emotional_payoff_instruction=emotional_payoff_instruction,
+            available_characters=", ".join(assets["characters"]),
+            available_backgrounds=", ".join(assets["backgrounds"]) or "none specified",
+            available_props=", ".join(assets["props"]) or "none specified"
+        )
+
+        try:
+            # Call Claude Opus 4.5
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4000,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            # Parse response
+            content = response.content[0].text
+            comic_data = self._parse_json_response(content)
+
+            # Build ComicScript
+            panels = []
+            for p in comic_data.get("panels", []):
+                panels.append(ComicPanel(
+                    panel_number=p.get("panel_number", len(panels) + 1),
+                    panel_type=p.get("panel_type", "BUILD"),
+                    dialogue=p.get("dialogue", ""),
+                    visual_description=p.get("visual_description", ""),
+                    character=p.get("character", "every-coon"),
+                    expression=p.get("expression", "neutral"),
+                    background=p.get("background"),
+                    props=p.get("props", [])
+                ))
+
+            # Determine grid layout
+            actual_panel_count = len(panels) or comic_data.get("suggested_panel_count", 4)
+            grid_data = comic_data.get("grid_layout", {})
+            if grid_data.get("cols") and grid_data.get("rows"):
+                grid_layout = GridLayout(
+                    cols=grid_data["cols"],
+                    rows=grid_data["rows"],
+                    aspect_ratio=config.aspect_ratio
+                )
+            else:
+                grid_layout = GridLayout.for_aspect_ratio(config.aspect_ratio, actual_panel_count)
+
+            # Parse emotional payoff
+            payoff_str = comic_data.get("emotional_payoff", "HA!").upper()
+            if payoff_str == "AHA":
+                emotional_payoff = EmotionalPayoff.AHA
+            elif payoff_str == "OOF":
+                emotional_payoff = EmotionalPayoff.OOF
+            else:
+                emotional_payoff = EmotionalPayoff.HA
+
+            comic_script = ComicScript(
+                id=str(uuid4()),
+                project_id=str(project_id),
+                version_number=1,
+                title=comic_data.get("title", "Untitled Comic"),
+                premise=comic_data.get("premise", ""),
+                emotional_payoff=emotional_payoff,
+                panels=panels,
+                grid_layout=grid_layout
+            )
+
+            logger.info(f"Condensed script to {len(panels)}-panel comic: {comic_script.title}")
+            return comic_script
+
+        except Exception as e:
+            logger.error(f"Comic condensation failed: {e}")
+            raise
+
+    async def evaluate_comic_script(
+        self,
+        comic_script: ComicScript
+    ) -> ComicEvaluation:
+        """
+        Evaluate a comic script for clarity, humor, and flow.
+
+        Uses comic-production KB evaluation checklist.
+
+        Args:
+            comic_script: ComicScript to evaluate
+
+        Returns:
+            ComicEvaluation with scores and suggestions
+        """
+        self._ensure_client()
+
+        logger.info(f"Evaluating comic: {comic_script.title}")
+
+        # Get KB context for evaluation
+        kb_context = await self._get_evaluation_context()
+
+        # Build prompt
+        prompt = self.EVALUATION_PROMPT.format(
+            kb_context=kb_context,
+            comic_script=json.dumps(comic_script.to_dict(), indent=2)
+        )
+
+        try:
+            # Call Claude Opus 4.5
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2000,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            # Parse response
+            content = response.content[0].text
+            eval_data = self._parse_json_response(content)
+
+            clarity_score = eval_data.get("clarity_score", 0)
+            humor_score = eval_data.get("humor_score", 0)
+            flow_score = eval_data.get("flow_score", 0)
+            overall_score = eval_data.get("overall_score", 0)
+
+            # Determine quick approve eligibility
+            quick_approve_eligible = all(s > 85 for s in [clarity_score, humor_score, flow_score])
+
+            evaluation = ComicEvaluation(
+                clarity_score=clarity_score,
+                humor_score=humor_score,
+                flow_score=flow_score,
+                overall_score=overall_score,
+                clarity_notes=eval_data.get("clarity_notes", ""),
+                humor_notes=eval_data.get("humor_notes", ""),
+                flow_notes=eval_data.get("flow_notes", ""),
+                issues=eval_data.get("issues", []),
+                suggestions=eval_data.get("suggestions", []),
+                ready_for_approval=eval_data.get("ready_for_approval", False),
+                quick_approve_eligible=quick_approve_eligible
+            )
+
+            logger.info(
+                f"Evaluation complete: clarity={clarity_score}, humor={humor_score}, "
+                f"flow={flow_score}, overall={overall_score}, quick_approve={quick_approve_eligible}"
+            )
+            return evaluation
+
+        except Exception as e:
+            logger.error(f"Comic evaluation failed: {e}")
+            raise
+
+    async def suggest_panel_count(
+        self,
+        script_data: Dict[str, Any],
+        aspect_ratio: AspectRatio = AspectRatio.VERTICAL_9_16
+    ) -> Tuple[int, str]:
+        """
+        Suggest optimal panel count based on script content.
+
+        Args:
+            script_data: Full script dictionary
+            aspect_ratio: Target aspect ratio
+
+        Returns:
+            Tuple of (suggested_count, reasoning)
+        """
+        # Simple heuristic based on beat count
+        beats = script_data.get("beats", [])
+        beat_count = len(beats)
+
+        if beat_count <= 4:
+            suggested = 4
+            reasoning = "Short script with few beats - 4 panels captures essence"
+        elif beat_count <= 8:
+            suggested = 6
+            reasoning = "Medium script - 6 panels allows for better flow"
+        elif beat_count <= 12:
+            suggested = 8
+            reasoning = "Longer script - 8 panels needed for proper condensation"
+        else:
+            suggested = 12
+            reasoning = "Complex script - 12 panels (max) for full coverage"
+
+        # Adjust for aspect ratio
+        if aspect_ratio == AspectRatio.LANDSCAPE_16_9:
+            # Landscape prefers horizontal layouts (fewer rows)
+            suggested = min(suggested, 8)
+            reasoning += f" (adjusted for {aspect_ratio.value} layout)"
+
+        return suggested, reasoning
+
+    def _format_script_for_condensation(self, script_data: Dict[str, Any]) -> str:
+        """
+        Format script data for condensation prompt.
+
+        Args:
+            script_data: Script dictionary with beats
+
+        Returns:
+            Formatted string for LLM
+        """
+        parts = []
+
+        # Title and overview
+        title = script_data.get("title") or script_data.get("topic_title", "Untitled")
+        parts.append(f"# {title}\n")
+
+        # Get beats from either script_data directly or nested storyboard_json
+        beats = script_data.get("beats", [])
+        if not beats and script_data.get("storyboard_json"):
+            beats = script_data["storyboard_json"].get("beats", [])
+
+        # Format each beat
+        for beat in beats:
+            beat_name = beat.get("beat_name", "Unnamed")
+            script = beat.get("script", "")
+            visual = beat.get("visual_notes", "")
+            character = beat.get("character", "")
+
+            parts.append(f"## {beat_name}")
+            if character:
+                parts.append(f"Character: {character}")
+            parts.append(f"Script: {script}")
+            if visual:
+                parts.append(f"Visual: {visual}")
+            parts.append("")
+
+        return "\n".join(parts)
+
+    def _parse_json_response(self, content: str) -> Dict[str, Any]:
+        """
+        Parse JSON from LLM response, handling common formatting issues.
+
+        Args:
+            content: Raw response content
+
+        Returns:
+            Parsed JSON as dict
+        """
+        content = content.strip()
+
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            start_idx = 1 if lines[0].startswith("```") else 0
+            end_idx = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
+            content = "\n".join(lines[start_idx:end_idx])
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error: {e}")
+            logger.debug(f"Raw content: {content[:1000]}")
+            raise ValueError(f"Failed to parse LLM response as JSON: {e}")
+
+    # =========================================================================
+    # Database Operations
+    # =========================================================================
+
+    async def save_comic_to_db(
+        self,
+        project_id: UUID,
+        comic_script: ComicScript,
+        script_version_id: Optional[UUID] = None
+    ) -> UUID:
+        """
+        Save a comic version to the database.
+
+        Args:
+            project_id: Content project UUID
+            comic_script: ComicScript to save
+            script_version_id: Source script version UUID
+
+        Returns:
+            Created comic_version UUID
+        """
+        if not self.supabase:
+            logger.warning("Supabase not configured - comic not saved")
+            return UUID(comic_script.id)
+
+        try:
+            # Get next version number
+            existing = self.supabase.table("comic_versions").select("version_number").eq(
+                "project_id", str(project_id)
+            ).order("version_number", desc=True).limit(1).execute()
+
+            next_version = (existing.data[0]["version_number"] + 1) if existing.data else 1
+
+            logger.info(f"Saving comic version {next_version} for project {project_id}")
+
+            result = self.supabase.table("comic_versions").insert({
+                "project_id": str(project_id),
+                "script_version_id": str(script_version_id) if script_version_id else None,
+                "version_number": next_version,
+                "comic_script": json.dumps(comic_script.to_dict()),
+                "panel_count": len(comic_script.panels),
+                "status": "draft"
+            }).execute()
+
+            if result.data:
+                comic_id = UUID(result.data[0]["id"])
+                logger.info(f"Saved comic version {comic_id}")
+
+                # Update project with current comic version
+                self.supabase.table("content_projects").update({
+                    "current_comic_version_id": str(comic_id),
+                    "workflow_state": "comic_evaluation"
+                }).eq("id", str(project_id)).execute()
+
+                return comic_id
+
+            return UUID(comic_script.id)
+
+        except Exception as e:
+            logger.error(f"Failed to save comic: {e}")
+            raise
+
+    async def save_evaluation_to_db(
+        self,
+        comic_version_id: UUID,
+        evaluation: ComicEvaluation
+    ) -> None:
+        """
+        Save evaluation results to the comic version.
+
+        Args:
+            comic_version_id: Comic version UUID
+            evaluation: ComicEvaluation results
+        """
+        if not self.supabase:
+            logger.warning("Supabase not configured - evaluation not saved")
+            return
+
+        try:
+            self.supabase.table("comic_versions").update({
+                "evaluation_results": evaluation.to_dict(),
+                "evaluation_notes": json.dumps({
+                    "clarity": evaluation.clarity_notes,
+                    "humor": evaluation.humor_notes,
+                    "flow": evaluation.flow_notes
+                })
+            }).eq("id", str(comic_version_id)).execute()
+
+            logger.info(f"Saved evaluation for comic {comic_version_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to save evaluation: {e}")
+
+    async def get_comic_version(
+        self,
+        comic_version_id: UUID
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get a comic version by ID.
+
+        Args:
+            comic_version_id: Comic version UUID
+
+        Returns:
+            Comic version dictionary or None
+        """
+        if not self.supabase:
+            return None
+
+        try:
+            result = self.supabase.table("comic_versions").select("*").eq(
+                "id", str(comic_version_id)
+            ).execute()
+
+            if result.data:
+                return result.data[0]
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to fetch comic: {e}")
+            return None
+
+    async def approve_comic(
+        self,
+        comic_version_id: UUID,
+        project_id: UUID,
+        human_notes: Optional[str] = None
+    ) -> None:
+        """
+        Approve a comic version.
+
+        Args:
+            comic_version_id: Comic version UUID to approve
+            project_id: Content project UUID
+            human_notes: Optional approval notes
+        """
+        if not self.supabase:
+            logger.warning("Supabase not configured")
+            return
+
+        try:
+            self.supabase.table("comic_versions").update({
+                "status": "approved",
+                "human_notes": human_notes,
+                "approved_at": datetime.utcnow().isoformat()
+            }).eq("id", str(comic_version_id)).execute()
+
+            self.supabase.table("content_projects").update({
+                "workflow_state": "comic_approved"
+            }).eq("id", str(project_id)).execute()
+
+            logger.info(f"Approved comic {comic_version_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to approve comic: {e}")
+            raise

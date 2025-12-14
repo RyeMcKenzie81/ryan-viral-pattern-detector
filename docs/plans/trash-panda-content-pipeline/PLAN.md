@@ -947,10 +947,10 @@ Public page (no auth).
   - [x] Examples (3): `comic_examples_plans`, `comic_examples_before_after`, `comic_schemas_structures`
   - [x] Meta (1): `comic_kb_usage_guide`
   - Script: `scripts/ingest_comic_kb.py`
-- [ ] ComicService
-- [ ] Comic condensation (uses KB for planning)
-- [ ] Comic evaluation (uses KB for quality assessment)
-- [ ] Human approval checkpoint (uses KB for AI-assisted fixes)
+- [x] ComicService (`comic_service.py`)
+- [x] Comic condensation (uses KB for planning)
+- [x] Comic evaluation (uses KB for quality assessment)
+- [x] Human approval checkpoint UI (Comic tab in Content Pipeline)
 
 ### Phase 9: Comic Generation & JSON
 - [ ] Comic panel generation

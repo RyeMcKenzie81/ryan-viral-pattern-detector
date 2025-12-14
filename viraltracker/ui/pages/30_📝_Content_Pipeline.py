@@ -77,6 +77,15 @@ if 'sfx_generating' not in st.session_state:
 # Handoff tab state (MVP 6)
 if 'handoff_generating' not in st.session_state:
     st.session_state.handoff_generating = False
+# Comic tab state (Phase 8)
+if 'comic_condensing' not in st.session_state:
+    st.session_state.comic_condensing = False
+if 'comic_evaluating' not in st.session_state:
+    st.session_state.comic_evaluating = False
+if 'current_comic' not in st.session_state:
+    st.session_state.current_comic = None
+if 'comic_evaluation' not in st.session_state:
+    st.session_state.comic_evaluation = None
 
 
 def get_supabase_client():
@@ -163,6 +172,14 @@ def get_handoff_service():
         audio_service=audio_service,
         asset_service=asset_service
     )
+
+
+def get_comic_service():
+    """Get ComicService instance."""
+    from viraltracker.services.content_pipeline.services.comic_service import ComicService
+    db = get_supabase_client()
+    docs = get_doc_service()
+    return ComicService(supabase_client=db, docs_service=docs)
 
 
 def get_script_data_for_project(project_id: str) -> Optional[Dict]:
@@ -757,8 +774,10 @@ def render_script_view(project: Dict):
 
     st.divider()
 
-    # Tabs for script workflow - include Audio, Assets, SFX, and Handoff tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets", "SFX", "Handoff"])
+    # Tabs for script workflow - include Audio, Assets, SFX, Handoff, and Comic tabs
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "Generate", "Review", "Approve", "Audio", "Assets", "SFX", "Handoff", "Comic"
+    ])
 
     with tab1:
         render_script_generation_tab(project)
@@ -780,6 +799,9 @@ def render_script_view(project: Dict):
 
     with tab7:
         render_handoff_tab(project)
+
+    with tab8:
+        render_comic_tab(project)
 
 
 def render_script_generation_tab(project: Dict):
@@ -3478,6 +3500,411 @@ def render_handoff_tab(project: Dict):
             except Exception as e:
                 st.session_state.handoff_generating = False
                 st.error(f"Failed to generate handoff: {e}")
+
+
+# =============================================================================
+# Comic Tab (Phase 8)
+# =============================================================================
+
+def render_comic_tab(project: Dict):
+    """Render the comic condensation tab."""
+    from viraltracker.services.content_pipeline.services.comic_service import (
+        ComicConfig, AspectRatio, EmotionalPayoff
+    )
+
+    project_id = project.get('id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    st.markdown("### Comic Condensation")
+
+    # Check if script is approved
+    if workflow_state not in ['script_approved', 'els_ready', 'audio_production', 'audio_complete',
+                               'asset_extraction', 'assets_ready', 'handoff_generated',
+                               'comic_evaluation', 'comic_approved']:
+        st.warning("Script must be approved before creating comics. Complete the Generate → Review → Approve workflow first.")
+        return
+
+    # Check for existing comic versions
+    try:
+        db = get_supabase_client()
+        comics = db.table("comic_versions").select("*").eq(
+            "project_id", project_id
+        ).order("version_number", desc=True).execute()
+        existing_comics = comics.data or []
+    except Exception as e:
+        st.error(f"Failed to load comics: {e}")
+        existing_comics = []
+
+    # Sub-tabs for comic workflow
+    comic_tab1, comic_tab2, comic_tab3 = st.tabs(["Condense", "Evaluate", "Approve"])
+
+    with comic_tab1:
+        render_comic_condense_tab(project, existing_comics)
+
+    with comic_tab2:
+        render_comic_evaluate_tab(project, existing_comics)
+
+    with comic_tab3:
+        render_comic_approve_tab(project, existing_comics)
+
+
+def render_comic_condense_tab(project: Dict, existing_comics: List[Dict]):
+    """Render the comic condensation sub-tab."""
+    from viraltracker.services.content_pipeline.services.comic_service import (
+        ComicConfig, AspectRatio, EmotionalPayoff
+    )
+
+    project_id = project.get('id')
+
+    if existing_comics:
+        latest = existing_comics[0]
+        st.success(f"Comic v{latest.get('version_number')} created ({latest.get('panel_count', '?')} panels)")
+
+        # Show comic preview
+        comic_script = latest.get('comic_script')
+        if comic_script:
+            try:
+                comic_data = json.loads(comic_script) if isinstance(comic_script, str) else comic_script
+                render_comic_preview(comic_data)
+            except Exception as e:
+                st.error(f"Failed to parse comic: {e}")
+
+        # Option to create new version
+        if st.button("Create New Version", type="secondary"):
+            st.session_state.current_comic = None
+
+    # Show condensation form
+    st.markdown("#### Condensation Settings")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Aspect ratio selection
+        aspect_options = {
+            "9:16 (TikTok, Reels, Shorts)": AspectRatio.VERTICAL_9_16,
+            "16:9 (YouTube, Twitter)": AspectRatio.LANDSCAPE_16_9,
+            "1:1 (Instagram Feed)": AspectRatio.SQUARE_1_1,
+            "4:5 (Instagram Portrait)": AspectRatio.PORTRAIT_4_5
+        }
+        aspect_label = st.selectbox("Aspect Ratio", list(aspect_options.keys()))
+        aspect_ratio = aspect_options[aspect_label]
+
+        # Platform
+        platform = st.selectbox("Target Platform", ["Instagram", "TikTok", "Twitter", "YouTube"])
+
+    with col2:
+        # Panel count
+        panel_mode = st.radio("Panel Count", ["AI Suggests", "Custom"])
+        if panel_mode == "Custom":
+            panel_count = st.slider("Number of Panels", 2, 12, 4)
+        else:
+            panel_count = None  # AI will suggest
+
+        # Emotional payoff
+        payoff_options = {
+            "Auto (AI Picks)": None,
+            "AHA (Insight)": EmotionalPayoff.AHA,
+            "HA! (Humor)": EmotionalPayoff.HA,
+            "OOF (Relatable Sting)": EmotionalPayoff.OOF
+        }
+        payoff_label = st.selectbox("Emotional Payoff", list(payoff_options.keys()))
+        emotional_payoff = payoff_options[payoff_label]
+
+    # Get approved script
+    script_data = get_script_data_for_project(project_id)
+
+    if not script_data:
+        st.warning("No approved script found. Please approve a script first.")
+        return
+
+    # Condense button
+    if st.button("Condense to Comic", type="primary", disabled=st.session_state.comic_condensing):
+        st.session_state.comic_condensing = True
+        st.rerun()
+
+    # Handle condensation
+    if st.session_state.comic_condensing:
+        with st.spinner("Condensing script to comic format... This may take 30-60 seconds."):
+            try:
+                config = ComicConfig(
+                    panel_count=panel_count,
+                    aspect_ratio=aspect_ratio,
+                    target_platform=platform.lower(),
+                    emotional_payoff=emotional_payoff
+                )
+
+                service = get_comic_service()
+                comic_script = asyncio.run(service.condense_to_comic(
+                    project_id=UUID(project_id),
+                    script_data=script_data,
+                    config=config
+                ))
+
+                # Save to database
+                script_version_id = project.get('current_script_version_id')
+                comic_id = asyncio.run(service.save_comic_to_db(
+                    project_id=UUID(project_id),
+                    comic_script=comic_script,
+                    script_version_id=UUID(script_version_id) if script_version_id else None
+                ))
+
+                st.session_state.comic_condensing = False
+                st.session_state.current_comic = comic_script.to_dict()
+                st.success(f"Created {len(comic_script.panels)}-panel comic!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.comic_condensing = False
+                st.error(f"Condensation failed: {e}")
+
+
+def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
+    """Render the comic evaluation sub-tab."""
+    project_id = project.get('id')
+
+    if not existing_comics:
+        st.info("No comic to evaluate. Create a comic first in the Condense tab.")
+        return
+
+    latest = existing_comics[0]
+    comic_id = latest.get('id')
+
+    # Check for existing evaluation
+    eval_results = latest.get('evaluation_results')
+
+    if eval_results:
+        st.markdown("### Evaluation Results")
+        render_comic_evaluation(eval_results)
+
+        if st.button("Re-evaluate", type="secondary"):
+            st.session_state.comic_evaluation = None
+
+    else:
+        st.markdown("### Evaluate Comic Script")
+        st.markdown("Evaluate the comic for clarity, humor, and flow using the Comic KB best practices.")
+
+        if st.button("Evaluate Comic", type="primary", disabled=st.session_state.comic_evaluating):
+            st.session_state.comic_evaluating = True
+            st.rerun()
+
+    # Handle evaluation
+    if st.session_state.comic_evaluating:
+        with st.spinner("Evaluating comic against KB checklist..."):
+            try:
+                from viraltracker.services.content_pipeline.services.comic_service import ComicScript, ComicPanel, GridLayout, AspectRatio, EmotionalPayoff
+
+                # Parse comic data
+                comic_script_data = latest.get('comic_script')
+                if isinstance(comic_script_data, str):
+                    comic_script_data = json.loads(comic_script_data)
+
+                # Rebuild ComicScript object
+                panels = []
+                for p in comic_script_data.get('panels', []):
+                    panels.append(ComicPanel(
+                        panel_number=p.get('panel_number', len(panels) + 1),
+                        panel_type=p.get('panel_type', 'BUILD'),
+                        dialogue=p.get('dialogue', ''),
+                        visual_description=p.get('visual_description', ''),
+                        character=p.get('character', 'every-coon'),
+                        expression=p.get('expression', 'neutral'),
+                        background=p.get('background'),
+                        props=p.get('props', [])
+                    ))
+
+                grid_data = comic_script_data.get('grid_layout', {})
+                grid_layout = GridLayout(
+                    cols=grid_data.get('cols', 2),
+                    rows=grid_data.get('rows', 2),
+                    aspect_ratio=AspectRatio(grid_data.get('aspect_ratio', '9:16'))
+                )
+
+                payoff_str = comic_script_data.get('emotional_payoff', 'HA!')
+                if payoff_str == 'AHA':
+                    emotional_payoff = EmotionalPayoff.AHA
+                elif payoff_str == 'OOF':
+                    emotional_payoff = EmotionalPayoff.OOF
+                else:
+                    emotional_payoff = EmotionalPayoff.HA
+
+                comic_script = ComicScript(
+                    id=comic_script_data.get('id', str(comic_id)),
+                    project_id=str(project_id),
+                    version_number=latest.get('version_number', 1),
+                    title=comic_script_data.get('title', 'Untitled'),
+                    premise=comic_script_data.get('premise', ''),
+                    emotional_payoff=emotional_payoff,
+                    panels=panels,
+                    grid_layout=grid_layout
+                )
+
+                service = get_comic_service()
+                evaluation = asyncio.run(service.evaluate_comic_script(comic_script))
+
+                # Save evaluation
+                asyncio.run(service.save_evaluation_to_db(
+                    comic_version_id=UUID(comic_id),
+                    evaluation=evaluation
+                ))
+
+                st.session_state.comic_evaluating = False
+                st.session_state.comic_evaluation = evaluation.to_dict()
+                st.success("Evaluation complete!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.comic_evaluating = False
+                st.error(f"Evaluation failed: {e}")
+
+
+def render_comic_approve_tab(project: Dict, existing_comics: List[Dict]):
+    """Render the comic approval sub-tab."""
+    project_id = project.get('id')
+
+    if not existing_comics:
+        st.info("No comic to approve. Create and evaluate a comic first.")
+        return
+
+    latest = existing_comics[0]
+    comic_id = latest.get('id')
+    status = latest.get('status', 'draft')
+
+    if status == 'approved':
+        st.success("Comic approved!")
+        approved_at = latest.get('approved_at', '')
+        if approved_at:
+            st.caption(f"Approved at: {approved_at}")
+
+        # Show comic preview
+        comic_script = latest.get('comic_script')
+        if comic_script:
+            try:
+                comic_data = json.loads(comic_script) if isinstance(comic_script, str) else comic_script
+                render_comic_preview(comic_data)
+            except Exception:
+                pass
+        return
+
+    # Check evaluation
+    eval_results = latest.get('evaluation_results')
+    if not eval_results:
+        st.warning("Comic must be evaluated before approval. Go to the Evaluate tab first.")
+        return
+
+    # Show evaluation summary
+    st.markdown("### Evaluation Summary")
+    render_comic_evaluation(eval_results)
+
+    # Quick approve check
+    quick_approve = eval_results.get('quick_approve_eligible', False)
+    if quick_approve:
+        st.success("Quick Approve Eligible - All scores > 85")
+
+    # Approval form
+    st.markdown("### Approve Comic")
+    human_notes = st.text_area("Approval Notes (optional)", placeholder="Any notes for this version...")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Approve Comic", type="primary"):
+            try:
+                service = get_comic_service()
+                asyncio.run(service.approve_comic(
+                    comic_version_id=UUID(comic_id),
+                    project_id=UUID(project_id),
+                    human_notes=human_notes if human_notes else None
+                ))
+                st.success("Comic approved!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Approval failed: {e}")
+
+    with col2:
+        if st.button("Request Revision", type="secondary"):
+            st.info("Revision feature coming soon. Create a new version in the Condense tab.")
+
+
+def render_comic_preview(comic_data: Dict):
+    """Render a preview of the comic panels."""
+    st.markdown("#### Comic Preview")
+
+    title = comic_data.get('title', 'Untitled')
+    premise = comic_data.get('premise', '')
+    payoff = comic_data.get('emotional_payoff', '')
+
+    st.markdown(f"**{title}**")
+    if premise:
+        st.caption(premise)
+    if payoff:
+        st.caption(f"Payoff: {payoff}")
+
+    panels = comic_data.get('panels', [])
+    grid = comic_data.get('grid_layout', {})
+    cols = grid.get('cols', 2)
+
+    # Render panels in grid
+    for i in range(0, len(panels), cols):
+        panel_cols = st.columns(cols)
+        for j, col in enumerate(panel_cols):
+            idx = i + j
+            if idx < len(panels):
+                panel = panels[idx]
+                with col:
+                    with st.container(border=True):
+                        panel_type = panel.get('panel_type', 'BUILD')
+                        st.markdown(f"**Panel {panel.get('panel_number', idx+1)}** ({panel_type})")
+                        st.markdown(f"*{panel.get('character', 'unknown')}*: {panel.get('expression', '')}")
+                        st.markdown(f'"{panel.get("dialogue", "")}"')
+                        st.caption(panel.get('visual_description', ''))
+
+
+def render_comic_evaluation(eval_results: Dict):
+    """Render comic evaluation results."""
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        clarity = eval_results.get('clarity_score', 0)
+        st.metric("Clarity", f"{clarity}/100")
+    with col2:
+        humor = eval_results.get('humor_score', 0)
+        st.metric("Humor", f"{humor}/100")
+    with col3:
+        flow = eval_results.get('flow_score', 0)
+        st.metric("Flow", f"{flow}/100")
+    with col4:
+        overall = eval_results.get('overall_score', 0)
+        st.metric("Overall", f"{overall}/100")
+
+    # Notes
+    with st.expander("Evaluation Details"):
+        if eval_results.get('clarity_notes'):
+            st.markdown(f"**Clarity:** {eval_results['clarity_notes']}")
+        if eval_results.get('humor_notes'):
+            st.markdown(f"**Humor:** {eval_results['humor_notes']}")
+        if eval_results.get('flow_notes'):
+            st.markdown(f"**Flow:** {eval_results['flow_notes']}")
+
+    # Issues
+    issues = eval_results.get('issues', [])
+    if issues:
+        with st.expander(f"Issues ({len(issues)})"):
+            for issue in issues:
+                severity = issue.get('severity', 'low')
+                if severity == 'high':
+                    st.error(f"**{severity.upper()}**: {issue.get('issue')}")
+                elif severity == 'medium':
+                    st.warning(f"**{severity.upper()}**: {issue.get('issue')}")
+                else:
+                    st.info(f"**{severity.upper()}**: {issue.get('issue')}")
+                if issue.get('suggestion'):
+                    st.caption(f"Suggestion: {issue['suggestion']}")
+
+    # Suggestions
+    suggestions = eval_results.get('suggestions', [])
+    if suggestions:
+        with st.expander("Suggestions"):
+            for s in suggestions:
+                st.markdown(f"- {s}")
 
 
 # Main app flow
