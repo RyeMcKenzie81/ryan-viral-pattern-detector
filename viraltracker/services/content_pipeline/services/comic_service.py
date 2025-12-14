@@ -784,6 +784,191 @@ THRESHOLDS:
             logger.error(f"Comic evaluation failed: {e}")
             raise
 
+    async def revise_comic(
+        self,
+        comic_script: ComicScript,
+        evaluation: ComicEvaluation,
+        revision_notes: Optional[str] = None
+    ) -> ComicScript:
+        """
+        Revise a comic script based on evaluation feedback.
+
+        Uses KB revision context (repair_patterns, examples_before_after) to
+        generate an improved version addressing the issues identified.
+
+        Args:
+            comic_script: The current comic script to revise
+            evaluation: The evaluation with issues and suggestions
+            revision_notes: Optional human notes for specific changes
+
+        Returns:
+            Revised ComicScript with improvements
+        """
+        self._ensure_client()
+
+        # Get revision context from KB
+        revision_context = await self._get_revision_context()
+
+        # Format issues and suggestions for the prompt
+        issues_text = ""
+        if evaluation.issues:
+            issues_text = "ISSUES TO ADDRESS:\n"
+            for issue in evaluation.issues:
+                severity = issue.get('severity', 'medium')
+                issues_text += f"- [{severity.upper()}] {issue.get('issue', '')}\n"
+                if issue.get('suggestion'):
+                    issues_text += f"  Suggestion: {issue.get('suggestion')}\n"
+
+        suggestions_text = ""
+        if evaluation.suggestions:
+            suggestions_text = "ADDITIONAL SUGGESTIONS:\n"
+            for s in evaluation.suggestions:
+                suggestions_text += f"- {s}\n"
+
+        scores_text = f"""CURRENT SCORES:
+- Clarity: {evaluation.clarity_score}/100 ({evaluation.clarity_notes})
+- Humor: {evaluation.humor_score}/100 ({evaluation.humor_notes})
+- Flow: {evaluation.flow_score}/100 ({evaluation.flow_notes})
+- Overall: {evaluation.overall_score}/100"""
+
+        # Format current comic for reference
+        current_panels_text = ""
+        for panel in comic_script.panels:
+            current_panels_text += f"""
+Panel {panel.panel_number} ({panel.panel_type}):
+  Character: {panel.character} ({panel.expression})
+  Dialogue: "{panel.dialogue}"
+  Visual: {panel.visual_description}
+"""
+
+        human_notes_text = ""
+        if revision_notes:
+            human_notes_text = f"\nHUMAN REVISION NOTES:\n{revision_notes}\n"
+
+        prompt = f"""You are a comic script revision expert. Revise this comic script to address the evaluation feedback.
+
+{revision_context}
+
+---
+
+CURRENT COMIC:
+Title: {comic_script.title}
+Premise: {comic_script.premise}
+Emotional Payoff: {comic_script.emotional_payoff.value}
+Panel Count: {len(comic_script.panels)}
+Grid: {comic_script.grid_layout.cols}x{comic_script.grid_layout.rows}
+
+PANELS:
+{current_panels_text}
+
+---
+
+{scores_text}
+
+{issues_text}
+
+{suggestions_text}
+{human_notes_text}
+
+---
+
+REVISION INSTRUCTIONS:
+1. Address ALL high-severity issues first
+2. Improve the weakest scoring dimension
+3. Maintain the same panel count and grid layout
+4. Keep the same emotional payoff type
+5. Preserve what's already working well
+6. Make dialogue punchier and more natural
+7. Strengthen the HOOK → BUILD → TWIST → PUNCHLINE flow
+
+Return the REVISED comic in this exact JSON format:
+{{
+  "title": "Comic title (can update if needed)",
+  "premise": "One-line premise",
+  "panels": [
+    {{
+      "panel_number": 1,
+      "panel_type": "HOOK|BUILD|TWIST|PUNCHLINE",
+      "dialogue": "Character dialogue",
+      "visual_description": "What we see in the panel",
+      "character": "character-id",
+      "expression": "expression name",
+      "background": "background description or null",
+      "props": ["prop1", "prop2"]
+    }}
+  ],
+  "revision_summary": "Brief explanation of what was changed and why"
+}}
+
+Return ONLY the JSON, no other text."""
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response_text = response.content[0].text.strip()
+
+            # Parse JSON response
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                json_lines = []
+                in_json = False
+                for line in lines:
+                    if line.startswith("```json"):
+                        in_json = True
+                        continue
+                    elif line.startswith("```"):
+                        break
+                    elif in_json:
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines)
+
+            revised_data = json.loads(response_text)
+
+            # Build revised ComicScript
+            revised_panels = []
+            for p in revised_data.get("panels", []):
+                revised_panels.append(ComicPanel(
+                    panel_number=p.get("panel_number", len(revised_panels) + 1),
+                    panel_type=p.get("panel_type", "BUILD"),
+                    dialogue=p.get("dialogue", ""),
+                    visual_description=p.get("visual_description", ""),
+                    character=p.get("character", "every-coon"),
+                    expression=p.get("expression", "neutral"),
+                    background=p.get("background"),
+                    props=p.get("props", [])
+                ))
+
+            # Create new version number
+            new_version = comic_script.version_number + 1
+
+            revised_script = ComicScript(
+                id=str(uuid.uuid4()),
+                project_id=comic_script.project_id,
+                version_number=new_version,
+                title=revised_data.get("title", comic_script.title),
+                premise=revised_data.get("premise", comic_script.premise),
+                emotional_payoff=comic_script.emotional_payoff,
+                panels=revised_panels,
+                grid_layout=comic_script.grid_layout
+            )
+
+            revision_summary = revised_data.get("revision_summary", "")
+            logger.info(f"Revised comic to v{new_version}: {revision_summary}")
+
+            return revised_script
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse revision response: {e}")
+            logger.error(f"Response was: {response_text[:500]}")
+            raise ValueError(f"Invalid revision response format: {e}")
+        except Exception as e:
+            logger.error(f"Comic revision failed: {e}")
+            raise
+
     async def suggest_panel_count(
         self,
         script_data: Dict[str, Any],

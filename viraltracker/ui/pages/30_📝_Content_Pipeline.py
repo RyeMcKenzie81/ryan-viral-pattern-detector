@@ -93,6 +93,8 @@ if 'comic_image_evaluating' not in st.session_state:
     st.session_state.comic_image_evaluating = False
 if 'comic_exporting' not in st.session_state:
     st.session_state.comic_exporting = False
+if 'comic_revising' not in st.session_state:
+    st.session_state.comic_revising = False
 
 
 def get_supabase_client():
@@ -3691,8 +3693,36 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
         st.markdown("### Evaluation Results")
         render_comic_evaluation(eval_results)
 
-        if st.button("Re-evaluate", type="secondary"):
-            st.session_state.comic_evaluation = None
+        # Check if revision is needed
+        quick_approve = eval_results.get('quick_approve_eligible', False)
+        overall_score = eval_results.get('overall_score', 0)
+
+        if not quick_approve:
+            st.markdown("---")
+            st.markdown("### Revise Comic")
+            st.markdown("Use AI to generate an improved version based on the evaluation feedback.")
+
+            revision_notes = st.text_area(
+                "Revision Notes (optional)",
+                placeholder="Add specific guidance for the revision, e.g., 'Make the punchline sharper' or 'The hook needs more punch'",
+                key="revision_notes"
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Revise Comic", type="primary", disabled=st.session_state.get('comic_revising', False)):
+                    st.session_state.comic_revising = True
+                    st.session_state.revision_notes = revision_notes
+                    st.rerun()
+            with col2:
+                if st.button("Re-evaluate", type="secondary"):
+                    st.session_state.comic_evaluation = None
+                    st.rerun()
+        else:
+            st.success("Comic is ready for approval! All scores > 85")
+            if st.button("Re-evaluate", type="secondary"):
+                st.session_state.comic_evaluation = None
+                st.rerun()
 
     else:
         st.markdown("### Evaluate Comic Script")
@@ -3770,6 +3800,105 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
             except Exception as e:
                 st.session_state.comic_evaluating = False
                 st.error(f"Evaluation failed: {e}")
+
+    # Handle revision
+    if st.session_state.get('comic_revising', False):
+        with st.spinner("Revising comic based on evaluation feedback... This may take 30-60 seconds."):
+            try:
+                from viraltracker.services.content_pipeline.services.comic_service import (
+                    ComicScript, ComicPanel, GridLayout, AspectRatio, EmotionalPayoff, ComicEvaluation
+                )
+
+                # Parse comic data
+                comic_script_data = latest.get('comic_script')
+                if isinstance(comic_script_data, str):
+                    comic_script_data = json.loads(comic_script_data)
+
+                # Rebuild ComicScript object
+                panels = []
+                for p in comic_script_data.get('panels', []):
+                    panels.append(ComicPanel(
+                        panel_number=p.get('panel_number', len(panels) + 1),
+                        panel_type=p.get('panel_type', 'BUILD'),
+                        dialogue=p.get('dialogue', ''),
+                        visual_description=p.get('visual_description', ''),
+                        character=p.get('character', 'every-coon'),
+                        expression=p.get('expression', 'neutral'),
+                        background=p.get('background'),
+                        props=p.get('props', [])
+                    ))
+
+                grid_data = comic_script_data.get('grid_layout', {})
+                grid_layout = GridLayout(
+                    cols=grid_data.get('cols', 2),
+                    rows=grid_data.get('rows', 2),
+                    aspect_ratio=AspectRatio(grid_data.get('aspect_ratio', '9:16'))
+                )
+
+                payoff_str = comic_script_data.get('emotional_payoff', 'HA!')
+                if payoff_str == 'AHA':
+                    emotional_payoff = EmotionalPayoff.AHA
+                elif payoff_str == 'OOF':
+                    emotional_payoff = EmotionalPayoff.OOF
+                else:
+                    emotional_payoff = EmotionalPayoff.HA
+
+                comic_script = ComicScript(
+                    id=comic_script_data.get('id', str(comic_id)),
+                    project_id=str(project_id),
+                    version_number=latest.get('version_number', 1),
+                    title=comic_script_data.get('title', 'Untitled'),
+                    premise=comic_script_data.get('premise', ''),
+                    emotional_payoff=emotional_payoff,
+                    panels=panels,
+                    grid_layout=grid_layout
+                )
+
+                # Rebuild ComicEvaluation object
+                eval_data = eval_results
+                issues = eval_data.get('issues', [])
+                evaluation = ComicEvaluation(
+                    clarity_score=eval_data.get('clarity_score', 0),
+                    clarity_notes=eval_data.get('clarity_notes', ''),
+                    humor_score=eval_data.get('humor_score', 0),
+                    humor_notes=eval_data.get('humor_notes', ''),
+                    flow_score=eval_data.get('flow_score', 0),
+                    flow_notes=eval_data.get('flow_notes', ''),
+                    overall_score=eval_data.get('overall_score', 0),
+                    quick_approve_eligible=eval_data.get('quick_approve_eligible', False),
+                    issues=issues,
+                    suggestions=eval_data.get('suggestions', [])
+                )
+
+                # Get revision notes
+                revision_notes = st.session_state.get('revision_notes', '')
+
+                # Revise the comic
+                service = get_comic_service()
+                revised_script = asyncio.run(service.revise_comic(
+                    comic_script=comic_script,
+                    evaluation=evaluation,
+                    revision_notes=revision_notes if revision_notes else None
+                ))
+
+                # Save to database as new version
+                script_version_id = project.get('current_script_version_id')
+                new_comic_id = asyncio.run(service.save_comic_to_db(
+                    project_id=UUID(project_id),
+                    comic_script=revised_script,
+                    script_version_id=UUID(script_version_id) if script_version_id else None
+                ))
+
+                st.session_state.comic_revising = False
+                st.session_state.revision_notes = ''
+                st.session_state.current_comic = revised_script.to_dict()
+                st.session_state.comic_evaluation = None  # Clear old evaluation
+                st.success(f"Created revised comic v{revised_script.version_number}! Please evaluate the new version.")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.comic_revising = False
+                st.error(f"Revision failed: {e}")
 
 
 def render_comic_approve_tab(project: Dict, existing_comics: List[Dict]):
