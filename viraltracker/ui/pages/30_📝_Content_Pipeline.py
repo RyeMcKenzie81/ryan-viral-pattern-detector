@@ -16,9 +16,12 @@ Future MVPs will add:
 import streamlit as st
 import asyncio
 import json
+import logging
 from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
@@ -4082,22 +4085,35 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                     grid_layout=grid_layout
                 )
 
-                # Get character assets URL (placeholder for now)
-                character_assets_url = project.get('character_assets_url', '')
+                # Get reference images from approved assets if available
+                reference_images = None
+                try:
+                    db = get_supabase_client()
+                    assets_result = db.table("project_assets").select("image_url").eq(
+                        "project_id", project_id
+                    ).eq("asset_type", "character").eq("status", "approved").limit(3).execute()
+                    if assets_result.data:
+                        reference_images = [a.get('image_url') for a in assets_result.data if a.get('image_url')]
+                except Exception as e:
+                    logger.warning(f"Could not fetch reference images: {e}")
 
+                # Generate comic image
                 service = get_comic_service()
-                result = asyncio.run(service.generate_comic_image(
+                gemini = get_gemini_service()
+                image_base64 = asyncio.run(service.generate_comic_image(
                     comic_script=comic_script,
-                    character_assets_url=character_assets_url
+                    gemini_service=gemini,
+                    reference_images=reference_images
                 ))
 
-                image_url = result.get('image_url')
+                # Convert base64 to data URL for display/storage
+                # TODO: Upload to Supabase storage for permanent URL
+                image_url = f"data:image/png;base64,{image_base64}"
 
                 # Save to database
                 asyncio.run(service.save_comic_image_to_db(
                     comic_version_id=UUID(comic_id),
-                    image_url=image_url,
-                    generation_metadata=result.get('metadata', {})
+                    image_url=image_url
                 ))
 
                 st.session_state.comic_image_generating = False
@@ -4120,10 +4136,67 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
     if st.session_state.get('comic_image_evaluating', False):
         with st.spinner("Evaluating comic image..."):
             try:
+                from viraltracker.services.content_pipeline.services.comic_service import (
+                    ComicScript, ComicPanel, GridLayout, AspectRatio, EmotionalPayoff
+                )
+
+                # Extract base64 from data URL if needed
+                if image_url.startswith("data:"):
+                    image_base64 = image_url.split(",", 1)[1]
+                else:
+                    # If it's a regular URL, we'd need to fetch it - for now just use as-is
+                    image_base64 = image_url
+
+                # Rebuild comic script for evaluation
+                comic_script_data = latest.get('comic_script')
+                if isinstance(comic_script_data, str):
+                    comic_script_data = json.loads(comic_script_data)
+
+                panels = []
+                for p in comic_script_data.get('panels', []):
+                    panels.append(ComicPanel(
+                        panel_number=p.get('panel_number', len(panels) + 1),
+                        panel_type=p.get('panel_type', 'BUILD'),
+                        dialogue=p.get('dialogue', ''),
+                        visual_description=p.get('visual_description', ''),
+                        character=p.get('character', 'every-coon'),
+                        expression=p.get('expression', 'neutral'),
+                        background=p.get('background'),
+                        props=p.get('props', [])
+                    ))
+
+                grid_data = comic_script_data.get('grid_layout', {})
+                grid_layout = GridLayout(
+                    cols=grid_data.get('cols', 2),
+                    rows=grid_data.get('rows', 2),
+                    aspect_ratio=AspectRatio(grid_data.get('aspect_ratio', '9:16'))
+                )
+
+                payoff_str = comic_script_data.get('emotional_payoff', 'HA!')
+                if payoff_str == 'AHA':
+                    emotional_payoff = EmotionalPayoff.AHA
+                elif payoff_str == 'OOF':
+                    emotional_payoff = EmotionalPayoff.OOF
+                else:
+                    emotional_payoff = EmotionalPayoff.HA
+
+                comic_script = ComicScript(
+                    id=comic_script_data.get('id', str(comic_id)),
+                    project_id=str(project_id),
+                    version_number=latest.get('version_number', 1),
+                    title=comic_script_data.get('title', 'Untitled'),
+                    premise=comic_script_data.get('premise', ''),
+                    emotional_payoff=emotional_payoff,
+                    panels=panels,
+                    grid_layout=grid_layout
+                )
+
                 service = get_comic_service()
+                gemini = get_gemini_service()
                 evaluation = asyncio.run(service.evaluate_comic_image(
-                    image_url=image_url,
-                    comic_version_id=UUID(comic_id)
+                    image_base64=image_base64,
+                    comic_script=comic_script,
+                    gemini_service=gemini
                 ))
 
                 # Save evaluation
