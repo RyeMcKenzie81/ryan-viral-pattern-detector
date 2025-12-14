@@ -203,6 +203,51 @@ class ComicEvaluation:
         }
 
 
+@dataclass
+class ComicImageEvaluation:
+    """Comic image evaluation results."""
+    overall_score: int  # 0-100
+
+    # Dimension scores
+    visual_clarity_score: int
+    character_accuracy_score: int
+    text_readability_score: int
+    composition_score: int
+    style_consistency_score: int
+
+    # Notes
+    visual_clarity_notes: str
+    character_accuracy_notes: str
+    text_readability_notes: str
+    composition_notes: str
+    style_consistency_notes: str
+
+    issues: List[Dict[str, str]]
+    suggestions: List[str]
+
+    passes_threshold: bool  # >= 90%
+    ready_for_review: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "overall_score": self.overall_score,
+            "visual_clarity_score": self.visual_clarity_score,
+            "character_accuracy_score": self.character_accuracy_score,
+            "text_readability_score": self.text_readability_score,
+            "composition_score": self.composition_score,
+            "style_consistency_score": self.style_consistency_score,
+            "visual_clarity_notes": self.visual_clarity_notes,
+            "character_accuracy_notes": self.character_accuracy_notes,
+            "text_readability_notes": self.text_readability_notes,
+            "composition_notes": self.composition_notes,
+            "style_consistency_notes": self.style_consistency_notes,
+            "issues": self.issues,
+            "suggestions": self.suggestions,
+            "passes_threshold": self.passes_threshold,
+            "ready_for_review": self.ready_for_review
+        }
+
+
 # =============================================================================
 # Comic Service
 # =============================================================================
@@ -998,4 +1043,428 @@ THRESHOLDS:
 
         except Exception as e:
             logger.error(f"Failed to approve comic: {e}")
+            raise
+
+    # =========================================================================
+    # Phase 9: Image Generation & JSON Conversion
+    # =========================================================================
+
+    # Image generation prompt template
+    IMAGE_GENERATION_PROMPT = """Create a {cols}x{rows} comic grid image for "{title}".
+
+STYLE: Flat vector cartoon art, minimal design, thick black outlines, simple geometric shapes,
+style of Cyanide and Happiness, 2D, high contrast, clean white backgrounds between panels.
+
+LAYOUT:
+- Grid: {cols} columns × {rows} rows
+- Panel borders: Thick black lines (4px)
+- Gutter: White space between panels
+- Aspect ratio: {aspect_ratio}
+
+PANELS:
+{panel_descriptions}
+
+REQUIREMENTS:
+1. Each panel clearly separated by thick black borders
+2. Characters should be simple, expressive, easily readable at small sizes
+3. Text bubbles with clear, readable dialogue
+4. Consistent character design across all panels
+5. Visual progression tells the story even without text
+6. Final panel should have the strongest visual impact
+
+Generate a single cohesive comic image with all {panel_count} panels in the grid layout."""
+
+    # Image evaluation prompt (for Gemini)
+    IMAGE_EVALUATION_PROMPT = """Evaluate this comic image against quality standards.
+
+SCORING DIMENSIONS (0-100):
+
+1. VISUAL CLARITY
+   - Are panels clearly separated?
+   - Can each panel be understood at a glance?
+   - Is the visual hierarchy clear?
+
+2. CHARACTER ACCURACY
+   - Are characters consistent across panels?
+   - Are expressions readable?
+   - Do characters match descriptions?
+
+3. TEXT READABILITY
+   - Are speech bubbles clear?
+   - Is text large enough to read?
+   - Is text placement appropriate?
+
+4. COMPOSITION
+   - Is the grid layout correct?
+   - Is there proper white space?
+   - Does the eye flow naturally?
+
+5. STYLE CONSISTENCY
+   - Is the art style consistent?
+   - Are line weights uniform?
+   - Is the color palette cohesive?
+
+OUTPUT FORMAT (JSON):
+{{
+    "overall_score": 85,
+    "visual_clarity_score": 90,
+    "visual_clarity_notes": "...",
+    "character_accuracy_score": 80,
+    "character_accuracy_notes": "...",
+    "text_readability_score": 85,
+    "text_readability_notes": "...",
+    "composition_score": 88,
+    "composition_notes": "...",
+    "style_consistency_score": 82,
+    "style_consistency_notes": "...",
+    "issues": [
+        {{"severity": "high|medium|low", "issue": "...", "panel": 2, "suggestion": "..."}}
+    ],
+    "suggestions": ["..."]
+}}
+
+THRESHOLD: Image must score >= 90% overall to proceed to human review."""
+
+    async def generate_comic_image(
+        self,
+        comic_script: ComicScript,
+        gemini_service: Any,
+        reference_images: Optional[List[str]] = None
+    ) -> str:
+        """
+        Generate a 4K comic grid image using Gemini Image.
+
+        Args:
+            comic_script: ComicScript with panels to render
+            gemini_service: GeminiService instance for image generation
+            reference_images: Optional base64 reference images (character sheets)
+
+        Returns:
+            Base64-encoded generated comic image
+        """
+        logger.info(f"Generating comic image for: {comic_script.title}")
+
+        # Build panel descriptions
+        panel_descriptions = []
+        for panel in comic_script.panels:
+            desc = f"""Panel {panel.panel_number} ({panel.panel_type}):
+- Character: {panel.character} with {panel.expression} expression
+- Dialogue: "{panel.dialogue}"
+- Visual: {panel.visual_description}
+- Background: {panel.background or 'simple/minimal'}"""
+            panel_descriptions.append(desc)
+
+        # Build prompt
+        prompt = self.IMAGE_GENERATION_PROMPT.format(
+            cols=comic_script.grid_layout.cols,
+            rows=comic_script.grid_layout.rows,
+            title=comic_script.title,
+            aspect_ratio=comic_script.grid_layout.aspect_ratio.value,
+            panel_descriptions="\n\n".join(panel_descriptions),
+            panel_count=len(comic_script.panels)
+        )
+
+        try:
+            # Generate image using Gemini
+            result = await gemini_service.generate_image(
+                prompt=prompt,
+                reference_images=reference_images,
+                return_metadata=True
+            )
+
+            if isinstance(result, dict):
+                image_base64 = result.get("image_base64", "")
+                logger.info(f"Generated comic image in {result.get('generation_time_ms', 0)}ms")
+            else:
+                image_base64 = result
+                logger.info("Generated comic image")
+
+            return image_base64
+
+        except Exception as e:
+            logger.error(f"Comic image generation failed: {e}")
+            raise
+
+    async def evaluate_comic_image(
+        self,
+        image_base64: str,
+        comic_script: ComicScript,
+        gemini_service: Any
+    ) -> ComicImageEvaluation:
+        """
+        Evaluate a generated comic image against quality checklist.
+
+        Must pass 90%+ to proceed to human review.
+
+        Args:
+            image_base64: Base64-encoded comic image
+            comic_script: ComicScript for reference
+            gemini_service: GeminiService for evaluation
+
+        Returns:
+            ComicImageEvaluation with scores and feedback
+        """
+        logger.info(f"Evaluating comic image for: {comic_script.title}")
+
+        # Use Gemini to analyze the image
+        try:
+            # Build evaluation context
+            context = f"""Comic: {comic_script.title}
+Premise: {comic_script.premise}
+Panel Count: {len(comic_script.panels)}
+Grid: {comic_script.grid_layout.cols}x{comic_script.grid_layout.rows}
+Expected Panels:
+"""
+            for p in comic_script.panels:
+                context += f"- Panel {p.panel_number}: {p.character} says '{p.dialogue}'\n"
+
+            # Call Gemini with image
+            response = await gemini_service.analyze_image(
+                image_base64=image_base64,
+                prompt=self.IMAGE_EVALUATION_PROMPT + f"\n\nCONTEXT:\n{context}"
+            )
+
+            # Parse response
+            eval_data = self._parse_json_response(response)
+
+            overall_score = eval_data.get("overall_score", 0)
+            passes_threshold = overall_score >= 90
+
+            evaluation = ComicImageEvaluation(
+                overall_score=overall_score,
+                visual_clarity_score=eval_data.get("visual_clarity_score", 0),
+                character_accuracy_score=eval_data.get("character_accuracy_score", 0),
+                text_readability_score=eval_data.get("text_readability_score", 0),
+                composition_score=eval_data.get("composition_score", 0),
+                style_consistency_score=eval_data.get("style_consistency_score", 0),
+                visual_clarity_notes=eval_data.get("visual_clarity_notes", ""),
+                character_accuracy_notes=eval_data.get("character_accuracy_notes", ""),
+                text_readability_notes=eval_data.get("text_readability_notes", ""),
+                composition_notes=eval_data.get("composition_notes", ""),
+                style_consistency_notes=eval_data.get("style_consistency_notes", ""),
+                issues=eval_data.get("issues", []),
+                suggestions=eval_data.get("suggestions", []),
+                passes_threshold=passes_threshold,
+                ready_for_review=passes_threshold
+            )
+
+            logger.info(
+                f"Image evaluation: {overall_score}% overall, "
+                f"passes_threshold={passes_threshold}"
+            )
+            return evaluation
+
+        except Exception as e:
+            logger.error(f"Comic image evaluation failed: {e}")
+            raise
+
+    def generate_comic_json(
+        self,
+        comic_script: ComicScript,
+        image_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate JSON for the comic video tool.
+
+        Converts ComicScript to the format expected by the existing
+        comic video generation system.
+
+        Args:
+            comic_script: ComicScript to convert
+            image_url: Optional URL of generated comic image
+
+        Returns:
+            Dict in comic video JSON format
+        """
+        logger.info(f"Generating comic JSON for: {comic_script.title}")
+
+        # Map panel types to video tool types
+        panel_type_map = {
+            "HOOK": "TITLE",
+            "BUILD": "ACT 1 - CONTENT",
+            "TWIST": "ACT 2 - CONTENT",
+            "PUNCHLINE": "OUTRO"
+        }
+
+        # Map emotional payoff to mood
+        payoff_mood_map = {
+            EmotionalPayoff.AHA: "positive",
+            EmotionalPayoff.HA: "celebration",
+            EmotionalPayoff.OOF: "dramatic"
+        }
+
+        # Build structure description
+        structure = {
+            "title": f"Panel 1",
+            "total_panels": len(comic_script.panels)
+        }
+
+        # Group panels into acts
+        panels_per_act = max(1, len(comic_script.panels) // 3)
+        act_num = 1
+        for i, panel in enumerate(comic_script.panels):
+            if i == 0:
+                continue  # Title panel
+            if i == len(comic_script.panels) - 1:
+                structure["outro"] = f"Panel {panel.panel_number}"
+            elif (i - 1) % panels_per_act == 0 and act_num <= 3:
+                end_panel = min(i + panels_per_act, len(comic_script.panels) - 1)
+                structure[f"act_{act_num}"] = f"Panels {i + 1}-{end_panel}"
+                act_num += 1
+
+        # Build panels array
+        panels = []
+        for panel in comic_script.panels:
+            panel_json = {
+                "panel_number": panel.panel_number,
+                "panel_type": panel_type_map.get(panel.panel_type, "ACT 1 - CONTENT"),
+                "header_text": comic_script.title if panel.panel_number == 1 else "",
+                "dialogue": panel.dialogue,
+                "mood": self._infer_mood_from_panel(panel, comic_script.emotional_payoff),
+                "characters_needed": [f"{panel.character} ({panel.expression})"],
+                "prompt": panel.visual_description
+            }
+            panels.append(panel_json)
+
+        # Build layout recommendation
+        layout = {
+            "format": f"{comic_script.grid_layout.cols} columns x {comic_script.grid_layout.rows} rows",
+            "panel_arrangement": self._build_panel_arrangement(comic_script)
+        }
+
+        # Assemble final JSON
+        comic_json = {
+            "total_panels": len(comic_script.panels),
+            "structure": structure,
+            "panels": panels,
+            "layout_recommendation": layout,
+            "metadata": {
+                "title": comic_script.title,
+                "premise": comic_script.premise,
+                "emotional_payoff": comic_script.emotional_payoff.value,
+                "aspect_ratio": comic_script.grid_layout.aspect_ratio.value,
+                "grid_cols": comic_script.grid_layout.cols,
+                "grid_rows": comic_script.grid_layout.rows
+            }
+        }
+
+        if image_url:
+            comic_json["comic_image_url"] = image_url
+
+        logger.info(f"Generated comic JSON with {len(panels)} panels")
+        return comic_json
+
+    def _infer_mood_from_panel(
+        self,
+        panel: ComicPanel,
+        default_payoff: EmotionalPayoff
+    ) -> str:
+        """
+        Infer mood from panel content for video effects.
+
+        Args:
+            panel: Comic panel
+            default_payoff: Default emotional payoff
+
+        Returns:
+            Mood string for video effects
+        """
+        dialogue_lower = panel.dialogue.lower()
+        expression_lower = panel.expression.lower()
+        visual_lower = panel.visual_description.lower()
+
+        # Check for explicit mood indicators
+        if any(w in dialogue_lower for w in ["panic", "crash", "disaster", "chaos"]):
+            return "chaos"
+        if any(w in dialogue_lower for w in ["danger", "warning", "alert"]):
+            return "danger"
+        if any(w in dialogue_lower for w in ["win", "success", "celebrate"]):
+            return "celebration"
+        if any(w in expression_lower for w in ["shocked", "scared", "panic"]):
+            return "danger"
+        if any(w in expression_lower for w in ["happy", "excited", "proud"]):
+            return "positive"
+        if any(w in visual_lower for w in ["chaos", "explosion", "crash"]):
+            return "chaos"
+
+        # Default based on panel type
+        if panel.panel_type == "PUNCHLINE":
+            if default_payoff == EmotionalPayoff.HA:
+                return "celebration"
+            elif default_payoff == EmotionalPayoff.OOF:
+                return "dramatic"
+            else:
+                return "positive"
+
+        return "neutral"
+
+    def _build_panel_arrangement(self, comic_script: ComicScript) -> List[List[str]]:
+        """
+        Build panel arrangement for layout recommendation.
+
+        Args:
+            comic_script: Comic script with grid layout
+
+        Returns:
+            2D array of panel positions
+        """
+        cols = comic_script.grid_layout.cols
+        rows = comic_script.grid_layout.rows
+        panels = comic_script.panels
+
+        arrangement = []
+        panel_idx = 0
+
+        for row in range(rows):
+            row_panels = []
+            for col in range(cols):
+                if panel_idx < len(panels):
+                    panel = panels[panel_idx]
+                    # First panel (title) might span multiple columns
+                    if panel_idx == 0 and cols > 1:
+                        row_panels.append(f"TITLE (wide, spans {cols} columns)")
+                        panel_idx += 1
+                        break
+                    else:
+                        row_panels.append(f"Panel {panel.panel_number}")
+                        panel_idx += 1
+            if row_panels:
+                arrangement.append(row_panels)
+
+        return arrangement
+
+    async def save_comic_image_to_db(
+        self,
+        comic_version_id: UUID,
+        image_url: str,
+        evaluation: Optional[ComicImageEvaluation] = None
+    ) -> None:
+        """
+        Save generated comic image URL and evaluation to database.
+
+        Args:
+            comic_version_id: Comic version UUID
+            image_url: URL of generated image
+            evaluation: Optional image evaluation results
+        """
+        if not self.supabase:
+            logger.warning("Supabase not configured - image not saved")
+            return
+
+        try:
+            update_data = {
+                "comic_image_url": image_url
+            }
+
+            if evaluation:
+                update_data["image_evaluation_results"] = evaluation.to_dict()
+
+            self.supabase.table("comic_versions").update(update_data).eq(
+                "id", str(comic_version_id)
+            ).execute()
+
+            logger.info(f"Saved comic image for version {comic_version_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to save comic image: {e}")
             raise

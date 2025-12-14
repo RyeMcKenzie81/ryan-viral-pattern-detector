@@ -953,9 +953,10 @@ Public page (no auth).
 - [x] Human approval checkpoint UI (Comic tab in Content Pipeline)
 
 ### Phase 9: Comic Generation & JSON
-- [ ] Comic panel generation
-- [ ] Comic JSON conversion
-- [ ] Integration with existing Comic Video tool
+- [x] Comic image generation (`generate_comic_image()` via Gemini)
+- [x] Comic image evaluation (`evaluate_comic_image()`)
+- [x] Comic JSON conversion (`generate_comic_json()`)
+- [x] UI: Generate Image tab and Export JSON tab in Comic workflow
 
 ### Phase 10: End-to-End Testing
 - [ ] Full workflow test

@@ -86,6 +86,13 @@ if 'current_comic' not in st.session_state:
     st.session_state.current_comic = None
 if 'comic_evaluation' not in st.session_state:
     st.session_state.comic_evaluation = None
+# Comic image generation state (Phase 9)
+if 'comic_image_generating' not in st.session_state:
+    st.session_state.comic_image_generating = False
+if 'comic_image_evaluating' not in st.session_state:
+    st.session_state.comic_image_evaluating = False
+if 'comic_exporting' not in st.session_state:
+    st.session_state.comic_exporting = False
 
 
 def get_supabase_client():
@@ -3536,7 +3543,9 @@ def render_comic_tab(project: Dict):
         existing_comics = []
 
     # Sub-tabs for comic workflow
-    comic_tab1, comic_tab2, comic_tab3 = st.tabs(["Condense", "Evaluate", "Approve"])
+    comic_tab1, comic_tab2, comic_tab3, comic_tab4, comic_tab5 = st.tabs([
+        "Condense", "Evaluate", "Approve", "Generate Image", "Export JSON"
+    ])
 
     with comic_tab1:
         render_comic_condense_tab(project, existing_comics)
@@ -3546,6 +3555,12 @@ def render_comic_tab(project: Dict):
 
     with comic_tab3:
         render_comic_approve_tab(project, existing_comics)
+
+    with comic_tab4:
+        render_comic_image_tab(project, existing_comics)
+
+    with comic_tab5:
+        render_comic_export_tab(project, existing_comics)
 
 
 def render_comic_condense_tab(project: Dict, existing_comics: List[Dict]):
@@ -3822,6 +3837,358 @@ def render_comic_approve_tab(project: Dict, existing_comics: List[Dict]):
     with col2:
         if st.button("Request Revision", type="secondary"):
             st.info("Revision feature coming soon. Create a new version in the Condense tab.")
+
+
+def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
+    """Render the comic image generation sub-tab."""
+    from viraltracker.services.content_pipeline.services.comic_service import (
+        ComicScript, ComicPanel, GridLayout, AspectRatio, EmotionalPayoff
+    )
+
+    project_id = project.get('id')
+
+    if not existing_comics:
+        st.info("No comic to generate images for. Create and approve a comic first.")
+        return
+
+    latest = existing_comics[0]
+    comic_id = latest.get('id')
+    status = latest.get('status', 'draft')
+
+    # Check if comic is approved
+    if status != 'approved':
+        st.warning("Comic must be approved before generating images. Go to the Approve tab first.")
+        return
+
+    # Check for existing generated image
+    image_url = latest.get('generated_image_url')
+    image_eval = latest.get('image_evaluation')
+
+    if image_url:
+        st.markdown("### Generated Comic Image")
+        st.image(image_url, caption="Generated Comic")
+
+        # Show evaluation if exists
+        if image_eval:
+            st.markdown("#### Image Evaluation")
+            render_comic_image_evaluation(image_eval)
+
+        # Option to regenerate
+        if st.button("Regenerate Image", type="secondary"):
+            st.session_state.comic_image_generating = True
+            st.rerun()
+
+    else:
+        st.markdown("### Generate Comic Image")
+        st.markdown("Generate a comic image using Gemini based on the approved comic script.")
+
+        # Character assets info
+        st.markdown("#### Character Assets")
+        st.info("The image generator will use character assets from the project's approved assets.")
+
+        # Style options
+        col1, col2 = st.columns(2)
+        with col1:
+            style = st.selectbox("Art Style", [
+                "Cartoon (Bold lines, flat colors)",
+                "Semi-realistic",
+                "Manga/Anime",
+                "Minimalist"
+            ])
+        with col2:
+            quality = st.selectbox("Quality", ["Standard", "High", "Ultra"])
+
+        # Generate button
+        if st.button("Generate Comic Image", type="primary", disabled=st.session_state.get('comic_image_generating', False)):
+            st.session_state.comic_image_generating = True
+            st.rerun()
+
+    # Handle image generation
+    if st.session_state.get('comic_image_generating', False):
+        with st.spinner("Generating comic image with Gemini... This may take 1-2 minutes."):
+            try:
+                # Parse comic data
+                comic_script_data = latest.get('comic_script')
+                if isinstance(comic_script_data, str):
+                    comic_script_data = json.loads(comic_script_data)
+
+                # Rebuild ComicScript object
+                panels = []
+                for p in comic_script_data.get('panels', []):
+                    panels.append(ComicPanel(
+                        panel_number=p.get('panel_number', len(panels) + 1),
+                        panel_type=p.get('panel_type', 'BUILD'),
+                        dialogue=p.get('dialogue', ''),
+                        visual_description=p.get('visual_description', ''),
+                        character=p.get('character', 'every-coon'),
+                        expression=p.get('expression', 'neutral'),
+                        background=p.get('background'),
+                        props=p.get('props', [])
+                    ))
+
+                grid_data = comic_script_data.get('grid_layout', {})
+                grid_layout = GridLayout(
+                    cols=grid_data.get('cols', 2),
+                    rows=grid_data.get('rows', 2),
+                    aspect_ratio=AspectRatio(grid_data.get('aspect_ratio', '9:16'))
+                )
+
+                payoff_str = comic_script_data.get('emotional_payoff', 'HA!')
+                if payoff_str == 'AHA':
+                    emotional_payoff = EmotionalPayoff.AHA
+                elif payoff_str == 'OOF':
+                    emotional_payoff = EmotionalPayoff.OOF
+                else:
+                    emotional_payoff = EmotionalPayoff.HA
+
+                comic_script = ComicScript(
+                    id=comic_script_data.get('id', str(comic_id)),
+                    project_id=str(project_id),
+                    version_number=latest.get('version_number', 1),
+                    title=comic_script_data.get('title', 'Untitled'),
+                    premise=comic_script_data.get('premise', ''),
+                    emotional_payoff=emotional_payoff,
+                    panels=panels,
+                    grid_layout=grid_layout
+                )
+
+                # Get character assets URL (placeholder for now)
+                character_assets_url = project.get('character_assets_url', '')
+
+                service = get_comic_service()
+                result = asyncio.run(service.generate_comic_image(
+                    comic_script=comic_script,
+                    character_assets_url=character_assets_url
+                ))
+
+                image_url = result.get('image_url')
+
+                # Save to database
+                asyncio.run(service.save_comic_image_to_db(
+                    comic_version_id=UUID(comic_id),
+                    image_url=image_url,
+                    generation_metadata=result.get('metadata', {})
+                ))
+
+                st.session_state.comic_image_generating = False
+                st.success("Comic image generated!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.comic_image_generating = False
+                st.error(f"Image generation failed: {e}")
+
+    # Evaluate image section
+    if image_url and not image_eval:
+        st.markdown("---")
+        st.markdown("### Evaluate Image")
+
+        if st.button("Evaluate Generated Image", type="primary", disabled=st.session_state.get('comic_image_evaluating', False)):
+            st.session_state.comic_image_evaluating = True
+            st.rerun()
+
+    if st.session_state.get('comic_image_evaluating', False):
+        with st.spinner("Evaluating comic image..."):
+            try:
+                service = get_comic_service()
+                evaluation = asyncio.run(service.evaluate_comic_image(
+                    image_url=image_url,
+                    comic_version_id=UUID(comic_id)
+                ))
+
+                # Save evaluation
+                db = get_supabase_client()
+                db.table("comic_versions").update({
+                    "image_evaluation": evaluation.to_dict()
+                }).eq("id", comic_id).execute()
+
+                st.session_state.comic_image_evaluating = False
+                st.success("Image evaluation complete!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.comic_image_evaluating = False
+                st.error(f"Image evaluation failed: {e}")
+
+
+def render_comic_image_evaluation(eval_data: Dict):
+    """Render comic image evaluation results."""
+    if isinstance(eval_data, str):
+        eval_data = json.loads(eval_data)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        quality = eval_data.get('quality_score', 0)
+        st.metric("Quality", f"{quality}/100")
+    with col2:
+        consistency = eval_data.get('consistency_score', 0)
+        st.metric("Consistency", f"{consistency}/100")
+    with col3:
+        readability = eval_data.get('readability_score', 0)
+        st.metric("Readability", f"{readability}/100")
+    with col4:
+        overall = eval_data.get('overall_score', 0)
+        st.metric("Overall", f"{overall}/100")
+
+    # Approval status
+    approved = eval_data.get('approved', False)
+    if approved:
+        st.success("Image approved for use")
+    else:
+        st.warning("Image may need regeneration")
+
+    # Issues
+    issues = eval_data.get('issues', [])
+    if issues:
+        with st.expander(f"Issues ({len(issues)})"):
+            for issue in issues:
+                st.markdown(f"- {issue}")
+
+    # Notes
+    notes = eval_data.get('notes', '')
+    if notes:
+        with st.expander("Evaluation Notes"):
+            st.markdown(notes)
+
+
+def render_comic_export_tab(project: Dict, existing_comics: List[Dict]):
+    """Render the comic export (JSON) sub-tab."""
+    project_id = project.get('id')
+
+    if not existing_comics:
+        st.info("No comic to export. Create and approve a comic first.")
+        return
+
+    latest = existing_comics[0]
+    comic_id = latest.get('id')
+    status = latest.get('status', 'draft')
+
+    # Check if comic is approved and has image
+    if status != 'approved':
+        st.warning("Comic must be approved before exporting. Go to the Approve tab first.")
+        return
+
+    image_url = latest.get('generated_image_url')
+    if not image_url:
+        st.warning("Comic image must be generated before exporting. Go to the Generate Image tab first.")
+        return
+
+    st.markdown("### Export Comic JSON")
+    st.markdown("Export the comic in JSON format for use with the video generation tool.")
+
+    # Check for existing export
+    export_json = latest.get('export_json')
+
+    if export_json:
+        st.success("Export JSON generated!")
+
+        # Display JSON
+        with st.expander("View Export JSON"):
+            if isinstance(export_json, str):
+                export_data = json.loads(export_json)
+            else:
+                export_data = export_json
+            st.json(export_data)
+
+        # Download button
+        json_str = json.dumps(export_data, indent=2)
+        st.download_button(
+            label="Download JSON",
+            data=json_str,
+            file_name=f"comic_{comic_id}.json",
+            mime="application/json"
+        )
+
+        # Regenerate option
+        if st.button("Regenerate Export", type="secondary"):
+            st.session_state.comic_exporting = True
+            st.rerun()
+
+    else:
+        # Export options
+        col1, col2 = st.columns(2)
+        with col1:
+            include_audio = st.checkbox("Include audio script references", value=True)
+        with col2:
+            include_assets = st.checkbox("Include asset URLs", value=True)
+
+        if st.button("Generate Export JSON", type="primary", disabled=st.session_state.get('comic_exporting', False)):
+            st.session_state.comic_exporting = True
+            st.rerun()
+
+    # Handle export generation
+    if st.session_state.get('comic_exporting', False):
+        with st.spinner("Generating export JSON..."):
+            try:
+                from viraltracker.services.content_pipeline.services.comic_service import (
+                    ComicScript, ComicPanel, GridLayout, AspectRatio, EmotionalPayoff
+                )
+
+                # Parse comic data
+                comic_script_data = latest.get('comic_script')
+                if isinstance(comic_script_data, str):
+                    comic_script_data = json.loads(comic_script_data)
+
+                # Rebuild ComicScript object
+                panels = []
+                for p in comic_script_data.get('panels', []):
+                    panels.append(ComicPanel(
+                        panel_number=p.get('panel_number', len(panels) + 1),
+                        panel_type=p.get('panel_type', 'BUILD'),
+                        dialogue=p.get('dialogue', ''),
+                        visual_description=p.get('visual_description', ''),
+                        character=p.get('character', 'every-coon'),
+                        expression=p.get('expression', 'neutral'),
+                        background=p.get('background'),
+                        props=p.get('props', [])
+                    ))
+
+                grid_data = comic_script_data.get('grid_layout', {})
+                grid_layout = GridLayout(
+                    cols=grid_data.get('cols', 2),
+                    rows=grid_data.get('rows', 2),
+                    aspect_ratio=AspectRatio(grid_data.get('aspect_ratio', '9:16'))
+                )
+
+                payoff_str = comic_script_data.get('emotional_payoff', 'HA!')
+                if payoff_str == 'AHA':
+                    emotional_payoff = EmotionalPayoff.AHA
+                elif payoff_str == 'OOF':
+                    emotional_payoff = EmotionalPayoff.OOF
+                else:
+                    emotional_payoff = EmotionalPayoff.HA
+
+                comic_script = ComicScript(
+                    id=comic_script_data.get('id', str(comic_id)),
+                    project_id=str(project_id),
+                    version_number=latest.get('version_number', 1),
+                    title=comic_script_data.get('title', 'Untitled'),
+                    premise=comic_script_data.get('premise', ''),
+                    emotional_payoff=emotional_payoff,
+                    panels=panels,
+                    grid_layout=grid_layout
+                )
+
+                service = get_comic_service()
+                export_json = asyncio.run(service.generate_comic_json(
+                    comic_script=comic_script,
+                    image_url=image_url
+                ))
+
+                # Save to database
+                db = get_supabase_client()
+                db.table("comic_versions").update({
+                    "export_json": export_json
+                }).eq("id", comic_id).execute()
+
+                st.session_state.comic_exporting = False
+                st.success("Export JSON generated!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.comic_exporting = False
+                st.error(f"Export generation failed: {e}")
 
 
 def render_comic_preview(comic_data: Dict):
