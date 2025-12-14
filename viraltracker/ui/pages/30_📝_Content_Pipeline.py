@@ -660,7 +660,7 @@ def render_project_detail(project_id: str):
 
     if workflow_state in ['pending', 'topic_discovery', 'topic_evaluation', 'topic_selection']:
         render_topic_selection_view(project)
-    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved', 'els_ready', 'audio_production', 'audio_complete', 'handoff_ready', 'handoff_generated']:
+    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved', 'els_ready', 'audio_production', 'audio_complete', 'handoff_ready', 'handoff_generated', 'comic_evaluation', 'comic_approved']:
         render_script_view(project)
     else:
         st.info(f"Workflow state '{workflow_state}' not yet implemented")
