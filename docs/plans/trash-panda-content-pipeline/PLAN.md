@@ -938,16 +938,15 @@ Public page (no auth).
 - [ ] Download endpoints
 
 ### Phase 8: Comic Path
-- [ ] **KB Ingestion: `comic-production` collection**
-  - [ ] ⚠️ **USER ACTION**: Provide 20 Comic KB documents:
-    - Core Philosophy (3): `comic_blueprint_overview`, `comic_planning_4_panel`, `comic_canonical_definitions`
-    - Craft Pillars (4): `comic_characters_principles`, `comic_dialogue_rules`, `comic_virality_principles`, `comic_composition_principles`
-    - Patterns (3): `comic_patterns_emotions`, `comic_patterns_gags`, `comic_genres_and_audiences`
-    - Platforms (3): `comic_platforms_instagram`, `comic_platforms_twitter`, `comic_platforms_tiktok_vertical`
-    - Evaluation (3): `comic_evaluation_checklist`, `comic_troubleshooting_common_problems`, `comic_repair_patterns`
-    - Examples (3): `comic_examples_plans`, `comic_examples_before_after`, `comic_schemas_structures`
-    - Meta (1): `comic_kb_usage_guide`
-  - [ ] Ingest documents into Knowledge Base
+- [x] **KB Ingestion: `comic-production` collection** (20 documents, 20 chunks)
+  - [x] Core Philosophy (3): `comic_blueprint_overview`, `comic_planning_4_panel`, `comic_canonical_definitions`
+  - [x] Craft Pillars (4): `comic_characters_principles`, `comic_dialogue_rules`, `comic_virality_principles`, `comic_composition_principles`
+  - [x] Patterns (3): `comic_patterns_emotions`, `comic_patterns_gags`, `comic_genres_and_audiences`
+  - [x] Platforms (3): `comic_platforms_instagram`, `comic_platforms_twitter`, `comic_platforms_tiktok_vertical`
+  - [x] Evaluation (3): `comic_evaluation_checklist`, `comic_troubleshooting_common_problems`, `comic_repair_patterns`
+  - [x] Examples (3): `comic_examples_plans`, `comic_examples_before_after`, `comic_schemas_structures`
+  - [x] Meta (1): `comic_kb_usage_guide`
+  - Script: `scripts/ingest_comic_kb.py`
 - [ ] ComicService
 - [ ] Comic condensation (uses KB for planning)
 - [ ] Comic evaluation (uses KB for quality assessment)
