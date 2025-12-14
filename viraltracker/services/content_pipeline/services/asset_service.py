@@ -31,7 +31,7 @@ class AssetManagementService:
     """
 
     # Gemini prompt for extracting assets from visual_notes
-    ASSET_EXTRACTION_PROMPT = """Analyze these visual notes from a video script and identify all visual assets needed.
+    ASSET_EXTRACTION_PROMPT = """Analyze these visual notes from a video script and identify ALL visual assets needed.
 
 For each asset, classify it as:
 - character: Named characters (Every-Coon, Fed, Boomer, Whale, Wojak, Chad, etc.)
@@ -39,16 +39,22 @@ For each asset, classify it as:
 - background: Scene backgrounds, environments (street, office, bank, etc.)
 - effect: ONLY custom visual effects that need to be drawn (NOT standard editor effects)
 
-IMPORTANT RULES:
-1. Deduplicate - if an asset appears multiple times, list it once with all beat references
-2. Use lowercase-hyphenated names (e.g., "every-coon", "money-printer", "wall-street")
-3. For characters, include their expression/pose variations as separate entries
-4. Group similar props (e.g., "pile-of-money" and "stack-of-bills" → "pile-of-money")
-5. DO NOT include effects that are standard in video editors (After Effects, Premiere):
-   - Skip: flashing lights, sparkles, glows, shakes, zooms, fades, transitions
-   - Skip: tears, sweat drops, motion blur, lens flare, explosions, fire
-   - Skip: any effect that can be done with built-in editor tools
-   - ONLY include truly custom drawn effects specific to this animation
+CRITICAL RULES:
+1. EVERY BEAT NEEDS A BACKGROUND - If a beat doesn't explicitly mention a location, infer one from context (e.g., "generic-interior", "abstract-background")
+2. EVERY CHARACTER mentioned in a beat MUST be extracted with that beat_id in script_references
+3. Deduplicate - if an asset appears multiple times, list it once with ALL beat references where it appears
+4. Use lowercase-hyphenated names (e.g., "every-coon", "money-printer", "wall-street")
+5. DO NOT include standard editor effects (sparkles, glows, shakes, zooms, fades, transitions, tears, motion blur, lens flare, explosions, fire)
+
+CHARACTER EXTRACTION:
+- Look for character names: Every-Coon, Fed, Boomer, Whale, Wojak, Chad
+- If a beat says "Chad appears" or "Chad walks in", Chad MUST be in script_references for that beat
+- Extract the main narrator character for beats with dialogue
+
+BACKGROUND EXTRACTION:
+- Extract explicit locations (office, street, bank, etc.)
+- If no location mentioned, create a sensible default (e.g., "generic-background", "simple-interior")
+- Each beat_id should appear in at least one background's script_references
 
 <visual_notes>
 {visual_notes}
