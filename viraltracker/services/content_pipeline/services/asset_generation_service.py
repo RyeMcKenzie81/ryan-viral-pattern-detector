@@ -537,7 +537,7 @@ Requirements:
         Extract SFX requirements from a script.
 
         Looks for SFX cues in beat audio_notes and visual_notes.
-        Intelligently sets duration based on SFX type (music = longer).
+        Creates SEPARATE entries for music vs sound effects.
 
         Args:
             script_data: Script JSON data
@@ -551,85 +551,125 @@ Requirements:
         """
         sfx_requirements = []
 
-        # Keywords that indicate short SFX (1-3 seconds)
-        short_sfx_keywords = [
+        # Keywords that indicate sound effects (short, punctuated sounds)
+        sfx_keywords = [
             "ding", "buzz", "whoosh", "boom", "splash", "click",
-            "beep", "pop", "snap", "thud", "crash", "bang"
+            "beep", "pop", "snap", "thud", "crash", "bang",
+            "sound", "sfx", "noise", "rumble", "alarm",
+            "siren", "horn", "ring", "chime", "effect"
         ]
 
-        # Keywords that indicate medium SFX (3-8 seconds)
-        medium_sfx_keywords = [
-            "sound", "sfx", "audio", "noise", "rumble", "alarm",
-            "siren", "horn", "ring", "chime"
-        ]
-
-        # Keywords that indicate music/longer SFX (10-22 seconds)
+        # Keywords that indicate music (longer, background audio)
         music_keywords = [
-            "music", "song", "tune", "melody", "beat", "rhythm",
+            "music", "song", "tune", "melody", "rhythm",
             "soundtrack", "theme", "jingle", "background music",
             "dramatic", "suspense", "tension", "celebration",
-            "montage", "transition"
+            "montage", "score", "orchestral", "synth"
         ]
 
         beats = script_data.get("beats", [])
 
         for beat in beats:
             beat_id = beat.get("beat_id", "unknown")
-            audio_notes = beat.get("audio_notes", "").lower()
-            visual_notes = beat.get("visual_notes", "").lower()
+            audio_notes = beat.get("audio_notes", "")
+            visual_notes = beat.get("visual_notes", "")
+            audio_notes_lower = audio_notes.lower()
+            visual_notes_lower = visual_notes.lower()
 
-            combined = f"{audio_notes} {visual_notes}"
+            combined_lower = f"{audio_notes_lower} {visual_notes_lower}"
 
-            # Determine duration based on SFX type
-            duration = 2.0  # Default
-            sfx_type = "sfx"
-
-            # Check for music first (longer duration)
-            is_music = any(kw in combined for kw in music_keywords)
-            if is_music:
-                duration = 15.0  # Music should be longer
-                sfx_type = "music"
-
-            # Check for short SFX
-            elif any(kw in combined for kw in short_sfx_keywords):
-                duration = 2.0
-                sfx_type = "short"
-
-            # Check for medium SFX
-            elif any(kw in combined for kw in medium_sfx_keywords):
-                duration = 5.0
-                sfx_type = "medium"
-
-            # Only add if we found any SFX-related keywords
-            all_keywords = short_sfx_keywords + medium_sfx_keywords + music_keywords
-            if any(kw in combined for kw in all_keywords):
+            # Check for MUSIC cues - create separate music entry
+            has_music = any(kw in combined_lower for kw in music_keywords)
+            if has_music:
+                # Extract music-specific description
+                music_desc = self._extract_music_description(audio_notes, visual_notes)
                 sfx_requirements.append({
-                    "name": f"{sfx_type}-{beat_id}",
-                    "description": combined[:200],
+                    "name": f"music-{beat_id}",
+                    "description": music_desc,
                     "beat_references": [beat_id],
-                    "source": "audio_notes" if any(kw in audio_notes for kw in all_keywords) else "visual_notes",
-                    "duration_seconds": duration,
-                    "sfx_type": sfx_type
+                    "source": "audio_notes",
+                    "duration_seconds": 15.0,  # Music is longer
+                    "sfx_type": "music"
                 })
 
-        # Deduplicate similar descriptions
+            # Check for SFX cues - create separate SFX entry
+            has_sfx = any(kw in combined_lower for kw in sfx_keywords)
+            if has_sfx:
+                # Extract SFX-specific description
+                sfx_desc = self._extract_sfx_description(audio_notes, visual_notes)
+                sfx_requirements.append({
+                    "name": f"sfx-{beat_id}",
+                    "description": sfx_desc,
+                    "beat_references": [beat_id],
+                    "source": "audio_notes",
+                    "duration_seconds": 2.0,  # SFX are short
+                    "sfx_type": "sfx"
+                })
+
+        # Deduplicate similar descriptions (separately for music vs sfx)
         unique_sfx = self._deduplicate_sfx(sfx_requirements)
 
-        logger.info(f"Extracted {len(unique_sfx)} unique SFX requirements from script")
+        logger.info(f"Extracted {len(unique_sfx)} unique audio requirements from script")
         return unique_sfx
+
+    def _extract_music_description(self, audio_notes: str, visual_notes: str) -> str:
+        """Extract a focused description for music generation."""
+        # Look for music-related phrases in the notes
+        music_keywords = [
+            "music", "song", "tune", "melody", "rhythm", "soundtrack",
+            "theme", "jingle", "dramatic", "suspense", "tension",
+            "celebration", "montage", "score", "orchestral", "synth"
+        ]
+
+        # First check audio_notes for music cues
+        for keyword in music_keywords:
+            if keyword in audio_notes.lower():
+                # Return the audio_notes as the music description
+                return f"Background music: {audio_notes[:150]}"
+
+        # Fall back to visual notes if music mentioned there
+        for keyword in music_keywords:
+            if keyword in visual_notes.lower():
+                return f"Background music for scene: {visual_notes[:150]}"
+
+        return f"Background music: {audio_notes[:100]}"
+
+    def _extract_sfx_description(self, audio_notes: str, visual_notes: str) -> str:
+        """Extract a focused description for SFX generation."""
+        sfx_keywords = [
+            "ding", "buzz", "whoosh", "boom", "splash", "click",
+            "beep", "pop", "snap", "thud", "crash", "bang",
+            "sound", "sfx", "noise", "rumble", "alarm",
+            "siren", "horn", "ring", "chime", "effect"
+        ]
+
+        # Look for specific SFX mentions
+        combined = f"{audio_notes} {visual_notes}"
+        combined_lower = combined.lower()
+
+        # Find which SFX keywords are present
+        found_sfx = [kw for kw in sfx_keywords if kw in combined_lower]
+
+        if found_sfx:
+            # Create a description focused on the SFX
+            return f"Sound effect: {', '.join(found_sfx)}. Context: {audio_notes[:100]}"
+
+        return f"Sound effect: {audio_notes[:150]}"
 
     def _deduplicate_sfx(
         self,
         sfx_list: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Deduplicate SFX by similar descriptions."""
+        """Deduplicate SFX by type and similar descriptions."""
         if not sfx_list:
             return []
 
-        # Simple dedup by first 50 chars of description
+        # Dedup by type + first 50 chars of description
+        # This keeps music and SFX separate even if similar descriptions
         seen = {}
         for sfx in sfx_list:
-            key = sfx["description"][:50].lower()
+            sfx_type = sfx.get("sfx_type", "sfx")
+            key = f"{sfx_type}:{sfx['description'][:50].lower()}"
             if key not in seen:
                 seen[key] = sfx
             else:
