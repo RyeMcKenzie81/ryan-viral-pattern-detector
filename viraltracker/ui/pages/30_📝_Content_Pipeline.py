@@ -3865,9 +3865,10 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
                     flow_score=eval_data.get('flow_score', 0),
                     flow_notes=eval_data.get('flow_notes', ''),
                     overall_score=eval_data.get('overall_score', 0),
-                    quick_approve_eligible=eval_data.get('quick_approve_eligible', False),
                     issues=issues,
-                    suggestions=eval_data.get('suggestions', [])
+                    suggestions=eval_data.get('suggestions', []),
+                    ready_for_approval=eval_data.get('ready_for_approval', False),
+                    quick_approve_eligible=eval_data.get('quick_approve_eligible', False)
                 )
 
                 # Get revision notes
