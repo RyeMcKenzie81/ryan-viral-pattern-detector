@@ -904,68 +904,32 @@ Public page (no auth).
 - [x] Revision loop with interactive UX (checkboxes, revise selected/all)
 - [x] Human approval checkpoint UI
 
-### Phase 4: ELS & Audio Integration (MVP 3) 🚧 IN PROGRESS
-- [ ] ELS conversion (`ScriptGenerationService.convert_to_els()`)
-- [ ] Save ELS to `els_versions` table
-- [ ] Add "Audio" tab to Content Pipeline UI
-- [ ] Auto-create audio session linked to project via `audio_session_id` FK
-- [ ] Embed audio generation workflow in Content Pipeline
-- [ ] Audio playback and take selection
-- [ ] Export selected takes
+### Phase 4: ELS & Audio Integration (MVP 3) ✅ COMPLETE
+- [x] ELS conversion (`ScriptGenerationService.convert_to_els()`)
+- [x] Save ELS to `els_versions` table
+- [x] Add "Audio" tab to Content Pipeline UI
+- [x] Auto-create audio session linked to project via `audio_session_id` FK
+- [x] Embed audio generation workflow in Content Pipeline
+- [x] Audio playback and take selection
+- [x] Beat regeneration with take numbering
+- [x] Mark Audio Complete button
 
-#### MVP 3 Technical Design
+### Phase 5: Asset Management (MVP 4) ✅ COMPLETE
+- [x] AssetManagementService (Gemini-powered extraction)
+- [x] Script parsing for assets (visual_notes → characters, props, backgrounds, effects)
+- [x] Asset library UI (browse, filter, view)
+- [x] Asset matching logic (match requirements against comic_assets)
+- [x] File upload to Supabase Storage (single + batch)
+- [x] JSON bulk import
 
-**ELS Conversion (Deterministic)**:
-```python
-# ScriptGenerationService.convert_to_els()
-# Input: script_data dict with beats
-# Output: ELS-formatted string
-
-[META]
-video_title: {script_data['title']}
-project: trash-panda
-default_character: every-coon
-
-[BEAT: {beat['beat_id']}]
-name: {beat['beat_name']}
----
-[CHARACTER: {beat['character']}]
-[DIRECTION: {beat['visual_notes'] or beat['audio_notes']}]
-[PACE: {infer_pace_from_beat(beat)}]
-{beat['script']}
-[PAUSE: {beat['pause_ms'] or 100}ms]
-[END_BEAT]
-```
-
-**Audio Tab UI Flow**:
-1. Show "Convert to ELS" button (if no ELS exists)
-2. Display generated ELS in expandable view
-3. "Generate Audio" button → creates audio session, links to project
-4. Embed beat-by-beat audio generation with progress
-5. Take selection per beat (play, regenerate, select)
-6. Export ZIP of selected takes
-
-**Database Links**:
-- `content_projects.audio_session_id` → FK to `audio_production_sessions.id`
-- `els_versions.project_id` → FK to `content_projects.id`
-- `els_versions.script_version_id` → FK to `script_versions.id`
-
-### Phase 5: Asset Management
-- [ ] AssetManagementService
-- [ ] Script parsing for assets
-- [ ] Asset library UI
-- [ ] Asset matching logic
-
-### Phase 6: Asset Generation
-- [ ] **Image Assets**: Gemini 3 Pro for backgrounds, props
-- [ ] **SFX Assets**: ElevenLabs Sound Effects API for missing audio
-  - Parse script for SFX triggers (whale rumble, printer sounds, "WAGMI", etc.)
-  - Check asset library for existing SFX
-  - Generate missing SFX via ElevenLabs
-  - Review and approve generated SFX
-- [ ] Asset generation workflow
-- [ ] Human review checkpoint UI
-- [ ] Asset approval flow
+### Phase 6: Asset Generation (MVP 5) ✅ COMPLETE
+- [x] **Image Assets**: `gemini-3-pro-image-preview` for backgrounds, props
+- [x] **SFX Assets**: ElevenLabs Sound Effects API for missing audio
+  - [x] Parse script for SFX triggers
+  - [x] Generate missing SFX via ElevenLabs
+- [x] **Human Review UI**: Approve/Reject/Regenerate workflow
+- [x] **Batch Generation**: Rate-limited batch processing with progress tracking
+- [x] **Asset Approval Flow**: Auto-add approved assets to library
 
 ### Phase 7: Editor Handoff
 - [ ] EditorHandoffService
@@ -974,16 +938,15 @@ name: {beat['beat_name']}
 - [ ] Download endpoints
 
 ### Phase 8: Comic Path
-- [ ] **KB Ingestion: `comic-production` collection**
-  - [ ] ⚠️ **USER ACTION**: Provide 20 Comic KB documents:
-    - Core Philosophy (3): `comic_blueprint_overview`, `comic_planning_4_panel`, `comic_canonical_definitions`
-    - Craft Pillars (4): `comic_characters_principles`, `comic_dialogue_rules`, `comic_virality_principles`, `comic_composition_principles`
-    - Patterns (3): `comic_patterns_emotions`, `comic_patterns_gags`, `comic_genres_and_audiences`
-    - Platforms (3): `comic_platforms_instagram`, `comic_platforms_twitter`, `comic_platforms_tiktok_vertical`
-    - Evaluation (3): `comic_evaluation_checklist`, `comic_troubleshooting_common_problems`, `comic_repair_patterns`
-    - Examples (3): `comic_examples_plans`, `comic_examples_before_after`, `comic_schemas_structures`
-    - Meta (1): `comic_kb_usage_guide`
-  - [ ] Ingest documents into Knowledge Base
+- [x] **KB Ingestion: `comic-production` collection** (20 documents, 20 chunks)
+  - [x] Core Philosophy (3): `comic_blueprint_overview`, `comic_planning_4_panel`, `comic_canonical_definitions`
+  - [x] Craft Pillars (4): `comic_characters_principles`, `comic_dialogue_rules`, `comic_virality_principles`, `comic_composition_principles`
+  - [x] Patterns (3): `comic_patterns_emotions`, `comic_patterns_gags`, `comic_genres_and_audiences`
+  - [x] Platforms (3): `comic_platforms_instagram`, `comic_platforms_twitter`, `comic_platforms_tiktok_vertical`
+  - [x] Evaluation (3): `comic_evaluation_checklist`, `comic_troubleshooting_common_problems`, `comic_repair_patterns`
+  - [x] Examples (3): `comic_examples_plans`, `comic_examples_before_after`, `comic_schemas_structures`
+  - [x] Meta (1): `comic_kb_usage_guide`
+  - Script: `scripts/ingest_comic_kb.py`
 - [ ] ComicService
 - [ ] Comic condensation (uses KB for planning)
 - [ ] Comic evaluation (uses KB for quality assessment)

@@ -59,6 +59,24 @@ if 'audio_generating' not in st.session_state:
     st.session_state.audio_generating = False
 if 'current_els' not in st.session_state:
     st.session_state.current_els = None
+# Assets tab state (MVP 4)
+if 'asset_extracting' not in st.session_state:
+    st.session_state.asset_extracting = False
+if 'extracted_assets' not in st.session_state:
+    st.session_state.extracted_assets = []
+# Asset generation state (MVP 5)
+if 'asset_generating' not in st.session_state:
+    st.session_state.asset_generating = False
+if 'generation_progress' not in st.session_state:
+    st.session_state.generation_progress = 0
+# SFX tab state
+if 'sfx_extracting' not in st.session_state:
+    st.session_state.sfx_extracting = False
+if 'sfx_generating' not in st.session_state:
+    st.session_state.sfx_generating = False
+# Handoff tab state (MVP 6)
+if 'handoff_generating' not in st.session_state:
+    st.session_state.handoff_generating = False
 
 
 def get_supabase_client():
@@ -77,12 +95,44 @@ def get_doc_service():
     return DocService(supabase=get_supabase_client(), openai_api_key=api_key)
 
 
+def get_gemini_service():
+    """Get GeminiService instance."""
+    from viraltracker.services.gemini_service import GeminiService
+    try:
+        return GeminiService()
+    except ValueError:
+        return None
+
+
 def get_content_pipeline_service():
     """Get ContentPipelineService instance."""
     from viraltracker.services.content_pipeline.services.content_pipeline_service import ContentPipelineService
     db = get_supabase_client()
     docs = get_doc_service()
-    return ContentPipelineService(supabase_client=db, docs_service=docs)
+    gemini = get_gemini_service()
+    return ContentPipelineService(supabase_client=db, docs_service=docs, gemini_service=gemini)
+
+
+def get_asset_service():
+    """Get AssetManagementService instance."""
+    from viraltracker.services.content_pipeline.services.asset_service import AssetManagementService
+    db = get_supabase_client()
+    gemini = get_gemini_service()
+    return AssetManagementService(supabase_client=db, gemini_service=gemini)
+
+
+def get_asset_generation_service():
+    """Get AssetGenerationService instance."""
+    from viraltracker.services.content_pipeline.services.asset_generation_service import AssetGenerationService
+    import os
+    db = get_supabase_client()
+    gemini = get_gemini_service()
+    elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
+    return AssetGenerationService(
+        supabase_client=db,
+        gemini_service=gemini,
+        elevenlabs_api_key=elevenlabs_key
+    )
 
 
 def get_topic_service():
@@ -99,6 +149,149 @@ def get_script_service():
     db = get_supabase_client()
     docs = get_doc_service()
     return ScriptGenerationService(supabase_client=db, docs_service=docs)
+
+
+def get_handoff_service():
+    """Get EditorHandoffService instance."""
+    from viraltracker.services.content_pipeline.services.handoff_service import EditorHandoffService
+    from viraltracker.services.audio_production_service import AudioProductionService
+    db = get_supabase_client()
+    audio_service = AudioProductionService()
+    asset_service = get_asset_service()
+    return EditorHandoffService(
+        supabase_client=db,
+        audio_service=audio_service,
+        asset_service=asset_service
+    )
+
+
+def get_script_data_for_project(project_id: str) -> Optional[Dict]:
+    """Load the approved script data for a project."""
+    try:
+        db = get_supabase_client()
+        result = db.table("script_versions").select(
+            "script_content"
+        ).eq("project_id", project_id).eq("status", "approved").order(
+            "version_number", desc=True
+        ).limit(1).execute()
+
+        if not result.data:
+            return None
+
+        script_content = result.data[0].get("script_content")
+        if isinstance(script_content, str):
+            return json.loads(script_content)
+        return script_content
+    except Exception:
+        return None
+
+
+def get_beat_context(script_data: Optional[Dict], script_reference: Any) -> str:
+    """
+    Get context about how an asset/SFX is used based on beat references.
+
+    Args:
+        script_data: The script data with beats array
+        script_reference: JSON array of beat IDs (or string/list)
+
+    Returns:
+        Formatted string describing usage context
+    """
+    if not script_data:
+        return ""
+
+    # Parse script_reference if it's a string
+    beat_ids = script_reference
+    if isinstance(script_reference, str):
+        try:
+            beat_ids = json.loads(script_reference)
+        except:
+            beat_ids = []
+
+    if not beat_ids:
+        return ""
+
+    # Build a lookup map of beats by beat_id
+    beats = script_data.get("beats", [])
+    beat_map = {b.get("beat_id"): b for b in beats}
+
+    # Gather context from referenced beats
+    contexts = []
+    for beat_id in beat_ids[:3]:  # Limit to first 3 beats for brevity
+        beat = beat_map.get(beat_id)
+        if beat:
+            beat_name = beat.get("beat_name", beat_id)
+            visual = beat.get("visual_notes", "")
+            script = beat.get("script", "")[:100]  # First 100 chars of dialogue
+            audio = beat.get("audio_notes", "")
+
+            context_parts = [f"**{beat_name}**"]
+            if visual:
+                context_parts.append(f"Visual: {visual[:150]}")
+            if script:
+                context_parts.append(f"Script: \"{script}...\"")
+            if audio:
+                context_parts.append(f"Audio: {audio[:100]}")
+
+            contexts.append(" | ".join(context_parts))
+
+    if len(beat_ids) > 3:
+        contexts.append(f"...and {len(beat_ids) - 3} more beats")
+
+    return "\n".join(contexts)
+
+
+def _build_prompt_preview(asset_name: str, asset_type: str, description: str) -> str:
+    """Build a preview of the prompt that will be used for generation."""
+    style = (
+        "Style similar to 'Cyanide and Happiness' or 'Brewstew'. "
+        "Large, smooth, pill-shaped heads with soft 3D shading and gradients, "
+        "simple rectangular bodies, and thick black stick-figure limbs. "
+        "Clean vector aesthetic. 2D, high contrast."
+    )
+
+    if asset_type == "character":
+        return f"""A character asset sheet for 2D puppet animation. {style}
+
+The Subject: {description}
+
+The Layout:
+- Row 1 (Heads): Four large floating heads showing distinct expressions.
+- Row 2 (Bodies): Standard body/torso + detached limbs for rigging.
+
+Background is plain white for easy cropping."""
+
+    elif asset_type == "background":
+        return f"""A 16:9 widescreen background scene for 2D animation. {style}
+
+The Scene: {description}
+
+Requirements:
+- Wide cinematic composition (16:9 aspect ratio)
+- No characters in the scene
+- Suitable for layering animated characters on top"""
+
+    elif asset_type == "prop":
+        return f"""A single prop/object for 2D animation. {style}
+
+The Object: {description}
+
+Requirements:
+- Single object, centered composition
+- Plain white background for easy cropping
+- Clean edges, suitable for cutout"""
+
+    elif asset_type == "effect":
+        return f"""A visual effect overlay for 2D animation. {style}
+
+The Effect: {description}
+
+Requirements:
+- Transparent or easily removable background
+- Suitable for overlaying on video"""
+
+    else:
+        return f"{description}. {style}"
 
 
 def get_brands():
@@ -443,7 +636,7 @@ def render_project_detail(project_id: str):
 
     if workflow_state in ['pending', 'topic_discovery', 'topic_evaluation', 'topic_selection']:
         render_topic_selection_view(project)
-    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved', 'els_ready', 'audio_production', 'audio_complete']:
+    elif workflow_state in ['topic_selected', 'script_generation', 'script_review', 'script_approval', 'script_approved', 'els_ready', 'audio_production', 'audio_complete', 'handoff_ready', 'handoff_generated']:
         render_script_view(project)
     else:
         st.info(f"Workflow state '{workflow_state}' not yet implemented")
@@ -564,8 +757,8 @@ def render_script_view(project: Dict):
 
     st.divider()
 
-    # Tabs for script workflow - include Audio tab
-    tab1, tab2, tab3, tab4 = st.tabs(["Generate", "Review", "Approve", "Audio"])
+    # Tabs for script workflow - include Audio, Assets, SFX, and Handoff tabs
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Generate", "Review", "Approve", "Audio", "Assets", "SFX", "Handoff"])
 
     with tab1:
         render_script_generation_tab(project)
@@ -578,6 +771,15 @@ def render_script_view(project: Dict):
 
     with tab4:
         render_audio_tab(project)
+
+    with tab5:
+        render_assets_tab(project)
+
+    with tab6:
+        render_sfx_tab(project)
+
+    with tab7:
+        render_handoff_tab(project)
 
 
 def render_script_generation_tab(project: Dict):
@@ -1429,7 +1631,10 @@ def render_audio_tab(project: Dict):
     workflow_state = project.get('workflow_state', 'pending')
 
     # Check if script is approved
-    script_approved = workflow_state in ['script_approved', 'els_ready', 'audio_production', 'audio_complete']
+    script_approved = workflow_state in [
+        'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+        'handoff_ready', 'handoff_generated'
+    ]
 
     if not script_approved:
         st.info("Approve your script first before generating audio.")
@@ -1794,6 +1999,1485 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Opti
         if st.button("Regen", key=f"regen_{beat_id}_{take_id}", help="Regenerate this beat"):
             st.session_state[f"regenerating_{beat_id}"] = True
             st.rerun()
+
+
+# =========================================================================
+# Assets Tab Functions (MVP 4)
+# =========================================================================
+
+async def run_asset_extraction(script_version_id: str, script_data: Dict, brand_id: str):
+    """Run asset extraction using Gemini AI."""
+    service = get_asset_service()
+
+    # Extract requirements from script
+    requirements = await service.extract_requirements(
+        script_version_id=UUID(script_version_id),
+        script_data=script_data
+    )
+
+    # Match against existing library
+    matched, unmatched = service.match_existing_assets(
+        requirements=requirements,
+        brand_id=UUID(brand_id)
+    )
+
+    return {"matched": matched, "unmatched": unmatched, "all": matched + unmatched}
+
+
+def render_assets_tab(project: Dict):
+    """Render the assets management tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved (assets require an approved script)
+    script_approved = workflow_state in [
+        'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+        'asset_extraction', 'asset_matching', 'asset_generation', 'asset_review',
+        'handoff_ready', 'handoff_generated'
+    ]
+
+    if not script_approved:
+        st.info("Approve your script first before extracting assets.")
+        st.caption("The Assets tab becomes available after script approval.")
+        return
+
+    st.markdown("### Visual Asset Management")
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).eq("status", "approved").order("version_number", desc=True).limit(1).execute()
+
+        if not scripts.data:
+            st.warning("No approved script found.")
+            return
+
+        current_script = scripts.data[0]
+        script_content = current_script.get('script_content')
+        script_data = json.loads(script_content) if isinstance(script_content, str) else script_content
+
+    except Exception as e:
+        st.error(f"Failed to load script: {e}")
+        return
+
+    # Check for existing asset requirements
+    try:
+        req_result = db.table("project_asset_requirements").select(
+            "*, comic_assets(*)"
+        ).eq("project_id", project_id).order("asset_type").execute()
+        existing_requirements = req_result.data or []
+    except Exception:
+        existing_requirements = []
+
+    # Sub-tabs for asset workflow
+    asset_tab1, asset_tab2, asset_tab3, asset_tab4, asset_tab5 = st.tabs([
+        "Extract", "Generate", "Review", "Library", "Upload"
+    ])
+
+    with asset_tab1:
+        render_asset_extraction(project_id, brand_id, current_script, script_data, existing_requirements)
+
+    with asset_tab2:
+        render_asset_generation(project_id, brand_id, existing_requirements)
+
+    with asset_tab3:
+        render_asset_review(project_id, brand_id, existing_requirements)
+
+    with asset_tab4:
+        render_asset_library(brand_id)
+
+    with asset_tab5:
+        render_asset_upload(brand_id)
+
+
+def render_asset_extraction(project_id: str, brand_id: str, current_script: Dict, script_data: Dict, existing_requirements: List[Dict]):
+    """Render the asset extraction interface."""
+
+    if existing_requirements:
+        st.success(f"Found {len(existing_requirements)} asset requirements")
+
+        # Summary stats
+        service = get_asset_service()
+        summary = service.get_asset_summary(existing_requirements)
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Assets", summary['total'])
+        with col2:
+            st.metric("Matched", summary['by_status']['matched'])
+        with col3:
+            st.metric("Needed", summary['by_status']['needed'])
+        with col4:
+            st.metric("Generated", summary['by_status']['generated'])
+
+        st.divider()
+
+        # Group by type
+        st.markdown("#### Assets by Type")
+
+        # Characters
+        characters = [r for r in existing_requirements if r.get('asset_type') == 'character']
+        if characters:
+            with st.expander(f"Characters ({len(characters)})", expanded=True):
+                render_requirement_list(characters, project_id)
+
+        # Props
+        props = [r for r in existing_requirements if r.get('asset_type') == 'prop']
+        if props:
+            with st.expander(f"Props ({len(props)})", expanded=False):
+                render_requirement_list(props, project_id)
+
+        # Backgrounds
+        backgrounds = [r for r in existing_requirements if r.get('asset_type') == 'background']
+        if backgrounds:
+            with st.expander(f"Backgrounds ({len(backgrounds)})", expanded=False):
+                render_requirement_list(backgrounds, project_id)
+
+        # Effects
+        effects = [r for r in existing_requirements if r.get('asset_type') == 'effect']
+        if effects:
+            with st.expander(f"Effects ({len(effects)})", expanded=False):
+                render_requirement_list(effects, project_id)
+
+        st.divider()
+
+        # Re-extraction option
+        if st.button("Re-Extract Assets", help="Clear and re-extract assets from script"):
+            with st.spinner("Clearing existing requirements..."):
+                try:
+                    service = get_asset_service()
+                    asyncio.run(service.clear_requirements(UUID(project_id)))
+                    st.session_state.asset_extracting = True
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to clear: {e}")
+
+    else:
+        st.info("Extract visual assets from your approved script using Gemini AI.")
+        st.caption("This will identify characters, props, backgrounds, and effects from the script's visual notes.")
+
+        # Show preview of visual notes
+        beats = script_data.get('beats', [])
+        notes_count = sum(1 for b in beats if b.get('visual_notes'))
+        st.caption(f"Found {notes_count} beats with visual notes.")
+
+        if st.button("Extract Assets", type="primary", disabled=st.session_state.asset_extracting):
+            st.session_state.asset_extracting = True
+            st.rerun()
+
+    # Handle extraction
+    if st.session_state.asset_extracting:
+        with st.spinner("Extracting assets with Gemini AI... This may take 15-30 seconds."):
+            try:
+                result = asyncio.run(run_asset_extraction(
+                    script_version_id=current_script.get('id'),
+                    script_data=script_data,
+                    brand_id=brand_id
+                ))
+
+                # Save to database
+                service = get_asset_service()
+                all_requirements = result['all']
+
+                if all_requirements:
+                    asyncio.run(service.save_requirements(
+                        project_id=UUID(project_id),
+                        requirements=all_requirements
+                    ))
+
+                st.session_state.asset_extracting = False
+                st.session_state.extracted_assets = all_requirements
+
+                matched_count = len(result['matched'])
+                unmatched_count = len(result['unmatched'])
+                st.success(f"Extracted {len(all_requirements)} assets! ({matched_count} matched, {unmatched_count} need generation)")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.asset_extracting = False
+                st.error(f"Asset extraction failed: {e}")
+
+
+def render_asset_generation(project_id: str, brand_id: str, existing_requirements: List[Dict]):
+    """Render the asset generation interface."""
+    st.markdown("### Generate Missing Assets")
+
+    # Filter for assets that need generation
+    needed = [r for r in existing_requirements if r.get('status') == 'needed']
+    generating = [r for r in existing_requirements if r.get('status') == 'generating']
+    failed = [r for r in existing_requirements if r.get('status') == 'generation_failed']
+    skipped = [r for r in existing_requirements if r.get('status') == 'skipped']
+
+    if not needed and not generating and not failed:
+        if not existing_requirements:
+            st.info("Extract assets from your script first (Extract tab).")
+        else:
+            msg = "All assets are matched or generated! Check the Review tab for generated assets."
+            if skipped:
+                msg += f" ({len(skipped)} skipped for editor)"
+            st.success(msg)
+        return
+
+    # Summary
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Need Generation", len(needed))
+    with col2:
+        st.metric("Currently Generating", len(generating))
+    with col3:
+        st.metric("Failed", len(failed))
+    with col4:
+        st.metric("Skipped", len(skipped))
+
+    st.divider()
+
+    # Show assets needing generation
+    if needed:
+        st.markdown("#### Assets to Generate")
+        for req in needed:
+            with st.container():
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
+                    desc = req.get('asset_description', '')
+                    if desc:
+                        st.caption(desc[:150] + "..." if len(desc) > 150 else desc)
+                    # Show preview of the actual prompt that will be built
+                    with st.expander("View prompt preview", expanded=False):
+                        preview_prompt = _build_prompt_preview(
+                            req.get('asset_name', 'unknown'),
+                            req.get('asset_type', 'prop'),
+                            desc or req.get('asset_name', '').replace('-', ' ')
+                        )
+                        st.code(preview_prompt, language=None)
+                with col2:
+                    st.caption(f":orange[Needed]")
+                with col3:
+                    # Individual generate button
+                    if st.button("Generate", key=f"gen_single_{req.get('id')}", disabled=st.session_state.asset_generating):
+                        with st.spinner(f"Generating {req.get('asset_name')}..."):
+                            try:
+                                service = get_asset_generation_service()
+                                result = asyncio.run(service.generate_single(
+                                    requirement=req,
+                                    brand_id=UUID(brand_id),
+                                    project_id=UUID(project_id)
+                                ))
+                                if result.get('success'):
+                                    st.success(f"Generated {req.get('asset_name')}!")
+                                else:
+                                    st.error(f"Failed: {result.get('error', 'Unknown error')}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Generation failed: {e}")
+                with col4:
+                    # Skip button - editor will handle
+                    if st.button("Skip", key=f"skip_{req.get('id')}", help="Editor will create this asset"):
+                        db = get_supabase_client()
+                        db.table("project_asset_requirements").update(
+                            {"status": "skipped"}
+                        ).eq("id", req.get('id')).execute()
+                        st.rerun()
+
+        st.divider()
+
+        # Batch generate button
+        if st.button(
+            f"Generate All {len(needed)} Assets",
+            type="primary",
+            disabled=st.session_state.asset_generating,
+            help="Generate all missing assets using Gemini AI (with rate limiting)"
+        ):
+            st.session_state.asset_generating = True
+            st.rerun()
+
+    # Handle generation
+    if st.session_state.asset_generating and needed:
+        st.warning("Generating assets... This may take several minutes. Do not close this page.")
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        try:
+            service = get_asset_generation_service()
+
+            # Generate batch
+            result = asyncio.run(service.generate_batch(
+                requirements=needed,
+                brand_id=UUID(brand_id),
+                project_id=UUID(project_id),
+                delay_between=3.0  # Rate limiting
+            ))
+
+            st.session_state.asset_generating = False
+
+            success_count = len(result.get('successful', []))
+            fail_count = len(result.get('failed', []))
+
+            if success_count > 0:
+                st.success(f"Generated {success_count} assets successfully!")
+            if fail_count > 0:
+                st.warning(f"{fail_count} assets failed to generate. You can retry them.")
+
+            st.rerun()
+
+        except Exception as e:
+            st.session_state.asset_generating = False
+            st.error(f"Generation failed: {e}")
+
+    # Show failed generations with retry option
+    if failed:
+        st.markdown("#### Failed Generations")
+
+        # Retry All Failed button
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button(f"Retry All {len(failed)} Failed", type="primary"):
+                db = get_supabase_client()
+                for req in failed:
+                    db.table("project_asset_requirements").update(
+                        {"status": "needed"}
+                    ).eq("id", req.get('id')).execute()
+                st.success(f"Reset {len(failed)} assets to 'needed' - they'll generate with the next batch")
+                st.rerun()
+
+        for req in failed:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{req.get('asset_name', 'Unknown')}**")
+                with col2:
+                    if st.button("Retry", key=f"retry_{req.get('id')}"):
+                        # Reset status to needed
+                        db = get_supabase_client()
+                        db.table("project_asset_requirements").update(
+                            {"status": "needed"}
+                        ).eq("id", req.get('id')).execute()
+                        st.rerun()
+
+    # Show skipped assets with unskip option
+    if skipped:
+        st.markdown("#### Skipped (Editor Will Handle)")
+        st.caption("These assets won't be generated - the editor will create them.")
+        for req in skipped:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{req.get('asset_name', 'Unknown')}** ({req.get('asset_type', 'prop')})")
+                with col2:
+                    if st.button("Unskip", key=f"unskip_{req.get('id')}"):
+                        db = get_supabase_client()
+                        db.table("project_asset_requirements").update(
+                            {"status": "needed"}
+                        ).eq("id", req.get('id')).execute()
+                        st.rerun()
+
+
+def render_asset_review(project_id: str, brand_id: str, existing_requirements: List[Dict]):
+    """Render the asset review/approval interface."""
+    st.markdown("### Review Generated Assets")
+
+    # Filter for assets pending review
+    generated = [r for r in existing_requirements if r.get('status') == 'generated']
+    approved = [r for r in existing_requirements if r.get('status') == 'approved']
+
+    if not generated:
+        if approved:
+            st.success(f"All generated assets have been reviewed! ({len(approved)} approved)")
+        else:
+            st.info("No assets pending review. Generate missing assets first (Generate tab).")
+        return
+
+    # Load script data once for context lookup
+    script_data = get_script_data_for_project(project_id)
+
+    st.info(f"{len(generated)} assets ready for review")
+
+    # Bulk actions
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Approve All", type="primary"):
+            service = get_asset_generation_service()
+            for req in generated:
+                asyncio.run(service.approve_asset(
+                    requirement_id=UUID(req.get('id')),
+                    add_to_library=True,
+                    brand_id=UUID(brand_id)
+                ))
+            st.success(f"Approved {len(generated)} assets!")
+            st.rerun()
+    with col2:
+        if st.button("Reject All & Regenerate"):
+            service = get_asset_generation_service()
+            for req in generated:
+                asyncio.run(service.reject_asset(
+                    requirement_id=UUID(req.get('id')),
+                    rejection_reason="Bulk rejected"
+                ))
+            st.warning(f"Rejected {len(generated)} assets - they'll appear in Generate tab")
+            st.rerun()
+
+    st.divider()
+
+    # Individual review
+    st.markdown("#### Review Each Asset")
+
+    for req in generated:
+        req_id = req.get('id')
+        name = req.get('asset_name', 'Unknown')
+        asset_type = req.get('asset_type', 'prop')
+        image_url = req.get('generated_image_url', '')
+
+        with st.container():
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.markdown(f"**{name}** ({asset_type})")
+
+                # Show generated image
+                if image_url:
+                    st.image(image_url, width=300)
+                else:
+                    st.warning("No image URL available")
+
+                # Description
+                desc = req.get('asset_description', '')
+                if desc:
+                    with st.expander("Description"):
+                        st.write(desc)
+
+                # Show usage context from script
+                script_ref = req.get('script_reference')
+                if script_ref and script_data:
+                    context = get_beat_context(script_data, script_ref)
+                    if context:
+                        with st.expander("📍 Used in these scenes", expanded=True):
+                            st.markdown(context)
+
+            with col2:
+                st.markdown("**Actions:**")
+
+                # Approve
+                if st.button("Approve", key=f"approve_{req_id}", type="primary"):
+                    service = get_asset_generation_service()
+                    asyncio.run(service.approve_asset(
+                        requirement_id=UUID(req_id),
+                        add_to_library=True,
+                        brand_id=UUID(brand_id)
+                    ))
+                    st.success(f"Approved '{name}'")
+                    st.rerun()
+
+                # Reject & Regenerate (resets to 'needed' status)
+                if st.button("Reject & Redo", key=f"reject_{req_id}"):
+                    service = get_asset_generation_service()
+                    asyncio.run(service.reject_asset(
+                        requirement_id=UUID(req_id),
+                        rejection_reason="Manual rejection"
+                    ))
+                    st.info(f"'{name}' sent back to Generate tab")
+                    st.rerun()
+
+            st.divider()
+
+
+def render_requirement_list(requirements: List[Dict], project_id: str):
+    """Render a list of asset requirements."""
+    for req in requirements:
+        status = req.get('status', 'needed')
+        name = req.get('asset_name', 'Unknown')
+        description = req.get('asset_description', '')[:100]
+
+        # Status badge
+        status_colors = {
+            'matched': 'green',
+            'needed': 'orange',
+            'generating': 'blue',
+            'generated': 'violet',
+            'approved': 'green',
+            'generation_failed': 'red',
+            'skipped': 'gray'
+        }
+        status_icons = {
+            'matched': '✅',
+            'needed': '🔸',
+            'generating': '⏳',
+            'generated': '🖼️',
+            'approved': '✓',
+            'generation_failed': '✗',
+            'skipped': '⏭️'
+        }
+
+        col1, col2, col3 = st.columns([3, 1, 1])
+
+        with col1:
+            st.markdown(f"**{name}**")
+            if description:
+                st.caption(description + "..." if len(req.get('asset_description', '')) > 100 else description)
+
+            # Show matched asset if exists
+            if req.get('comic_assets'):
+                matched_asset = req['comic_assets']
+                if matched_asset.get('image_url'):
+                    st.image(matched_asset['image_url'], width=100)
+
+        with col2:
+            color = status_colors.get(status, 'gray')
+            icon = status_icons.get(status, '•')
+            st.markdown(f":{color}[{icon} {status}]")
+
+        with col3:
+            # Script references
+            refs = req.get('script_reference')
+            if refs:
+                try:
+                    ref_list = json.loads(refs) if isinstance(refs, str) else refs
+                    if ref_list:
+                        st.caption(f"Beats: {', '.join(ref_list[:3])}")
+                except Exception:
+                    pass
+
+        st.divider()
+
+
+def render_asset_library(brand_id: str):
+    """Render the asset library browser."""
+    st.markdown("#### Asset Library")
+
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        filter_type = st.selectbox(
+            "Filter by Type",
+            options=["All", "character", "prop", "background", "effect"],
+            key="asset_library_filter_type"
+        )
+    with col2:
+        core_only = st.checkbox("Core Assets Only", key="asset_library_core_only")
+
+    # Fetch assets
+    service = get_asset_service()
+    asset_type = None if filter_type == "All" else filter_type
+    assets = asyncio.run(service.get_asset_library(
+        brand_id=UUID(brand_id),
+        asset_type=asset_type,
+        core_only=core_only
+    ))
+
+    if not assets:
+        st.info("No assets in library yet. Upload assets or generate them from scripts.")
+        return
+
+    st.caption(f"Showing {len(assets)} assets")
+
+    # Display in grid
+    cols = st.columns(4)
+    for idx, asset in enumerate(assets):
+        col_idx = idx % 4
+        with cols[col_idx]:
+            with st.container():
+                # Image or placeholder
+                if asset.get('image_url'):
+                    st.image(asset['image_url'], use_container_width=True)
+                else:
+                    st.markdown("🖼️ *No image*")
+
+                # Name and type
+                st.markdown(f"**{asset.get('name', 'Unknown')}**")
+
+                # Type badge
+                asset_type = asset.get('asset_type', 'unknown')
+                type_colors = {
+                    'character': 'blue',
+                    'prop': 'orange',
+                    'background': 'green',
+                    'effect': 'violet'
+                }
+                st.caption(f":{type_colors.get(asset_type, 'gray')}[{asset_type}]")
+
+                # Core asset badge
+                if asset.get('is_core_asset'):
+                    st.caption("⭐ Core Asset")
+
+                # Tags
+                tags = asset.get('tags', [])
+                if tags:
+                    st.caption(f"Tags: {', '.join(tags[:3])}")
+
+
+def render_asset_upload(brand_id: str):
+    """Render the asset upload interface."""
+
+    # Sub-tabs for different upload methods
+    upload_tab1, upload_tab2, upload_tab3 = st.tabs(["Single Upload", "Batch File Upload", "JSON Import"])
+
+    with upload_tab1:
+        render_single_asset_upload(brand_id)
+
+    with upload_tab2:
+        render_batch_file_upload(brand_id)
+
+    with upload_tab3:
+        render_json_import(brand_id)
+
+
+def render_single_asset_upload(brand_id: str):
+    """Render single asset upload form with file upload support."""
+    st.markdown("#### Upload Single Asset")
+
+    with st.form("asset_upload_form"):
+        name = st.text_input(
+            "Asset Name",
+            placeholder="e.g., every-coon-happy",
+            help="Use lowercase with hyphens. If uploading a file, name will default to filename."
+        )
+
+        asset_type = st.selectbox(
+            "Asset Type",
+            options=["character", "prop", "background", "effect"]
+        )
+
+        description = st.text_area(
+            "Description",
+            placeholder="Visual description of the asset...",
+            help="Describe the asset for future generation prompts"
+        )
+
+        tags_input = st.text_input(
+            "Tags (comma-separated)",
+            placeholder="raccoon, happy, excited",
+            help="Add searchable tags"
+        )
+
+        is_core = st.checkbox(
+            "Mark as Core Asset",
+            help="Core assets are always available for matching"
+        )
+
+        # File upload
+        uploaded_file = st.file_uploader(
+            "Upload Image File",
+            type=["png", "jpg", "jpeg", "webp"],
+            help="Upload image file directly (PNG, JPG, WEBP)"
+        )
+
+        # OR URL input
+        image_url = st.text_input(
+            "OR Image URL",
+            placeholder="https://example.com/asset.png",
+            help="Alternatively, provide a direct URL to the image"
+        )
+
+        submitted = st.form_submit_button("Add Asset")
+
+        if submitted:
+            service = get_asset_service()
+            tags = [t.strip() for t in tags_input.split(',') if t.strip()] if tags_input else []
+
+            try:
+                if uploaded_file:
+                    # File upload flow
+                    file_data = uploaded_file.read()
+                    filename = uploaded_file.name
+                    asset_name = name if name else filename.rsplit('.', 1)[0]
+
+                    # Determine content type
+                    content_type = uploaded_file.type or "image/png"
+
+                    asset_id = asyncio.run(service.upload_asset_with_file(
+                        brand_id=UUID(brand_id),
+                        name=asset_name,
+                        asset_type=asset_type,
+                        file_data=file_data,
+                        filename=filename,
+                        content_type=content_type,
+                        description=description,
+                        tags=tags,
+                        is_core_asset=is_core
+                    ))
+
+                    st.success(f"Asset '{asset_name}' uploaded successfully!")
+                    st.rerun()
+
+                elif image_url:
+                    # URL flow
+                    if not name:
+                        st.error("Asset name is required when using URL")
+                    else:
+                        asset_id = asyncio.run(service.upload_asset(
+                            brand_id=UUID(brand_id),
+                            name=name,
+                            asset_type=asset_type,
+                            description=description,
+                            tags=tags,
+                            image_url=image_url,
+                            is_core_asset=is_core
+                        ))
+
+                        st.success(f"Asset '{name}' added successfully!")
+                        st.rerun()
+                else:
+                    st.error("Please upload a file or provide an image URL")
+
+            except Exception as e:
+                st.error(f"Failed to add asset: {e}")
+
+
+def render_batch_file_upload(brand_id: str):
+    """Render batch file upload interface."""
+    st.markdown("#### Batch File Upload")
+    st.caption("Upload multiple image files at once. Asset names will be derived from filenames.")
+
+    # Default settings for batch
+    col1, col2 = st.columns(2)
+    with col1:
+        default_type = st.selectbox(
+            "Default Asset Type",
+            options=["character", "prop", "background", "effect"],
+            key="batch_default_type"
+        )
+    with col2:
+        default_core = st.checkbox(
+            "Mark All as Core Assets",
+            key="batch_default_core"
+        )
+
+    default_tags = st.text_input(
+        "Default Tags (comma-separated)",
+        placeholder="imported, batch",
+        help="Tags to apply to all uploaded assets",
+        key="batch_default_tags"
+    )
+
+    # Multi-file uploader
+    uploaded_files = st.file_uploader(
+        "Select Image Files",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        help="Select multiple PNG, JPG, or WEBP files"
+    )
+
+    if uploaded_files:
+        st.info(f"Selected {len(uploaded_files)} files")
+
+        # Preview selected files
+        with st.expander("Preview Selected Files", expanded=False):
+            cols = st.columns(4)
+            for idx, f in enumerate(uploaded_files[:12]):  # Show first 12
+                with cols[idx % 4]:
+                    st.caption(f.name)
+
+        if st.button("Upload All Files", type="primary"):
+            service = get_asset_service()
+            tags = [t.strip() for t in default_tags.split(',') if t.strip()] if default_tags else []
+
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            successful = 0
+            failed = 0
+
+            for idx, uploaded_file in enumerate(uploaded_files):
+                try:
+                    status_text.text(f"Uploading {uploaded_file.name}...")
+
+                    file_data = uploaded_file.read()
+                    filename = uploaded_file.name
+                    asset_name = filename.rsplit('.', 1)[0]
+                    content_type = uploaded_file.type or "image/png"
+
+                    asyncio.run(service.upload_asset_with_file(
+                        brand_id=UUID(brand_id),
+                        name=asset_name,
+                        asset_type=default_type,
+                        file_data=file_data,
+                        filename=filename,
+                        content_type=content_type,
+                        tags=tags,
+                        is_core_asset=default_core
+                    ))
+
+                    successful += 1
+
+                except Exception as e:
+                    st.warning(f"Failed to upload '{uploaded_file.name}': {e}")
+                    failed += 1
+
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+
+            status_text.empty()
+            progress_bar.empty()
+
+            if failed == 0:
+                st.success(f"Successfully uploaded all {successful} assets!")
+            else:
+                st.warning(f"Uploaded {successful} assets, {failed} failed")
+
+            st.rerun()
+
+
+def render_json_import(brand_id: str):
+    """Render JSON import interface."""
+    st.markdown("#### JSON Import")
+    st.caption("Import assets from JSON data. Best for assets with URLs already hosted.")
+
+    st.markdown("""
+    **Expected JSON format:**
+    ```json
+    [
+        {
+            "name": "asset-name",
+            "type": "character|prop|background|effect",
+            "description": "Visual description",
+            "tags": ["tag1", "tag2"],
+            "image_url": "https://example.com/image.png",
+            "is_core": false
+        }
+    ]
+    ```
+    """)
+
+    json_data = st.text_area(
+        "Paste JSON Array",
+        placeholder='[{"name": "asset-1", "type": "character", "description": "..."}]',
+        help="Array of asset objects",
+        height=200
+    )
+
+    if st.button("Import from JSON"):
+        if not json_data:
+            st.warning("Please paste JSON data to import")
+        else:
+            try:
+                assets_to_import = json.loads(json_data)
+                if not isinstance(assets_to_import, list):
+                    st.error("JSON must be an array of asset objects")
+                else:
+                    service = get_asset_service()
+                    imported = 0
+                    for asset in assets_to_import:
+                        try:
+                            asyncio.run(service.upload_asset(
+                                brand_id=UUID(brand_id),
+                                name=asset.get('name', ''),
+                                asset_type=asset.get('type', 'prop'),
+                                description=asset.get('description', ''),
+                                tags=asset.get('tags', []),
+                                image_url=asset.get('image_url'),
+                                is_core_asset=asset.get('is_core', False)
+                            ))
+                            imported += 1
+                        except Exception as e:
+                            st.warning(f"Failed to import '{asset.get('name')}': {e}")
+
+                    st.success(f"Imported {imported} of {len(assets_to_import)} assets")
+                    st.rerun()
+
+            except json.JSONDecodeError as e:
+                st.error(f"Invalid JSON: {e}")
+
+
+# =========================================================================
+# SFX Tab Functions
+# =========================================================================
+
+def render_sfx_tab(project: Dict):
+    """Render the sound effects management tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved
+    script_approved = workflow_state in [
+        'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+        'handoff_ready', 'handoff_generated'
+    ]
+
+    st.markdown("### Sound Effects (SFX)")
+
+    if not script_approved:
+        st.info("Approve your script first before extracting SFX.")
+        st.caption("The SFX tab becomes available after script approval.")
+        return
+
+    # Get current script
+    try:
+        db = get_supabase_client()
+        scripts = db.table("script_versions").select("*").eq(
+            "project_id", project_id
+        ).eq("status", "approved").order("version_number", desc=True).limit(1).execute()
+
+        if not scripts.data:
+            st.warning("No approved script found.")
+            return
+
+        current_script = scripts.data[0]
+        script_content = current_script.get("script_content", {})
+        if isinstance(script_content, str):
+            import json
+            script_content = json.loads(script_content)
+
+    except Exception as e:
+        st.error(f"Failed to load script: {e}")
+        return
+
+    # Load existing SFX requirements
+    try:
+        sfx_result = db.table("project_sfx_requirements").select("*").eq(
+            "project_id", project_id
+        ).execute()
+        existing_sfx = sfx_result.data or []
+    except Exception:
+        existing_sfx = []
+
+    # Sub-tabs for SFX workflow
+    sfx_tab1, sfx_tab2, sfx_tab3 = st.tabs(["Extract", "Generate", "Review"])
+
+    with sfx_tab1:
+        render_sfx_extract(project_id, script_content, existing_sfx)
+
+    with sfx_tab2:
+        render_sfx_generate(project_id, brand_id, existing_sfx)
+
+    with sfx_tab3:
+        render_sfx_review(project_id, existing_sfx)
+
+
+def render_sfx_extract(project_id: str, script_content: Dict, existing_sfx: List[Dict]):
+    """Render the SFX extraction interface."""
+    st.markdown("#### Extract SFX from Script")
+
+    if existing_sfx:
+        st.success(f"Found {len(existing_sfx)} existing SFX requirements")
+
+        # Show summary by status
+        status_counts = {}
+        for sfx in existing_sfx:
+            status = sfx.get('status', 'needed')
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        cols = st.columns(len(status_counts))
+        for idx, (status, count) in enumerate(status_counts.items()):
+            with cols[idx]:
+                st.metric(status.title(), count)
+
+    st.caption("Extract sound effect cues from your script's audio and visual notes.")
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        if st.button(
+            "Extract SFX from Script",
+            type="primary" if not existing_sfx else "secondary",
+            disabled=st.session_state.sfx_extracting
+        ):
+            st.session_state.sfx_extracting = True
+            st.rerun()
+
+    with col2:
+        if existing_sfx:
+            if st.button("Clear & Re-extract", help="Clear existing SFX and extract fresh"):
+                db = get_supabase_client()
+                db.table("project_sfx_requirements").delete().eq(
+                    "project_id", project_id
+                ).execute()
+                st.session_state.sfx_extracting = True
+                st.rerun()
+
+    # Handle extraction
+    if st.session_state.sfx_extracting:
+        with st.spinner("Extracting SFX requirements from script..."):
+            try:
+                service = get_asset_generation_service()
+                sfx_requirements = asyncio.run(service.extract_sfx_from_script(script_content))
+
+                # Save to database with smart duration from extraction
+                db = get_supabase_client()
+                for sfx in sfx_requirements:
+                    # Use duration from extraction (music cues are longer)
+                    duration = sfx.get("duration_seconds", 2.0)
+                    db.table("project_sfx_requirements").insert({
+                        "project_id": project_id,
+                        "sfx_name": sfx.get("name", "unknown"),
+                        "description": sfx.get("description", ""),
+                        "script_reference": sfx.get("beat_references", []),
+                        "duration_seconds": duration,
+                        "status": "needed"
+                    }).execute()
+
+                st.session_state.sfx_extracting = False
+                st.success(f"Extracted {len(sfx_requirements)} SFX requirements!")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.sfx_extracting = False
+                st.error(f"Extraction failed: {e}")
+
+    # Show existing SFX list
+    if existing_sfx:
+        st.divider()
+        st.markdown("#### Extracted SFX")
+        for sfx in existing_sfx:
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.markdown(f"**{sfx.get('sfx_name', 'Unknown')}**")
+                    st.caption(sfx.get('description', '')[:100] + "..." if len(sfx.get('description', '')) > 100 else sfx.get('description', ''))
+                with col2:
+                    status = sfx.get('status', 'needed')
+                    status_colors = {'needed': 'orange', 'generating': 'blue', 'generated': 'violet', 'approved': 'green', 'rejected': 'red', 'skipped': 'gray'}
+                    st.markdown(f":{status_colors.get(status, 'gray')}[{status}]")
+                with col3:
+                    duration = sfx.get('duration_seconds', 2.0)
+                    st.caption(f"{duration}s")
+
+
+def render_sfx_generate(project_id: str, brand_id: str, existing_sfx: List[Dict]):
+    """Render the SFX generation interface."""
+    st.markdown("#### Generate Sound Effects")
+
+    # Filter for SFX that need generation
+    needed = [s for s in existing_sfx if s.get('status') == 'needed']
+    generating = [s for s in existing_sfx if s.get('status') == 'generating']
+    failed = [s for s in existing_sfx if s.get('status') == 'rejected']
+
+    if not needed and not generating and not failed:
+        if not existing_sfx:
+            st.info("Extract SFX from your script first (Extract tab).")
+        else:
+            st.success("All SFX have been generated! Check the Review tab.")
+        return
+
+    # Summary
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Need Generation", len(needed))
+    with col2:
+        st.metric("Generating", len(generating))
+    with col3:
+        st.metric("Failed/Rejected", len(failed))
+
+    st.divider()
+
+    # Show SFX needing generation
+    if needed:
+        st.markdown("#### SFX to Generate")
+        for sfx in needed:
+            with st.container():
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    st.markdown(f"**{sfx.get('sfx_name', 'Unknown')}**")
+                    st.caption(sfx.get('description', '')[:80])
+                with col2:
+                    duration = st.number_input(
+                        "Duration",
+                        min_value=0.5,
+                        max_value=22.0,
+                        value=float(sfx.get('duration_seconds', 2.0)),
+                        step=0.5,
+                        key=f"dur_{sfx.get('id')}"
+                    )
+                with col3:
+                    if st.button("Generate", key=f"gen_sfx_{sfx.get('id')}", disabled=st.session_state.sfx_generating):
+                        with st.spinner(f"Generating {sfx.get('sfx_name')}..."):
+                            try:
+                                asyncio.run(generate_single_sfx(sfx, brand_id, duration))
+                                st.success(f"Generated!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed: {e}")
+                with col4:
+                    if st.button("Skip", key=f"skip_sfx_{sfx.get('id')}", help="Editor will handle"):
+                        db = get_supabase_client()
+                        db.table("project_sfx_requirements").update(
+                            {"status": "skipped"}
+                        ).eq("id", sfx.get('id')).execute()
+                        st.rerun()
+
+        st.divider()
+
+        # Batch generate button
+        if st.button(
+            f"Generate All {len(needed)} SFX",
+            type="primary",
+            disabled=st.session_state.sfx_generating
+        ):
+            st.session_state.sfx_generating = True
+            st.rerun()
+
+    # Handle batch generation
+    if st.session_state.sfx_generating and needed:
+        st.warning("Generating SFX... This may take a while.")
+        progress_bar = st.progress(0)
+
+        try:
+            total = len(needed)
+            for idx, sfx in enumerate(needed):
+                progress_bar.progress((idx + 1) / total)
+                asyncio.run(generate_single_sfx(sfx, brand_id, sfx.get('duration_seconds', 2.0)))
+
+            st.session_state.sfx_generating = False
+            st.success(f"Generated {total} SFX!")
+            st.rerun()
+
+        except Exception as e:
+            st.session_state.sfx_generating = False
+            st.error(f"Generation failed: {e}")
+
+    # Show failed/rejected with retry option
+    if failed:
+        st.markdown("#### Failed/Rejected SFX")
+        if st.button(f"Retry All {len(failed)} Failed"):
+            db = get_supabase_client()
+            for sfx in failed:
+                db.table("project_sfx_requirements").update(
+                    {"status": "needed"}
+                ).eq("id", sfx.get('id')).execute()
+            st.rerun()
+
+        for sfx in failed:
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{sfx.get('sfx_name', 'Unknown')}**")
+                with col2:
+                    if st.button("Retry", key=f"retry_sfx_{sfx.get('id')}"):
+                        db = get_supabase_client()
+                        db.table("project_sfx_requirements").update(
+                            {"status": "needed"}
+                        ).eq("id", sfx.get('id')).execute()
+                        st.rerun()
+
+
+async def generate_single_sfx(sfx: Dict, brand_id: str, duration: float):
+    """Generate a single SFX and save to storage."""
+    db = get_supabase_client()
+    sfx_id = sfx.get('id')
+
+    # Update status to generating
+    db.table("project_sfx_requirements").update(
+        {"status": "generating"}
+    ).eq("id", sfx_id).execute()
+
+    try:
+        service = get_asset_generation_service()
+        result = await service.generate_sfx(
+            description=sfx.get('description', ''),
+            duration_seconds=duration
+        )
+
+        # Save to storage (use audio-production bucket)
+        import base64
+        audio_bytes = base64.b64decode(result['audio_base64'])
+        storage_path = f"{brand_id}/sfx/{sfx.get('sfx_name', 'unknown')}.mp3"
+
+        db.storage.from_("audio-production").upload(
+            storage_path,
+            audio_bytes,
+            {"content-type": "audio/mpeg", "upsert": "true"}
+        )
+
+        # Get public URL
+        audio_url = db.storage.from_("audio-production").get_public_url(storage_path)
+
+        # Update database
+        db.table("project_sfx_requirements").update({
+            "status": "generated",
+            "generated_audio_url": audio_url.rstrip("?") if audio_url else "",
+            "storage_path": storage_path,
+            "duration_seconds": duration
+        }).eq("id", sfx_id).execute()
+
+    except Exception as e:
+        db.table("project_sfx_requirements").update({
+            "status": "rejected",
+            "rejection_reason": str(e)
+        }).eq("id", sfx_id).execute()
+        raise
+
+
+def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
+    """Render the SFX review/approval interface."""
+    st.markdown("#### Review Generated SFX")
+
+    # Filter for generated SFX
+    generated = [s for s in existing_sfx if s.get('status') == 'generated']
+    approved = [s for s in existing_sfx if s.get('status') == 'approved']
+
+    if not generated:
+        if approved:
+            st.success(f"All SFX have been reviewed! ({len(approved)} approved)")
+        else:
+            st.info("No SFX pending review. Generate SFX first (Generate tab).")
+        return
+
+    # Load script data once for context lookup
+    script_data = get_script_data_for_project(project_id)
+
+    st.info(f"{len(generated)} SFX ready for review")
+
+    # Bulk actions
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Approve All", type="primary", key="sfx_approve_all_btn"):
+            db = get_supabase_client()
+            for sfx in generated:
+                db.table("project_sfx_requirements").update(
+                    {"status": "approved"}
+                ).eq("id", sfx.get('id')).execute()
+            st.success(f"Approved {len(generated)} SFX!")
+            st.rerun()
+    with col2:
+        if st.button("Reject All & Regenerate", key="sfx_reject_all_btn"):
+            db = get_supabase_client()
+            for sfx in generated:
+                db.table("project_sfx_requirements").update({
+                    "status": "needed",
+                    "generated_audio_url": None,
+                    "storage_path": None
+                }).eq("id", sfx.get('id')).execute()
+            st.warning(f"Rejected {len(generated)} SFX - they'll appear in Generate tab")
+            st.rerun()
+
+    st.divider()
+
+    # Individual review
+    for sfx in generated:
+        with st.container():
+            st.markdown(f"### {sfx.get('sfx_name', 'Unknown')}")
+            st.caption(sfx.get('description', ''))
+
+            # Show usage context from script
+            script_ref = sfx.get('script_reference')
+            if script_ref and script_data:
+                context = get_beat_context(script_data, script_ref)
+                if context:
+                    with st.expander("📍 Used in these scenes", expanded=True):
+                        st.markdown(context)
+
+            # Audio player
+            audio_url = sfx.get('generated_audio_url')
+            if audio_url:
+                st.audio(audio_url)
+                st.caption(f"Duration: {sfx.get('duration_seconds', 0)}s")
+
+            # Action buttons
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("Approve", key=f"approve_sfx_{sfx.get('id')}", type="primary"):
+                    db = get_supabase_client()
+                    db.table("project_sfx_requirements").update(
+                        {"status": "approved"}
+                    ).eq("id", sfx.get('id')).execute()
+                    st.success(f"Approved!")
+                    st.rerun()
+            with col2:
+                if st.button("Reject & Redo", key=f"reject_sfx_{sfx.get('id')}"):
+                    db = get_supabase_client()
+                    db.table("project_sfx_requirements").update({
+                        "status": "needed",
+                        "generated_audio_url": None,
+                        "storage_path": None
+                    }).eq("id", sfx.get('id')).execute()
+                    st.info(f"Sent back to Generate tab")
+                    st.rerun()
+            with col3:
+                # Adjust duration and regenerate
+                new_duration = st.number_input(
+                    "New duration",
+                    min_value=0.5,
+                    max_value=22.0,
+                    value=float(sfx.get('duration_seconds', 2.0)),
+                    step=0.5,
+                    key=f"new_dur_{sfx.get('id')}"
+                )
+                if st.button("Regenerate", key=f"regen_sfx_{sfx.get('id')}"):
+                    db = get_supabase_client()
+                    db.table("project_sfx_requirements").update({
+                        "status": "needed",
+                        "duration_seconds": new_duration,
+                        "generated_audio_url": None,
+                        "storage_path": None
+                    }).eq("id", sfx.get('id')).execute()
+                    st.rerun()
+
+            st.divider()
+
+
+# =========================================================================
+# Handoff Tab Functions (MVP 6)
+# =========================================================================
+
+def render_handoff_tab(project: Dict):
+    """Render the editor handoff tab."""
+    project_id = project.get('id')
+    brand_id = project.get('brand_id')
+    workflow_state = project.get('workflow_state', 'pending')
+
+    # Check if script is approved and audio is complete
+    audio_complete = workflow_state in ['audio_complete', 'handoff_ready', 'handoff_generated']
+
+    st.markdown("### Editor Handoff")
+
+    # Check asset status and warn about ungenerated assets
+    db = get_supabase_client()
+    asset_reqs = db.table("project_asset_requirements").select("*").eq(
+        "project_id", project_id
+    ).execute().data or []
+
+    needed = [r for r in asset_reqs if r.get('status') == 'needed']
+    failed = [r for r in asset_reqs if r.get('status') == 'generation_failed']
+    skipped = [r for r in asset_reqs if r.get('status') == 'skipped']
+
+    if needed or failed:
+        with st.expander(f"Asset Warning: {len(needed) + len(failed)} assets not generated", expanded=True):
+            if needed:
+                st.warning(f"**{len(needed)} assets still need generation:** {', '.join(r.get('asset_name', '?') for r in needed[:5])}{'...' if len(needed) > 5 else ''}")
+            if failed:
+                st.error(f"**{len(failed)} assets failed generation:** {', '.join(r.get('asset_name', '?') for r in failed[:5])}{'...' if len(failed) > 5 else ''}")
+            st.caption("You can still generate handoff - the editor will need to create these assets.")
+
+    if skipped:
+        st.info(f"{len(skipped)} assets marked for editor to create: {', '.join(r.get('asset_name', '?') for r in skipped[:5])}{'...' if len(skipped) > 5 else ''}")
+
+    if not audio_complete:
+        st.info("Complete audio production before generating handoff.")
+        st.caption("The Handoff tab becomes available after audio is marked complete.")
+
+        # Show progress
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            script_approved = workflow_state in [
+                'script_approved', 'els_ready', 'audio_production', 'audio_complete',
+                'handoff_ready', 'handoff_generated'
+            ]
+            if script_approved:
+                st.success("Script approved")
+            else:
+                st.warning("Script pending")
+
+        with col2:
+            if audio_complete:
+                st.success("Audio complete")
+            else:
+                st.warning("Audio pending")
+
+        with col3:
+            st.warning("Handoff pending")
+        return
+
+    st.caption("Generate a shareable handoff package for your video editor.")
+
+    # Check for existing handoffs
+    service = get_handoff_service()
+    try:
+        existing_handoffs = asyncio.run(service.get_project_handoffs(UUID(project_id)))
+    except Exception as e:
+        existing_handoffs = []
+        st.warning(f"Could not load existing handoffs: {e}")
+
+    if existing_handoffs:
+        st.success(f"Found {len(existing_handoffs)} existing handoff(s)")
+
+        # Show most recent handoff
+        latest = existing_handoffs[0]
+        latest_id = latest.get('id')
+        created = latest.get('created_at', '')[:16].replace('T', ' ')
+
+        st.markdown(f"**Latest Handoff:** {created}")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            # View handoff page
+            handoff_url = f"/Editor_Handoff?id={latest_id}"
+            if st.button("View Handoff Page", type="primary", use_container_width=True):
+                st.markdown(f"[Open Handoff Page]({handoff_url})")
+                st.info(f"Share this URL with your editor:\n\n`{handoff_url}`")
+
+        with col2:
+            # Download ZIP
+            if st.button("Download ZIP", use_container_width=True):
+                with st.spinner("Generating ZIP file..."):
+                    try:
+                        zip_data = asyncio.run(service.generate_zip(UUID(latest_id)))
+                        project_title = project.get('topic_title', 'project').replace(' ', '-').lower()
+                        st.download_button(
+                            label="Click to Download",
+                            data=zip_data,
+                            file_name=f"{project_title}-handoff.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to generate ZIP: {e}")
+
+        with col3:
+            # Copy link
+            st.code(f"?id={latest_id}", language=None)
+            st.caption("Copy this URL")
+
+        st.divider()
+
+        # Show handoff summary
+        metadata = latest.get('metadata', {})
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Beats", metadata.get('beat_count', 0))
+        with col2:
+            st.metric("Script Version", f"v{metadata.get('script_version', 1)}")
+        with col3:
+            has_audio = "Yes" if metadata.get('has_audio') else "No"
+            st.metric("Has Audio", has_audio)
+        with col4:
+            st.metric("Status", metadata.get('workflow_state', 'unknown'))
+
+        st.divider()
+
+        # Regenerate option
+        with st.expander("Regenerate Handoff"):
+            st.caption("Create a new handoff package with the latest project data.")
+            if st.button("Regenerate Handoff", disabled=st.session_state.handoff_generating):
+                st.session_state.handoff_generating = True
+                st.rerun()
+
+    else:
+        # No existing handoffs - show generation UI
+        st.info("Generate a handoff package for your video editor.")
+        st.markdown("""
+        The handoff package includes:
+        - Beat-by-beat breakdown with script text
+        - Audio files for each beat
+        - Visual assets and SFX
+        - ZIP download with all files
+        - Shareable URL for your editor
+        """)
+
+        if st.button("Generate Handoff Package", type="primary", disabled=st.session_state.handoff_generating):
+            st.session_state.handoff_generating = True
+            st.rerun()
+
+    # Handle handoff generation
+    if st.session_state.handoff_generating:
+        with st.spinner("Generating handoff package... This may take a moment."):
+            try:
+                package = asyncio.run(service.generate_handoff(UUID(project_id)))
+                st.session_state.handoff_generating = False
+
+                # Update workflow state
+                db = get_supabase_client()
+                db.table("content_projects").update({
+                    "workflow_state": "handoff_generated"
+                }).eq("id", project_id).execute()
+
+                st.success(f"Handoff generated! {len(package.beats)} beats packaged.")
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.handoff_generating = False
+                st.error(f"Failed to generate handoff: {e}")
 
 
 # Main app flow
