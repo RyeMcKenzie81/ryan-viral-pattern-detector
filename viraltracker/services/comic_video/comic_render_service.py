@@ -674,10 +674,33 @@ class ComicRenderService:
             with open(self._debug_file, "a") as f:
                 f.write(f"\n=== CONCATENATION (using concat filter) ===\n")
                 f.write(f"Total segments to concatenate: {len(segment_paths)}\n")
-                for i, path in enumerate(segment_paths):
-                    exists = path.exists()
-                    size_kb = path.stat().st_size / 1024 if exists else 0
-                    f.write(f"  [{i}] {path.name}: exists={exists}, size={size_kb:.1f}KB\n")
+
+        # CRITICAL: Verify all segments have audio streams before concatenating
+        # The concat filter requires all inputs to have matching streams
+        for i, path in enumerate(segment_paths):
+            exists = path.exists()
+            size_kb = path.stat().st_size / 1024 if exists else 0
+
+            if hasattr(self, '_debug_file') and self._debug_file:
+                with open(self._debug_file, "a") as f:
+                    f.write(f"  [{i}] {path.name}: exists={exists}, size={size_kb:.1f}KB")
+
+            if exists:
+                has_audio = await self._has_audio_stream(path)
+                if hasattr(self, '_debug_file') and self._debug_file:
+                    with open(self._debug_file, "a") as f:
+                        f.write(f", has_audio={has_audio}")
+
+                if not has_audio:
+                    logger.warning(f"Segment {path.name} missing audio - adding silent track")
+                    await self._add_silent_audio_to_segment(path)
+
+            if hasattr(self, '_debug_file') and self._debug_file:
+                with open(self._debug_file, "a") as f:
+                    f.write(f"\n")
+
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
                 f.write(f"\n")
 
         # Build FFmpeg command using concat filter
@@ -1240,6 +1263,73 @@ class ComicRenderService:
             logger.warning(f"Failed to detect audio duration: {e}")
 
         return None
+
+    # =========================================================================
+    # FFmpeg Helpers
+    # =========================================================================
+
+    async def _has_audio_stream(self, video_path: Path) -> bool:
+        """Check if video file has an audio stream using ffprobe."""
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(video_path)
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            # If there's output, there's an audio stream
+            return bool(stdout.decode().strip())
+        except Exception as e:
+            logger.warning(f"Failed to check audio stream: {e}")
+            return False
+
+    async def _add_silent_audio_to_segment(self, video_path: Path) -> Path:
+        """Add silent audio track to a video that's missing audio."""
+        output_path = video_path.with_suffix(".with_audio.mp4")
+
+        # Get video duration first
+        duration_cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            str(video_path)
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *duration_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        duration = float(stdout.decode().strip()) if stdout else 5.0
+
+        # Add silent audio
+        cmd = [
+            self._ffmpeg_path, "-y",
+            "-i", str(video_path),
+            "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+            "-t", str(duration),
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-shortest",
+            str(output_path)
+        ]
+        await self._run_ffmpeg(cmd)
+
+        # Replace original with new file
+        video_path.unlink()
+        output_path.rename(video_path)
+        logger.info(f"Added silent audio to {video_path.name}")
+        return video_path
 
     # =========================================================================
     # FFmpeg Execution

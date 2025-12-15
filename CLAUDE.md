@@ -19,6 +19,7 @@ For every task, follow this workflow:
 - Identify affected files and systems
 - Consider edge cases and error handling
 - Use TodoWrite to track multi-step tasks
+- **CRITICAL: Research third-party tools before implementing** (see below)
 
 ### 2. Implement
 - Follow the architecture patterns below
@@ -47,6 +48,46 @@ For every task, follow this workflow:
   - `/docs/README.md`
   - Any checkpoint files in `/docs/archive/`
 - Documentation should always reflect current system state
+
+---
+
+## Third-Party Tool Research (CRITICAL)
+
+**Before implementing anything that uses external tools or libraries, ALWAYS:**
+
+1. **Search for official documentation** using WebSearch or WebFetch
+2. **Look for common pitfalls and best practices** - search for "[tool] best practices" or "[tool] common issues"
+3. **Verify the approach** before writing code - don't assume you know the right way
+
+### Why This Matters
+
+We've learned this lesson the hard way. Example: FFmpeg has multiple ways to concatenate videos:
+- **Concat demuxer** (`-f concat -c copy`) - fast but has known audio sync bugs with mixed sources
+- **Concat filter** (`-filter_complex "concat=n=X:v=1:a=1"`) - slower but reliable
+
+We spent 3+ hours debugging audio sync issues that would have been avoided by reading FFmpeg docs first.
+
+### Tools That Require Research
+
+| Tool | Research Before |
+|------|-----------------|
+| FFmpeg | Video/audio processing, concatenation, filters |
+| ImageMagick | Image manipulation, compositing |
+| Supabase | Storage, RLS policies, edge functions |
+| OpenAI/Anthropic APIs | Rate limits, best practices, token optimization |
+| Any new library | Check docs for gotchas and recommended patterns |
+
+### How to Research
+
+```
+# Good search queries:
+"FFmpeg concat audio sync issues"
+"FFmpeg best practice video concatenation"
+"[library] common mistakes"
+"[library] official documentation [specific feature]"
+```
+
+**Take the extra 5 minutes to research. It saves hours of debugging.**
 
 ---
 
