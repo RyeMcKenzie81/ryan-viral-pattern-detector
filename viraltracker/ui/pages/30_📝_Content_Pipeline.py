@@ -5088,10 +5088,13 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                     st.caption(f"Rendered: {rendered_at}")
 
             try:
-                # Convert storage path to signed URL
+                # Convert storage path to signed URL with cache-busting
                 from viraltracker.services.comic_video import ComicRenderService
                 render_service = ComicRenderService()
                 final_video_url = asyncio.run(render_service.get_video_url(final_video_path))
+                # Add cache-buster to force fresh video load
+                cb = hash(rendered_at) if rendered_at else 0
+                final_video_url += f"&_t={cb}" if "?" in final_video_url else f"?_t={cb}"
                 st.video(final_video_url)
             except Exception as video_err:
                 st.warning(f"Could not load video: {video_err}")
