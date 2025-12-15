@@ -478,8 +478,9 @@ class ComicRenderService:
         """
         fps = self.DEFAULT_FPS
 
-        # Get audio delay from user overrides or use default (0ms for now to debug sync)
-        audio_delay_ms = 0
+        # Get audio delay from user overrides or use default
+        # Default 150ms gives a brief pause after camera arrives before voice starts
+        audio_delay_ms = 150
         if instruction.user_overrides and instruction.user_overrides.audio_delay_ms is not None:
             audio_delay_ms = instruction.user_overrides.audio_delay_ms
 
@@ -613,9 +614,10 @@ class ComicRenderService:
 
         cmd.append(str(output_path))
 
+        has_audio = audio_path and audio_path.exists()
         logger.info(
             f"Rendering panel {instruction.panel_number}: "
-            f"audio={audio_delay_ms}ms delay + actual audio, "
+            f"has_audio={has_audio}, audio_delay={audio_delay_ms}ms, "
             f"video={content_duration_ms}ms content + {transition_duration_ms}ms transition = {total_duration_ms}ms total, "
             f"camera=({instruction.camera.center_x:.3f}, {instruction.camera.center_y:.3f})"
             + (f" -> next=({next_instruction.camera.center_x:.3f}, {next_instruction.camera.center_y:.3f})"
