@@ -145,7 +145,7 @@ class ComicVideoService:
                 .execute()
         )
 
-        if not result.data:
+        if not result or not result.data:
             return None
 
         return self._row_to_project(result.data)
@@ -470,7 +470,11 @@ class ComicVideoService:
 
         # Apply user overrides if present
         if instruction.user_overrides and instruction.user_overrides.has_overrides():
+            logger.info(f"Panel {panel_number}: Applying overrides: {instruction.user_overrides}")
             instruction = self.director.apply_overrides(instruction, instruction.user_overrides)
+            logger.info(f"Panel {panel_number}: Effects after override: {instruction.effects}")
+        else:
+            logger.info(f"Panel {panel_number}: No overrides to apply (user_overrides={instruction.user_overrides})")
 
         # Download comic grid
         grid_path = await self._download_file(
@@ -503,23 +507,25 @@ class ComicVideoService:
             aspect_ratio=aspect_ratio
         )
 
-        # Upload preview
-        preview_url = await self.render.upload_video(
+        # Upload preview (returns storage path)
+        storage_path = await self.render.upload_video(
             project_id=project_id,
             local_path=Path(preview_path),
             filename=f"preview_panel_{panel_number:02d}.mp4"
         )
 
-        # Update instruction with preview URL
+        # Update instruction with storage path (for later retrieval)
         await asyncio.to_thread(
             lambda: self.supabase.table("comic_panel_instructions")
-                .update({"preview_url": preview_url})
+                .update({"preview_url": storage_path})
                 .eq("project_id", project_id)
                 .eq("panel_number", panel_number)
                 .execute()
         )
 
-        return preview_url
+        # Return signed URL for immediate playback
+        signed_url = await self.render.get_video_url(storage_path)
+        return signed_url
 
     async def approve_panel(
         self,
@@ -527,13 +533,18 @@ class ComicVideoService:
         panel_number: int
     ) -> None:
         """
-        Approve both audio and instruction for a panel.
+        Approve audio (if exists) and instruction for a panel.
 
         Args:
             project_id: Project UUID
             panel_number: Panel to approve
         """
-        await self.audio.approve_panel_audio(project_id, panel_number)
+        # Check if audio exists before trying to approve
+        panel_audio = await self.audio.get_panel_audio(project_id, panel_number)
+        if panel_audio:
+            await self.audio.approve_panel_audio(project_id, panel_number)
+
+        # Always approve instruction
         await self.director.approve_instruction(project_id, panel_number)
 
         logger.info(f"Approved panel {panel_number} for project {project_id}")
@@ -644,20 +655,22 @@ class ComicVideoService:
                 background_music_path=bg_music_path
             )
 
-            # Upload final video
-            final_url = await self.render.upload_video(
+            # Upload final video (returns storage path)
+            storage_path = await self.render.upload_video(
                 project_id=project_id,
                 local_path=Path(video_path),
                 filename="final_video.mp4"
             )
 
-            # Update project
+            # Update project with storage path and render timestamp
+            render_time = datetime.utcnow()
             await asyncio.to_thread(
                 lambda: self.supabase.table("comic_video_projects")
                     .update({
-                        "final_video_url": final_url,
+                        "final_video_url": storage_path,
                         "status": ProjectStatus.COMPLETE.value,
-                        "updated_at": datetime.utcnow().isoformat()
+                        "rendered_at": render_time.isoformat(),
+                        "updated_at": render_time.isoformat()
                     })
                     .eq("id", project_id)
                     .execute()
@@ -665,7 +678,9 @@ class ComicVideoService:
 
             logger.info(f"Rendered final video for project {project_id}")
 
-            return final_url
+            # Return signed URL for immediate playback
+            signed_url = await self.render.get_video_url(storage_path)
+            return signed_url
 
         except Exception as e:
             await self.update_status(project_id, ProjectStatus.FAILED, str(e))
@@ -741,23 +756,25 @@ class ComicVideoService:
                     aspect_ratio=aspect_ratio
                 )
 
-                # Upload preview
-                preview_url = await self.render.upload_video(
+                # Upload preview (returns storage path)
+                storage_path = await self.render.upload_video(
                     project_id=project_id,
                     local_path=Path(preview_path),
                     filename=f"preview_panel_{panel_num:02d}.mp4"
                 )
 
-                # Update instruction with preview URL
+                # Update instruction with storage path
                 await asyncio.to_thread(
-                    lambda pn=panel_num, url=preview_url: self.supabase.table("comic_panel_instructions")
-                        .update({"preview_url": url})
+                    lambda pn=panel_num, path=storage_path: self.supabase.table("comic_panel_instructions")
+                        .update({"preview_url": path})
                         .eq("project_id", project_id)
                         .eq("panel_number", pn)
                         .execute()
                 )
 
-                results[panel_num] = preview_url
+                # Return signed URL for playback
+                signed_url = await self.render.get_video_url(storage_path)
+                results[panel_num] = signed_url
 
             except Exception as e:
                 logger.error(f"Failed to render panel {panel_num}: {e}")

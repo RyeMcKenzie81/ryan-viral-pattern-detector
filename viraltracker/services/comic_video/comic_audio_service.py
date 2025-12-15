@@ -272,15 +272,33 @@ class ComicAudioService:
                     await self._save_panel_audio(project_id, audio)
                     results.append(audio)
                 else:
-                    # Single speaker - use regular generation
+                    # Single speaker - check for character field to use proper voice
                     text = self.extract_panel_text(panel)
                     if text:
+                        # Check for character field and use proper voice lookup
+                        character = panel.get("character", "").strip().lower()
+                        logger.info(f"Panel {panel_number}: character='{character}', text='{text[:50]}...'")
+
+                        if character:
+                            # Look up voice for character (e.g., every-coon, raccoon)
+                            panel_voice_id, panel_voice_name = await self.get_voice_for_speaker(
+                                speaker=character,
+                                narrator_voice_id=voice_id,
+                                narrator_voice_name=voice_name
+                            )
+                            logger.info(f"Panel {panel_number}: Using voice '{panel_voice_name}' (id: {panel_voice_id[:8] if panel_voice_id else 'None'}...)")
+                        else:
+                            # Fall back to provided voice or default
+                            panel_voice_id = voice_id
+                            panel_voice_name = voice_name
+                            logger.info(f"Panel {panel_number}: No character, using default voice")
+
                         audio = await self.generate_panel_audio(
                             project_id=project_id,
                             panel_number=panel_number,
                             text=text,
-                            voice_id=voice_id,
-                            voice_name=voice_name
+                            voice_id=panel_voice_id,
+                            voice_name=panel_voice_name
                         )
                         results.append(audio)
 
@@ -359,7 +377,7 @@ class ComicAudioService:
                 .execute()
         )
 
-        if not result.data:
+        if not result or not result.data:
             return None
 
         return self._row_to_panel_audio(result.data)
@@ -437,14 +455,31 @@ class ComicAudioService:
         # Read file
         audio_data = local_path.read_bytes()
 
-        # Upload
-        await asyncio.to_thread(
-            lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
-                storage_path,
-                audio_data,
-                {"content-type": "audio/mpeg"}
+        # Upload with upsert to handle existing files
+        try:
+            await asyncio.to_thread(
+                lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                    storage_path,
+                    audio_data,
+                    {"content-type": "audio/mpeg", "upsert": "true"}
+                )
             )
-        )
+        except Exception as e:
+            if "Duplicate" in str(e) or "already exists" in str(e).lower():
+                # Delete and re-upload
+                logger.info(f"File exists, replacing: {storage_path}")
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).remove([storage_path])
+                )
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                        storage_path,
+                        audio_data,
+                        {"content-type": "audio/mpeg"}
+                    )
+                )
+            else:
+                raise
 
         logger.debug(f"Uploaded audio: {storage_path}")
         return f"{self.STORAGE_BUCKET}/{storage_path}"
@@ -504,17 +539,20 @@ class ComicAudioService:
     ) -> None:
         """Save panel audio to database."""
         await asyncio.to_thread(
-            lambda: self.supabase.table("comic_panel_audio").upsert({
-                "project_id": project_id,
-                "panel_number": audio.panel_number,
-                "audio_url": audio.audio_url,
-                "audio_filename": audio.audio_filename,
-                "duration_ms": audio.duration_ms,
-                "voice_id": audio.voice_id,
-                "voice_name": audio.voice_name,
-                "text_content": audio.text_content,
-                "is_approved": audio.is_approved
-            }).execute()
+            lambda: self.supabase.table("comic_panel_audio").upsert(
+                {
+                    "project_id": project_id,
+                    "panel_number": audio.panel_number,
+                    "audio_url": audio.audio_url,
+                    "audio_filename": audio.audio_filename,
+                    "duration_ms": audio.duration_ms,
+                    "voice_id": audio.voice_id,
+                    "voice_name": audio.voice_name,
+                    "text_content": audio.text_content,
+                    "is_approved": audio.is_approved
+                },
+                on_conflict="project_id,panel_number"
+            ).execute()
         )
 
     async def _delete_panel_audio(
@@ -608,35 +646,58 @@ class ComicAudioService:
         Returns:
             Tuple of (voice_id, voice_name)
         """
-        speaker_lower = speaker.lower()
+        speaker_lower = speaker.lower().strip()
+        logger.info(f"get_voice_for_speaker: speaker='{speaker_lower}'")
 
         # Narrator uses user-selected voice or default
         if speaker_lower == "narrator":
             voice_id = narrator_voice_id or self.DEFAULT_VOICE_ID
             voice_name = narrator_voice_name or self.DEFAULT_VOICE_NAME
+            logger.info(f"get_voice_for_speaker: Using narrator voice '{voice_name}'")
             return voice_id, voice_name
 
-        # Raccoon/every-coon - look up from database
-        if speaker_lower in ("raccoon", "every-coon"):
-            try:
-                result = await asyncio.to_thread(
-                    lambda: self.supabase.table("character_voice_profiles")
-                        .select("voice_id, display_name")
-                        .eq("character", "every-coon")
-                        .maybe_single()
-                        .execute()
-                )
-                if result.data:
-                    return result.data["voice_id"], result.data.get("display_name", "Every-Coon")
-            except Exception as e:
-                logger.warning(f"Could not load every-coon voice: {e}")
+        # Map character strings to Character enum (same as video pipeline)
+        # Include variations that might come from comic generation
+        character_map = {
+            "every-coon": Character.EVERY_COON,
+            "everycoon": Character.EVERY_COON,
+            "every_coon": Character.EVERY_COON,
+            "every coon": Character.EVERY_COON,
+            "raccoon": Character.EVERY_COON,
+            "pile-of-raccoon-icons": Character.EVERY_COON,  # Comic variation
+            "raccoon-icons": Character.EVERY_COON,
+            "boomer": Character.BOOMER,
+            "fed": Character.FED,
+            "the fed": Character.FED,
+            "whale": Character.WHALE,
+            "wojak": Character.WOJAK,
+            "chad": Character.CHAD,
+        }
 
-            # Fallback for raccoon if not found
-            logger.info("Using default voice for raccoon (every-coon not found)")
+        # Also check if "raccoon" or "coon" is in the name (fallback for creative names)
+        if speaker_lower not in character_map:
+            if "raccoon" in speaker_lower or "coon" in speaker_lower:
+                logger.info(f"Normalizing '{speaker_lower}' to every-coon")
+                character_map[speaker_lower] = Character.EVERY_COON
+
+        character_enum = character_map.get(speaker_lower)
+        if character_enum:
+            try:
+                # Use ElevenLabsService to get voice profile (same as video pipeline)
+                profile = await self.elevenlabs.get_voice_profile(character_enum)
+                logger.info(f"get_voice_for_speaker: Found {character_enum.value} voice '{profile.display_name}' (id: {profile.voice_id[:8]}...)")
+                return profile.voice_id, profile.display_name
+            except ValueError as e:
+                logger.warning(f"get_voice_for_speaker: No profile for {character_enum.value}: {e}")
+            except Exception as e:
+                logger.warning(f"get_voice_for_speaker: Error loading {character_enum.value} voice: {e}")
+
+            # Fallback if profile not found
+            logger.info(f"get_voice_for_speaker: Using default voice ({character_enum.value} not configured)")
             return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
 
         # Unknown speaker - use narrator voice
-        logger.info(f"Unknown speaker '{speaker}', using narrator voice")
+        logger.info(f"get_voice_for_speaker: Unknown speaker '{speaker_lower}', using narrator voice")
         voice_id = narrator_voice_id or self.DEFAULT_VOICE_ID
         voice_name = narrator_voice_name or self.DEFAULT_VOICE_NAME
         return voice_id, voice_name

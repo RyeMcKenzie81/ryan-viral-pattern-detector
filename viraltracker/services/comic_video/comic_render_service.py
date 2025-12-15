@@ -478,7 +478,9 @@ class ComicRenderService:
         """
         fps = self.DEFAULT_FPS
 
-        # Get audio delay from user overrides or use default (0ms for now to debug sync)
+        # Get audio delay from user overrides or use default
+        # Default 0ms = audio starts exactly when segment starts (camera at panel)
+        # Add delay if you want a pause after camera arrives before voice starts
         audio_delay_ms = 0
         if instruction.user_overrides and instruction.user_overrides.audio_delay_ms is not None:
             audio_delay_ms = instruction.user_overrides.audio_delay_ms
@@ -497,7 +499,16 @@ class ComicRenderService:
                 content_duration_ms = instruction.duration_ms
                 logger.info(f"Panel {instruction.panel_number}: using stored duration {content_duration_ms}ms")
         else:
+            # Panel has no audio - use stored duration with minimum fallback
+            # IMPORTANT: Ensure silent segments have enough duration so they don't cause sync issues
             content_duration_ms = instruction.duration_ms
+            MIN_NO_AUDIO_DURATION_MS = 2000  # Minimum 2 seconds for panels without voice
+            if content_duration_ms < MIN_NO_AUDIO_DURATION_MS:
+                logger.warning(
+                    f"Panel {instruction.panel_number}: no audio, stored duration {content_duration_ms}ms too short, "
+                    f"using minimum {MIN_NO_AUDIO_DURATION_MS}ms"
+                )
+                content_duration_ms = MIN_NO_AUDIO_DURATION_MS
 
         transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
 
@@ -586,13 +597,21 @@ class ComicRenderService:
                     "-map", "1:a",
                 ])
         else:
-            # No audio - just video filters
+            # No voice audio - generate silent audio track
+            # IMPORTANT: All segments must have audio for proper concatenation
             if effects_filter:
-                filter_complex = f"{zoompan_filter},{effects_filter}{final_scale}"
+                video_chain = f"[0:v]{zoompan_filter},{effects_filter}{final_scale}[vout]"
             else:
-                filter_complex = f"{zoompan_filter}{final_scale}"
+                video_chain = f"[0:v]{zoompan_filter}{final_scale}[vout]"
+
+            # Generate silent audio using anullsrc
+            # Must match the segment duration exactly
+            silent_audio = f"anullsrc=r=44100:cl=stereo,atrim=0:{total_duration_sec}[aout]"
+            filter_complex = f"{video_chain};{silent_audio}"
             cmd.extend([
                 "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "[aout]",
             ])
 
         cmd.extend([
@@ -601,21 +620,16 @@ class ComicRenderService:
             "-preset", "medium",
             "-crf", "23",
             "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
         ])
-
-        if audio_path and audio_path.exists():
-            cmd.extend([
-                "-c:a", "aac",
-                "-b:a", "128k",
-            ])
-        else:
-            cmd.extend(["-an"])
 
         cmd.append(str(output_path))
 
+        has_audio = audio_path and audio_path.exists()
         logger.info(
             f"Rendering panel {instruction.panel_number}: "
-            f"audio={audio_delay_ms}ms delay + actual audio, "
+            f"has_audio={has_audio}, audio_delay={audio_delay_ms}ms, "
             f"video={content_duration_ms}ms content + {transition_duration_ms}ms transition = {total_duration_ms}ms total, "
             f"camera=({instruction.camera.center_x:.3f}, {instruction.camera.center_y:.3f})"
             + (f" -> next=({next_instruction.camera.center_x:.3f}, {next_instruction.camera.center_y:.3f})"
@@ -644,45 +658,92 @@ class ComicRenderService:
         segment_paths: List[Path],
         output_path: Path
     ) -> None:
-        """Concatenate video segments using FFmpeg concat demuxer."""
+        """
+        Concatenate video segments using FFmpeg concat FILTER.
+
+        IMPORTANT: We use the concat filter (not concat demuxer) because:
+        - The demuxer with -c copy has known audio sync issues
+        - Segments with different audio sources (voice vs anullsrc silence)
+          can have timestamp mismatches causing audio drift
+        - The concat filter re-encodes everything, ensuring perfect sync
+
+        See: https://trac.ffmpeg.org/wiki/Concatenate
+        """
         # Debug: log concatenation details
         if hasattr(self, '_debug_file') and self._debug_file:
             with open(self._debug_file, "a") as f:
-                f.write(f"\n=== CONCATENATION ===\n")
+                f.write(f"\n=== CONCATENATION (using concat filter) ===\n")
                 f.write(f"Total segments to concatenate: {len(segment_paths)}\n")
-                for i, path in enumerate(segment_paths):
-                    exists = path.exists()
-                    size_kb = path.stat().st_size / 1024 if exists else 0
-                    f.write(f"  [{i}] {path.name}: exists={exists}, size={size_kb:.1f}KB\n")
-                f.write(f"\n")
 
-        # Create concat list file
-        concat_list = output_path.parent / "concat_list.txt"
-        with open(concat_list, "w") as f:
-            for path in segment_paths:
-                # Use absolute path to avoid path resolution issues
-                abs_path = path.resolve()
-                # Escape single quotes
-                escaped = str(abs_path).replace("'", "'\\''")
-                f.write(f"file '{escaped}'\n")
+        # CRITICAL: Verify all segments have audio streams before concatenating
+        # The concat filter requires all inputs to have matching streams
+        for i, path in enumerate(segment_paths):
+            exists = path.exists()
+            size_kb = path.stat().st_size / 1024 if exists else 0
 
-        # Debug: log concat list contents
+            if hasattr(self, '_debug_file') and self._debug_file:
+                with open(self._debug_file, "a") as f:
+                    f.write(f"  [{i}] {path.name}: exists={exists}, size={size_kb:.1f}KB")
+
+            if exists:
+                has_audio = await self._has_audio_stream(path)
+                if hasattr(self, '_debug_file') and self._debug_file:
+                    with open(self._debug_file, "a") as f:
+                        f.write(f", has_audio={has_audio}")
+
+                if not has_audio:
+                    logger.warning(f"Segment {path.name} missing audio - adding silent track")
+                    await self._add_silent_audio_to_segment(path)
+
+            if hasattr(self, '_debug_file') and self._debug_file:
+                with open(self._debug_file, "a") as f:
+                    f.write(f"\n")
+
         if hasattr(self, '_debug_file') and self._debug_file:
             with open(self._debug_file, "a") as f:
-                f.write(f"Concat list file contents:\n")
-                with open(concat_list, "r") as cl:
-                    f.write(cl.read())
                 f.write(f"\n")
 
-        cmd = [
-            self._ffmpeg_path,
-            "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_list),
-            "-c", "copy",  # Just copy streams, no re-encoding
+        # Build FFmpeg command using concat filter
+        # This approach re-encodes but guarantees proper audio sync
+        cmd = [self._ffmpeg_path, "-y"]
+
+        # Add all input files
+        for path in segment_paths:
+            cmd.extend(["-i", str(path)])
+
+        # Build the filter_complex for concat filter
+        # IMPORTANT: Normalize SAR (Sample Aspect Ratio) for each segment before concat
+        # Different encoding paths can produce different SARs (e.g., 1712:1719 vs 1:1)
+        # which causes concat to fail with "parameters do not match" error
+        n = len(segment_paths)
+
+        # First normalize each video stream's SAR to 1:1, then concat
+        # Format: [0:v]setsar=1:1[v0];[1:v]setsar=1:1[v1];...;[v0][0:a][v1][1:a]...concat=n=N:v=1:a=1[outv][outa]
+        sar_filters = []
+        concat_inputs = []
+        for i in range(n):
+            sar_filters.append(f"[{i}:v]setsar=1:1[v{i}]")
+            concat_inputs.append(f"[v{i}][{i}:a]")
+
+        filter_complex = ";".join(sar_filters) + ";" + "".join(concat_inputs) + f"concat=n={n}:v=1:a=1[outv][outa]"
+
+        # Debug: log the filter
+        if hasattr(self, '_debug_file') and self._debug_file:
+            with open(self._debug_file, "a") as f:
+                f.write(f"Concat filter: {filter_complex}\n\n")
+
+        cmd.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            "-map", "[outa]",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
             str(output_path)
-        ]
+        ])
 
         await self._run_ffmpeg(cmd)
 
@@ -692,9 +753,6 @@ class ComicRenderService:
                 size_mb = output_path.stat().st_size / (1024 * 1024)
                 with open(self._debug_file, "a") as f:
                     f.write(f"Concatenation complete: {output_path.name} ({size_mb:.2f}MB)\n\n")
-
-        # Cleanup - keep concat_list.txt for debugging
-        # concat_list.unlink(missing_ok=True)
 
     async def _mix_background_music(
         self,
@@ -980,6 +1038,7 @@ class ComicRenderService:
 
         if effect_type == EffectType.VIGNETTE:
             softness = effect.params.get("softness")
+            logger.info(f"Building vignette filter: intensity={intensity}, softness={softness}, params={effect.params}")
             filter_str = self._vignette_filter(intensity, softness=softness)
 
         elif effect_type == EffectType.VIGNETTE_LIGHT:
@@ -1064,17 +1123,16 @@ class ComicRenderService:
         gradually increases the vignette strength from 0 to target over fade_in_ms.
         """
         # Softness controls the spread/distance from edges
-        # Default to 0.4 (subtle) if not specified
+        # Default to 0.4 if not specified
         soft = softness if softness is not None else 0.4
-        # Map softness 0-1 to angle range PI*0.25 to PI*0.6
-        # Lower angle = tighter to edges, higher = extends toward center
-        base_angle = 0.25 + (soft * 0.35)
+        # Map softness 0.1-1.0 to angle range PI*0.2 (tight) to PI*0.7 (very spread)
+        # This gives a much more noticeable range of effect
+        base_angle = 0.2 + (soft * 0.5)
 
         # For fade-in, we animate the angle from a very small value (no vignette)
         # to the target angle over the fade duration
         fade_in_sec = fade_in_ms / 1000
         # Start at PI*0.1 (nearly invisible) and ramp to target angle
-        # Using min(t/fade_duration, 1) to clamp at 1 after fade completes
         start_angle = 0.1
         angle_expr = f"PI*({start_angle}+({base_angle}-{start_angle})*min(t/{fade_in_sec},1))"
 
@@ -1082,8 +1140,10 @@ class ComicRenderService:
         vignette = f"vignette=angle='{angle_expr}'"
 
         # Intensity controls additional brightness reduction for darker edges
-        if intensity > 0.5:
-            brightness_reduction = (intensity - 0.5) * 0.3
+        # Now affects the full range: intensity 0.1 = slight, 1.0 = very dark
+        # Map intensity to brightness reduction: 0.1->0.02, 0.5->0.10, 1.0->0.25
+        brightness_reduction = intensity * 0.25
+        if brightness_reduction > 0.02:
             return f"{vignette},eq=brightness=-{brightness_reduction:.2f}"
         else:
             return vignette
@@ -1215,6 +1275,73 @@ class ComicRenderService:
         return None
 
     # =========================================================================
+    # FFmpeg Helpers
+    # =========================================================================
+
+    async def _has_audio_stream(self, video_path: Path) -> bool:
+        """Check if video file has an audio stream using ffprobe."""
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(video_path)
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            # If there's output, there's an audio stream
+            return bool(stdout.decode().strip())
+        except Exception as e:
+            logger.warning(f"Failed to check audio stream: {e}")
+            return False
+
+    async def _add_silent_audio_to_segment(self, video_path: Path) -> Path:
+        """Add silent audio track to a video that's missing audio."""
+        output_path = video_path.with_suffix(".with_audio.mp4")
+
+        # Get video duration first
+        duration_cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            str(video_path)
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *duration_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        duration = float(stdout.decode().strip()) if stdout else 5.0
+
+        # Add silent audio
+        cmd = [
+            self._ffmpeg_path, "-y",
+            "-i", str(video_path),
+            "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+            "-t", str(duration),
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-shortest",
+            str(output_path)
+        ]
+        await self._run_ffmpeg(cmd)
+
+        # Replace original with new file
+        video_path.unlink()
+        output_path.rename(video_path)
+        logger.info(f"Added silent audio to {video_path.name}")
+        return video_path
+
+    # =========================================================================
     # FFmpeg Execution
     # =========================================================================
 
@@ -1240,8 +1367,12 @@ class ComicRenderService:
 
             if process.returncode != 0:
                 error_msg = stderr.decode() if stderr else "Unknown error"
-                logger.error(f"FFmpeg failed: {error_msg}")
-                raise RuntimeError(f"FFmpeg failed: {error_msg[:500]}")
+                # Extract the actual error (last few lines), skip the version/config spam
+                error_lines = error_msg.strip().split('\n')
+                # Get last 20 lines which usually contain the actual error
+                relevant_error = '\n'.join(error_lines[-20:]) if len(error_lines) > 20 else error_msg
+                logger.error(f"FFmpeg failed: {relevant_error}")
+                raise RuntimeError(f"FFmpeg failed: {relevant_error[:1500]}")
 
         except asyncio.TimeoutError:
             process.kill()

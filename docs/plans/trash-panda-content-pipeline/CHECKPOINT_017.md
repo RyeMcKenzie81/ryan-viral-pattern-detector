@@ -73,18 +73,38 @@ Verified RAG retrieval is working:
   - Maps categories to tool_usage
   - Runs search test after ingestion
 
+### Services
+- `viraltracker/services/content_pipeline/services/comic_service.py` - ComicService
+  - `ComicConfig`, `AspectRatio`, `EmotionalPayoff` enums
+  - `GridLayout`, `ComicPanel`, `ComicScript`, `ComicEvaluation` dataclasses
+  - `condense_to_comic()` - Condense full script to 2-12 panel comic
+  - `evaluate_comic_script()` - Evaluate for clarity, humor, flow
+  - `suggest_panel_count()` - AI panel count suggestion
+  - KB retrieval helpers (`_get_planning_context()`, `_get_evaluation_context()`)
+  - Database operations (save, approve, get)
+
+### UI
+- `viraltracker/ui/pages/30_📝_Content_Pipeline.py`
+  - Added Comic tab (8th tab)
+  - Comic sub-tabs: Condense, Evaluate, Approve
+  - Configuration options: aspect ratio, panel count, platform, emotional payoff
+  - Comic preview with panel grid
+  - Evaluation results display with scores and issues
+
 ---
 
 ## Phase 8 Progress
 
 ### Completed
 - [x] KB Ingestion: `comic-production` collection (20 documents)
+- [x] ComicService architecture and implementation
+- [x] Comic condensation (`condense_to_comic()`)
+- [x] Comic evaluation (`evaluate_comic_script()`)
+- [x] Human approval checkpoint UI (Comic tab in Content Pipeline)
 
-### Next Steps
-- [ ] ComicService architecture
-- [ ] Comic condensation (script → 4-panel comic)
-- [ ] Comic evaluation (clarity, humor, flow scoring)
-- [ ] Human approval checkpoint UI
+### Next Steps (Phase 9)
+- [ ] Comic image generation (Gemini)
+- [ ] Comic JSON conversion for video tool
 
 ---
 
@@ -144,12 +164,23 @@ for r in results:
 ## Key Design Decisions
 
 ### Comic Condensation Approach
-The comic path takes an approved full script and condenses it to a 4-panel format. Key considerations:
+The comic path takes an approved full script and condenses it to comic format. Key decisions:
 
-1. **Input:** Full script with storyboard (from script_versions table)
-2. **Config:** Panel count (default 4), target platform, grid layout
-3. **KB Context:** Fetch planning + patterns docs for LLM guidance
-4. **Output:** ComicVersion with panel-by-panel script
+| Aspect | Decision |
+|--------|----------|
+| **Input** | Full script + storyboard JSON (both for maximum context) |
+| **Panel Count** | 1-12 panels (max 3 rows × 4 cols), AI suggests based on KB best practices |
+| **Formats** | 4 aspect ratios: 9:16, 16:9, 1:1, 4:5 |
+| **KB Strategy** | Targeted fetch per operation (planning docs vs evaluation docs) |
+| **Assets** | Reuse existing characters/backgrounds/props from video path |
+
+### KB Retrieval Strategy (Targeted)
+
+| Operation | Documents Fetched |
+|-----------|-------------------|
+| **Condensation** | blueprint_overview, planning_4_panel, canonical_definitions, patterns_emotions, patterns_gags |
+| **Evaluation** | evaluation_checklist, troubleshooting_common_problems, dialogue_rules |
+| **Revision** | repair_patterns, examples_before_after |
 
 ### Evaluation Scoring
 Comic script evaluation uses 3 dimensions from the KB:
@@ -158,6 +189,15 @@ Comic script evaluation uses 3 dimensions from the KB:
 - **Flow:** HOOK → BUILD → TWIST → PUNCHLINE structure
 
 **Quick Approve Threshold:** All scores > 85
+
+### Aspect Ratio Grid Layouts
+
+| Format | Use Case | Grid Options |
+|--------|----------|--------------|
+| 9:16 | TikTok, Reels, Shorts | 1×4, 1×6, 2×4, 2×6 |
+| 16:9 | YouTube, Twitter | 4×1, 4×2, 4×3 |
+| 1:1 | Instagram feed | 2×2, 3×3, 4×3 |
+| 4:5 | Instagram portrait | 2×3, 2×4, 3×4 |
 
 ---
 

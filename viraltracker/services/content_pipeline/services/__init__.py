@@ -11,6 +11,7 @@ from .content_pipeline_service import ContentPipelineService
 from .asset_service import AssetManagementService
 from .asset_generation_service import AssetGenerationService
 from .handoff_service import EditorHandoffService
+from .comic_service import ComicService
 
 __all__ = [
     "TopicDiscoveryService",
@@ -19,4 +20,5 @@ __all__ = [
     "AssetManagementService",
     "AssetGenerationService",
     "EditorHandoffService",
+    "ComicService",
 ]
