@@ -4006,6 +4006,18 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
             st.markdown("#### Image Evaluation")
             render_comic_image_evaluation(image_eval)
 
+            # Re-evaluate button
+            if st.button("Re-evaluate Image", type="secondary", key="re_eval_image"):
+                try:
+                    db = get_supabase_client()
+                    db.table("comic_versions").update({
+                        "image_evaluation": None
+                    }).eq("id", comic_id).execute()
+                    st.success("Evaluation cleared. Click 'Evaluate Generated Image' to re-evaluate.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to clear evaluation: {e}")
+
         # Option to regenerate
         if st.button("Regenerate Image", type="secondary"):
             st.session_state.comic_image_generating = True
