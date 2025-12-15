@@ -663,18 +663,28 @@ class ComicAudioService:
             return voice_id, voice_name
 
         # Map character strings to Character enum (same as video pipeline)
+        # Include variations that might come from comic generation
         character_map = {
             "every-coon": Character.EVERY_COON,
             "everycoon": Character.EVERY_COON,
             "every_coon": Character.EVERY_COON,
             "every coon": Character.EVERY_COON,
             "raccoon": Character.EVERY_COON,
+            "pile-of-raccoon-icons": Character.EVERY_COON,  # Comic variation
+            "raccoon-icons": Character.EVERY_COON,
             "boomer": Character.BOOMER,
             "fed": Character.FED,
+            "the fed": Character.FED,
             "whale": Character.WHALE,
             "wojak": Character.WOJAK,
             "chad": Character.CHAD,
         }
+
+        # Also check if "raccoon" or "coon" is in the name (fallback for creative names)
+        if speaker_lower not in character_map:
+            if "raccoon" in speaker_lower or "coon" in speaker_lower:
+                print(f"[COMIC AUDIO DEBUG] Normalizing '{speaker_lower}' to every-coon", file=sys.stderr)
+                character_map[speaker_lower] = Character.EVERY_COON
 
         character_enum = character_map.get(speaker_lower)
         print(f"[COMIC AUDIO DEBUG] character_enum for '{speaker_lower}' = {character_enum}", file=sys.stderr)
