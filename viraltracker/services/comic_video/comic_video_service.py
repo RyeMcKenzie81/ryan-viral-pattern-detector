@@ -662,15 +662,14 @@ class ComicVideoService:
                 filename="final_video.mp4"
             )
 
-            # Update project with storage path
-            # Note: Add rendered_at column to DB then uncomment below
+            # Update project with storage path and render timestamp
             render_time = datetime.utcnow()
             await asyncio.to_thread(
                 lambda: self.supabase.table("comic_video_projects")
                     .update({
                         "final_video_url": storage_path,
                         "status": ProjectStatus.COMPLETE.value,
-                        # "rendered_at": render_time.isoformat(),  # Needs DB migration
+                        "rendered_at": render_time.isoformat(),
                         "updated_at": render_time.isoformat()
                     })
                     .eq("id", project_id)
