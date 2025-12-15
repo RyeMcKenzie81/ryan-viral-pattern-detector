@@ -4805,10 +4805,17 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                         # Audio section
                         st.markdown("**Audio**")
                         if audio:
-                            audio_url = audio.get('audio_url')
-                            if audio_url:
-                                st.audio(audio_url)
-                            st.caption(f"Text: {audio.get('text', 'N/A')[:100]}...")
+                            audio_path = audio.get('audio_url')
+                            if audio_path:
+                                # Convert storage path to signed URL for playback
+                                try:
+                                    from viraltracker.services.comic_video import ComicAudioService
+                                    audio_service = ComicAudioService()
+                                    signed_url = asyncio.run(audio_service.get_audio_url(audio_path))
+                                    st.audio(signed_url)
+                                except Exception as audio_err:
+                                    st.warning(f"Audio preview unavailable: {audio_err}")
+                            st.caption(f"Text: {audio.get('text_content', audio.get('text', 'N/A'))[:100]}...")
                             st.caption(f"Duration: {audio.get('duration_ms', 0)}ms | Voice: {audio.get('voice_name', 'default')}")
 
                             audio_approved = audio.get('is_approved', False)
