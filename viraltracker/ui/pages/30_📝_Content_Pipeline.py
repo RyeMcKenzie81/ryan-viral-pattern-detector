@@ -4501,10 +4501,10 @@ def render_comic_export_tab(project: Dict, existing_comics: List[Dict]):
                 )
 
                 service = get_comic_service()
-                export_json = asyncio.run(service.generate_comic_json(
+                export_json = service.generate_comic_json(
                     comic_script=comic_script,
                     image_url=image_url
-                ))
+                )
 
                 # Save to database
                 db = get_supabase_client()
