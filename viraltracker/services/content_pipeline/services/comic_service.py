@@ -15,6 +15,7 @@ Part of the Trash Panda Content Pipeline (Phase 8).
 """
 
 import os
+import re
 import logging
 import json
 from typing import List, Dict, Any, Optional, Tuple
@@ -1060,17 +1061,34 @@ Return ONLY the JSON, no other text."""
         content = content.strip()
 
         # Remove markdown code blocks if present
-        if content.startswith("```"):
-            lines = content.split("\n")
-            start_idx = 1 if lines[0].startswith("```") else 0
-            end_idx = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
-            content = "\n".join(lines[start_idx:end_idx])
+        if "```" in content:
+            # Try to extract JSON from ```json ... ``` or ``` ... ```
+            json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1).strip()
+            else:
+                # Fallback: remove first and last lines if they're code fences
+                lines = content.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                content = "\n".join(lines)
+
+        # Try to find JSON object in the content
+        content = content.strip()
+        if not content.startswith("{"):
+            # Look for first { and last }
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                content = content[start:end + 1]
 
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            logger.debug(f"Raw content: {content[:1000]}")
+            logger.error(f"Raw content (first 500 chars): {content[:500]}")
             raise ValueError(f"Failed to parse LLM response as JSON: {e}")
 
     # =========================================================================
