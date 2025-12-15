@@ -1594,9 +1594,11 @@ EXPECTED PANELS:
             }
             panels.append(panel_json)
 
-        # Build layout recommendation
+        # Build layout recommendation with grid_structure (preferred by Comic Video service)
+        grid_structure = self._build_grid_structure(comic_script)
         layout = {
             "format": f"{comic_script.grid_layout.cols} columns x {comic_script.grid_layout.rows} rows",
+            "grid_structure": grid_structure,
             "panel_arrangement": self._build_panel_arrangement(comic_script)
         }
 
@@ -1606,6 +1608,8 @@ EXPECTED PANELS:
             "structure": structure,
             "panels": panels,
             "layout_recommendation": layout,
+            "canvas_width": comic_script.grid_layout.cols * 1000,
+            "canvas_height": comic_script.grid_layout.rows * 1000,
             "metadata": {
                 "title": comic_script.title,
                 "premise": comic_script.premise,
@@ -1665,6 +1669,52 @@ EXPECTED PANELS:
                 return "positive"
 
         return "neutral"
+
+    def _build_grid_structure(self, comic_script: ComicScript) -> List[Dict[str, Any]]:
+        """
+        Build grid_structure for Comic Video service layout parsing.
+
+        This format explicitly maps each panel to its grid position,
+        which the Comic Video service prefers over panel_arrangement.
+
+        Args:
+            comic_script: Comic script with panels and grid layout
+
+        Returns:
+            List of row definitions with panel mappings
+        """
+        cols = comic_script.grid_layout.cols
+        rows = comic_script.grid_layout.rows
+        panels = comic_script.panels
+        total_panels = len(panels)
+
+        grid_structure = []
+        panel_idx = 0
+
+        for row in range(rows):
+            # Calculate how many panels fit in this row
+            remaining_panels = total_panels - panel_idx
+            remaining_rows = rows - row
+            panels_this_row = min(cols, remaining_panels)
+
+            # If this is the last row and we have fewer panels, adjust
+            if remaining_rows == 1:
+                panels_this_row = remaining_panels
+
+            # Build list of panel numbers for this row
+            row_panels = []
+            for _ in range(panels_this_row):
+                if panel_idx < total_panels:
+                    row_panels.append(panels[panel_idx].panel_number)
+                    panel_idx += 1
+
+            grid_structure.append({
+                "row": row + 1,  # 1-indexed for Comic Video service
+                "columns": len(row_panels),
+                "panels": row_panels
+            })
+
+        return grid_structure
 
     def _build_panel_arrangement(self, comic_script: ComicScript) -> List[List[str]]:
         """
