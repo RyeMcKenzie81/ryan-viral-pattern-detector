@@ -3548,8 +3548,8 @@ def render_comic_tab(project: Dict):
         existing_comics = []
 
     # Sub-tabs for comic workflow
-    comic_tab1, comic_tab2, comic_tab3, comic_tab4, comic_tab5 = st.tabs([
-        "Condense", "Evaluate", "Approve", "Generate Image", "Export JSON"
+    comic_tab1, comic_tab2, comic_tab3, comic_tab4, comic_tab5, comic_tab6 = st.tabs([
+        "Condense", "Evaluate", "Approve", "Generate Image", "Export JSON", "Video"
     ])
 
     with comic_tab1:
@@ -3566,6 +3566,9 @@ def render_comic_tab(project: Dict):
 
     with comic_tab5:
         render_comic_export_tab(project, existing_comics)
+
+    with comic_tab6:
+        render_comic_video_tab(project, existing_comics)
 
 
 def render_comic_condense_tab(project: Dict, existing_comics: List[Dict]):
@@ -4527,6 +4530,222 @@ def render_comic_export_tab(project: Dict, existing_comics: List[Dict]):
             except Exception as e:
                 st.session_state.comic_exporting = False
                 st.error(f"Export generation failed: {e}")
+
+
+def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
+    """Render the comic video generation sub-tab.
+
+    Integrates the Comic Video service for audio generation,
+    director instructions, and final video rendering.
+    """
+    from viraltracker.services.comic_video import ComicVideoService
+
+    project_id = project.get('id')
+
+    if not existing_comics:
+        st.info("No comic to create video from. Create and approve a comic first.")
+        return
+
+    latest = existing_comics[0]
+    comic_id = latest.get('id')
+    status = latest.get('status', 'draft')
+    image_url = latest.get('generated_image_url')
+    export_json = latest.get('export_json')
+
+    # Check prerequisites
+    if status != 'approved':
+        st.warning("Comic must be approved before creating video. Go to the Approve tab first.")
+        return
+
+    if not image_url:
+        st.warning("Comic image must be generated first. Go to the Generate Image tab.")
+        return
+
+    if not export_json:
+        st.warning("Comic JSON must be exported first. Go to the Export JSON tab.")
+        return
+
+    # Check if image is a data URL (not uploaded to storage)
+    if image_url.startswith("data:"):
+        st.warning("Comic image needs to be uploaded to storage. Regenerate the image to upload to Supabase Storage.")
+        return
+
+    st.markdown("### Comic Video Generation")
+
+    # Initialize session state for video workflow
+    if 'comic_video_project_id' not in st.session_state:
+        st.session_state.comic_video_project_id = None
+    if 'comic_video_generating_audio' not in st.session_state:
+        st.session_state.comic_video_generating_audio = False
+    if 'comic_video_generating_instructions' not in st.session_state:
+        st.session_state.comic_video_generating_instructions = False
+    if 'comic_video_rendering' not in st.session_state:
+        st.session_state.comic_video_rendering = False
+
+    # Check for existing video project linked to this comic
+    try:
+        db = get_supabase_client()
+        # Look for video project that uses this comic's image
+        video_projects = db.table("comic_video_projects").select("*").eq(
+            "comic_grid_url", image_url
+        ).order("created_at", desc=True).limit(1).execute()
+        existing_video_project = video_projects.data[0] if video_projects.data else None
+    except Exception as e:
+        st.warning(f"Could not check for existing video projects: {e}")
+        existing_video_project = None
+
+    if existing_video_project:
+        video_project_id = existing_video_project.get('id')
+        video_status = existing_video_project.get('status', 'draft')
+
+        st.success(f"Video project exists: {existing_video_project.get('title', 'Untitled')}")
+        st.caption(f"Status: {video_status}")
+
+        # Show link to Comic Video page for full editing
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"[Open in Comic Video Editor](/Comic_Video?project_id={video_project_id})")
+        with col2:
+            if st.button("Delete Video Project", type="secondary"):
+                try:
+                    service = ComicVideoService()
+                    asyncio.run(service.delete_project(video_project_id))
+                    st.success("Video project deleted!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to delete: {e}")
+
+        # Quick status overview
+        st.markdown("---")
+        st.markdown("#### Video Workflow Status")
+
+        # Get audio and instruction counts
+        try:
+            audio_result = db.table("comic_panel_audio").select("panel_number, is_approved").eq(
+                "project_id", video_project_id
+            ).execute()
+            audio_data = audio_result.data or []
+
+            instr_result = db.table("comic_panel_instructions").select("panel_number, is_approved").eq(
+                "project_id", video_project_id
+            ).execute()
+            instr_data = instr_result.data or []
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                approved_audio = len([a for a in audio_data if a.get('is_approved')])
+                st.metric("Audio", f"{approved_audio}/{len(audio_data)} approved")
+            with col2:
+                approved_instr = len([i for i in instr_data if i.get('is_approved')])
+                st.metric("Instructions", f"{approved_instr}/{len(instr_data)} approved")
+            with col3:
+                if video_status == 'rendered':
+                    st.metric("Video", "Complete")
+                else:
+                    st.metric("Video", "Pending")
+
+        except Exception as e:
+            st.warning(f"Could not load workflow status: {e}")
+
+        # Quick actions
+        st.markdown("---")
+        st.markdown("#### Quick Actions")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Generate All Audio", disabled=st.session_state.comic_video_generating_audio):
+                st.session_state.comic_video_generating_audio = True
+                st.rerun()
+
+        with col2:
+            if st.button("Generate Instructions", disabled=st.session_state.comic_video_generating_instructions):
+                st.session_state.comic_video_generating_instructions = True
+                st.rerun()
+
+        with col3:
+            all_approved = (
+                len(audio_data) > 0 and
+                len(instr_data) > 0 and
+                all(a.get('is_approved') for a in audio_data) and
+                all(i.get('is_approved') for i in instr_data)
+            )
+            if st.button("Render Final Video", disabled=not all_approved or st.session_state.comic_video_rendering):
+                st.session_state.comic_video_rendering = True
+                st.rerun()
+
+            if not all_approved:
+                st.caption("All panels must be approved first")
+
+        # Handle async operations
+        if st.session_state.comic_video_generating_audio:
+            with st.spinner("Generating audio for all panels..."):
+                try:
+                    service = ComicVideoService()
+                    asyncio.run(service.generate_all_audio(video_project_id))
+                    st.session_state.comic_video_generating_audio = False
+                    st.success("Audio generated for all panels!")
+                    st.rerun()
+                except Exception as e:
+                    st.session_state.comic_video_generating_audio = False
+                    st.error(f"Audio generation failed: {e}")
+
+        if st.session_state.comic_video_generating_instructions:
+            with st.spinner("Generating director instructions..."):
+                try:
+                    service = ComicVideoService()
+                    asyncio.run(service.generate_all_instructions(video_project_id))
+                    st.session_state.comic_video_generating_instructions = False
+                    st.success("Instructions generated for all panels!")
+                    st.rerun()
+                except Exception as e:
+                    st.session_state.comic_video_generating_instructions = False
+                    st.error(f"Instruction generation failed: {e}")
+
+        if st.session_state.comic_video_rendering:
+            with st.spinner("Rendering final video... This may take several minutes."):
+                try:
+                    service = ComicVideoService()
+                    video_url = asyncio.run(service.render_final_video(video_project_id))
+                    st.session_state.comic_video_rendering = False
+                    st.success("Video rendered!")
+                    st.video(video_url)
+                    st.rerun()
+                except Exception as e:
+                    st.session_state.comic_video_rendering = False
+                    st.error(f"Video rendering failed: {e}")
+
+        # Show final video if available
+        final_video_url = existing_video_project.get('final_video_url')
+        if final_video_url:
+            st.markdown("---")
+            st.markdown("#### Final Video")
+            st.video(final_video_url)
+
+    else:
+        # No video project yet - show creation UI
+        st.info("No video project exists for this comic. Create one to start the video workflow.")
+
+        comic_title = export_json.get('metadata', {}).get('title', 'Untitled Comic')
+
+        st.markdown("#### Create Video Project")
+        st.markdown(f"**Comic:** {comic_title}")
+        st.markdown(f"**Panels:** {export_json.get('total_panels', 'unknown')}")
+
+        if st.button("Create Video Project", type="primary"):
+            with st.spinner("Creating video project..."):
+                try:
+                    service = ComicVideoService()
+                    video_project = asyncio.run(service.create_project(
+                        title=comic_title,
+                        comic_grid_url=image_url,
+                        comic_json=export_json
+                    ))
+                    st.session_state.comic_video_project_id = video_project.project_id
+                    st.success(f"Video project created!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to create video project: {e}")
 
 
 def render_comic_preview(comic_data: Dict):
