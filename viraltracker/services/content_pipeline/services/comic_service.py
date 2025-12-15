@@ -1048,16 +1048,18 @@ Return ONLY the JSON, no other text."""
 
         return "\n".join(parts)
 
-    def _parse_json_response(self, content: str) -> Dict[str, Any]:
+    def _parse_json_response(self, content: str, fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Parse JSON from LLM response, handling common formatting issues.
 
         Args:
             content: Raw response content
+            fallback: Optional fallback dict if parsing fails
 
         Returns:
             Parsed JSON as dict
         """
+        original_content = content
         content = content.strip()
 
         # Remove markdown code blocks if present
@@ -1084,12 +1086,40 @@ Return ONLY the JSON, no other text."""
             if start != -1 and end != -1 and end > start:
                 content = content[start:end + 1]
 
+        # First attempt: parse as-is
         try:
             return json.loads(content)
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {e}")
-            logger.error(f"Raw content (first 500 chars): {content[:500]}")
-            raise ValueError(f"Failed to parse LLM response as JSON: {e}")
+        except json.JSONDecodeError:
+            pass
+
+        # Second attempt: try fixing single quotes to double quotes
+        try:
+            # Replace single quotes with double quotes (common LLM issue)
+            fixed = content.replace("'", '"')
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        # Third attempt: try to extract using a more aggressive regex
+        try:
+            # Find anything that looks like a JSON object
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+        # Log the failure
+        logger.error(f"JSON parse error after all attempts")
+        logger.error(f"Original content (first 500 chars): {original_content[:500]}")
+        logger.error(f"Processed content (first 500 chars): {content[:500]}")
+
+        # Return fallback if provided
+        if fallback is not None:
+            logger.warning("Using fallback response due to JSON parse failure")
+            return fallback
+
+        raise ValueError(f"Failed to parse LLM response as JSON")
 
     # =========================================================================
     # Database Operations
@@ -1427,8 +1457,23 @@ Expected Panels:
                 prompt=self.IMAGE_EVALUATION_PROMPT + f"\n\nCONTEXT:\n{context}"
             )
 
-            # Parse response
-            eval_data = self._parse_json_response(response)
+            # Parse response with fallback for resilience
+            fallback_eval = {
+                "overall_score": 70,
+                "visual_clarity_score": 70,
+                "character_accuracy_score": 70,
+                "text_readability_score": 70,
+                "composition_score": 70,
+                "style_consistency_score": 70,
+                "visual_clarity_notes": "Unable to parse detailed evaluation",
+                "character_accuracy_notes": "Unable to parse detailed evaluation",
+                "text_readability_notes": "Unable to parse detailed evaluation",
+                "composition_notes": "Unable to parse detailed evaluation",
+                "style_consistency_notes": "Unable to parse detailed evaluation",
+                "issues": [{"severity": "medium", "issue": "Evaluation parsing failed - manual review recommended"}],
+                "suggestions": ["Please manually review the generated comic image"]
+            }
+            eval_data = self._parse_json_response(response, fallback=fallback_eval)
 
             overall_score = eval_data.get("overall_score", 0)
             passes_threshold = overall_score >= 90
