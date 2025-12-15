@@ -277,9 +277,6 @@ class ComicAudioService:
                     if text:
                         # Check for character field and use proper voice lookup
                         character = panel.get("character", "").strip().lower()
-                        # DEBUG: Print to stderr to ensure it shows in logs
-                        import sys
-                        print(f"[COMIC AUDIO DEBUG] Panel {panel_number}: character='{character}', keys={list(panel.keys())}", file=sys.stderr)
                         logger.info(f"Panel {panel_number}: character='{character}', text='{text[:50]}...'")
 
                         if character:
@@ -289,8 +286,7 @@ class ComicAudioService:
                                 narrator_voice_id=voice_id,
                                 narrator_voice_name=voice_name
                             )
-                            print(f"[COMIC AUDIO DEBUG] Panel {panel_number}: Using voice '{panel_voice_name}' (id: {panel_voice_id[:8] if panel_voice_id else 'None'}...)", file=sys.stderr)
-                            logger.info(f"Panel {panel_number}: Using voice '{panel_voice_name}' (id: {panel_voice_id[:8]}...)")
+                            logger.info(f"Panel {panel_number}: Using voice '{panel_voice_name}' (id: {panel_voice_id[:8] if panel_voice_id else 'None'}...)")
                         else:
                             # Fall back to provided voice or default
                             panel_voice_id = voice_id
@@ -651,8 +647,6 @@ class ComicAudioService:
             Tuple of (voice_id, voice_name)
         """
         speaker_lower = speaker.lower().strip()
-        import sys
-        print(f"[COMIC AUDIO DEBUG] get_voice_for_speaker called with speaker='{speaker_lower}'", file=sys.stderr)
         logger.info(f"get_voice_for_speaker: speaker='{speaker_lower}'")
 
         # Narrator uses user-selected voice or default
@@ -683,17 +677,14 @@ class ComicAudioService:
         # Also check if "raccoon" or "coon" is in the name (fallback for creative names)
         if speaker_lower not in character_map:
             if "raccoon" in speaker_lower or "coon" in speaker_lower:
-                print(f"[COMIC AUDIO DEBUG] Normalizing '{speaker_lower}' to every-coon", file=sys.stderr)
+                logger.info(f"Normalizing '{speaker_lower}' to every-coon")
                 character_map[speaker_lower] = Character.EVERY_COON
 
         character_enum = character_map.get(speaker_lower)
-        print(f"[COMIC AUDIO DEBUG] character_enum for '{speaker_lower}' = {character_enum}", file=sys.stderr)
         if character_enum:
             try:
                 # Use ElevenLabsService to get voice profile (same as video pipeline)
-                print(f"[COMIC AUDIO DEBUG] Calling elevenlabs.get_voice_profile({character_enum})", file=sys.stderr)
                 profile = await self.elevenlabs.get_voice_profile(character_enum)
-                print(f"[COMIC AUDIO DEBUG] Got profile: voice_id={profile.voice_id[:8]}..., display_name={profile.display_name}", file=sys.stderr)
                 logger.info(f"get_voice_for_speaker: Found {character_enum.value} voice '{profile.display_name}' (id: {profile.voice_id[:8]}...)")
                 return profile.voice_id, profile.display_name
             except ValueError as e:

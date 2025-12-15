@@ -298,6 +298,14 @@ Panel Count: {panel_count_instruction}
 Emotional Payoff Goal: {emotional_payoff_instruction}
 </config>
 
+<character_mapping>
+VALID CHARACTERS (you MUST use these exact names):
+{script_characters}
+
+These are the ONLY valid character names. Do NOT create variations or creative names.
+Map any character references to these exact names.
+</character_mapping>
+
 <available_assets>
 Characters: {available_characters}
 Backgrounds: {available_backgrounds}
@@ -324,7 +332,7 @@ OUTPUT FORMAT (JSON):
             "panel_type": "HOOK|BUILD|TWIST|PUNCHLINE",
             "dialogue": "Short dialogue (max 15 words)",
             "visual_description": "What we see",
-            "character": "character name from available_assets",
+            "character": "MUST be one of: {script_characters}",
             "expression": "emotion/expression",
             "background": "background name from available_assets or null",
             "props": ["prop names from available_assets"]
@@ -341,7 +349,7 @@ CRITICAL RULES:
 - Each panel MUST add new information or emotion
 - Final panel MUST be the strongest beat
 - Dialogue must pass the one-breath test
-- Use characters and assets from the available_assets list
+- CHARACTER NAMES MUST BE EXACT: Only use "{script_characters}" - no variations, no creative names
 - For {aspect_ratio}, optimize panel flow (vertical for 9:16, horizontal for 16:9)"""
 
     # Evaluation prompt
@@ -517,8 +525,81 @@ THRESHOLDS:
 - OOF = Relatable sting/self-own"""
 
     # =========================================================================
-    # Asset Helpers
+    # Character & Asset Helpers
     # =========================================================================
+
+    def _extract_script_characters(self, script_data: Dict[str, Any]) -> List[str]:
+        """
+        Extract unique character names from the original script beats.
+
+        Args:
+            script_data: Script dictionary with beats
+
+        Returns:
+            List of unique character names from the script
+        """
+        characters = set()
+
+        # Get beats from either script_data directly or nested storyboard_json
+        beats = script_data.get("beats", [])
+        if not beats and script_data.get("storyboard_json"):
+            beats = script_data["storyboard_json"].get("beats", [])
+
+        for beat in beats:
+            character = beat.get("character", "")
+            if character:
+                # Normalize the character name
+                char_lower = character.strip().lower()
+                if char_lower:
+                    characters.add(char_lower)
+
+        # Ensure we always have at least the default character
+        if not characters:
+            characters.add("every-coon")
+
+        return list(characters)
+
+    def _normalize_character_name(self, character: str, valid_characters: List[str]) -> str:
+        """
+        Normalize a character name to match a valid character from the script.
+
+        Args:
+            character: Character name to normalize
+            valid_characters: List of valid character names from the script
+
+        Returns:
+            Normalized character name
+        """
+        char_lower = character.strip().lower()
+
+        # Direct match
+        if char_lower in valid_characters:
+            return char_lower
+
+        # Check for partial matches
+        for valid in valid_characters:
+            # Check if valid name is contained in the character
+            if valid in char_lower:
+                return valid
+            # Check if character is contained in valid name
+            if char_lower in valid:
+                return valid
+
+        # Raccoon/coon variations -> every-coon
+        if "raccoon" in char_lower or "coon" in char_lower:
+            if "every-coon" in valid_characters:
+                return "every-coon"
+            # Return first raccoon-related valid character
+            for valid in valid_characters:
+                if "coon" in valid or "raccoon" in valid:
+                    return valid
+
+        # Default to first valid character (usually every-coon)
+        if valid_characters:
+            logger.warning(f"Could not match character '{character}' to valid characters, using '{valid_characters[0]}'")
+            return valid_characters[0]
+
+        return "every-coon"
 
     async def _get_available_assets(self, project_id: UUID) -> Dict[str, List[str]]:
         """
@@ -614,6 +695,10 @@ THRESHOLDS:
         # Get available assets
         assets = await self._get_available_assets(project_id)
 
+        # Extract character names from original script (primary source of truth)
+        script_characters = self._extract_script_characters(script_data)
+        logger.info(f"Extracted script characters: {script_characters}")
+
         # Prepare script content
         script_content = self._format_script_for_condensation(script_data)
         storyboard_json = json.dumps(script_data.get("storyboard_json", {}), indent=2)
@@ -630,6 +715,9 @@ THRESHOLDS:
         else:
             emotional_payoff_instruction = "best fit (AHA for insight, HA! for humor, OOF for relatable sting)"
 
+        # Format script characters for prompt
+        script_chars_str = ", ".join(script_characters)
+
         # Build prompt
         prompt = self.CONDENSATION_PROMPT.format(
             kb_context=kb_context,
@@ -639,6 +727,7 @@ THRESHOLDS:
             aspect_ratio=config.aspect_ratio.value,
             panel_count_instruction=panel_count_instruction,
             emotional_payoff_instruction=emotional_payoff_instruction,
+            script_characters=script_chars_str,
             available_characters=", ".join(assets["characters"]),
             available_backgrounds=", ".join(assets["backgrounds"]) or "none specified",
             available_props=", ".join(assets["props"]) or "none specified"
@@ -658,15 +747,21 @@ THRESHOLDS:
             content = response.content[0].text
             comic_data = self._parse_json_response(content)
 
-            # Build ComicScript
+            # Build ComicScript with character name normalization
             panels = []
             for p in comic_data.get("panels", []):
+                # Normalize character name to match script characters
+                raw_character = p.get("character", "every-coon")
+                normalized_character = self._normalize_character_name(raw_character, script_characters)
+                if raw_character.lower() != normalized_character:
+                    logger.info(f"Normalized character '{raw_character}' -> '{normalized_character}'")
+
                 panels.append(ComicPanel(
                     panel_number=p.get("panel_number", len(panels) + 1),
                     panel_type=p.get("panel_type", "BUILD"),
                     dialogue=p.get("dialogue", ""),
                     visual_description=p.get("visual_description", ""),
-                    character=p.get("character", "every-coon"),
+                    character=normalized_character,
                     expression=p.get("expression", "neutral"),
                     background=p.get("background"),
                     props=p.get("props", [])
@@ -929,15 +1024,28 @@ Return ONLY the JSON, no other text."""
 
             revised_data = json.loads(response_text)
 
-            # Build revised ComicScript
+            # Extract valid characters from original comic script for normalization
+            valid_characters = list(set(
+                panel.character.lower() for panel in comic_script.panels if panel.character
+            ))
+            if not valid_characters:
+                valid_characters = ["every-coon"]
+
+            # Build revised ComicScript with character normalization
             revised_panels = []
             for p in revised_data.get("panels", []):
+                # Normalize character name
+                raw_character = p.get("character", "every-coon")
+                normalized_character = self._normalize_character_name(raw_character, valid_characters)
+                if raw_character.lower() != normalized_character:
+                    logger.info(f"Revision: Normalized character '{raw_character}' -> '{normalized_character}'")
+
                 revised_panels.append(ComicPanel(
                     panel_number=p.get("panel_number", len(revised_panels) + 1),
                     panel_type=p.get("panel_type", "BUILD"),
                     dialogue=p.get("dialogue", ""),
                     visual_description=p.get("visual_description", ""),
-                    character=p.get("character", "every-coon"),
+                    character=normalized_character,
                     expression=p.get("expression", "neutral"),
                     background=p.get("background"),
                     props=p.get("props", [])
