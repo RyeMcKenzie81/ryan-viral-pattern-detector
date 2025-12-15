@@ -4219,27 +4219,30 @@ def render_comic_image_evaluation(eval_data: Dict):
     if isinstance(eval_data, str):
         eval_data = json.loads(eval_data)
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        quality = eval_data.get('quality_score', 0)
-        st.metric("Quality", f"{quality}/100")
+        clarity = eval_data.get('visual_clarity_score', 0)
+        st.metric("Clarity", f"{clarity}/100")
     with col2:
-        consistency = eval_data.get('consistency_score', 0)
-        st.metric("Consistency", f"{consistency}/100")
+        accuracy = eval_data.get('character_accuracy_score', 0)
+        st.metric("Character", f"{accuracy}/100")
     with col3:
-        readability = eval_data.get('readability_score', 0)
-        st.metric("Readability", f"{readability}/100")
+        readability = eval_data.get('text_readability_score', 0)
+        st.metric("Text", f"{readability}/100")
     with col4:
+        composition = eval_data.get('composition_score', 0)
+        st.metric("Composition", f"{composition}/100")
+    with col5:
         overall = eval_data.get('overall_score', 0)
         st.metric("Overall", f"{overall}/100")
 
     # Approval status
-    approved = eval_data.get('approved', False)
-    if approved:
-        st.success("Image approved for use")
+    passes = eval_data.get('passes_threshold', False)
+    if passes:
+        st.success("Image passes threshold (>= 90%) - ready for review")
     else:
-        st.warning("Image may need regeneration")
+        st.warning("Image below threshold - may need regeneration")
 
     # Issues
     issues = eval_data.get('issues', [])
