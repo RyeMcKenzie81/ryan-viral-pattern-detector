@@ -4758,6 +4758,132 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                     st.session_state.comic_video_rendering = False
                     st.error(f"Video rendering failed: {e}")
 
+        # Panel-by-panel review and approval section
+        st.markdown("---")
+        st.markdown("#### Panel Review & Approval")
+
+        # Get full audio and instruction data
+        try:
+            full_audio = db.table("comic_panel_audio").select("*").eq(
+                "project_id", video_project_id
+            ).order("panel_number").execute()
+            audio_by_panel = {a['panel_number']: a for a in (full_audio.data or [])}
+
+            full_instr = db.table("comic_panel_instructions").select("*").eq(
+                "project_id", video_project_id
+            ).order("panel_number").execute()
+            instr_by_panel = {i['panel_number']: i for i in (full_instr.data or [])}
+
+            # Get panel count from export JSON
+            panel_count = export_json.get('total_panels', 4)
+
+            # Quick Approve All button
+            if audio_by_panel and instr_by_panel:
+                unapproved_count = sum(1 for a in audio_by_panel.values() if not a.get('is_approved'))
+                unapproved_count += sum(1 for i in instr_by_panel.values() if not i.get('is_approved'))
+
+                if unapproved_count > 0:
+                    if st.button(f"Quick Approve All ({unapproved_count} pending)", type="primary"):
+                        try:
+                            service = ComicVideoService()
+                            for panel_num in range(1, panel_count + 1):
+                                asyncio.run(service.approve_panel(video_project_id, panel_num))
+                            st.success("All panels approved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Approval failed: {e}")
+
+            # Panel-by-panel display
+            for panel_num in range(1, panel_count + 1):
+                audio = audio_by_panel.get(panel_num)
+                instr = instr_by_panel.get(panel_num)
+
+                with st.expander(f"Panel {panel_num}", expanded=False):
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        # Audio section
+                        st.markdown("**Audio**")
+                        if audio:
+                            audio_url = audio.get('audio_url')
+                            if audio_url:
+                                st.audio(audio_url)
+                            st.caption(f"Text: {audio.get('text', 'N/A')[:100]}...")
+                            st.caption(f"Duration: {audio.get('duration_ms', 0)}ms | Voice: {audio.get('voice_name', 'default')}")
+
+                            audio_approved = audio.get('is_approved', False)
+                            if audio_approved:
+                                st.success("Audio approved")
+                            else:
+                                st.warning("Audio pending approval")
+                        else:
+                            st.info("No audio generated yet")
+
+                        # Instructions section
+                        st.markdown("**Camera & Effects**")
+                        if instr:
+                            camera = instr.get('camera', {})
+                            effects = instr.get('effects', {})
+                            transition = instr.get('transition', {})
+
+                            st.caption(f"Camera: zoom {camera.get('zoom_start', 1.0):.1f}→{camera.get('zoom_end', 1.0):.1f}")
+                            st.caption(f"Mood: {instr.get('mood', 'neutral')}")
+
+                            # Show effects if any
+                            effect_list = []
+                            if effects.get('vignette'):
+                                effect_list.append("vignette")
+                            if effects.get('shake'):
+                                effect_list.append("shake")
+                            if effects.get('golden_glow'):
+                                effect_list.append("golden_glow")
+                            if effect_list:
+                                st.caption(f"Effects: {', '.join(effect_list)}")
+
+                            instr_approved = instr.get('is_approved', False)
+                            if instr_approved:
+                                st.success("Instructions approved")
+                            else:
+                                st.warning("Instructions pending approval")
+                        else:
+                            st.info("No instructions generated yet")
+
+                    with col2:
+                        # Approval buttons
+                        st.markdown("**Actions**")
+
+                        both_exist = audio and instr
+                        audio_approved = audio.get('is_approved', False) if audio else False
+                        instr_approved = instr.get('is_approved', False) if instr else False
+
+                        if both_exist and not (audio_approved and instr_approved):
+                            if st.button(f"Approve Panel {panel_num}", key=f"approve_panel_{panel_num}"):
+                                try:
+                                    service = ComicVideoService()
+                                    asyncio.run(service.approve_panel(video_project_id, panel_num))
+                                    st.success("Approved!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Failed: {e}")
+                        elif audio_approved and instr_approved:
+                            st.success("Approved")
+
+                        # Preview button (if instructions exist)
+                        if instr:
+                            if st.button(f"Preview", key=f"preview_panel_{panel_num}"):
+                                with st.spinner("Rendering preview..."):
+                                    try:
+                                        service = ComicVideoService()
+                                        preview_url = asyncio.run(service.render_panel_preview(
+                                            video_project_id, panel_num
+                                        ))
+                                        st.video(preview_url)
+                                    except Exception as e:
+                                        st.error(f"Preview failed: {e}")
+
+        except Exception as e:
+            st.warning(f"Could not load panel details: {e}")
+
         # Show final video if available
         final_video_url = existing_video_project.get('final_video_url')
         if final_video_url:
