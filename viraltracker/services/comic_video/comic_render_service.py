@@ -1357,8 +1357,12 @@ class ComicRenderService:
 
             if process.returncode != 0:
                 error_msg = stderr.decode() if stderr else "Unknown error"
-                logger.error(f"FFmpeg failed: {error_msg}")
-                raise RuntimeError(f"FFmpeg failed: {error_msg[:500]}")
+                # Extract the actual error (last few lines), skip the version/config spam
+                error_lines = error_msg.strip().split('\n')
+                # Get last 20 lines which usually contain the actual error
+                relevant_error = '\n'.join(error_lines[-20:]) if len(error_lines) > 20 else error_msg
+                logger.error(f"FFmpeg failed: {relevant_error}")
+                raise RuntimeError(f"FFmpeg failed: {relevant_error[:1500]}")
 
         except asyncio.TimeoutError:
             process.kill()
