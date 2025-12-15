@@ -539,17 +539,20 @@ class ComicAudioService:
     ) -> None:
         """Save panel audio to database."""
         await asyncio.to_thread(
-            lambda: self.supabase.table("comic_panel_audio").upsert({
-                "project_id": project_id,
-                "panel_number": audio.panel_number,
-                "audio_url": audio.audio_url,
-                "audio_filename": audio.audio_filename,
-                "duration_ms": audio.duration_ms,
-                "voice_id": audio.voice_id,
-                "voice_name": audio.voice_name,
-                "text_content": audio.text_content,
-                "is_approved": audio.is_approved
-            }).execute()
+            lambda: self.supabase.table("comic_panel_audio").upsert(
+                {
+                    "project_id": project_id,
+                    "panel_number": audio.panel_number,
+                    "audio_url": audio.audio_url,
+                    "audio_filename": audio.audio_filename,
+                    "duration_ms": audio.duration_ms,
+                    "voice_id": audio.voice_id,
+                    "voice_name": audio.voice_name,
+                    "text_content": audio.text_content,
+                    "is_approved": audio.is_approved
+                },
+                on_conflict="project_id,panel_number"
+            ).execute()
         )
 
     async def _delete_panel_audio(
