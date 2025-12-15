@@ -1405,7 +1405,7 @@ Expected Panels:
 
             # Call Gemini with image
             response = await gemini_service.analyze_image(
-                image_base64=image_base64,
+                image_data=image_base64,
                 prompt=self.IMAGE_EVALUATION_PROMPT + f"\n\nCONTEXT:\n{context}"
             )
 
