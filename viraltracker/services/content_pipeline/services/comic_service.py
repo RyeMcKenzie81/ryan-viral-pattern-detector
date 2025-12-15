@@ -1307,22 +1307,43 @@ REQUIREMENTS:
 
 Generate a single cohesive comic image with all {panel_count} panels in the grid layout."""
 
-    # Image evaluation prompt (for Gemini)
-    IMAGE_EVALUATION_PROMPT = """You are evaluating a comic image. Score each dimension 0-100.
+    # Image evaluation prompt (for Gemini) - will be combined with KB context
+    IMAGE_EVALUATION_PROMPT = """You are a comic art director evaluating a comic image using professional standards.
 
-IMPORTANT: Return ONLY a valid JSON object. No explanations, no markdown, just the JSON.
+{kb_context}
 
-Score these dimensions:
-1. VISUAL CLARITY - Are panels clear and separated? (0-100)
-2. CHARACTER ACCURACY - Are characters consistent? (0-100)
-3. TEXT READABILITY - Can text be read easily? (0-100)
-4. COMPOSITION - Is layout correct? (0-100)
-5. STYLE CONSISTENCY - Is art style uniform? (0-100)
+EVALUATION CRITERIA (score 0-100 each):
 
-Return this exact JSON structure (fill in your scores and notes):
-{"overall_score": 75, "visual_clarity_score": 80, "visual_clarity_notes": "notes here", "character_accuracy_score": 70, "character_accuracy_notes": "notes here", "text_readability_score": 75, "text_readability_notes": "notes here", "composition_score": 80, "composition_notes": "notes here", "style_consistency_score": 70, "style_consistency_notes": "notes here", "issues": [], "suggestions": []}
+1. VISUAL CLARITY
+   - Are panels clearly separated with proper borders?
+   - Can each panel be understood in under 3 seconds?
+   - Is the visual hierarchy guiding the eye correctly?
 
-ONLY return the JSON object, nothing else."""
+2. CHARACTER ACCURACY
+   - Are characters consistent across all panels?
+   - Are expressions clear and readable at small sizes?
+   - Do poses convey the intended emotion?
+
+3. TEXT READABILITY
+   - Are speech bubbles properly sized and positioned?
+   - Is text large enough to read on mobile?
+   - Does text placement avoid covering important visuals?
+
+4. COMPOSITION
+   - Does the grid layout match the intended structure?
+   - Is there proper white space (gutters) between panels?
+   - Does the eye flow naturally from panel to panel?
+
+5. STYLE CONSISTENCY
+   - Is the art style uniform across all panels?
+   - Are line weights consistent?
+   - Is the color palette cohesive?
+
+IMPORTANT: Provide SPECIFIC, ACTIONABLE suggestions based on comic best practices.
+For any score below 85, give concrete advice on how to fix it.
+
+Return ONLY this JSON (no other text):
+{{"overall_score": 75, "visual_clarity_score": 80, "visual_clarity_notes": "specific observation", "character_accuracy_score": 70, "character_accuracy_notes": "specific observation", "text_readability_score": 75, "text_readability_notes": "specific observation", "composition_score": 80, "composition_notes": "specific observation", "style_consistency_score": 70, "style_consistency_notes": "specific observation", "issues": [{{"severity": "high", "issue": "specific problem", "suggestion": "how to fix it"}}], "suggestions": ["actionable suggestion 1", "actionable suggestion 2"]}}"""
 
     async def generate_comic_image(
         self,
@@ -1421,20 +1442,36 @@ Make sure to improve these specific aspects while maintaining everything else.""
 
         # Use Gemini to analyze the image
         try:
-            # Build evaluation context
-            context = f"""Comic: {comic_script.title}
-Premise: {comic_script.premise}
-Panel Count: {len(comic_script.panels)}
-Grid: {comic_script.grid_layout.cols}x{comic_script.grid_layout.rows}
-Expected Panels:
+            # Fetch KB context for evaluation
+            kb_context = await self._get_evaluation_context()
+            if not kb_context or len(kb_context) < 100:
+                kb_context = """COMIC EVALUATION BEST PRACTICES:
+- 3-second clarity: Each panel must be understood instantly
+- HOOK → BUILD → TWIST → PUNCHLINE flow
+- Character expressions must be readable at thumbnail size
+- Text bubbles should not exceed 15 words
+- Final panel needs strongest visual/emotional impact"""
+
+            # Build comic context
+            comic_context = f"""
+COMIC BEING EVALUATED:
+- Title: {comic_script.title}
+- Premise: {comic_script.premise}
+- Panel Count: {len(comic_script.panels)}
+- Grid Layout: {comic_script.grid_layout.cols}x{comic_script.grid_layout.rows}
+
+EXPECTED PANELS:
 """
             for p in comic_script.panels:
-                context += f"- Panel {p.panel_number}: {p.character} says '{p.dialogue}'\n"
+                comic_context += f"- Panel {p.panel_number} ({p.panel_type}): {p.character} says '{p.dialogue}'\n"
+
+            # Build full prompt with KB context
+            full_prompt = self.IMAGE_EVALUATION_PROMPT.format(kb_context=kb_context) + comic_context
 
             # Call Gemini with image
             response = await gemini_service.analyze_image(
                 image_data=image_base64,
-                prompt=self.IMAGE_EVALUATION_PROMPT + f"\n\nCONTEXT:\n{context}"
+                prompt=full_prompt
             )
 
             # Log raw response for debugging
