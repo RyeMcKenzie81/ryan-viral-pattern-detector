@@ -712,10 +712,20 @@ class ComicRenderService:
             cmd.extend(["-i", str(path)])
 
         # Build the filter_complex for concat filter
-        # Format: [0:v][0:a][1:v][1:a][2:v][2:a]...concat=n=N:v=1:a=1[outv][outa]
+        # IMPORTANT: Normalize SAR (Sample Aspect Ratio) for each segment before concat
+        # Different encoding paths can produce different SARs (e.g., 1712:1719 vs 1:1)
+        # which causes concat to fail with "parameters do not match" error
         n = len(segment_paths)
-        filter_inputs = "".join(f"[{i}:v][{i}:a]" for i in range(n))
-        filter_complex = f"{filter_inputs}concat=n={n}:v=1:a=1[outv][outa]"
+
+        # First normalize each video stream's SAR to 1:1, then concat
+        # Format: [0:v]setsar=1:1[v0];[1:v]setsar=1:1[v1];...;[v0][0:a][v1][1:a]...concat=n=N:v=1:a=1[outv][outa]
+        sar_filters = []
+        concat_inputs = []
+        for i in range(n):
+            sar_filters.append(f"[{i}:v]setsar=1:1[v{i}]")
+            concat_inputs.append(f"[v{i}][{i}:a]")
+
+        filter_complex = ";".join(sar_filters) + ";" + "".join(concat_inputs) + f"concat=n={n}:v=1:a=1[outv][outa]"
 
         # Debug: log the filter
         if hasattr(self, '_debug_file') and self._debug_file:
