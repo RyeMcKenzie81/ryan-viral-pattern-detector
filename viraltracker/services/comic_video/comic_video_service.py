@@ -533,13 +533,18 @@ class ComicVideoService:
         panel_number: int
     ) -> None:
         """
-        Approve both audio and instruction for a panel.
+        Approve audio (if exists) and instruction for a panel.
 
         Args:
             project_id: Project UUID
             panel_number: Panel to approve
         """
-        await self.audio.approve_panel_audio(project_id, panel_number)
+        # Check if audio exists before trying to approve
+        panel_audio = await self.audio.get_panel_audio(project_id, panel_number)
+        if panel_audio:
+            await self.audio.approve_panel_audio(project_id, panel_number)
+
+        # Always approve instruction
         await self.director.approve_instruction(project_id, panel_number)
 
         logger.info(f"Approved panel {panel_number} for project {project_id}")

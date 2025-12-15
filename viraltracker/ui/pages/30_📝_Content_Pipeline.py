@@ -5037,11 +5037,11 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                         # Approval buttons
                         st.markdown("**Actions**")
 
-                        both_exist = audio and instr
-                        audio_approved = audio.get('is_approved', False) if audio else False
+                        audio_approved = audio.get('is_approved', False) if audio else True  # No audio = consider approved
                         instr_approved = instr.get('is_approved', False) if instr else False
 
-                        if both_exist and not (audio_approved and instr_approved):
+                        # Show approve button if instructions exist and not fully approved
+                        if instr and not (audio_approved and instr_approved):
                             if st.button(f"Approve Panel {panel_num}", key=f"approve_panel_{panel_num}"):
                                 try:
                                     service = ComicVideoService()
@@ -5050,7 +5050,7 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Failed: {e}")
-                        elif audio_approved and instr_approved:
+                        elif instr and audio_approved and instr_approved:
                             st.success("Approved")
 
                         # Preview button (if instructions exist)
