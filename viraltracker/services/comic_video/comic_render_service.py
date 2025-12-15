@@ -499,7 +499,16 @@ class ComicRenderService:
                 content_duration_ms = instruction.duration_ms
                 logger.info(f"Panel {instruction.panel_number}: using stored duration {content_duration_ms}ms")
         else:
+            # Panel has no audio - use stored duration with minimum fallback
+            # IMPORTANT: Ensure silent segments have enough duration so they don't cause sync issues
             content_duration_ms = instruction.duration_ms
+            MIN_NO_AUDIO_DURATION_MS = 2000  # Minimum 2 seconds for panels without voice
+            if content_duration_ms < MIN_NO_AUDIO_DURATION_MS:
+                logger.warning(
+                    f"Panel {instruction.panel_number}: no audio, stored duration {content_duration_ms}ms too short, "
+                    f"using minimum {MIN_NO_AUDIO_DURATION_MS}ms"
+                )
+                content_duration_ms = MIN_NO_AUDIO_DURATION_MS
 
         transition_duration_ms = instruction.transition.duration_ms if next_instruction else 0
 
