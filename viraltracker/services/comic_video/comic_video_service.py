@@ -503,23 +503,25 @@ class ComicVideoService:
             aspect_ratio=aspect_ratio
         )
 
-        # Upload preview
-        preview_url = await self.render.upload_video(
+        # Upload preview (returns storage path)
+        storage_path = await self.render.upload_video(
             project_id=project_id,
             local_path=Path(preview_path),
             filename=f"preview_panel_{panel_number:02d}.mp4"
         )
 
-        # Update instruction with preview URL
+        # Update instruction with storage path (for later retrieval)
         await asyncio.to_thread(
             lambda: self.supabase.table("comic_panel_instructions")
-                .update({"preview_url": preview_url})
+                .update({"preview_url": storage_path})
                 .eq("project_id", project_id)
                 .eq("panel_number", panel_number)
                 .execute()
         )
 
-        return preview_url
+        # Return signed URL for immediate playback
+        signed_url = await self.render.get_video_url(storage_path)
+        return signed_url
 
     async def approve_panel(
         self,
@@ -741,23 +743,25 @@ class ComicVideoService:
                     aspect_ratio=aspect_ratio
                 )
 
-                # Upload preview
-                preview_url = await self.render.upload_video(
+                # Upload preview (returns storage path)
+                storage_path = await self.render.upload_video(
                     project_id=project_id,
                     local_path=Path(preview_path),
                     filename=f"preview_panel_{panel_num:02d}.mp4"
                 )
 
-                # Update instruction with preview URL
+                # Update instruction with storage path
                 await asyncio.to_thread(
-                    lambda pn=panel_num, url=preview_url: self.supabase.table("comic_panel_instructions")
-                        .update({"preview_url": url})
+                    lambda pn=panel_num, path=storage_path: self.supabase.table("comic_panel_instructions")
+                        .update({"preview_url": path})
                         .eq("project_id", project_id)
                         .eq("panel_number", pn)
                         .execute()
                 )
 
-                results[panel_num] = preview_url
+                # Return signed URL for playback
+                signed_url = await self.render.get_video_url(storage_path)
+                results[panel_num] = signed_url
 
             except Exception as e:
                 logger.error(f"Failed to render panel {panel_num}: {e}")

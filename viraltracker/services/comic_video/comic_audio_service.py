@@ -277,6 +277,8 @@ class ComicAudioService:
                     if text:
                         # Check for character field and use proper voice lookup
                         character = panel.get("character", "").strip().lower()
+                        logger.info(f"Panel {panel_number}: character='{character}', text='{text[:50]}...'")
+
                         if character:
                             # Look up voice for character (e.g., every-coon, raccoon)
                             panel_voice_id, panel_voice_name = await self.get_voice_for_speaker(
@@ -284,10 +286,12 @@ class ComicAudioService:
                                 narrator_voice_id=voice_id,
                                 narrator_voice_name=voice_name
                             )
+                            logger.info(f"Panel {panel_number}: Using voice '{panel_voice_name}' (id: {panel_voice_id[:8]}...)")
                         else:
                             # Fall back to provided voice or default
                             panel_voice_id = voice_id
                             panel_voice_name = voice_name
+                            logger.info(f"Panel {panel_number}: No character, using default voice")
 
                         audio = await self.generate_panel_audio(
                             project_id=project_id,
@@ -622,16 +626,19 @@ class ComicAudioService:
         Returns:
             Tuple of (voice_id, voice_name)
         """
-        speaker_lower = speaker.lower()
+        speaker_lower = speaker.lower().strip()
+        logger.info(f"get_voice_for_speaker: speaker='{speaker_lower}'")
 
         # Narrator uses user-selected voice or default
         if speaker_lower == "narrator":
             voice_id = narrator_voice_id or self.DEFAULT_VOICE_ID
             voice_name = narrator_voice_name or self.DEFAULT_VOICE_NAME
+            logger.info(f"get_voice_for_speaker: Using narrator voice '{voice_name}'")
             return voice_id, voice_name
 
-        # Raccoon/every-coon - look up from database
-        if speaker_lower in ("raccoon", "every-coon"):
+        # Every-coon/raccoon variations - look up from database
+        every_coon_aliases = ("raccoon", "every-coon", "everycoon", "every_coon", "every coon")
+        if speaker_lower in every_coon_aliases:
             try:
                 result = await asyncio.to_thread(
                     lambda: self.supabase.table("character_voice_profiles")
@@ -641,16 +648,21 @@ class ComicAudioService:
                         .execute()
                 )
                 if result.data:
-                    return result.data["voice_id"], result.data.get("display_name", "Every-Coon")
+                    voice_id = result.data["voice_id"]
+                    voice_name = result.data.get("display_name", "Every-Coon")
+                    logger.info(f"get_voice_for_speaker: Found every-coon voice '{voice_name}' (id: {voice_id[:8]}...)")
+                    return voice_id, voice_name
+                else:
+                    logger.warning("get_voice_for_speaker: No every-coon record found in database")
             except Exception as e:
-                logger.warning(f"Could not load every-coon voice: {e}")
+                logger.warning(f"get_voice_for_speaker: Could not load every-coon voice: {e}")
 
             # Fallback for raccoon if not found
-            logger.info("Using default voice for raccoon (every-coon not found)")
+            logger.info("get_voice_for_speaker: Using default voice (every-coon not in database)")
             return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
 
         # Unknown speaker - use narrator voice
-        logger.info(f"Unknown speaker '{speaker}', using narrator voice")
+        logger.info(f"get_voice_for_speaker: Unknown speaker '{speaker_lower}', using narrator voice")
         voice_id = narrator_voice_id or self.DEFAULT_VOICE_ID
         voice_name = narrator_voice_name or self.DEFAULT_VOICE_NAME
         return voice_id, voice_name
