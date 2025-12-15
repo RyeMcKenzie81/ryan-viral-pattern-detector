@@ -145,7 +145,7 @@ class ComicVideoService:
                 .execute()
         )
 
-        if not result.data:
+        if not result or not result.data:
             return None
 
         return self._row_to_project(result.data)

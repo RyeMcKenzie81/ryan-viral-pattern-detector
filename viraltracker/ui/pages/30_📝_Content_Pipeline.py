@@ -34,6 +34,54 @@ st.set_page_config(
 from viraltracker.ui.auth import require_auth
 require_auth()
 
+# Comic video imports for editing controls
+from viraltracker.services.comic_video.models import (
+    MOOD_EFFECT_PRESETS, PanelMood, EffectType, TransitionType, CameraEasing, PanelOverrides
+)
+
+
+def get_mood_effects(mood_str: str) -> Dict[str, bool]:
+    """Get which effects a mood preset enables."""
+    try:
+        mood = PanelMood(mood_str)
+        preset = MOOD_EFFECT_PRESETS.get(mood)
+        if not preset:
+            return {"vignette": False, "shake": False, "golden_glow": False, "pulse": False, "red_glow": False, "color_tint": False}
+
+        all_effects = preset.ambient_effects + preset.triggered_effects
+        effect_types = {e.effect_type for e in all_effects}
+
+        has_vignette = any(et in effect_types for et in [
+            EffectType.VIGNETTE, EffectType.VIGNETTE_LIGHT, EffectType.VIGNETTE_HEAVY
+        ])
+
+        return {
+            "vignette": has_vignette,
+            "shake": EffectType.SHAKE in effect_types,
+            "golden_glow": EffectType.GOLDEN_GLOW in effect_types,
+            "pulse": EffectType.PULSE in effect_types,
+            "red_glow": EffectType.RED_GLOW in effect_types,
+            "color_tint": preset.color_tint is not None,
+        }
+    except (ValueError, KeyError):
+        return {"vignette": False, "shake": False, "golden_glow": False, "pulse": False, "red_glow": False, "color_tint": False}
+
+
+async def save_panel_overrides(project_id: str, panel_number: int, overrides: dict):
+    """Save panel overrides."""
+    from viraltracker.services.comic_video import ComicDirectorService
+    service = ComicDirectorService()
+    panel_overrides = PanelOverrides(panel_number=panel_number, **overrides)
+    return await service.save_overrides(project_id, panel_number, panel_overrides)
+
+
+async def clear_panel_overrides(project_id: str, panel_number: int):
+    """Clear panel overrides (reset to auto)."""
+    from viraltracker.services.comic_video import ComicDirectorService
+    service = ComicDirectorService()
+    return await service.clear_overrides(project_id, panel_number)
+
+
 # Initialize session state
 if 'pipeline_brand_id' not in st.session_state:
     st.session_state.pipeline_brand_id = None
@@ -4826,26 +4874,129 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                         else:
                             st.info("No audio generated yet")
 
-                        # Instructions section
+                        # Instructions section - full editing controls
                         st.markdown("**Camera & Effects**")
                         if instr:
-                            camera = instr.get('camera', {})
-                            effects = instr.get('effects', {})
-                            transition = instr.get('transition', {})
+                            camera_json = instr.get('camera_json', {})
+                            effects_json = instr.get('effects_json', {})
+                            transition_json = instr.get('transition_json', {})
+                            user_overrides_data = instr.get('user_overrides')
 
-                            st.caption(f"Camera: zoom {camera.get('zoom_start', 1.0):.1f}→{camera.get('zoom_end', 1.0):.1f}")
-                            st.caption(f"Mood: {instr.get('mood', 'neutral')}")
+                            # Parse user overrides if present
+                            user_overrides = None
+                            if user_overrides_data:
+                                try:
+                                    user_overrides = PanelOverrides(**user_overrides_data)
+                                except:
+                                    pass
 
-                            # Show effects if any
-                            effect_list = []
-                            if effects.get('vignette'):
-                                effect_list.append("vignette")
-                            if effects.get('shake'):
-                                effect_list.append("shake")
-                            if effects.get('golden_glow'):
-                                effect_list.append("golden_glow")
-                            if effect_list:
-                                st.caption(f"Effects: {', '.join(effect_list)}")
+                            has_overrides = user_overrides and user_overrides.has_overrides() if user_overrides else False
+
+                            # Get current values
+                            current_start_zoom = camera_json.get('start_zoom', 1.0)
+                            current_end_zoom = camera_json.get('end_zoom', 1.15)
+                            current_mood = instr.get('mood', 'neutral')
+
+                            # Camera zoom sliders
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                start_zoom = st.slider(
+                                    "Start Zoom", min_value=0.5, max_value=2.0,
+                                    value=float(current_start_zoom), step=0.1,
+                                    key=f"cp_start_zoom_{panel_num}"
+                                )
+                            with col_b:
+                                end_zoom = st.slider(
+                                    "End Zoom", min_value=0.5, max_value=2.0,
+                                    value=float(current_end_zoom), step=0.1,
+                                    key=f"cp_end_zoom_{panel_num}"
+                                )
+
+                            # Mood selector
+                            moods = ["neutral", "positive", "warning", "danger", "chaos", "dramatic", "celebration"]
+                            mood_idx = moods.index(current_mood) if current_mood in moods else 0
+                            selected_mood = st.selectbox(
+                                "Mood", options=moods, index=mood_idx,
+                                key=f"cp_mood_{panel_num}"
+                            )
+
+                            # Get mood effect defaults
+                            mood_effects = get_mood_effects(selected_mood)
+
+                            def get_effect_value(override_attr: str, mood_key: str) -> bool:
+                                if user_overrides and getattr(user_overrides, override_attr, None) is not None:
+                                    return getattr(user_overrides, override_attr)
+                                return mood_effects[mood_key]
+
+                            # Effect toggles
+                            st.caption("Effects:")
+                            col_e1, col_e2 = st.columns(2)
+                            with col_e1:
+                                vignette_on = st.checkbox("Vignette", value=get_effect_value("vignette_enabled", "vignette"), key=f"cp_vignette_{panel_num}")
+                                shake_on = st.checkbox("Shake", value=get_effect_value("shake_enabled", "shake"), key=f"cp_shake_{panel_num}")
+                            with col_e2:
+                                golden_on = st.checkbox("Golden Glow", value=get_effect_value("golden_glow_enabled", "golden_glow"), key=f"cp_golden_{panel_num}")
+                                pulse_on = st.checkbox("Pulse", value=get_effect_value("pulse_enabled", "pulse"), key=f"cp_pulse_{panel_num}")
+
+                            # Vignette settings
+                            vignette_intensity = 0.5
+                            vignette_softness = 0.4
+                            if vignette_on:
+                                col_v1, col_v2 = st.columns(2)
+                                with col_v1:
+                                    saved_intensity = user_overrides.vignette_intensity if user_overrides and user_overrides.vignette_intensity is not None else 0.5
+                                    vignette_intensity = st.slider("Darkness", min_value=0.1, max_value=1.0, value=float(saved_intensity), step=0.1, key=f"cp_vig_int_{panel_num}")
+                                with col_v2:
+                                    saved_softness = user_overrides.vignette_softness if user_overrides and user_overrides.vignette_softness is not None else 0.4
+                                    vignette_softness = st.slider("Spread", min_value=0.1, max_value=1.0, value=float(saved_softness), step=0.1, key=f"cp_vig_soft_{panel_num}")
+
+                            # Audio delay
+                            saved_delay = user_overrides.audio_delay_ms if user_overrides and user_overrides.audio_delay_ms is not None else 150
+                            audio_delay = st.slider("Audio Delay (ms)", min_value=0, max_value=500, value=int(saved_delay), step=25, key=f"cp_audio_delay_{panel_num}")
+
+                            # Transition controls
+                            st.caption("Transition:")
+                            transition_types = [t.value for t in TransitionType]
+                            current_transition = transition_json.get('transition_type', 'pan')
+                            if user_overrides and user_overrides.transition_type_override is not None:
+                                current_transition = user_overrides.transition_type_override.value if hasattr(user_overrides.transition_type_override, 'value') else user_overrides.transition_type_override
+                            transition_type = st.selectbox("Type", options=transition_types, index=transition_types.index(current_transition) if current_transition in transition_types else 0, key=f"cp_trans_type_{panel_num}")
+
+                            current_duration = transition_json.get('duration_ms', 400)
+                            if user_overrides and user_overrides.transition_duration_ms is not None:
+                                current_duration = user_overrides.transition_duration_ms
+                            transition_duration = st.slider("Duration (ms)", min_value=0, max_value=2000, value=int(current_duration), step=50, key=f"cp_trans_dur_{panel_num}")
+
+                            # Apply/Reset buttons
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                if st.button("Apply", key=f"cp_apply_{panel_num}"):
+                                    overrides = {
+                                        "camera_start_zoom": float(start_zoom),
+                                        "camera_end_zoom": float(end_zoom),
+                                        "mood_override": selected_mood,
+                                        "vignette_enabled": vignette_on,
+                                        "vignette_intensity": float(vignette_intensity) if vignette_on else None,
+                                        "vignette_softness": float(vignette_softness) if vignette_on else None,
+                                        "shake_enabled": shake_on,
+                                        "golden_glow_enabled": golden_on,
+                                        "pulse_enabled": pulse_on,
+                                        "audio_delay_ms": int(audio_delay),
+                                        "transition_type_override": transition_type,
+                                        "transition_duration_ms": int(transition_duration),
+                                    }
+                                    asyncio.run(save_panel_overrides(video_project_id, panel_num, overrides))
+                                    st.success("Saved!")
+                                    st.rerun()
+                            with col_btn2:
+                                if has_overrides:
+                                    if st.button("Reset", key=f"cp_reset_{panel_num}"):
+                                        asyncio.run(clear_panel_overrides(video_project_id, panel_num))
+                                        st.success("Reset!")
+                                        st.rerun()
+
+                            if has_overrides:
+                                st.caption("Custom settings active")
 
                             instr_approved = instr.get('is_approved', False)
                             if instr_approved:

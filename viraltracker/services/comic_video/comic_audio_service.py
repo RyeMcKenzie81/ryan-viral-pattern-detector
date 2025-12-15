@@ -377,7 +377,7 @@ class ComicAudioService:
                 .execute()
         )
 
-        if not result.data:
+        if not result or not result.data:
             return None
 
         return self._row_to_panel_audio(result.data)
