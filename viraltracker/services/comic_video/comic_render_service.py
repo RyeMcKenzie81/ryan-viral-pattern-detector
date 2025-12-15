@@ -980,6 +980,7 @@ class ComicRenderService:
 
         if effect_type == EffectType.VIGNETTE:
             softness = effect.params.get("softness")
+            logger.info(f"Building vignette filter: intensity={intensity}, softness={softness}, params={effect.params}")
             filter_str = self._vignette_filter(intensity, softness=softness)
 
         elif effect_type == EffectType.VIGNETTE_LIGHT:
@@ -1064,17 +1065,16 @@ class ComicRenderService:
         gradually increases the vignette strength from 0 to target over fade_in_ms.
         """
         # Softness controls the spread/distance from edges
-        # Default to 0.4 (subtle) if not specified
+        # Default to 0.4 if not specified
         soft = softness if softness is not None else 0.4
-        # Map softness 0-1 to angle range PI*0.25 to PI*0.6
-        # Lower angle = tighter to edges, higher = extends toward center
-        base_angle = 0.25 + (soft * 0.35)
+        # Map softness 0.1-1.0 to angle range PI*0.2 (tight) to PI*0.7 (very spread)
+        # This gives a much more noticeable range of effect
+        base_angle = 0.2 + (soft * 0.5)
 
         # For fade-in, we animate the angle from a very small value (no vignette)
         # to the target angle over the fade duration
         fade_in_sec = fade_in_ms / 1000
         # Start at PI*0.1 (nearly invisible) and ramp to target angle
-        # Using min(t/fade_duration, 1) to clamp at 1 after fade completes
         start_angle = 0.1
         angle_expr = f"PI*({start_angle}+({base_angle}-{start_angle})*min(t/{fade_in_sec},1))"
 
@@ -1082,8 +1082,10 @@ class ComicRenderService:
         vignette = f"vignette=angle='{angle_expr}'"
 
         # Intensity controls additional brightness reduction for darker edges
-        if intensity > 0.5:
-            brightness_reduction = (intensity - 0.5) * 0.3
+        # Now affects the full range: intensity 0.1 = slight, 1.0 = very dark
+        # Map intensity to brightness reduction: 0.1->0.02, 0.5->0.10, 1.0->0.25
+        brightness_reduction = intensity * 0.25
+        if brightness_reduction > 0.02:
             return f"{vignette},eq=brightness=-{brightness_reduction:.2f}"
         else:
             return vignette

@@ -470,7 +470,11 @@ class ComicVideoService:
 
         # Apply user overrides if present
         if instruction.user_overrides and instruction.user_overrides.has_overrides():
+            logger.info(f"Panel {panel_number}: Applying overrides: {instruction.user_overrides}")
             instruction = self.director.apply_overrides(instruction, instruction.user_overrides)
+            logger.info(f"Panel {panel_number}: Effects after override: {instruction.effects}")
+        else:
+            logger.info(f"Panel {panel_number}: No overrides to apply (user_overrides={instruction.user_overrides})")
 
         # Download comic grid
         grid_path = await self._download_file(
