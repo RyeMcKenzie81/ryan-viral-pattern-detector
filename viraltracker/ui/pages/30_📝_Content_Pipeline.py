@@ -4027,17 +4027,17 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                 regen_notes = st.text_area(
                     "Regeneration Notes",
                     placeholder="Add specific guidance for regeneration based on the evaluation feedback, e.g., 'Make text bubbles larger and clearer' or 'Improve character consistency in panels 2-3'",
-                    key="image_regen_notes"
+                    key="image_regen_notes_input"
                 )
                 if st.button("Regenerate with Notes", type="primary"):
                     st.session_state.comic_image_generating = True
-                    st.session_state.image_regen_notes = regen_notes
+                    st.session_state.comic_image_regen_notes = regen_notes  # Different key
                     st.rerun()
 
         # Simple regenerate option (always available)
         if st.button("Regenerate Image", type="secondary"):
             st.session_state.comic_image_generating = True
-            st.session_state.image_regen_notes = ""
+            st.session_state.comic_image_regen_notes = ""  # Different key
             st.rerun()
 
     else:
@@ -4131,7 +4131,7 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                 gemini = get_gemini_service()
 
                 # Get regeneration notes if any
-                regen_notes = st.session_state.get('image_regen_notes', '')
+                regen_notes = st.session_state.get('comic_image_regen_notes', '')
 
                 image_base64 = asyncio.run(service.generate_comic_image(
                     comic_script=comic_script,
@@ -4141,7 +4141,7 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                 ))
 
                 # Clear regen notes after use
-                st.session_state.image_regen_notes = ""
+                st.session_state.comic_image_regen_notes = ""
 
                 # Convert base64 to data URL for display/storage
                 # TODO: Upload to Supabase storage for permanent URL
