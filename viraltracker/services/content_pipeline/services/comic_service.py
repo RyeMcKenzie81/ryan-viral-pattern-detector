@@ -1638,11 +1638,11 @@ Expected Panels:
 
         try:
             update_data = {
-                "comic_image_url": image_url
+                "generated_image_url": image_url
             }
 
             if evaluation:
-                update_data["image_evaluation_results"] = evaluation.to_dict()
+                update_data["image_evaluation"] = evaluation.to_dict()
 
             self.supabase.table("comic_versions").update(update_data).eq(
                 "id", str(comic_version_id)
