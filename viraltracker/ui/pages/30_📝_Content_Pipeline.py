@@ -4006,21 +4006,38 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
             st.markdown("#### Image Evaluation")
             render_comic_image_evaluation(image_eval)
 
-            # Re-evaluate button
-            if st.button("Re-evaluate Image", type="secondary", key="re_eval_image"):
-                try:
-                    db = get_supabase_client()
-                    db.table("comic_versions").update({
-                        "image_evaluation": None
-                    }).eq("id", comic_id).execute()
-                    st.success("Evaluation cleared. Click 'Evaluate Generated Image' to re-evaluate.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to clear evaluation: {e}")
+            # Re-evaluate and regenerate options
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("Re-evaluate Image", type="secondary", key="re_eval_image"):
+                    try:
+                        db = get_supabase_client()
+                        db.table("comic_versions").update({
+                            "image_evaluation": None
+                        }).eq("id", comic_id).execute()
+                        st.success("Evaluation cleared. Click 'Evaluate Generated Image' to re-evaluate.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to clear evaluation: {e}")
 
-        # Option to regenerate
+            # Regenerate with notes option (shown when below threshold)
+            if not image_eval.get('passes_threshold', False):
+                st.markdown("---")
+                st.markdown("### Regenerate Image")
+                regen_notes = st.text_area(
+                    "Regeneration Notes",
+                    placeholder="Add specific guidance for regeneration based on the evaluation feedback, e.g., 'Make text bubbles larger and clearer' or 'Improve character consistency in panels 2-3'",
+                    key="image_regen_notes"
+                )
+                if st.button("Regenerate with Notes", type="primary"):
+                    st.session_state.comic_image_generating = True
+                    st.session_state.image_regen_notes = regen_notes
+                    st.rerun()
+
+        # Simple regenerate option (always available)
         if st.button("Regenerate Image", type="secondary"):
             st.session_state.comic_image_generating = True
+            st.session_state.image_regen_notes = ""
             st.rerun()
 
     else:
@@ -4112,11 +4129,19 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                 # Generate comic image
                 service = get_comic_service()
                 gemini = get_gemini_service()
+
+                # Get regeneration notes if any
+                regen_notes = st.session_state.get('image_regen_notes', '')
+
                 image_base64 = asyncio.run(service.generate_comic_image(
                     comic_script=comic_script,
                     gemini_service=gemini,
-                    reference_images=reference_images
+                    reference_images=reference_images,
+                    improvement_notes=regen_notes if regen_notes else None
                 ))
+
+                # Clear regen notes after use
+                st.session_state.image_regen_notes = ""
 
                 # Convert base64 to data URL for display/storage
                 # TODO: Upload to Supabase storage for permanent URL
@@ -4256,18 +4281,40 @@ def render_comic_image_evaluation(eval_data: Dict):
     else:
         st.warning("Image below threshold - may need regeneration")
 
+    # Dimension notes
+    with st.expander("Evaluation Details", expanded=True):
+        if eval_data.get('visual_clarity_notes'):
+            st.markdown(f"**Clarity:** {eval_data['visual_clarity_notes']}")
+        if eval_data.get('character_accuracy_notes'):
+            st.markdown(f"**Character:** {eval_data['character_accuracy_notes']}")
+        if eval_data.get('text_readability_notes'):
+            st.markdown(f"**Text:** {eval_data['text_readability_notes']}")
+        if eval_data.get('composition_notes'):
+            st.markdown(f"**Composition:** {eval_data['composition_notes']}")
+        if eval_data.get('style_consistency_notes'):
+            st.markdown(f"**Style:** {eval_data['style_consistency_notes']}")
+
     # Issues
     issues = eval_data.get('issues', [])
     if issues:
         with st.expander(f"Issues ({len(issues)})"):
             for issue in issues:
-                st.markdown(f"- {issue}")
+                if isinstance(issue, dict):
+                    severity = issue.get('severity', 'medium')
+                    issue_text = issue.get('issue', str(issue))
+                    suggestion = issue.get('suggestion', '')
+                    st.markdown(f"**[{severity.upper()}]** {issue_text}")
+                    if suggestion:
+                        st.caption(f"Suggestion: {suggestion}")
+                else:
+                    st.markdown(f"- {issue}")
 
-    # Notes
-    notes = eval_data.get('notes', '')
-    if notes:
-        with st.expander("Evaluation Notes"):
-            st.markdown(notes)
+    # Suggestions
+    suggestions = eval_data.get('suggestions', [])
+    if suggestions:
+        with st.expander("Suggestions"):
+            for s in suggestions:
+                st.markdown(f"- {s}")
 
 
 def render_comic_export_tab(project: Dict, existing_comics: List[Dict]):

@@ -1328,7 +1328,8 @@ ONLY return the JSON object, nothing else."""
         self,
         comic_script: ComicScript,
         gemini_service: Any,
-        reference_images: Optional[List[str]] = None
+        reference_images: Optional[List[str]] = None,
+        improvement_notes: Optional[str] = None
     ) -> str:
         """
         Generate a 4K comic grid image using Gemini Image.
@@ -1337,11 +1338,14 @@ ONLY return the JSON object, nothing else."""
             comic_script: ComicScript with panels to render
             gemini_service: GeminiService instance for image generation
             reference_images: Optional base64 reference images (character sheets)
+            improvement_notes: Optional notes for improving previous generation
 
         Returns:
             Base64-encoded generated comic image
         """
         logger.info(f"Generating comic image for: {comic_script.title}")
+        if improvement_notes:
+            logger.info(f"With improvement notes: {improvement_notes[:100]}...")
 
         # Build panel descriptions
         panel_descriptions = []
@@ -1362,6 +1366,16 @@ ONLY return the JSON object, nothing else."""
             panel_descriptions="\n\n".join(panel_descriptions),
             panel_count=len(comic_script.panels)
         )
+
+        # Add improvement notes if this is a regeneration
+        if improvement_notes:
+            prompt += f"""
+
+IMPORTANT - IMPROVEMENTS NEEDED:
+This is a regeneration. The previous image had issues. Please specifically address:
+{improvement_notes}
+
+Make sure to improve these specific aspects while maintaining everything else."""
 
         try:
             # Generate image using Gemini
