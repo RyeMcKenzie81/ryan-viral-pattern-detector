@@ -4024,14 +4024,79 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
             if not image_eval.get('passes_threshold', False):
                 st.markdown("---")
                 st.markdown("### Regenerate Image")
+
+                # Build suggestions string from evaluation
+                suggestions_text = ""
+                issues = image_eval.get('issues', [])
+                suggestions = image_eval.get('suggestions', [])
+
+                # Add issues with suggestions
+                if issues:
+                    suggestions_text += "FIX THESE ISSUES:\n"
+                    for issue in issues:
+                        if isinstance(issue, dict):
+                            issue_text = issue.get('issue', str(issue))
+                            suggestion = issue.get('suggestion', '')
+                            suggestions_text += f"- {issue_text}"
+                            if suggestion:
+                                suggestions_text += f" → {suggestion}"
+                            suggestions_text += "\n"
+                        else:
+                            suggestions_text += f"- {issue}\n"
+
+                # Add general suggestions
+                if suggestions:
+                    if suggestions_text:
+                        suggestions_text += "\nIMPROVEMENTS:\n"
+                    else:
+                        suggestions_text += "IMPROVEMENTS:\n"
+                    for s in suggestions:
+                        suggestions_text += f"- {s}\n"
+
+                # Add low score dimension notes
+                low_score_notes = []
+                if image_eval.get('visual_clarity_score', 100) < 85 and image_eval.get('visual_clarity_notes'):
+                    low_score_notes.append(f"Clarity: {image_eval['visual_clarity_notes']}")
+                if image_eval.get('character_accuracy_score', 100) < 85 and image_eval.get('character_accuracy_notes'):
+                    low_score_notes.append(f"Character: {image_eval['character_accuracy_notes']}")
+                if image_eval.get('text_readability_score', 100) < 85 and image_eval.get('text_readability_notes'):
+                    low_score_notes.append(f"Text: {image_eval['text_readability_notes']}")
+                if image_eval.get('composition_score', 100) < 85 and image_eval.get('composition_notes'):
+                    low_score_notes.append(f"Composition: {image_eval['composition_notes']}")
+
+                if low_score_notes:
+                    if suggestions_text:
+                        suggestions_text += "\nLOW SCORE AREAS:\n"
+                    else:
+                        suggestions_text += "LOW SCORE AREAS:\n"
+                    for note in low_score_notes:
+                        suggestions_text += f"- {note}\n"
+
+                # Initialize session state for pre-filled notes if not set
+                if 'prefilled_regen_notes' not in st.session_state:
+                    st.session_state.prefilled_regen_notes = ""
+
+                # Apply suggestions button
+                col_apply1, col_apply2 = st.columns([1, 3])
+                with col_apply1:
+                    if st.button("Apply Suggestions", help="Auto-fill notes with evaluation feedback"):
+                        st.session_state.prefilled_regen_notes = suggestions_text.strip()
+                        st.rerun()
+                with col_apply2:
+                    if suggestions_text:
+                        st.caption(f"{len(issues)} issues, {len(suggestions)} suggestions available")
+
                 regen_notes = st.text_area(
                     "Regeneration Notes",
+                    value=st.session_state.prefilled_regen_notes,
                     placeholder="Add specific guidance for regeneration based on the evaluation feedback, e.g., 'Make text bubbles larger and clearer' or 'Improve character consistency in panels 2-3'",
-                    key="image_regen_notes_input"
+                    key="image_regen_notes_input",
+                    height=200
                 )
-                if st.button("Regenerate with Notes", type="primary"):
+                if st.button("Regenerate with Suggestions", type="primary"):
                     st.session_state.comic_image_generating = True
                     st.session_state.comic_image_regen_notes = regen_notes  # Different key
+                    st.session_state.prefilled_regen_notes = ""  # Clear for next time
                     st.rerun()
 
         # Simple regenerate option (always available)
