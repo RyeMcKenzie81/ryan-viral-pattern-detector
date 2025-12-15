@@ -658,11 +658,21 @@ class ComicRenderService:
         segment_paths: List[Path],
         output_path: Path
     ) -> None:
-        """Concatenate video segments using FFmpeg concat demuxer."""
+        """
+        Concatenate video segments using FFmpeg concat FILTER.
+
+        IMPORTANT: We use the concat filter (not concat demuxer) because:
+        - The demuxer with -c copy has known audio sync issues
+        - Segments with different audio sources (voice vs anullsrc silence)
+          can have timestamp mismatches causing audio drift
+        - The concat filter re-encodes everything, ensuring perfect sync
+
+        See: https://trac.ffmpeg.org/wiki/Concatenate
+        """
         # Debug: log concatenation details
         if hasattr(self, '_debug_file') and self._debug_file:
             with open(self._debug_file, "a") as f:
-                f.write(f"\n=== CONCATENATION ===\n")
+                f.write(f"\n=== CONCATENATION (using concat filter) ===\n")
                 f.write(f"Total segments to concatenate: {len(segment_paths)}\n")
                 for i, path in enumerate(segment_paths):
                     exists = path.exists()
@@ -670,33 +680,37 @@ class ComicRenderService:
                     f.write(f"  [{i}] {path.name}: exists={exists}, size={size_kb:.1f}KB\n")
                 f.write(f"\n")
 
-        # Create concat list file
-        concat_list = output_path.parent / "concat_list.txt"
-        with open(concat_list, "w") as f:
-            for path in segment_paths:
-                # Use absolute path to avoid path resolution issues
-                abs_path = path.resolve()
-                # Escape single quotes
-                escaped = str(abs_path).replace("'", "'\\''")
-                f.write(f"file '{escaped}'\n")
+        # Build FFmpeg command using concat filter
+        # This approach re-encodes but guarantees proper audio sync
+        cmd = [self._ffmpeg_path, "-y"]
 
-        # Debug: log concat list contents
+        # Add all input files
+        for path in segment_paths:
+            cmd.extend(["-i", str(path)])
+
+        # Build the filter_complex for concat filter
+        # Format: [0:v][0:a][1:v][1:a][2:v][2:a]...concat=n=N:v=1:a=1[outv][outa]
+        n = len(segment_paths)
+        filter_inputs = "".join(f"[{i}:v][{i}:a]" for i in range(n))
+        filter_complex = f"{filter_inputs}concat=n={n}:v=1:a=1[outv][outa]"
+
+        # Debug: log the filter
         if hasattr(self, '_debug_file') and self._debug_file:
             with open(self._debug_file, "a") as f:
-                f.write(f"Concat list file contents:\n")
-                with open(concat_list, "r") as cl:
-                    f.write(cl.read())
-                f.write(f"\n")
+                f.write(f"Concat filter: {filter_complex}\n\n")
 
-        cmd = [
-            self._ffmpeg_path,
-            "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_list),
-            "-c", "copy",  # Just copy streams, no re-encoding
+        cmd.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            "-map", "[outa]",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
             str(output_path)
-        ]
+        ])
 
         await self._run_ffmpeg(cmd)
 
@@ -706,9 +720,6 @@ class ComicRenderService:
                 size_mb = output_path.stat().st_size / (1024 * 1024)
                 with open(self._debug_file, "a") as f:
                     f.write(f"Concatenation complete: {output_path.name} ({size_mb:.2f}MB)\n\n")
-
-        # Cleanup - keep concat_list.txt for debugging
-        # concat_list.unlink(missing_ok=True)
 
     async def _mix_background_music(
         self,
