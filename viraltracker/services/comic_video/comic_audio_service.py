@@ -272,15 +272,29 @@ class ComicAudioService:
                     await self._save_panel_audio(project_id, audio)
                     results.append(audio)
                 else:
-                    # Single speaker - use regular generation
+                    # Single speaker - check for character field to use proper voice
                     text = self.extract_panel_text(panel)
                     if text:
+                        # Check for character field and use proper voice lookup
+                        character = panel.get("character", "").strip().lower()
+                        if character:
+                            # Look up voice for character (e.g., every-coon, raccoon)
+                            panel_voice_id, panel_voice_name = await self.get_voice_for_speaker(
+                                speaker=character,
+                                narrator_voice_id=voice_id,
+                                narrator_voice_name=voice_name
+                            )
+                        else:
+                            # Fall back to provided voice or default
+                            panel_voice_id = voice_id
+                            panel_voice_name = voice_name
+
                         audio = await self.generate_panel_audio(
                             project_id=project_id,
                             panel_number=panel_number,
                             text=text,
-                            voice_id=voice_id,
-                            voice_name=voice_name
+                            voice_id=panel_voice_id,
+                            voice_name=panel_voice_name
                         )
                         results.append(audio)
 

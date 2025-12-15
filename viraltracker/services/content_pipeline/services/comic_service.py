@@ -1588,6 +1588,8 @@ EXPECTED PANELS:
                 "panel_type": panel_type_map.get(panel.panel_type, "ACT 1 - CONTENT"),
                 "header_text": comic_script.title if panel.panel_number == 1 else "",
                 "dialogue": panel.dialogue,
+                "character": panel.character,  # For audio voice lookup
+                "expression": panel.expression,
                 "mood": self._infer_mood_from_panel(panel, comic_script.emotional_payoff),
                 "characters_needed": [f"{panel.character} ({panel.expression})"],
                 "prompt": panel.visual_description
