@@ -4567,7 +4567,50 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
 
     # Check if image is a data URL (not uploaded to storage)
     if image_url.startswith("data:"):
-        st.warning("Comic image needs to be uploaded to storage. Regenerate the image to upload to Supabase Storage.")
+        st.warning("Comic image is stored as base64 data. Upload to Supabase Storage for video generation.")
+
+        if 'uploading_existing_image' not in st.session_state:
+            st.session_state.uploading_existing_image = False
+
+        if st.button("Upload Existing Image to Storage", type="primary", disabled=st.session_state.uploading_existing_image):
+            st.session_state.uploading_existing_image = True
+            st.rerun()
+
+        if st.session_state.uploading_existing_image:
+            with st.spinner("Uploading image to Supabase Storage..."):
+                try:
+                    # Extract base64 from data URL
+                    base64_data = image_url.split(",", 1)[1] if "," in image_url else image_url
+
+                    # Upload using comic service
+                    service = get_comic_service()
+                    new_url = service.upload_comic_image_to_storage(
+                        image_base64=base64_data,
+                        comic_id=str(comic_id),
+                        project_id=str(project_id)
+                    )
+
+                    # Update database with new URL
+                    db = get_supabase_client()
+                    db.table("comic_versions").update({
+                        "generated_image_url": new_url
+                    }).eq("id", comic_id).execute()
+
+                    # Also update export_json if it exists
+                    if export_json:
+                        export_json['comic_image_url'] = new_url
+                        db.table("comic_versions").update({
+                            "export_json": export_json
+                        }).eq("id", comic_id).execute()
+
+                    st.session_state.uploading_existing_image = False
+                    st.success("Image uploaded to storage!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.session_state.uploading_existing_image = False
+                    st.error(f"Upload failed: {e}")
+
         return
 
     st.markdown("### Comic Video Generation")
