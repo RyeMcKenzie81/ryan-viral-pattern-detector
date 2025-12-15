@@ -479,8 +479,9 @@ class ComicRenderService:
         fps = self.DEFAULT_FPS
 
         # Get audio delay from user overrides or use default
-        # Default 150ms gives a brief pause after camera arrives before voice starts
-        audio_delay_ms = 150
+        # Default 0ms = audio starts exactly when segment starts (camera at panel)
+        # Add delay if you want a pause after camera arrives before voice starts
+        audio_delay_ms = 0
         if instruction.user_overrides and instruction.user_overrides.audio_delay_ms is not None:
             audio_delay_ms = instruction.user_overrides.audio_delay_ms
 
@@ -587,13 +588,21 @@ class ComicRenderService:
                     "-map", "1:a",
                 ])
         else:
-            # No audio - just video filters
+            # No voice audio - generate silent audio track
+            # IMPORTANT: All segments must have audio for proper concatenation
             if effects_filter:
-                filter_complex = f"{zoompan_filter},{effects_filter}{final_scale}"
+                video_chain = f"[0:v]{zoompan_filter},{effects_filter}{final_scale}[vout]"
             else:
-                filter_complex = f"{zoompan_filter}{final_scale}"
+                video_chain = f"[0:v]{zoompan_filter}{final_scale}[vout]"
+
+            # Generate silent audio using anullsrc
+            # Must match the segment duration exactly
+            silent_audio = f"anullsrc=r=44100:cl=stereo,atrim=0:{total_duration_sec}[aout]"
+            filter_complex = f"{video_chain};{silent_audio}"
             cmd.extend([
                 "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "[aout]",
             ])
 
         cmd.extend([
@@ -602,15 +611,9 @@ class ComicRenderService:
             "-preset", "medium",
             "-crf", "23",
             "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
         ])
-
-        if audio_path and audio_path.exists():
-            cmd.extend([
-                "-c:a", "aac",
-                "-b:a", "128k",
-            ])
-        else:
-            cmd.extend(["-an"])
 
         cmd.append(str(output_path))
 
