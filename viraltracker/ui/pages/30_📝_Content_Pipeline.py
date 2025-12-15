@@ -4208,9 +4208,17 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                 # Clear regen notes after use
                 st.session_state.comic_image_regen_notes = ""
 
-                # Convert base64 to data URL for display/storage
-                # TODO: Upload to Supabase storage for permanent URL
-                image_url = f"data:image/png;base64,{image_base64}"
+                # Upload to Supabase Storage for permanent URL
+                try:
+                    image_url = service.upload_comic_image_to_storage(
+                        image_base64=image_base64,
+                        comic_id=str(comic_id),
+                        project_id=str(project_id)
+                    )
+                except Exception as upload_err:
+                    # Fallback to data URL if upload fails
+                    logger.warning(f"Storage upload failed, using data URL: {upload_err}")
+                    image_url = f"data:image/png;base64,{image_base64}"
 
                 # Save to database
                 asyncio.run(service.save_comic_image_to_db(

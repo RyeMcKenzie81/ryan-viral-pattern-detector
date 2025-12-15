@@ -1701,6 +1701,73 @@ EXPECTED PANELS:
 
         return arrangement
 
+    # Storage bucket for comic images
+    COMIC_IMAGES_BUCKET = "comic-assets"
+
+    def upload_comic_image_to_storage(
+        self,
+        image_base64: str,
+        comic_id: str,
+        project_id: str
+    ) -> str:
+        """
+        Upload comic image to Supabase Storage and return public URL.
+
+        Args:
+            image_base64: Base64-encoded image data (with or without data URL prefix)
+            comic_id: Comic version ID for filename
+            project_id: Project ID for folder organization
+
+        Returns:
+            Public URL of uploaded image
+        """
+        if not self.supabase:
+            raise ValueError("Supabase client not configured")
+
+        import base64
+
+        # Strip data URL prefix if present
+        if image_base64.startswith("data:"):
+            # Format: data:image/png;base64,XXXX
+            header, image_base64 = image_base64.split(",", 1)
+            # Extract mime type
+            mime_type = header.split(";")[0].split(":")[1]
+            extension = mime_type.split("/")[1]  # png, jpeg, etc.
+        else:
+            extension = "png"
+            mime_type = "image/png"
+
+        # Decode base64 to bytes
+        try:
+            image_bytes = base64.b64decode(image_base64)
+        except Exception as e:
+            logger.error(f"Failed to decode base64 image: {e}")
+            raise ValueError(f"Invalid base64 image data: {e}")
+
+        # Generate storage path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        storage_path = f"comics/{project_id}/{comic_id}_{timestamp}.{extension}"
+
+        try:
+            # Upload to Supabase Storage
+            self.supabase.storage.from_(self.COMIC_IMAGES_BUCKET).upload(
+                path=storage_path,
+                file=image_bytes,
+                file_options={"content-type": mime_type}
+            )
+
+            # Get public URL
+            public_url = self.supabase.storage.from_(
+                self.COMIC_IMAGES_BUCKET
+            ).get_public_url(storage_path)
+
+            logger.info(f"Uploaded comic image to {storage_path}")
+            return public_url
+
+        except Exception as e:
+            logger.error(f"Failed to upload comic image: {e}")
+            raise
+
     async def save_comic_image_to_db(
         self,
         comic_version_id: UUID,
