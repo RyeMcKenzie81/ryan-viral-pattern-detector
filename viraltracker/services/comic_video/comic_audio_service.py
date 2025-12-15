@@ -455,14 +455,31 @@ class ComicAudioService:
         # Read file
         audio_data = local_path.read_bytes()
 
-        # Upload
-        await asyncio.to_thread(
-            lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
-                storage_path,
-                audio_data,
-                {"content-type": "audio/mpeg"}
+        # Upload with upsert to handle existing files
+        try:
+            await asyncio.to_thread(
+                lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                    storage_path,
+                    audio_data,
+                    {"content-type": "audio/mpeg", "upsert": "true"}
+                )
             )
-        )
+        except Exception as e:
+            if "Duplicate" in str(e) or "already exists" in str(e).lower():
+                # Delete and re-upload
+                logger.info(f"File exists, replacing: {storage_path}")
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).remove([storage_path])
+                )
+                await asyncio.to_thread(
+                    lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                        storage_path,
+                        audio_data,
+                        {"content-type": "audio/mpeg"}
+                    )
+                )
+            else:
+                raise
 
         logger.debug(f"Uploaded audio: {storage_path}")
         return f"{self.STORAGE_BUCKET}/{storage_path}"
