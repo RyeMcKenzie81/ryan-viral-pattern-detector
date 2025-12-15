@@ -1308,55 +1308,21 @@ REQUIREMENTS:
 Generate a single cohesive comic image with all {panel_count} panels in the grid layout."""
 
     # Image evaluation prompt (for Gemini)
-    IMAGE_EVALUATION_PROMPT = """Evaluate this comic image against quality standards.
+    IMAGE_EVALUATION_PROMPT = """You are evaluating a comic image. Score each dimension 0-100.
 
-SCORING DIMENSIONS (0-100):
+IMPORTANT: Return ONLY a valid JSON object. No explanations, no markdown, just the JSON.
 
-1. VISUAL CLARITY
-   - Are panels clearly separated?
-   - Can each panel be understood at a glance?
-   - Is the visual hierarchy clear?
+Score these dimensions:
+1. VISUAL CLARITY - Are panels clear and separated? (0-100)
+2. CHARACTER ACCURACY - Are characters consistent? (0-100)
+3. TEXT READABILITY - Can text be read easily? (0-100)
+4. COMPOSITION - Is layout correct? (0-100)
+5. STYLE CONSISTENCY - Is art style uniform? (0-100)
 
-2. CHARACTER ACCURACY
-   - Are characters consistent across panels?
-   - Are expressions readable?
-   - Do characters match descriptions?
+Return this exact JSON structure (fill in your scores and notes):
+{"overall_score": 75, "visual_clarity_score": 80, "visual_clarity_notes": "notes here", "character_accuracy_score": 70, "character_accuracy_notes": "notes here", "text_readability_score": 75, "text_readability_notes": "notes here", "composition_score": 80, "composition_notes": "notes here", "style_consistency_score": 70, "style_consistency_notes": "notes here", "issues": [], "suggestions": []}
 
-3. TEXT READABILITY
-   - Are speech bubbles clear?
-   - Is text large enough to read?
-   - Is text placement appropriate?
-
-4. COMPOSITION
-   - Is the grid layout correct?
-   - Is there proper white space?
-   - Does the eye flow naturally?
-
-5. STYLE CONSISTENCY
-   - Is the art style consistent?
-   - Are line weights uniform?
-   - Is the color palette cohesive?
-
-OUTPUT FORMAT (JSON):
-{{
-    "overall_score": 85,
-    "visual_clarity_score": 90,
-    "visual_clarity_notes": "...",
-    "character_accuracy_score": 80,
-    "character_accuracy_notes": "...",
-    "text_readability_score": 85,
-    "text_readability_notes": "...",
-    "composition_score": 88,
-    "composition_notes": "...",
-    "style_consistency_score": 82,
-    "style_consistency_notes": "...",
-    "issues": [
-        {{"severity": "high|medium|low", "issue": "...", "panel": 2, "suggestion": "..."}}
-    ],
-    "suggestions": ["..."]
-}}
-
-THRESHOLD: Image must score >= 90% overall to proceed to human review."""
+ONLY return the JSON object, nothing else."""
 
     async def generate_comic_image(
         self,
@@ -1456,6 +1422,9 @@ Expected Panels:
                 image_data=image_base64,
                 prompt=self.IMAGE_EVALUATION_PROMPT + f"\n\nCONTEXT:\n{context}"
             )
+
+            # Log raw response for debugging
+            logger.info(f"Gemini raw response (first 500 chars): {str(response)[:500]}")
 
             # Parse response with fallback for resilience
             fallback_eval = {
