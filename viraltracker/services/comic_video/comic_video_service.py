@@ -655,18 +655,18 @@ class ComicVideoService:
                 background_music_path=bg_music_path
             )
 
-            # Upload final video
-            final_url = await self.render.upload_video(
+            # Upload final video (returns storage path)
+            storage_path = await self.render.upload_video(
                 project_id=project_id,
                 local_path=Path(video_path),
                 filename="final_video.mp4"
             )
 
-            # Update project
+            # Update project with storage path (for later retrieval)
             await asyncio.to_thread(
                 lambda: self.supabase.table("comic_video_projects")
                     .update({
-                        "final_video_url": final_url,
+                        "final_video_url": storage_path,
                         "status": ProjectStatus.COMPLETE.value,
                         "updated_at": datetime.utcnow().isoformat()
                     })
@@ -676,7 +676,9 @@ class ComicVideoService:
 
             logger.info(f"Rendered final video for project {project_id}")
 
-            return final_url
+            # Return signed URL for immediate playback
+            signed_url = await self.render.get_video_url(storage_path)
+            return signed_url
 
         except Exception as e:
             await self.update_status(project_id, ProjectStatus.FAILED, str(e))

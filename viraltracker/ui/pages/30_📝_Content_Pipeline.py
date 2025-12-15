@@ -5070,11 +5070,18 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
             st.warning(f"Could not load panel details: {e}")
 
         # Show final video if available
-        final_video_url = existing_video_project.get('final_video_url')
-        if final_video_url:
+        final_video_path = existing_video_project.get('final_video_url')
+        if final_video_path:
             st.markdown("---")
             st.markdown("#### Final Video")
-            st.video(final_video_url)
+            try:
+                # Convert storage path to signed URL
+                from viraltracker.services.comic_video import ComicRenderService
+                render_service = ComicRenderService()
+                final_video_url = asyncio.run(render_service.get_video_url(final_video_path))
+                st.video(final_video_url)
+            except Exception as video_err:
+                st.warning(f"Could not load video: {video_err}")
 
     else:
         # No video project yet - show creation UI
