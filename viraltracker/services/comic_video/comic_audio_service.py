@@ -636,29 +636,34 @@ class ComicAudioService:
             logger.info(f"get_voice_for_speaker: Using narrator voice '{voice_name}'")
             return voice_id, voice_name
 
-        # Every-coon/raccoon variations - look up from database
-        every_coon_aliases = ("raccoon", "every-coon", "everycoon", "every_coon", "every coon")
-        if speaker_lower in every_coon_aliases:
-            try:
-                result = await asyncio.to_thread(
-                    lambda: self.supabase.table("character_voice_profiles")
-                        .select("voice_id, display_name")
-                        .eq("character", "every-coon")
-                        .maybe_single()
-                        .execute()
-                )
-                if result.data:
-                    voice_id = result.data["voice_id"]
-                    voice_name = result.data.get("display_name", "Every-Coon")
-                    logger.info(f"get_voice_for_speaker: Found every-coon voice '{voice_name}' (id: {voice_id[:8]}...)")
-                    return voice_id, voice_name
-                else:
-                    logger.warning("get_voice_for_speaker: No every-coon record found in database")
-            except Exception as e:
-                logger.warning(f"get_voice_for_speaker: Could not load every-coon voice: {e}")
+        # Map character strings to Character enum (same as video pipeline)
+        character_map = {
+            "every-coon": Character.EVERY_COON,
+            "everycoon": Character.EVERY_COON,
+            "every_coon": Character.EVERY_COON,
+            "every coon": Character.EVERY_COON,
+            "raccoon": Character.EVERY_COON,
+            "boomer": Character.BOOMER,
+            "fed": Character.FED,
+            "whale": Character.WHALE,
+            "wojak": Character.WOJAK,
+            "chad": Character.CHAD,
+        }
 
-            # Fallback for raccoon if not found
-            logger.info("get_voice_for_speaker: Using default voice (every-coon not in database)")
+        character_enum = character_map.get(speaker_lower)
+        if character_enum:
+            try:
+                # Use ElevenLabsService to get voice profile (same as video pipeline)
+                profile = await self.elevenlabs.get_voice_profile(character_enum)
+                logger.info(f"get_voice_for_speaker: Found {character_enum.value} voice '{profile.display_name}' (id: {profile.voice_id[:8]}...)")
+                return profile.voice_id, profile.display_name
+            except ValueError as e:
+                logger.warning(f"get_voice_for_speaker: No profile for {character_enum.value}: {e}")
+            except Exception as e:
+                logger.warning(f"get_voice_for_speaker: Error loading {character_enum.value} voice: {e}")
+
+            # Fallback if profile not found
+            logger.info(f"get_voice_for_speaker: Using default voice ({character_enum.value} not configured)")
             return self.DEFAULT_VOICE_ID, self.DEFAULT_VOICE_NAME
 
         # Unknown speaker - use narrator voice
