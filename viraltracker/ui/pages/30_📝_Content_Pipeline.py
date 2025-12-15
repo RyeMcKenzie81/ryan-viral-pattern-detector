@@ -4871,6 +4871,33 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                                 st.success("Audio approved")
                             else:
                                 st.warning("Audio pending approval")
+
+                            # Regenerate audio button
+                            if st.button("🔄 Regenerate Audio", key=f"cp_regen_audio_{panel_num}"):
+                                with st.spinner("Regenerating audio..."):
+                                    try:
+                                        from viraltracker.services.comic_video import ComicAudioService
+                                        audio_service = ComicAudioService()
+                                        text = audio.get('text_content', audio.get('text', ''))
+                                        voice_id = audio.get('voice_id')
+                                        voice_name = audio.get('voice_name')
+                                        # Get character for voice lookup
+                                        character = audio.get('character', '')
+                                        if character:
+                                            voice_id, voice_name = asyncio.run(
+                                                audio_service.get_voice_for_speaker(character, voice_id, voice_name)
+                                            )
+                                        asyncio.run(audio_service.regenerate_panel_audio(
+                                            project_id=video_project_id,
+                                            panel_number=panel_num,
+                                            text=text,
+                                            voice_id=voice_id,
+                                            voice_name=voice_name
+                                        ))
+                                        st.success("Audio regenerated!")
+                                        st.rerun()
+                                    except Exception as regen_err:
+                                        st.error(f"Regeneration failed: {regen_err}")
                         else:
                             st.info("No audio generated yet")
 
