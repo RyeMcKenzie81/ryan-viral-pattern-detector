@@ -5074,6 +5074,19 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
         if final_video_path:
             st.markdown("---")
             st.markdown("#### Final Video")
+
+            # Show render timestamp
+            rendered_at = existing_video_project.get('rendered_at')
+            if rendered_at:
+                try:
+                    from datetime import datetime
+                    render_dt = datetime.fromisoformat(rendered_at.replace("Z", "+00:00"))
+                    # Convert to local time display
+                    render_str = render_dt.strftime("%Y-%m-%d %I:%M:%S %p UTC")
+                    st.caption(f"Rendered: {render_str}")
+                except:
+                    st.caption(f"Rendered: {rendered_at}")
+
             try:
                 # Convert storage path to signed URL
                 from viraltracker.services.comic_video import ComicRenderService
