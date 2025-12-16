@@ -1,8 +1,8 @@
 # Checkpoint 001 - Belief-First Planning
 
 **Date**: 2025-12-15
-**Status**: Phase 5 INTEGRATION & TEST - Complete
-**Branch**: `main`
+**Status**: Phase 6 POLISH - Complete
+**Branch**: `feature/belief-first-planning`
 
 ---
 
@@ -135,10 +135,11 @@ MODIFIED:
 
 ## What's Next
 
-### Immediate (Phase 6: Polish)
-1. **Fix compile_plan RLS issue** - Either use service_role key or adjust RLS policies
-2. **Add template preview** - Show template images/content in selection UI
-3. **Plan list view** - Add page to view and manage existing plans
+### Phase 6: Polish - COMPLETE
+
+1. ✅ **Fix compile_plan template source issue** - Updated `get_plan()` to query both `ad_brief_templates` and `scraped_templates` based on `template_source` column
+2. ✅ **Add template preview** - Shows template images and text in selection UI
+3. ✅ **Plan list view** - Added `33_📊_Plan_List.py` page to view and manage existing plans
 
 ### Future (Integration with Ad Creator)
 1. **Connect to Ad Creator** - Feed compiled plan payload to ad generation
@@ -157,3 +158,6 @@ MODIFIED:
 - `d660bd8` - feat: Include both manual and scraped templates in planning wizard
 - `79858ba` - fix: Support both manual and scraped templates in plans
 - `d50e420` - fix: Validate button shows inline feedback, simplify save
+- `4c41f8e` - feat: Add template preview with images and text
+- `1357b04` - feat: Add plan list page to view/manage plans
+- `f1c1e43` - fix: Handle both template sources in compile_plan

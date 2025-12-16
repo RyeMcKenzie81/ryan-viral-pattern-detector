@@ -727,9 +727,13 @@ def render_step_7_templates():
     if scraped_template_list:
         st.subheader(f"Scraped Templates ({len(scraped_template_list)})")
         for template in scraped_template_list:
+            template_id = template.get('id')
+            template_name = template.get('name', 'Unnamed')
+
+            # Header row with name and checkbox
             col1, col2 = st.columns([4, 1])
             with col1:
-                st.markdown(f"**{template.get('name', 'Unnamed')}**")
+                st.markdown(f"**{template_name}**")
                 source_info = []
                 if template.get('source_brand'):
                     source_info.append(f"From: {template['source_brand']}")
@@ -737,17 +741,38 @@ def render_step_7_templates():
                     source_info.append(f"Niche: {template['industry_niche']}")
                 if source_info:
                     st.caption(" | ".join(source_info))
-                if template.get('instructions'):
-                    st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
             with col2:
-                template_id = template.get('id')
                 is_selected = is_template_selected(template_id)
                 if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
                     if not is_selected:
-                        add_template(template_id, "scraped", template.get('name', 'Unnamed'))
+                        add_template(template_id, "scraped", template_name)
                 else:
                     if is_selected:
                         remove_template(template_id)
+
+            # Preview expander with image and full text
+            with st.expander("Preview", expanded=False):
+                preview_col1, preview_col2 = st.columns([1, 1])
+                with preview_col1:
+                    # Show image if available
+                    image_url = template.get('asset_public_url') or template.get('asset_original_url')
+                    if image_url and template.get('asset_type') == 'image':
+                        try:
+                            st.image(image_url, use_container_width=True)
+                        except Exception:
+                            st.caption("Image not available")
+                    elif template.get('asset_type') == 'video':
+                        st.caption("Video template (preview not available)")
+                    else:
+                        st.caption("No image available")
+                with preview_col2:
+                    # Show template text
+                    template_text = template.get('template_text') or template.get('instructions', '')
+                    if template_text:
+                        st.markdown("**Template Text:**")
+                        st.text_area("", value=template_text, height=200, disabled=True, key=f"text_{template_id}")
+                    else:
+                        st.caption("No template text")
             st.divider()
 
     if not manual_templates and not scraped_template_list:
@@ -894,8 +919,14 @@ def render_step_8_review():
                     ads_per_angle=st.session_state.ads_per_angle
                 )
 
-                st.success(f"Plan saved successfully!")
-                st.info(f"Plan ID: `{plan.id}`")
+                # Compile the plan for ad creator
+                try:
+                    compiled = service.compile_plan(plan.id)
+                    st.success(f"Plan saved and compiled successfully!")
+                    st.info(f"Plan ID: `{plan.id}` | Status: {compiled.status}")
+                except Exception as compile_error:
+                    st.warning(f"Plan saved but compilation failed: {compile_error}")
+                    st.info(f"Plan ID: `{plan.id}`")
 
                 # Show plan summary
                 total_ads = len(st.session_state.angles) * st.session_state.ads_per_angle
