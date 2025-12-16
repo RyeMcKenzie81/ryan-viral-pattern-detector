@@ -12,25 +12,28 @@ D5 - Slot Availability (0-3): Does it have clear text slots?
 D6 - Compliance (pass/fail): No before/after, medical claims, guarantees?
 
 Phase 1-2 Eligible: D6 pass AND total >= 12 AND D2 >= 2
+
+Uses Gemini for vision-based evaluation of image templates (cheaper + better vision).
+Falls back to Claude for text-only templates.
 """
 
 import os
 import json
 import logging
+import asyncio
+import base64
+import httpx
 from typing import List, Dict, Optional, Any
 from uuid import UUID
 from datetime import datetime
 
-import anthropic
 from supabase import Client
 
 from ..core.database import get_supabase_client
 from .models import TemplateEvaluation
+from .gemini_service import GeminiService
 
 logger = logging.getLogger(__name__)
-
-# Default model for AI evaluation
-DEFAULT_MODEL = "claude-opus-4-5-20251101"
 
 EVALUATION_PROMPT = """You are an expert at evaluating ad creative templates for belief-first testing.
 
@@ -108,30 +111,21 @@ Return ONLY the JSON object, no other text."""
 class TemplateEvaluationService:
     """Service for evaluating templates for phase eligibility."""
 
-    def __init__(
-        self,
-        anthropic_api_key: Optional[str] = None,
-        model: Optional[str] = None
-    ):
+    def __init__(self):
         """
         Initialize TemplateEvaluationService.
 
-        Args:
-            anthropic_api_key: Optional API key (defaults to env var)
-            model: Claude model to use (defaults to claude-opus-4-5-20251101)
+        Uses GeminiService for vision-based evaluation (cheaper + better for images).
         """
         self.supabase: Client = get_supabase_client()
 
-        # Initialize Anthropic client for AI evaluation
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set - AI evaluation will fail")
-            self.client = None
-        else:
-            self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = model or DEFAULT_MODEL
-
-        logger.info("TemplateEvaluationService initialized")
+        # Initialize Gemini service for vision-based evaluation
+        try:
+            self.gemini = GeminiService()
+            logger.info("TemplateEvaluationService initialized with Gemini")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Gemini service: {e}")
+            self.gemini = None
 
     # ============================================
     # SINGLE TEMPLATE EVALUATION
@@ -195,7 +189,8 @@ class TemplateEvaluationService:
         try:
             if template_source == "scraped_templates":
                 result = self.supabase.table("scraped_templates").select(
-                    "id, name, description, category, layout_analysis, awareness_level, industry_niche"
+                    "id, name, description, category, layout_analysis, awareness_level, industry_niche, "
+                    "asset_public_url, asset_original_url, asset_type"
                 ).eq("id", str(template_id)).execute()
             else:
                 result = self.supabase.table("ad_brief_templates").select(
@@ -208,9 +203,9 @@ class TemplateEvaluationService:
             return None
 
     def _evaluate_with_ai(self, template: Dict[str, Any], template_source: str) -> Optional[Dict[str, Any]]:
-        """Run AI evaluation on template."""
-        if not self.client:
-            logger.error("Anthropic client not initialized")
+        """Run AI evaluation on template, using Gemini vision for image templates."""
+        if not self.gemini:
+            logger.error("Gemini service not initialized")
             return None
 
         # Build template info for prompt
@@ -239,14 +234,34 @@ class TemplateEvaluationService:
         )
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = response.content[0].text.strip()
+            # Check if we have an image to include (scraped templates)
+            image_url = template.get("asset_public_url") or template.get("asset_original_url")
+            asset_type = template.get("asset_type", "")
+
+            if image_url and asset_type == "image":
+                # Use Gemini vision: fetch image and analyze
+                logger.info(f"Evaluating template with Gemini vision: {template_name}")
+
+                # Fetch image and convert to base64
+                image_base64 = self._fetch_image_as_base64(image_url)
+                if not image_base64:
+                    logger.warning(f"Could not fetch image, falling back to text-only: {image_url}")
+                    # Fall back to text analysis
+                    content = asyncio.run(self.gemini.analyze_text(
+                        "",
+                        prompt + "\n\n**Note: Image could not be loaded. Evaluate based on metadata only.**"
+                    ))
+                else:
+                    # Vision-based evaluation
+                    vision_prompt = prompt + "\n\n**IMPORTANT: Carefully examine the template image above. Look at:**\n- Layout and visual hierarchy\n- Text slot locations and sizes\n- Any baked-in sales elements, prices, or urgency cues\n- Compliance issues (before/after, medical claims, etc.)"
+                    content = asyncio.run(self.gemini.analyze_image(image_base64, vision_prompt))
+            else:
+                # Text-only evaluation using Gemini
+                logger.info(f"Evaluating template with Gemini text: {template_name}")
+                content = asyncio.run(self.gemini.analyze_text("", prompt))
 
             # Clean markdown if present
+            content = content.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -256,6 +271,17 @@ class TemplateEvaluationService:
             return json.loads(content)
         except Exception as e:
             logger.error(f"AI evaluation failed: {e}")
+            return None
+
+    def _fetch_image_as_base64(self, url: str) -> Optional[str]:
+        """Fetch image from URL and return as base64 string."""
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(url)
+                response.raise_for_status()
+                return base64.b64encode(response.content).decode('utf-8')
+        except Exception as e:
+            logger.error(f"Failed to fetch image from {url}: {e}")
             return None
 
     def _save_evaluation(self, evaluation: TemplateEvaluation) -> bool:
