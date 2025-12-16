@@ -361,18 +361,22 @@ class CopyScaffoldService:
 
         try:
             # Get angle data
+            # belief_angles columns: name, belief_statement, explanation, status
             angle_result = self.supabase.table("belief_angles").select(
-                "name, angle_text, is_truth, key_claim, mechanism_hypothesis"
+                "name, belief_statement, explanation"
             ).eq("id", str(angle_id)).execute()
 
             if angle_result.data:
                 angle = angle_result.data[0]
-                context["ANGLE_CLAIM"] = angle.get("key_claim") or angle.get("angle_text", "")
+                # Use belief_statement as the angle claim (core belief)
+                context["ANGLE_CLAIM"] = angle.get("belief_statement", "")
                 context["ANGLE_NAME"] = angle.get("name", "")
-                # Mechanism hypothesis can provide MECHANISM_PHRASE
-                if angle.get("mechanism_hypothesis"):
-                    context["MECHANISM_PHRASE"] = angle.get("mechanism_hypothesis")
-                logger.debug(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')[:30]}...'")
+                # Explanation can provide mechanism phrase if available
+                explanation = angle.get("explanation", "")
+                if explanation:
+                    # Try to extract a mechanism-like phrase from explanation
+                    context["MECHANISM_PHRASE"] = explanation[:100] if len(explanation) > 100 else explanation
+                logger.info(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')[:50]}...'")
 
             # Get product data
             if product_id:
