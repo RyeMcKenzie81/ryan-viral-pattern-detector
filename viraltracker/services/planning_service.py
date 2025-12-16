@@ -341,27 +341,39 @@ class PlanningService:
             logger.error(f"Failed to fetch JTBDs: {e}")
             return []
 
-    def extract_jtbd_from_persona(self, persona_id: UUID) -> List[Dict[str, Any]]:
+    def extract_jtbd_from_persona(self, persona_id: UUID) -> List[str]:
         """
-        Extract JTBDs from persona's domain_sentiment.outcomes_jtbd.
+        Extract JTBDs from persona's outcomes_jtbd field.
+
+        The outcomes_jtbd is a DomainSentiment with emotional, social, functional arrays.
 
         Args:
             persona_id: Persona UUID
 
         Returns:
-            List of JTBD dicts from persona data
+            List of JTBD strings from persona data
         """
         try:
             persona = self.get_persona(persona_id)
             if not persona:
                 return []
 
-            domain_sentiment = persona.get("domain_sentiment", {})
-            if isinstance(domain_sentiment, str):
-                domain_sentiment = json.loads(domain_sentiment)
+            # outcomes_jtbd is a top-level field, not inside domain_sentiment
+            outcomes_jtbd = persona.get("outcomes_jtbd", {})
+            if isinstance(outcomes_jtbd, str):
+                outcomes_jtbd = json.loads(outcomes_jtbd)
 
-            jtbds = domain_sentiment.get("outcomes_jtbd", [])
-            return jtbds if isinstance(jtbds, list) else []
+            # Flatten emotional, social, functional into single list
+            jtbds = []
+            if isinstance(outcomes_jtbd, dict):
+                for category in ["emotional", "social", "functional"]:
+                    items = outcomes_jtbd.get(category, [])
+                    if isinstance(items, list):
+                        jtbds.extend(items)
+            elif isinstance(outcomes_jtbd, list):
+                jtbds = outcomes_jtbd
+
+            return jtbds
         except Exception as e:
             logger.error(f"Failed to extract JTBDs from persona {persona_id}: {e}")
             return []
