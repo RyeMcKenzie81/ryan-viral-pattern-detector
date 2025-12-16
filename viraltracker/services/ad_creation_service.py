@@ -1363,8 +1363,11 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
 
         Args:
             plan_id: UUID of the belief plan
-            num_variations: Total number of ads to generate
-            strategy: How to distribute ('round_robin', 'weighted', 'single_angle')
+            num_variations: Total number of ads to generate (or variations per angle for 'all_angles')
+            strategy: How to distribute:
+                - 'round_robin': Cycle through angles for num_variations total ads
+                - 'single_angle': Use first angle only, num_variations ads
+                - 'all_angles': ALL angles × num_variations each = angles × variations ads
 
         Returns:
             List of dicts, each with angle_id, belief_statement, headline, primary_text
@@ -1377,7 +1380,34 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         angles = plan_data["angles"]
         selected = []
 
-        if strategy == "round_robin":
+        if strategy == "all_angles":
+            # ALL angles × num_variations each
+            # e.g., 5 angles × 3 variations = 15 ads per template
+            variation_count = 0
+            for angle in angles:
+                copy_set = angle.get("copy_set", {})
+                headlines = copy_set.get("headline_variants", [])
+                primary_texts = copy_set.get("primary_text_variants", [])
+
+                for v in range(num_variations):
+                    # Cycle through copy variants for each variation
+                    headline_idx = v % len(headlines) if headlines else 0
+                    primary_idx = v % len(primary_texts) if primary_texts else 0
+
+                    selected.append({
+                        "angle_id": angle["id"],
+                        "angle_name": angle["name"],
+                        "belief_statement": angle["belief_statement"],
+                        "mechanism_hypothesis": angle.get("mechanism_hypothesis", ""),
+                        "headline": headlines[headline_idx].get("text", "") if headlines else "",
+                        "primary_text": primary_texts[primary_idx].get("text", "") if primary_texts else "",
+                        "token_context": copy_set.get("token_context", {}),
+                        "variation_index": variation_count,
+                        "angle_variation": v  # Which variation of this angle (0, 1, 2...)
+                    })
+                    variation_count += 1
+
+        elif strategy == "round_robin":
             # Distribute evenly across angles
             angle_index = 0
             for i in range(num_variations):

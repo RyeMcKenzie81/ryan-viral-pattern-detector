@@ -3280,19 +3280,21 @@ async def complete_ad_workflow(
             )
         elif content_source == "belief_plan":
             # Belief plan flow - use pre-validated angles and copy
-            logger.info(f"Stage 6: Getting {num_variations} angles from belief plan {belief_plan_id}...")
+            # Use 'all_angles' strategy: ALL angles × num_variations each
+            # e.g., 5 angles × 3 variations slider = 15 ads per template
+            logger.info(f"Stage 6: Getting ALL angles × {num_variations} variations from belief plan {belief_plan_id}...")
 
             # Get angles with copy from the belief plan
             selected_angles = await ctx.deps.ad_creation.select_angles_for_generation(
                 plan_id=UUID(belief_plan_id),
                 num_variations=num_variations,
-                strategy="round_robin"
+                strategy="all_angles"  # All angles × variations each
             )
 
             if not selected_angles:
                 raise ValueError(f"No angles found in belief plan {belief_plan_id}. Create angles in Ad Planning first.")
 
-            logger.info(f"  Retrieved {len(selected_angles)} angle variations")
+            logger.info(f"  Retrieved {len(selected_angles)} total variations (all angles × {num_variations} each)")
 
             # Get ALL templates from the belief plan to cycle through anchor texts
             # Phase 1-2 CRITICAL: The on-image text should be the template's anchor text,
@@ -3498,7 +3500,8 @@ async def complete_ad_workflow(
         )
 
         # STAGE 8-10: Generate ad variations (ONE AT A TIME)
-        logger.info(f"Stage 8-10: Generating {num_variations} ad variations...")
+        total_variations = len(selected_hooks)
+        logger.info(f"Stage 8-10: Generating {total_variations} ad variations...")
         generated_ads_with_reviews = []
 
         # Get product_id once for structured naming (used for all variations)
@@ -3506,7 +3509,7 @@ async def complete_ad_workflow(
         product_id_for_naming = await ctx.deps.ad_creation.get_product_id_for_run(UUID(ad_run_id_str))
 
         for i, selected_hook in enumerate(selected_hooks, start=1):
-            logger.info(f"  → Generating variation {i}/{num_variations}...")
+            logger.info(f"  → Generating variation {i}/{total_variations}...")
 
             try:
                 # Generate prompt
