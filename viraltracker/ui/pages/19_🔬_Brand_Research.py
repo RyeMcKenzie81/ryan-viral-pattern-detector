@@ -814,9 +814,9 @@ def render_landing_page_section(brand_id: str, product_id: Optional[str] = None)
     analyzed = lp_stats.get("analyzed", 0)
     to_analyze = lp_stats.get("to_analyze", 0)
 
-    # Show overall status
+    # Show overall status - only show warning if no landing pages at all
     if available == 0:
-        st.warning("No URL patterns found. Add URLs on the URL Mapping page first.")
+        st.info("No landing pages yet. Use the form above to add URLs manually, or add URL patterns on the URL Mapping page.")
         return
 
     col1, col2 = st.columns(2)

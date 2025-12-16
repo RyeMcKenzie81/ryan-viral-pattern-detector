@@ -2877,38 +2877,38 @@ class BrandResearchService:
 
         Returns:
             Dict with counts:
-            - available: Total URL patterns in product_urls for this brand/product
+            - available: Total URLs (from product_urls + manually added landing pages)
             - total: Landing pages in database (scraped or attempted)
             - scraped: Successfully scraped pages
             - analyzed: Pages with AI analysis complete
             - failed: Failed scrape attempts
             - pending: Pages pending scrape
-            - to_scrape: Available URLs not yet scraped (available - total)
+            - to_scrape: Available URLs not yet scraped
             - to_analyze: Scraped pages not yet analyzed
         """
         try:
             # Get count of available URLs from product_urls
+            product_url_count = 0
             if product_id:
                 # Filter to specific product
                 urls_result = self.supabase.table("product_urls").select(
                     "id", count="exact"
                 ).eq("product_id", str(product_id)).execute()
-                available = urls_result.count or 0
+                product_url_count = urls_result.count or 0
             else:
                 # All products for brand
                 products_result = self.supabase.table("products").select(
                     "id"
                 ).eq("brand_id", str(brand_id)).execute()
 
-                available = 0
                 if products_result.data:
                     product_ids = [p['id'] for p in products_result.data]
                     urls_result = self.supabase.table("product_urls").select(
                         "id", count="exact"
                     ).in_("product_id", product_ids).execute()
-                    available = urls_result.count or 0
+                    product_url_count = urls_result.count or 0
 
-            # Get existing landing page stats
+            # Get existing landing page stats (includes manually added pages)
             query = self.supabase.table("brand_landing_pages").select(
                 "scrape_status"
             ).eq("brand_id", str(brand_id))
@@ -2919,7 +2919,6 @@ class BrandResearchService:
             result = query.execute()
 
             stats = {
-                "available": available,
                 "total": 0,
                 "scraped": 0,      # Pages with 'scraped' status (not yet analyzed)
                 "analyzed": 0,     # Pages with 'analyzed' status
@@ -2936,12 +2935,18 @@ class BrandResearchService:
             # Calculate derived stats
             # successfully_scraped = pages that have content (scraped OR analyzed)
             successfully_scraped = stats["scraped"] + stats["analyzed"]
-            # to_scrape = URLs that haven't been successfully scraped yet
-            stats["to_scrape"] = max(0, available - successfully_scraped)
+
+            # available = URLs from product_urls OR manually added landing pages (whichever is higher)
+            # This ensures manually added pages show up even without product_urls
+            available = max(product_url_count, stats["total"])
+
+            # to_scrape = pending pages + (product_urls not yet in landing_pages)
+            stats["to_scrape"] = stats["pending"] + max(0, product_url_count - stats["total"])
             # to_analyze = scraped pages that haven't been analyzed yet
             stats["to_analyze"] = stats["scraped"]  # Only 'scraped' status needs analysis
             # For display: total successfully scraped (includes analyzed)
             stats["successfully_scraped"] = successfully_scraped
+            stats["available"] = available
 
             return stats
 
