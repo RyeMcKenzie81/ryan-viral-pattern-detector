@@ -1068,8 +1068,8 @@ def render_step_8_copy_generation():
                         for issue in variant.get("issues", []):
                             st.caption(f"⚠️ {issue}")
 
-                # Token context
-                with st.expander("Token Context"):
+                # Token context (use checkbox toggle since we're inside an expander)
+                if st.checkbox("Show Token Context", key=f"show_tokens_{copy_set['angle_id']}"):
                     st.json(copy_set.get("token_context", {}))
 
     # Navigation
