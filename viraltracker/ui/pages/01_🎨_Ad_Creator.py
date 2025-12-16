@@ -325,17 +325,89 @@ def get_belief_plans_for_product(product_id: str):
         return []
 
 
+def get_all_belief_plans_with_products():
+    """Get all belief plans with product info for the belief plan selector."""
+    try:
+        db = get_supabase_client()
+        result = db.table("belief_plans").select(
+            "id, name, status, phase_id, product_id, persona_id, brand_id, "
+            "products(id, name), brands(id, name)"
+        ).order("updated_at", desc=True).execute()
+
+        plans = []
+        for row in result.data or []:
+            # Get angle count
+            angle_result = db.table("belief_plan_angles").select(
+                "id", count="exact"
+            ).eq("plan_id", row["id"]).execute()
+
+            # Check if angles have copy
+            has_copy = False
+            if angle_result.count and angle_result.count > 0:
+                angles_result = db.table("belief_plan_angles").select("angle_id").eq("plan_id", row["id"]).limit(1).execute()
+                if angles_result.data:
+                    copy_result = db.table("angle_copy_sets").select("id").eq("angle_id", angles_result.data[0]["angle_id"]).execute()
+                    has_copy = bool(copy_result.data)
+
+            plans.append({
+                **row,
+                "angle_count": angle_result.count if angle_result.count else 0,
+                "has_copy": has_copy,
+                "product_name": row.get("products", {}).get("name", "Unknown") if row.get("products") else "Unknown",
+                "brand_name": row.get("brands", {}).get("name", "Unknown") if row.get("brands") else "Unknown"
+            })
+
+        # Filter to only plans with angles and copy
+        return [p for p in plans if p["angle_count"] > 0 and p["has_copy"]]
+    except Exception as e:
+        logger.error(f"Failed to get all belief plans: {e}")
+        return []
+
+
 def get_belief_plan_details(plan_id: str):
-    """Get belief plan with angles and copy sets for preview."""
+    """Get belief plan with angles, copy sets, templates, and product info."""
     try:
         db = get_supabase_client()
 
-        # Get plan
-        plan_result = db.table("belief_plans").select("*").eq("id", plan_id).execute()
+        # Get plan with product info
+        plan_result = db.table("belief_plans").select(
+            "*, products(id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts))"
+        ).eq("id", plan_id).execute()
         if not plan_result.data:
             return None
 
         plan = plan_result.data[0]
+
+        # Get templates for this plan (from belief_plan_templates)
+        templates_result = db.table("belief_plan_templates").select(
+            "template_id, template_source, is_primary"
+        ).eq("plan_id", plan_id).order("is_primary", desc=True).execute()
+
+        templates = []
+        primary_template = None
+        for tmpl in templates_result.data or []:
+            template_source = tmpl.get("template_source", "ad_brief_templates")
+            template_id = tmpl["template_id"]
+
+            # Get template details based on source
+            if template_source == "scraped_templates":
+                tmpl_result = db.table("scraped_templates").select(
+                    "id, name, storage_path, anchor_text"
+                ).eq("id", template_id).execute()
+            else:
+                tmpl_result = db.table("ad_brief_templates").select(
+                    "id, name, storage_path, anchor_text"
+                ).eq("id", template_id).execute()
+
+            if tmpl_result.data:
+                template_data = {
+                    **tmpl_result.data[0],
+                    "source": template_source,
+                    "is_primary": tmpl.get("is_primary", False)
+                }
+                templates.append(template_data)
+                if tmpl.get("is_primary", False):
+                    primary_template = template_data
 
         # Get angles
         angles_result = db.table("belief_plan_angles").select(
@@ -367,7 +439,10 @@ def get_belief_plan_details(plan_id: str):
 
         return {
             "plan": plan,
-            "angles": angles
+            "angles": angles,
+            "templates": templates,
+            "primary_template": primary_template,
+            "product": plan.get("products")
         }
     except Exception as e:
         logger.error(f"Failed to get belief plan details: {e}")
@@ -701,44 +776,139 @@ if st.session_state.workflow_result:
 
 else:
     # ============================================================================
-    # Configuration - Product & Image Selection (outside form for interactivity)
+    # STEP 1: Content Source (determines entire flow)
     # ============================================================================
 
-    st.subheader("1. Select Product")
+    st.subheader("1. Content Source")
 
-    products = get_products()
-    if not products:
-        st.error("No products found in database")
-        st.stop()
-
-    product_options = {p['name']: p['id'] for p in products}
-
-    # Use session state to persist product selection
-    if 'selected_product_name' not in st.session_state:
-        st.session_state.selected_product_name = list(product_options.keys())[0]
-
-    selected_product_name = st.selectbox(
-        "Product",
-        options=list(product_options.keys()),
-        index=list(product_options.keys()).index(st.session_state.selected_product_name) if st.session_state.selected_product_name in product_options else 0,
-        help="Select the product to create ads for",
-        key="product_selector"
+    content_source = st.radio(
+        "How should we create the ad variations?",
+        options=["hooks", "recreate_template", "belief_plan"],
+        index=["hooks", "recreate_template", "belief_plan"].index(st.session_state.content_source),
+        format_func=lambda x: {
+            "hooks": "🎣 Hooks - Use persuasive hooks from your database",
+            "recreate_template": "🔄 Recreate - Vary template by product benefits",
+            "belief_plan": "🎯 Belief Plan - Use pre-planned angles with validated copy"
+        }.get(x, x),
+        horizontal=True,
+        help="Belief Plan mode uses all context from your plan (product, template, copy)"
     )
-    st.session_state.selected_product_name = selected_product_name
-    selected_product_id = product_options[selected_product_name]
-
-    # Show product details
-    selected_product = next((p for p in products if p['id'] == selected_product_id), None)
-    if selected_product:
-        st.caption(f"Target Audience: {selected_product.get('target_audience', 'Not specified')}")
+    st.session_state.content_source = content_source
 
     st.divider()
+
+    # Initialize variables that may be set by belief plan
+    selected_product = None
+    selected_product_id = None
+    products = get_products()
+
+    # ============================================================================
+    # BELIEF PLAN FLOW - Auto-populates product, template, persona from plan
+    # ============================================================================
+    if content_source == "belief_plan":
+        st.subheader("2. Select Belief Plan")
+
+        all_plans = get_all_belief_plans_with_products()
+
+        if not all_plans:
+            st.warning("⚠️ No belief plans with copy found. Create a plan in Ad Planning first and generate copy for all angles.")
+            st.stop()
+
+        # Plan selector
+        plan_options = {
+            p["id"]: f"{p['name']} ({p['product_name']}, Phase {p['phase_id']}, {p['angle_count']} angles)"
+            for p in all_plans
+        }
+
+        # Get current selection or default
+        current_plan_id = st.session_state.selected_belief_plan_id
+        if current_plan_id not in plan_options:
+            current_plan_id = list(plan_options.keys())[0] if plan_options else None
+
+        selected_plan_id = st.selectbox(
+            "Belief Plan",
+            options=list(plan_options.keys()),
+            index=list(plan_options.keys()).index(current_plan_id) if current_plan_id in plan_options else 0,
+            format_func=lambda x: plan_options.get(x, x),
+            help="Select a belief plan - product, template, and copy will be loaded automatically"
+        )
+        st.session_state.selected_belief_plan_id = selected_plan_id
+
+        # Load plan details
+        if selected_plan_id:
+            plan_details = get_belief_plan_details(selected_plan_id)
+            if plan_details:
+                st.session_state.belief_plan_data = plan_details
+
+                # Auto-populate product from plan
+                plan_product = plan_details.get("product")
+                if plan_product:
+                    selected_product = plan_product
+                    selected_product_id = plan_product.get("id")
+                    # Update product session state to match
+                    st.session_state.selected_product = selected_product
+                    st.session_state.selected_product_name = plan_product.get("name", "")
+
+                # Show plan summary
+                plan = plan_details.get("plan", {})
+                angles = plan_details.get("angles", [])
+                primary_template = plan_details.get("primary_template")
+
+                st.success(f"✅ Plan loaded: **{plan.get('name')}** (Phase {plan.get('phase_id')})")
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown(f"**Product:** {plan_product.get('name', 'N/A')}")
+                with col2:
+                    st.markdown(f"**Angles:** {len(angles)} with copy")
+                with col3:
+                    st.markdown(f"**Template:** {primary_template.get('name', 'N/A') if primary_template else 'None'}")
+
+                # Show angles preview
+                with st.expander("📋 Plan Angles", expanded=False):
+                    for angle in angles:
+                        st.markdown(f"• **{angle['name']}** - {angle.get('headline_count', 0)} headlines, {angle.get('primary_text_count', 0)} primary texts")
+
+        st.divider()
+
+    # ============================================================================
+    # HOOKS/RECREATE FLOW - Manual product selection
+    # ============================================================================
+    else:
+        st.subheader("2. Select Product")
+
+        if not products:
+            st.error("No products found in database")
+            st.stop()
+
+        product_options = {p['name']: p['id'] for p in products}
+
+        # Use session state to persist product selection
+        if 'selected_product_name' not in st.session_state:
+            st.session_state.selected_product_name = list(product_options.keys())[0]
+
+        selected_product_name = st.selectbox(
+            "Product",
+            options=list(product_options.keys()),
+            index=list(product_options.keys()).index(st.session_state.selected_product_name) if st.session_state.selected_product_name in product_options else 0,
+            help="Select the product to create ads for",
+            key="product_selector"
+        )
+        st.session_state.selected_product_name = selected_product_name
+        selected_product_id = product_options[selected_product_name]
+
+        # Show product details
+        selected_product = next((p for p in products if p['id'] == selected_product_id), None)
+        if selected_product:
+            st.caption(f"Target Audience: {selected_product.get('target_audience', 'Not specified')}")
+
+        st.divider()
 
     # ============================================================================
     # Image Selection (outside form for interactivity)
     # ============================================================================
 
-    st.subheader("2. Product Image")
+    st.subheader("3. Product Image" if content_source == "belief_plan" else "3. Product Image")
 
     # Fetch product images
     product_images = get_product_images(selected_product_id) if selected_product_id else []
@@ -843,367 +1013,418 @@ else:
     st.divider()
 
     # ============================================================================
-    # Section 2.5: Target Persona (Optional)
+    # Persona, Variant, Instructions - ONLY for hooks/recreate modes
+    # (belief_plan mode uses these from the plan)
     # ============================================================================
 
-    st.subheader("Target Persona (Optional)")
+    if content_source != "belief_plan":
+        st.subheader("Target Persona (Optional)")
 
-    # Fetch personas for selected product
-    personas = get_personas_for_product(selected_product_id) if selected_product_id else []
+        # Fetch personas for selected product
+        personas = get_personas_for_product(selected_product_id) if selected_product_id else []
 
-    if personas:
-        # Build persona options - "None" + all personas
-        persona_options = {"None - Use product defaults": None}
-        for p in personas:
-            snapshot = p.get('snapshot', '')[:50] if p.get('snapshot') else ''
-            label = f"{p['name']}"
-            if snapshot:
-                label += f" ({snapshot}...)"
-            if p.get('is_primary'):
-                label += " ⭐"
-            persona_options[label] = p['id']
+        if personas:
+            # Build persona options - "None" + all personas
+            persona_options = {"None - Use product defaults": None}
+            for p in personas:
+                snapshot = p.get('snapshot', '')[:50] if p.get('snapshot') else ''
+                label = f"{p['name']}"
+                if snapshot:
+                    label += f" ({snapshot}...)"
+                if p.get('is_primary'):
+                    label += " ⭐"
+                persona_options[label] = p['id']
 
-        # Get current selection label
-        current_persona_label = "None - Use product defaults"
-        if st.session_state.selected_persona_id:
-            for label, pid in persona_options.items():
-                if pid == st.session_state.selected_persona_id:
-                    current_persona_label = label
-                    break
+            # Get current selection label
+            current_persona_label = "None - Use product defaults"
+            if st.session_state.selected_persona_id:
+                for label, pid in persona_options.items():
+                    if pid == st.session_state.selected_persona_id:
+                        current_persona_label = label
+                        break
 
-        selected_persona_label = st.selectbox(
-            "Select a 4D Persona to target",
-            options=list(persona_options.keys()),
-            index=list(persona_options.keys()).index(current_persona_label) if current_persona_label in persona_options else 0,
-            help="Persona data will inform hook selection and copy generation with emotional triggers and customer voice",
+            selected_persona_label = st.selectbox(
+                "Select a 4D Persona to target",
+                options=list(persona_options.keys()),
+                index=list(persona_options.keys()).index(current_persona_label) if current_persona_label in persona_options else 0,
+                help="Persona data will inform hook selection and copy generation with emotional triggers and customer voice",
+                disabled=st.session_state.workflow_running,
+                key="persona_selector"
+            )
+            st.session_state.selected_persona_id = persona_options[selected_persona_label]
+
+            # Show persona preview if selected
+            if st.session_state.selected_persona_id:
+                selected_persona = next((p for p in personas if p['id'] == st.session_state.selected_persona_id), None)
+                if selected_persona:
+                    with st.expander("Persona Preview", expanded=False):
+                        st.markdown(f"**{selected_persona['name']}**")
+                        if selected_persona.get('snapshot'):
+                            st.write(selected_persona['snapshot'])
+
+                        # Show key persona data if available (from the full persona)
+                        st.caption("💡 Persona data will be used to select hooks and generate copy that resonates with this audience's pain points, desires, and language.")
+        else:
+            st.info("No personas available for this product. Create personas in Brand Research to enable persona-targeted ad creation.")
+            st.session_state.selected_persona_id = None
+
+        st.divider()
+
+        # ============================================================================
+        # Section 2.6: Product Variant (Optional)
+        # ============================================================================
+
+        st.subheader("Product Variant (Optional)")
+
+        # Fetch variants for selected product
+        variants = get_variants_for_product(selected_product_id) if selected_product_id else []
+
+        if variants:
+            # Build variant options - "Default" + all variants
+            variant_options = {"Use default variant": None}
+            for v in variants:
+                label = f"{v['name']}"
+                if v.get('is_default'):
+                    label += " (default)"
+                if v.get('description'):
+                    label += f" - {v['description'][:40]}..."
+                variant_options[label] = v['id']
+
+            # Get current selection label
+            current_variant_label = "Use default variant"
+            if st.session_state.selected_variant_id:
+                for label, vid in variant_options.items():
+                    if vid == st.session_state.selected_variant_id:
+                        current_variant_label = label
+                        break
+
+            selected_variant_label = st.selectbox(
+                "Select a product variant",
+                options=list(variant_options.keys()),
+                index=list(variant_options.keys()).index(current_variant_label) if current_variant_label in variant_options else 0,
+                help="Choose a specific flavor, size, or variant to feature in ads",
+                disabled=st.session_state.workflow_running,
+                key="variant_selector"
+            )
+            st.session_state.selected_variant_id = variant_options[selected_variant_label]
+
+            # Show variant preview if selected
+            if st.session_state.selected_variant_id:
+                selected_variant = next((v for v in variants if v['id'] == st.session_state.selected_variant_id), None)
+                if selected_variant and selected_variant.get('description'):
+                    st.caption(f"📦 {selected_variant['description']}")
+        else:
+            st.info("No variants available for this product. Add variants in Brand Manager if needed.")
+            st.session_state.selected_variant_id = None
+
+        st.divider()
+
+        # ============================================================================
+        # Section 2.7: Additional Instructions (Optional)
+        # ============================================================================
+
+        st.subheader("Additional Instructions (Optional)")
+
+        # Get brand's default ad creation notes
+        brand_ad_notes = ""
+        if selected_product and selected_product.get('brands'):
+            brand_ad_notes = selected_product['brands'].get('ad_creation_notes') or ""
+
+        # Show brand defaults if they exist
+        if brand_ad_notes:
+            st.caption(f"📋 **Brand defaults:** {brand_ad_notes[:100]}{'...' if len(brand_ad_notes) > 100 else ''}")
+
+        additional_instructions = st.text_area(
+            "Additional instructions for this run",
+            value=st.session_state.additional_instructions,
+            placeholder="Add any specific instructions for this ad generation run...\n\nExamples:\n- Feature the Brown Sugar flavor prominently\n- Use a summer/outdoor theme\n- Include '20% OFF' badge",
+            height=100,
+            help="These instructions will be combined with the brand's default ad creation notes",
             disabled=st.session_state.workflow_running,
-            key="persona_selector"
+            key="additional_instructions_input"
         )
-        st.session_state.selected_persona_id = persona_options[selected_persona_label]
+        st.session_state.additional_instructions = additional_instructions
 
-        # Show persona preview if selected
-        if st.session_state.selected_persona_id:
-            selected_persona = next((p for p in personas if p['id'] == st.session_state.selected_persona_id), None)
-            if selected_persona:
-                with st.expander("Persona Preview", expanded=False):
-                    st.markdown(f"**{selected_persona['name']}**")
-                    if selected_persona.get('snapshot'):
-                        st.write(selected_persona['snapshot'])
+        st.divider()
 
-                    # Show key persona data if available (from the full persona)
-                    st.caption("💡 Persona data will be used to select hooks and generate copy that resonates with this audience's pain points, desires, and language.")
+        # ============================================================================
+        # Section 3: Reference Ad (outside form for interactivity)
+        # ============================================================================
+
+        st.subheader("4. Reference Ad")
     else:
-        st.info("No personas available for this product. Create personas in Brand Research to enable persona-targeted ad creation.")
-        st.session_state.selected_persona_id = None
+        # For belief_plan, personas are loaded from session state
+        personas = []
 
-    st.divider()
-
-    # ============================================================================
-    # Section 2.6: Product Variant (Optional)
-    # ============================================================================
-
-    st.subheader("Product Variant (Optional)")
-
-    # Fetch variants for selected product
-    variants = get_variants_for_product(selected_product_id) if selected_product_id else []
-
-    if variants:
-        # Build variant options - "Default" + all variants
-        variant_options = {"Use default variant": None}
-        for v in variants:
-            label = f"{v['name']}"
-            if v.get('is_default'):
-                label += " (default)"
-            if v.get('description'):
-                label += f" - {v['description'][:40]}..."
-            variant_options[label] = v['id']
-
-        # Get current selection label
-        current_variant_label = "Use default variant"
-        if st.session_state.selected_variant_id:
-            for label, vid in variant_options.items():
-                if vid == st.session_state.selected_variant_id:
-                    current_variant_label = label
-                    break
-
-        selected_variant_label = st.selectbox(
-            "Select a product variant",
-            options=list(variant_options.keys()),
-            index=list(variant_options.keys()).index(current_variant_label) if current_variant_label in variant_options else 0,
-            help="Choose a specific flavor, size, or variant to feature in ads",
-            disabled=st.session_state.workflow_running,
-            key="variant_selector"
-        )
-        st.session_state.selected_variant_id = variant_options[selected_variant_label]
-
-        # Show variant preview if selected
-        if st.session_state.selected_variant_id:
-            selected_variant = next((v for v in variants if v['id'] == st.session_state.selected_variant_id), None)
-            if selected_variant and selected_variant.get('description'):
-                st.caption(f"📦 {selected_variant['description']}")
-    else:
-        st.info("No variants available for this product. Add variants in Brand Manager if needed.")
-        st.session_state.selected_variant_id = None
-
-    st.divider()
-
-    # ============================================================================
-    # Section 2.7: Additional Instructions (Optional)
-    # ============================================================================
-
-    st.subheader("Additional Instructions (Optional)")
-
-    # Get brand's default ad creation notes
-    brand_ad_notes = ""
-    if selected_product and selected_product.get('brands'):
-        brand_ad_notes = selected_product['brands'].get('ad_creation_notes') or ""
-
-    # Show brand defaults if they exist
-    if brand_ad_notes:
-        st.caption(f"📋 **Brand defaults:** {brand_ad_notes[:100]}{'...' if len(brand_ad_notes) > 100 else ''}")
-
-    additional_instructions = st.text_area(
-        "Additional instructions for this run",
-        value=st.session_state.additional_instructions,
-        placeholder="Add any specific instructions for this ad generation run...\n\nExamples:\n- Feature the Brown Sugar flavor prominently\n- Use a summer/outdoor theme\n- Include '20% OFF' badge",
-        height=100,
-        help="These instructions will be combined with the brand's default ad creation notes",
-        disabled=st.session_state.workflow_running,
-        key="additional_instructions_input"
-    )
-    st.session_state.additional_instructions = additional_instructions
-
-    st.divider()
-
-    # ============================================================================
-    # Section 3: Reference Ad (outside form for interactivity)
-    # ============================================================================
-
-    st.subheader("3. Reference Ad")
-
-    reference_options = ["Upload New", "Uploaded Templates", "Scraped Template Library"]
-    current_index = 0
-    if st.session_state.reference_source == "Use Existing Template":
-        current_index = 1
-    elif st.session_state.reference_source == "Scraped Template Library":
-        current_index = 2
-
-    reference_source = st.radio(
-        "Reference ad source",
-        options=reference_options,
-        index=current_index,
-        horizontal=True,
-        key="reference_source_radio",
-        help="Upload a new image, use previously uploaded templates, or browse scraped templates from competitors"
-    )
-    # Map back for backwards compatibility
-    if reference_source == "Uploaded Templates":
-        st.session_state.reference_source = "Use Existing Template"
-    else:
-        st.session_state.reference_source = reference_source
-
+    # Initialize reference_ad variables
     reference_ad_base64 = None
     reference_filename = None
-
-    # Track selected scraped template ID for usage tracking
     selected_scraped_template_id = None
 
-    if reference_source == "Upload New":
-        uploaded_file = st.file_uploader(
-            "Upload reference ad image",
-            type=['jpg', 'jpeg', 'png', 'webp'],
-            help="Upload a high-performing ad to use as a style reference"
-        )
+    # ============================================================================
+    # Reference Ad handling - different for belief_plan vs other modes
+    # ============================================================================
+    if content_source == "belief_plan":
+        # Load template from the belief plan
+        st.subheader("4. Reference Template (from Plan)")
 
-        if uploaded_file:
-            # Preview
-            st.image(uploaded_file, caption="Reference Ad Preview", width=300)
+        plan_data = st.session_state.get("belief_plan_data")
+        primary_template = plan_data.get("primary_template") if plan_data else None
 
-            # Encode to base64
-            reference_ad_base64 = base64.b64encode(uploaded_file.read()).decode('utf-8')
-            reference_filename = uploaded_file.name
-            uploaded_file.seek(0)  # Reset for potential re-read
+        if primary_template:
+            storage_path = primary_template.get("storage_path")
+            if storage_path:
+                # Get signed URL and show preview
+                template_url = get_signed_url(storage_path)
+                if template_url:
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.image(template_url, caption=f"Template: {primary_template.get('name', 'Unknown')}", width=200)
+                    with col2:
+                        st.success(f"✅ Using template: **{primary_template.get('name', 'Unknown')}**")
+                        if primary_template.get("anchor_text"):
+                            st.caption(f"📝 Anchor text: \"{primary_template.get('anchor_text')}\"")
 
-    elif reference_source == "Uploaded Templates":
-        templates = get_existing_templates()
-        if templates:
-            total_templates = len(templates)
-            visible_count = min(st.session_state.templates_visible, total_templates)
-            visible_templates = templates[:visible_count]
-
-            st.caption(f"Showing {visible_count} of {total_templates} templates")
-
-            # Thumbnail grid - 5 columns
-            cols = st.columns(5)
-            for idx, template in enumerate(visible_templates):
-                with cols[idx % 5]:
-                    storage_name = template['storage_name']
-                    display_name = template['name']
-                    is_selected = st.session_state.selected_template_storage == storage_name
-
-                    # Get signed URL for thumbnail
-                    thumb_url = get_signed_url(f"reference-ads/{storage_name}")
-
-                    # Show thumbnail with selection border
-                    if thumb_url:
-                        border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
-                        st.markdown(
-                            f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
-                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{display_name}"/>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(
-                            f'<div style="height:80px;background:#333;border-radius:4px;'
-                            f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
-                            f'{display_name[:10]}...</div>',
-                            unsafe_allow_html=True
-                        )
-
-                    # Select button
-                    if st.button(
-                        "✓ Selected" if is_selected else "Select",
-                        key=f"tpl_{idx}",
-                        type="primary" if is_selected else "secondary",
-                        use_container_width=True
-                    ):
-                        st.session_state.selected_template = display_name
-                        st.session_state.selected_template_storage = storage_name
-                        st.rerun()
-
-            # Load more button
-            if visible_count < total_templates:
-                remaining = total_templates - visible_count
-                if st.button(f"Load More ({remaining} more)", use_container_width=True):
-                    st.session_state.templates_visible += 30
-                    st.rerun()
-
-            # Show selected template preview
-            if st.session_state.selected_template_storage:
-                st.markdown("---")
-                st.markdown(f"**Selected:** {st.session_state.selected_template}")
-
-                try:
-                    db = get_supabase_client()
-                    template_data = db.storage.from_("reference-ads").download(
-                        st.session_state.selected_template_storage
-                    )
-                    reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                    reference_filename = st.session_state.selected_template
-
-                    # Larger preview
-                    st.image(template_data, caption="Selected Template", width=300)
-                except Exception as e:
-                    st.error(f"Failed to load template: {e}")
+                    # Load image as base64 for the workflow
+                    try:
+                        import requests
+                        response = requests.get(template_url)
+                        if response.status_code == 200:
+                            reference_ad_base64 = base64.b64encode(response.content).decode('utf-8')
+                            reference_filename = primary_template.get('name', 'template') + ".png"
+                    except Exception as e:
+                        logger.error(f"Failed to load template image: {e}")
+                        st.error("Failed to load template image")
+                else:
+                    st.error("Could not load template image URL")
+            else:
+                st.warning("Template has no storage path")
         else:
-            st.warning("No uploaded templates found. Upload a reference ad first, or use Scraped Template Library.")
+            st.warning("⚠️ No template found in this plan. Go to Ad Planning to select a template.")
 
-    elif reference_source == "Scraped Template Library":
-        # Category filter
-        categories = get_template_categories()
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            selected_category = st.selectbox(
-                "Category",
-                options=categories,
-                index=categories.index(st.session_state.scraped_template_category) if st.session_state.scraped_template_category in categories else 0,
-                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All Categories",
-                key="scraped_category_filter"
+        st.divider()
+
+    # ============================================================================
+    # Standard reference ad selection - ONLY for hooks/recreate modes
+    # ============================================================================
+    if content_source != "belief_plan":
+        reference_options = ["Upload New", "Uploaded Templates", "Scraped Template Library"]
+        current_index = 0
+        if st.session_state.reference_source == "Use Existing Template":
+            current_index = 1
+        elif st.session_state.reference_source == "Scraped Template Library":
+            current_index = 2
+
+        reference_source = st.radio(
+            "Reference ad source",
+            options=reference_options,
+            index=current_index,
+            horizontal=True,
+            key="reference_source_radio",
+            help="Upload a new image, use previously uploaded templates, or browse scraped templates from competitors"
+        )
+        # Map back for backwards compatibility
+        if reference_source == "Uploaded Templates":
+            st.session_state.reference_source = "Use Existing Template"
+        else:
+            st.session_state.reference_source = reference_source
+
+        if reference_source == "Upload New":
+            uploaded_file = st.file_uploader(
+                "Upload reference ad image",
+                type=['jpg', 'jpeg', 'png', 'webp'],
+                help="Upload a high-performing ad to use as a style reference"
             )
-            st.session_state.scraped_template_category = selected_category
 
-        # Get scraped templates
-        scraped_templates = get_scraped_templates(
-            category=selected_category if selected_category != "all" else None,
-            limit=50
-        )
+            if uploaded_file:
+                # Preview
+                st.image(uploaded_file, caption="Reference Ad Preview", width=300)
 
-        if scraped_templates:
-            st.caption(f"Showing {len(scraped_templates)} templates" +
-                      (f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""))
+                # Encode to base64
+                reference_ad_base64 = base64.b64encode(uploaded_file.read()).decode('utf-8')
+                reference_filename = uploaded_file.name
+                uploaded_file.seek(0)  # Reset for potential re-read
 
-            # Thumbnail grid - 5 columns
-            cols = st.columns(5)
-            for idx, template in enumerate(scraped_templates):
-                with cols[idx % 5]:
-                    template_id = template.get('id', '')
-                    template_name = template.get('name', 'Unnamed')
-                    storage_path = template.get('storage_path', '')
-                    category = template.get('category', 'other')
-                    times_used = template.get('times_used', 0) or 0
+        elif reference_source == "Uploaded Templates":
+            templates = get_existing_templates()
+            if templates:
+                total_templates = len(templates)
+                visible_count = min(st.session_state.templates_visible, total_templates)
+                visible_templates = templates[:visible_count]
 
-                    is_selected = st.session_state.selected_scraped_template == template_id
+                st.caption(f"Showing {visible_count} of {total_templates} templates")
 
-                    # Get preview URL
-                    thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+                # Thumbnail grid - 5 columns
+                cols = st.columns(5)
+                for idx, template in enumerate(visible_templates):
+                    with cols[idx % 5]:
+                        storage_name = template['storage_name']
+                        display_name = template['name']
+                        is_selected = st.session_state.selected_template_storage == storage_name
 
-                    # Show thumbnail with selection border
-                    if thumb_url:
-                        border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
-                        st.markdown(
-                            f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
-                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{template_name}"/>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(
-                            f'<div style="height:80px;background:#333;border-radius:4px;'
-                            f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
-                            f'{template_name[:10]}...</div>',
-                            unsafe_allow_html=True
-                        )
+                        # Get signed URL for thumbnail
+                        thumb_url = get_signed_url(f"reference-ads/{storage_name}")
 
-                    # Show template info
-                    st.caption(f"📁 {category.replace('_', ' ').title()}")
-                    if times_used > 0:
-                        st.caption(f"Used {times_used}x")
+                        # Show thumbnail with selection border
+                        if thumb_url:
+                            border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
+                            st.markdown(
+                                f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                                f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{display_name}"/>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                f'<div style="height:80px;background:#333;border-radius:4px;'
+                                f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
+                                f'{display_name[:10]}...</div>',
+                                unsafe_allow_html=True
+                            )
 
-                    # Select button
-                    if st.button(
-                        "✓ Selected" if is_selected else "Select",
-                        key=f"scraped_tpl_{idx}",
-                        type="primary" if is_selected else "secondary",
-                        use_container_width=True
-                    ):
-                        st.session_state.selected_scraped_template = template_id
+                        # Select button
+                        if st.button(
+                            "✓ Selected" if is_selected else "Select",
+                            key=f"tpl_{idx}",
+                            type="primary" if is_selected else "secondary",
+                            use_container_width=True
+                        ):
+                            st.session_state.selected_template = display_name
+                            st.session_state.selected_template_storage = storage_name
+                            st.rerun()
+
+                # Load more button
+                if visible_count < total_templates:
+                    remaining = total_templates - visible_count
+                    if st.button(f"Load More ({remaining} more)", use_container_width=True):
+                        st.session_state.templates_visible += 30
                         st.rerun()
 
-            # Show selected template preview and load its data
-            if st.session_state.selected_scraped_template:
-                # Find selected template in list
-                selected_tpl = next(
-                    (t for t in scraped_templates if t.get('id') == st.session_state.selected_scraped_template),
-                    None
-                )
-                if selected_tpl:
+                # Show selected template preview
+                if st.session_state.selected_template_storage:
                     st.markdown("---")
-                    st.markdown(f"**Selected:** {selected_tpl.get('name', 'Unnamed')}")
+                    st.markdown(f"**Selected:** {st.session_state.selected_template}")
 
-                    storage_path = selected_tpl.get('storage_path', '')
-                    if storage_path:
-                        try:
-                            # Download the template image
-                            db = get_supabase_client()
-                            parts = storage_path.split("/", 1)
-                            if len(parts) == 2:
-                                bucket, path = parts
-                                template_data = db.storage.from_(bucket).download(path)
-                                reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                                reference_filename = selected_tpl.get('name', 'template.jpg')
-                                selected_scraped_template_id = st.session_state.selected_scraped_template
+                    try:
+                        db = get_supabase_client()
+                        template_data = db.storage.from_("reference-ads").download(
+                            st.session_state.selected_template_storage
+                        )
+                        reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
+                        reference_filename = st.session_state.selected_template
 
-                                # Larger preview
-                                st.image(template_data, caption="Selected Template", width=300)
-                        except Exception as e:
-                            st.error(f"Failed to load template: {e}")
-        else:
-            st.info("No scraped templates found. Use the Template Queue to approve templates from competitor ads.")
-            if st.button("Go to Template Queue →"):
-                st.switch_page("pages/16_📋_Template_Queue.py")
+                        # Larger preview
+                        st.image(template_data, caption="Selected Template", width=300)
+                    except Exception as e:
+                        st.error(f"Failed to load template: {e}")
+            else:
+                st.warning("No uploaded templates found. Upload a reference ad first, or use Scraped Template Library.")
 
-    st.divider()
+        elif reference_source == "Scraped Template Library":
+            # Category filter
+            categories = get_template_categories()
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                selected_category = st.selectbox(
+                    "Category",
+                    options=categories,
+                    index=categories.index(st.session_state.scraped_template_category) if st.session_state.scraped_template_category in categories else 0,
+                    format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All Categories",
+                    key="scraped_category_filter"
+                )
+                st.session_state.scraped_template_category = selected_category
+
+            # Get scraped templates
+            scraped_templates = get_scraped_templates(
+                category=selected_category if selected_category != "all" else None,
+                limit=50
+            )
+
+            if scraped_templates:
+                st.caption(f"Showing {len(scraped_templates)} templates" +
+                          (f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""))
+
+                # Thumbnail grid - 5 columns
+                cols = st.columns(5)
+                for idx, template in enumerate(scraped_templates):
+                    with cols[idx % 5]:
+                        template_id = template.get('id', '')
+                        template_name = template.get('name', 'Unnamed')
+                        storage_path = template.get('storage_path', '')
+                        category = template.get('category', 'other')
+                        times_used = template.get('times_used', 0) or 0
+
+                        is_selected = st.session_state.selected_scraped_template == template_id
+
+                        # Get preview URL
+                        thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+
+                        # Show thumbnail with selection border
+                        if thumb_url:
+                            border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
+                            st.markdown(
+                                f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                                f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{template_name}"/>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                f'<div style="height:80px;background:#333;border-radius:4px;'
+                                f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
+                                f'{template_name[:10]}...</div>',
+                                unsafe_allow_html=True
+                            )
+
+                        # Show template info
+                        st.caption(f"📁 {category.replace('_', ' ').title()}")
+                        if times_used > 0:
+                            st.caption(f"Used {times_used}x")
+
+                        # Select button
+                        if st.button(
+                            "✓ Selected" if is_selected else "Select",
+                            key=f"scraped_tpl_{idx}",
+                            type="primary" if is_selected else "secondary",
+                            use_container_width=True
+                        ):
+                            st.session_state.selected_scraped_template = template_id
+                            st.rerun()
+
+                # Show selected template preview and load its data
+                if st.session_state.selected_scraped_template:
+                    # Find selected template in list
+                    selected_tpl = next(
+                        (t for t in scraped_templates if t.get('id') == st.session_state.selected_scraped_template),
+                        None
+                    )
+                    if selected_tpl:
+                        st.markdown("---")
+                        st.markdown(f"**Selected:** {selected_tpl.get('name', 'Unnamed')}")
+
+                        storage_path = selected_tpl.get('storage_path', '')
+                        if storage_path:
+                            try:
+                                # Download the template image
+                                db = get_supabase_client()
+                                parts = storage_path.split("/", 1)
+                                if len(parts) == 2:
+                                    bucket, path = parts
+                                    template_data = db.storage.from_(bucket).download(path)
+                                    reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
+                                    reference_filename = selected_tpl.get('name', 'template.jpg')
+                                    selected_scraped_template_id = st.session_state.selected_scraped_template
+
+                                    # Larger preview
+                                    st.image(template_data, caption="Selected Template", width=300)
+                            except Exception as e:
+                                st.error(f"Failed to load template: {e}")
+            else:
+                st.info("No scraped templates found. Use the Template Queue to approve templates from competitor ads.")
+                if st.button("Go to Template Queue →"):
+                    st.switch_page("pages/16_📋_Template_Queue.py")
+
+        st.divider()
 
     # ============================================================================
     # Section 4: Export Destination (outside form for conditional fields)
@@ -1285,45 +1506,7 @@ else:
     # ============================================================================
 
     with st.form("ad_creation_form"):
-        st.subheader("5. Content Source")
-
-        # Determine current index for radio
-        content_options = ["hooks", "recreate_template", "belief_plan"]
-        current_content_source = st.session_state.content_source
-        content_index = content_options.index(current_content_source) if current_content_source in content_options else 0
-
-        content_source = st.radio(
-            "How should we create the ad variations?",
-            options=content_options,
-            index=content_index,
-            format_func=lambda x: {
-                "hooks": "🎣 Hooks List - Use persuasive hooks from your database",
-                "recreate_template": "🔄 Recreate Template - Keep template's angle, vary by product benefits",
-                "belief_plan": "🎯 Belief Plan - Use pre-planned angles with validated copy"
-            }.get(x, x),
-            horizontal=False,
-            help="Choose how to generate the messaging for each ad variation",
-            disabled=st.session_state.workflow_running
-        )
-        st.session_state.content_source = content_source
-
-        # Show explanation based on selection
-        if content_source == "hooks":
-            st.info("💡 Each variation will use a different persuasive hook from your hooks database, combined with the template's visual style.")
-        elif content_source == "recreate_template":
-            st.info("💡 The template's existing angle/message will be analyzed and recreated using your product's different benefits and USPs.")
-        else:  # belief_plan
-            st.info("💡 Use angles and copy from a belief plan you created in Ad Planning. Copy is pre-validated with guardrails for Phase 1-2 testing.")
-
-            # Show belief plan selector if product is selected
-            if st.session_state.selected_product:
-                _render_belief_plan_selector()
-            else:
-                st.warning("⚠️ Select a product first to see available belief plans.")
-
-        st.divider()
-
-        st.subheader("6. Number of Variations")
+        st.subheader("5. Number of Variations")
 
         num_variations = st.slider(
             "How many ad variations to generate?",
@@ -1344,7 +1527,7 @@ else:
 
         st.divider()
 
-        st.subheader("7. Color Scheme")
+        st.subheader("6. Color Scheme")
 
         # Check if selected product has brand colors
         brand_colors_available = False
