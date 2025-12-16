@@ -456,12 +456,28 @@ def render_step_5_jtbd():
         else:
             st.info("No JTBDs created yet. Create one or use AI suggestions.")
 
-        # Show extracted JTBDs from persona
+        # Show extracted JTBDs from persona with "Use" buttons
         if st.session_state.extracted_jtbds:
             st.subheader("JTBDs from Persona Data")
-            for i, jtbd in enumerate(st.session_state.extracted_jtbds[:5]):
+            st.caption("Click 'Use' to create and select a JTBD from your persona")
+            for i, jtbd in enumerate(st.session_state.extracted_jtbds[:10]):
                 jtbd_text = jtbd if isinstance(jtbd, str) else str(jtbd)
-                st.write(f"• {jtbd_text}")
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.write(f"• {jtbd_text}")
+                with col2:
+                    if st.button("Use", key=f"use_extracted_jtbd_{i}"):
+                        # Create JTBD from extracted text
+                        new_jtbd = service.create_jtbd_framed(
+                            persona_id=persona_id,
+                            product_id=product_id,
+                            name=jtbd_text[:100],  # Truncate for name
+                            progress_statement=jtbd_text,
+                            source="extracted_from_persona"
+                        )
+                        st.session_state.selected_jtbd_id = str(new_jtbd.id)
+                        st.success(f"Created and selected JTBD!")
+                        st.rerun()
 
     with tab2:
         st.subheader("Create New JTBD")
@@ -507,10 +523,20 @@ def render_step_5_jtbd():
             with st.container():
                 st.markdown(f"**{sug.get('name', 'Suggestion')}**")
                 st.write(f"*{sug.get('progress_statement', '')}*")
+                if sug.get('description'):
+                    st.caption(sug.get('description'))
                 if st.button(f"Use This JTBD", key=f"use_jtbd_{i}"):
-                    st.session_state.new_jtbd_name = sug.get('name', '')
-                    st.session_state.new_jtbd_progress = sug.get('progress_statement', '')
-                    st.session_state.new_jtbd_description = sug.get('description', '')
+                    # Create JTBD directly and select it
+                    new_jtbd = service.create_jtbd_framed(
+                        persona_id=persona_id,
+                        product_id=product_id,
+                        name=sug.get('name', 'AI Suggested JTBD'),
+                        progress_statement=sug.get('progress_statement', ''),
+                        description=sug.get('description', ''),
+                        source="ai_generated"
+                    )
+                    st.session_state.selected_jtbd_id = str(new_jtbd.id)
+                    st.success(f"Created and selected: {new_jtbd.name}")
                     st.rerun()
                 st.divider()
 
