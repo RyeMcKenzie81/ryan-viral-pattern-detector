@@ -1303,7 +1303,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             jtbd_data = None
             if plan.get("jtbd_framed_id"):
                 jtbd_result = self.supabase.table("belief_jtbd_framed").select(
-                    "id, job_statement, situation_context"
+                    "id, name, description, progress_statement"
                 ).eq("id", plan["jtbd_framed_id"]).execute()
                 if jtbd_result.data:
                     jtbd_data = jtbd_result.data[0]
