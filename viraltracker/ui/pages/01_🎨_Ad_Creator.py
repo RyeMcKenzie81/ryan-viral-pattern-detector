@@ -311,7 +311,7 @@ def get_belief_plans_for_product(product_id: str):
         for row in result.data or []:
             # Get angle count
             angle_result = db.table("belief_plan_angles").select(
-                "id", count="exact"
+                "angle_id", count="exact"
             ).eq("plan_id", row["id"]).execute()
 
             plans.append({
@@ -338,7 +338,7 @@ def get_all_belief_plans_with_products():
         for row in result.data or []:
             # Get angle count
             angle_result = db.table("belief_plan_angles").select(
-                "id", count="exact"
+                "angle_id", count="exact"
             ).eq("plan_id", row["id"]).execute()
 
             # Check if angles have copy
