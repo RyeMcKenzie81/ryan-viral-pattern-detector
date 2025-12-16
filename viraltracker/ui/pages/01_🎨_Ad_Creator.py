@@ -379,34 +379,37 @@ def get_belief_plan_details(plan_id: str):
         plan = plan_result.data[0]
 
         # Get templates for this plan (from belief_plan_templates)
+        # Table only has: plan_id, template_id, display_order
         templates_result = db.table("belief_plan_templates").select(
-            "template_id, template_source, is_primary"
-        ).eq("plan_id", plan_id).order("is_primary", desc=True).execute()
+            "template_id, display_order"
+        ).eq("plan_id", plan_id).order("display_order").execute()
 
         templates = []
         primary_template = None
-        for tmpl in templates_result.data or []:
-            template_source = tmpl.get("template_source", "ad_brief_templates")
+        for idx, tmpl in enumerate(templates_result.data or []):
             template_id = tmpl["template_id"]
 
-            # Get template details based on source
-            if template_source == "scraped_templates":
+            # Try ad_brief_templates first, then scraped_templates
+            tmpl_result = db.table("ad_brief_templates").select(
+                "id, name, storage_path, anchor_text"
+            ).eq("id", template_id).execute()
+
+            template_source = "ad_brief_templates"
+            if not tmpl_result.data:
+                # Try scraped_templates
                 tmpl_result = db.table("scraped_templates").select(
                     "id, name, storage_path, anchor_text"
                 ).eq("id", template_id).execute()
-            else:
-                tmpl_result = db.table("ad_brief_templates").select(
-                    "id, name, storage_path, anchor_text"
-                ).eq("id", template_id).execute()
+                template_source = "scraped_templates"
 
             if tmpl_result.data:
                 template_data = {
                     **tmpl_result.data[0],
                     "source": template_source,
-                    "is_primary": tmpl.get("is_primary", False)
+                    "is_primary": idx == 0  # First template is primary
                 }
                 templates.append(template_data)
-                if tmpl.get("is_primary", False):
+                if idx == 0:
                     primary_template = template_data
 
         # Get angles
