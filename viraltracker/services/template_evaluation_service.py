@@ -188,18 +188,62 @@ class TemplateEvaluationService:
         """Fetch template data from appropriate table."""
         try:
             if template_source == "scraped_templates":
+                # Get template with joined asset info
                 result = self.supabase.table("scraped_templates").select(
                     "id, name, description, category, layout_analysis, awareness_level, industry_niche, "
-                    "asset_public_url, asset_original_url, asset_type"
+                    "storage_path, thumbnail_path, source_asset_id"
                 ).eq("id", str(template_id)).execute()
+
+                if result.data:
+                    template = result.data[0]
+                    # Convert storage_path to public URL
+                    storage_path = template.get("storage_path")
+                    if storage_path:
+                        template["image_url"] = self._storage_path_to_url(storage_path)
+
+                    # Get asset_type from linked asset if available
+                    source_asset_id = template.get("source_asset_id")
+                    if source_asset_id:
+                        asset_result = self.supabase.table("scraped_ad_assets").select(
+                            "asset_type, original_url"
+                        ).eq("id", str(source_asset_id)).execute()
+                        if asset_result.data:
+                            template["asset_type"] = asset_result.data[0].get("asset_type", "image")
+                            # Use original_url as fallback if storage URL fails
+                            if not template.get("image_url"):
+                                template["image_url"] = asset_result.data[0].get("original_url")
+                    else:
+                        # Assume image if no linked asset
+                        template["asset_type"] = "image"
+
+                    return template
+                return None
             else:
                 result = self.supabase.table("ad_brief_templates").select(
                     "id, name, instructions"
                 ).eq("id", str(template_id)).execute()
 
-            return result.data[0] if result.data else None
+                return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Failed to fetch template {template_id}: {e}")
+            return None
+
+    def _storage_path_to_url(self, storage_path: str) -> Optional[str]:
+        """Convert a Supabase storage path to a public URL."""
+        try:
+            if not storage_path:
+                return None
+
+            # Storage path format: "bucket/path/to/file"
+            parts = storage_path.split("/", 1)
+            if len(parts) != 2:
+                logger.warning(f"Invalid storage path format: {storage_path}")
+                return None
+
+            bucket, path = parts
+            return self.supabase.storage.from_(bucket).get_public_url(path)
+        except Exception as e:
+            logger.error(f"Failed to convert storage path to URL: {e}")
             return None
 
     def _evaluate_with_ai(self, template: Dict[str, Any], template_source: str) -> Optional[Dict[str, Any]]:
@@ -235,8 +279,8 @@ class TemplateEvaluationService:
 
         try:
             # Check if we have an image to include (scraped templates)
-            image_url = template.get("asset_public_url") or template.get("asset_original_url")
-            asset_type = template.get("asset_type", "")
+            image_url = template.get("image_url")
+            asset_type = template.get("asset_type", "image")
 
             if image_url and asset_type == "image":
                 # Use Gemini vision: fetch image and analyze
