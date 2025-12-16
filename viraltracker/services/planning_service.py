@@ -669,16 +669,32 @@ class PlanningService:
                 if row.get("belief_angles")
             ]
 
-            # Get templates
+            # Get templates (handle both sources)
             templates_result = self.supabase.table("belief_plan_templates").select(
-                "template_id, display_order, ad_brief_templates(*)"
+                "template_id, display_order, template_source"
             ).eq("plan_id", str(plan_id)).order("display_order").execute()
 
-            plan.templates = [
-                row["ad_brief_templates"]
-                for row in templates_result.data or []
-                if row.get("ad_brief_templates")
-            ]
+            plan.templates = []
+            for row in templates_result.data or []:
+                template_id = row.get("template_id")
+                template_source = row.get("template_source", "ad_brief_templates")
+
+                if template_source == "scraped_templates":
+                    t_result = self.supabase.table("scraped_templates").select(
+                        "id, name, template_text"
+                    ).eq("id", template_id).execute()
+                    if t_result.data:
+                        template = t_result.data[0]
+                        template["source"] = "scraped"
+                        plan.templates.append(template)
+                else:
+                    t_result = self.supabase.table("ad_brief_templates").select(
+                        "id, name, instructions"
+                    ).eq("id", template_id).execute()
+                    if t_result.data:
+                        template = t_result.data[0]
+                        template["source"] = "manual"
+                        plan.templates.append(template)
 
             return plan
         except Exception as e:
@@ -784,7 +800,8 @@ class PlanningService:
             templates=[
                 {
                     "template_id": t.get("id"),
-                    "name": t.get("name")
+                    "name": t.get("name"),
+                    "source": t.get("source", "manual")
                 }
                 for t in plan.templates
             ],

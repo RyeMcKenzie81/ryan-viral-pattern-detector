@@ -919,8 +919,14 @@ def render_step_8_review():
                     ads_per_angle=st.session_state.ads_per_angle
                 )
 
-                st.success(f"Plan saved successfully!")
-                st.info(f"Plan ID: `{plan.id}`")
+                # Compile the plan for ad creator
+                try:
+                    compiled = service.compile_plan(plan.id)
+                    st.success(f"Plan saved and compiled successfully!")
+                    st.info(f"Plan ID: `{plan.id}` | Status: {compiled.status}")
+                except Exception as compile_error:
+                    st.warning(f"Plan saved but compilation failed: {compile_error}")
+                    st.info(f"Plan ID: `{plan.id}`")
 
                 # Show plan summary
                 total_ads = len(st.session_state.angles) * st.session_state.ads_per_angle
