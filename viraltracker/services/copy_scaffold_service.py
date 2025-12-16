@@ -586,15 +586,20 @@ class CopyScaffoldService:
                 "primary_texts": self.generate_copy_variants(primary_text_scaffolds, context)
             }
 
-        # Build scaffold examples for the prompt
+        # Count scaffolds to determine how many variants to generate
+        num_headlines = len(headline_scaffolds) if headline_scaffolds else 4
+        num_primary_texts = len(primary_text_scaffolds) if primary_text_scaffolds else 2
+
+        # Build scaffold examples for the prompt (include all selected scaffolds)
         headline_examples = "\n".join([
             f"- {s.name}: \"{s.template_text}\""
-            for s in headline_scaffolds[:4]
-        ])
+            for s in headline_scaffolds
+        ]) if headline_scaffolds else "- Use observational, curiosity-driven headlines"
+
         primary_examples = "\n".join([
             f"- {s.name}: \"{s.template_text}\""
-            for s in primary_text_scaffolds[:2]
-        ])
+            for s in primary_text_scaffolds
+        ]) if primary_text_scaffolds else "- Use empathy-led, problem-aware primary text"
 
         # Build the generation prompt
         prompt = f"""Generate ad copy for a belief-first advertising campaign.
@@ -620,7 +625,7 @@ STRICT REQUIREMENTS:
 3. Primary text should be 2-3 sentences max
 4. Phase {phase_id} rules: NO discounts, NO medical claims, NO guarantees, NO urgency
 
-Generate 4 headline variants and 4 primary text variants.
+Generate exactly {num_headlines} headline variants and exactly {num_primary_texts} primary text variants.
 
 OUTPUT FORMAT (JSON):
 {{
