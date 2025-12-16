@@ -73,6 +73,43 @@ class PlanningService:
         logger.info("PlanningService initialized")
 
     # ============================================
+    # STORAGE HELPERS
+    # ============================================
+
+    def _get_storage_public_url(self, storage_path: str) -> Optional[str]:
+        """
+        Get public URL for a storage path.
+
+        Args:
+            storage_path: Path in format "bucket/path/to/file" or just "path/to/file"
+
+        Returns:
+            Public URL or None if failed
+        """
+        try:
+            # Default bucket for scraped assets
+            default_bucket = "scraped-assets"
+
+            # Check if path includes bucket
+            if "/" in storage_path:
+                parts = storage_path.split("/", 1)
+                # If first part looks like a bucket name (no extension), use it
+                if "." not in parts[0]:
+                    bucket = parts[0]
+                    path = parts[1]
+                else:
+                    bucket = default_bucket
+                    path = storage_path
+            else:
+                bucket = default_bucket
+                path = storage_path
+
+            return self.supabase.storage.from_(bucket).get_public_url(path)
+        except Exception as e:
+            logger.warning(f"Failed to get public URL for {storage_path}: {e}")
+            return None
+
+    # ============================================
     # BRAND & PRODUCT HELPERS
     # ============================================
 
@@ -505,9 +542,13 @@ class PlanningService:
                 # Extract asset info for display
                 asset = t.get("scraped_ad_assets", {})
                 if asset:
-                    t["asset_storage_path"] = asset.get("storage_path")
+                    storage_path = asset.get("storage_path")
+                    t["asset_storage_path"] = storage_path
                     t["asset_original_url"] = asset.get("original_url")
                     t["asset_type"] = asset.get("asset_type")
+                    # Get public URL for the asset
+                    if storage_path:
+                        t["asset_public_url"] = self._get_storage_public_url(storage_path)
                 templates.append(t)
 
             return templates
