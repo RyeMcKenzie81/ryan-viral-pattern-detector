@@ -415,8 +415,8 @@ def get_belief_plan_details(plan_id: str):
 
         # Get angles
         angles_result = db.table("belief_plan_angles").select(
-            "angle_id, sort_order"
-        ).eq("plan_id", plan_id).order("sort_order").execute()
+            "angle_id, display_order"
+        ).eq("plan_id", plan_id).order("display_order").execute()
 
         angles = []
         for plan_angle in angles_result.data or []:
