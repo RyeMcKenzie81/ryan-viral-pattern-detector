@@ -371,7 +371,11 @@ class TemplateEvaluationService:
             phase_tags = {
                 "eligible_phases": [1, 2] if eligible else [],
                 "total_score": total_score,
+                "d1_belief_clarity": evaluation.d1_belief_clarity,
                 "d2_neutrality": evaluation.d2_neutrality,
+                "d3_reusability": evaluation.d3_reusability,
+                "d4_problem_aware_entry": evaluation.d4_problem_aware_entry,
+                "d5_slot_availability": evaluation.d5_slot_availability,
                 "d6_compliance_pass": evaluation.d6_compliance_pass
             }
 
