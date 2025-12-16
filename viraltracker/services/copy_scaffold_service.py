@@ -379,32 +379,38 @@ class CopyScaffoldService:
                 logger.info(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')[:50]}...'")
 
             # Get product data
+            # products columns: name, description, target_audience, key_problems_solved, key_benefits, features
             if product_id:
                 product_result = self.supabase.table("products").select(
-                    "name, benefits, symptoms, target_audience"
+                    "name, description, target_audience, key_problems_solved, key_benefits"
                 ).eq("id", str(product_id)).execute()
 
                 if product_result.data:
                     product = product_result.data[0]
                     context["PRODUCT_NAME"] = product.get("name", "")
 
-                    benefits = product.get("benefits", [])
-                    if benefits and len(benefits) > 0:
-                        context["BENEFIT_1"] = benefits[0] if isinstance(benefits[0], str) else benefits[0].get("text", "")
+                    # key_benefits is JSONB array
+                    key_benefits = product.get("key_benefits", []) or []
+                    if key_benefits and len(key_benefits) > 0:
+                        first_benefit = key_benefits[0]
+                        context["BENEFIT_1"] = first_benefit if isinstance(first_benefit, str) else first_benefit.get("text", str(first_benefit))
                     else:
-                        # Fallback: use target audience or product name
                         context["BENEFIT_1"] = "better daily comfort"
-                        logger.warning(f"Product {product_id} has no benefits, using default")
+                        logger.warning(f"Product {product_id} has no key_benefits, using default")
 
-                    symptoms = product.get("symptoms", [])
-                    if symptoms:
-                        if len(symptoms) > 0:
-                            context["SYMPTOM_1"] = symptoms[0] if isinstance(symptoms[0], str) else symptoms[0].get("text", "")
-                        if len(symptoms) > 1:
-                            context["SYMPTOM_2"] = symptoms[1] if isinstance(symptoms[1], str) else symptoms[1].get("text", "")
+                    # key_problems_solved is JSONB array - use as symptoms
+                    problems = product.get("key_problems_solved", []) or []
+                    if problems and len(problems) > 0:
+                        first_problem = problems[0]
+                        context["SYMPTOM_1"] = first_problem if isinstance(first_problem, str) else first_problem.get("text", str(first_problem))
+                        if len(problems) > 1:
+                            second_problem = problems[1]
+                            context["SYMPTOM_2"] = second_problem if isinstance(second_problem, str) else second_problem.get("text", str(second_problem))
+                        else:
+                            context["SYMPTOM_2"] = context["SYMPTOM_1"]  # Duplicate if only one
                     else:
-                        # Fallback: derive from target audience or use generic
-                        target = product.get("target_audience", "")
+                        # Fallback: derive from target audience
+                        target = product.get("target_audience", "") or ""
                         if "joint" in target.lower() or "mobil" in target.lower():
                             context["SYMPTOM_1"] = "stiff joints"
                             context["SYMPTOM_2"] = "slower movement"
@@ -414,34 +420,48 @@ class CopyScaffoldService:
                         else:
                             context["SYMPTOM_1"] = "early signs of change"
                             context["SYMPTOM_2"] = "subtle shifts"
-                        logger.warning(f"Product {product_id} has no symptoms, using defaults based on target audience")
+                        logger.warning(f"Product {product_id} has no key_problems_solved, using defaults")
 
-                    logger.debug(f"Product tokens: PRODUCT_NAME='{context.get('PRODUCT_NAME', '')}', SYMPTOM_1='{context.get('SYMPTOM_1', '')}'")
+                    logger.info(f"Product tokens: PRODUCT_NAME='{context.get('PRODUCT_NAME', '')}', SYMPTOM_1='{context.get('SYMPTOM_1', '')}', BENEFIT_1='{context.get('BENEFIT_1', '')}'")
 
             # Get persona data
+            # personas_4d columns: name, pain_points (JSONB {emotional:[], social:[], functional:[]}), desires, snapshot
             if persona_id:
                 persona_result = self.supabase.table("personas_4d").select(
-                    "persona_label, persona_name, core_frustration, pain_points"
+                    "name, pain_points, snapshot"
                 ).eq("id", str(persona_id)).execute()
 
                 if persona_result.data:
                     persona = persona_result.data[0]
-                    context["PERSONA_LABEL"] = persona.get("persona_label") or persona.get("persona_name", "")
+                    # Use name as persona label
+                    context["PERSONA_LABEL"] = persona.get("name", "")
 
-                    # Common belief from core frustration
-                    core_frustration = persona.get("core_frustration", "")
-                    if core_frustration:
-                        context["COMMON_BELIEF"] = core_frustration
+                    # Extract common belief from pain_points JSONB
+                    # Structure: {emotional: [], social: [], functional: []}
+                    pain_points = persona.get("pain_points", {}) or {}
+                    common_belief = None
+
+                    # Try emotional first, then functional, then social
+                    for category in ["emotional", "functional", "social"]:
+                        points = pain_points.get(category, []) or []
+                        if points and len(points) > 0:
+                            first_point = points[0]
+                            common_belief = first_point if isinstance(first_point, str) else str(first_point)
+                            break
+
+                    if common_belief:
+                        context["COMMON_BELIEF"] = common_belief
                     else:
-                        # Fallback: extract from pain points
-                        pain_points = persona.get("pain_points", [])
-                        if pain_points and len(pain_points) > 0:
-                            context["COMMON_BELIEF"] = pain_points[0] if isinstance(pain_points[0], str) else "just getting older"
+                        # Fallback to snapshot or generic
+                        snapshot = persona.get("snapshot", "")
+                        if snapshot:
+                            # Take first sentence as belief
+                            context["COMMON_BELIEF"] = snapshot.split(".")[0][:50] if "." in snapshot else snapshot[:50]
                         else:
                             context["COMMON_BELIEF"] = "just getting older"
-                        logger.warning(f"Persona {persona_id} has no core_frustration, using fallback")
+                        logger.warning(f"Persona {persona_id} has no pain_points, using fallback")
 
-                    logger.debug(f"Persona tokens: PERSONA_LABEL='{context.get('PERSONA_LABEL', '')}', COMMON_BELIEF='{context.get('COMMON_BELIEF', '')[:30]}...'")
+                    logger.info(f"Persona tokens: PERSONA_LABEL='{context.get('PERSONA_LABEL', '')}', COMMON_BELIEF='{context.get('COMMON_BELIEF', '')[:30]}...'")
 
             # Get JTBD data
             if jtbd_id:
