@@ -71,8 +71,8 @@ def init_session_state():
         "jtbd_suggestions": [],
         "extracted_jtbds": [],
 
-        # Step 6: Angles
-        "angles": [],  # List of {name, belief_statement, explanation}
+        # Step 6: Angles (stored as IDs, loaded from DB)
+        "selected_angle_ids": [],  # List of angle UUIDs (persisted in DB)
         "new_angle_name": "",
         "new_angle_belief": "",
         "new_angle_explanation": "",
@@ -153,7 +153,7 @@ def can_proceed_to_step(step: int) -> bool:
     elif step == 6:
         return st.session_state.selected_jtbd_id is not None
     elif step == 7:
-        return len(st.session_state.angles) >= 1
+        return len(st.session_state.selected_angle_ids) >= 1
     elif step == 8:
         return len(st.session_state.selected_templates) >= 1
     return True
@@ -568,28 +568,56 @@ def render_step_6_angles():
     service = get_planning_service()
     jtbd_id = UUID(st.session_state.selected_jtbd_id)
 
-    # Current angles
-    st.subheader(f"Current Angles ({len(st.session_state.angles)})")
+    # Load angles from database for this JTBD
+    db_angles = service.get_angles_for_jtbd(jtbd_id)
 
-    if st.session_state.angles:
-        for i, angle in enumerate(st.session_state.angles):
+    # Sync selected_angle_ids with what exists in DB
+    # (in case angles were deleted externally)
+    valid_db_ids = {str(a.id) for a in db_angles}
+    st.session_state.selected_angle_ids = [
+        aid for aid in st.session_state.selected_angle_ids
+        if aid in valid_db_ids
+    ]
+
+    # Get selected angles data for display
+    selected_angles = [a for a in db_angles if str(a.id) in st.session_state.selected_angle_ids]
+    unselected_angles = [a for a in db_angles if str(a.id) not in st.session_state.selected_angle_ids]
+
+    # Current selected angles
+    st.subheader(f"Selected Angles ({len(selected_angles)})")
+
+    if selected_angles:
+        for i, angle in enumerate(selected_angles):
             with st.container():
                 col1, col2 = st.columns([4, 1])
                 with col1:
-                    st.markdown(f"**{i+1}. {angle['name']}**")
-                    st.write(angle['belief_statement'])
+                    st.markdown(f"**{i+1}. {angle.name}**")
+                    st.write(angle.belief_statement)
                 with col2:
-                    if st.button("Remove", key=f"remove_angle_{i}"):
-                        st.session_state.angles.pop(i)
+                    if st.button("Remove", key=f"remove_angle_{angle.id}"):
+                        st.session_state.selected_angle_ids.remove(str(angle.id))
                         st.rerun()
                 st.divider()
     else:
-        st.info("No angles added yet. Create or generate some below.")
+        st.info("No angles selected yet. Create or select some below.")
 
     # Show warning if count is off
-    angle_count = len(st.session_state.angles)
+    angle_count = len(selected_angles)
     if angle_count > 0 and (angle_count < 5 or angle_count > 7):
         st.warning(f"Phase 1 recommends 5-7 angles. You have {angle_count}.")
+
+    # Show existing unselected angles for this JTBD
+    if unselected_angles:
+        st.subheader("Existing Angles (click to add)")
+        for angle in unselected_angles:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"**{angle.name}**")
+                st.caption(angle.belief_statement[:100] + "..." if len(angle.belief_statement) > 100 else angle.belief_statement)
+            with col2:
+                if st.button("Add", key=f"add_existing_{angle.id}"):
+                    st.session_state.selected_angle_ids.append(str(angle.id))
+                    st.rerun()
 
     # Add angle form
     tab1, tab2 = st.tabs(["Create Manually", "AI Suggestions"])
@@ -614,11 +642,14 @@ def render_step_6_angles():
 
         if st.button("Add Angle", key="add_angle_btn"):
             if st.session_state.new_angle_name and st.session_state.new_angle_belief:
-                st.session_state.angles.append({
-                    "name": st.session_state.new_angle_name,
-                    "belief_statement": st.session_state.new_angle_belief,
-                    "explanation": st.session_state.new_angle_explanation
-                })
+                # Save to database immediately
+                new_angle = service.create_angle(
+                    jtbd_framed_id=jtbd_id,
+                    name=st.session_state.new_angle_name,
+                    belief_statement=st.session_state.new_angle_belief,
+                    explanation=st.session_state.new_angle_explanation
+                )
+                st.session_state.selected_angle_ids.append(str(new_angle.id))
                 # Clear form
                 st.session_state.new_angle_name = ""
                 st.session_state.new_angle_belief = ""
@@ -643,11 +674,14 @@ def render_step_6_angles():
                 st.write(sug.get('belief_statement', ''))
                 st.caption(sug.get('explanation', ''))
                 if st.button(f"Add This Angle", key=f"add_suggested_angle_{i}"):
-                    st.session_state.angles.append({
-                        "name": sug.get('name', ''),
-                        "belief_statement": sug.get('belief_statement', ''),
-                        "explanation": sug.get('explanation', '')
-                    })
+                    # Save to database immediately
+                    new_angle = service.create_angle(
+                        jtbd_framed_id=jtbd_id,
+                        name=sug.get('name', ''),
+                        belief_statement=sug.get('belief_statement', ''),
+                        explanation=sug.get('explanation', '')
+                    )
+                    st.session_state.selected_angle_ids.append(str(new_angle.id))
                     st.rerun()
                 st.divider()
 
@@ -819,6 +853,11 @@ def render_step_8_review():
     st.write("Review your plan and compile for the ad creator.")
 
     service = get_planning_service()
+    jtbd_id = UUID(st.session_state.selected_jtbd_id)
+
+    # Load selected angles from database for display
+    db_angles = service.get_angles_for_jtbd(jtbd_id)
+    selected_angles = [a for a in db_angles if str(a.id) in st.session_state.selected_angle_ids]
 
     # Plan name
     st.session_state.plan_name = st.text_input(
@@ -848,17 +887,18 @@ def render_step_8_review():
     with col2:
         st.markdown("**Testing Config**")
         st.write(f"Phase: 1 (Discovery)")
-        st.write(f"Angles: {len(st.session_state.angles)}")
+        st.write(f"Angles: {len(selected_angles)}")
         st.write(f"Templates: {len(st.session_state.selected_templates)}")
         st.write(f"Template Strategy: {st.session_state.template_strategy}")
         st.write(f"Ads per Angle: {st.session_state.ads_per_angle}")
-        total_ads = len(st.session_state.angles) * st.session_state.ads_per_angle
+        total_ads = len(selected_angles) * st.session_state.ads_per_angle
         st.write(f"**Total Ads to Generate: {total_ads}**")
 
     # Angles summary
     st.subheader("Angles")
-    for i, angle in enumerate(st.session_state.angles, 1):
-        st.write(f"{i}. **{angle['name']}**: {angle['belief_statement'][:100]}...")
+    for i, angle in enumerate(selected_angles, 1):
+        belief_text = angle.belief_statement[:100] + "..." if len(angle.belief_statement) > 100 else angle.belief_statement
+        st.write(f"{i}. **{angle.name}**: {belief_text}")
 
     # Validation warnings
     if st.session_state.validation_warnings:
@@ -871,10 +911,10 @@ def render_step_8_review():
     with col_val1:
         if st.button("Validate Plan"):
             warnings = []
-            if len(st.session_state.angles) < 5:
-                warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(st.session_state.angles)}.")
-            if len(st.session_state.angles) > 7:
-                warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(st.session_state.angles)}.")
+            if len(selected_angles) < 5:
+                warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(selected_angles)}.")
+            if len(selected_angles) > 7:
+                warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(selected_angles)}.")
             if len(st.session_state.selected_templates) < 1:
                 warnings.append("No templates selected.")
             st.session_state.validation_warnings = warnings
@@ -892,17 +932,8 @@ def render_step_8_review():
     if st.button("Save Plan", type="primary"):
         try:
             with st.spinner("Creating plan..."):
-                # First create the angles in the database
-                jtbd_id = UUID(st.session_state.selected_jtbd_id)
-                created_angle_ids = []
-                for angle_data in st.session_state.angles:
-                    angle = service.create_angle(
-                        jtbd_framed_id=jtbd_id,
-                        name=angle_data["name"],
-                        belief_statement=angle_data["belief_statement"],
-                        explanation=angle_data.get("explanation")
-                    )
-                    created_angle_ids.append(angle.id)
+                # Angles are already saved to DB - use existing IDs
+                angle_ids = [UUID(aid) for aid in st.session_state.selected_angle_ids]
 
                 # Create the plan
                 plan = service.create_plan(
@@ -911,7 +942,7 @@ def render_step_8_review():
                     product_id=UUID(st.session_state.selected_product_id),
                     persona_id=UUID(st.session_state.selected_persona_id),
                     jtbd_framed_id=jtbd_id,
-                    angle_ids=created_angle_ids,
+                    angle_ids=angle_ids,
                     template_ids=st.session_state.selected_templates,
                     offer_id=UUID(st.session_state.selected_offer_id) if st.session_state.selected_offer_id else None,
                     phase_id=1,
@@ -929,10 +960,10 @@ def render_step_8_review():
                     st.info(f"Plan ID: `{plan.id}`")
 
                 # Show plan summary
-                total_ads = len(st.session_state.angles) * st.session_state.ads_per_angle
+                total_ads = len(selected_angles) * st.session_state.ads_per_angle
                 with st.expander("Plan Summary", expanded=True):
                     st.write(f"**Name:** {st.session_state.plan_name}")
-                    st.write(f"**Angles:** {len(st.session_state.angles)}")
+                    st.write(f"**Angles:** {len(selected_angles)}")
                     st.write(f"**Templates:** {len(st.session_state.selected_templates)}")
                     st.write(f"**Ads per Angle:** {st.session_state.ads_per_angle}")
                     st.write(f"**Total Ads to Generate:** {total_ads}")
