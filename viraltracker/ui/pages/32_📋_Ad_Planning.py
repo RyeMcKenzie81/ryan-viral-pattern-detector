@@ -761,7 +761,7 @@ def render_step_7_templates():
                 template_text = template.get('instructions', '')
                 if template_text:
                     st.markdown("**Template Instructions:**")
-                    st.text_area("", value=template_text, height=200, disabled=True, key=f"manual_text_{template_id}")
+                    st.text_area("Instructions", value=template_text, height=200, disabled=True, key=f"manual_text_{template_id}", label_visibility="collapsed")
                 else:
                     st.caption("No instructions available")
             st.divider()
@@ -809,11 +809,11 @@ def render_step_7_templates():
                     else:
                         st.caption("No image available")
                 with preview_col2:
-                    # Show template text
-                    template_text = template.get('template_text') or template.get('instructions', '')
+                    # Show template text (description for scraped, instructions for manual)
+                    template_text = template.get('description') or template.get('instructions', '')
                     if template_text:
                         st.markdown("**Template Text:**")
-                        st.text_area("", value=template_text, height=200, disabled=True, key=f"text_{template_id}")
+                        st.text_area("Template text", value=template_text, height=200, disabled=True, key=f"text_{template_id}", label_visibility="collapsed")
                     else:
                         st.caption("No template text")
             st.divider()

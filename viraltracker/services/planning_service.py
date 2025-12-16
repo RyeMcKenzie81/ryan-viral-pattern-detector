@@ -538,7 +538,7 @@ class PlanningService:
                 t["source"] = "scraped"
                 # Map scraped_templates fields to common format
                 if not t.get("instructions"):
-                    t["instructions"] = t.get("template_text", "")
+                    t["instructions"] = t.get("description", "")
                 # Extract asset info for display
                 asset = t.get("scraped_ad_assets", {})
                 if asset:
@@ -681,7 +681,7 @@ class PlanningService:
 
                 if template_source == "scraped_templates":
                     t_result = self.supabase.table("scraped_templates").select(
-                        "id, name, template_text"
+                        "id, name, description"
                     ).eq("id", template_id).execute()
                     if t_result.data:
                         template = t_result.data[0]
