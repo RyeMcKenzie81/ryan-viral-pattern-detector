@@ -741,13 +741,13 @@ def render_step_7_templates():
     if manual_templates:
         st.subheader(f"Manual Templates ({len(manual_templates)})")
         for template in manual_templates:
+            template_id = template.get('id')
             col1, col2 = st.columns([4, 1])
             with col1:
                 st.markdown(f"**{template.get('name', 'Unnamed')}**")
                 if template.get('instructions'):
                     st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
             with col2:
-                template_id = template.get('id')
                 is_selected = is_template_selected(template_id)
                 if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
                     if not is_selected:
@@ -755,6 +755,15 @@ def render_step_7_templates():
                 else:
                     if is_selected:
                         remove_template(template_id)
+
+            # Preview expander for manual templates
+            with st.expander("Preview", expanded=False):
+                template_text = template.get('instructions', '')
+                if template_text:
+                    st.markdown("**Template Instructions:**")
+                    st.text_area("", value=template_text, height=200, disabled=True, key=f"manual_text_{template_id}")
+                else:
+                    st.caption("No instructions available")
             st.divider()
 
     # Scraped templates section
