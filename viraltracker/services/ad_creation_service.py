@@ -1242,15 +1242,16 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             plan = plan_result.data[0]
 
             # Get angles linked to this plan
+            # Note: belief_plan_angles is a junction table with (plan_id, angle_id, display_order) - no 'id' column
             angles_result = self.supabase.table("belief_plan_angles").select(
-                "id, angle_id, sort_order"
-            ).eq("plan_id", str(plan_id)).order("sort_order").execute()
+                "angle_id, display_order"
+            ).eq("plan_id", str(plan_id)).order("display_order").execute()
 
             angles = []
             for plan_angle in angles_result.data or []:
                 # Get the actual angle data
                 angle_result = self.supabase.table("belief_angles").select(
-                    "id, name, belief_statement, mechanism_hypothesis, status"
+                    "id, name, belief_statement, status"
                 ).eq("id", plan_angle["angle_id"]).execute()
 
                 if angle_result.data:
@@ -1264,28 +1265,38 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
 
                     angles.append({
                         **angle_data,
-                        "sort_order": plan_angle["sort_order"],
+                        "display_order": plan_angle["display_order"],
                         "copy_set": copy_set
                     })
 
             # Get templates linked to this plan
+            # Note: belief_plan_templates only has (plan_id, template_id, display_order)
             templates_result = self.supabase.table("belief_plan_templates").select(
-                "template_id, template_source, is_primary"
-            ).eq("plan_id", str(plan_id)).execute()
+                "template_id, display_order"
+            ).eq("plan_id", str(plan_id)).order("display_order").execute()
 
             templates = []
-            for tpl in templates_result.data or []:
-                # Get template details
-                tpl_table = tpl["template_source"]
-                tpl_result = self.supabase.table(tpl_table).select(
+            for idx, tpl in enumerate(templates_result.data or []):
+                template_id = tpl["template_id"]
+
+                # Try scraped_templates first (has storage_path)
+                tpl_result = self.supabase.table("scraped_templates").select(
                     "id, name, storage_path"
-                ).eq("id", tpl["template_id"]).execute()
+                ).eq("id", template_id).execute()
+
+                template_source = "scraped_templates"
+                if not tpl_result.data:
+                    # Try ad_brief_templates (no storage_path)
+                    tpl_result = self.supabase.table("ad_brief_templates").select(
+                        "id, name"
+                    ).eq("id", template_id).execute()
+                    template_source = "ad_brief_templates"
 
                 if tpl_result.data:
                     templates.append({
                         **tpl_result.data[0],
-                        "source": tpl["template_source"],
-                        "is_primary": tpl["is_primary"]
+                        "source": template_source,
+                        "is_primary": idx == 0  # First template is primary
                     })
 
             # Get JTBD info for context
