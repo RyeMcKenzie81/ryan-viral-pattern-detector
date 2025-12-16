@@ -138,6 +138,10 @@ class PlanningService:
         """
         Fetch personas linked to a product.
 
+        Checks both:
+        1. Direct product_id on personas_4d table
+        2. product_personas junction table
+
         Args:
             product_id: Product UUID
 
@@ -145,14 +149,35 @@ class PlanningService:
             List of personas with id, name, snapshot, is_primary
         """
         try:
-            result = self.supabase.table("product_personas").select(
+            personas = []
+            seen_ids = set()
+
+            # Method 1: Direct product_id on personas_4d
+            direct_result = self.supabase.table("personas_4d").select(
+                "id, name, snapshot, persona_type, domain_sentiment, is_primary"
+            ).eq("product_id", str(product_id)).execute()
+
+            for row in direct_result.data or []:
+                if row.get("id") and row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    personas.append({
+                        "id": row.get("id"),
+                        "name": row.get("name"),
+                        "snapshot": row.get("snapshot", ""),
+                        "persona_type": row.get("persona_type"),
+                        "domain_sentiment": row.get("domain_sentiment"),
+                        "is_primary": row.get("is_primary", False)
+                    })
+
+            # Method 2: Junction table (product_personas)
+            junction_result = self.supabase.table("product_personas").select(
                 "persona_id, is_primary, personas_4d(id, name, snapshot, persona_type, domain_sentiment)"
             ).eq("product_id", str(product_id)).execute()
 
-            personas = []
-            for row in result.data or []:
+            for row in junction_result.data or []:
                 persona_data = row.get("personas_4d", {})
-                if persona_data:
+                if persona_data and persona_data.get("id") and persona_data["id"] not in seen_ids:
+                    seen_ids.add(persona_data["id"])
                     personas.append({
                         "id": persona_data.get("id"),
                         "name": persona_data.get("name"),
