@@ -154,7 +154,7 @@ class PlanningService:
 
             # Method 1: Direct product_id on personas_4d
             direct_result = self.supabase.table("personas_4d").select(
-                "id, name, snapshot, persona_type, domain_sentiment, is_primary"
+                "id, name, snapshot, persona_type, is_primary"
             ).eq("product_id", str(product_id)).execute()
 
             for row in direct_result.data or []:
@@ -165,13 +165,12 @@ class PlanningService:
                         "name": row.get("name"),
                         "snapshot": row.get("snapshot", ""),
                         "persona_type": row.get("persona_type"),
-                        "domain_sentiment": row.get("domain_sentiment"),
                         "is_primary": row.get("is_primary", False)
                     })
 
             # Method 2: Junction table (product_personas)
             junction_result = self.supabase.table("product_personas").select(
-                "persona_id, is_primary, personas_4d(id, name, snapshot, persona_type, domain_sentiment)"
+                "persona_id, is_primary, personas_4d(id, name, snapshot, persona_type)"
             ).eq("product_id", str(product_id)).execute()
 
             for row in junction_result.data or []:
@@ -183,7 +182,6 @@ class PlanningService:
                         "name": persona_data.get("name"),
                         "snapshot": persona_data.get("snapshot", ""),
                         "persona_type": persona_data.get("persona_type"),
-                        "domain_sentiment": persona_data.get("domain_sentiment"),
                         "is_primary": row.get("is_primary", False)
                     })
 
