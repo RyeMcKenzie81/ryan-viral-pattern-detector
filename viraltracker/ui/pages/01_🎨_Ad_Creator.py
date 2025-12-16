@@ -842,12 +842,27 @@ else:
 
                 # Auto-populate product from plan
                 plan_product = plan_details.get("product")
-                if plan_product:
+                plan_data = plan_details.get("plan", {})
+
+                # Get product_id - try from joined product first, fallback to plan's product_id
+                if plan_product and plan_product.get("id"):
                     selected_product = plan_product
                     selected_product_id = plan_product.get("id")
-                    # Update product session state to match
                     st.session_state.selected_product = selected_product
                     st.session_state.selected_product_name = plan_product.get("name", "")
+                elif plan_data.get("product_id"):
+                    # Fallback: use product_id directly from plan
+                    selected_product_id = plan_data.get("product_id")
+                    # Fetch product details
+                    db = get_supabase_client()
+                    prod_result = db.table("products").select(
+                        "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts)"
+                    ).eq("id", selected_product_id).execute()
+                    if prod_result.data:
+                        selected_product = prod_result.data[0]
+                        st.session_state.selected_product = selected_product
+                        st.session_state.selected_product_name = selected_product.get("name", "")
+                        plan_product = selected_product  # Update for display below
 
                 # Show plan summary
                 plan = plan_details.get("plan", {})
