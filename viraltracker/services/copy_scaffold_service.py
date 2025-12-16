@@ -1,24 +1,28 @@
 """
-CopyScaffoldService - Token-based copy generation with guardrails.
+CopyScaffoldService - LLM-powered copy generation with guardrails.
 
 This service manages copy scaffolds (tokenized templates) for belief-first
 ad generation. It handles:
 
 - Scaffold retrieval by phase/scope
-- Token filling with context values
+- LLM-based copy generation with character limits
 - 40-character headline validation
 - Guardrail enforcement (no discounts, medical claims, etc.)
 - Copy set generation for angles
 
-Copy is generated per-angle, not per-ad, to isolate belief testing.
+Copy is generated per-angle using Claude Opus 4.5 to ensure quality
+and proper character limits. Scaffolds serve as patterns/inspiration.
 """
 
+import os
 import re
+import json
 import logging
 from typing import List, Dict, Optional, Any
 from uuid import UUID
 from datetime import datetime
 
+import anthropic
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -75,12 +79,31 @@ BANNED_PATTERNS = {
 
 
 class CopyScaffoldService:
-    """Service for copy scaffold management and generation."""
+    """Service for copy scaffold management and LLM-powered generation."""
 
-    def __init__(self):
-        """Initialize CopyScaffoldService."""
+    # Claude Opus 4.5 for high-quality copy
+    DEFAULT_MODEL = "claude-opus-4-5-20251101"
+
+    def __init__(self, anthropic_api_key: Optional[str] = None, model: Optional[str] = None):
+        """
+        Initialize CopyScaffoldService.
+
+        Args:
+            anthropic_api_key: API key for Claude (defaults to env var)
+            model: Claude model to use (defaults to Opus 4.5)
+        """
         self.supabase: Client = get_supabase_client()
-        logger.info("CopyScaffoldService initialized")
+
+        # Initialize Anthropic client for LLM-based copy generation
+        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+        if api_key:
+            self.client = anthropic.Anthropic(api_key=api_key)
+            self.model = model or self.DEFAULT_MODEL
+            logger.info(f"CopyScaffoldService initialized with Claude model: {self.model}")
+        else:
+            self.client = None
+            self.model = None
+            logger.warning("ANTHROPIC_API_KEY not set - will use token-filling fallback")
 
     # ============================================
     # SCAFFOLD RETRIEVAL
@@ -368,24 +391,15 @@ class CopyScaffoldService:
 
             if angle_result.data:
                 angle = angle_result.data[0]
-                # Use belief_statement as the angle claim - TRUNCATE for headline use
-                # Headlines have 40 char limit, so angle claims should be SHORT
-                belief = angle.get("belief_statement", "")
-                # Extract first clause or truncate to ~25 chars for headline compatibility
-                if "." in belief:
-                    context["ANGLE_CLAIM"] = belief.split(".")[0][:30]
-                elif "," in belief:
-                    context["ANGLE_CLAIM"] = belief.split(",")[0][:30]
-                else:
-                    context["ANGLE_CLAIM"] = belief[:30]
-
+                # Full belief statement for LLM context
+                context["ANGLE_CLAIM"] = angle.get("belief_statement", "")
                 context["ANGLE_NAME"] = angle.get("name", "")
-                # Explanation can provide mechanism phrase if available
+
+                # Explanation provides mechanism phrase
                 explanation = angle.get("explanation", "")
                 if explanation:
-                    # Extract short mechanism phrase (for primary text)
-                    context["MECHANISM_PHRASE"] = explanation[:50] if len(explanation) > 50 else explanation
-                logger.info(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')}'")
+                    context["MECHANISM_PHRASE"] = explanation
+                logger.info(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')[:50]}...'")
 
             # Get product data
             # products columns: name, description, target_audience, key_problems_solved, key_benefits, features
@@ -398,36 +412,30 @@ class CopyScaffoldService:
                     product = product_result.data[0]
                     context["PRODUCT_NAME"] = product.get("name", "")
 
-                    # key_benefits is JSONB array - truncate for primary text use
+                    # key_benefits is JSONB array - full value for LLM
                     key_benefits = product.get("key_benefits", []) or []
                     if key_benefits and len(key_benefits) > 0:
                         first_benefit = key_benefits[0]
-                        raw_benefit = first_benefit if isinstance(first_benefit, str) else first_benefit.get("text", str(first_benefit))
-                        # Truncate to ~30 chars for readable primary text
-                        context["BENEFIT_1"] = raw_benefit[:30] if len(raw_benefit) > 30 else raw_benefit
+                        context["BENEFIT_1"] = first_benefit if isinstance(first_benefit, str) else first_benefit.get("text", str(first_benefit))
                     else:
                         context["BENEFIT_1"] = "better daily comfort"
                         logger.warning(f"Product {product_id} has no key_benefits, using default")
 
-                    # key_problems_solved is JSONB array - use as symptoms
-                    # IMPORTANT: Truncate to short phrases for headline compatibility
+                    # key_problems_solved is JSONB array - full values for LLM
                     problems = product.get("key_problems_solved", []) or []
                     if problems and len(problems) > 0:
                         first_problem = problems[0]
-                        raw_symptom = first_problem if isinstance(first_problem, str) else first_problem.get("text", str(first_problem))
-                        # Truncate to ~20 chars for headline use
-                        context["SYMPTOM_1"] = raw_symptom[:25] if len(raw_symptom) > 25 else raw_symptom
+                        context["SYMPTOM_1"] = first_problem if isinstance(first_problem, str) else first_problem.get("text", str(first_problem))
                         if len(problems) > 1:
                             second_problem = problems[1]
-                            raw_symptom2 = second_problem if isinstance(second_problem, str) else second_problem.get("text", str(second_problem))
-                            context["SYMPTOM_2"] = raw_symptom2[:25] if len(raw_symptom2) > 25 else raw_symptom2
+                            context["SYMPTOM_2"] = second_problem if isinstance(second_problem, str) else second_problem.get("text", str(second_problem))
                         else:
-                            context["SYMPTOM_2"] = context["SYMPTOM_1"]  # Duplicate if only one
+                            context["SYMPTOM_2"] = context["SYMPTOM_1"]
                     else:
                         # Fallback: derive from target audience
                         target = product.get("target_audience", "") or ""
                         if "joint" in target.lower() or "mobil" in target.lower():
-                            context["SYMPTOM_1"] = "stiff joints"
+                            context["SYMPTOM_1"] = "joint stiffness"
                             context["SYMPTOM_2"] = "slower movement"
                         elif "dog" in target.lower() or "pet" in target.lower():
                             context["SYMPTOM_1"] = "slower movement"
@@ -437,7 +445,7 @@ class CopyScaffoldService:
                             context["SYMPTOM_2"] = "subtle shifts"
                         logger.warning(f"Product {product_id} has no key_problems_solved, using defaults")
 
-                    logger.info(f"Product tokens: PRODUCT_NAME='{context.get('PRODUCT_NAME', '')}', SYMPTOM_1='{context.get('SYMPTOM_1', '')}', BENEFIT_1='{context.get('BENEFIT_1', '')}'")
+                    logger.info(f"Product tokens: PRODUCT_NAME='{context.get('PRODUCT_NAME', '')}', SYMPTOM_1='{context.get('SYMPTOM_1', '')[:30]}...'")
 
             # Get persona data
             # personas_4d columns: name, pain_points (JSONB {emotional:[], social:[], functional:[]}), desires, snapshot
@@ -448,11 +456,9 @@ class CopyScaffoldService:
 
                 if persona_result.data:
                     persona = persona_result.data[0]
-                    # Use name as persona label
                     context["PERSONA_LABEL"] = persona.get("name", "")
 
-                    # Extract common belief from pain_points JSONB
-                    # Structure: {emotional: [], social: [], functional: []}
+                    # Extract common belief from pain_points JSONB - full value for LLM
                     pain_points = persona.get("pain_points", {}) or {}
                     common_belief = None
 
@@ -465,18 +471,14 @@ class CopyScaffoldService:
                             break
 
                     if common_belief:
-                        # Truncate to ~15 chars for headline compatibility
-                        # e.g., "just getting older" not "Feeling tired and sluggish is just part of aging"
-                        context["COMMON_BELIEF"] = common_belief[:18] if len(common_belief) > 18 else common_belief
+                        context["COMMON_BELIEF"] = common_belief
                     else:
-                        # Fallback to snapshot or generic - keep it SHORT for headlines
+                        # Fallback to snapshot or generic
                         snapshot = persona.get("snapshot", "")
                         if snapshot:
-                            # Take first sentence, truncate to 18 chars
-                            first_sentence = snapshot.split(".")[0] if "." in snapshot else snapshot
-                            context["COMMON_BELIEF"] = first_sentence[:18]
+                            context["COMMON_BELIEF"] = snapshot.split(".")[0] if "." in snapshot else snapshot
                         else:
-                            context["COMMON_BELIEF"] = "just getting older"
+                            context["COMMON_BELIEF"] = "it's just part of getting older"
                         logger.warning(f"Persona {persona_id} has no pain_points, using fallback")
 
                     logger.info(f"Persona tokens: PERSONA_LABEL='{context.get('PERSONA_LABEL', '')}', COMMON_BELIEF='{context.get('COMMON_BELIEF', '')[:30]}...'")
@@ -550,6 +552,152 @@ class CopyScaffoldService:
 
         return variants
 
+    # ============================================
+    # LLM-BASED COPY GENERATION
+    # ============================================
+
+    def generate_copy_with_llm(
+        self,
+        context: Dict[str, str],
+        headline_scaffolds: List[CopyScaffold],
+        primary_text_scaffolds: List[CopyScaffold],
+        phase_id: int = 1
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Generate copy using Claude with explicit character limits.
+
+        This method asks Claude to generate headlines and primary text
+        that fit within character constraints while preserving meaning.
+
+        Args:
+            context: Token context with full values (angle, product, persona info)
+            headline_scaffolds: Scaffold patterns for headline inspiration
+            primary_text_scaffolds: Scaffold patterns for primary text inspiration
+            phase_id: Phase for guardrail rules
+
+        Returns:
+            Dict with "headlines" and "primary_texts" lists
+        """
+        if not self.client:
+            logger.warning("No Anthropic client - falling back to token filling")
+            return {
+                "headlines": self.generate_copy_variants(headline_scaffolds, context),
+                "primary_texts": self.generate_copy_variants(primary_text_scaffolds, context)
+            }
+
+        # Build scaffold examples for the prompt
+        headline_examples = "\n".join([
+            f"- {s.name}: \"{s.template_text}\""
+            for s in headline_scaffolds[:4]
+        ])
+        primary_examples = "\n".join([
+            f"- {s.name}: \"{s.template_text}\""
+            for s in primary_text_scaffolds[:2]
+        ])
+
+        # Build the generation prompt
+        prompt = f"""Generate ad copy for a belief-first advertising campaign.
+
+CONTEXT:
+- Product: {context.get('PRODUCT_NAME', 'Unknown Product')}
+- Target Persona: {context.get('PERSONA_LABEL', 'General audience')}
+- Key Belief/Angle: {context.get('ANGLE_CLAIM', '')}
+- Symptom/Problem: {context.get('SYMPTOM_1', '')}
+- Common Misconception: {context.get('COMMON_BELIEF', '')}
+- Benefit: {context.get('BENEFIT_1', '')}
+- Job To Be Done: {context.get('JTBD', '')}
+
+HEADLINE SCAFFOLD PATTERNS (for inspiration):
+{headline_examples}
+
+PRIMARY TEXT SCAFFOLD PATTERNS (for inspiration):
+{primary_examples}
+
+STRICT REQUIREMENTS:
+1. Headlines MUST be 40 characters or less (this is a Meta/Facebook hard limit)
+2. Headlines should be observational, not salesy - invite curiosity
+3. Primary text should be 2-3 sentences max
+4. Phase {phase_id} rules: NO discounts, NO medical claims, NO guarantees, NO urgency
+
+Generate 4 headline variants and 2 primary text variants.
+
+OUTPUT FORMAT (JSON):
+{{
+    "headlines": [
+        {{"text": "headline text here", "style": "observation|reframe|question|curiosity"}},
+        ...
+    ],
+    "primary_texts": [
+        {{"text": "primary text here", "style": "observation-reframe|problem-solution|empathy-lead"}},
+        ...
+    ]
+}}
+
+IMPORTANT: Every headline MUST be 40 characters or less. Count carefully."""
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1500,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            content = response.content[0].text
+            # Parse JSON from response
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+
+                # Convert to our variant format and validate
+                headlines = []
+                for i, h in enumerate(result.get("headlines", [])):
+                    text = h.get("text", "")
+                    validation = self.validate_copy(text, "headline")
+                    headlines.append({
+                        "text": text,
+                        "scaffold_id": str(headline_scaffolds[i % len(headline_scaffolds)].id) if headline_scaffolds else None,
+                        "scaffold_name": f"LLM-{h.get('style', 'generated')}",
+                        "tokens_used": {},
+                        "valid": validation["valid"],
+                        "issues": validation["issues"],
+                        "llm_generated": True
+                    })
+
+                primary_texts = []
+                for i, p in enumerate(result.get("primary_texts", [])):
+                    text = p.get("text", "")
+                    validation = self.validate_copy(text, "primary_text")
+                    primary_texts.append({
+                        "text": text,
+                        "scaffold_id": str(primary_text_scaffolds[i % len(primary_text_scaffolds)].id) if primary_text_scaffolds else None,
+                        "scaffold_name": f"LLM-{p.get('style', 'generated')}",
+                        "tokens_used": {},
+                        "valid": validation["valid"],
+                        "issues": validation["issues"],
+                        "llm_generated": True
+                    })
+
+                logger.info(f"LLM generated {len(headlines)} headlines, {len(primary_texts)} primary texts")
+                return {"headlines": headlines, "primary_texts": primary_texts}
+
+            else:
+                logger.error("Could not parse JSON from LLM response")
+                # Fallback to token filling
+                return {
+                    "headlines": self.generate_copy_variants(headline_scaffolds, context),
+                    "primary_texts": self.generate_copy_variants(primary_text_scaffolds, context)
+                }
+
+        except Exception as e:
+            logger.error(f"LLM copy generation failed: {e}")
+            # Fallback to token filling
+            return {
+                "headlines": self.generate_copy_variants(headline_scaffolds, context),
+                "primary_texts": self.generate_copy_variants(primary_text_scaffolds, context)
+            }
+
     def generate_copy_set(
         self,
         angle_id: UUID,
@@ -601,9 +749,15 @@ class CopyScaffoldService:
             else:
                 pt_scaffolds = self.get_scaffolds_for_phase(phase_id, scope="primary_text")
 
-            # Generate variants
-            headline_variants = self.generate_copy_variants(headline_scaffolds, context)
-            primary_text_variants = self.generate_copy_variants(pt_scaffolds, context)
+            # Generate variants using LLM (falls back to token filling if no client)
+            llm_result = self.generate_copy_with_llm(
+                context=context,
+                headline_scaffolds=headline_scaffolds,
+                primary_text_scaffolds=pt_scaffolds,
+                phase_id=phase_id
+            )
+            headline_variants = llm_result["headlines"]
+            primary_text_variants = llm_result["primary_texts"]
 
             # Create copy set
             copy_set = AngleCopySet(
