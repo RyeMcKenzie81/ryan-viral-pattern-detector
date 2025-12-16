@@ -1160,3 +1160,309 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             logger.error(f"Failed to save template analysis cache: {e}")
             return False
 
+    # ============================================
+    # BELIEF PLAN OPERATIONS
+    # ============================================
+
+    async def get_belief_plans_for_product(
+        self,
+        product_id: UUID,
+        status: Optional[str] = None,
+        phase_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get belief plans for a product, optionally filtered by status/phase.
+
+        Args:
+            product_id: UUID of product
+            status: Optional status filter ('draft', 'ready', 'active', 'completed')
+            phase_id: Optional phase filter (1-6)
+
+        Returns:
+            List of belief plans with summary info
+        """
+        try:
+            query = self.supabase.table("belief_plans").select(
+                "id, name, status, phase_id, created_at, updated_at, "
+                "brand_id, persona_id, jtbd_framed_id, offer_id"
+            ).eq("product_id", str(product_id))
+
+            if status:
+                query = query.eq("status", status)
+            if phase_id:
+                query = query.eq("phase_id", phase_id)
+
+            query = query.order("updated_at", desc=True)
+            result = query.execute()
+
+            plans = []
+            for row in result.data or []:
+                # Get angle count for this plan
+                angle_result = self.supabase.table("belief_plan_angles").select(
+                    "id", count="exact"
+                ).eq("plan_id", row["id"]).execute()
+
+                plans.append({
+                    **row,
+                    "angle_count": angle_result.count if angle_result.count else 0
+                })
+
+            return plans
+
+        except Exception as e:
+            logger.error(f"Failed to get belief plans for product {product_id}: {e}")
+            return []
+
+    async def get_belief_plan_with_copy(
+        self,
+        plan_id: UUID
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get a belief plan with all angles and their copy sets.
+
+        This is the main method for loading a plan for ad generation.
+        Returns the full plan with angles, copy variants, and templates.
+
+        Args:
+            plan_id: UUID of the belief plan
+
+        Returns:
+            Dict with plan, angles, copy_sets, templates, or None if not found
+        """
+        try:
+            # Get plan
+            plan_result = self.supabase.table("belief_plans").select("*").eq(
+                "id", str(plan_id)
+            ).execute()
+
+            if not plan_result.data:
+                logger.warning(f"Belief plan not found: {plan_id}")
+                return None
+
+            plan = plan_result.data[0]
+
+            # Get angles linked to this plan
+            angles_result = self.supabase.table("belief_plan_angles").select(
+                "id, angle_id, sort_order"
+            ).eq("plan_id", str(plan_id)).order("sort_order").execute()
+
+            angles = []
+            for plan_angle in angles_result.data or []:
+                # Get the actual angle data
+                angle_result = self.supabase.table("belief_angles").select(
+                    "id, name, belief_statement, mechanism_hypothesis, status"
+                ).eq("id", plan_angle["angle_id"]).execute()
+
+                if angle_result.data:
+                    angle_data = angle_result.data[0]
+
+                    # Get copy set for this angle
+                    copy_set = await self._get_copy_set_for_angle(
+                        UUID(angle_data["id"]),
+                        plan.get("phase_id", 1)
+                    )
+
+                    angles.append({
+                        **angle_data,
+                        "sort_order": plan_angle["sort_order"],
+                        "copy_set": copy_set
+                    })
+
+            # Get templates linked to this plan
+            templates_result = self.supabase.table("belief_plan_templates").select(
+                "template_id, template_source, is_primary"
+            ).eq("plan_id", str(plan_id)).execute()
+
+            templates = []
+            for tpl in templates_result.data or []:
+                # Get template details
+                tpl_table = tpl["template_source"]
+                tpl_result = self.supabase.table(tpl_table).select(
+                    "id, name, storage_path"
+                ).eq("id", tpl["template_id"]).execute()
+
+                if tpl_result.data:
+                    templates.append({
+                        **tpl_result.data[0],
+                        "source": tpl["template_source"],
+                        "is_primary": tpl["is_primary"]
+                    })
+
+            # Get JTBD info for context
+            jtbd_data = None
+            if plan.get("jtbd_framed_id"):
+                jtbd_result = self.supabase.table("belief_jtbd_framed").select(
+                    "id, job_statement, situation_context"
+                ).eq("id", plan["jtbd_framed_id"]).execute()
+                if jtbd_result.data:
+                    jtbd_data = jtbd_result.data[0]
+
+            return {
+                "plan": plan,
+                "angles": angles,
+                "templates": templates,
+                "jtbd": jtbd_data,
+                "angle_count": len(angles),
+                "has_copy": any(a.get("copy_set") for a in angles)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get belief plan with copy {plan_id}: {e}")
+            return None
+
+    async def _get_copy_set_for_angle(
+        self,
+        angle_id: UUID,
+        phase_id: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the copy set (headline/primary text variants) for an angle.
+
+        Args:
+            angle_id: UUID of the belief angle
+            phase_id: Phase to get copy for
+
+        Returns:
+            Dict with headline_variants, primary_text_variants, token_context
+        """
+        try:
+            result = self.supabase.table("angle_copy_sets").select("*").eq(
+                "angle_id", str(angle_id)
+            ).eq("phase_id", phase_id).execute()
+
+            if result.data:
+                return result.data[0]
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get copy set for angle {angle_id}: {e}")
+            return None
+
+    async def select_angles_for_generation(
+        self,
+        plan_id: UUID,
+        num_variations: int,
+        strategy: str = "round_robin"
+    ) -> List[Dict[str, Any]]:
+        """
+        Select angles from a plan for ad generation.
+
+        Distributes the requested number of variations across angles
+        based on the specified strategy.
+
+        Args:
+            plan_id: UUID of the belief plan
+            num_variations: Total number of ads to generate
+            strategy: How to distribute ('round_robin', 'weighted', 'single_angle')
+
+        Returns:
+            List of dicts, each with angle_id, belief_statement, headline, primary_text
+        """
+        plan_data = await self.get_belief_plan_with_copy(plan_id)
+        if not plan_data or not plan_data.get("angles"):
+            logger.error(f"No angles found for plan {plan_id}")
+            return []
+
+        angles = plan_data["angles"]
+        selected = []
+
+        if strategy == "round_robin":
+            # Distribute evenly across angles
+            angle_index = 0
+            for i in range(num_variations):
+                angle = angles[angle_index % len(angles)]
+                copy_set = angle.get("copy_set", {})
+
+                # Get headline and primary text variants
+                headlines = copy_set.get("headline_variants", [])
+                primary_texts = copy_set.get("primary_text_variants", [])
+
+                # Cycle through variants
+                headline_idx = i % len(headlines) if headlines else 0
+                primary_idx = i % len(primary_texts) if primary_texts else 0
+
+                selected.append({
+                    "angle_id": angle["id"],
+                    "angle_name": angle["name"],
+                    "belief_statement": angle["belief_statement"],
+                    "mechanism_hypothesis": angle.get("mechanism_hypothesis", ""),
+                    "headline": headlines[headline_idx].get("text", "") if headlines else "",
+                    "primary_text": primary_texts[primary_idx].get("text", "") if primary_texts else "",
+                    "token_context": copy_set.get("token_context", {}),
+                    "variation_index": i
+                })
+
+                angle_index += 1
+
+        elif strategy == "single_angle":
+            # Use only the first angle, vary copy
+            angle = angles[0]
+            copy_set = angle.get("copy_set", {})
+            headlines = copy_set.get("headline_variants", [])
+            primary_texts = copy_set.get("primary_text_variants", [])
+
+            for i in range(num_variations):
+                headline_idx = i % len(headlines) if headlines else 0
+                primary_idx = i % len(primary_texts) if primary_texts else 0
+
+                selected.append({
+                    "angle_id": angle["id"],
+                    "angle_name": angle["name"],
+                    "belief_statement": angle["belief_statement"],
+                    "mechanism_hypothesis": angle.get("mechanism_hypothesis", ""),
+                    "headline": headlines[headline_idx].get("text", "") if headlines else "",
+                    "primary_text": primary_texts[primary_idx].get("text", "") if primary_texts else "",
+                    "token_context": copy_set.get("token_context", {}),
+                    "variation_index": i
+                })
+
+        return selected
+
+    async def get_template_image_for_plan(
+        self,
+        plan_id: UUID,
+        primary_only: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the template image path for a belief plan.
+
+        Args:
+            plan_id: UUID of the belief plan
+            primary_only: If True, only return the primary template
+
+        Returns:
+            Dict with storage_path, name, or None if no template
+        """
+        try:
+            query = self.supabase.table("belief_plan_templates").select(
+                "template_id, template_source, is_primary"
+            ).eq("plan_id", str(plan_id))
+
+            if primary_only:
+                query = query.eq("is_primary", True)
+
+            result = query.execute()
+
+            if not result.data:
+                return None
+
+            tpl = result.data[0]
+            tpl_table = tpl["template_source"]
+
+            # Get template details including storage path
+            tpl_result = self.supabase.table(tpl_table).select(
+                "id, name, storage_path"
+            ).eq("id", tpl["template_id"]).execute()
+
+            if tpl_result.data:
+                return {
+                    **tpl_result.data[0],
+                    "source": tpl["template_source"]
+                }
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get template for plan {plan_id}: {e}")
+            return None
+

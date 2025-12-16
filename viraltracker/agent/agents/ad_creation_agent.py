@@ -2971,7 +2971,8 @@ async def complete_ad_workflow(
     selected_image_paths: Optional[List[str]] = None,
     persona_id: Optional[str] = None,
     variant_id: Optional[str] = None,
-    additional_instructions: Optional[str] = None
+    additional_instructions: Optional[str] = None,
+    belief_plan_id: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -3007,6 +3008,7 @@ async def complete_ad_workflow(
         content_source: Source for ad content variations:
             - "hooks": Use hooks from database (default)
             - "recreate_template": Extract template angle and use product benefits
+            - "belief_plan": Use angles and copy from a belief plan
         color_mode: Color scheme to use ("original", "complementary", "brand")
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: How to select product images:
@@ -3019,6 +3021,8 @@ async def complete_ad_workflow(
             variant name and description are used to customize ad copy for that specific variant.
         additional_instructions: Optional run-specific instructions for ad generation. Combined
             with brand's ad_creation_notes to guide the AI in creating ads.
+        belief_plan_id: Optional UUID of belief plan. Required when content_source="belief_plan".
+            The plan provides angles with pre-validated copy for Phase 1-2 testing.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3063,9 +3067,13 @@ async def complete_ad_workflow(
             raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
 
         # Validate content_source
-        valid_content_sources = ["hooks", "recreate_template"]
+        valid_content_sources = ["hooks", "recreate_template", "belief_plan"]
         if content_source not in valid_content_sources:
             raise ValueError(f"content_source must be one of {valid_content_sources}, got {content_source}")
+
+        # Validate belief_plan_id is provided when using belief_plan content source
+        if content_source == "belief_plan" and not belief_plan_id:
+            raise ValueError("belief_plan_id is required when content_source='belief_plan'")
 
         logger.info(f"=== STARTING COMPLETE AD WORKFLOW for product {product_id} ===")
         logger.info(f"Generating {num_variations} ad variations using content_source='{content_source}'")
@@ -3073,6 +3081,8 @@ async def complete_ad_workflow(
             logger.info(f"Using persona: {persona_id}")
         if variant_id:
             logger.info(f"Using variant: {variant_id}")
+        if belief_plan_id:
+            logger.info(f"Using belief plan: {belief_plan_id}")
         if additional_instructions:
             logger.info(f"Additional instructions provided: {additional_instructions[:50]}...")
 
@@ -3086,7 +3096,8 @@ async def complete_ad_workflow(
             "brand_colors": brand_colors,
             "persona_id": persona_id,
             "variant_id": variant_id,
-            "additional_instructions": additional_instructions
+            "additional_instructions": additional_instructions,
+            "belief_plan_id": belief_plan_id
         }
 
         # STAGE 1: Initialize ad run and upload reference ad
@@ -3212,6 +3223,8 @@ async def complete_ad_workflow(
                 limit=50,
                 active_only=True
             )
+        elif content_source == "belief_plan":
+            logger.info("Stage 3: Skipping hooks (using belief_plan mode)")
         else:
             logger.info("Stage 3: Skipping hooks (using recreate_template mode)")
 
@@ -3269,6 +3282,107 @@ async def complete_ad_workflow(
                 count=num_variations,
                 persona_data=persona_data
             )
+        elif content_source == "belief_plan":
+            # Belief plan flow - use pre-validated angles and copy
+            logger.info(f"Stage 6: Getting {num_variations} angles from belief plan {belief_plan_id}...")
+
+            # Get angles with copy from the belief plan
+            selected_angles = await ctx.deps.ad_creation.select_angles_for_generation(
+                plan_id=UUID(belief_plan_id),
+                num_variations=num_variations,
+                strategy="round_robin"
+            )
+
+            if not selected_angles:
+                raise ValueError(f"No angles found in belief plan {belief_plan_id}. Create angles in Ad Planning first.")
+
+            logger.info(f"  Retrieved {len(selected_angles)} angle variations")
+
+            # Get ALL templates from the belief plan to cycle through anchor texts
+            # Phase 1-2 CRITICAL: The on-image text should be the template's anchor text,
+            # NOT the copy scaffold headline. The headline/primary_text are for Meta ad fields.
+            # We cycle through templates to ensure each variation gets a different anchor text.
+            template_anchor_texts = []
+            try:
+                db = ctx.deps.ad_creation.supabase
+
+                # Get all templates linked to the plan
+                templates_result = db.table("belief_plan_templates").select(
+                    "template_id, template_source, is_primary"
+                ).eq("plan_id", belief_plan_id).order("is_primary", desc=True).execute()
+
+                for tpl in templates_result.data or []:
+                    tpl_source = tpl["template_source"]
+                    tpl_id = tpl["template_id"]
+
+                    # Get layout_analysis from template
+                    tpl_result = db.table(tpl_source).select(
+                        "name, layout_analysis"
+                    ).eq("id", tpl_id).execute()
+
+                    if tpl_result.data:
+                        layout = tpl_result.data[0].get("layout_analysis", {})
+                        anchor = layout.get("anchor_text", "") or ""
+                        template_name = tpl_result.data[0].get("name", "Unknown")
+                        template_type = layout.get("template_type", "observation_shot")
+
+                        template_anchor_texts.append({
+                            "anchor_text": anchor,
+                            "template_name": template_name,
+                            "template_type": template_type,
+                            "template_id": tpl_id
+                        })
+                        logger.info(f"  Template: {template_name} ({template_type}) - Anchor: '{anchor or 'None'}'")
+
+            except Exception as e:
+                logger.warning(f"  Could not get templates: {e}")
+
+            if not template_anchor_texts:
+                logger.warning("  No templates found - ads will have no on-image text")
+                template_anchor_texts = [{"anchor_text": "", "template_name": "None", "template_type": "none", "template_id": None}]
+
+            logger.info(f"  Found {len(template_anchor_texts)} templates to cycle through")
+
+            # Convert angles to the same format as selected_hooks for downstream compatibility
+            # IMPORTANT: For Phase 1-2 belief testing:
+            # - adapted_text = template's anchor text (short observational line for ON the image)
+            # - meta_headline = copy scaffold headline (for Meta's headline field BELOW image)
+            # - meta_primary_text = copy scaffold primary text (for Meta's primary text field ABOVE image)
+            # We cycle through templates round-robin to ensure variety in on-image text
+            selected_hooks = []
+            for i, angle in enumerate(selected_angles):
+                # Copy scaffold generated text (for Meta ad fields, NOT on-image)
+                meta_headline = angle.get("headline", "")
+                meta_primary_text = angle.get("primary_text", "")
+                belief_statement = angle.get("belief_statement", "")
+
+                # Cycle through templates round-robin to get different anchor texts
+                template_info = template_anchor_texts[i % len(template_anchor_texts)]
+                on_image_text = template_info["anchor_text"]
+
+                selected_hooks.append({
+                    "hook_id": angle.get("angle_id"),  # Use angle_id as hook_id for tracking
+                    "text": belief_statement,  # Original belief statement
+                    "category": "belief_test",  # All belief plan hooks are belief tests
+                    "framework": f"Angle: {angle.get('angle_name', 'Unknown')}",
+                    "impact_score": 0,  # No impact score for belief angles
+                    "reasoning": f"Belief plan angle: {angle.get('angle_name')}. Testing: {belief_statement[:100]}",
+                    # ON-IMAGE TEXT: Template's anchor text (observational, short)
+                    "adapted_text": on_image_text,
+                    # META AD FIELDS (outside the image)
+                    "meta_headline": meta_headline,  # Below image in Meta feed
+                    "meta_primary_text": meta_primary_text,  # Above image in Meta feed
+                    # Additional belief plan specific fields
+                    "belief_plan_id": belief_plan_id,
+                    "template_id": template_info["template_id"],
+                    "template_name": template_info["template_name"],
+                    "mechanism_hypothesis": angle.get("mechanism_hypothesis", ""),
+                    "token_context": angle.get("token_context", {}),
+                    "is_belief_plan": True  # Flag to indicate this is Phase 1-2 belief testing
+                })
+                logger.info(f"  Variation {i+1}: {angle.get('angle_name')}")
+                logger.info(f"    Template: {template_info['template_name']} | On-image: '{on_image_text or 'None'}'")
+                logger.info(f"    Meta headline: '{meta_headline[:40]}...' " if meta_headline else "    Meta headline: (none)")
         else:
             # Recreate template flow
             if not used_cache:

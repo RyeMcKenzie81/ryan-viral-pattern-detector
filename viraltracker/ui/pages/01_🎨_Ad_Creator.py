@@ -12,8 +12,11 @@ This page allows users to:
 import streamlit as st
 import base64
 import asyncio
+import logging
 from pathlib import Path
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
@@ -39,6 +42,10 @@ if 'num_variations' not in st.session_state:
     st.session_state.num_variations = 5
 if 'content_source' not in st.session_state:
     st.session_state.content_source = "hooks"
+if 'selected_belief_plan_id' not in st.session_state:
+    st.session_state.selected_belief_plan_id = None
+if 'belief_plan_data' not in st.session_state:
+    st.session_state.belief_plan_data = None
 if 'color_mode' not in st.session_state:
     st.session_state.color_mode = "original"
 if 'image_selection_mode' not in st.session_state:
@@ -292,6 +299,144 @@ def get_ad_run_details(ad_run_id: str):
         return None
 
 
+def get_belief_plans_for_product(product_id: str):
+    """Get belief plans for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("belief_plans").select(
+            "id, name, status, phase_id, created_at"
+        ).eq("product_id", product_id).order("updated_at", desc=True).execute()
+
+        plans = []
+        for row in result.data or []:
+            # Get angle count
+            angle_result = db.table("belief_plan_angles").select(
+                "id", count="exact"
+            ).eq("plan_id", row["id"]).execute()
+
+            plans.append({
+                **row,
+                "angle_count": angle_result.count if angle_result.count else 0
+            })
+
+        return plans
+    except Exception as e:
+        logger.error(f"Failed to get belief plans: {e}")
+        return []
+
+
+def get_belief_plan_details(plan_id: str):
+    """Get belief plan with angles and copy sets for preview."""
+    try:
+        db = get_supabase_client()
+
+        # Get plan
+        plan_result = db.table("belief_plans").select("*").eq("id", plan_id).execute()
+        if not plan_result.data:
+            return None
+
+        plan = plan_result.data[0]
+
+        # Get angles
+        angles_result = db.table("belief_plan_angles").select(
+            "angle_id, sort_order"
+        ).eq("plan_id", plan_id).order("sort_order").execute()
+
+        angles = []
+        for plan_angle in angles_result.data or []:
+            angle_result = db.table("belief_angles").select(
+                "id, name, belief_statement"
+            ).eq("id", plan_angle["angle_id"]).execute()
+
+            if angle_result.data:
+                angle_data = angle_result.data[0]
+
+                # Get copy set
+                copy_result = db.table("angle_copy_sets").select(
+                    "headline_variants, primary_text_variants"
+                ).eq("angle_id", angle_data["id"]).eq("phase_id", plan.get("phase_id", 1)).execute()
+
+                copy_set = copy_result.data[0] if copy_result.data else None
+
+                angles.append({
+                    **angle_data,
+                    "has_copy": copy_set is not None,
+                    "headline_count": len(copy_set.get("headline_variants", [])) if copy_set else 0,
+                    "primary_text_count": len(copy_set.get("primary_text_variants", [])) if copy_set else 0
+                })
+
+        return {
+            "plan": plan,
+            "angles": angles
+        }
+    except Exception as e:
+        logger.error(f"Failed to get belief plan details: {e}")
+        return None
+
+
+def _render_belief_plan_selector():
+    """Render belief plan selector UI within the form."""
+    product_id = st.session_state.selected_product.get("id") if st.session_state.selected_product else None
+
+    if not product_id:
+        return
+
+    plans = get_belief_plans_for_product(product_id)
+
+    if not plans:
+        st.warning("No belief plans found for this product. Create one in Ad Planning first.")
+        return
+
+    # Filter to show only plans with angles
+    plans_with_angles = [p for p in plans if p.get("angle_count", 0) > 0]
+
+    if not plans_with_angles:
+        st.warning("No belief plans with angles found. Complete your plan in Ad Planning first.")
+        return
+
+    # Plan selector
+    plan_options = {p["id"]: f"{p['name']} (Phase {p['phase_id']}, {p['angle_count']} angles)" for p in plans_with_angles}
+
+    selected_plan_id = st.selectbox(
+        "Select Belief Plan",
+        options=list(plan_options.keys()),
+        format_func=lambda x: plan_options.get(x, x),
+        key="belief_plan_selector",
+        help="Choose a belief plan to use for ad generation"
+    )
+
+    if selected_plan_id:
+        st.session_state.selected_belief_plan_id = selected_plan_id
+
+        # Load plan details for preview
+        plan_details = get_belief_plan_details(selected_plan_id)
+
+        if plan_details:
+            st.session_state.belief_plan_data = plan_details
+
+            # Show preview
+            st.markdown("**Plan Preview:**")
+            plan = plan_details["plan"]
+            angles = plan_details["angles"]
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Phase", plan.get("phase_id", 1))
+            col2.metric("Angles", len(angles))
+            col3.metric("Status", plan.get("status", "draft").title())
+
+            # Show angles summary
+            if angles:
+                st.markdown("**Angles:**")
+                for i, angle in enumerate(angles, 1):
+                    has_copy = "✓" if angle.get("has_copy") else "✗"
+                    st.caption(f"{i}. {angle['name']} - Copy: {has_copy} ({angle.get('headline_count', 0)} headlines)")
+
+                # Check if all angles have copy
+                missing_copy = [a for a in angles if not a.get("has_copy")]
+                if missing_copy:
+                    st.warning(f"⚠️ {len(missing_copy)} angle(s) missing copy. Generate copy in Ad Planning first.")
+
+
 async def run_workflow(
     product_id: str,
     reference_ad_base64: str,
@@ -309,7 +454,8 @@ async def run_workflow(
     brand_name: str = None,
     persona_id: str = None,
     variant_id: str = None,
-    additional_instructions: str = None
+    additional_instructions: str = None,
+    belief_plan_id: str = None
 ):
     """Run the ad creation workflow with optional export.
 
@@ -318,7 +464,7 @@ async def run_workflow(
         reference_ad_base64: Base64-encoded reference ad image
         filename: Original filename of the reference ad
         num_variations: Number of ad variations to generate (1-15)
-        content_source: "hooks" or "recreate_template"
+        content_source: "hooks", "recreate_template", or "belief_plan"
         color_mode: "original", "complementary", or "brand"
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: "auto" or "manual"
@@ -331,6 +477,7 @@ async def run_workflow(
         persona_id: Optional persona UUID for targeted ad copy
         variant_id: Optional variant UUID for specific flavor/size
         additional_instructions: Optional run-specific instructions for ad generation
+        belief_plan_id: Optional belief plan UUID for belief_plan content source
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -362,7 +509,8 @@ async def run_workflow(
         selected_image_paths=selected_image_paths,
         persona_id=persona_id,
         variant_id=variant_id,
-        additional_instructions=additional_instructions
+        additional_instructions=additional_instructions,
+        belief_plan_id=belief_plan_id
     )
 
     # Handle exports if configured
@@ -400,9 +548,6 @@ async def handle_export(
         brand_name: Brand name for context
         deps: AgentDependencies for accessing services
     """
-    import logging
-    logger = logging.getLogger(__name__)
-
     # Collect image URLs for approved ads
     db = get_supabase_client()
     image_urls = []
@@ -1142,13 +1287,19 @@ else:
     with st.form("ad_creation_form"):
         st.subheader("5. Content Source")
 
+        # Determine current index for radio
+        content_options = ["hooks", "recreate_template", "belief_plan"]
+        current_content_source = st.session_state.content_source
+        content_index = content_options.index(current_content_source) if current_content_source in content_options else 0
+
         content_source = st.radio(
             "How should we create the ad variations?",
-            options=["hooks", "recreate_template"],
-            index=0 if st.session_state.content_source == "hooks" else 1,
+            options=content_options,
+            index=content_index,
             format_func=lambda x: {
                 "hooks": "🎣 Hooks List - Use persuasive hooks from your database",
-                "recreate_template": "🔄 Recreate Template - Keep template's angle, vary by product benefits"
+                "recreate_template": "🔄 Recreate Template - Keep template's angle, vary by product benefits",
+                "belief_plan": "🎯 Belief Plan - Use pre-planned angles with validated copy"
             }.get(x, x),
             horizontal=False,
             help="Choose how to generate the messaging for each ad variation",
@@ -1159,8 +1310,16 @@ else:
         # Show explanation based on selection
         if content_source == "hooks":
             st.info("💡 Each variation will use a different persuasive hook from your hooks database, combined with the template's visual style.")
-        else:
+        elif content_source == "recreate_template":
             st.info("💡 The template's existing angle/message will be analyzed and recreated using your product's different benefits and USPs.")
+        else:  # belief_plan
+            st.info("💡 Use angles and copy from a belief plan you created in Ad Planning. Copy is pre-validated with guardrails for Phase 1-2 testing.")
+
+            # Show belief plan selector if product is selected
+            if st.session_state.selected_product:
+                _render_belief_plan_selector()
+            else:
+                st.warning("⚠️ Select a product first to see available belief plans.")
 
         st.divider()
 
@@ -1176,7 +1335,11 @@ else:
         )
         st.session_state.num_variations = num_variations
 
-        variation_source = "hooks" if content_source == "hooks" else "benefits/USPs"
+        variation_source = {
+            "hooks": "hooks",
+            "recreate_template": "benefits/USPs",
+            "belief_plan": "belief angles"
+        }.get(content_source, "hooks")
         st.caption(f"Will generate {num_variations} ads using different {variation_source}")
 
         st.divider()
@@ -1310,6 +1473,11 @@ else:
             variant_id = st.session_state.selected_variant_id
             add_instructions = st.session_state.additional_instructions
 
+            # Get belief_plan_id if using belief_plan content source
+            belief_plan_id = None
+            if content_source == "belief_plan":
+                belief_plan_id = st.session_state.selected_belief_plan_id
+
             # Run workflow synchronously (simpler and more reliable than threading)
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -1328,7 +1496,8 @@ else:
                 brand_name=brd_name,
                 persona_id=persona_id,
                 variant_id=variant_id,
-                additional_instructions=add_instructions
+                additional_instructions=add_instructions,
+                belief_plan_id=belief_plan_id
             ))
 
             # Record template usage if a scraped template was used

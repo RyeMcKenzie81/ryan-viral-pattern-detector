@@ -92,6 +92,9 @@ All pre-scored 15/15 for Phase 1-2 eligibility.
 - `viraltracker/services/__init__.py` - Export new services
 - `viraltracker/services/planning_service.py` - Copy integration
 - `viraltracker/ui/pages/32_📋_Ad_Planning.py` - 9-step wizard
+- `viraltracker/services/ad_creation_service.py` - Belief plan methods
+- `viraltracker/ui/pages/01_🎨_Ad_Creator.py` - Belief plan content source
+- `viraltracker/agent/agents/ad_creation_agent.py` - belief_plan workflow
 
 ---
 
@@ -126,9 +129,49 @@ All pre-scored 15/15 for Phase 1-2 eligibility.
 
 ---
 
+## Ad Creator Integration (Added 2025-12-16)
+
+### What Was Built
+
+**AdCreationService** (`viraltracker/services/ad_creation_service.py`)
+- `get_belief_plans_for_product()` - Get plans for a product
+- `get_belief_plan_with_copy()` - Get full plan with angles and copy
+- `select_angles_for_generation()` - Select angles with round-robin strategy
+- `get_template_image_for_plan()` - Get template from plan
+
+**Ad Creator UI** (`viraltracker/ui/pages/01_🎨_Ad_Creator.py`)
+- Added "🎯 Belief Plan" as third content source option
+- Belief plan selector with preview (phase, angles, copy status)
+- Passes `belief_plan_id` through to workflow
+
+**Ad Creation Agent** (`viraltracker/agent/agents/ad_creation_agent.py`)
+- `complete_ad_workflow()` now accepts `belief_plan_id` parameter
+- Added "belief_plan" to valid content sources
+- Stage 6 belief_plan branch that:
+  - Gets angles from plan using `select_angles_for_generation()`
+  - Gets template's anchor text for on-image text
+  - Stores copy scaffold headline/primary_text for Meta ad fields
+
+### Critical Copy Separation (Phase 1-2)
+
+The implementation correctly separates three types of text:
+
+| Field | Location | Example | Source |
+|-------|----------|---------|--------|
+| `adapted_text` | ON the image | "Noticing this?" | Template's anchor_text |
+| `meta_headline` | Below image (Meta) | "Joint stiffness isn't age..." | Copy scaffold headline |
+| `meta_primary_text` | Above image (Meta) | "If you've noticed..." | Copy scaffold primary text |
+
+**Key Rules:**
+- Image shows the situation, not the solution
+- On-image text is observational, not persuasive
+- Claims, benefits, mechanisms belong OUTSIDE the image
+
+---
+
 ## Next Steps
 
 1. Test copy generation when Railway is back
-2. Verify compiled_payload includes copy sets
-3. Wire copy into ad creation workflow
+2. Test end-to-end belief plan → ad generation flow
+3. Verify meta_headline/meta_primary_text export to Meta
 4. Consider: Template thumbnail previews in evaluation UI
