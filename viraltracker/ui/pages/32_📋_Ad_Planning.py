@@ -87,6 +87,7 @@ def init_session_state():
         "plan_name": "",
         "compilation_result": None,
         "validation_warnings": [],
+        "validation_done": False,
 
         # AI generation state
         "generating": False,
@@ -841,20 +842,29 @@ def render_step_8_review():
             st.warning(warning)
 
     # Validate button
-    if st.button("Validate Plan"):
-        warnings = []
-        if len(st.session_state.angles) < 5:
-            warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(st.session_state.angles)}.")
-        if len(st.session_state.angles) > 7:
-            warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(st.session_state.angles)}.")
-        st.session_state.validation_warnings = warnings
-        if not warnings:
-            st.success("Plan is valid!")
-        st.rerun()
+    col_val1, col_val2 = st.columns([1, 3])
+    with col_val1:
+        if st.button("Validate Plan"):
+            warnings = []
+            if len(st.session_state.angles) < 5:
+                warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(st.session_state.angles)}.")
+            if len(st.session_state.angles) > 7:
+                warnings.append(f"Phase 1 recommends 5-7 angles. You have {len(st.session_state.angles)}.")
+            if len(st.session_state.selected_templates) < 1:
+                warnings.append("No templates selected.")
+            st.session_state.validation_warnings = warnings
+            st.session_state.validation_done = True
+    with col_val2:
+        if st.session_state.get("validation_done"):
+            if st.session_state.validation_warnings:
+                for w in st.session_state.validation_warnings:
+                    st.warning(w)
+            else:
+                st.success("Plan is valid!")
 
-    # Compile button
+    # Save button
     st.divider()
-    if st.button("Compile & Save Plan", type="primary"):
+    if st.button("Save Plan", type="primary"):
         try:
             with st.spinner("Creating plan..."):
                 # First create the angles in the database
@@ -877,22 +887,25 @@ def render_step_8_review():
                     persona_id=UUID(st.session_state.selected_persona_id),
                     jtbd_framed_id=jtbd_id,
                     angle_ids=created_angle_ids,
-                    template_ids=st.session_state.selected_templates,  # Pass dicts with id and source
+                    template_ids=st.session_state.selected_templates,
                     offer_id=UUID(st.session_state.selected_offer_id) if st.session_state.selected_offer_id else None,
                     phase_id=1,
                     template_strategy=st.session_state.template_strategy,
                     ads_per_angle=st.session_state.ads_per_angle
                 )
 
-                # Compile the plan
-                compiled = service.compile_plan(plan.id)
-                st.session_state.compilation_result = compiled
+                st.success(f"Plan saved successfully!")
+                st.info(f"Plan ID: `{plan.id}`")
 
-                st.success(f"Plan created and compiled! Plan ID: {plan.id}")
-
-                # Show compiled payload
-                with st.expander("Compiled Payload (JSON)", expanded=False):
-                    st.json(compiled.model_dump(mode="json"))
+                # Show plan summary
+                total_ads = len(st.session_state.angles) * st.session_state.ads_per_angle
+                with st.expander("Plan Summary", expanded=True):
+                    st.write(f"**Name:** {st.session_state.plan_name}")
+                    st.write(f"**Angles:** {len(st.session_state.angles)}")
+                    st.write(f"**Templates:** {len(st.session_state.selected_templates)}")
+                    st.write(f"**Ads per Angle:** {st.session_state.ads_per_angle}")
+                    st.write(f"**Total Ads to Generate:** {total_ads}")
+                    st.write(f"**Strategy:** {st.session_state.template_strategy}")
 
         except Exception as e:
             st.error(f"Failed to create plan: {e}")
