@@ -692,25 +692,22 @@ def scrape_single_landing_page(brand_id: str, url: str, product_id: Optional[str
         True if successful, False otherwise
     """
     from viraltracker.services.brand_research_service import BrandResearchService
+    from viraltracker.services.web_scraping_service import WebScrapingService, LANDING_PAGE_SCHEMA
 
     async def _scrape():
         service = BrandResearchService()
-        # Use the service's internal scraping method
-        from viraltracker.services.firecrawl_service import FireCrawlService
-
-        scraper = FireCrawlService()
+        scraper = WebScrapingService()
 
         try:
             # Scrape the page
-            scrape_result = scraper.scrape_url(url)
+            scrape_result = await scraper.scrape_url_async(url)
             if not scrape_result or not scrape_result.success:
                 return False
 
             # Try structured extraction
             extract_result = None
             try:
-                from viraltracker.services.brand_research_service import LANDING_PAGE_SCHEMA
-                extract_result = scraper.extract_structured(url=url, schema=LANDING_PAGE_SCHEMA)
+                extract_result = await scraper.extract_structured_async(url=url, schema=LANDING_PAGE_SCHEMA)
             except Exception:
                 pass
 
