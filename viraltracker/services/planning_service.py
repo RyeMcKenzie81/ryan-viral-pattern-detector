@@ -493,15 +493,21 @@ class PlanningService:
                 t["source"] = "manual"
                 templates.append(t)
 
-            # 2. Get scraped templates (scraped_templates)
-            result = self.supabase.table("scraped_templates").select("*").eq(
-                "is_active", True
-            ).execute()
+            # 2. Get scraped templates (scraped_templates) with asset info for images
+            result = self.supabase.table("scraped_templates").select(
+                "*, scraped_ad_assets(storage_path, original_url, asset_type)"
+            ).eq("is_active", True).execute()
             for t in result.data or []:
                 t["source"] = "scraped"
                 # Map scraped_templates fields to common format
                 if not t.get("instructions"):
                     t["instructions"] = t.get("template_text", "")
+                # Extract asset info for display
+                asset = t.get("scraped_ad_assets", {})
+                if asset:
+                    t["asset_storage_path"] = asset.get("storage_path")
+                    t["asset_original_url"] = asset.get("original_url")
+                    t["asset_type"] = asset.get("asset_type")
                 templates.append(t)
 
             return templates
@@ -521,7 +527,7 @@ class PlanningService:
         persona_id: UUID,
         jtbd_framed_id: UUID,
         angle_ids: List[UUID],
-        template_ids: List[UUID],
+        template_ids: List[Dict[str, Any]],  # List of {"id": UUID, "source": "ad_brief_templates"|"scraped_templates"}
         offer_id: Optional[UUID] = None,
         phase_id: int = 1,
         template_strategy: str = "fixed",
@@ -538,7 +544,7 @@ class PlanningService:
             persona_id: Persona UUID
             jtbd_framed_id: JTBD UUID
             angle_ids: List of angle UUIDs
-            template_ids: List of template UUIDs
+            template_ids: List of dicts with 'id' and 'source' keys
             offer_id: Optional offer UUID
             phase_id: Phase 1-6
             template_strategy: fixed or random
@@ -577,11 +583,14 @@ class PlanningService:
                 "display_order": i
             }).execute()
 
-        # Link templates
-        for i, template_id in enumerate(template_ids):
+        # Link templates (with source tracking)
+        for i, template_info in enumerate(template_ids):
+            template_id = template_info.get("id") if isinstance(template_info, dict) else template_info
+            template_source = template_info.get("source", "ad_brief_templates") if isinstance(template_info, dict) else "ad_brief_templates"
             self.supabase.table("belief_plan_templates").insert({
                 "plan_id": str(plan_id),
                 "template_id": str(template_id),
+                "template_source": template_source,
                 "display_order": i
             }).execute()
 

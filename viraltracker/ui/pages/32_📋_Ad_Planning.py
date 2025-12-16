@@ -79,7 +79,7 @@ def init_session_state():
         "angle_suggestions": [],
 
         # Step 7: Templates
-        "selected_template_ids": [],
+        "selected_templates": [],  # List of {"id": str, "source": str, "name": str}
         "template_strategy": "fixed",
         "ads_per_angle": 3,
 
@@ -154,7 +154,7 @@ def can_proceed_to_step(step: int) -> bool:
     elif step == 7:
         return len(st.session_state.angles) >= 1
     elif step == 8:
-        return len(st.session_state.selected_template_ids) >= 1
+        return len(st.session_state.selected_templates) >= 1
     return True
 
 
@@ -681,9 +681,26 @@ def render_step_7_templates():
         st.warning("No templates found. Please create templates first.")
         return
 
+    # Helper to check if template is selected
+    def is_template_selected(template_id: str) -> bool:
+        return any(t.get("id") == template_id for t in st.session_state.selected_templates)
+
+    def add_template(template_id: str, source: str, name: str):
+        if not is_template_selected(template_id):
+            st.session_state.selected_templates.append({
+                "id": template_id,
+                "source": "ad_brief_templates" if source == "manual" else "scraped_templates",
+                "name": name
+            })
+
+    def remove_template(template_id: str):
+        st.session_state.selected_templates = [
+            t for t in st.session_state.selected_templates if t.get("id") != template_id
+        ]
+
     # Separate templates by source
     manual_templates = [t for t in templates if t.get('source') == 'manual']
-    scraped_templates = [t for t in templates if t.get('source') == 'scraped']
+    scraped_template_list = [t for t in templates if t.get('source') == 'scraped']
 
     # Manual templates section
     if manual_templates:
@@ -696,19 +713,19 @@ def render_step_7_templates():
                     st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
             with col2:
                 template_id = template.get('id')
-                is_selected = template_id in st.session_state.selected_template_ids
+                is_selected = is_template_selected(template_id)
                 if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
-                    if template_id not in st.session_state.selected_template_ids:
-                        st.session_state.selected_template_ids.append(template_id)
+                    if not is_selected:
+                        add_template(template_id, "manual", template.get('name', 'Unnamed'))
                 else:
-                    if template_id in st.session_state.selected_template_ids:
-                        st.session_state.selected_template_ids.remove(template_id)
+                    if is_selected:
+                        remove_template(template_id)
             st.divider()
 
     # Scraped templates section
-    if scraped_templates:
-        st.subheader(f"Scraped Templates ({len(scraped_templates)})")
-        for template in scraped_templates:
+    if scraped_template_list:
+        st.subheader(f"Scraped Templates ({len(scraped_template_list)})")
+        for template in scraped_template_list:
             col1, col2 = st.columns([4, 1])
             with col1:
                 st.markdown(f"**{template.get('name', 'Unnamed')}**")
@@ -723,16 +740,16 @@ def render_step_7_templates():
                     st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
             with col2:
                 template_id = template.get('id')
-                is_selected = template_id in st.session_state.selected_template_ids
+                is_selected = is_template_selected(template_id)
                 if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
-                    if template_id not in st.session_state.selected_template_ids:
-                        st.session_state.selected_template_ids.append(template_id)
+                    if not is_selected:
+                        add_template(template_id, "scraped", template.get('name', 'Unnamed'))
                 else:
-                    if template_id in st.session_state.selected_template_ids:
-                        st.session_state.selected_template_ids.remove(template_id)
+                    if is_selected:
+                        remove_template(template_id)
             st.divider()
 
-    if not manual_templates and not scraped_templates:
+    if not manual_templates and not scraped_template_list:
         st.warning("No templates found. Please create templates first.")
 
     # Template settings
@@ -753,7 +770,7 @@ def render_step_7_templates():
             value=st.session_state.ads_per_angle
         )
 
-    st.info(f"Selected {len(st.session_state.selected_template_ids)} template(s)")
+    st.info(f"Selected {len(st.session_state.selected_templates)} template(s)")
 
     # Navigation
     st.divider()
@@ -806,7 +823,7 @@ def render_step_8_review():
         st.markdown("**Testing Config**")
         st.write(f"Phase: 1 (Discovery)")
         st.write(f"Angles: {len(st.session_state.angles)}")
-        st.write(f"Templates: {len(st.session_state.selected_template_ids)}")
+        st.write(f"Templates: {len(st.session_state.selected_templates)}")
         st.write(f"Template Strategy: {st.session_state.template_strategy}")
         st.write(f"Ads per Angle: {st.session_state.ads_per_angle}")
         total_ads = len(st.session_state.angles) * st.session_state.ads_per_angle
@@ -860,7 +877,7 @@ def render_step_8_review():
                     persona_id=UUID(st.session_state.selected_persona_id),
                     jtbd_framed_id=jtbd_id,
                     angle_ids=created_angle_ids,
-                    template_ids=[UUID(t) for t in st.session_state.selected_template_ids],
+                    template_ids=st.session_state.selected_templates,  # Pass dicts with id and source
                     offer_id=UUID(st.session_state.selected_offer_id) if st.session_state.selected_offer_id else None,
                     phase_id=1,
                     template_strategy=st.session_state.template_strategy,
