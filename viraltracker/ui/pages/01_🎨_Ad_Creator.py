@@ -389,15 +389,15 @@ def get_belief_plan_details(plan_id: str):
         for idx, tmpl in enumerate(templates_result.data or []):
             template_id = tmpl["template_id"]
 
-            # Try scraped_templates first (has storage_path, anchor_text)
+            # Try scraped_templates first (has storage_path)
             # then ad_brief_templates (only has id, name, instructions)
             tmpl_result = db.table("scraped_templates").select(
-                "id, name, storage_path, anchor_text"
+                "id, name, storage_path"
             ).eq("id", template_id).execute()
 
             template_source = "scraped_templates"
             if not tmpl_result.data:
-                # Try ad_brief_templates (no storage_path or anchor_text columns)
+                # Try ad_brief_templates (no storage_path column)
                 tmpl_result = db.table("ad_brief_templates").select(
                     "id, name, instructions"
                 ).eq("id", template_id).execute()
