@@ -1099,3 +1099,233 @@ Return ONLY the JSON array, no other text."""
         except Exception as e:
             logger.error(f"Failed to generate angle suggestions: {e}")
             return []
+
+    # ============================================
+    # COPY SCAFFOLDS & TEMPLATE EVALUATION
+    # ============================================
+
+    def get_phase_eligible_templates(
+        self,
+        brand_id: Optional[UUID] = None,
+        phase_id: int = 1
+    ) -> List[Dict[str, Any]]:
+        """
+        Get templates that are eligible for a specific phase.
+
+        Uses the TemplateEvaluationService to filter templates by eligibility.
+
+        Args:
+            brand_id: Optional brand filter
+            phase_id: Phase to filter for (default 1)
+
+        Returns:
+            List of eligible templates with their evaluation data
+        """
+        from .template_evaluation_service import TemplateEvaluationService
+        eval_service = TemplateEvaluationService()
+        return eval_service.get_phase_eligible_templates(brand_id, phase_id)
+
+    def get_all_templates_with_eligibility(
+        self,
+        brand_id: Optional[UUID] = None,
+        phase_id: int = 1
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all templates with their eligibility status.
+
+        Args:
+            brand_id: Optional brand filter
+            phase_id: Phase to check eligibility for
+
+        Returns:
+            List of all templates with eligibility info
+        """
+        from .template_evaluation_service import TemplateEvaluationService
+        eval_service = TemplateEvaluationService()
+        return eval_service.get_all_templates_with_eligibility(brand_id, phase_id)
+
+    def generate_copy_sets_for_plan(self, plan_id: UUID) -> List[Dict[str, Any]]:
+        """
+        Generate copy sets for all angles in a plan.
+
+        Args:
+            plan_id: Plan UUID
+
+        Returns:
+            List of generated copy sets
+        """
+        from .copy_scaffold_service import CopyScaffoldService
+        copy_service = CopyScaffoldService()
+
+        plan = self.get_plan(plan_id)
+        if not plan:
+            logger.error(f"Plan not found: {plan_id}")
+            return []
+
+        copy_sets = []
+        for angle in plan.angles:
+            copy_set = copy_service.generate_copy_set(
+                angle_id=angle.id,
+                phase_id=plan.phase_id,
+                product_id=plan.product_id,
+                persona_id=plan.persona_id,
+                jtbd_id=plan.jtbd_framed_id,
+                offer_id=plan.offer_id,
+                brand_id=plan.brand_id
+            )
+            if copy_set:
+                copy_sets.append({
+                    "angle_id": str(angle.id),
+                    "angle_name": angle.name,
+                    "headline_variants": copy_set.headline_variants,
+                    "primary_text_variants": copy_set.primary_text_variants,
+                    "token_context": copy_set.token_context,
+                    "guardrails_validated": copy_set.guardrails_validated
+                })
+
+        logger.info(f"Generated {len(copy_sets)} copy sets for plan {plan_id}")
+        return copy_sets
+
+    def get_copy_sets_for_plan(self, plan_id: UUID) -> List[Dict[str, Any]]:
+        """
+        Get existing copy sets for all angles in a plan.
+
+        Args:
+            plan_id: Plan UUID
+
+        Returns:
+            List of copy sets for the plan's angles
+        """
+        from .copy_scaffold_service import CopyScaffoldService
+        copy_service = CopyScaffoldService()
+        copy_sets = copy_service.get_copy_sets_for_plan(plan_id)
+
+        return [
+            {
+                "angle_id": str(cs.angle_id),
+                "headline_variants": cs.headline_variants,
+                "primary_text_variants": cs.primary_text_variants,
+                "token_context": cs.token_context,
+                "guardrails_validated": cs.guardrails_validated
+            }
+            for cs in copy_sets
+        ]
+
+    def compile_plan_with_copy(self, plan_id: UUID) -> CompiledPlanPayload:
+        """
+        Compile a plan with copy sets attached to angles.
+
+        This is an enhanced version of compile_plan that includes copy variants.
+
+        Args:
+            plan_id: Plan UUID
+
+        Returns:
+            CompiledPlanPayload with copy variants per angle
+
+        Raises:
+            ValueError: If plan not found or incomplete
+        """
+        plan = self.get_plan(plan_id)
+        if not plan:
+            raise ValueError(f"Plan not found: {plan_id}")
+
+        if not plan.angles:
+            raise ValueError("Plan has no angles")
+
+        if not plan.templates:
+            raise ValueError("Plan has no templates")
+
+        # Get copy sets for all angles
+        from .copy_scaffold_service import CopyScaffoldService
+        copy_service = CopyScaffoldService()
+
+        # Build compiled payload with copy
+        angles_with_copy = []
+        for a in plan.angles:
+            angle_data = {
+                "angle_id": str(a.id),
+                "name": a.name,
+                "belief_statement": a.belief_statement
+            }
+
+            # Get copy set for this angle
+            copy_set = copy_service.get_copy_set_for_angle(a.id, plan.phase_id)
+            if copy_set:
+                angle_data["headline_variants"] = copy_set.headline_variants
+                angle_data["primary_text_variants"] = copy_set.primary_text_variants
+                angle_data["token_context"] = copy_set.token_context
+                angle_data["guardrails_validated"] = copy_set.guardrails_validated
+            else:
+                angle_data["headline_variants"] = []
+                angle_data["primary_text_variants"] = []
+                angle_data["token_context"] = {}
+                angle_data["guardrails_validated"] = False
+
+            angles_with_copy.append(angle_data)
+
+        compiled = CompiledPlanPayload(
+            plan_id=plan.id,
+            brand_id=plan.brand_id,
+            product_id=plan.product_id,
+            offer_id=plan.offer_id,
+            persona_id=plan.persona_id,
+            jtbd_framed_id=plan.jtbd_framed_id,
+            phase_id=plan.phase_id,
+            angles=angles_with_copy,
+            templates=[
+                {
+                    "template_id": t.get("id"),
+                    "name": t.get("name"),
+                    "source": t.get("source", "manual")
+                }
+                for t in plan.templates
+            ],
+            template_strategy=plan.template_strategy,
+            ads_per_angle=plan.ads_per_angle,
+            locked_fields=["brand_id", "product_id", "persona_id", "jtbd_framed_id"],
+            allowed_variations=["angle_id", "template_id"],
+            compiled_at=datetime.now(),
+            status="ready"
+        )
+
+        # Store compiled payload in plan
+        self.supabase.table("belief_plans").update({
+            "compiled_payload": compiled.model_dump(mode="json"),
+            "compiled_at": datetime.now().isoformat(),
+            "status": "ready"
+        }).eq("id", str(plan_id)).execute()
+
+        logger.info(f"Compiled plan {plan_id} with copy")
+        return compiled
+
+    def get_copy_scaffolds(
+        self,
+        phase_id: int = 1,
+        scope: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get copy scaffolds for a phase.
+
+        Args:
+            phase_id: Phase to get scaffolds for
+            scope: Filter by 'headline' or 'primary_text' (None = both)
+
+        Returns:
+            List of scaffolds
+        """
+        from .copy_scaffold_service import CopyScaffoldService
+        copy_service = CopyScaffoldService()
+        scaffolds = copy_service.get_scaffolds_for_phase(phase_id, scope)
+        return [
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "scope": s.scope,
+                "template_text": s.template_text,
+                "max_chars": s.max_chars,
+                "guardrails": s.guardrails,
+                "required_tokens": copy_service.get_required_tokens(s)
+            }
+            for s in scaffolds
+        ]

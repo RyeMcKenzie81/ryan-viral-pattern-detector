@@ -1,15 +1,16 @@
 """
 Belief-First Ad Planning - Create test plans for discovering winning beliefs.
 
-This page implements an 8-step wizard:
+This page implements a 9-step wizard:
 1. Select Brand
 2. Select Product
 3. Define/Select Offer (optional)
 4. Select/Create Persona
 5. Define/Select JTBD
 6. Define Angles (5-7)
-7. Select Templates
-8. Review & Compile
+7. Select Templates (with phase eligibility filtering)
+8. Generate Copy (mandatory for Phase 1-2)
+9. Review & Compile
 
 Uses direct service calls (not pydantic-graph) because:
 - User-driven wizard flow
@@ -82,8 +83,15 @@ def init_session_state():
         "selected_templates": [],  # List of {"id": str, "source": str, "name": str}
         "template_strategy": "fixed",
         "ads_per_angle": 3,
+        "filter_eligible_only": True,  # Filter to show only phase-eligible templates
 
-        # Step 8: Review
+        # Step 8: Copy Generation
+        "copy_generated": False,
+        "copy_sets": [],  # Generated copy sets per angle
+        "selected_headline_scaffolds": [],
+        "selected_primary_text_scaffolds": [],
+
+        # Step 9: Review
         "plan_name": "",
         "compilation_result": None,
         "validation_warnings": [],
@@ -125,7 +133,7 @@ def render_progress_bar():
     """Render wizard progress indicator."""
     steps = [
         "Brand", "Product", "Offer", "Persona",
-        "JTBD", "Angles", "Templates", "Review"
+        "JTBD", "Angles", "Templates", "Copy", "Review"
     ]
     current = st.session_state.planning_step
 
@@ -156,6 +164,10 @@ def can_proceed_to_step(step: int) -> bool:
         return len(st.session_state.selected_angle_ids) >= 1
     elif step == 8:
         return len(st.session_state.selected_templates) >= 1
+    elif step == 9:
+        # For Phase 1-2, copy must be generated
+        # For later phases, copy is optional
+        return st.session_state.copy_generated or len(st.session_state.copy_sets) > 0
     return True
 
 
@@ -701,16 +713,46 @@ def render_step_6_angles():
 # ============================================
 
 def render_step_7_templates():
-    """Step 7: Select Templates."""
+    """Step 7: Select Templates with phase eligibility filtering."""
     st.header("Step 7: Select Templates")
-    st.write("Choose templates for ad generation.")
+    st.write("Choose templates for ad generation. Phase 1-2 templates are filtered by eligibility.")
 
     if not st.session_state.selected_brand_id:
         st.warning("Please select a brand first.")
         return
 
     service = get_planning_service()
-    templates = service.get_templates_for_brand(UUID(st.session_state.selected_brand_id))
+
+    # For Phase 1-2, show eligibility-filtered templates
+    phase_id = 1  # Default to Phase 1
+
+    # Filter toggle
+    col_filter1, col_filter2 = st.columns([3, 1])
+    with col_filter1:
+        st.session_state.filter_eligible_only = st.checkbox(
+            "Show only Phase 1-2 eligible templates",
+            value=st.session_state.filter_eligible_only,
+            help="Filter templates by D1-D6 evaluation scores (eligible: D6 pass, score >= 12, D2 >= 2)"
+        )
+    with col_filter2:
+        if st.button("Evaluate Templates", help="Go to Template Evaluation page"):
+            st.info("Navigate to Template Evaluation page to run evaluations.")
+
+    # Get templates with eligibility info
+    if st.session_state.filter_eligible_only:
+        templates = service.get_all_templates_with_eligibility(
+            brand_id=UUID(st.session_state.selected_brand_id),
+            phase_id=phase_id
+        )
+        # Filter to only show eligible ones
+        templates = [t for t in templates if t.get("eligible")]
+        if not templates:
+            st.warning("No eligible templates found. Turn off the filter or evaluate templates first.")
+    else:
+        templates = service.get_all_templates_with_eligibility(
+            brand_id=UUID(st.session_state.selected_brand_id),
+            phase_id=phase_id
+        )
 
     if not templates:
         st.warning("No templates found. Please create templates first.")
@@ -733,6 +775,16 @@ def render_step_7_templates():
             t for t in st.session_state.selected_templates if t.get("id") != template_id
         ]
 
+    def render_eligibility_badge(template: Dict) -> str:
+        """Generate eligibility badge text."""
+        if not template.get("evaluated"):
+            return "⚪ Not Evaluated"
+        score = template.get("evaluation_score")
+        if template.get("eligible"):
+            return f"✅ {score:.0f}/15"
+        else:
+            return f"❌ {score:.0f}/15"
+
     # Separate templates by source
     manual_templates = [t for t in templates if t.get('source') == 'manual']
     scraped_template_list = [t for t in templates if t.get('source') == 'scraped']
@@ -742,12 +794,14 @@ def render_step_7_templates():
         st.subheader(f"Manual Templates ({len(manual_templates)})")
         for template in manual_templates:
             template_id = template.get('id')
-            col1, col2 = st.columns([4, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.markdown(f"**{template.get('name', 'Unnamed')}**")
                 if template.get('instructions'):
                     st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
             with col2:
+                st.markdown(render_eligibility_badge(template))
+            with col3:
                 is_selected = is_template_selected(template_id)
                 if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
                     if not is_selected:
@@ -773,18 +827,18 @@ def render_step_7_templates():
             template_id = template.get('id')
             template_name = template.get('name', 'Unnamed')
 
-            # Header row with name and checkbox
-            col1, col2 = st.columns([4, 1])
+            # Header row with name, badge, and checkbox
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.markdown(f"**{template_name}**")
                 source_info = []
-                if template.get('source_brand'):
-                    source_info.append(f"From: {template['source_brand']}")
-                if template.get('industry_niche'):
-                    source_info.append(f"Niche: {template['industry_niche']}")
+                if template.get('category'):
+                    source_info.append(f"Category: {template['category']}")
                 if source_info:
                     st.caption(" | ".join(source_info))
             with col2:
+                st.markdown(render_eligibility_badge(template))
+            with col3:
                 is_selected = is_template_selected(template_id)
                 if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
                     if not is_selected:
@@ -848,17 +902,195 @@ def render_step_7_templates():
         if st.button("← Back to Angles"):
             prev_step()
     with col2:
-        if st.button("Next: Review & Compile →", disabled=not can_proceed_to_step(8)):
+        if st.button("Next: Generate Copy →", disabled=not can_proceed_to_step(8)):
             next_step()
 
 
 # ============================================
-# STEP 8: REVIEW & COMPILE
+# STEP 8: GENERATE COPY
 # ============================================
 
-def render_step_8_review():
-    """Step 8: Review & Compile."""
-    st.header("Step 8: Review & Compile")
+def render_step_8_copy_generation():
+    """Step 8: Generate Copy from scaffolds (mandatory for Phase 1-2)."""
+    st.header("Step 8: Generate Copy")
+    st.write("Generate headline and primary text variants for each angle using copy scaffolds.")
+    st.info("Copy scaffolds use tokenized templates with guardrails to ensure belief-focused messaging.")
+
+    if not st.session_state.selected_jtbd_id or not st.session_state.selected_angle_ids:
+        st.warning("Please complete previous steps first.")
+        return
+
+    service = get_planning_service()
+    jtbd_id = UUID(st.session_state.selected_jtbd_id)
+    phase_id = 1  # Default Phase 1
+
+    # Load angles from database
+    db_angles = service.get_angles_for_jtbd(jtbd_id)
+    selected_angles = [a for a in db_angles if str(a.id) in st.session_state.selected_angle_ids]
+
+    if not selected_angles:
+        st.warning("No angles selected.")
+        return
+
+    # Get available scaffolds
+    scaffolds = service.get_copy_scaffolds(phase_id=phase_id)
+    headline_scaffolds = [s for s in scaffolds if s.get("scope") == "headline"]
+    primary_text_scaffolds = [s for s in scaffolds if s.get("scope") == "primary_text"]
+
+    # Scaffold selection
+    st.subheader("Select Copy Scaffolds")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Headline Scaffolds** (max 40 chars)")
+        for scaffold in headline_scaffolds:
+            scaffold_id = scaffold.get("id")
+            is_selected = scaffold_id in st.session_state.selected_headline_scaffolds
+
+            with st.container():
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    st.markdown(f"**{scaffold.get('name')}**")
+                    st.caption(scaffold.get('template_text', '')[:80] + "...")
+                    if scaffold.get("required_tokens"):
+                        st.caption(f"Tokens: {', '.join(scaffold['required_tokens'])}")
+                with col_b:
+                    if st.checkbox("Use", value=is_selected, key=f"headline_{scaffold_id}"):
+                        if scaffold_id not in st.session_state.selected_headline_scaffolds:
+                            st.session_state.selected_headline_scaffolds.append(scaffold_id)
+                    else:
+                        if scaffold_id in st.session_state.selected_headline_scaffolds:
+                            st.session_state.selected_headline_scaffolds.remove(scaffold_id)
+
+    with col2:
+        st.markdown("**Primary Text Scaffolds**")
+        for scaffold in primary_text_scaffolds:
+            scaffold_id = scaffold.get("id")
+            is_selected = scaffold_id in st.session_state.selected_primary_text_scaffolds
+
+            with st.container():
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    st.markdown(f"**{scaffold.get('name')}**")
+                    st.caption(scaffold.get('template_text', '')[:100] + "...")
+                    if scaffold.get("required_tokens"):
+                        st.caption(f"Tokens: {', '.join(scaffold['required_tokens'])}")
+                with col_b:
+                    if st.checkbox("Use", value=is_selected, key=f"primary_{scaffold_id}"):
+                        if scaffold_id not in st.session_state.selected_primary_text_scaffolds:
+                            st.session_state.selected_primary_text_scaffolds.append(scaffold_id)
+                    else:
+                        if scaffold_id in st.session_state.selected_primary_text_scaffolds:
+                            st.session_state.selected_primary_text_scaffolds.remove(scaffold_id)
+
+    st.divider()
+
+    # Generate copy button
+    selected_headline_count = len(st.session_state.selected_headline_scaffolds)
+    selected_primary_count = len(st.session_state.selected_primary_text_scaffolds)
+
+    st.info(f"Selected: {selected_headline_count} headline scaffolds, {selected_primary_count} primary text scaffolds")
+
+    if st.button("Generate Copy for All Angles", type="primary", disabled=selected_headline_count == 0 and selected_primary_count == 0):
+        with st.spinner("Generating copy variants for all angles..."):
+            from viraltracker.services.copy_scaffold_service import CopyScaffoldService
+            copy_service = CopyScaffoldService()
+
+            copy_sets = []
+            for angle in selected_angles:
+                # Generate copy set for this angle
+                copy_set = copy_service.generate_copy_set(
+                    angle_id=angle.id,
+                    phase_id=phase_id,
+                    product_id=UUID(st.session_state.selected_product_id),
+                    persona_id=UUID(st.session_state.selected_persona_id),
+                    jtbd_id=jtbd_id,
+                    offer_id=UUID(st.session_state.selected_offer_id) if st.session_state.selected_offer_id else None,
+                    brand_id=UUID(st.session_state.selected_brand_id),
+                    headline_scaffold_ids=[UUID(s) for s in st.session_state.selected_headline_scaffolds] if st.session_state.selected_headline_scaffolds else None,
+                    primary_text_scaffold_ids=[UUID(s) for s in st.session_state.selected_primary_text_scaffolds] if st.session_state.selected_primary_text_scaffolds else None
+                )
+
+                if copy_set:
+                    copy_sets.append({
+                        "angle_id": str(angle.id),
+                        "angle_name": angle.name,
+                        "headline_variants": copy_set.headline_variants,
+                        "primary_text_variants": copy_set.primary_text_variants,
+                        "token_context": copy_set.token_context,
+                        "guardrails_validated": copy_set.guardrails_validated
+                    })
+
+            st.session_state.copy_sets = copy_sets
+            st.session_state.copy_generated = True
+            st.success(f"Generated copy for {len(copy_sets)} angles!")
+            st.rerun()
+
+    # Preview generated copy
+    if st.session_state.copy_sets:
+        st.subheader("Generated Copy Preview")
+
+        for copy_set in st.session_state.copy_sets:
+            with st.expander(f"📝 {copy_set.get('angle_name', 'Unknown Angle')}", expanded=True):
+                # Validation status
+                if copy_set.get("guardrails_validated"):
+                    st.success("All copy passes guardrails ✓")
+                else:
+                    st.warning("Some copy may have guardrail violations")
+
+                # Headlines
+                st.markdown("**Headlines:**")
+                for i, variant in enumerate(copy_set.get("headline_variants", []), 1):
+                    text = variant.get("text", "")
+                    length = len(text)
+                    valid = variant.get("valid", True)
+                    status = "✓" if valid else "⚠️"
+                    st.write(f"{i}. {status} `{text}` ({length}/40 chars)")
+                    if not valid and variant.get("issues"):
+                        for issue in variant.get("issues", []):
+                            st.caption(f"   ⚠️ {issue}")
+
+                # Primary text
+                st.markdown("**Primary Text:**")
+                for i, variant in enumerate(copy_set.get("primary_text_variants", []), 1):
+                    text = variant.get("text", "")
+                    valid = variant.get("valid", True)
+                    status = "✓" if valid else "⚠️"
+                    st.text_area(
+                        f"Variant {i} {status}",
+                        value=text,
+                        height=100,
+                        disabled=True,
+                        key=f"copy_preview_{copy_set['angle_id']}_{i}"
+                    )
+                    if not valid and variant.get("issues"):
+                        for issue in variant.get("issues", []):
+                            st.caption(f"⚠️ {issue}")
+
+                # Token context
+                with st.expander("Token Context"):
+                    st.json(copy_set.get("token_context", {}))
+
+    # Navigation
+    st.divider()
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("← Back to Templates"):
+            prev_step()
+    with col2:
+        can_proceed = st.session_state.copy_generated or len(st.session_state.copy_sets) > 0
+        if st.button("Next: Review & Compile →", disabled=not can_proceed):
+            next_step()
+
+
+# ============================================
+# STEP 9: REVIEW & COMPILE
+# ============================================
+
+def render_step_9_review():
+    """Step 9: Review & Compile."""
+    st.header("Step 9: Review & Compile")
     st.write("Review your plan and compile for the ad creator.")
 
     service = get_planning_service()
@@ -908,6 +1140,35 @@ def render_step_8_review():
     for i, angle in enumerate(selected_angles, 1):
         belief_text = angle.belief_statement[:100] + "..." if len(angle.belief_statement) > 100 else angle.belief_statement
         st.write(f"{i}. **{angle.name}**: {belief_text}")
+
+    # Copy summary
+    if st.session_state.copy_sets:
+        st.subheader("Copy Summary")
+        st.write(f"Generated copy for {len(st.session_state.copy_sets)} angles")
+
+        # Check if all copy passes guardrails
+        all_valid = all(cs.get("guardrails_validated") for cs in st.session_state.copy_sets)
+        if all_valid:
+            st.success("All copy passes guardrails")
+        else:
+            st.warning("Some copy may have guardrail violations - review before publishing")
+
+        # Collapsible copy preview per angle
+        for copy_set in st.session_state.copy_sets:
+            with st.expander(f"📝 {copy_set.get('angle_name', 'Unknown')}", expanded=False):
+                # Headlines
+                st.markdown("**Headlines:**")
+                for variant in copy_set.get("headline_variants", [])[:3]:  # Show first 3
+                    text = variant.get("text", "")
+                    st.write(f"• `{text}`")
+
+                # Primary text preview
+                st.markdown("**Primary Text (first variant):**")
+                pt_variants = copy_set.get("primary_text_variants", [])
+                if pt_variants:
+                    st.caption(pt_variants[0].get("text", "")[:200] + "...")
+    else:
+        st.warning("No copy generated. Go back to Step 8 to generate copy.")
 
     # Validation warnings
     if st.session_state.validation_warnings:
@@ -959,9 +1220,12 @@ def render_step_8_review():
                     ads_per_angle=st.session_state.ads_per_angle
                 )
 
-                # Compile the plan for ad creator
+                # Compile the plan for ad creator (with copy if available)
                 try:
-                    compiled = service.compile_plan(plan.id)
+                    if st.session_state.copy_sets:
+                        compiled = service.compile_plan_with_copy(plan.id)
+                    else:
+                        compiled = service.compile_plan(plan.id)
                     st.success(f"Plan saved and compiled successfully!")
                     st.info(f"Plan ID: `{plan.id}` | Status: {compiled.status}")
                 except Exception as compile_error:
@@ -985,14 +1249,14 @@ def render_step_8_review():
     st.divider()
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("← Back to Templates"):
+        if st.button("← Back to Copy"):
             prev_step()
     with col2:
         if st.session_state.compilation_result:
             if st.button("Start New Plan"):
                 # Reset all state
                 for key in list(st.session_state.keys()):
-                    if key.startswith("planning_") or key.startswith("selected_") or key.startswith("new_"):
+                    if key.startswith("planning_") or key.startswith("selected_") or key.startswith("new_") or key.startswith("copy_"):
                         del st.session_state[key]
                 st.session_state.planning_step = 1
                 st.rerun()
@@ -1029,7 +1293,9 @@ def main():
     elif step == 7:
         render_step_7_templates()
     elif step == 8:
-        render_step_8_review()
+        render_step_8_copy_generation()
+    elif step == 9:
+        render_step_9_review()
 
 
 if __name__ == "__main__":

@@ -20,9 +20,15 @@ from .models import (
     BeliefPlan,
     BeliefPlanRun,
     CompiledPlanPayload,
+    # Copy Scaffolds & Template Evaluation Models
+    CopyScaffold,
+    AngleCopySet,
+    TemplateEvaluation,
 )
 
 from .planning_service import PlanningService
+from .template_evaluation_service import TemplateEvaluationService
+from .copy_scaffold_service import CopyScaffoldService
 
 __all__ = [
     "Tweet",
@@ -40,4 +46,10 @@ __all__ = [
     "BeliefPlan",
     "BeliefPlanRun",
     "CompiledPlanPayload",
+    # Copy Scaffolds & Template Evaluation
+    "TemplateEvaluationService",
+    "CopyScaffoldService",
+    "CopyScaffold",
+    "AngleCopySet",
+    "TemplateEvaluation",
 ]

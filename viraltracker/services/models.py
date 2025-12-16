@@ -1260,7 +1260,7 @@ class CompiledPlanPayload(BaseModel):
     persona_id: UUID
     jtbd_framed_id: UUID
     phase_id: int
-    angles: List[Dict[str, Any]] = Field(..., description="[{angle_id, name, belief_statement}]")
+    angles: List[Dict[str, Any]] = Field(..., description="[{angle_id, name, belief_statement, headline_variants?, primary_text_variants?}]")
     templates: List[Dict[str, Any]] = Field(..., description="[{template_id, name}]")
     template_strategy: str
     ads_per_angle: int
@@ -1268,3 +1268,105 @@ class CompiledPlanPayload(BaseModel):
     allowed_variations: List[str] = Field(default_factory=list)
     compiled_at: datetime
     status: str
+
+
+# ============================================================================
+# Copy Scaffolds & Template Evaluation Models
+# ============================================================================
+
+class CopyScaffold(BaseModel):
+    """
+    Tokenized copy template for belief-safe ad generation.
+
+    Scaffolds contain placeholder tokens like {SYMPTOM_1}, {ANGLE_CLAIM}, etc.
+    that are filled at generation time with context from the plan.
+    """
+    id: Optional[UUID] = None
+    scope: str = Field(..., description="headline or primary_text")
+    name: str = Field(..., description="Scaffold identifier (e.g., H1-Observation-1)")
+    template_text: str = Field(..., description="Template with {TOKEN} placeholders")
+    phase_min: int = Field(default=1, ge=1, le=6, description="Minimum phase this scaffold applies to")
+    phase_max: int = Field(default=6, ge=1, le=6, description="Maximum phase this scaffold applies to")
+    awareness_targets: List[str] = Field(
+        default_factory=lambda: ["problem-aware", "early-solution-aware"],
+        description="Target awareness levels"
+    )
+    max_chars: Optional[int] = Field(None, description="Max character limit (40 for headlines)")
+    guardrails: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Validation rules")
+    template_requirements: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Required tokens")
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class AngleCopySet(BaseModel):
+    """
+    Generated copy variants for a specific angle.
+
+    Copy is generated per-angle (not per-ad) to ensure consistent belief expression
+    across all ads testing that angle.
+    """
+    id: Optional[UUID] = None
+    brand_id: Optional[UUID] = None
+    product_id: Optional[UUID] = None
+    offer_id: Optional[UUID] = None
+    persona_id: Optional[UUID] = None
+    jtbd_framed_id: Optional[UUID] = None
+    angle_id: UUID = Field(..., description="The angle this copy set belongs to")
+    phase_id: int = Field(default=1, ge=1, le=6)
+    headline_variants: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="[{text, scaffold_id, tokens_used}]"
+    )
+    primary_text_variants: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="[{text, scaffold_id, tokens_used}]"
+    )
+    token_context: Optional[Dict[str, str]] = Field(
+        default_factory=dict,
+        description="Token values used for generation"
+    )
+    guardrails_validated: bool = Field(default=False, description="Whether guardrails have been checked")
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class TemplateEvaluation(BaseModel):
+    """
+    Evaluation scores for template phase eligibility.
+
+    Uses a 6-dimension rubric (D1-D6) to determine if a template
+    is suitable for Phase 1-2 belief testing.
+    """
+    id: Optional[UUID] = None
+    template_id: UUID = Field(..., description="The template being evaluated")
+    template_source: str = Field(..., description="ad_brief_templates or scraped_templates")
+    phase_id: int = Field(..., ge=1, le=6, description="Phase being evaluated for")
+
+    # D1-D5: Scored 0-3
+    d1_belief_clarity: int = Field(..., ge=0, le=3, description="Can template clearly express a single belief?")
+    d2_neutrality: int = Field(..., ge=0, le=3, description="Free of sales bias, offers, urgency?")
+    d3_reusability: int = Field(..., ge=0, le=3, description="Can work across different angles?")
+    d4_problem_aware_entry: int = Field(..., ge=0, le=3, description="Supports problem-aware audiences?")
+    d5_slot_availability: int = Field(..., ge=0, le=3, description="Has clear text slots?")
+
+    # D6: Pass/fail
+    d6_compliance_pass: bool = Field(..., description="No before/after, medical claims, guarantees?")
+
+    # Computed (optional - computed in DB)
+    total_score: Optional[int] = Field(None, description="Sum of D1-D5 (0-15)")
+    eligible: Optional[bool] = Field(None, description="Phase 1-2 eligible: D6 pass AND total>=12 AND D2>=2")
+
+    evaluation_notes: Optional[str] = None
+    evaluated_by: str = Field(default="ai", description="ai or human")
+    evaluated_at: Optional[datetime] = None
+
+    @property
+    def computed_total_score(self) -> int:
+        """Calculate total score from D1-D5."""
+        return self.d1_belief_clarity + self.d2_neutrality + self.d3_reusability + self.d4_problem_aware_entry + self.d5_slot_availability
+
+    @property
+    def computed_eligible(self) -> bool:
+        """Determine Phase 1-2 eligibility."""
+        return self.d6_compliance_pass and self.computed_total_score >= 12 and self.d2_neutrality >= 2
