@@ -368,15 +368,24 @@ class CopyScaffoldService:
 
             if angle_result.data:
                 angle = angle_result.data[0]
-                # Use belief_statement as the angle claim (core belief)
-                context["ANGLE_CLAIM"] = angle.get("belief_statement", "")
+                # Use belief_statement as the angle claim - TRUNCATE for headline use
+                # Headlines have 40 char limit, so angle claims should be SHORT
+                belief = angle.get("belief_statement", "")
+                # Extract first clause or truncate to ~25 chars for headline compatibility
+                if "." in belief:
+                    context["ANGLE_CLAIM"] = belief.split(".")[0][:30]
+                elif "," in belief:
+                    context["ANGLE_CLAIM"] = belief.split(",")[0][:30]
+                else:
+                    context["ANGLE_CLAIM"] = belief[:30]
+
                 context["ANGLE_NAME"] = angle.get("name", "")
                 # Explanation can provide mechanism phrase if available
                 explanation = angle.get("explanation", "")
                 if explanation:
-                    # Try to extract a mechanism-like phrase from explanation
-                    context["MECHANISM_PHRASE"] = explanation[:100] if len(explanation) > 100 else explanation
-                logger.info(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')[:50]}...'")
+                    # Extract short mechanism phrase (for primary text)
+                    context["MECHANISM_PHRASE"] = explanation[:50] if len(explanation) > 50 else explanation
+                logger.info(f"Angle tokens: ANGLE_CLAIM='{context.get('ANGLE_CLAIM', '')}'")
 
             # Get product data
             # products columns: name, description, target_audience, key_problems_solved, key_benefits, features
@@ -389,23 +398,29 @@ class CopyScaffoldService:
                     product = product_result.data[0]
                     context["PRODUCT_NAME"] = product.get("name", "")
 
-                    # key_benefits is JSONB array
+                    # key_benefits is JSONB array - truncate for primary text use
                     key_benefits = product.get("key_benefits", []) or []
                     if key_benefits and len(key_benefits) > 0:
                         first_benefit = key_benefits[0]
-                        context["BENEFIT_1"] = first_benefit if isinstance(first_benefit, str) else first_benefit.get("text", str(first_benefit))
+                        raw_benefit = first_benefit if isinstance(first_benefit, str) else first_benefit.get("text", str(first_benefit))
+                        # Truncate to ~30 chars for readable primary text
+                        context["BENEFIT_1"] = raw_benefit[:30] if len(raw_benefit) > 30 else raw_benefit
                     else:
                         context["BENEFIT_1"] = "better daily comfort"
                         logger.warning(f"Product {product_id} has no key_benefits, using default")
 
                     # key_problems_solved is JSONB array - use as symptoms
+                    # IMPORTANT: Truncate to short phrases for headline compatibility
                     problems = product.get("key_problems_solved", []) or []
                     if problems and len(problems) > 0:
                         first_problem = problems[0]
-                        context["SYMPTOM_1"] = first_problem if isinstance(first_problem, str) else first_problem.get("text", str(first_problem))
+                        raw_symptom = first_problem if isinstance(first_problem, str) else first_problem.get("text", str(first_problem))
+                        # Truncate to ~20 chars for headline use
+                        context["SYMPTOM_1"] = raw_symptom[:25] if len(raw_symptom) > 25 else raw_symptom
                         if len(problems) > 1:
                             second_problem = problems[1]
-                            context["SYMPTOM_2"] = second_problem if isinstance(second_problem, str) else second_problem.get("text", str(second_problem))
+                            raw_symptom2 = second_problem if isinstance(second_problem, str) else second_problem.get("text", str(second_problem))
+                            context["SYMPTOM_2"] = raw_symptom2[:25] if len(raw_symptom2) > 25 else raw_symptom2
                         else:
                             context["SYMPTOM_2"] = context["SYMPTOM_1"]  # Duplicate if only one
                     else:
@@ -450,13 +465,16 @@ class CopyScaffoldService:
                             break
 
                     if common_belief:
-                        context["COMMON_BELIEF"] = common_belief
+                        # Truncate to ~15 chars for headline compatibility
+                        # e.g., "just getting older" not "Feeling tired and sluggish is just part of aging"
+                        context["COMMON_BELIEF"] = common_belief[:18] if len(common_belief) > 18 else common_belief
                     else:
-                        # Fallback to snapshot or generic
+                        # Fallback to snapshot or generic - keep it SHORT for headlines
                         snapshot = persona.get("snapshot", "")
                         if snapshot:
-                            # Take first sentence as belief
-                            context["COMMON_BELIEF"] = snapshot.split(".")[0][:50] if "." in snapshot else snapshot[:50]
+                            # Take first sentence, truncate to 18 chars
+                            first_sentence = snapshot.split(".")[0] if "." in snapshot else snapshot
+                            context["COMMON_BELIEF"] = first_sentence[:18]
                         else:
                             context["COMMON_BELIEF"] = "just getting older"
                         logger.warning(f"Persona {persona_id} has no pain_points, using fallback")
