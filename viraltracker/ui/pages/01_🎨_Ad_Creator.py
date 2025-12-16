@@ -332,7 +332,7 @@ def get_all_belief_plans_with_products():
         result = db.table("belief_plans").select(
             "id, name, status, phase_id, product_id, persona_id, brand_id, "
             "products(id, name), brands(id, name)"
-        ).order("updated_at", desc=True).execute()
+        ).order("created_at", desc=True).execute()
 
         plans = []
         for row in result.data or []:
