@@ -1128,3 +1128,143 @@ class CopyBrief(BaseModel):
 
     # Avoid these
     allergies: Dict[str, str] = Field(default_factory=dict, description="Messaging turn-offs to avoid")
+
+
+# ============================================================================
+# Belief-First Planning Models
+# ============================================================================
+
+class BeliefOffer(BaseModel):
+    """Versioned offer for a product."""
+    id: Optional[UUID] = None
+    product_id: UUID
+    name: str
+    description: Optional[str] = None
+    urgency_drivers: List[str] = Field(default_factory=list, description="Urgency/incentive drivers")
+    active: bool = True
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class SubLayerType(str):
+    """Enum for the 6 canonical sub-layer types."""
+    GEOGRAPHY_LOCALE = "geography_locale"
+    ASSET_SPECIFIC = "asset_specific"
+    ENVIRONMENT_CONTEXT = "environment_context"
+    LIFESTYLE_USAGE = "lifestyle_usage"
+    PURCHASE_CONSTRAINTS = "purchase_constraints"
+    VALUES_IDENTITY = "values_identity"
+
+
+class BeliefSubLayer(BaseModel):
+    """Persona relevance modifier (6 canonical types only)."""
+    id: Optional[UUID] = None
+    persona_id: UUID
+    sublayer_type: str = Field(..., description="One of: geography_locale, asset_specific, environment_context, lifestyle_usage, purchase_constraints, values_identity")
+    name: str
+    values: List[str] = Field(default_factory=list, description="Array of values for this sublayer")
+    notes: Optional[str] = None
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+
+
+class BeliefJTBDFramed(BaseModel):
+    """Persona-framed JTBD for advertising."""
+    id: Optional[UUID] = None
+    persona_id: UUID
+    product_id: UUID
+    name: str
+    description: Optional[str] = None
+    progress_statement: Optional[str] = Field(None, description="When I..., I want to..., so I can...")
+    source: str = Field(default="manual", description="manual, extracted_from_persona, or ai_generated")
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+
+
+class AngleStatus(str):
+    """Status for angle testing."""
+    UNTESTED = "untested"
+    TESTING = "testing"
+    WINNER = "winner"
+    LOSER = "loser"
+
+
+class BeliefAngle(BaseModel):
+    """Angle belief that explains why the JTBD exists and why this solution works."""
+    id: Optional[UUID] = None
+    jtbd_framed_id: UUID
+    name: str
+    belief_statement: str = Field(..., description="The core belief/explanation")
+    explanation: Optional[str] = Field(None, description="Why this angle works")
+    status: str = Field(default="untested", description="untested, testing, winner, or loser")
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+
+
+class PlanStatus(str):
+    """Status for plans."""
+    DRAFT = "draft"
+    READY = "ready"
+    RUNNING = "running"
+    COMPLETED = "completed"
+
+
+class TemplateStrategy(str):
+    """Strategy for template assignment."""
+    FIXED = "fixed"
+    RANDOM = "random"
+
+
+class BeliefPlan(BaseModel):
+    """Ad testing plan with compiled payload."""
+    id: Optional[UUID] = None
+    name: str
+    brand_id: UUID
+    product_id: UUID
+    offer_id: Optional[UUID] = None
+    persona_id: UUID
+    jtbd_framed_id: UUID
+    phase_id: int = Field(default=1, ge=1, le=6, description="Testing phase 1-6")
+    template_strategy: str = Field(default="fixed", description="fixed or random")
+    ads_per_angle: int = Field(default=3, ge=1)
+    status: str = Field(default="draft", description="draft, ready, running, completed")
+    compiled_payload: Optional[Dict[str, Any]] = Field(None, description="Generator-ready deterministic payload")
+    created_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+    compiled_at: Optional[datetime] = None
+
+    # Populated when fetching full plan
+    angles: List[BeliefAngle] = Field(default_factory=list)
+    templates: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class BeliefPlanRun(BaseModel):
+    """Phase run tracking for a plan."""
+    id: Optional[UUID] = None
+    plan_id: UUID
+    phase_id: int = Field(..., ge=1, le=6)
+    status: str = Field(default="pending", description="pending, running, completed, failed")
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    results: Optional[Dict[str, Any]] = Field(None, description="Performance data, winner angles, etc.")
+    created_at: Optional[datetime] = None
+
+
+class CompiledPlanPayload(BaseModel):
+    """The compiled, generator-ready payload for ad creator consumption."""
+    plan_id: UUID
+    brand_id: UUID
+    product_id: UUID
+    offer_id: Optional[UUID] = None
+    persona_id: UUID
+    jtbd_framed_id: UUID
+    phase_id: int
+    angles: List[Dict[str, Any]] = Field(..., description="[{angle_id, name, belief_statement}]")
+    templates: List[Dict[str, Any]] = Field(..., description="[{template_id, name}]")
+    template_strategy: str
+    ads_per_angle: int
+    locked_fields: List[str] = Field(default_factory=list)
+    allowed_variations: List[str] = Field(default_factory=list)
+    compiled_at: datetime
+    status: str
