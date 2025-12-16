@@ -602,30 +602,34 @@ class CopyScaffoldService:
         ]) if primary_text_scaffolds else "- Use empathy-led, problem-aware primary text"
 
         # Build the generation prompt
-        prompt = f"""Generate ad copy for a belief-first advertising campaign.
+        prompt = f"""Generate ad copy by filling in the scaffold formulas below.
 
-CONTEXT:
-- Product: {context.get('PRODUCT_NAME', 'Unknown Product')}
-- Target Persona: {context.get('PERSONA_LABEL', 'General audience')}
-- Key Belief/Angle: {context.get('ANGLE_CLAIM', '')}
-- Symptom/Problem: {context.get('SYMPTOM_1', '')}
-- Common Misconception: {context.get('COMMON_BELIEF', '')}
-- Benefit: {context.get('BENEFIT_1', '')}
-- Job To Be Done: {context.get('JTBD', '')}
+TOKEN VALUES (use these to fill the scaffolds):
+- {{PRODUCT_NAME}}: {context.get('PRODUCT_NAME', 'the product')}
+- {{PERSONA_LABEL}}: {context.get('PERSONA_LABEL', 'people')}
+- {{ANGLE_CLAIM}}: {context.get('ANGLE_CLAIM', '')}
+- {{SYMPTOM_1}}: {context.get('SYMPTOM_1', '')}
+- {{SYMPTOM_2}}: {context.get('SYMPTOM_2', '')}
+- {{COMMON_BELIEF}}: {context.get('COMMON_BELIEF', '')}
+- {{BENEFIT_1}}: {context.get('BENEFIT_1', '')}
+- {{JTBD}}: {context.get('JTBD', '')}
+- {{MECHANISM_PHRASE}}: {context.get('MECHANISM_PHRASE', '')}
 
-HEADLINE SCAFFOLD PATTERNS (for inspiration):
+HEADLINE SCAFFOLD FORMULAS (follow these patterns, fill in tokens):
 {headline_examples}
 
-PRIMARY TEXT SCAFFOLD PATTERNS (for inspiration):
+PRIMARY TEXT SCAFFOLD FORMULAS (follow these patterns, fill in tokens):
 {primary_examples}
 
-STRICT REQUIREMENTS:
-1. Headlines MUST be 40 characters or less (this is a Meta/Facebook hard limit)
-2. Headlines should be observational, not salesy - invite curiosity
-3. Primary text should be 2-3 sentences max
-4. Phase {phase_id} rules: NO discounts, NO medical claims, NO guarantees, NO urgency
+INSTRUCTIONS:
+1. For each scaffold formula, replace the {{TOKEN}} placeholders with the values above
+2. You may shorten/rephrase token values to fit character limits, but preserve the meaning
+3. Headlines MUST be 40 characters or less (Meta hard limit) - shorten aggressively if needed
+4. Primary text should be 2-3 sentences max
+5. Phase {phase_id} rules: NO discounts, NO medical claims, NO guarantees, NO urgency
+6. Keep the scaffold's tone and structure - don't invent new formats
 
-Generate exactly {num_headlines} headline variants and exactly {num_primary_texts} primary text variants.
+Generate exactly {num_headlines} headlines (one per scaffold) and exactly {num_primary_texts} primary texts (one per scaffold).
 
 OUTPUT FORMAT (JSON):
 {{
