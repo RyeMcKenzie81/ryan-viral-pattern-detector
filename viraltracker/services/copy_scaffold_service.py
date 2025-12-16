@@ -484,14 +484,15 @@ class CopyScaffoldService:
                     logger.info(f"Persona tokens: PERSONA_LABEL='{context.get('PERSONA_LABEL', '')}', COMMON_BELIEF='{context.get('COMMON_BELIEF', '')[:30]}...'")
 
             # Get JTBD data
+            # belief_jtbd_framed columns: name, description, progress_statement, source
             if jtbd_id:
                 jtbd_result = self.supabase.table("belief_jtbd_framed").select(
-                    "framed_statement"
+                    "name, progress_statement"
                 ).eq("id", str(jtbd_id)).execute()
 
                 if jtbd_result.data:
                     jtbd = jtbd_result.data[0]
-                    context["JTBD"] = jtbd.get("framed_statement", "")
+                    context["JTBD"] = jtbd.get("progress_statement", "") or jtbd.get("name", "")
                     logger.debug(f"JTBD token: '{context.get('JTBD', '')[:30]}...'")
 
             # Default mechanism phrase if not set
@@ -619,7 +620,7 @@ STRICT REQUIREMENTS:
 3. Primary text should be 2-3 sentences max
 4. Phase {phase_id} rules: NO discounts, NO medical claims, NO guarantees, NO urgency
 
-Generate 4 headline variants and 2 primary text variants.
+Generate 4 headline variants and 4 primary text variants.
 
 OUTPUT FORMAT (JSON):
 {{
