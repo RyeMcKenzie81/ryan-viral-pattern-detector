@@ -3182,7 +3182,7 @@ async def complete_ad_workflow(
             product_dict['variant'] = None
             product_dict['display_name'] = product_dict.get('name', 'Product')
 
-        # STAGE 2d: Fetch brand's ad_creation_notes and combine with additional_instructions
+        # STAGE 2d: Fetch brand fonts (ad_creation_notes column may not exist yet)
         combined_instructions = ""
         brand_id = product_dict.get('brand_id')
         brand_fonts = None  # Will be fetched below
@@ -3190,12 +3190,8 @@ async def complete_ad_workflow(
             try:
                 from viraltracker.core.database import get_supabase_client
                 db = get_supabase_client()
-                brand_result = db.table("brands").select("ad_creation_notes, brand_fonts").eq("id", brand_id).single().execute()
+                brand_result = db.table("brands").select("brand_fonts").eq("id", brand_id).single().execute()
                 if brand_result.data:
-                    if brand_result.data.get('ad_creation_notes'):
-                        brand_notes = brand_result.data['ad_creation_notes']
-                        logger.info(f"Stage 2d: Loaded brand ad creation notes: {brand_notes[:50]}...")
-                        combined_instructions = brand_notes
                     if brand_result.data.get('brand_fonts'):
                         brand_fonts = brand_result.data['brand_fonts']
                         logger.info(f"Stage 2d: Loaded brand fonts: {brand_fonts.get('primary', 'N/A')}")
