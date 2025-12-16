@@ -76,6 +76,8 @@ if 'selected_variant_id' not in st.session_state:
     st.session_state.selected_variant_id = None
 if 'additional_instructions' not in st.session_state:
     st.session_state.additional_instructions = ""
+if 'selected_templates_for_generation' not in st.session_state:
+    st.session_state.selected_templates_for_generation = []
 
 
 def get_supabase_client():
@@ -1215,42 +1217,61 @@ else:
     # Reference Ad handling - different for belief_plan vs other modes
     # ============================================================================
     if content_source == "belief_plan":
-        # Load template from the belief plan
-        st.subheader("4. Reference Template (from Plan)")
+        # Load templates from the belief plan - allow selecting one or all
+        st.subheader("4. Reference Templates (from Plan)")
 
         plan_data = st.session_state.get("belief_plan_data")
-        primary_template = plan_data.get("primary_template") if plan_data else None
+        all_templates = plan_data.get("templates", []) if plan_data else []
 
-        if primary_template:
-            storage_path = primary_template.get("storage_path")
-            if storage_path:
-                # Get signed URL and show preview
-                template_url = get_signed_url(storage_path)
+        if all_templates:
+            # Template selection - one or all
+            template_options = {"all": f"🔄 All Templates ({len(all_templates)})"}
+            for tmpl in all_templates:
+                template_options[tmpl["id"]] = tmpl.get("name", "Unknown")
+
+            selected_template_option = st.selectbox(
+                "Which template(s) to use?",
+                options=list(template_options.keys()),
+                format_func=lambda x: template_options.get(x, x),
+                help="Select a specific template or 'All' to generate ads for each template"
+            )
+
+            # Store selection in session state
+            if selected_template_option == "all":
+                selected_templates_for_generation = all_templates
+                st.info(f"📋 Will generate ads using all {len(all_templates)} templates")
+            else:
+                selected_templates_for_generation = [t for t in all_templates if t["id"] == selected_template_option]
+
+            st.session_state.selected_templates_for_generation = selected_templates_for_generation
+
+            # Show template previews
+            st.markdown("**Template Preview:**")
+            preview_cols = st.columns(min(len(selected_templates_for_generation), 4))
+            for idx, tmpl in enumerate(selected_templates_for_generation[:4]):
+                with preview_cols[idx % 4]:
+                    storage_path = tmpl.get("storage_path")
+                    if storage_path:
+                        template_url = get_signed_url(storage_path)
+                        if template_url:
+                            st.image(template_url, caption=tmpl.get('name', 'Template'), width=150)
+
+            # For the workflow, load the first template as base64 (or handle all in workflow)
+            first_template = selected_templates_for_generation[0] if selected_templates_for_generation else None
+            if first_template and first_template.get("storage_path"):
+                template_url = get_signed_url(first_template.get("storage_path"))
                 if template_url:
-                    col1, col2 = st.columns([1, 2])
-                    with col1:
-                        st.image(template_url, caption=f"Template: {primary_template.get('name', 'Unknown')}", width=200)
-                    with col2:
-                        st.success(f"✅ Using template: **{primary_template.get('name', 'Unknown')}**")
-                        if primary_template.get("anchor_text"):
-                            st.caption(f"📝 Anchor text: \"{primary_template.get('anchor_text')}\"")
-
-                    # Load image as base64 for the workflow
                     try:
                         import requests
                         response = requests.get(template_url)
                         if response.status_code == 200:
                             reference_ad_base64 = base64.b64encode(response.content).decode('utf-8')
-                            reference_filename = primary_template.get('name', 'template') + ".png"
+                            reference_filename = first_template.get('name', 'template') + ".png"
                     except Exception as e:
                         logger.error(f"Failed to load template image: {e}")
-                        st.error("Failed to load template image")
-                else:
-                    st.error("Could not load template image URL")
-            else:
-                st.warning("Template has no storage path")
         else:
-            st.warning("⚠️ No template found in this plan. Go to Ad Planning to select a template.")
+            st.warning("⚠️ No templates found in this plan. Go to Ad Planning to select templates.")
+            st.session_state.selected_templates_for_generation = []
 
         st.divider()
 
@@ -1708,38 +1729,113 @@ else:
 
             # Get belief_plan_id if using belief_plan content source
             belief_plan_id = None
+            templates_to_run = []
             if content_source == "belief_plan":
                 belief_plan_id = st.session_state.selected_belief_plan_id
+                templates_to_run = st.session_state.get("selected_templates_for_generation", [])
 
-            # Run workflow synchronously (simpler and more reliable than threading)
-            result = asyncio.run(run_workflow(
-                product_id=selected_product_id,
-                reference_ad_base64=reference_ad_base64,
-                filename=reference_filename,
-                num_variations=num_variations,
-                content_source=content_source,
-                color_mode=color_mode,
-                brand_colors=brand_colors_data,
-                image_selection_mode=img_mode,
-                selected_image_paths=img_paths,
-                export_destination=exp_dest,
-                export_email=exp_email,
-                export_slack_webhook=exp_slack,
-                product_name=prod_name,
-                brand_name=brd_name,
-                persona_id=persona_id,
-                variant_id=variant_id,
-                additional_instructions=add_instructions,
-                belief_plan_id=belief_plan_id
-            ))
+            # Handle multi-template generation for belief plan mode
+            if content_source == "belief_plan" and len(templates_to_run) > 1:
+                # Multi-template mode - run workflow for each template
+                all_results = []
+                progress_bar = st.progress(0)
+                status_text = st.empty()
 
-            # Record template usage if a scraped template was used
-            if st.session_state.selected_scraped_template and result:
-                ad_run_id = result.get('ad_run_id')
-                record_template_usage(
-                    template_id=st.session_state.selected_scraped_template,
-                    ad_run_id=ad_run_id
-                )
+                for idx, template in enumerate(templates_to_run):
+                    status_text.text(f"🎨 Generating with template {idx + 1}/{len(templates_to_run)}: {template.get('name', 'Unknown')}...")
+                    progress_bar.progress((idx) / len(templates_to_run))
+
+                    # Load this template's image
+                    tmpl_storage_path = template.get("storage_path")
+                    tmpl_base64 = None
+                    tmpl_filename = template.get('name', 'template') + ".png"
+
+                    if tmpl_storage_path:
+                        tmpl_url = get_signed_url(tmpl_storage_path)
+                        if tmpl_url:
+                            try:
+                                import requests
+                                resp = requests.get(tmpl_url)
+                                if resp.status_code == 200:
+                                    tmpl_base64 = base64.b64encode(resp.content).decode('utf-8')
+                            except Exception as e:
+                                logger.error(f"Failed to load template {template.get('name')}: {e}")
+                                continue
+
+                    if not tmpl_base64:
+                        st.warning(f"Skipping template {template.get('name')} - could not load image")
+                        continue
+
+                    # Run workflow for this template
+                    try:
+                        tmpl_result = asyncio.run(run_workflow(
+                            product_id=selected_product_id,
+                            reference_ad_base64=tmpl_base64,
+                            filename=tmpl_filename,
+                            num_variations=num_variations,
+                            content_source=content_source,
+                            color_mode=color_mode,
+                            brand_colors=brand_colors_data,
+                            image_selection_mode=img_mode,
+                            selected_image_paths=img_paths,
+                            export_destination=exp_dest,
+                            export_email=exp_email,
+                            export_slack_webhook=exp_slack,
+                            product_name=prod_name,
+                            brand_name=brd_name,
+                            persona_id=persona_id,
+                            variant_id=variant_id,
+                            additional_instructions=add_instructions,
+                            belief_plan_id=belief_plan_id
+                        ))
+                        if tmpl_result:
+                            tmpl_result['template_name'] = template.get('name')
+                            all_results.append(tmpl_result)
+                    except Exception as e:
+                        logger.error(f"Workflow failed for template {template.get('name')}: {e}")
+                        st.warning(f"⚠️ Failed for template {template.get('name')}: {str(e)[:100]}")
+
+                progress_bar.progress(1.0)
+                status_text.text(f"✅ Completed {len(all_results)}/{len(templates_to_run)} templates")
+
+                # Aggregate results
+                result = {
+                    "multi_template": True,
+                    "template_count": len(templates_to_run),
+                    "successful_count": len(all_results),
+                    "results": all_results,
+                    "total_ads": sum(r.get('variation_count', 0) for r in all_results)
+                }
+            else:
+                # Single template mode - run once
+                result = asyncio.run(run_workflow(
+                    product_id=selected_product_id,
+                    reference_ad_base64=reference_ad_base64,
+                    filename=reference_filename,
+                    num_variations=num_variations,
+                    content_source=content_source,
+                    color_mode=color_mode,
+                    brand_colors=brand_colors_data,
+                    image_selection_mode=img_mode,
+                    selected_image_paths=img_paths,
+                    export_destination=exp_dest,
+                    export_email=exp_email,
+                    export_slack_webhook=exp_slack,
+                    product_name=prod_name,
+                    brand_name=brd_name,
+                    persona_id=persona_id,
+                    variant_id=variant_id,
+                    additional_instructions=add_instructions,
+                    belief_plan_id=belief_plan_id
+                ))
+
+                # Record template usage if a scraped template was used
+                if st.session_state.selected_scraped_template and result:
+                    ad_run_id = result.get('ad_run_id')
+                    record_template_usage(
+                        template_id=st.session_state.selected_scraped_template,
+                        ad_run_id=ad_run_id
+                    )
 
             # Success - store result and show
             st.session_state.workflow_result = result
