@@ -389,18 +389,19 @@ def get_belief_plan_details(plan_id: str):
         for idx, tmpl in enumerate(templates_result.data or []):
             template_id = tmpl["template_id"]
 
-            # Try ad_brief_templates first, then scraped_templates
-            tmpl_result = db.table("ad_brief_templates").select(
+            # Try scraped_templates first (has storage_path, anchor_text)
+            # then ad_brief_templates (only has id, name, instructions)
+            tmpl_result = db.table("scraped_templates").select(
                 "id, name, storage_path, anchor_text"
             ).eq("id", template_id).execute()
 
-            template_source = "ad_brief_templates"
+            template_source = "scraped_templates"
             if not tmpl_result.data:
-                # Try scraped_templates
-                tmpl_result = db.table("scraped_templates").select(
-                    "id, name, storage_path, anchor_text"
+                # Try ad_brief_templates (no storage_path or anchor_text columns)
+                tmpl_result = db.table("ad_brief_templates").select(
+                    "id, name, instructions"
                 ).eq("id", template_id).execute()
-                template_source = "scraped_templates"
+                template_source = "ad_brief_templates"
 
             if tmpl_result.data:
                 template_data = {
@@ -809,7 +810,7 @@ else:
     # BELIEF PLAN FLOW - Auto-populates product, template, persona from plan
     # ============================================================================
     if content_source == "belief_plan":
-        st.subheader("2. Select Belief Plan")
+        st.subheader("2. Select Product & Plan")
 
         all_plans = get_all_belief_plans_with_products()
 
@@ -817,24 +818,55 @@ else:
             st.warning("⚠️ No belief plans with copy found. Create a plan in Ad Planning first and generate copy for all angles.")
             st.stop()
 
+        # Get unique products from plans
+        products_in_plans = {}
+        for p in all_plans:
+            pid = p.get("product_id")
+            pname = p.get("product_name", "Unknown Product")
+            if pid and pid not in products_in_plans:
+                products_in_plans[pid] = pname
+
+        # Product filter
+        product_options = {"all": "All Products", **{pid: pname for pid, pname in products_in_plans.items()}}
+
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            selected_product_filter = st.selectbox(
+                "Filter by Product",
+                options=list(product_options.keys()),
+                format_func=lambda x: product_options.get(x, x),
+                help="Filter plans by product"
+            )
+
+        # Filter plans by product
+        if selected_product_filter != "all":
+            filtered_plans = [p for p in all_plans if p.get("product_id") == selected_product_filter]
+        else:
+            filtered_plans = all_plans
+
+        if not filtered_plans:
+            st.warning("No plans found for this product.")
+            st.stop()
+
         # Plan selector
         plan_options = {
-            p["id"]: f"{p['name']} ({p['product_name']}, Phase {p['phase_id']}, {p['angle_count']} angles)"
-            for p in all_plans
+            p["id"]: f"{p['name']} (Phase {p['phase_id']}, {p['angle_count']} angles)"
+            for p in filtered_plans
         }
 
-        # Get current selection or default
-        current_plan_id = st.session_state.selected_belief_plan_id
-        if current_plan_id not in plan_options:
-            current_plan_id = list(plan_options.keys())[0] if plan_options else None
+        with col2:
+            # Get current selection or default
+            current_plan_id = st.session_state.selected_belief_plan_id
+            if current_plan_id not in plan_options:
+                current_plan_id = list(plan_options.keys())[0] if plan_options else None
 
-        selected_plan_id = st.selectbox(
-            "Belief Plan",
-            options=list(plan_options.keys()),
-            index=list(plan_options.keys()).index(current_plan_id) if current_plan_id in plan_options else 0,
-            format_func=lambda x: plan_options.get(x, x),
-            help="Select a belief plan - product, template, and copy will be loaded automatically"
-        )
+            selected_plan_id = st.selectbox(
+                "Belief Plan",
+                options=list(plan_options.keys()),
+                index=list(plan_options.keys()).index(current_plan_id) if current_plan_id in plan_options else 0,
+                format_func=lambda x: plan_options.get(x, x),
+                help="Select a belief plan - product, template, and copy will be loaded automatically"
+            )
         st.session_state.selected_belief_plan_id = selected_plan_id
 
         # Load plan details
