@@ -651,10 +651,130 @@ def render_analysis_section(brand_id: str, product_id: Optional[str] = None):
             st.rerun()
 
 
+def add_manual_landing_page(brand_id: str, url: str, product_id: Optional[str] = None) -> bool:
+    """Add a manual landing page URL for a brand.
+
+    Args:
+        brand_id: Brand UUID
+        url: Landing page URL to add
+        product_id: Optional product UUID to link
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        db = get_supabase_client()
+        record = {
+            "brand_id": brand_id,
+            "url": url,
+            "product_id": product_id,
+            "scrape_status": "pending"
+        }
+        db.table("brand_landing_pages").upsert(
+            record,
+            on_conflict="brand_id,url"
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to add landing page: {e}")
+        return False
+
+
+def scrape_single_landing_page(brand_id: str, url: str, product_id: Optional[str] = None) -> bool:
+    """Scrape a single landing page URL.
+
+    Args:
+        brand_id: Brand UUID
+        url: Landing page URL to scrape
+        product_id: Optional product UUID
+
+    Returns:
+        True if successful, False otherwise
+    """
+    from viraltracker.services.brand_research_service import BrandResearchService
+
+    async def _scrape():
+        service = BrandResearchService()
+        # Use the service's internal scraping method
+        from viraltracker.services.firecrawl_service import FireCrawlService
+
+        scraper = FireCrawlService()
+
+        try:
+            # Scrape the page
+            scrape_result = scraper.scrape_url(url)
+            if not scrape_result or not scrape_result.success:
+                return False
+
+            # Try structured extraction
+            extract_result = None
+            try:
+                from viraltracker.services.brand_research_service import LANDING_PAGE_SCHEMA
+                extract_result = scraper.extract_structured(url=url, schema=LANDING_PAGE_SCHEMA)
+            except Exception:
+                pass
+
+            # Save to database
+            service._save_landing_page(
+                brand_id=UUID(brand_id),
+                url=url,
+                product_id=product_id,
+                scrape_result=scrape_result,
+                extract_result=extract_result
+            )
+            return True
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to scrape {url}: {e}")
+            return False
+
+    return run_async(_scrape())
+
+
 def render_landing_page_section(brand_id: str, product_id: Optional[str] = None):
     """Render landing page scraping and analysis section."""
     st.subheader("3. Landing Pages")
     st.markdown("Scrape and analyze landing pages from URL patterns for deeper persona insights.")
+
+    # Manual URL addition form
+    with st.expander("➕ Add Landing Page URL Manually"):
+        with st.form("add_brand_landing_page"):
+            lp_url = st.text_input("URL", placeholder="https://example.com/product-page")
+
+            # Product assignment
+            products = get_products_for_brand(brand_id)
+            lp_product_options = {"Unassigned": None}
+            if products:
+                lp_product_options.update({p['name']: p['id'] for p in products})
+
+            lp_product = st.selectbox(
+                "Assign to Product (optional)",
+                options=list(lp_product_options.keys())
+            )
+            lp_product_id = lp_product_options[lp_product]
+
+            col_add, col_scrape = st.columns(2)
+            with col_add:
+                add_only = st.form_submit_button("Add URL")
+            with col_scrape:
+                add_and_scrape = st.form_submit_button("Add & Scrape Now", type="primary")
+
+            if add_only or add_and_scrape:
+                if not lp_url:
+                    st.error("URL is required")
+                elif not lp_url.startswith(("http://", "https://")):
+                    st.error("URL must start with http:// or https://")
+                else:
+                    if add_manual_landing_page(brand_id, lp_url, lp_product_id):
+                        if add_and_scrape:
+                            with st.spinner(f"Scraping {lp_url}..."):
+                                if scrape_single_landing_page(brand_id, lp_url, lp_product_id):
+                                    st.success("Landing page added and scraped!")
+                                else:
+                                    st.warning("Landing page added but scraping failed. You can retry later.")
+                        else:
+                            st.success("Landing page URL added! Click 'Scrape Landing Pages' to scrape it.")
+                        st.rerun()
 
     lp_stats = get_landing_page_stats(brand_id, product_id)
     available = lp_stats.get("available", 0)
