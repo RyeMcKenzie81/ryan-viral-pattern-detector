@@ -681,24 +681,59 @@ def render_step_7_templates():
         st.warning("No templates found. Please create templates first.")
         return
 
-    # Template selection
-    st.subheader("Available Templates")
-    for template in templates:
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            st.markdown(f"**{template.get('name', 'Unnamed')}**")
-            if template.get('instructions'):
-                st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
-        with col2:
-            template_id = template.get('id')
-            is_selected = template_id in st.session_state.selected_template_ids
-            if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
-                if template_id not in st.session_state.selected_template_ids:
-                    st.session_state.selected_template_ids.append(template_id)
-            else:
-                if template_id in st.session_state.selected_template_ids:
-                    st.session_state.selected_template_ids.remove(template_id)
-        st.divider()
+    # Separate templates by source
+    manual_templates = [t for t in templates if t.get('source') == 'manual']
+    scraped_templates = [t for t in templates if t.get('source') == 'scraped']
+
+    # Manual templates section
+    if manual_templates:
+        st.subheader(f"Manual Templates ({len(manual_templates)})")
+        for template in manual_templates:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"**{template.get('name', 'Unnamed')}**")
+                if template.get('instructions'):
+                    st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
+            with col2:
+                template_id = template.get('id')
+                is_selected = template_id in st.session_state.selected_template_ids
+                if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
+                    if template_id not in st.session_state.selected_template_ids:
+                        st.session_state.selected_template_ids.append(template_id)
+                else:
+                    if template_id in st.session_state.selected_template_ids:
+                        st.session_state.selected_template_ids.remove(template_id)
+            st.divider()
+
+    # Scraped templates section
+    if scraped_templates:
+        st.subheader(f"Scraped Templates ({len(scraped_templates)})")
+        for template in scraped_templates:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"**{template.get('name', 'Unnamed')}**")
+                source_info = []
+                if template.get('source_brand'):
+                    source_info.append(f"From: {template['source_brand']}")
+                if template.get('industry_niche'):
+                    source_info.append(f"Niche: {template['industry_niche']}")
+                if source_info:
+                    st.caption(" | ".join(source_info))
+                if template.get('instructions'):
+                    st.caption(template['instructions'][:100] + "..." if len(template.get('instructions', '')) > 100 else template.get('instructions', ''))
+            with col2:
+                template_id = template.get('id')
+                is_selected = template_id in st.session_state.selected_template_ids
+                if st.checkbox("Select", value=is_selected, key=f"template_{template_id}"):
+                    if template_id not in st.session_state.selected_template_ids:
+                        st.session_state.selected_template_ids.append(template_id)
+                else:
+                    if template_id in st.session_state.selected_template_ids:
+                        st.session_state.selected_template_ids.remove(template_id)
+            st.divider()
+
+    if not manual_templates and not scraped_templates:
+        st.warning("No templates found. Please create templates first.")
 
     # Template settings
     st.subheader("Template Settings")

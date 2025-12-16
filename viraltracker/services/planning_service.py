@@ -463,28 +463,46 @@ class PlanningService:
 
     def get_templates_for_brand(self, brand_id: Optional[UUID] = None) -> List[Dict[str, Any]]:
         """
-        Fetch templates for a brand (or global templates).
+        Fetch templates for a brand from both sources:
+        1. ad_brief_templates - manually created templates
+        2. scraped_templates - templates from scraped competitor ads
 
         Args:
             brand_id: Brand UUID (None for global)
 
         Returns:
-            List of template dicts
+            List of template dicts with 'source' field indicating origin
         """
         try:
-            # Get brand-specific templates
             templates = []
+
+            # 1. Get manual templates (ad_brief_templates)
             if brand_id:
                 result = self.supabase.table("ad_brief_templates").select("*").eq(
                     "brand_id", str(brand_id)
                 ).eq("active", True).execute()
-                templates.extend(result.data or [])
+                for t in result.data or []:
+                    t["source"] = "manual"
+                    templates.append(t)
 
-            # Also get global templates
+            # Also get global manual templates
             result = self.supabase.table("ad_brief_templates").select("*").is_(
                 "brand_id", "null"
             ).eq("active", True).execute()
-            templates.extend(result.data or [])
+            for t in result.data or []:
+                t["source"] = "manual"
+                templates.append(t)
+
+            # 2. Get scraped templates (scraped_templates)
+            result = self.supabase.table("scraped_templates").select("*").eq(
+                "is_active", True
+            ).execute()
+            for t in result.data or []:
+                t["source"] = "scraped"
+                # Map scraped_templates fields to common format
+                if not t.get("instructions"):
+                    t["instructions"] = t.get("template_text", "")
+                templates.append(t)
 
             return templates
         except Exception as e:
