@@ -245,19 +245,20 @@ def render_plan_details(plan_id: str):
     # Templates
     st.subheader("Templates")
     templates_result = db.table("belief_plan_templates").select(
-        "display_order, template_id, template_source"
+        "display_order, template_id"
     ).eq("plan_id", plan_id).order("display_order").execute()
 
     if templates_result.data:
         for row in templates_result.data:
             template_id = row.get("template_id")
-            source = row.get("template_source", "ad_brief_templates")
 
-            # Fetch template name from appropriate table
-            if source == "scraped_templates":
-                t_result = db.table("scraped_templates").select("name").eq("id", template_id).execute()
-            else:
+            # Try scraped_templates first, then ad_brief_templates
+            t_result = db.table("scraped_templates").select("name").eq("id", template_id).execute()
+            source = "scraped_templates"
+
+            if not t_result.data:
                 t_result = db.table("ad_brief_templates").select("name").eq("id", template_id).execute()
+                source = "ad_brief_templates"
 
             template_name = t_result.data[0].get("name", "Unknown") if t_result.data else "Unknown"
             st.write(f"• {template_name} ({source})")

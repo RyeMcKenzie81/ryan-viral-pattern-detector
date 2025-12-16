@@ -1439,18 +1439,20 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
 
         Args:
             plan_id: UUID of the belief plan
-            primary_only: If True, only return the primary template
+            primary_only: If True, only return the primary template (first in display_order)
 
         Returns:
             Dict with storage_path, name, or None if no template
         """
         try:
+            # Note: belief_plan_templates only has (plan_id, template_id, display_order)
+            # Primary template is the first one (display_order = 0)
             query = self.supabase.table("belief_plan_templates").select(
-                "template_id, template_source, is_primary"
-            ).eq("plan_id", str(plan_id))
+                "template_id, display_order"
+            ).eq("plan_id", str(plan_id)).order("display_order")
 
             if primary_only:
-                query = query.eq("is_primary", True)
+                query = query.limit(1)
 
             result = query.execute()
 
@@ -1458,17 +1460,25 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
                 return None
 
             tpl = result.data[0]
-            tpl_table = tpl["template_source"]
+            template_id = tpl["template_id"]
 
-            # Get template details including storage path
-            tpl_result = self.supabase.table(tpl_table).select(
+            # Try scraped_templates first (has storage_path)
+            tpl_result = self.supabase.table("scraped_templates").select(
                 "id, name, storage_path"
-            ).eq("id", tpl["template_id"]).execute()
+            ).eq("id", template_id).execute()
+
+            template_source = "scraped_templates"
+            if not tpl_result.data:
+                # Try ad_brief_templates (no storage_path)
+                tpl_result = self.supabase.table("ad_brief_templates").select(
+                    "id, name"
+                ).eq("id", template_id).execute()
+                template_source = "ad_brief_templates"
 
             if tpl_result.data:
                 return {
                     **tpl_result.data[0],
-                    "source": tpl["template_source"]
+                    "source": template_source
                 }
 
             return None

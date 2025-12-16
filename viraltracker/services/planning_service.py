@@ -670,24 +670,26 @@ class PlanningService:
             ]
 
             # Get templates (handle both sources)
+            # Note: belief_plan_templates only has (plan_id, template_id, display_order)
             templates_result = self.supabase.table("belief_plan_templates").select(
-                "template_id, display_order, template_source"
+                "template_id, display_order"
             ).eq("plan_id", str(plan_id)).order("display_order").execute()
 
             plan.templates = []
             for row in templates_result.data or []:
                 template_id = row.get("template_id")
-                template_source = row.get("template_source", "ad_brief_templates")
 
-                if template_source == "scraped_templates":
-                    t_result = self.supabase.table("scraped_templates").select(
-                        "id, name, description"
-                    ).eq("id", template_id).execute()
-                    if t_result.data:
-                        template = t_result.data[0]
-                        template["source"] = "scraped"
-                        plan.templates.append(template)
+                # Try scraped_templates first
+                t_result = self.supabase.table("scraped_templates").select(
+                    "id, name, description"
+                ).eq("id", template_id).execute()
+
+                if t_result.data:
+                    template = t_result.data[0]
+                    template["source"] = "scraped"
+                    plan.templates.append(template)
                 else:
+                    # Try ad_brief_templates
                     t_result = self.supabase.table("ad_brief_templates").select(
                         "id, name, instructions"
                     ).eq("id", template_id).execute()

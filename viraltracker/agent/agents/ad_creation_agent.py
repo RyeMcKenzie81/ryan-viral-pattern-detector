@@ -3303,21 +3303,27 @@ async def complete_ad_workflow(
                 db = ctx.deps.ad_creation.supabase
 
                 # Get all templates linked to the plan
+                # Note: belief_plan_templates only has (plan_id, template_id, display_order)
                 templates_result = db.table("belief_plan_templates").select(
-                    "template_id, template_source, is_primary"
-                ).eq("plan_id", belief_plan_id).order("is_primary", desc=True).execute()
+                    "template_id, display_order"
+                ).eq("plan_id", belief_plan_id).order("display_order").execute()
 
                 for tpl in templates_result.data or []:
-                    tpl_source = tpl["template_source"]
                     tpl_id = tpl["template_id"]
 
-                    # Get layout_analysis from template
-                    tpl_result = db.table(tpl_source).select(
+                    # Try scraped_templates first (has layout_analysis)
+                    tpl_result = db.table("scraped_templates").select(
                         "name, layout_analysis"
                     ).eq("id", tpl_id).execute()
 
+                    if not tpl_result.data:
+                        # Try ad_brief_templates (no layout_analysis)
+                        tpl_result = db.table("ad_brief_templates").select(
+                            "name"
+                        ).eq("id", tpl_id).execute()
+
                     if tpl_result.data:
-                        layout = tpl_result.data[0].get("layout_analysis", {})
+                        layout = tpl_result.data[0].get("layout_analysis", {}) or {}
                         anchor = layout.get("anchor_text", "") or ""
                         template_name = tpl_result.data[0].get("name", "Unknown")
                         template_type = layout.get("template_type", "observation_shot")
