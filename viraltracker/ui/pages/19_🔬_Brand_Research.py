@@ -691,11 +691,10 @@ def scrape_single_landing_page(brand_id: str, url: str, product_id: Optional[str
     Returns:
         True if successful, False otherwise
     """
-    from viraltracker.services.brand_research_service import BrandResearchService
     from viraltracker.services.web_scraping_service import WebScrapingService, LANDING_PAGE_SCHEMA
+    from datetime import datetime
 
     async def _scrape():
-        service = BrandResearchService()
         scraper = WebScrapingService()
 
         try:
@@ -711,14 +710,49 @@ def scrape_single_landing_page(brand_id: str, url: str, product_id: Optional[str
             except Exception:
                 pass
 
-            # Save to database
-            service._save_landing_page(
-                brand_id=UUID(brand_id),
-                url=url,
-                product_id=product_id,
-                scrape_result=scrape_result,
-                extract_result=extract_result
-            )
+            # Build extracted_data from extract_result
+            extracted_data = {}
+            if extract_result and extract_result.success and extract_result.data:
+                extracted_data = extract_result.data if isinstance(extract_result.data, dict) else {}
+
+            # Extract metadata
+            raw_metadata = scrape_result.metadata
+            if raw_metadata is None:
+                metadata = {}
+            elif isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            else:
+                metadata = {
+                    "title": getattr(raw_metadata, 'title', None),
+                    "description": getattr(raw_metadata, 'description', None),
+                }
+
+            # Build update record
+            update_record = {
+                "page_title": metadata.get("title") or extracted_data.get("page_title"),
+                "meta_description": metadata.get("description") or extracted_data.get("meta_description"),
+                "raw_markdown": scrape_result.markdown,
+                "extracted_data": extracted_data,
+                "product_name": extracted_data.get("product_name"),
+                "pricing": extracted_data.get("pricing", {}),
+                "benefits": extracted_data.get("benefits", []),
+                "features": extracted_data.get("features", []),
+                "testimonials": extracted_data.get("testimonials", []),
+                "social_proof": extracted_data.get("social_proof", []),
+                "call_to_action": extracted_data.get("call_to_action"),
+                "objection_handling": extracted_data.get("objection_handling", []),
+                "guarantee": extracted_data.get("guarantee"),
+                "urgency_elements": extracted_data.get("urgency_elements", []),
+                "scrape_status": "scraped",
+                "scraped_at": datetime.utcnow().isoformat()
+            }
+
+            # Update existing record (upsert pattern)
+            db = get_supabase_client()
+            db.table("brand_landing_pages").update(update_record).eq(
+                "brand_id", brand_id
+            ).eq("url", url).execute()
+
             return True
         except Exception as e:
             import logging
