@@ -1587,3 +1587,488 @@ Return ONLY valid JSON."""
         except Exception as e:
             logger.error(f"Failed to get brand analyses by product: {e}")
             return []
+
+    # =========================================================================
+    # AMAZON REVIEW SCRAPING & ANALYSIS
+    # =========================================================================
+
+    def scrape_amazon_reviews_for_competitor(
+        self,
+        competitor_amazon_url_id: UUID,
+        include_keywords: bool = True,
+        include_helpful: bool = True,
+        timeout: int = 900
+    ) -> Dict[str, Any]:
+        """
+        Scrape Amazon reviews for a competitor product.
+
+        Args:
+            competitor_amazon_url_id: UUID of the competitor_amazon_urls record
+            include_keywords: Include keyword filter configs for broader coverage
+            include_helpful: Include helpful-sort configs
+            timeout: Apify run timeout in seconds
+
+        Returns:
+            Dict with scrape results:
+            - raw_reviews_count: Total reviews fetched
+            - unique_reviews_count: After deduplication
+            - reviews_saved: Successfully saved to DB
+            - cost_estimate: Estimated Apify cost
+            - errors: List of error messages
+        """
+        from .apify_service import ApifyService
+        from .amazon_review_service import AmazonReviewService
+
+        errors = []
+        amazon_service = AmazonReviewService()
+        apify = ApifyService()
+
+        # Get the competitor_amazon_urls record
+        url_record = self.supabase.table("competitor_amazon_urls").select(
+            "id, competitor_id, brand_id, amazon_url, asin, domain_code, competitor_product_id"
+        ).eq("id", str(competitor_amazon_url_id)).single().execute()
+
+        if not url_record.data:
+            return {
+                "raw_reviews_count": 0,
+                "unique_reviews_count": 0,
+                "reviews_saved": 0,
+                "cost_estimate": 0.0,
+                "errors": ["Amazon URL record not found"]
+            }
+
+        record = url_record.data
+        asin = record["asin"]
+        domain = record.get("domain_code", "com")
+        competitor_id = record["competitor_id"]
+        brand_id = record["brand_id"]
+        competitor_product_id = record.get("competitor_product_id")
+
+        logger.info(f"Scraping reviews for competitor ASIN {asin} (domain: {domain})")
+
+        # Build scrape configs using AmazonReviewService
+        configs = amazon_service.build_scrape_configs(
+            asin=asin,
+            domain=domain,
+            include_keywords=include_keywords,
+            include_helpful=include_helpful
+        )
+
+        # Run Apify actor
+        logger.info(f"Running Apify with {len(configs)} configs for competitor ASIN {asin}")
+        try:
+            result = apify.run_actor_batch(
+                actor_id="axesso_data/amazon-reviews-scraper",
+                batch_inputs=configs,
+                timeout=timeout,
+                memory_mbytes=2048
+            )
+            raw_reviews = result.items
+            raw_count = len(raw_reviews)
+            logger.info(f"Got {raw_count} raw reviews from Apify")
+
+        except Exception as e:
+            logger.error(f"Apify scrape failed: {e}")
+            return {
+                "raw_reviews_count": 0,
+                "unique_reviews_count": 0,
+                "reviews_saved": 0,
+                "cost_estimate": 0.0,
+                "errors": [str(e)]
+            }
+
+        # Deduplicate
+        unique_reviews = amazon_service._deduplicate_reviews(raw_reviews)
+        unique_count = len(unique_reviews)
+        logger.info(f"Deduplicated to {unique_count} unique reviews")
+
+        # Save to competitor_amazon_reviews table
+        saved_count = self._save_competitor_reviews(
+            reviews=unique_reviews,
+            competitor_amazon_url_id=competitor_amazon_url_id,
+            competitor_id=UUID(competitor_id),
+            brand_id=UUID(brand_id),
+            asin=asin,
+            competitor_product_id=UUID(competitor_product_id) if competitor_product_id else None
+        )
+
+        # Update scrape stats
+        cost_estimate = apify.estimate_cost(raw_count)
+        self.supabase.table("competitor_amazon_urls").update({
+            "last_scraped_at": datetime.utcnow().isoformat(),
+            "total_reviews_scraped": saved_count,
+            "scrape_cost_estimate": cost_estimate
+        }).eq("id", str(competitor_amazon_url_id)).execute()
+
+        return {
+            "raw_reviews_count": raw_count,
+            "unique_reviews_count": unique_count,
+            "reviews_saved": saved_count,
+            "cost_estimate": cost_estimate,
+            "errors": errors
+        }
+
+    def _save_competitor_reviews(
+        self,
+        reviews: List[Dict],
+        competitor_amazon_url_id: UUID,
+        competitor_id: UUID,
+        brand_id: UUID,
+        asin: str,
+        competitor_product_id: Optional[UUID] = None
+    ) -> int:
+        """
+        Save scraped reviews to competitor_amazon_reviews table.
+
+        Args:
+            reviews: List of review dicts from Apify
+            competitor_amazon_url_id: UUID of competitor_amazon_urls record
+            competitor_id: Competitor UUID
+            brand_id: Brand UUID
+            asin: Amazon ASIN
+            competitor_product_id: Optional competitor product UUID
+
+        Returns:
+            Number of reviews saved
+        """
+        from .amazon_review_service import AmazonReviewService
+        amazon_service = AmazonReviewService()
+
+        if not reviews:
+            return 0
+
+        saved_count = 0
+        batch_size = 100
+
+        for i in range(0, len(reviews), batch_size):
+            batch = reviews[i:i + batch_size]
+            records = []
+
+            for review in batch:
+                # Parse date
+                review_date = None
+                date_str = review.get("date")
+                if date_str:
+                    try:
+                        review_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                    except (ValueError, TypeError):
+                        pass
+
+                # Parse rating
+                rating = amazon_service._parse_rating(review.get("rating"))
+
+                record = {
+                    "competitor_amazon_url_id": str(competitor_amazon_url_id),
+                    "competitor_id": str(competitor_id),
+                    "brand_id": str(brand_id),
+                    "review_id": review.get("reviewId"),
+                    "asin": asin,
+                    "rating": rating,
+                    "title": review.get("title"),
+                    "body": review.get("text"),
+                    "author": review.get("author"),
+                    "review_date": review_date.isoformat() if review_date else None,
+                    "verified_purchase": review.get("verified", False),
+                    "helpful_votes": review.get("numberOfHelpful", 0) or 0,
+                }
+
+                if competitor_product_id:
+                    record["competitor_product_id"] = str(competitor_product_id)
+
+                records.append(record)
+
+            try:
+                result = self.supabase.table("competitor_amazon_reviews").upsert(
+                    records,
+                    on_conflict="review_id,asin"
+                ).execute()
+                saved_count += len(result.data)
+            except Exception as e:
+                logger.error(f"Error saving competitor review batch: {e}")
+
+        logger.info(f"Saved {saved_count} competitor reviews to database")
+        return saved_count
+
+    async def analyze_amazon_reviews_for_competitor(
+        self,
+        competitor_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze Amazon reviews for a competitor with rich themed output.
+
+        Generates themed clusters with scores and contextual quotes for:
+        - Pain Points
+        - Desired Outcomes
+        - Buying Objections
+        - Desired Features
+        - Failed Solutions
+
+        Args:
+            competitor_id: Competitor UUID
+            competitor_product_id: Optional product UUID to filter reviews
+
+        Returns:
+            Dict with analysis results including themed testimonials
+        """
+        import anthropic
+        import json
+
+        # Get reviews
+        query = self.supabase.table("competitor_amazon_reviews").select(
+            "rating, title, body, author, verified_purchase, helpful_votes"
+        ).eq("competitor_id", str(competitor_id))
+
+        if competitor_product_id:
+            query = query.eq("competitor_product_id", str(competitor_product_id))
+
+        result = query.order("helpful_votes", desc=True).limit(500).execute()
+        reviews = result.data or []
+
+        if not reviews:
+            return {"error": "No reviews found to analyze"}
+
+        logger.info(f"Analyzing {len(reviews)} competitor reviews")
+
+        # Format reviews for prompt
+        reviews_text = self._format_reviews_for_analysis(reviews)
+
+        # Get competitor info for context
+        competitor = self.supabase.table("competitors").select(
+            "name, website_url, industry"
+        ).eq("id", str(competitor_id)).single().execute()
+        competitor_info = competitor.data if competitor.data else {}
+
+        product_info = None
+        if competitor_product_id:
+            product = self.supabase.table("competitor_products").select(
+                "name, description"
+            ).eq("id", str(competitor_product_id)).single().execute()
+            product_info = product.data
+
+        # Build analysis prompt
+        prompt = self._build_rich_analysis_prompt(
+            reviews_text=reviews_text,
+            competitor_name=competitor_info.get("name", "Unknown"),
+            product_name=product_info.get("name") if product_info else None,
+            review_count=len(reviews)
+        )
+
+        # Call Claude
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        response_text = response.content[0].text
+
+        # Parse JSON response
+        try:
+            # Extract JSON from response
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                analysis = json.loads(json_match.group())
+            else:
+                raise ValueError("No JSON found in response")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse analysis response: {e}")
+            return {"error": f"Failed to parse analysis: {e}"}
+
+        # Save analysis to database
+        self._save_competitor_amazon_analysis(
+            competitor_id=competitor_id,
+            competitor_product_id=competitor_product_id,
+            analysis=analysis,
+            reviews_count=len(reviews)
+        )
+
+        return analysis
+
+    def _format_reviews_for_analysis(self, reviews: List[Dict]) -> str:
+        """Format reviews into text for analysis prompt."""
+        lines = []
+        for i, review in enumerate(reviews[:200], 1):  # Limit to 200 for token efficiency
+            rating = review.get("rating", "?")
+            title = review.get("title", "").strip()
+            body = review.get("body", "").strip()
+            author = review.get("author", "Anonymous")
+            verified = "✓" if review.get("verified_purchase") else ""
+            helpful = review.get("helpful_votes", 0)
+
+            lines.append(f"[Review {i}] ⭐{rating} {verified}")
+            if title:
+                lines.append(f"Title: {title}")
+            if body:
+                # Truncate very long reviews
+                body_truncated = body[:1500] + "..." if len(body) > 1500 else body
+                lines.append(f"Body: {body_truncated}")
+            lines.append(f"Author: {author} | Helpful votes: {helpful}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _build_rich_analysis_prompt(
+        self,
+        reviews_text: str,
+        competitor_name: str,
+        product_name: Optional[str],
+        review_count: int
+    ) -> str:
+        """Build the prompt for rich themed analysis."""
+        product_context = f" for their product '{product_name}'" if product_name else ""
+
+        return f"""You are an expert at extracting deep customer insights from Amazon reviews.
+
+Analyze these {review_count} reviews for {competitor_name}{product_context}.
+
+Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 5 categories, each with numbered themes ranked by importance (score 1-10).
+
+For each theme:
+1. Give it a descriptive name and score (based on frequency and intensity)
+2. Include 3-5 direct quotes that exemplify this theme
+3. For each quote, add context explaining what it reveals about the customer
+
+REVIEWS:
+{reviews_text}
+
+Return a JSON object with this exact structure:
+{{
+  "pain_points": [
+    {{
+      "theme": "Descriptive Theme Name",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote from review",
+          "author": "Author name if available",
+          "rating": 3,
+          "context": "What this quote reveals about customer psychology, frustration, or unmet need"
+        }}
+      ]
+    }}
+  ],
+  "desired_outcomes": [
+    {{
+      "theme": "What Customers Want to Achieve",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 5,
+          "context": "What this reveals about their ideal end state"
+        }}
+      ]
+    }}
+  ],
+  "buying_objections": [
+    {{
+      "theme": "Reasons for Hesitation or Dissatisfaction",
+      "score": 8.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 2,
+          "context": "What barrier or concern this represents"
+        }}
+      ]
+    }}
+  ],
+  "desired_features": [
+    {{
+      "theme": "Features/Attributes Customers Value",
+      "score": 8.5,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 5,
+          "context": "Why this feature matters to them"
+        }}
+      ]
+    }}
+  ],
+  "failed_solutions": [
+    {{
+      "theme": "Past Products/Approaches That Didn't Work",
+      "score": 7.5,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote mentioning other products",
+          "author": "Author name",
+          "rating": 4,
+          "context": "Why the previous solution failed them"
+        }}
+      ]
+    }}
+  ],
+  "summary": {{
+    "total_reviews_analyzed": {review_count},
+    "sentiment_distribution": {{
+      "positive": 0,
+      "neutral": 0,
+      "negative": 0
+    }},
+    "key_insight": "One sentence summary of the most important finding"
+  }}
+}}
+
+Guidelines:
+- Use EXACT verbatim quotes - do not paraphrase or clean up language
+- Include profanity, typos, emphasis (caps, multiple punctuation) as written
+- Score themes 1-10 based on how frequently and intensely they appear
+- Context should explain the psychological insight, not just summarize the quote
+- Aim for 4-6 themes per category, 3-5 quotes per theme
+- Focus on actionable insights that could inform marketing and product positioning
+
+Return ONLY the JSON object, no other text."""
+
+    def _save_competitor_amazon_analysis(
+        self,
+        competitor_id: UUID,
+        competitor_product_id: Optional[UUID],
+        analysis: Dict[str, Any],
+        reviews_count: int
+    ) -> None:
+        """Save the rich analysis to competitor_amazon_review_analysis table."""
+        try:
+            # Get brand_id from competitor
+            competitor = self.supabase.table("competitors").select(
+                "brand_id"
+            ).eq("id", str(competitor_id)).single().execute()
+            brand_id = competitor.data["brand_id"]
+
+            # Extract summary stats
+            summary = analysis.get("summary", {})
+            sentiment = summary.get("sentiment_distribution", {})
+
+            record = {
+                "competitor_id": str(competitor_id),
+                "brand_id": str(brand_id),
+                "total_reviews_analyzed": reviews_count,
+                "sentiment_distribution": sentiment,
+                "pain_points": {"themes": analysis.get("pain_points", [])},
+                "desires": {"themes": analysis.get("desired_outcomes", [])},
+                "objections": {"themes": analysis.get("buying_objections", [])},
+                "language_patterns": {"themes": analysis.get("desired_features", [])},
+                "transformation": {"themes": analysis.get("failed_solutions", [])},
+                "model_used": "claude-sonnet-4-20250514",
+                "analyzed_at": datetime.utcnow().isoformat()
+            }
+
+            if competitor_product_id:
+                record["competitor_product_id"] = str(competitor_product_id)
+
+            # Upsert - update if exists for this competitor
+            self.supabase.table("competitor_amazon_review_analysis").upsert(
+                record,
+                on_conflict="competitor_id"
+            ).execute()
+
+            logger.info(f"Saved Amazon analysis for competitor {competitor_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to save competitor Amazon analysis: {e}")

@@ -1122,8 +1122,23 @@ with tab_amazon:
                     col_scrape, col_del = st.columns(2)
                     with col_scrape:
                         if st.button("📥 Scrape", key=f"scrape_amz_{amz['id']}", help="Scrape reviews"):
-                            st.info("Review scraping will be integrated with AmazonReviewService")
-                            # TODO: Integrate with Amazon review scraping
+                            with st.spinner(f"Scraping reviews for {amz['asin']}... (this may take 5-15 minutes)"):
+                                try:
+                                    service = get_competitor_service()
+                                    result = service.scrape_amazon_reviews_for_competitor(
+                                        competitor_amazon_url_id=UUID(amz['id'])
+                                    )
+                                    if result.get('errors'):
+                                        st.error(f"Errors: {result['errors']}")
+                                    else:
+                                        st.success(
+                                            f"Scraped {result['reviews_saved']} reviews "
+                                            f"(from {result['raw_reviews_count']} raw, "
+                                            f"~${result['cost_estimate']:.2f})"
+                                        )
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"Scrape failed: {e}")
                     with col_del:
                         if st.button("🗑️", key=f"del_amz_{amz['id']}", help="Delete"):
                             try:
@@ -1139,10 +1154,44 @@ with tab_amazon:
     except Exception as e:
         st.error(f"Failed to load Amazon URLs: {e}")
 
-    # Amazon Review Analysis Results
+    # Check if we have reviews to analyze
+    try:
+        db = get_supabase_client()
+        reviews_count_result = db.table("competitor_amazon_reviews").select(
+            "id", count="exact"
+        ).eq("competitor_id", selected_competitor_id).execute()
+        total_reviews = reviews_count_result.count or 0
+    except Exception:
+        total_reviews = 0
+
+    # Analyze button
+    if total_reviews > 0:
+        st.markdown("---")
+        col_analyze, col_info = st.columns([1, 2])
+        with col_analyze:
+            if st.button("🔬 Analyze Reviews", key="analyze_amazon_reviews", type="primary"):
+                with st.spinner(f"Analyzing {total_reviews} reviews with Claude... (this may take 1-2 minutes)"):
+                    try:
+                        service = get_competitor_service()
+                        # Run async analysis
+                        result = asyncio.run(service.analyze_amazon_reviews_for_competitor(
+                            competitor_id=UUID(selected_competitor_id),
+                            competitor_product_id=UUID(selected_product_id) if selected_product_id else None
+                        ))
+                        if result.get('error'):
+                            st.error(result['error'])
+                        else:
+                            st.success("Analysis complete!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+        with col_info:
+            st.caption(f"{total_reviews} reviews available for analysis")
+
+    # Amazon Review Analysis Results - Rich Themed Display
     if stats.get('has_amazon_analysis'):
         st.markdown("---")
-        st.markdown("### Analysis Results")
+        st.markdown("### Amazon Review Analysis")
 
         try:
             db = get_supabase_client()
@@ -1153,48 +1202,61 @@ with tab_amazon:
             if analysis_result.data:
                 analysis = analysis_result.data
 
-                tab_pain, tab_desires, tab_language, tab_quotes = st.tabs([
-                    "Pain Points", "Desires", "Language", "Quotes"
+                # Show summary
+                st.caption(f"📊 {analysis.get('total_reviews_analyzed', 0)} reviews analyzed | Model: {analysis.get('model_used', 'Unknown')}")
+
+                tab_pain, tab_outcomes, tab_objections, tab_features, tab_failed = st.tabs([
+                    "😫 Pain Points", "🎯 Desired Outcomes", "🚫 Buying Objections",
+                    "✨ Desired Features", "❌ Failed Solutions"
                 ])
 
+                def render_themed_section(data: Dict, tab_name: str):
+                    """Render a themed section with quotes and context."""
+                    themes = data.get('themes', []) if isinstance(data, dict) else []
+                    if not themes:
+                        st.info(f"No {tab_name.lower()} extracted yet.")
+                        return
+
+                    for i, theme in enumerate(themes, 1):
+                        theme_name = theme.get('theme', 'Unknown Theme')
+                        score = theme.get('score', 0)
+                        quotes = theme.get('quotes', [])
+
+                        # Theme header with score
+                        st.markdown(f"### {i}. {theme_name} — Score: {score}/10")
+
+                        # Quotes with context
+                        for q in quotes[:5]:
+                            quote_text = q.get('quote', '')
+                            context = q.get('context', '')
+                            author = q.get('author', 'Anonymous')
+                            rating = q.get('rating')
+
+                            rating_str = f"⭐{rating}" if rating else ""
+
+                            st.markdown(f"""
+> **Quote:** "{quote_text}"
+>
+> **Context:** {context}
+>
+> *— {author} {rating_str}*
+""")
+                        st.markdown("---")
+
                 with tab_pain:
-                    pain_points = analysis.get('pain_points', {})
-                    if isinstance(pain_points, dict) and pain_points.get('insights'):
-                        for insight in pain_points['insights'][:10]:
-                            st.markdown(f"• {insight}")
-                    else:
-                        st.info("No pain points extracted")
+                    render_themed_section(analysis.get('pain_points', {}), "Pain Points")
 
-                with tab_desires:
-                    desires = analysis.get('desires', {})
-                    if isinstance(desires, dict) and desires.get('insights'):
-                        for insight in desires['insights'][:10]:
-                            st.markdown(f"• {insight}")
-                    else:
-                        st.info("No desires extracted")
+                with tab_outcomes:
+                    render_themed_section(analysis.get('desires', {}), "Desired Outcomes")
 
-                with tab_language:
-                    language = analysis.get('language_patterns', {})
-                    if isinstance(language, dict):
-                        if language.get('positive_phrases'):
-                            st.markdown("**Positive Phrases:**")
-                            for phrase in language['positive_phrases'][:5]:
-                                st.caption(f"• \"{phrase}\"")
-                        if language.get('negative_phrases'):
-                            st.markdown("**Negative Phrases:**")
-                            for phrase in language['negative_phrases'][:5]:
-                                st.caption(f"• \"{phrase}\"")
-                    else:
-                        st.info("No language patterns extracted")
+                with tab_objections:
+                    render_themed_section(analysis.get('objections', {}), "Buying Objections")
 
-                with tab_quotes:
-                    st.markdown("**Top Positive Quotes:**")
-                    for quote in (analysis.get('top_positive_quotes') or [])[:3]:
-                        st.caption(f"💬 \"{quote}\"")
+                with tab_features:
+                    render_themed_section(analysis.get('language_patterns', {}), "Desired Features")
 
-                    st.markdown("**Top Negative Quotes:**")
-                    for quote in (analysis.get('top_negative_quotes') or [])[:3]:
-                        st.caption(f"💬 \"{quote}\"")
+                with tab_failed:
+                    render_themed_section(analysis.get('transformation', {}), "Failed Solutions")
 
         except Exception as e:
             st.error(f"Failed to load analysis: {e}")
