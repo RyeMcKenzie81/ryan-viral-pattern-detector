@@ -796,6 +796,10 @@ brand_id = render_brand_selector(key="competitive_analysis_brand_selector")
 if not brand_id:
     st.stop()
 
+# Get brand name for analysis
+brands = get_brands()
+brand_name = next((b['name'] for b in brands if b['id'] == brand_id), "Unknown Brand")
+
 st.divider()
 
 # Get data
@@ -806,7 +810,7 @@ competitors = get_competitors_for_brand(brand_id)
 render_data_status(brand_id, brand_personas, competitors)
 st.divider()
 
-render_analysis_section(selected_brand_name, brand_id, brand_personas, competitors)
+render_analysis_section(brand_name, brand_id, brand_personas, competitors)
 
 # Show results if available
 if st.session_state.competitive_analysis:
