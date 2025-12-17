@@ -1205,14 +1205,14 @@ with tab_amazon:
                 # Show summary
                 st.caption(f"📊 {analysis.get('total_reviews_analyzed', 0)} reviews analyzed | Model: {analysis.get('model_used', 'Unknown')}")
 
-                tab_pain, tab_outcomes, tab_objections, tab_features, tab_failed = st.tabs([
-                    "😫 Pain Points", "🎯 Desired Outcomes", "🚫 Buying Objections",
-                    "✨ Desired Features", "❌ Failed Solutions"
+                tab_pain, tab_jtbd, tab_issues, tab_outcomes, tab_objections, tab_features, tab_failed = st.tabs([
+                    "😫 Pain Points", "🎯 Jobs to Be Done", "⚠️ Product Issues",
+                    "✨ Desired Outcomes", "🚫 Buying Objections",
+                    "💡 Desired Features", "❌ Failed Solutions"
                 ])
 
-                def render_themed_section(data: Dict, tab_name: str):
+                def render_themed_section(themes: list, tab_name: str):
                     """Render a themed section with quotes and context."""
-                    themes = data.get('themes', []) if isinstance(data, dict) else []
                     if not themes:
                         st.info(f"No {tab_name.lower()} extracted yet.")
                         return
@@ -1243,20 +1243,48 @@ with tab_amazon:
 """)
                         st.markdown("---")
 
+                # Extract data - pain_points now contains themes, jobs_to_be_done, and product_issues
+                pain_data = analysis.get('pain_points', {})
+                if isinstance(pain_data, dict):
+                    pain_themes = pain_data.get('themes', [])
+                    jtbd_themes = pain_data.get('jobs_to_be_done', [])
+                    issues_themes = pain_data.get('product_issues', [])
+                else:
+                    pain_themes = []
+                    jtbd_themes = []
+                    issues_themes = []
+
                 with tab_pain:
-                    render_themed_section(analysis.get('pain_points', {}), "Pain Points")
+                    st.caption("Life frustrations BEFORE trying the product - what drove them to seek a solution")
+                    render_themed_section(pain_themes, "Pain Points")
+
+                with tab_jtbd:
+                    st.caption("What customers are trying to accomplish - functional, emotional, and social goals")
+                    render_themed_section(jtbd_themes, "Jobs to Be Done")
+
+                with tab_issues:
+                    st.caption("Problems WITH this specific product - complaints, defects, disappointments")
+                    render_themed_section(issues_themes, "Product Issues")
 
                 with tab_outcomes:
-                    render_themed_section(analysis.get('desires', {}), "Desired Outcomes")
+                    desires_data = analysis.get('desires', {})
+                    desires_themes = desires_data.get('themes', []) if isinstance(desires_data, dict) else []
+                    render_themed_section(desires_themes, "Desired Outcomes")
 
                 with tab_objections:
-                    render_themed_section(analysis.get('objections', {}), "Buying Objections")
+                    objections_data = analysis.get('objections', {})
+                    objections_themes = objections_data.get('themes', []) if isinstance(objections_data, dict) else []
+                    render_themed_section(objections_themes, "Buying Objections")
 
                 with tab_features:
-                    render_themed_section(analysis.get('language_patterns', {}), "Desired Features")
+                    features_data = analysis.get('language_patterns', {})
+                    features_themes = features_data.get('themes', []) if isinstance(features_data, dict) else []
+                    render_themed_section(features_themes, "Desired Features")
 
                 with tab_failed:
-                    render_themed_section(analysis.get('transformation', {}), "Failed Solutions")
+                    failed_data = analysis.get('transformation', {})
+                    failed_themes = failed_data.get('themes', []) if isinstance(failed_data, dict) else []
+                    render_themed_section(failed_themes, "Failed Solutions")
 
         except Exception as e:
             st.error(f"Failed to load analysis: {e}")

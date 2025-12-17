@@ -1922,7 +1922,12 @@ Return ONLY valid JSON."""
 
 Analyze these {review_count} reviews for {competitor_name}{product_context}.
 
-Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 5 categories, each with numbered themes ranked by importance (score 1-10).
+Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 7 categories, each with numbered themes ranked by importance (score 1-10).
+
+IMPORTANT DISTINCTIONS:
+- "pain_points" = Life frustrations BEFORE using this product (the symptoms driving them to seek a solution)
+- "product_issues" = Problems WITH this specific product (complaints, defects, disappointments)
+- "jobs_to_be_done" = What customers are trying to accomplish (functional, emotional, social goals)
 
 For each theme:
 1. Give it a descriptive name and score (based on frequency and intensity)
@@ -1936,14 +1941,42 @@ Return a JSON object with this exact structure:
 {{
   "pain_points": [
     {{
-      "theme": "Descriptive Theme Name",
+      "theme": "Life Frustration Before Product",
       "score": 9.0,
       "quotes": [
         {{
-          "quote": "Exact verbatim quote from review",
+          "quote": "Exact verbatim quote describing life pain/frustration BEFORE trying product",
           "author": "Author name if available",
           "rating": 3,
-          "context": "What this quote reveals about customer psychology, frustration, or unmet need"
+          "context": "What this reveals about their life situation, frustrations, or unmet needs before this product"
+        }}
+      ]
+    }}
+  ],
+  "jobs_to_be_done": [
+    {{
+      "theme": "What They're Trying to Accomplish",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote showing what job/goal they hired this product for",
+          "author": "Author name",
+          "rating": 5,
+          "context": "The functional, emotional, or social job they're trying to get done"
+        }}
+      ]
+    }}
+  ],
+  "product_issues": [
+    {{
+      "theme": "Specific Problem With This Product",
+      "score": 8.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote about a problem with THIS product",
+          "author": "Author name",
+          "rating": 2,
+          "context": "What product defect, disappointment, or issue this represents"
         }}
       ]
     }}
@@ -1964,14 +1997,14 @@ Return a JSON object with this exact structure:
   ],
   "buying_objections": [
     {{
-      "theme": "Reasons for Hesitation or Dissatisfaction",
+      "theme": "Reasons for Hesitation Before Purchase",
       "score": 8.0,
       "quotes": [
         {{
-          "quote": "Exact verbatim quote",
+          "quote": "Exact verbatim quote about pre-purchase concerns or hesitations",
           "author": "Author name",
-          "rating": 2,
-          "context": "What barrier or concern this represents"
+          "rating": 4,
+          "context": "What barrier or concern almost stopped them from buying"
         }}
       ]
     }}
@@ -1996,7 +2029,7 @@ Return a JSON object with this exact structure:
       "score": 7.5,
       "quotes": [
         {{
-          "quote": "Exact verbatim quote mentioning other products",
+          "quote": "Exact verbatim quote mentioning other products they tried",
           "author": "Author name",
           "rating": 4,
           "context": "Why the previous solution failed them"
@@ -2021,6 +2054,7 @@ Guidelines:
 - Score themes 1-10 based on how frequently and intensely they appear
 - Context should explain the psychological insight, not just summarize the quote
 - Aim for 4-6 themes per category, 3-5 quotes per theme
+- CRITICAL: Separate "pain_points" (life before product) from "product_issues" (problems with this product)
 - Focus on actionable insights that could inform marketing and product positioning
 
 Return ONLY the JSON object, no other text."""
@@ -2044,12 +2078,19 @@ Return ONLY the JSON object, no other text."""
             summary = analysis.get("summary", {})
             sentiment = summary.get("sentiment_distribution", {})
 
+            # Map analysis fields to DB columns
+            # Note: We store the full analysis structure in each JSONB column
+            # jobs_to_be_done and product_issues are new, stored alongside existing fields
             record = {
                 "competitor_id": str(competitor_id),
                 "brand_id": str(brand_id),
                 "total_reviews_analyzed": reviews_count,
                 "sentiment_distribution": sentiment,
-                "pain_points": {"themes": analysis.get("pain_points", [])},
+                "pain_points": {
+                    "themes": analysis.get("pain_points", []),
+                    "jobs_to_be_done": analysis.get("jobs_to_be_done", []),
+                    "product_issues": analysis.get("product_issues", [])
+                },
                 "desires": {"themes": analysis.get("desired_outcomes", [])},
                 "objections": {"themes": analysis.get("buying_objections", [])},
                 "language_patterns": {"themes": analysis.get("desired_features", [])},
