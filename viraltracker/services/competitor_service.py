@@ -2061,10 +2061,13 @@ Return ONLY the JSON object, no other text."""
             if competitor_product_id:
                 record["competitor_product_id"] = str(competitor_product_id)
 
-            # Upsert - update if exists for this competitor
-            self.supabase.table("competitor_amazon_review_analysis").upsert(
-                record,
-                on_conflict="competitor_id"
+            # Delete existing analysis for this competitor, then insert new one
+            self.supabase.table("competitor_amazon_review_analysis").delete().eq(
+                "competitor_id", str(competitor_id)
+            ).execute()
+
+            self.supabase.table("competitor_amazon_review_analysis").insert(
+                record
             ).execute()
 
             logger.info(f"Saved Amazon analysis for competitor {competitor_id}")
