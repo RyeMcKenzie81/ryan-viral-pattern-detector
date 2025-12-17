@@ -1488,6 +1488,287 @@ Return ONLY valid JSON."""
             logger.error(f"Failed to analyze landing page {landing_page_id}: {e}")
             return None
 
+    def get_landing_page_stats(
+        self,
+        competitor_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Dict[str, int]:
+        """
+        Get landing page statistics for a competitor.
+
+        Returns:
+            Dict with counts:
+            - available: Total unique URLs from competitor ads
+            - total: Landing pages in database
+            - scraped: Successfully scraped pages (have scraped_at)
+            - analyzed: Pages with analysis complete (have analyzed_at)
+            - to_scrape: URLs from ads not yet in landing_pages table
+            - to_analyze: Scraped pages not yet analyzed
+        """
+        try:
+            competitor_id_str = str(competitor_id)
+
+            # Get unique URLs from competitor ads
+            ads_query = self.supabase.table("competitor_ads").select(
+                "link_url"
+            ).eq("competitor_id", competitor_id_str).not_.is_("link_url", "null")
+
+            if competitor_product_id:
+                ads_query = ads_query.eq("competitor_product_id", str(competitor_product_id))
+
+            ads_result = ads_query.execute()
+
+            # Extract unique URLs
+            ad_urls = set()
+            for ad in ads_result.data or []:
+                url = ad.get("link_url")
+                if url and url.strip():
+                    ad_urls.add(url.strip())
+
+            available = len(ad_urls)
+
+            # Get existing landing pages
+            lp_query = self.supabase.table("competitor_landing_pages").select(
+                "url, scraped_at, analyzed_at"
+            ).eq("competitor_id", competitor_id_str)
+
+            if competitor_product_id:
+                lp_query = lp_query.eq("competitor_product_id", str(competitor_product_id))
+
+            lp_result = lp_query.execute()
+
+            existing_urls = set()
+            scraped = 0
+            analyzed = 0
+
+            for page in lp_result.data or []:
+                url = page.get("url")
+                if url:
+                    existing_urls.add(url)
+                if page.get("scraped_at"):
+                    scraped += 1
+                if page.get("analyzed_at"):
+                    analyzed += 1
+
+            total = len(existing_urls)
+            to_scrape = len(ad_urls - existing_urls)
+            to_analyze = scraped - analyzed
+
+            return {
+                "available": available,
+                "total": total,
+                "scraped": scraped,
+                "analyzed": analyzed,
+                "to_scrape": to_scrape,
+                "to_analyze": max(0, to_analyze)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get landing page stats: {e}")
+            return {
+                "available": 0, "total": 0, "scraped": 0,
+                "analyzed": 0, "to_scrape": 0, "to_analyze": 0
+            }
+
+    async def scrape_landing_pages_for_competitor(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        limit: int = 20,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Dict[str, Any]:
+        """
+        Discover and scrape landing pages from competitor ads.
+
+        Finds unique URLs from competitor_ads.link_url that aren't yet
+        in competitor_landing_pages, then scrapes them.
+
+        Args:
+            competitor_id: Competitor UUID
+            brand_id: Brand UUID (for record keeping)
+            limit: Maximum pages to scrape
+            competitor_product_id: Optional filter by product
+
+        Returns:
+            Dict with results: urls_found, pages_scraped, pages_failed, already_scraped
+        """
+        from datetime import datetime
+        from .web_scraping_service import WebScrapingService
+
+        competitor_id_str = str(competitor_id)
+
+        # Get unique URLs from competitor ads
+        ads_query = self.supabase.table("competitor_ads").select(
+            "link_url, competitor_product_id"
+        ).eq("competitor_id", competitor_id_str).not_.is_("link_url", "null")
+
+        if competitor_product_id:
+            ads_query = ads_query.eq("competitor_product_id", str(competitor_product_id))
+
+        ads_result = ads_query.execute()
+
+        # Build URL -> product mapping (use first product seen for each URL)
+        url_to_product: Dict[str, Optional[str]] = {}
+        for ad in ads_result.data or []:
+            url = ad.get("link_url")
+            if url and url.strip() and url not in url_to_product:
+                url_to_product[url.strip()] = ad.get("competitor_product_id")
+
+        urls_found = len(url_to_product)
+        logger.info(f"Found {urls_found} unique URLs from competitor ads")
+
+        if not url_to_product:
+            return {
+                "urls_found": 0,
+                "pages_scraped": 0,
+                "pages_failed": 0,
+                "already_scraped": 0
+            }
+
+        # Get existing landing page URLs
+        existing_result = self.supabase.table("competitor_landing_pages").select(
+            "url"
+        ).eq("competitor_id", competitor_id_str).execute()
+
+        existing_urls = {p["url"] for p in existing_result.data or []}
+        already_scraped = len(existing_urls)
+
+        # Filter to URLs not yet scraped
+        new_urls = [(url, prod_id) for url, prod_id in url_to_product.items()
+                    if url not in existing_urls]
+
+        if not new_urls:
+            logger.info("All URLs already scraped")
+            return {
+                "urls_found": urls_found,
+                "pages_scraped": 0,
+                "pages_failed": 0,
+                "already_scraped": already_scraped
+            }
+
+        # Scrape new URLs (up to limit)
+        scraper = WebScrapingService()
+        pages_scraped = 0
+        pages_failed = 0
+
+        for url, prod_id in new_urls[:limit]:
+            try:
+                result = await scraper.scrape_url_async(
+                    url=url,
+                    formats=["markdown", "html"],
+                    only_main_content=True
+                )
+
+                if result.success:
+                    record = {
+                        "competitor_id": competitor_id_str,
+                        "brand_id": str(brand_id),
+                        "url": url,
+                        "is_manual": False,
+                        "scraped_content": result.markdown,
+                        "scraped_html": result.html,
+                        "scraped_at": datetime.utcnow().isoformat()
+                    }
+
+                    if prod_id:
+                        record["competitor_product_id"] = prod_id
+
+                    self.supabase.table("competitor_landing_pages").upsert(
+                        record,
+                        on_conflict="competitor_id,url"
+                    ).execute()
+
+                    pages_scraped += 1
+                    logger.info(f"Scraped landing page: {url}")
+                else:
+                    pages_failed += 1
+                    logger.warning(f"Failed to scrape {url}: {result.error}")
+
+            except Exception as e:
+                pages_failed += 1
+                logger.error(f"Error scraping {url}: {e}")
+
+        return {
+            "urls_found": urls_found,
+            "pages_scraped": pages_scraped,
+            "pages_failed": pages_failed,
+            "already_scraped": already_scraped
+        }
+
+    async def analyze_landing_pages_for_competitor(
+        self,
+        competitor_id: UUID,
+        limit: int = 20,
+        competitor_product_id: Optional[UUID] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Analyze scraped landing pages that haven't been analyzed yet.
+
+        Args:
+            competitor_id: Competitor UUID
+            limit: Maximum pages to analyze
+            competitor_product_id: Optional filter by product
+
+        Returns:
+            List of analysis results
+        """
+        competitor_id_str = str(competitor_id)
+
+        # Get scraped but not analyzed pages
+        query = self.supabase.table("competitor_landing_pages").select(
+            "id, url"
+        ).eq("competitor_id", competitor_id_str).not_.is_(
+            "scraped_at", "null"
+        ).is_("analyzed_at", "null")
+
+        if competitor_product_id:
+            query = query.eq("competitor_product_id", str(competitor_product_id))
+
+        result = query.limit(limit).execute()
+
+        if not result.data:
+            logger.info("No landing pages to analyze")
+            return []
+
+        results = []
+        for page in result.data:
+            page_id = UUID(page["id"])
+            analysis = await self.analyze_landing_page(page_id)
+
+            if analysis:
+                results.append({
+                    "landing_page_id": str(page_id),
+                    "url": page["url"],
+                    "analysis": analysis
+                })
+
+        return results
+
+    def get_landing_pages_for_competitor(
+        self,
+        competitor_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all landing pages for a competitor.
+
+        Args:
+            competitor_id: Competitor UUID
+            competitor_product_id: Optional filter by product
+
+        Returns:
+            List of landing page records
+        """
+        query = self.supabase.table("competitor_landing_pages").select(
+            "id, url, scraped_at, analyzed_at, analysis_data, competitor_product_id"
+        ).eq("competitor_id", str(competitor_id))
+
+        if competitor_product_id:
+            query = query.eq("competitor_product_id", str(competitor_product_id))
+
+        result = query.order("scraped_at", desc=True).execute()
+        return result.data or []
+
     # ================================================================
     # Product-Level Analysis Methods (for Competitive Comparison)
     # ================================================================

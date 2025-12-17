@@ -915,10 +915,98 @@ with tab_ads:
 # LANDING PAGES TAB
 # ----------------------------------------------------------------------------
 with tab_landing:
-    st.markdown("### Landing Page Management")
+    st.markdown("### Landing Page Scraping & Analysis")
+    st.caption("Extract landing pages from competitor ads and analyze them for marketing insights.")
 
-    # Add manual landing page
-    with st.expander("➕ Add Landing Page URL"):
+    # Get stats
+    service = get_competitor_service()
+    lp_stats = service.get_landing_page_stats(
+        competitor_id=UUID(selected_competitor_id),
+        competitor_product_id=UUID(selected_product_id) if selected_product_id else None
+    )
+
+    # Show stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("URLs from Ads", lp_stats.get("available", 0))
+    with col2:
+        st.metric("Scraped", lp_stats.get("scraped", 0))
+    with col3:
+        st.metric("Analyzed", lp_stats.get("analyzed", 0))
+    with col4:
+        to_scrape = lp_stats.get("to_scrape", 0)
+        to_analyze = lp_stats.get("to_analyze", 0)
+        st.metric("Pending", f"{to_scrape} / {to_analyze}", help="To scrape / To analyze")
+
+    st.markdown("---")
+
+    # Batch operations
+    col_scrape, col_analyze = st.columns(2)
+
+    with col_scrape:
+        st.markdown("**Scrape Landing Pages**")
+        st.caption("Discover URLs from competitor ads and scrape them")
+
+        to_scrape = lp_stats.get("to_scrape", 0)
+        if to_scrape > 0:
+            st.info(f"{to_scrape} new URLs ready to scrape")
+        elif lp_stats.get("scraped", 0) > 0:
+            st.success(f"All {lp_stats.get('available', 0)} URLs scraped")
+        else:
+            st.info("No URLs found in competitor ads yet")
+
+        scrape_limit = st.number_input("Pages to scrape", 1, 50, min(to_scrape, 20) if to_scrape > 0 else 20, key="lp_scrape_limit")
+
+        if st.button("Scrape Landing Pages", type="primary", disabled=to_scrape == 0, key="btn_scrape_lp"):
+            with st.spinner(f"Scraping up to {scrape_limit} landing pages..."):
+                try:
+                    result = asyncio.run(service.scrape_landing_pages_for_competitor(
+                        competitor_id=UUID(selected_competitor_id),
+                        brand_id=UUID(selected_brand_id),
+                        limit=scrape_limit,
+                        competitor_product_id=UUID(selected_product_id) if selected_product_id else None
+                    ))
+                    if result['pages_scraped'] > 0:
+                        st.success(f"Scraped {result['pages_scraped']} of {result['urls_found']} URLs ({result['pages_failed']} failed)")
+                    elif result['already_scraped'] > 0:
+                        st.info(f"All {result['urls_found']} URLs already scraped")
+                    else:
+                        st.warning("No pages scraped")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Scrape failed: {e}")
+
+    with col_analyze:
+        st.markdown("**Analyze Landing Pages**")
+        st.caption("Extract marketing insights with AI")
+
+        to_analyze = lp_stats.get("to_analyze", 0)
+        if to_analyze > 0:
+            st.info(f"{to_analyze} pages ready to analyze")
+        elif lp_stats.get("analyzed", 0) > 0:
+            st.success(f"All {lp_stats.get('scraped', 0)} scraped pages analyzed")
+        else:
+            st.caption("Scrape pages first")
+
+        analyze_limit = st.number_input("Pages to analyze", 1, 50, min(to_analyze, 20) if to_analyze > 0 else 20, key="lp_analyze_limit")
+
+        if st.button("Analyze Landing Pages", type="primary", disabled=to_analyze == 0, key="btn_analyze_lp"):
+            with st.spinner(f"Analyzing up to {analyze_limit} landing pages..."):
+                try:
+                    results = asyncio.run(service.analyze_landing_pages_for_competitor(
+                        competitor_id=UUID(selected_competitor_id),
+                        limit=analyze_limit,
+                        competitor_product_id=UUID(selected_product_id) if selected_product_id else None
+                    ))
+                    st.success(f"Analyzed {len(results)} landing pages")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
+
+    st.markdown("---")
+
+    # Manual URL entry
+    with st.expander("➕ Add Landing Page URL Manually"):
         with st.form("add_landing_page"):
             lp_url = st.text_input("URL", placeholder="https://competitor.com/products/xyz")
 
@@ -951,17 +1039,12 @@ with tab_landing:
                         st.error(f"Failed: {e}")
 
     # List landing pages
+    st.markdown("### Landing Pages")
     try:
-        db = get_supabase_client()
-        lp_query = db.table("competitor_landing_pages").select(
-            "id, url, is_manual, competitor_product_id, scraped_at, analyzed_at"
-        ).eq("competitor_id", selected_competitor_id)
-
-        if selected_product_id:
-            lp_query = lp_query.eq("competitor_product_id", selected_product_id)
-
-        lp_result = lp_query.order("created_at", desc=True).limit(50).execute()
-        landing_pages = lp_result.data or []
+        landing_pages = service.get_landing_pages_for_competitor(
+            competitor_id=UUID(selected_competitor_id),
+            competitor_product_id=UUID(selected_product_id) if selected_product_id else None
+        )
 
         if landing_pages:
             st.markdown(f"**{len(landing_pages)} landing page(s)**")
@@ -994,7 +1077,6 @@ with tab_landing:
                             if st.button("📥", key=f"scrape_lp_{lp['id']}", help="Scrape"):
                                 with st.spinner("Scraping..."):
                                     try:
-                                        service = get_competitor_service()
                                         asyncio.run(service.scrape_and_save_landing_page(
                                             url=lp['url'],
                                             competitor_id=UUID(selected_competitor_id),
@@ -1010,7 +1092,6 @@ with tab_landing:
                             if st.button("🔍", key=f"analyze_lp_{lp['id']}", help="Analyze"):
                                 with st.spinner("Analyzing..."):
                                     try:
-                                        service = get_competitor_service()
                                         asyncio.run(service.analyze_landing_page(UUID(lp['id'])))
                                         st.success("Analyzed!")
                                         st.rerun()
@@ -1019,6 +1100,7 @@ with tab_landing:
                     with col_del:
                         if st.button("🗑️", key=f"del_lp_{lp['id']}", help="Delete"):
                             try:
+                                db = get_supabase_client()
                                 db.table("competitor_landing_pages").delete().eq(
                                     "id", lp['id']
                                 ).execute()
@@ -1026,7 +1108,7 @@ with tab_landing:
                             except Exception as e:
                                 st.error(f"Failed: {e}")
         else:
-            st.info("No landing pages found.")
+            st.info("No landing pages found. Click 'Scrape Landing Pages' to extract URLs from competitor ads.")
 
     except Exception as e:
         st.error(f"Failed to load landing pages: {e}")
