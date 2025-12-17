@@ -555,7 +555,16 @@ class AmazonReviewService:
         delay_between: float = 2.0
     ) -> Optional[Dict[str, Any]]:
         """
-        Analyze stored reviews with Claude to extract persona signals.
+        Analyze stored reviews with Claude to extract rich themed persona signals.
+
+        Generates themed clusters with scores and contextual quotes for:
+        - Pain Points (life frustrations BEFORE the product)
+        - Jobs to Be Done (what they're trying to accomplish)
+        - Product Issues (problems WITH this product)
+        - Desired Outcomes
+        - Buying Objections
+        - Desired Features
+        - Failed Solutions (past products that didn't work)
 
         Args:
             product_id: Product UUID
@@ -565,13 +574,15 @@ class AmazonReviewService:
         Returns:
             Analysis results dictionary or None if no reviews
         """
-        import asyncio
+        import json
         from anthropic import Anthropic
 
-        # Fetch reviews
+        # Fetch reviews with all fields needed for rich formatting
         result = self.supabase.table("amazon_reviews").select(
-            "rating, title, body"
-        ).eq("product_id", str(product_id)).limit(limit).execute()
+            "rating, title, body, author, verified_purchase, helpful_votes"
+        ).eq("product_id", str(product_id)).order(
+            "helpful_votes", desc=True
+        ).limit(limit).execute()
 
         if not result.data:
             logger.info(f"No reviews found for product {product_id}")
@@ -595,15 +606,17 @@ class AmazonReviewService:
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=4096,
+                max_tokens=8000,
                 messages=[{
                     "role": "user",
-                    "content": REVIEW_ANALYSIS_PROMPT.format(reviews_text=reviews_text)
+                    "content": REVIEW_ANALYSIS_PROMPT.format(
+                        reviews_text=reviews_text,
+                        review_count=len(reviews)
+                    )
                 }]
             )
 
             # Parse response
-            import json
             analysis_text = response.content[0].text
 
             # Extract JSON from response
@@ -629,24 +642,27 @@ class AmazonReviewService:
             return None
 
     def _format_reviews_for_prompt(self, reviews: List[Dict]) -> str:
-        """Format reviews for Claude prompt with author attribution."""
+        """Format reviews for Claude prompt with rich context."""
         lines = []
-        for review in reviews:
+        for i, review in enumerate(reviews[:200], 1):  # Limit to 200 for token efficiency
             rating = review.get("rating", "?")
-            title = review.get("title", "No title")
-            body = review.get("body", "No content")
+            title = review.get("title", "").strip()
+            body = review.get("body", "").strip()
             author = review.get("author", "Anonymous")
+            verified = "✓" if review.get("verified_purchase") else ""
+            helpful = review.get("helpful_votes", 0)
 
-            # Format author as "First L." if possible
-            author_formatted = self._format_author_name(author)
+            lines.append(f"[Review {i}] ⭐{rating} {verified}")
+            if title:
+                lines.append(f"Title: {title}")
+            if body:
+                # Truncate very long reviews
+                body_truncated = body[:1500] + "..." if len(body) > 1500 else body
+                lines.append(f"Body: {body_truncated}")
+            lines.append(f"Author: {author} | Helpful votes: {helpful}")
+            lines.append("")
 
-            # Truncate long reviews
-            if len(body) > 500:
-                body = body[:500] + "..."
-
-            lines.append(f"[{rating}★] {author_formatted} | {title}\n{body}\n")
-
-        return "\n---\n".join(lines)
+        return "\n".join(lines)
 
     def _format_author_name(self, author: str) -> str:
         """Format author name as 'First L.' for attribution."""
@@ -676,61 +692,51 @@ class AmazonReviewService:
         reviews_count: int,
         analysis: Dict[str, Any]
     ):
-        """Save review analysis to database.
+        """Save rich themed review analysis to database.
 
-        Maps new analysis structure to database columns:
-        - transformation -> transformation_quotes (JSONB with insights + quotes)
-        - pain_points -> pain_points (JSONB with insights + quotes)
-        - desired_features -> desires (JSONB with insights + quotes)
-        - past_failures, buying_objections, familiar_promises -> objections (combined JSONB)
-        - language_patterns -> language_patterns (JSONB)
+        Maps analysis structure to database columns (matching competitor format):
+        - pain_points stores themes + jobs_to_be_done + product_issues
+        - desires stores desired_outcomes themes
+        - objections stores buying_objections themes
+        - language_patterns stores desired_features themes
+        - transformation stores failed_solutions themes
         """
         try:
-            # Extract quotes for legacy TEXT[] columns (for backwards compat)
-            transformation_quotes = [
-                q.get("text", "") for q in
-                analysis.get("transformation", {}).get("quotes", [])
-            ]
-            pain_quotes = [
-                q.get("text", "") for q in
-                analysis.get("pain_points", {}).get("quotes", [])
-            ]
+            # Extract summary stats
+            summary = analysis.get("summary", {})
+            sentiment = summary.get("sentiment_distribution", {})
 
-            # Combine objection-related categories
-            combined_objections = {
-                "past_failures": analysis.get("past_failures", {}),
-                "buying_objections": analysis.get("buying_objections", {}),
-                "familiar_promises": analysis.get("familiar_promises", {})
-            }
-
-            # Build purchase triggers from insights
-            triggers = []
-            for cat in ["transformation", "desired_features"]:
-                insights = analysis.get(cat, {}).get("insights", [])
-                triggers.extend(insights[:3])  # Top 3 from each
-
-            self.supabase.table("amazon_review_analysis").upsert({
+            # Map analysis fields to DB columns in competitor-compatible format
+            # Note: We store jobs_to_be_done and product_issues inside pain_points JSONB
+            record = {
                 "product_id": str(product_id),
                 "brand_id": str(brand_id),
                 "total_reviews_analyzed": reviews_count,
-                "sentiment_distribution": analysis.get("sentiment_summary", {}),
-                # Store full structure in JSONB columns (includes quotes with author attribution)
-                "pain_points": analysis.get("pain_points", {}),
-                "desires": analysis.get("desired_features", {}),
-                "language_patterns": analysis.get("language_patterns", {}),
-                "objections": combined_objections,
-                "purchase_triggers": triggers,
-                # Store full transformation structure with quotes (JSONB)
-                "transformation": analysis.get("transformation", {}),
-                # Legacy TEXT[] columns for backwards compatibility
-                "transformation_quotes": transformation_quotes,
-                "top_positive_quotes": transformation_quotes[:5],  # Best outcomes
-                "top_negative_quotes": pain_quotes[:5],  # Pain points
+                "sentiment_distribution": sentiment,
+                # Store the full structure in each JSONB column
+                "pain_points": {
+                    "themes": analysis.get("pain_points", []),
+                    "jobs_to_be_done": analysis.get("jobs_to_be_done", []),
+                    "product_issues": analysis.get("product_issues", [])
+                },
+                "desires": {"themes": analysis.get("desired_outcomes", [])},
+                "objections": {"themes": analysis.get("buying_objections", [])},
+                "language_patterns": {"themes": analysis.get("desired_features", [])},
+                "transformation": {"themes": analysis.get("failed_solutions", [])},
                 "model_used": "claude-sonnet-4-20250514",
                 "analyzed_at": datetime.utcnow().isoformat()
-            }, on_conflict="product_id").execute()
+            }
 
-            logger.info(f"Saved review analysis for product {product_id}")
+            # Delete existing analysis for this product, then insert new one
+            self.supabase.table("amazon_review_analysis").delete().eq(
+                "product_id", str(product_id)
+            ).execute()
+
+            self.supabase.table("amazon_review_analysis").insert(
+                record
+            ).execute()
+
+            logger.info(f"Saved Amazon analysis for product {product_id}")
 
         except Exception as e:
             logger.error(f"Error saving review analysis: {e}")
@@ -796,80 +802,145 @@ class AmazonReviewService:
         return result.data[0] if result.data else None
 
 
-# Analysis prompt for extracting persona signals from reviews
-REVIEW_ANALYSIS_PROMPT = """Analyze these Amazon reviews to extract customer insights for building advertising personas.
+# Rich themed analysis prompt for extracting persona signals from reviews
+# Matches the format used for competitor analysis with 7 categories
+REVIEW_ANALYSIS_PROMPT = """You are an expert at extracting deep customer insights from Amazon reviews.
 
-Each review is formatted as:
-[Rating★] Author Name | Title
-Body text
+Analyze these {review_count} reviews for the product.
+
+Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 7 categories, each with numbered themes ranked by importance (score 1-10).
+
+IMPORTANT DISTINCTIONS:
+- "pain_points" = Life frustrations BEFORE using this product (the symptoms driving them to seek a solution)
+- "product_issues" = Problems WITH this specific product (complaints, defects, disappointments)
+- "jobs_to_be_done" = What customers are trying to accomplish (functional, emotional, social goals)
+
+For each theme:
+1. Give it a descriptive name and score (based on frequency and intensity)
+2. Include 3-5 direct quotes that exemplify this theme
+3. For each quote, add context explaining what it reveals about the customer
 
 REVIEWS:
 {reviews_text}
 
-Extract the following 6 categories. For each category, provide:
-1. "insights" - 3-5 summarized patterns you observed
-2. "quotes" - UP TO 10 VERBATIM quotes with the most EMOTIONAL language
-
-Return as JSON:
-
+Return a JSON object with this exact structure:
 {{
-    "transformation": {{
-        "insights": ["Summarized outcomes/results customers experienced AFTER using the product"],
-        "quotes": [
-            {{"text": "Exact quote about results/transformation they experienced", "author": "Sarah M.", "rating": 5}},
-            {{"text": "Another outcome quote", "author": "John D.", "rating": 5}}
-        ]
-    }},
-    "pain_points": {{
-        "insights": ["Problems/frustrations customers had BEFORE using this product - the issues that led them to buy"],
-        "quotes": [
-            {{"text": "Exact quote about the problem they were experiencing BEFORE this product", "author": "Mike R.", "rating": 5}},
-            {{"text": "Another quote about their prior struggle", "author": "Lisa K.", "rating": 4}}
-        ]
-    }},
-    "desired_features": {{
-        "insights": ["What customers wanted/expected the product to do for them"],
-        "quotes": [
-            {{"text": "Exact quote about what they were hoping for", "author": "Amy T.", "rating": 4}}
-        ]
-    }},
-    "past_failures": {{
-        "insights": ["Other products/solutions they tried that failed them"],
-        "quotes": [
-            {{"text": "Exact quote about what they tried before that didn't work", "author": "Chris B.", "rating": 5}}
-        ]
-    }},
-    "buying_objections": {{
-        "insights": ["Concerns, hesitations, or skepticism they had before buying"],
-        "quotes": [
-            {{"text": "Exact quote about their initial objection/doubt before purchasing", "author": "Karen W.", "rating": 4}}
-        ]
-    }},
-    "familiar_promises": {{
-        "insights": ["Claims/promises they've heard from other brands that didn't deliver"],
-        "quotes": [
-            {{"text": "Exact quote mentioning other brands or marketing claims they've seen", "author": "David H.", "rating": 5}}
-        ]
-    }},
-    "language_patterns": {{
-        "positive_phrases": ["Exact emotional phrases when happy"],
-        "negative_phrases": ["Exact emotional phrases when upset"],
-        "power_words": ["Emotionally charged words used repeatedly"]
-    }},
-    "sentiment_summary": {{
-        "overall": "positive/mixed/negative",
-        "average_rating": 4.5,
-        "total_analyzed": 100
+  "pain_points": [
+    {{
+      "theme": "Life Frustration Before Product",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote describing life pain/frustration BEFORE trying product",
+          "author": "Author name if available",
+          "rating": 3,
+          "context": "What this reveals about their life situation, frustrations, or unmet needs before this product"
+        }}
+      ]
     }}
+  ],
+  "jobs_to_be_done": [
+    {{
+      "theme": "What They're Trying to Accomplish",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote showing what job/goal they hired this product for",
+          "author": "Author name",
+          "rating": 5,
+          "context": "The functional, emotional, or social job they're trying to get done"
+        }}
+      ]
+    }}
+  ],
+  "product_issues": [
+    {{
+      "theme": "Specific Problem With This Product",
+      "score": 8.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote about a problem with THIS product",
+          "author": "Author name",
+          "rating": 2,
+          "context": "What product defect, disappointment, or issue this represents"
+        }}
+      ]
+    }}
+  ],
+  "desired_outcomes": [
+    {{
+      "theme": "What Customers Want to Achieve",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 5,
+          "context": "What this reveals about their ideal end state"
+        }}
+      ]
+    }}
+  ],
+  "buying_objections": [
+    {{
+      "theme": "Reasons for Hesitation Before Purchase",
+      "score": 8.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote about pre-purchase concerns or hesitations",
+          "author": "Author name",
+          "rating": 4,
+          "context": "What barrier or concern almost stopped them from buying"
+        }}
+      ]
+    }}
+  ],
+  "desired_features": [
+    {{
+      "theme": "Features/Attributes Customers Value",
+      "score": 8.5,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 5,
+          "context": "Why this feature matters to them"
+        }}
+      ]
+    }}
+  ],
+  "failed_solutions": [
+    {{
+      "theme": "Past Products/Approaches That Didn't Work",
+      "score": 7.5,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote mentioning other products they tried",
+          "author": "Author name",
+          "rating": 4,
+          "context": "Why the previous solution failed them"
+        }}
+      ]
+    }}
+  ],
+  "summary": {{
+    "total_reviews_analyzed": {review_count},
+    "sentiment_distribution": {{
+      "positive": 0,
+      "neutral": 0,
+      "negative": 0
+    }},
+    "key_insight": "One sentence summary of the most important finding"
+  }}
 }}
 
-CRITICAL INSTRUCTIONS:
-1. Extract UP TO 10 quotes per category - prioritize the most EMOTIONALLY compelling ones
-2. Use EXACT verbatim quotes - do not paraphrase, clean up grammar, or summarize
-3. Look for quotes with strong emotional language: frustration, relief, joy, disappointment, anger, gratitude, surprise
-4. For "author" - extract the reviewer's first name and last initial (e.g., "Sarah M."). If no name is available, omit the author field entirely
-5. IMPORTANT for "pain_points": These are problems they had BEFORE using this product, NOT complaints about it
-6. These quotes will be used directly in advertising copy - authenticity is critical
-7. For "familiar_promises" - look for mentions of competitors, other brands, or marketing claims they've seen
+Guidelines:
+- Use EXACT verbatim quotes - do not paraphrase or clean up language
+- Include profanity, typos, emphasis (caps, multiple punctuation) as written
+- Score themes 1-10 based on how frequently and intensely they appear
+- Context should explain the psychological insight, not just summarize the quote
+- Aim for 4-6 themes per category, 3-5 quotes per theme
+- CRITICAL: Separate "pain_points" (life before product) from "product_issues" (problems with this product)
+- Focus on actionable insights that could inform marketing and product positioning
 
-Return ONLY valid JSON, no other text."""
+Return ONLY the JSON object, no other text."""

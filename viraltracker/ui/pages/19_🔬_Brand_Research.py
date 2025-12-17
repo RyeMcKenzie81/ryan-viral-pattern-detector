@@ -909,9 +909,203 @@ def get_landing_pages_for_brand(brand_id: str) -> list:
     return service.get_landing_pages_for_brand(UUID(brand_id))
 
 
+def get_amazon_review_service():
+    """Get AmazonReviewService instance."""
+    from viraltracker.services.amazon_review_service import AmazonReviewService
+    return AmazonReviewService()
+
+
+def get_amazon_review_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, Any]:
+    """Get Amazon review statistics for a brand/product."""
+    try:
+        db = get_supabase_client()
+
+        # Check if there's an Amazon URL configured
+        if product_id:
+            url_result = db.table("amazon_product_urls").select(
+                "id, asin, total_reviews_scraped"
+            ).eq("product_id", product_id).execute()
+        else:
+            url_result = db.table("amazon_product_urls").select(
+                "id, asin, total_reviews_scraped"
+            ).eq("brand_id", brand_id).execute()
+
+        if not url_result.data:
+            return {
+                "has_amazon_url": False,
+                "reviews_scraped": 0,
+                "has_analysis": False
+            }
+
+        total_scraped = sum(u.get("total_reviews_scraped", 0) or 0 for u in url_result.data)
+
+        # Check for existing analysis
+        if product_id:
+            analysis_result = db.table("amazon_review_analysis").select(
+                "analyzed_at, total_reviews_analyzed, model_used"
+            ).eq("product_id", product_id).execute()
+        else:
+            analysis_result = db.table("amazon_review_analysis").select(
+                "analyzed_at, total_reviews_analyzed, model_used"
+            ).eq("brand_id", brand_id).execute()
+
+        analysis_data = analysis_result.data[0] if analysis_result.data else {}
+
+        return {
+            "has_amazon_url": True,
+            "url_count": len(url_result.data),
+            "reviews_scraped": total_scraped,
+            "has_analysis": bool(analysis_result.data),
+            "analyzed_at": analysis_data.get("analyzed_at"),
+            "reviews_analyzed": analysis_data.get("total_reviews_analyzed", 0),
+            "model_used": analysis_data.get("model_used")
+        }
+    except Exception as e:
+        st.error(f"Failed to get Amazon stats: {e}")
+        return {"has_amazon_url": False, "reviews_scraped": 0, "has_analysis": False}
+
+
+def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None):
+    """Render Amazon review analysis section with 7 themed tabs."""
+    st.subheader("4. Amazon Review Analysis")
+    st.markdown("Analyze Amazon reviews to extract customer pain points, jobs to be done, and more.")
+
+    stats = get_amazon_review_stats(brand_id, product_id)
+
+    if not stats.get("has_amazon_url"):
+        st.info("No Amazon product URLs configured. Add URLs in URL Mapping to enable Amazon review analysis.")
+        return
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.caption(f"📦 {stats.get('url_count', 0)} Amazon URL(s) | 📝 {stats.get('reviews_scraped', 0)} reviews scraped")
+
+        if stats.get("has_analysis"):
+            st.success(f"Analysis complete ({stats.get('reviews_analyzed', 0)} reviews analyzed)")
+            st.caption(f"Model: {stats.get('model_used', 'Unknown')} | Analyzed: {stats.get('analyzed_at', 'Unknown')[:10] if stats.get('analyzed_at') else 'Unknown'}")
+
+    with col2:
+        # Button to run/re-run analysis
+        if product_id:
+            btn_label = "Re-analyze Reviews" if stats.get("has_analysis") else "Analyze Reviews"
+            if st.button(btn_label, type="primary", disabled=st.session_state.analysis_running, key="btn_amazon"):
+                st.session_state.analysis_running = True
+                with st.spinner("Analyzing Amazon reviews (30-60 seconds)..."):
+                    try:
+                        service = get_amazon_review_service()
+                        result = run_async(service.analyze_reviews_for_product(UUID(product_id)))
+                        if result:
+                            st.success("Amazon review analysis complete!")
+                        else:
+                            st.warning("No reviews found to analyze. Scrape reviews first.")
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+                st.session_state.analysis_running = False
+                st.rerun()
+        else:
+            st.info("Select a product to analyze its Amazon reviews")
+
+    # Display existing analysis with 7 tabs
+    if stats.get("has_analysis") and product_id:
+        try:
+            service = get_amazon_review_service()
+            analysis = service.get_analysis_for_product(UUID(product_id))
+
+            if analysis:
+                st.markdown("---")
+
+                # Show summary
+                st.caption(f"📊 {analysis.get('total_reviews_analyzed', 0)} reviews analyzed | Model: {analysis.get('model_used', 'Unknown')}")
+
+                tab_pain, tab_jtbd, tab_issues, tab_outcomes, tab_objections, tab_features, tab_failed = st.tabs([
+                    "😫 Pain Points", "🎯 Jobs to Be Done", "⚠️ Product Issues",
+                    "✨ Desired Outcomes", "🚫 Buying Objections",
+                    "💡 Desired Features", "❌ Failed Solutions"
+                ])
+
+                def render_themed_section(themes: list, tab_name: str):
+                    """Render a themed section with quotes and context."""
+                    if not themes:
+                        st.info(f"No {tab_name.lower()} extracted yet.")
+                        return
+
+                    for i, theme in enumerate(themes, 1):
+                        theme_name = theme.get('theme', 'Unknown Theme')
+                        score = theme.get('score', 0)
+                        quotes = theme.get('quotes', [])
+
+                        # Theme header with score
+                        st.markdown(f"### {i}. {theme_name} — Score: {score}/10")
+
+                        # Quotes with context
+                        for q in quotes[:5]:
+                            quote_text = q.get('quote', '')
+                            context = q.get('context', '')
+                            author = q.get('author', 'Anonymous')
+                            rating = q.get('rating')
+
+                            rating_str = f"⭐{rating}" if rating else ""
+
+                            st.markdown(f"""
+> **Quote:** "{quote_text}"
+>
+> **Context:** {context}
+>
+> *— {author} {rating_str}*
+""")
+                        st.markdown("---")
+
+                # Extract data - pain_points now contains themes, jobs_to_be_done, and product_issues
+                pain_data = analysis.get('pain_points', {})
+                if isinstance(pain_data, dict):
+                    pain_themes = pain_data.get('themes', [])
+                    jtbd_themes = pain_data.get('jobs_to_be_done', [])
+                    issues_themes = pain_data.get('product_issues', [])
+                else:
+                    pain_themes = []
+                    jtbd_themes = []
+                    issues_themes = []
+
+                with tab_pain:
+                    st.caption("Life frustrations BEFORE trying the product - what drove them to seek a solution")
+                    render_themed_section(pain_themes, "Pain Points")
+
+                with tab_jtbd:
+                    st.caption("What customers are trying to accomplish - functional, emotional, and social goals")
+                    render_themed_section(jtbd_themes, "Jobs to Be Done")
+
+                with tab_issues:
+                    st.caption("Problems WITH this specific product - complaints, defects, disappointments")
+                    render_themed_section(issues_themes, "Product Issues")
+
+                with tab_outcomes:
+                    desires_data = analysis.get('desires', {})
+                    desires_themes = desires_data.get('themes', []) if isinstance(desires_data, dict) else []
+                    render_themed_section(desires_themes, "Desired Outcomes")
+
+                with tab_objections:
+                    objections_data = analysis.get('objections', {})
+                    objections_themes = objections_data.get('themes', []) if isinstance(objections_data, dict) else []
+                    render_themed_section(objections_themes, "Buying Objections")
+
+                with tab_features:
+                    features_data = analysis.get('language_patterns', {})
+                    features_themes = features_data.get('themes', []) if isinstance(features_data, dict) else []
+                    render_themed_section(features_themes, "Desired Features")
+
+                with tab_failed:
+                    failed_data = analysis.get('transformation', {})
+                    failed_themes = failed_data.get('themes', []) if isinstance(failed_data, dict) else []
+                    render_themed_section(failed_themes, "Failed Solutions")
+
+        except Exception as e:
+            st.error(f"Failed to load analysis: {e}")
+
+
 def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
     """Render persona synthesis section."""
-    st.subheader("4. Synthesize Personas")
+    st.subheader("5. Synthesize Personas")
     st.markdown("Aggregate all analyses to detect customer segments and generate 4D personas.")
 
     analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
@@ -1389,6 +1583,11 @@ else:
 
         # Landing page section
         render_landing_page_section(selected_brand_id, selected_product_id)
+
+        st.divider()
+
+        # Amazon review analysis section
+        render_amazon_review_section(selected_brand_id, selected_product_id)
 
         st.divider()
 
