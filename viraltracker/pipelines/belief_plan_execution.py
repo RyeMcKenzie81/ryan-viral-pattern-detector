@@ -576,6 +576,7 @@ async def run_belief_plan_execution(
     from ..core.database import get_supabase_client
     from datetime import datetime
 
+    print(f"[PIPELINE] Starting belief plan execution for plan {belief_plan_id}", flush=True)
     logger.info(f"Starting belief plan execution for plan {belief_plan_id}")
 
     # Get database client for tracking
@@ -584,6 +585,7 @@ async def run_belief_plan_execution(
 
     try:
         # Create pipeline_runs record
+        print("[PIPELINE] Creating pipeline_runs record...", flush=True)
         run_record = {
             "pipeline_name": "belief_plan_execution",
             "belief_plan_id": str(belief_plan_id),
@@ -599,15 +601,19 @@ async def run_belief_plan_execution(
         insert_result = db.table("pipeline_runs").insert(run_record).execute()
         if insert_result.data:
             run_id = insert_result.data[0]["id"]
+            print(f"[PIPELINE] Created pipeline_runs record: {run_id}", flush=True)
             logger.info(f"Created pipeline_runs record: {run_id}")
 
     except Exception as e:
+        print(f"[PIPELINE] Failed to create pipeline_runs record: {e}", flush=True)
         logger.error(f"Failed to create pipeline_runs record: {e}")
         # Continue anyway - tracking failure shouldn't stop execution
 
     try:
         # Create dependencies
+        print("[PIPELINE] Creating AgentDependencies...", flush=True)
         deps = AgentDependencies.create()
+        print("[PIPELINE] AgentDependencies created", flush=True)
         logger.info("Created AgentDependencies")
 
         # Create initial state
@@ -618,12 +624,14 @@ async def run_belief_plan_execution(
         )
 
         # Run the graph
+        print("[PIPELINE] Starting graph execution...", flush=True)
         logger.info("Starting graph execution...")
         result = await belief_plan_execution_graph.run(
             LoadPlanNode(),
             state=state,
             deps=deps
         )
+        print(f"[PIPELINE] Graph execution complete: {result.output}", flush=True)
         logger.info(f"Graph execution complete: {result.output}")
 
         # Update pipeline_runs on success
@@ -649,6 +657,9 @@ async def run_belief_plan_execution(
         return result.output
 
     except Exception as e:
+        print(f"[PIPELINE] Pipeline execution failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         logger.error(f"Pipeline execution failed: {e}", exc_info=True)
 
         # Update pipeline_runs on failure
