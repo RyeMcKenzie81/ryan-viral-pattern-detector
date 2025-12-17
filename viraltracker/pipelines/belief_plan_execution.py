@@ -148,7 +148,7 @@ async def review_phase12_ad(
     """
     try:
         # Get image for review
-        image_base64 = await ctx.deps.ad_creation.get_image_as_base64(storage_path)
+        image_data = await ctx.deps.ad_creation.get_image_as_base64(storage_path)
 
         anchor_text = prompt.get("anchor_text") or "None"
 
@@ -171,7 +171,7 @@ Return JSON only: {{"status": "approved" or "rejected", "notes": "brief explanat
 """
 
         result = await ctx.deps.gemini.analyze_image(
-            image_base64=image_base64,
+            image_data=image_data,
             prompt=review_prompt
         )
 
@@ -193,8 +193,9 @@ Return JSON only: {{"status": "approved" or "rejected", "notes": "brief explanat
     except Exception as e:
         logger.error(f"Review failed: {e}")
         return {
-            "status": "review_failed",
+            "status": "rejected",
             "error": str(e),
+            "notes": f"Review error: {str(e)}",
             "scores": {}
         }
 
@@ -492,7 +493,7 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
                 except Exception as e:
                     logger.error(f"Review failed for ad {ad['prompt_index']}: {e}")
                     ad["review_error"] = str(e)
-                    ad["final_status"] = "review_failed"
+                    ad["final_status"] = "rejected"  # Use valid status instead of review_failed
 
             ctx.state.current_step = "complete"
 
