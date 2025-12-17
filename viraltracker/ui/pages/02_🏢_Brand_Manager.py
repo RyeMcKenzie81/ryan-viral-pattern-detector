@@ -26,8 +26,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 
 # Initialize session state
-if 'selected_brand_id' not in st.session_state:
-    st.session_state.selected_brand_id = None
 if 'expanded_product_id' not in st.session_state:
     st.session_state.expanded_product_id = None
 if 'analyzing_image' not in st.session_state:
@@ -342,30 +340,18 @@ st.markdown("Manage brands, products, images, and hooks in one place.")
 
 st.divider()
 
-# Brand selector
-brands = get_brands()
-if not brands:
-    st.warning("No brands found. Add brands to get started.")
-    st.stop()
-
-brand_options = {b['id']: b['name'] for b in brands}
-brand_ids = list(brand_options.keys())
-
-# Set default brand if not selected
-if st.session_state.selected_brand_id not in brand_ids:
-    st.session_state.selected_brand_id = brand_ids[0]
+# Brand selector (uses shared utility for cross-page persistence)
+from viraltracker.ui.utils import render_brand_selector
 
 col_brand, col_spacer = st.columns([2, 3])
 with col_brand:
-    selected_brand_id = st.selectbox(
-        "Select Brand",
-        options=brand_ids,
-        format_func=lambda x: brand_options[x],
-        key="brand_selector"
-    )
-    st.session_state.selected_brand_id = selected_brand_id
+    selected_brand_id = render_brand_selector(key="brand_manager_brand_selector")
+
+if not selected_brand_id:
+    st.stop()
 
 # Get selected brand data
+brands = get_brands()
 selected_brand = next((b for b in brands if b['id'] == selected_brand_id), None)
 
 if not selected_brand:

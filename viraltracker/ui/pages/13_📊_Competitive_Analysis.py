@@ -789,24 +789,12 @@ def render_gaps_insights(gaps: Dict):
 st.title("📊 Competitive Analysis")
 st.caption("Compare your brand vs competitors to find gaps and opportunities")
 
-# Brand selector
-brands = get_brands()
+# Brand selector (uses shared utility for cross-page persistence)
+from viraltracker.ui.utils import render_brand_selector
+brand_id = render_brand_selector(key="competitive_analysis_brand_selector")
 
-if not brands:
-    st.warning("No brands found. Create a brand first in Brand Manager.")
+if not brand_id:
     st.stop()
-
-brand_options = {b['name']: b['id'] for b in brands}
-selected_brand_name = st.selectbox(
-    "Select Brand",
-    options=list(brand_options.keys()),
-    index=0
-)
-
-if not selected_brand_name:
-    st.stop()
-
-brand_id = brand_options[selected_brand_name]
 
 st.divider()
 

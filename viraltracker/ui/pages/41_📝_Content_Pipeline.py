@@ -83,8 +83,6 @@ async def clear_panel_overrides(project_id: str, panel_number: int):
 
 
 # Initialize session state
-if 'pipeline_brand_id' not in st.session_state:
-    st.session_state.pipeline_brand_id = None
 if 'pipeline_project_id' not in st.session_state:
     st.session_state.pipeline_project_id = None
 if 'discovered_topics' not in st.session_state:
@@ -549,20 +547,11 @@ def render_project_dashboard():
     """Render the main project dashboard."""
     st.header("📝 Content Pipeline")
 
-    # Brand selector
-    brands = get_brands()
-    if not brands:
-        st.warning("No brands found. Please create a brand first.")
+    # Brand selector (uses shared utility for cross-page persistence)
+    from viraltracker.ui.utils import render_brand_selector
+    brand_id = render_brand_selector(key="pipeline_brand_selector")
+    if not brand_id:
         return
-
-    brand_options = {b['name']: b['id'] for b in brands}
-    selected_brand_name = st.selectbox(
-        "Select Brand",
-        options=list(brand_options.keys()),
-        key="brand_selector"
-    )
-    brand_id = brand_options[selected_brand_name]
-    st.session_state.pipeline_brand_id = brand_id
 
     # Tabs for different views
     tab1, tab2 = st.tabs(["📋 Projects", "➕ New Project"])

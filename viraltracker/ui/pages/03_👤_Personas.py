@@ -29,8 +29,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 
 # Initialize session state
-if 'selected_brand_id' not in st.session_state:
-    st.session_state.selected_brand_id = None
 if 'selected_product_id' not in st.session_state:
     st.session_state.selected_product_id = None
 if 'selected_persona_id' not in st.session_state:
@@ -729,20 +727,12 @@ def render_persona_list():
     """Render the main persona list view."""
     st.title("4D Persona Builder")
 
-    # Brand selector
-    brands = get_brands()
-    if not brands:
-        st.warning("No brands found. Please create a brand first in Brand Manager.")
-        return
+    # Brand selector (uses shared utility for cross-page persistence)
+    from viraltracker.ui.utils import render_brand_selector
+    selected_brand_id = render_brand_selector(key="personas_brand_selector")
 
-    brand_options = {b["name"]: b["id"] for b in brands}
-    selected_brand_name = st.selectbox(
-        "Select Brand",
-        options=list(brand_options.keys()),
-        index=0
-    )
-    selected_brand_id = brand_options[selected_brand_name]
-    st.session_state.selected_brand_id = selected_brand_id
+    if not selected_brand_id:
+        return
 
     # Product filter (optional)
     products = get_products_for_brand(selected_brand_id)

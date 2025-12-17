@@ -39,8 +39,6 @@ def get_ad_creation_service():
 # SESSION STATE
 # ============================================
 
-if 'executor_selected_brand' not in st.session_state:
-    st.session_state.executor_selected_brand = None
 if 'executor_selected_product' not in st.session_state:
     st.session_state.executor_selected_product = None
 if 'executor_selected_plan' not in st.session_state:
@@ -505,19 +503,11 @@ def render_results_by_angle(result: dict):
 st.title("🎯 Plan Executor")
 st.write("Execute Phase 1-2 belief testing plans to generate ads.")
 
-# Brand selector
-brands = fetch_brands()
-brand_options = {b["id"]: b["name"] for b in brands}
-
-selected_brand_id = st.selectbox(
-    "Select Brand",
-    options=[""] + list(brand_options.keys()),
-    format_func=lambda x: brand_options.get(x, "Select a brand...") if x else "Select a brand...",
-    key="executor_brand_select"
-)
+# Brand selector (uses shared utility for cross-page persistence)
+from viraltracker.ui.utils import render_brand_selector
+selected_brand_id = render_brand_selector(key="executor_brand_selector")
 
 if selected_brand_id:
-    st.session_state.executor_selected_brand = selected_brand_id
 
     # Product selector
     products = fetch_products_for_brand(selected_brand_id)

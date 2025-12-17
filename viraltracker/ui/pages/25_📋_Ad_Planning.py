@@ -194,24 +194,12 @@ def render_step_1_brand():
     st.header("Step 1: Select Brand")
     st.write("Choose the brand for this ad test plan.")
 
-    service = get_planning_service()
-    brands = service.get_brands()
+    # Brand selector (uses shared utility for cross-page persistence)
+    from viraltracker.ui.utils import render_brand_selector
+    selected_brand_id = render_brand_selector(key="ad_planning_brand_selector", label="Brand")
 
-    if not brands:
-        st.warning("No brands found. Please create a brand first.")
-        return
-
-    # Brand dropdown
-    brand_options = {b["name"]: b["id"] for b in brands}
-    selected_name = st.selectbox(
-        "Brand",
-        options=["Select a brand..."] + list(brand_options.keys()),
-        key="brand_selector"
-    )
-
-    if selected_name and selected_name != "Select a brand...":
-        st.session_state.selected_brand_id = brand_options[selected_name]
-        st.success(f"Selected: **{selected_name}**")
+    if selected_brand_id:
+        st.success(f"Brand selected")
 
     # Navigation
     st.divider()

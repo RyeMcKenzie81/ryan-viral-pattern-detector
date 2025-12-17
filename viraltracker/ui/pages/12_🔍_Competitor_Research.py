@@ -33,8 +33,6 @@ if 'research_competitor_id' not in st.session_state:
     st.session_state.research_competitor_id = None
 if 'research_competitor_product_id' not in st.session_state:
     st.session_state.research_competitor_product_id = None
-if 'research_brand_id' not in st.session_state:
-    st.session_state.research_brand_id = None
 
 
 def get_supabase_client():
@@ -193,34 +191,19 @@ def get_research_stats(
 st.title("🔍 Competitor Research")
 st.caption("Analyze competitor messaging, ads, and customer signals")
 
-# Brand Selector
-brands = get_brands()
-if not brands:
-    st.warning("No brands found. Please create a brand first.")
-    st.stop()
-
-brand_options = {b['name']: b['id'] for b in brands}
-brand_names = list(brand_options.keys())
-
-# Restore previous selection
-current_brand_name = None
-if st.session_state.research_brand_id:
-    for name, bid in brand_options.items():
-        if bid == st.session_state.research_brand_id:
-            current_brand_name = name
-            break
+# Brand Selector (uses shared utility for cross-page persistence)
+from viraltracker.ui.utils import render_brand_selector as shared_brand_selector
 
 col_brand, col_competitor, col_product = st.columns([1, 1, 1])
 
 with col_brand:
-    selected_brand_name = st.selectbox(
-        "Brand",
-        options=brand_names,
-        index=brand_names.index(current_brand_name) if current_brand_name in brand_names else 0,
-        key="brand_selector"
+    selected_brand_id = shared_brand_selector(
+        key="competitor_research_brand_selector",
+        label="Brand"
     )
-    selected_brand_id = brand_options[selected_brand_name]
-    st.session_state.research_brand_id = selected_brand_id
+
+if not selected_brand_id:
+    st.stop()
 
 # Competitor Selector
 competitors = get_competitors_for_brand(selected_brand_id)

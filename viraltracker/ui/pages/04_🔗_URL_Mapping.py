@@ -25,8 +25,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 
 # Initialize session state
-if 'selected_brand_id' not in st.session_state:
-    st.session_state.selected_brand_id = None
 if 'matching_in_progress' not in st.session_state:
     st.session_state.matching_in_progress = False
 if 'url_mapping_mode' not in st.session_state:
@@ -95,23 +93,11 @@ def get_sample_ads(ad_ids: list, limit: int = 3):
 st.title("🔗 URL Mapping")
 st.caption("Map landing page URLs to products for ad identification")
 
-# Brand selector
-brands = get_brands()
-if not brands:
-    st.warning("No brands found. Please create a brand first.")
-    st.stop()
+# Brand selector (uses shared utility for cross-page persistence)
+from viraltracker.ui.utils import render_brand_selector
+brand_id = render_brand_selector(key="url_mapping_brand_selector")
 
-brand_options = {b['name']: b['id'] for b in brands}
-selected_brand_name = st.selectbox(
-    "Select Brand",
-    options=list(brand_options.keys()),
-    index=0 if brands else None
-)
-
-if selected_brand_name:
-    brand_id = brand_options[selected_brand_name]
-    st.session_state.selected_brand_id = brand_id
-else:
+if not brand_id:
     st.stop()
 
 # Mode toggle: Brand Products vs Competitor Products

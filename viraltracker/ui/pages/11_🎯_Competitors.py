@@ -24,8 +24,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 
 # Initialize session state
-if 'selected_brand_id' not in st.session_state:
-    st.session_state.selected_brand_id = None
 if 'expanded_competitor_id' not in st.session_state:
     st.session_state.expanded_competitor_id = None
 if 'expanded_product_id' not in st.session_state:
@@ -86,32 +84,12 @@ def get_competitors_for_brand(brand_id: str):
 st.title("🎯 Competitors")
 st.caption("Track and analyze competitor products and messaging")
 
-# Brand Selector
-brands = get_brands()
-if not brands:
-    st.warning("No brands found. Please create a brand first.")
+# Brand Selector (uses shared utility for cross-page persistence)
+from viraltracker.ui.utils import render_brand_selector
+selected_brand_id = render_brand_selector(key="competitors_brand_selector")
+
+if not selected_brand_id:
     st.stop()
-
-brand_options = {b['name']: b['id'] for b in brands}
-brand_names = list(brand_options.keys())
-
-# Get current selection
-current_brand_name = None
-if st.session_state.selected_brand_id:
-    for name, bid in brand_options.items():
-        if bid == st.session_state.selected_brand_id:
-            current_brand_name = name
-            break
-
-selected_brand_name = st.selectbox(
-    "Select Brand",
-    options=brand_names,
-    index=brand_names.index(current_brand_name) if current_brand_name in brand_names else 0,
-    key="brand_selector"
-)
-
-selected_brand_id = brand_options[selected_brand_name]
-st.session_state.selected_brand_id = selected_brand_id
 
 st.divider()
 

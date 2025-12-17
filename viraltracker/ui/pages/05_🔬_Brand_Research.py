@@ -29,10 +29,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 
 # Initialize session state
-if 'research_brand_id' not in st.session_state:
-    st.session_state.research_brand_id = None
-if 'research_product_id' not in st.session_state:
-    st.session_state.research_product_id = None
 if 'analysis_running' not in st.session_state:
     st.session_state.analysis_running = False
 if 'suggested_personas' not in st.session_state:
@@ -439,44 +435,15 @@ def synthesize_personas_sync(brand_id: str) -> List[Dict]:
     return run_async(_synthesize())
 
 
-def render_brand_selector():
-    """Render brand selector and return (brand_id, product_id)."""
-    brands = get_brands()
-
-    if not brands:
-        st.warning("No brands found. Please create a brand first in Brand Manager.")
-        return None, None
-
-    brand_options = {b["name"]: b["id"] for b in brands}
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        selected_brand_name = st.selectbox(
-            "Select Brand",
-            options=list(brand_options.keys()),
-            index=0
-        )
-        selected_brand_id = brand_options[selected_brand_name]
-
-    with col2:
-        products = get_products_for_brand(selected_brand_id)
-        if products:
-            product_options = {"All Products (Brand-level)": None}
-            product_options.update({p["name"]: p["id"] for p in products})
-
-            selected_product_name = st.selectbox(
-                "Filter by Product (optional)",
-                options=list(product_options.keys()),
-                index=0,
-                help="Select a product to analyze only ads linking to that product's URLs"
-            )
-            selected_product_id = product_options[selected_product_name]
-        else:
-            st.info("No products defined yet")
-            selected_product_id = None
-
-    return selected_brand_id, selected_product_id
+def render_brand_product_selector():
+    """Render brand and product selector using shared utility."""
+    from viraltracker.ui.utils import render_brand_selector as shared_brand_selector
+    return shared_brand_selector(
+        include_product=True,
+        product_label="Filter by Product (optional)",
+        key="research_brand_selector",
+        product_key="research_product_selector"
+    )
 
 
 def render_stats_section(brand_id: str, product_id: Optional[str] = None):
@@ -1422,7 +1389,7 @@ def render_persona_review():
                 st.markdown("**Actions**")
 
                 # Product linking
-                brand_id = st.session_state.research_brand_id
+                brand_id = st.session_state.get('selected_brand_id')
                 products = get_products_for_brand(brand_id) if brand_id else []
 
                 if products:
@@ -1553,13 +1520,10 @@ st.markdown("Analyze ad content to build data-driven 4D customer personas.")
 if st.session_state.review_mode:
     render_persona_review()
 else:
-    # Brand and product selector
-    selected_brand_id, selected_product_id = render_brand_selector()
+    # Brand and product selector (uses shared utility for cross-page persistence)
+    selected_brand_id, selected_product_id = render_brand_product_selector()
 
     if selected_brand_id:
-        st.session_state.research_brand_id = selected_brand_id
-        st.session_state.research_product_id = selected_product_id
-
         # Show product filter status
         if selected_product_id:
             st.info(f"Filtering by product - analyses will be linked to this product")
