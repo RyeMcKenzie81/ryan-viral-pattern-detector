@@ -261,7 +261,8 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
             persona_id = plan_data.get("plan", {}).get("persona_id")
             if persona_id:
                 try:
-                    ctx.state.persona_data = await ctx.deps.ad_creation.get_persona_for_ad_generation(
+                    # get_persona_for_ad_generation is sync, not async
+                    ctx.state.persona_data = ctx.deps.ad_creation.get_persona_for_ad_generation(
                         UUID(persona_id) if isinstance(persona_id, str) else persona_id
                     )
                 except Exception as e:

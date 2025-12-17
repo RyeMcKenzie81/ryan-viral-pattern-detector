@@ -1056,6 +1056,39 @@ Return ONLY valid JSON, no other text."""
         brief = self.export_for_copy_brief(persona_id)
         return brief.model_dump()
 
+    def export_for_ad_generation(self, persona_id: UUID) -> Dict[str, Any]:
+        """
+        Export persona in simplified format for ad image generation prompts.
+
+        Returns key persona traits useful for generating relevant ad imagery.
+        This is lighter than export_for_copy_brief - meant for image generation,
+        not copy writing.
+
+        Args:
+            persona_id: UUID of the persona
+
+        Returns:
+            Dict with name, snapshot, demographics, key traits
+
+        Raises:
+            ValueError: If persona not found
+        """
+        persona = self.get_persona(persona_id)
+        if not persona:
+            raise ValueError(f"Persona not found: {persona_id}")
+
+        return {
+            "id": str(persona_id),
+            "name": persona.name,
+            "snapshot": persona.snapshot or "",
+            "demographics": persona.demographics.model_dump() if persona.demographics else {},
+            "current_self_image": persona.current_self_image or "",
+            "desired_self_image": persona.desired_self_image or "",
+            "worldview": persona.worldview or "",
+            "activation_events": persona.activation_events or [],
+            "pain_symptoms": persona.pain_symptoms or [],
+        }
+
     # =========================================================================
     # Internal Helpers
     # =========================================================================
