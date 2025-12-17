@@ -2958,6 +2958,397 @@ class BrandResearchService:
             }
 
     # =========================================================================
+    # BELIEF-FIRST LANDING PAGE ANALYSIS
+    # Deep strategic analysis using the 13-layer evaluation canvas
+    # =========================================================================
+
+    async def analyze_landing_page_belief_first(
+        self,
+        page_id: UUID,
+        force_reanalyze: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Analyze a single landing page using the 13-layer belief-first canvas.
+
+        Uses Claude Opus 4.5 for deep strategic analysis that evaluates:
+        - Market context & awareness level
+        - Brand, product, persona alignment
+        - JTBD, angle, unique mechanism
+        - Problem/pain/symptoms articulation
+        - Benefits, features, proof, expression
+
+        Args:
+            page_id: UUID of the brand_landing_pages record
+            force_reanalyze: If True, re-analyze even if already analyzed
+
+        Returns:
+            13-layer analysis dict or None if failed
+        """
+        import re
+        from anthropic import Anthropic
+
+        try:
+            # Get the landing page
+            result = self.supabase.table("brand_landing_pages").select(
+                "id, url, page_title, raw_markdown, belief_first_analyzed_at"
+            ).eq("id", str(page_id)).single().execute()
+
+            if not result.data:
+                logger.error(f"Landing page not found: {page_id}")
+                return None
+
+            page = result.data
+
+            # Skip if already analyzed (unless force)
+            if page.get("belief_first_analyzed_at") and not force_reanalyze:
+                logger.info(f"Page {page_id} already has belief-first analysis, skipping")
+                return None
+
+            # Need scraped content
+            content = page.get("raw_markdown", "")
+            if not content:
+                logger.warning(f"No content for page {page_id}, skipping")
+                return None
+
+            # Truncate content if too long (Opus 4.5 can handle large context)
+            max_content_length = 50000
+            if len(content) > max_content_length:
+                content = content[:max_content_length] + "\n\n[Content truncated...]"
+
+            # Build prompt
+            prompt = BELIEF_FIRST_ANALYSIS_PROMPT.format(
+                page_title=page.get("page_title", "Unknown"),
+                url=page.get("url", ""),
+                content=content
+            )
+
+            # Call Claude Opus 4.5
+            client = Anthropic()
+            response = client.messages.create(
+                model="claude-opus-4-5-20250514",
+                max_tokens=8000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response_text = response.content[0].text
+
+            # Parse JSON response
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                analysis = json.loads(json_match.group())
+            else:
+                logger.error(f"No JSON found in belief-first analysis response for {page_id}")
+                return None
+
+            # Add metadata
+            analysis["page_id"] = str(page_id)
+            analysis["url"] = page.get("url", "")
+            analysis["model_used"] = "claude-opus-4-5-20250514"
+            analysis["analyzed_at"] = datetime.utcnow().isoformat()
+
+            # Save to database
+            self.supabase.table("brand_landing_pages").update({
+                "belief_first_analysis": analysis,
+                "belief_first_analyzed_at": datetime.utcnow().isoformat()
+            }).eq("id", str(page_id)).execute()
+
+            logger.info(f"Completed belief-first analysis for page {page_id}")
+            return analysis
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse belief-first analysis JSON: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed belief-first analysis for page {page_id}: {e}")
+            return None
+
+    async def analyze_landing_pages_belief_first_for_brand(
+        self,
+        brand_id: UUID,
+        limit: int = 20,
+        delay_between: float = 3.0,
+        product_id: Optional[UUID] = None,
+        force_reanalyze: bool = False
+    ) -> List[Dict]:
+        """
+        Batch analyze landing pages using belief-first canvas.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum pages to analyze
+            delay_between: Delay between API calls (Opus 4.5 benefits from spacing)
+            product_id: Optional product filter
+            force_reanalyze: Re-analyze existing
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        try:
+            # Build query for pages to analyze
+            query = self.supabase.table("brand_landing_pages").select(
+                "id"
+            ).eq("brand_id", str(brand_id))
+
+            # Filter by product if specified
+            if product_id:
+                query = query.eq("product_id", str(product_id))
+
+            # Filter to pages that need analysis (scraped but not belief-first analyzed)
+            if not force_reanalyze:
+                query = query.is_("belief_first_analyzed_at", "null")
+
+            # Only analyze pages that have content
+            query = query.not_.is_("raw_markdown", "null")
+
+            result = query.limit(limit).execute()
+
+            if not result.data:
+                logger.info(f"No pages to analyze for brand {brand_id}")
+                return []
+
+            page_ids = [UUID(p["id"]) for p in result.data]
+            logger.info(f"Analyzing {len(page_ids)} pages with belief-first canvas")
+
+            results = []
+            for i, page_id in enumerate(page_ids):
+                try:
+                    analysis = await self.analyze_landing_page_belief_first(
+                        page_id=page_id,
+                        force_reanalyze=force_reanalyze
+                    )
+                    if analysis:
+                        results.append(analysis)
+
+                    # Delay between calls
+                    if i < len(page_ids) - 1:
+                        await asyncio.sleep(delay_between)
+
+                except Exception as e:
+                    logger.error(f"Error analyzing page {page_id}: {e}")
+                    continue
+
+            logger.info(f"Completed belief-first analysis for {len(results)}/{len(page_ids)} pages")
+            return results
+
+        except Exception as e:
+            logger.error(f"Failed batch belief-first analysis: {e}")
+            return []
+
+    def aggregate_belief_first_analysis_for_brand(
+        self,
+        brand_id: UUID,
+        product_id: Optional[UUID] = None
+    ) -> Dict[str, Any]:
+        """
+        Aggregate belief-first analysis across all landing pages for a brand.
+
+        Computes:
+        - Layer-by-layer summary (count of clear/weak/missing/conflicting per layer)
+        - Problem pages ranked by issue count
+        - Overall statistics
+
+        Args:
+            brand_id: Brand UUID
+            product_id: Optional product filter
+
+        Returns:
+            Dict with layer_summary, problem_pages, and overall stats
+        """
+        try:
+            # Get all pages with belief-first analysis
+            query = self.supabase.table("brand_landing_pages").select(
+                "id, url, page_title, belief_first_analysis"
+            ).eq("brand_id", str(brand_id)).not_.is_("belief_first_analysis", "null")
+
+            if product_id:
+                query = query.eq("product_id", str(product_id))
+
+            result = query.execute()
+
+            if not result.data:
+                return {
+                    "layer_summary": {},
+                    "problem_pages": [],
+                    "overall": {"total_pages": 0, "average_score": 0}
+                }
+
+            # Layer names
+            layer_names = [
+                "market_context", "brand", "product_offer", "persona",
+                "jobs_to_be_done", "persona_sublayers", "angle", "unique_mechanism",
+                "problem_pain_symptoms", "benefits", "features",
+                "proof_risk_reversal", "expression"
+            ]
+
+            # Initialize counters
+            layer_summary = {
+                layer: {"clear": 0, "weak": 0, "missing": 0, "conflicting": 0}
+                for layer in layer_names
+            }
+
+            problem_pages = []
+            total_scores = []
+
+            for page in result.data:
+                analysis = page.get("belief_first_analysis", {})
+                layers = analysis.get("layers", {})
+                summary = analysis.get("summary", {})
+
+                # Count statuses per layer
+                for layer_name in layer_names:
+                    layer_data = layers.get(layer_name, {})
+                    status = layer_data.get("status", "missing")
+                    if status in layer_summary[layer_name]:
+                        layer_summary[layer_name][status] += 1
+
+                # Track scores
+                score = summary.get("overall_score", 5)
+                if isinstance(score, (int, float)):
+                    total_scores.append(score)
+
+                # Identify problem pages (3+ issues)
+                issue_count = (
+                    summary.get("weak", 0) +
+                    summary.get("missing", 0) +
+                    summary.get("conflicting", 0)
+                )
+                if issue_count >= 3:
+                    problem_pages.append({
+                        "page_id": page.get("id"),
+                        "url": page.get("url", ""),
+                        "page_title": page.get("page_title", ""),
+                        "issue_count": issue_count,
+                        "score": score,
+                        "top_issues": summary.get("top_issues", [])[:3]
+                    })
+
+            # Sort problem pages by issue count
+            problem_pages.sort(key=lambda x: x["issue_count"], reverse=True)
+
+            # Find most common issues and strongest layers
+            issue_counts = {}
+            for layer_name, counts in layer_summary.items():
+                issues = counts["weak"] + counts["missing"] + counts["conflicting"]
+                issue_counts[layer_name] = issues
+
+            sorted_issues = sorted(issue_counts.items(), key=lambda x: x[1], reverse=True)
+            most_common_issues = [layer for layer, count in sorted_issues[:3] if count > 0]
+
+            clear_counts = {layer: counts["clear"] for layer, counts in layer_summary.items()}
+            sorted_clear = sorted(clear_counts.items(), key=lambda x: x[1], reverse=True)
+            strongest_layers = [layer for layer, count in sorted_clear[:3] if count > 0]
+
+            aggregation = {
+                "layer_summary": layer_summary,
+                "problem_pages": problem_pages[:20],  # Top 20 problem pages
+                "overall": {
+                    "total_pages": len(result.data),
+                    "average_score": round(sum(total_scores) / len(total_scores), 1) if total_scores else 0,
+                    "most_common_issues": most_common_issues,
+                    "strongest_layers": strongest_layers
+                }
+            }
+
+            # Save to summary table
+            self._save_belief_first_summary(
+                brand_id=brand_id,
+                product_id=product_id,
+                scope="brand",
+                aggregation=aggregation
+            )
+
+            return aggregation
+
+        except Exception as e:
+            logger.error(f"Failed to aggregate belief-first analysis: {e}")
+            return {
+                "layer_summary": {},
+                "problem_pages": [],
+                "overall": {"total_pages": 0, "average_score": 0}
+            }
+
+    def _save_belief_first_summary(
+        self,
+        brand_id: UUID,
+        product_id: Optional[UUID],
+        scope: str,
+        aggregation: Dict[str, Any],
+        competitor_id: Optional[UUID] = None
+    ):
+        """Save aggregated belief-first analysis summary to database."""
+        try:
+            record = {
+                "brand_id": str(brand_id),
+                "product_id": str(product_id) if product_id else None,
+                "competitor_id": str(competitor_id) if competitor_id else None,
+                "scope": scope,
+                "layer_summary": aggregation.get("layer_summary", {}),
+                "problem_pages": aggregation.get("problem_pages", []),
+                "total_pages_analyzed": aggregation.get("overall", {}).get("total_pages", 0),
+                "average_score": aggregation.get("overall", {}).get("average_score"),
+                "most_common_issues": aggregation.get("overall", {}).get("most_common_issues", []),
+                "strongest_layers": aggregation.get("overall", {}).get("strongest_layers", []),
+                "model_used": "claude-opus-4-5-20250514",
+                "generated_at": datetime.utcnow().isoformat()
+            }
+
+            # Delete existing summary and insert new one
+            delete_query = self.supabase.table("landing_page_belief_analysis_summary").delete().eq(
+                "brand_id", str(brand_id)
+            ).eq("scope", scope)
+
+            if product_id:
+                delete_query = delete_query.eq("product_id", str(product_id))
+            else:
+                delete_query = delete_query.is_("product_id", "null")
+
+            delete_query.execute()
+
+            self.supabase.table("landing_page_belief_analysis_summary").insert(record).execute()
+            logger.info(f"Saved belief-first summary for brand {brand_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to save belief-first summary: {e}")
+
+    def get_belief_first_analysis_stats(
+        self,
+        brand_id: UUID,
+        product_id: Optional[UUID] = None
+    ) -> Dict[str, int]:
+        """
+        Get belief-first analysis statistics for a brand.
+
+        Returns:
+            Dict with counts: total, analyzed, pending
+        """
+        try:
+            # Get all scraped pages
+            query = self.supabase.table("brand_landing_pages").select(
+                "id, belief_first_analyzed_at"
+            ).eq("brand_id", str(brand_id)).not_.is_("raw_markdown", "null")
+
+            if product_id:
+                query = query.eq("product_id", str(product_id))
+
+            result = query.execute()
+
+            total = len(result.data) if result.data else 0
+            analyzed = sum(1 for p in (result.data or []) if p.get("belief_first_analyzed_at"))
+            pending = total - analyzed
+
+            return {
+                "total": total,
+                "analyzed": analyzed,
+                "pending": pending
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get belief-first stats: {e}")
+            return {"total": 0, "analyzed": 0, "pending": 0}
+
+    # =========================================================================
     # COMPETITOR RESEARCH METHODS
     # Reuse the same AI analysis logic but with competitor tables
     # =========================================================================
@@ -3737,3 +4128,231 @@ Return JSON with this structure:
 }}
 
 Return ONLY valid JSON, no other text."""
+
+
+# Belief-First Landing Page Evaluation Canvas
+# Uses Claude Opus 4.5 for deep strategic analysis of landing pages
+BELIEF_FIRST_ANALYSIS_PROMPT = """You are an expert conversion copywriter evaluating landing pages through a "Belief-First" framework.
+
+Analyze this landing page through 13 strategic layers. For each layer, evaluate:
+- STATUS: clear | weak | missing | conflicting
+- EXPLANATION: Why you gave this rating (be specific)
+- EXAMPLES: Verbatim quotes from the page demonstrating this layer (or absence of it)
+- CONTEXT: What this means for the page's conversion effectiveness
+- RECOMMENDATIONS: Specific copy suggestions to fix (if status is weak/missing/conflicting)
+
+PAGE TITLE: {page_title}
+URL: {url}
+
+PAGE CONTENT:
+{content}
+
+=== 13-LAYER BELIEF-FIRST EVALUATION CANVAS ===
+
+1. MARKET CONTEXT (External Reality) + Market Awareness Level
+   - Does the page acknowledge the market/industry context?
+   - What awareness level is this targeting? (Unaware → Problem-Aware → Solution-Aware → Product-Aware → Most-Aware)
+   - Is the awareness level appropriate for likely traffic sources?
+
+2. BRAND
+   - Is the brand identity clear and consistent?
+   - Does the brand positioning differentiate from competitors?
+   - Are brand values and personality evident?
+
+3. PRODUCT/OFFER
+   - Is it clear what's being sold?
+   - Is the offer structure understandable (pricing, packages, deliverables)?
+   - Is there a clear value exchange?
+
+4. PERSONA
+   - Who is the ideal customer? Is it clear?
+   - Does the language match the target audience?
+   - Would the target customer feel "this is for me"?
+
+5. JOBS TO BE DONE (JTBD)
+   - What functional job does this help them accomplish?
+   - What emotional job does this address?
+   - What social job does this fulfill?
+
+6. PERSONA SUB-LAYERS (Relevance Modifiers)
+   - Are there age/life-stage signals?
+   - Are there lifestyle/interest signals?
+   - Are there identity/values signals that create belonging?
+
+7. ANGLE (Core Explanation)
+   - Is there a clear "angle" or hook that explains why this works?
+   - Does it provide a new frame or perspective?
+   - Is the explanation memorable and differentiated?
+
+8. UNIQUE MECHANISM
+   - Is there a proprietary method, system, or ingredient?
+   - Is it named and explained?
+   - Does it create a barrier to comparison shopping?
+
+9. PROBLEM → PAIN → SYMPTOMS
+   - Is the core problem clearly articulated?
+   - Is the emotional pain vivid and relatable?
+   - Are observable symptoms mentioned (things they can say "yes, that's me" to)?
+
+10. BENEFITS
+    - Are outcomes and transformations clearly stated?
+    - Are benefits specific or generic?
+    - Do benefits connect to the JTBD and desires?
+
+11. FEATURES
+    - Are key features explained?
+    - Are features translated into benefits?
+    - Is there feature fatigue or appropriate focus?
+
+12. PROOF/RISK REVERSAL
+    - What types of proof are present? (testimonials, stats, demos, logos, media)
+    - Is proof specific and credible?
+    - Is there a guarantee or risk reversal offer?
+    - Does proof address likely objections?
+
+13. EXPRESSION (Language & Structure)
+    - Is the language clear and readable?
+    - Is the tone consistent with the brand and audience?
+    - Is the page structure logical (flow, hierarchy, CTAs)?
+    - Are power words and emotional language used effectively?
+
+=== OUTPUT FORMAT ===
+
+Return ONLY valid JSON with this exact structure:
+{{
+  "layers": {{
+    "market_context": {{
+      "status": "clear|weak|missing|conflicting",
+      "explanation": "Why this rating",
+      "examples": [
+        {{"quote": "Verbatim text from page", "location": "hero|body|footer|etc"}}
+      ],
+      "context": "What this means for effectiveness",
+      "recommendations": ["Specific fix suggestion"],
+      "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware"
+    }},
+    "brand": {{
+      "status": "clear|weak|missing|conflicting",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "product_offer": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "persona": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "jobs_to_be_done": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "persona_sublayers": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...],
+      "relevance_modifiers": {{
+        "age_signals": "...",
+        "lifestyle_signals": "...",
+        "identity_signals": "..."
+      }}
+    }},
+    "angle": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "unique_mechanism": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "problem_pain_symptoms": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...],
+      "problem": "Core problem identified",
+      "pain": "Emotional pain articulated",
+      "symptoms": ["Observable symptoms"]
+    }},
+    "benefits": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "features": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...]
+    }},
+    "proof_risk_reversal": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...],
+      "proof_types": ["testimonial", "statistic", "demo", "logo", "media"],
+      "risk_reversal": "guarantee type or null"
+    }},
+    "expression": {{
+      "status": "...",
+      "explanation": "...",
+      "examples": [...],
+      "context": "...",
+      "recommendations": [...],
+      "language_patterns": {{
+        "tone": "...",
+        "readability": "simple|moderate|complex",
+        "power_words": [...]
+      }},
+      "structure": {{
+        "hierarchy": "clear|unclear",
+        "flow": "logical|scattered"
+      }}
+    }}
+  }},
+  "summary": {{
+    "total_layers": 13,
+    "clear": <count>,
+    "weak": <count>,
+    "missing": <count>,
+    "conflicting": <count>,
+    "overall_score": <1-10>,
+    "top_issues": [
+      {{"layer": "layer_name", "status": "weak|missing|conflicting", "priority": "high|medium|low"}}
+    ],
+    "key_insight": "One sentence summary of biggest opportunity"
+  }}
+}}
+
+IMPORTANT:
+- Be specific in examples - use exact quotes from the page
+- Recommendations should be actionable copy suggestions, not generic advice
+- "missing" = no evidence found; "weak" = present but ineffective; "conflicting" = contradictory signals
+- Prioritize issues by impact on conversion
+
+Return ONLY the JSON object, no other text."""

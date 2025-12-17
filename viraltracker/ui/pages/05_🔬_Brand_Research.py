@@ -868,6 +868,162 @@ def render_landing_page_section(brand_id: str, product_id: Optional[str] = None)
                 st.markdown(f"{status_icon} **{title}**")
                 st.caption(url)
 
+    # Belief-First Analysis Section
+    st.divider()
+    _render_belief_first_section(brand_id, product_id, successfully_scraped)
+
+
+def _render_belief_first_section(brand_id: str, product_id: Optional[str], scraped_count: int):
+    """Render the belief-first landing page analysis sub-section."""
+    from viraltracker.ui.utils import render_belief_first_analysis, render_belief_first_aggregation
+
+    st.markdown("#### Belief-First Analysis (13-Layer Canvas)")
+    st.caption("Deep strategic analysis using Claude Opus 4.5 to evaluate messaging coherence")
+
+    if scraped_count == 0:
+        st.info("Scrape landing pages first to run belief-first analysis.")
+        return
+
+    # Get belief-first stats
+    bf_stats = get_belief_first_stats(brand_id, product_id)
+    total = bf_stats.get("total", 0)
+    analyzed = bf_stats.get("analyzed", 0)
+    pending = bf_stats.get("pending", 0)
+
+    # Stats row
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Scraped Pages", total)
+    with col2:
+        st.metric("Belief-First Analyzed", analyzed)
+    with col3:
+        st.metric("Pending", pending)
+
+    # Analysis controls
+    col_analyze, col_aggregate = st.columns(2)
+
+    with col_analyze:
+        if pending > 0:
+            analyze_limit = st.number_input(
+                "Pages to analyze",
+                min_value=1,
+                max_value=min(pending, 20),
+                value=min(pending, 5),
+                key="bf_analyze_limit"
+            )
+
+            # Cost estimate
+            estimated_cost = analyze_limit * 0.15  # ~$0.15 per page with Opus 4.5
+            st.caption(f"Estimated cost: ~${estimated_cost:.2f} (Opus 4.5)")
+
+            if st.button("Run Belief-First Analysis", type="primary", key="btn_bf_analyze"):
+                with st.spinner(f"Analyzing {analyze_limit} pages with Claude Opus 4.5..."):
+                    try:
+                        results = run_belief_first_analysis_sync(brand_id, analyze_limit, product_id)
+                        st.success(f"Analyzed {len(results)} pages")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+        else:
+            if analyzed > 0:
+                st.success(f"All {total} pages analyzed")
+            else:
+                st.info("No pages ready for belief-first analysis")
+
+    with col_aggregate:
+        if analyzed > 0:
+            if st.button("Generate Summary", key="btn_bf_aggregate"):
+                with st.spinner("Aggregating analysis across all pages..."):
+                    try:
+                        aggregation = aggregate_belief_first_sync(brand_id, product_id)
+                        st.session_state.bf_aggregation = aggregation
+                        st.success("Summary generated!")
+                    except Exception as e:
+                        st.error(f"Aggregation failed: {e}")
+
+    # Display results
+    if analyzed > 0:
+        tab_individual, tab_summary = st.tabs(["Individual Pages", "Summary View"])
+
+        with tab_individual:
+            pages = get_landing_pages_with_belief_first(brand_id, product_id)
+            if pages:
+                for page in pages[:10]:  # Limit to 10 for performance
+                    bf_analysis = page.get("belief_first_analysis")
+                    if bf_analysis:
+                        url = page.get("url", "Unknown")
+                        title = page.get("page_title") or url.split("/")[-1] or "Untitled"
+                        score = bf_analysis.get("summary", {}).get("overall_score", "?")
+
+                        with st.expander(f"📄 {title} (Score: {score}/10)"):
+                            st.caption(url)
+                            render_belief_first_analysis(bf_analysis)
+            else:
+                st.info("No pages with belief-first analysis yet.")
+
+        with tab_summary:
+            # Get or generate aggregation
+            if st.session_state.get("bf_aggregation"):
+                render_belief_first_aggregation(
+                    st.session_state.bf_aggregation,
+                    entity_name="Brand Landing Pages"
+                )
+            else:
+                # Try to get from database or generate
+                aggregation = aggregate_belief_first_sync(brand_id, product_id)
+                if aggregation and aggregation.get("overall", {}).get("total_pages", 0) > 0:
+                    render_belief_first_aggregation(aggregation, entity_name="Brand Landing Pages")
+                else:
+                    st.info("Click 'Generate Summary' to see aggregated analysis.")
+
+
+def get_belief_first_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
+    """Get belief-first analysis stats for a brand."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+    service = BrandResearchService()
+    return service.get_belief_first_analysis_stats(
+        UUID(brand_id),
+        UUID(product_id) if product_id else None
+    )
+
+
+def run_belief_first_analysis_sync(brand_id: str, limit: int, product_id: Optional[str] = None) -> List:
+    """Run belief-first analysis synchronously."""
+    import asyncio
+    from viraltracker.services.brand_research_service import BrandResearchService
+    service = BrandResearchService()
+    return asyncio.run(service.analyze_landing_pages_belief_first_for_brand(
+        UUID(brand_id),
+        limit=limit,
+        product_id=UUID(product_id) if product_id else None
+    ))
+
+
+def aggregate_belief_first_sync(brand_id: str, product_id: Optional[str] = None) -> Dict:
+    """Aggregate belief-first analysis synchronously."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+    service = BrandResearchService()
+    return service.aggregate_belief_first_analysis_for_brand(
+        UUID(brand_id),
+        UUID(product_id) if product_id else None
+    )
+
+
+def get_landing_pages_with_belief_first(brand_id: str, product_id: Optional[str] = None) -> List:
+    """Get landing pages that have belief-first analysis."""
+    from viraltracker.core.database import get_supabase_client
+    db = get_supabase_client()
+
+    query = db.table("brand_landing_pages").select(
+        "id, url, page_title, belief_first_analysis"
+    ).eq("brand_id", brand_id).not_.is_("belief_first_analysis", "null")
+
+    if product_id:
+        query = query.eq("product_id", product_id)
+
+    result = query.order("belief_first_analyzed_at", desc=True).execute()
+    return result.data or []
+
 
 def get_landing_pages_for_brand(brand_id: str) -> list:
     """Get landing pages for a brand."""

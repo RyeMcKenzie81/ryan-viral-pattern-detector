@@ -1778,6 +1778,336 @@ Return ONLY valid JSON."""
         return result.data or []
 
     # ================================================================
+    # BELIEF-FIRST LANDING PAGE ANALYSIS
+    # Deep strategic analysis using the 13-layer evaluation canvas
+    # ================================================================
+
+    async def analyze_landing_page_belief_first(
+        self,
+        landing_page_id: UUID,
+        force_reanalyze: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Analyze a single competitor landing page using the 13-layer belief-first canvas.
+
+        Uses Claude Opus 4.5 for deep strategic analysis.
+
+        Args:
+            landing_page_id: UUID of the competitor_landing_pages record
+            force_reanalyze: If True, re-analyze even if already analyzed
+
+        Returns:
+            13-layer analysis dict or None if failed
+        """
+        import re
+        from anthropic import Anthropic
+
+        # Import the prompt from brand_research_service
+        from .brand_research_service import BELIEF_FIRST_ANALYSIS_PROMPT
+
+        try:
+            # Get the landing page
+            result = self.supabase.table("competitor_landing_pages").select(
+                "id, url, scraped_content, belief_first_analyzed_at"
+            ).eq("id", str(landing_page_id)).single().execute()
+
+            if not result.data:
+                logger.error(f"Competitor landing page not found: {landing_page_id}")
+                return None
+
+            page = result.data
+
+            # Skip if already analyzed (unless force)
+            if page.get("belief_first_analyzed_at") and not force_reanalyze:
+                logger.info(f"Page {landing_page_id} already has belief-first analysis, skipping")
+                return None
+
+            # Need scraped content
+            content = page.get("scraped_content", "")
+            if not content:
+                logger.warning(f"No content for page {landing_page_id}, skipping")
+                return None
+
+            # Truncate content if too long
+            max_content_length = 50000
+            if len(content) > max_content_length:
+                content = content[:max_content_length] + "\n\n[Content truncated...]"
+
+            # Build prompt
+            prompt = BELIEF_FIRST_ANALYSIS_PROMPT.format(
+                page_title="Competitor Landing Page",
+                url=page.get("url", ""),
+                content=content
+            )
+
+            # Call Claude Opus 4.5
+            client = Anthropic()
+            response = client.messages.create(
+                model="claude-opus-4-5-20250514",
+                max_tokens=8000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response_text = response.content[0].text
+
+            # Parse JSON response
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                analysis = json.loads(json_match.group())
+            else:
+                logger.error(f"No JSON found in belief-first analysis response for {landing_page_id}")
+                return None
+
+            # Add metadata
+            analysis["page_id"] = str(landing_page_id)
+            analysis["url"] = page.get("url", "")
+            analysis["model_used"] = "claude-opus-4-5-20250514"
+            analysis["analyzed_at"] = datetime.utcnow().isoformat()
+
+            # Save to database
+            self.supabase.table("competitor_landing_pages").update({
+                "belief_first_analysis": analysis,
+                "belief_first_analyzed_at": datetime.utcnow().isoformat()
+            }).eq("id", str(landing_page_id)).execute()
+
+            logger.info(f"Completed belief-first analysis for competitor page {landing_page_id}")
+            return analysis
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse belief-first analysis JSON: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed belief-first analysis for competitor page {landing_page_id}: {e}")
+            return None
+
+    async def analyze_landing_pages_belief_first_for_competitor(
+        self,
+        competitor_id: UUID,
+        limit: int = 20,
+        delay_between: float = 3.0,
+        competitor_product_id: Optional[UUID] = None,
+        force_reanalyze: bool = False
+    ) -> List[Dict]:
+        """
+        Batch analyze competitor landing pages using belief-first canvas.
+
+        Args:
+            competitor_id: Competitor UUID
+            limit: Maximum pages to analyze
+            delay_between: Delay between API calls
+            competitor_product_id: Optional product filter
+            force_reanalyze: Re-analyze existing
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        try:
+            # Build query for pages to analyze
+            query = self.supabase.table("competitor_landing_pages").select(
+                "id"
+            ).eq("competitor_id", str(competitor_id))
+
+            # Filter by product if specified
+            if competitor_product_id:
+                query = query.eq("competitor_product_id", str(competitor_product_id))
+
+            # Filter to pages that need analysis
+            if not force_reanalyze:
+                query = query.is_("belief_first_analyzed_at", "null")
+
+            # Only analyze pages that have content
+            query = query.not_.is_("scraped_content", "null")
+
+            result = query.limit(limit).execute()
+
+            if not result.data:
+                logger.info(f"No pages to analyze for competitor {competitor_id}")
+                return []
+
+            page_ids = [UUID(p["id"]) for p in result.data]
+            logger.info(f"Analyzing {len(page_ids)} competitor pages with belief-first canvas")
+
+            results = []
+            for i, page_id in enumerate(page_ids):
+                try:
+                    analysis = await self.analyze_landing_page_belief_first(
+                        landing_page_id=page_id,
+                        force_reanalyze=force_reanalyze
+                    )
+                    if analysis:
+                        results.append(analysis)
+
+                    # Delay between calls
+                    if i < len(page_ids) - 1:
+                        await asyncio.sleep(delay_between)
+
+                except Exception as e:
+                    logger.error(f"Error analyzing competitor page {page_id}: {e}")
+                    continue
+
+            logger.info(f"Completed belief-first analysis for {len(results)}/{len(page_ids)} competitor pages")
+            return results
+
+        except Exception as e:
+            logger.error(f"Failed batch belief-first analysis for competitor: {e}")
+            return []
+
+    def aggregate_belief_first_analysis_for_competitor(
+        self,
+        competitor_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Dict[str, Any]:
+        """
+        Aggregate belief-first analysis across all landing pages for a competitor.
+
+        Args:
+            competitor_id: Competitor UUID
+            competitor_product_id: Optional product filter
+
+        Returns:
+            Dict with layer_summary, problem_pages, and overall stats
+        """
+        try:
+            # Get all pages with belief-first analysis
+            query = self.supabase.table("competitor_landing_pages").select(
+                "id, url, belief_first_analysis"
+            ).eq("competitor_id", str(competitor_id)).not_.is_("belief_first_analysis", "null")
+
+            if competitor_product_id:
+                query = query.eq("competitor_product_id", str(competitor_product_id))
+
+            result = query.execute()
+
+            if not result.data:
+                return {
+                    "layer_summary": {},
+                    "problem_pages": [],
+                    "overall": {"total_pages": 0, "average_score": 0}
+                }
+
+            # Layer names
+            layer_names = [
+                "market_context", "brand", "product_offer", "persona",
+                "jobs_to_be_done", "persona_sublayers", "angle", "unique_mechanism",
+                "problem_pain_symptoms", "benefits", "features",
+                "proof_risk_reversal", "expression"
+            ]
+
+            # Initialize counters
+            layer_summary = {
+                layer: {"clear": 0, "weak": 0, "missing": 0, "conflicting": 0}
+                for layer in layer_names
+            }
+
+            problem_pages = []
+            total_scores = []
+
+            for page in result.data:
+                analysis = page.get("belief_first_analysis", {})
+                layers = analysis.get("layers", {})
+                summary = analysis.get("summary", {})
+
+                # Count statuses per layer
+                for layer_name in layer_names:
+                    layer_data = layers.get(layer_name, {})
+                    status = layer_data.get("status", "missing")
+                    if status in layer_summary[layer_name]:
+                        layer_summary[layer_name][status] += 1
+
+                # Track scores
+                score = summary.get("overall_score", 5)
+                if isinstance(score, (int, float)):
+                    total_scores.append(score)
+
+                # Identify problem pages (3+ issues)
+                issue_count = (
+                    summary.get("weak", 0) +
+                    summary.get("missing", 0) +
+                    summary.get("conflicting", 0)
+                )
+                if issue_count >= 3:
+                    problem_pages.append({
+                        "page_id": page.get("id"),
+                        "url": page.get("url", ""),
+                        "issue_count": issue_count,
+                        "score": score,
+                        "top_issues": summary.get("top_issues", [])[:3]
+                    })
+
+            # Sort problem pages by issue count
+            problem_pages.sort(key=lambda x: x["issue_count"], reverse=True)
+
+            # Find most common issues and strongest layers
+            issue_counts = {}
+            for layer_name, counts in layer_summary.items():
+                issues = counts["weak"] + counts["missing"] + counts["conflicting"]
+                issue_counts[layer_name] = issues
+
+            sorted_issues = sorted(issue_counts.items(), key=lambda x: x[1], reverse=True)
+            most_common_issues = [layer for layer, count in sorted_issues[:3] if count > 0]
+
+            clear_counts = {layer: counts["clear"] for layer, counts in layer_summary.items()}
+            sorted_clear = sorted(clear_counts.items(), key=lambda x: x[1], reverse=True)
+            strongest_layers = [layer for layer, count in sorted_clear[:3] if count > 0]
+
+            return {
+                "layer_summary": layer_summary,
+                "problem_pages": problem_pages[:20],
+                "overall": {
+                    "total_pages": len(result.data),
+                    "average_score": round(sum(total_scores) / len(total_scores), 1) if total_scores else 0,
+                    "most_common_issues": most_common_issues,
+                    "strongest_layers": strongest_layers
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to aggregate belief-first analysis for competitor: {e}")
+            return {
+                "layer_summary": {},
+                "problem_pages": [],
+                "overall": {"total_pages": 0, "average_score": 0}
+            }
+
+    def get_belief_first_analysis_stats_for_competitor(
+        self,
+        competitor_id: UUID,
+        competitor_product_id: Optional[UUID] = None
+    ) -> Dict[str, int]:
+        """
+        Get belief-first analysis statistics for a competitor.
+
+        Returns:
+            Dict with counts: total, analyzed, pending
+        """
+        try:
+            # Get all scraped pages
+            query = self.supabase.table("competitor_landing_pages").select(
+                "id, belief_first_analyzed_at"
+            ).eq("competitor_id", str(competitor_id)).not_.is_("scraped_content", "null")
+
+            if competitor_product_id:
+                query = query.eq("competitor_product_id", str(competitor_product_id))
+
+            result = query.execute()
+
+            total = len(result.data) if result.data else 0
+            analyzed = sum(1 for p in (result.data or []) if p.get("belief_first_analyzed_at"))
+            pending = total - analyzed
+
+            return {
+                "total": total,
+                "analyzed": analyzed,
+                "pending": pending
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get belief-first stats for competitor: {e}")
+            return {"total": 0, "analyzed": 0, "pending": 0}
+
+    # ================================================================
     # Product-Level Analysis Methods (for Competitive Comparison)
     # ================================================================
 
