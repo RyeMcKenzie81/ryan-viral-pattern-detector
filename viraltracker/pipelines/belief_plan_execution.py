@@ -588,6 +588,7 @@ async def run_belief_plan_execution(
             "pipeline_name": "belief_plan_execution",
             "belief_plan_id": str(belief_plan_id),
             "status": "running",
+            "current_node": "LoadPlanNode",
             "started_at": datetime.utcnow().isoformat(),
             "state_snapshot": {
                 "current_step": "starting",
@@ -630,6 +631,7 @@ async def run_belief_plan_execution(
             try:
                 db.table("pipeline_runs").update({
                     "status": "complete",
+                    "current_node": "Complete",
                     "completed_at": datetime.utcnow().isoformat(),
                     "state_snapshot": {
                         "current_step": "complete",
@@ -654,6 +656,7 @@ async def run_belief_plan_execution(
             try:
                 db.table("pipeline_runs").update({
                     "status": "failed",
+                    "current_node": "Failed",
                     "completed_at": datetime.utcnow().isoformat(),
                     "error_message": str(e),
                     "state_snapshot": {
