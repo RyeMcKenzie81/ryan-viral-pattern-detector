@@ -1381,9 +1381,13 @@ class CompetitorService:
             if competitor_product_id:
                 record["competitor_product_id"] = str(competitor_product_id)
 
-            db_result = self.supabase.table("competitor_landing_pages").upsert(
-                record,
-                on_conflict="competitor_id,url"
+            # Use delete+insert pattern (more reliable than upsert)
+            self.supabase.table("competitor_landing_pages").delete().eq(
+                "competitor_id", str(competitor_id)
+            ).eq("url", url).execute()
+
+            db_result = self.supabase.table("competitor_landing_pages").insert(
+                record
             ).execute()
 
             if db_result.data:
@@ -1673,9 +1677,13 @@ Return ONLY valid JSON."""
                     if prod_id:
                         record["competitor_product_id"] = prod_id
 
-                    self.supabase.table("competitor_landing_pages").upsert(
-                        record,
-                        on_conflict="competitor_id,url"
+                    # Use delete+insert pattern (more reliable than upsert)
+                    self.supabase.table("competitor_landing_pages").delete().eq(
+                        "competitor_id", competitor_id_str
+                    ).eq("url", url).execute()
+
+                    self.supabase.table("competitor_landing_pages").insert(
+                        record
                     ).execute()
 
                     pages_scraped += 1
