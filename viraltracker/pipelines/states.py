@@ -138,3 +138,74 @@ class CompetitorResearchState:
     # Tracking
     current_step: str = "pending"
     error: Optional[str] = None
+
+
+@dataclass
+class BeliefPlanExecutionState:
+    """
+    State for Phase 1-2 belief plan execution pipeline.
+
+    Pipeline: LoadPlan → BuildPrompts → GenerateImages → ReviewAds → Complete
+
+    This pipeline generates belief-testing ads for Phase 1-2 plans where:
+    - Templates are STYLE references, not final images
+    - No product images are composited
+    - Only observational anchor text appears on images
+    - Copy scaffolds provide Meta headline/primary text (not on image)
+
+    Attributes:
+        belief_plan_id: UUID of the belief plan to execute
+        variations_per_angle: How many variations per angle×template combo
+        canvas_size: Output image dimensions
+
+        plan_data: Full plan with angles, templates, copy sets
+        angles: List of angles from the plan
+        templates: List of templates from the plan
+        persona_data: Persona context for situational generation
+        jtbd_data: Job-to-be-done for situational context
+
+        prompts: List of prepared prompts for generation
+        total_ads_planned: Count of ads to generate
+
+        generated_ads: Results from image generation
+        ad_run_id: UUID of the ad_runs record
+
+        approved_count: Count of approved ads
+        rejected_count: Count of rejected ads
+
+        current_step: Current node for status display
+        error: Error message if failed
+        ads_generated: Progress counter
+        ads_reviewed: Progress counter
+    """
+
+    # Input parameters
+    belief_plan_id: UUID
+    variations_per_angle: int = 3
+    canvas_size: str = "1080x1080px"
+
+    # Populated by LoadPlanNode
+    plan_data: Optional[Dict] = None
+    phase_id: int = 1
+    angles: List[Dict] = field(default_factory=list)
+    templates: List[Dict] = field(default_factory=list)
+    persona_data: Optional[Dict] = None
+    jtbd_data: Optional[Dict] = None
+
+    # Populated by BuildPromptsNode
+    prompts: List[Dict] = field(default_factory=list)
+    total_ads_planned: int = 0
+
+    # Populated by GenerateImagesNode
+    generated_ads: List[Dict] = field(default_factory=list)
+    ad_run_id: Optional[UUID] = None
+
+    # Populated by ReviewAdsNode
+    approved_count: int = 0
+    rejected_count: int = 0
+
+    # Tracking
+    current_step: str = "pending"
+    error: Optional[str] = None
+    ads_generated: int = 0
+    ads_reviewed: int = 0
