@@ -553,8 +553,8 @@ async def run_belief_plan_execution(
     """
     Run the belief plan execution pipeline.
 
-    This is a convenience function that creates dependencies
-    and runs the full pipeline.
+    This is a convenience function that creates dependencies,
+    tracks the run in pipeline_runs table, and runs the full pipeline.
 
     Args:
         belief_plan_id: UUID of the belief plan to execute
@@ -573,17 +573,99 @@ async def run_belief_plan_execution(
         >>> print(result["approved"])  # 45
     """
     from ..agent.dependencies import AgentDependencies
+    from ..core.database import get_supabase_client
+    from datetime import datetime
 
-    deps = AgentDependencies.create()
+    logger.info(f"Starting belief plan execution for plan {belief_plan_id}")
 
-    result = await belief_plan_execution_graph.run(
-        LoadPlanNode(),
-        state=BeliefPlanExecutionState(
+    # Get database client for tracking
+    db = get_supabase_client()
+    run_id = None
+
+    try:
+        # Create pipeline_runs record
+        run_record = {
+            "pipeline_name": "belief_plan_execution",
+            "belief_plan_id": str(belief_plan_id),
+            "status": "running",
+            "started_at": datetime.utcnow().isoformat(),
+            "state_snapshot": {
+                "current_step": "starting",
+                "variations_per_angle": variations_per_angle,
+                "canvas_size": canvas_size
+            }
+        }
+        insert_result = db.table("pipeline_runs").insert(run_record).execute()
+        if insert_result.data:
+            run_id = insert_result.data[0]["id"]
+            logger.info(f"Created pipeline_runs record: {run_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to create pipeline_runs record: {e}")
+        # Continue anyway - tracking failure shouldn't stop execution
+
+    try:
+        # Create dependencies
+        deps = AgentDependencies.create()
+        logger.info("Created AgentDependencies")
+
+        # Create initial state
+        state = BeliefPlanExecutionState(
             belief_plan_id=belief_plan_id,
             variations_per_angle=variations_per_angle,
             canvas_size=canvas_size
-        ),
-        deps=deps
-    )
+        )
 
-    return result.output
+        # Run the graph
+        logger.info("Starting graph execution...")
+        result = await belief_plan_execution_graph.run(
+            LoadPlanNode(),
+            state=state,
+            deps=deps
+        )
+        logger.info(f"Graph execution complete: {result.output}")
+
+        # Update pipeline_runs on success
+        if run_id:
+            try:
+                db.table("pipeline_runs").update({
+                    "status": "complete",
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "state_snapshot": {
+                        "current_step": "complete",
+                        "total_ads_planned": state.total_ads_planned,
+                        "ads_generated": state.ads_generated,
+                        "ads_reviewed": state.ads_reviewed,
+                        "approved_count": state.approved_count,
+                        "rejected_count": state.rejected_count,
+                        "ad_run_id": str(state.ad_run_id) if state.ad_run_id else None
+                    }
+                }).eq("id", run_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to update pipeline_runs: {e}")
+
+        return result.output
+
+    except Exception as e:
+        logger.error(f"Pipeline execution failed: {e}", exc_info=True)
+
+        # Update pipeline_runs on failure
+        if run_id:
+            try:
+                db.table("pipeline_runs").update({
+                    "status": "failed",
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "error_message": str(e),
+                    "state_snapshot": {
+                        "current_step": "failed",
+                        "error": str(e)
+                    }
+                }).eq("id", run_id).execute()
+            except Exception as update_err:
+                logger.error(f"Failed to update pipeline_runs with error: {update_err}")
+
+        return {
+            "status": "error",
+            "error": str(e),
+            "run_id": run_id
+        }
