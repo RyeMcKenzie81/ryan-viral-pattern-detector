@@ -297,6 +297,88 @@ logger.error(f"Failed: {e}")            # Errors
 
 ---
 
+## Streamlit UI Patterns
+
+### Shared Brand Selector (ALWAYS USE)
+
+Use `render_brand_selector()` from `viraltracker/ui/utils.py` for all brand selection. This ensures:
+- Brand selection persists across pages in the same browser session
+- Consistent UI across all pages
+- Single source of truth for brand state
+
+```python
+# viraltracker/ui/pages/XX_My_Page.py
+
+# Import shared utility
+from viraltracker.ui.utils import render_brand_selector
+
+# Basic usage - just brand selector
+brand_id = render_brand_selector(key="my_page_brand_selector")
+if not brand_id:
+    st.stop()
+
+# With product selector
+brand_id, product_id = render_brand_selector(
+    key="my_page_brand_selector",
+    include_product=True,
+    product_key="my_page_product_selector"
+)
+
+# If you need brand name for display/prompts
+brands = get_brands()
+brand_name = next((b['name'] for b in brands if b['id'] == brand_id), "Unknown")
+```
+
+**Session State Key**: Uses `st.session_state.selected_brand_id` internally - do NOT create page-specific brand selection keys.
+
+### Page Structure Pattern
+
+```python
+# 1. Page config (must be first Streamlit call)
+st.set_page_config(page_title="My Page", page_icon="📊", layout="wide")
+
+# 2. Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
+# 3. Session state initialization
+if 'my_state' not in st.session_state:
+    st.session_state.my_state = None
+
+# 4. Helper functions
+def get_my_service():
+    from viraltracker.services.my_service import MyService
+    return MyService()
+
+# 5. UI rendering functions
+def render_my_section(brand_id: str):
+    st.subheader("My Section")
+    # ...
+
+# 6. Main page content
+st.title("📊 My Page")
+
+# 7. Brand selector (shared utility)
+from viraltracker.ui.utils import render_brand_selector
+brand_id = render_brand_selector(key="my_page_brand_selector")
+if not brand_id:
+    st.stop()
+
+# 8. Render sections
+render_my_section(brand_id)
+```
+
+### Sidebar Page Organization
+
+Pages are organized by feature area with numbered prefixes:
+- `01-05`: Brands (Manager, Products, Personas, URL Mapping, Brand Research)
+- `10-13`: Competitors (Competitors, Research, Analysis)
+- `20-29`: Ads (Library, Planning, Executor, etc.)
+- `40-49`: Content (Pipeline, etc.)
+- `60-69`: System (Settings, etc.)
+
+---
+
 ## Checklist Before Completing Any Task
 
 - [ ] Code follows thin-tools pattern (business logic in services)
