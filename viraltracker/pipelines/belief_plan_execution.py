@@ -39,7 +39,10 @@ def build_phase12_prompt(
     canvas_size: str
 ) -> Dict:
     """
-    Build a single Phase 1-2 prompt.
+    Build a single Phase 1-2 prompt in Nano Banana format.
+
+    Uses proven structured JSON format with text_placement, fonts, and colors
+    configs for proper text rendering by Gemini 3 Pro Image Preview.
 
     Args:
         angle: Angle dict with belief_statement, mechanism_hypothesis, copy_set
@@ -55,6 +58,8 @@ def build_phase12_prompt(
     layout_analysis = template.get("layout_analysis", {}) or {}
     anchor_text = layout_analysis.get("anchor_text")
     template_type = layout_analysis.get("template_type", "observation_shot")
+    text_placement = layout_analysis.get("text_placement", {})
+    template_colors = layout_analysis.get("color_palette", layout_analysis.get("colors", {}))
 
     # Get copy from angle's copy_set
     copy_set = angle.get("copy_set", {}) or {}
@@ -80,33 +85,96 @@ def build_phase12_prompt(
         if progress:
             situation += f" related to: {progress}"
 
+    # Build structured JSON prompt matching Nano Banana format
     json_prompt = {
-        "ad_type": "phase_1_2_belief_test",
-        "style": {
-            "canvas_size": canvas_size,
-            "template_type": template_type,
-            "reference": "Use attached template as STYLE GUIDE ONLY"
+        "task": {
+            "action": "create_phase12_belief_ad",
+            "variation_index": variation_index,
+            "template_type": template_type
         },
+
         "content": {
+            "headline": {
+                "text": anchor_text,
+                "placement": "match_template",
+                "purpose": "observational_anchor",
+                "render_requirement": "MUST render this text exactly, pixel-perfect legible"
+            } if anchor_text else None,
             "situation": situation,
-            "on_image_text": anchor_text,
             "belief_being_tested": angle.get("belief_statement")
         },
+
+        "style": {
+            "canvas_size": canvas_size,
+            "format_type": template_type,
+            "layout_structure": layout_analysis.get("layout_structure", "single_image"),
+            "text_placement": text_placement if text_placement else {
+                "headline": "match_template_position",
+                "requirement": "Position text EXACTLY where template has text"
+            },
+            "fonts": {
+                "body": {
+                    "family": layout_analysis.get("font_family", "sans-serif"),
+                    "weights": ["400", "600", "700"],
+                    "style_notes": "Match template text style exactly - same size, weight, color"
+                }
+            } if anchor_text else None,
+            "colors": {
+                "mode": "original",
+                "palette": template_colors if isinstance(template_colors, list) else [],
+                "instruction": "Match template colors exactly"
+            } if template_colors else None,
+            "reference": "Use attached template as STYLE GUIDE - match layout, colors, text position"
+        },
+
+        "rules": {
+            "text": {
+                "render_exactly": anchor_text,
+                "position": "match_template_text_position",
+                "requirement": "Text MUST be pixel-perfect legible",
+                "font_size": "match_template",
+                "contrast": "ensure_high_contrast_with_background"
+            } if anchor_text else {"no_text": True, "requirement": "Generate image with NO text"},
+            "product": {
+                "show_product": False,
+                "requirement": "ABSOLUTELY NO product bottles, supplements, pills, or solutions visible"
+            },
+            "lighting": {
+                "match_scene": True,
+                "requirement": "Match template lighting and mood"
+            }
+        },
+
         "instructions": {
+            "CRITICAL": [
+                f"RENDER TEXT EXACTLY: '{anchor_text}'" if anchor_text else "NO TEXT on image",
+                "Match template STYLE - same composition, colors, text placement",
+                "Show the SITUATION (recognition moment), NOT a product"
+            ],
             "DO": [
-                "Generate a NEW image showing the SITUATION (recognition moment)",
-                "Match the visual style, lighting, and mood of the template",
-                f"Place anchor text: '{anchor_text}'" if anchor_text else "No text on image",
-                f"Persona context: {persona_snapshot}"
+                "Generate a NEW image matching the template STYLE",
+                "Show the recognition moment/situation",
+                f"Match persona: {persona_snapshot}",
+                "Use same text style, size, and position as template" if anchor_text else "Keep image text-free"
             ],
             "DO_NOT": [
-                "Show any product or supplement bottle",
-                "Include benefits, claims, or mechanisms",
-                "Add text beyond the anchor text",
-                "Show transformations or solutions"
+                "Show any product, supplement, bottle, or pill",
+                "Add ANY text beyond the anchor text" if anchor_text else "Add ANY text to the image",
+                "Include benefits, claims, mechanisms, or solutions",
+                "Show transformations or before/after"
             ]
         }
     }
+
+    # Remove None values for cleaner JSON
+    def remove_none(d):
+        if isinstance(d, dict):
+            return {k: remove_none(v) for k, v in d.items() if v is not None}
+        elif isinstance(d, list):
+            return [remove_none(i) for i in d if i is not None]
+        return d
+
+    json_prompt = remove_none(json_prompt)
 
     return {
         "json_prompt": json_prompt,
@@ -373,6 +441,10 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
             )
             ctx.state.ad_run_id = ad_run_id
 
+            # Get database client for progress updates
+            from ..core.database import get_supabase_client
+            db = get_supabase_client()
+
             # Generate each image
             for i, prompt in enumerate(ctx.state.prompts):
                 logger.info(f"  Generating image {i+1}/{len(ctx.state.prompts)}...")
@@ -412,6 +484,23 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
                     ctx.state.ads_generated += 1
 
                     logger.info(f"  ✓ Generated {i+1}/{len(ctx.state.prompts)}")
+
+                    # Update progress in database for real-time UI updates
+                    if ctx.state.pipeline_run_id:
+                        try:
+                            db.table("pipeline_runs").update({
+                                "current_node": "GenerateImagesNode",
+                                "state_snapshot": {
+                                    "current_step": "generating",
+                                    "ads_generated": ctx.state.ads_generated,
+                                    "total_ads_planned": ctx.state.total_ads_planned,
+                                    "current_prompt": i + 1,
+                                    "current_angle": prompt.get("angle_name", ""),
+                                    "current_template": prompt.get("template_name", "")
+                                }
+                            }).eq("id", ctx.state.pipeline_run_id).execute()
+                        except Exception as update_err:
+                            logger.warning(f"Failed to update progress: {update_err}")
 
                 except Exception as e:
                     logger.error(f"  ✗ Generation failed for prompt {i+1}: {e}")
@@ -473,21 +562,32 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
 
                     ctx.state.ads_reviewed += 1
 
-                    # Save review to database
+                    # Extract belief metadata from prompt
+                    prompt = ad["prompt"]
+                    angle_id = prompt.get("angle_id")
+                    template_id = prompt.get("template_id")
+
+                    # Save review to database with belief metadata
                     if ad.get("ad_id"):
                         await ctx.deps.ad_creation.save_generated_ad(
                             ad_run_id=ctx.state.ad_run_id,
                             prompt_index=ad["prompt_index"],
-                            prompt_text=ad["prompt"]["full_prompt"],
-                            prompt_spec=ad["prompt"]["json_prompt"],
+                            prompt_text=prompt["full_prompt"],
+                            prompt_spec=prompt["json_prompt"],
                             hook_id=None,  # No hooks in Phase 1-2
-                            hook_text=ad["prompt"].get("anchor_text") or "",
+                            hook_text=prompt.get("anchor_text") or "",
                             storage_path=ad["storage_path"],
                             gemini_review=review,
                             final_status=ad["final_status"],
                             model_used=ad.get("model_used"),
                             generation_time_ms=ad.get("generation_time_ms"),
-                            ad_id=UUID(ad["ad_id"])
+                            ad_id=UUID(ad["ad_id"]),
+                            # Belief plan metadata for organization
+                            angle_id=UUID(angle_id) if angle_id else None,
+                            template_id=UUID(template_id) if template_id else None,
+                            belief_plan_id=ctx.state.belief_plan_id,
+                            meta_headline=prompt.get("meta_headline"),
+                            meta_primary_text=prompt.get("meta_primary_text")
                         )
 
                 except Exception as e:
@@ -509,6 +609,46 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
                 f"{ctx.state.rejected_count} rejected"
             )
 
+            # Group ads by angle for organized display
+            ads_by_angle = {}
+            for ad in ctx.state.generated_ads:
+                prompt = ad.get("prompt", {})
+                angle_id = prompt.get("angle_id", "unknown")
+                angle_name = prompt.get("angle_name", "Unknown Angle")
+
+                if angle_id not in ads_by_angle:
+                    ads_by_angle[angle_id] = {
+                        "angle_id": angle_id,
+                        "angle_name": angle_name,
+                        "belief_statement": prompt.get("belief_statement", ""),
+                        "ads": [],
+                        "approved": 0,
+                        "rejected": 0,
+                        "failed": 0
+                    }
+
+                ad_entry = {
+                    "ad_id": ad.get("ad_id"),
+                    "storage_path": ad.get("storage_path"),
+                    "template_name": prompt.get("template_name"),
+                    "template_id": prompt.get("template_id"),
+                    "anchor_text": prompt.get("anchor_text"),
+                    "meta_headline": prompt.get("meta_headline"),
+                    "meta_primary_text": prompt.get("meta_primary_text"),
+                    "final_status": ad.get("final_status", "pending"),
+                    "variation_index": prompt.get("variation_index", 0)
+                }
+
+                if ad.get("error"):
+                    ad_entry["error"] = ad.get("error")
+                    ads_by_angle[angle_id]["failed"] += 1
+                elif ad.get("final_status") == "approved":
+                    ads_by_angle[angle_id]["approved"] += 1
+                elif ad.get("final_status") == "rejected":
+                    ads_by_angle[angle_id]["rejected"] += 1
+
+                ads_by_angle[angle_id]["ads"].append(ad_entry)
+
             return End({
                 "status": "complete",
                 "total_planned": ctx.state.total_ads_planned,
@@ -517,7 +657,8 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
                 "approved": ctx.state.approved_count,
                 "rejected": ctx.state.rejected_count,
                 "ad_run_id": str(ctx.state.ad_run_id) if ctx.state.ad_run_id else None,
-                "belief_plan_id": str(ctx.state.belief_plan_id)
+                "belief_plan_id": str(ctx.state.belief_plan_id),
+                "ads_by_angle": ads_by_angle
             })
 
         except Exception as e:
@@ -617,11 +758,12 @@ async def run_belief_plan_execution(
         print("[PIPELINE] AgentDependencies created", flush=True)
         logger.info("Created AgentDependencies")
 
-        # Create initial state
+        # Create initial state with pipeline_run_id for real-time progress updates
         state = BeliefPlanExecutionState(
             belief_plan_id=belief_plan_id,
             variations_per_angle=variations_per_angle,
-            canvas_size=canvas_size
+            canvas_size=canvas_size,
+            pipeline_run_id=run_id
         )
 
         # Run the graph

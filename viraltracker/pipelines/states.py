@@ -209,3 +209,4 @@ class BeliefPlanExecutionState:
     error: Optional[str] = None
     ads_generated: int = 0
     ads_reviewed: int = 0
+    pipeline_run_id: Optional[str] = None  # For real-time progress updates

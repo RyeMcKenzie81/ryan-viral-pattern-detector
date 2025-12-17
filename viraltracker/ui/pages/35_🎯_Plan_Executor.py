@@ -49,6 +49,8 @@ if 'executor_running' not in st.session_state:
     st.session_state.executor_running = False
 if 'executor_current_run_id' not in st.session_state:
     st.session_state.executor_current_run_id = None
+if 'executor_last_result' not in st.session_state:
+    st.session_state.executor_last_result = None
 
 
 # ============================================
@@ -191,6 +193,40 @@ def run_execution(plan_id: str, variations: int, canvas_size: str):
         loop.close()
 
 
+def get_latest_run(plan_id: str):
+    """Get the most recent pipeline run for a plan."""
+    db = get_supabase_client()
+    try:
+        result = db.table("pipeline_runs").select("*").eq(
+            "pipeline_name", "belief_plan_execution"
+        ).eq("belief_plan_id", plan_id).order("started_at", desc=True).limit(1).execute()
+        return result.data[0] if result.data else None
+    except Exception:
+        return None
+
+
+def get_public_url(storage_path: str) -> str:
+    """Get public URL for a storage path."""
+    db = get_supabase_client()
+    try:
+        # Parse bucket and path from storage_path
+        if storage_path.startswith("generated-ads/"):
+            bucket = "generated-ads"
+            path = storage_path.replace("generated-ads/", "")
+        elif "/" in storage_path:
+            parts = storage_path.split("/", 1)
+            bucket = parts[0]
+            path = parts[1]
+        else:
+            bucket = "generated-ads"
+            path = storage_path
+
+        result = db.storage.from_(bucket).get_public_url(path)
+        return result
+    except Exception:
+        return ""
+
+
 # ============================================
 # UI COMPONENTS
 # ============================================
@@ -277,27 +313,42 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
 
     st.info(f"**Generation Math:** {num_angles} angles × {num_templates} templates × {variations} variations = **{total_ads} ads**")
 
-    if st.button("Execute Plan", type="primary", use_container_width=True):
-        st.session_state.executor_running = True
-        with st.spinner(f"Generating {total_ads} ads... This may take a while."):
-            try:
-                result = run_execution(plan_id, variations, canvas_size)
-                st.session_state.executor_running = False
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Execute Plan", type="primary", use_container_width=True):
+            st.session_state.executor_running = True
+            st.session_state.executor_last_result = None
+            with st.spinner(f"Generating {total_ads} ads... This may take a while."):
+                try:
+                    result = run_execution(plan_id, variations, canvas_size)
+                    st.session_state.executor_running = False
+                    st.session_state.executor_last_result = result
 
-                if result.get("status") == "complete":
-                    st.success(f"Execution complete! Generated {result.get('total_generated', 0)} ads.")
-                    st.write(f"- Approved: {result.get('approved', 0)}")
-                    st.write(f"- Rejected: {result.get('rejected', 0)}")
-                    if result.get("ad_run_id"):
-                        st.write(f"- Ad Run ID: `{result['ad_run_id']}`")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error(f"Execution failed: {result.get('error', 'Unknown error')}")
+                    if result.get("status") == "complete":
+                        st.success(f"Execution complete! Generated {result.get('total_generated', 0)} ads.")
+                        st.write(f"- Approved: {result.get('approved', 0)}")
+                        st.write(f"- Rejected: {result.get('rejected', 0)}")
+                        if result.get("ad_run_id"):
+                            st.write(f"- Ad Run ID: `{result['ad_run_id']}`")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Execution failed: {result.get('error', 'Unknown error')}")
 
-            except Exception as e:
-                st.session_state.executor_running = False
-                st.error(f"Execution error: {e}")
+                except Exception as e:
+                    st.session_state.executor_running = False
+                    st.error(f"Execution error: {e}")
+
+    with col2:
+        if st.session_state.executor_last_result:
+            if st.button("Clear Results", use_container_width=True):
+                st.session_state.executor_last_result = None
+                st.rerun()
+
+    # Show results if available
+    if st.session_state.executor_last_result and st.session_state.executor_last_result.get("status") == "complete":
+        st.divider()
+        render_results_by_angle(st.session_state.executor_last_result)
 
 
 def render_run_history(plan_id: str):
@@ -341,6 +392,110 @@ def render_run_history(plan_id: str):
 
             if run.get("error_message"):
                 st.error(f"Error: {run['error_message']}")
+
+
+def render_results_by_angle(result: dict):
+    """Render generated ads grouped by angle with their copy scaffolds."""
+    ads_by_angle = result.get("ads_by_angle", {})
+
+    if not ads_by_angle:
+        st.info("No results to display.")
+        return
+
+    st.subheader("Generated Ads by Angle")
+    st.write("Review ads organized by the belief angle they test. Copy scaffolds shown for each ad.")
+
+    for angle_id, angle_data in ads_by_angle.items():
+        angle_name = angle_data.get("angle_name", "Unknown Angle")
+        belief = angle_data.get("belief_statement", "")
+        approved = angle_data.get("approved", 0)
+        rejected = angle_data.get("rejected", 0)
+        failed = angle_data.get("failed", 0)
+        total = len(angle_data.get("ads", []))
+
+        # Status indicator
+        if approved == total and total > 0:
+            status_emoji = "✅"
+        elif approved > 0:
+            status_emoji = "🟡"
+        else:
+            status_emoji = "❌"
+
+        with st.expander(f"{status_emoji} **{angle_name}** - {approved}/{total} approved"):
+            if belief:
+                st.caption(f"*Testing belief: {belief}*")
+
+            # Stats row
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Approved", approved)
+            with col2:
+                st.metric("Rejected", rejected)
+            with col3:
+                st.metric("Failed", failed)
+
+            st.divider()
+
+            # Display ads in a grid
+            ads = angle_data.get("ads", [])
+            if not ads:
+                st.info("No ads generated for this angle.")
+                continue
+
+            # Group by 3 columns
+            cols = st.columns(3)
+            for i, ad in enumerate(ads):
+                with cols[i % 3]:
+                    storage_path = ad.get("storage_path")
+                    if storage_path:
+                        image_url = get_public_url(storage_path)
+                        if image_url:
+                            st.image(image_url, use_container_width=True)
+                        else:
+                            st.warning("Image not available")
+                    else:
+                        st.warning("No image")
+
+                    # Status badge
+                    status = ad.get("final_status", "pending")
+                    if status == "approved":
+                        st.success("Approved")
+                    elif status == "rejected":
+                        st.error("Rejected")
+                    elif ad.get("error"):
+                        st.error(f"Failed: {ad.get('error', '')[:50]}")
+                    else:
+                        st.info("Pending")
+
+                    # Template info
+                    st.caption(f"Template: {ad.get('template_name', 'Unknown')}")
+
+                    # Copy scaffolds in expandable sections
+                    with st.expander("Meta Copy"):
+                        headline = ad.get("meta_headline", "")
+                        primary = ad.get("meta_primary_text", "")
+
+                        if headline:
+                            st.text_area(
+                                "Headline (below image)",
+                                value=headline,
+                                height=60,
+                                key=f"headline_{ad.get('ad_id', i)}",
+                                disabled=True
+                            )
+                        else:
+                            st.caption("No headline")
+
+                        if primary:
+                            st.text_area(
+                                "Primary Text (above image)",
+                                value=primary,
+                                height=100,
+                                key=f"primary_{ad.get('ad_id', i)}",
+                                disabled=True
+                            )
+                        else:
+                            st.caption("No primary text")
 
 
 # ============================================

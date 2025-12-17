@@ -560,7 +560,13 @@ class AdCreationService:
         generation_time_ms: Optional[int] = None,
         generation_retries: Optional[int] = None,
         # Pre-generated ID for structured naming
-        ad_id: Optional[UUID] = None
+        ad_id: Optional[UUID] = None,
+        # Belief plan metadata (Phase 1-2)
+        angle_id: Optional[UUID] = None,
+        template_id: Optional[UUID] = None,
+        belief_plan_id: Optional[UUID] = None,
+        meta_headline: Optional[str] = None,
+        meta_primary_text: Optional[str] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -581,6 +587,11 @@ class AdCreationService:
             generation_time_ms: Time taken to generate the image
             generation_retries: Number of retries needed
             ad_id: Optional pre-generated UUID (for structured naming)
+            angle_id: UUID of belief angle being tested (Phase 1-2)
+            template_id: UUID of template used as style reference (Phase 1-2)
+            belief_plan_id: UUID of belief plan this ad belongs to (Phase 1-2)
+            meta_headline: Headline for Meta ad placement (below image)
+            meta_primary_text: Primary text for Meta ad placement (above image)
 
         Returns:
             UUID of generated ad record
@@ -622,6 +633,18 @@ class AdCreationService:
             data["generation_time_ms"] = generation_time_ms
         if generation_retries is not None:
             data["generation_retries"] = generation_retries
+
+        # Add belief plan metadata if provided (Phase 1-2)
+        if angle_id is not None:
+            data["angle_id"] = str(angle_id)
+        if template_id is not None:
+            data["template_id"] = str(template_id)
+        if belief_plan_id is not None:
+            data["belief_plan_id"] = str(belief_plan_id)
+        if meta_headline is not None:
+            data["meta_headline"] = meta_headline
+        if meta_primary_text is not None:
+            data["meta_primary_text"] = meta_primary_text
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])
