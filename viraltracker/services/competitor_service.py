@@ -1771,9 +1771,8 @@ Return ONLY valid JSON."""
                     "verified_purchase": review.get("verified", False),
                     "helpful_votes": review.get("numberOfHelpful", 0) or 0,
                 }
-
-                if competitor_product_id:
-                    record["competitor_product_id"] = str(competitor_product_id)
+                # Note: competitor_product_id column doesn't exist in table yet
+                # TODO: Add migration for competitor_product_id column
 
                 records.append(record)
 
