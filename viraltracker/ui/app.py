@@ -23,10 +23,6 @@ Environment variables required:
     DB_PATH: (optional) Path to database, defaults to viraltracker.db
     PROJECT_NAME: (optional) Project name, defaults to yakety-pack-instagram
 """
-import logging
-logging.basicConfig(level=logging.INFO)
-_startup_logger = logging.getLogger("viraltracker.startup")
-_startup_logger.info("[STARTUP] app.py loading...")
 
 import asyncio
 import base64
