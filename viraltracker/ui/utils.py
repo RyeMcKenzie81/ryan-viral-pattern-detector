@@ -133,13 +133,14 @@ def render_brand_selector(
 # BELIEF-FIRST ANALYSIS UI COMPONENTS
 # ============================================================================
 
-def render_belief_first_analysis(analysis: dict, show_recommendations: bool = True):
+def render_belief_first_analysis(analysis: dict, show_recommendations: bool = True, nested: bool = False):
     """
     Render the 13-layer belief-first analysis with grouped expanders.
 
     Args:
         analysis: The belief-first analysis dict from the service
         show_recommendations: Whether to show copy recommendations
+        nested: If True, use flat layout (no expanders) to avoid nested expander errors
     """
     if not analysis:
         st.info("No belief-first analysis available. Run the analysis to see results.")
@@ -209,8 +210,8 @@ def render_belief_first_analysis(analysis: dict, show_recommendations: bool = Tr
             emoji = status_emoji.get(status, "❓")
             display_name = display_names.get(layer_name, layer_name.replace("_", " ").title())
 
-            # Expand non-clear layers by default
-            with st.expander(f"{emoji} {display_name} — {status.upper()}", expanded=(status != "clear")):
+            # Helper function to render layer content
+            def render_layer_content(layer_data, layer_name, status, show_recommendations):
                 # Explanation
                 explanation = layer_data.get("explanation", "No analysis available")
                 st.markdown(f"**Analysis:** {explanation}")
@@ -272,6 +273,16 @@ def render_belief_first_analysis(analysis: dict, show_recommendations: bool = Tr
                         st.markdown("**Recommendations:**")
                         for rec in recommendations:
                             st.markdown(f"- {rec}")
+
+            if nested:
+                # Flat layout - use markdown header instead of expander
+                st.markdown(f"**{emoji} {display_name} — {status.upper()}**")
+                render_layer_content(layer_data, layer_name, status, show_recommendations)
+                st.markdown("---")
+            else:
+                # Use expanders (default)
+                with st.expander(f"{emoji} {display_name} — {status.upper()}", expanded=(status != "clear")):
+                    render_layer_content(layer_data, layer_name, status, show_recommendations)
 
 
 def render_belief_first_aggregation(aggregation: dict, entity_name: str = "Brand"):

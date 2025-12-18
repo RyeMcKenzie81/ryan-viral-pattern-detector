@@ -284,7 +284,7 @@ def _render_competitor_belief_first_section(
 
                         with st.expander(f"📄 {display_url} (Score: {score}/10)"):
                             st.caption(url)
-                            render_belief_first_analysis(bf_analysis)
+                            render_belief_first_analysis(bf_analysis, nested=True)
             else:
                 st.info("No pages with belief-first analysis yet.")
 

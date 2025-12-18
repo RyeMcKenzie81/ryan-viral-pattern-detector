@@ -957,7 +957,7 @@ def _render_belief_first_section(brand_id: str, product_id: Optional[str], scrap
 
                         with st.expander(f"📄 {title} (Score: {score}/10)"):
                             st.caption(url)
-                            render_belief_first_analysis(bf_analysis)
+                            render_belief_first_analysis(bf_analysis, nested=True)
             else:
                 st.info("No pages with belief-first analysis yet.")
 
