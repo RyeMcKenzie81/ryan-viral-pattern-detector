@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from collections import Counter
 from uuid import UUID
+from enum import Enum
 
 
 # ============================================================================
@@ -1370,3 +1371,173 @@ class TemplateEvaluation(BaseModel):
     def computed_eligible(self) -> bool:
         """Determine Phase 1-2 eligibility."""
         return self.d6_compliance_pass and self.computed_total_score >= 12 and self.d2_neutrality >= 2
+
+
+# ============================================================================
+# Reddit Sentiment Analysis Models
+# ============================================================================
+
+class SentimentCategory(str, Enum):
+    """
+    The 6 sentiment buckets that map to belief-first planning fields.
+
+    Mapping to persona fields:
+    - PAIN_POINT -> pain_points (DomainSentiment)
+    - DESIRED_OUTCOME -> outcomes_jtbd (DomainSentiment)
+    - BUYING_OBJECTION -> buying_objections (DomainSentiment)
+    - FAILED_SOLUTION -> failed_solutions (List)
+    - DESIRED_FEATURE -> desired_features (List)
+    - FAMILIAR_SOLUTION -> familiar_promises (List)
+    """
+    PAIN_POINT = "PAIN_POINT"
+    DESIRED_OUTCOME = "DESIRED_OUTCOME"
+    BUYING_OBJECTION = "BUYING_OBJECTION"
+    FAILED_SOLUTION = "FAILED_SOLUTION"
+    DESIRED_FEATURE = "DESIRED_FEATURE"
+    FAMILIAR_SOLUTION = "FAMILIAR_SOLUTION"
+
+
+class RedditPost(BaseModel):
+    """
+    A scraped Reddit post with engagement metrics and LLM scoring.
+
+    Used during pipeline processing before database persistence.
+    """
+    id: Optional[UUID] = None
+    reddit_id: str = Field(..., description="Reddit post ID (e.g., 't3_abc123')")
+    subreddit: str = Field(..., description="Subreddit name without r/")
+    title: str = Field(..., description="Post title")
+    body: Optional[str] = Field(None, description="Post body/selftext")
+    author: Optional[str] = Field(None, description="Reddit username")
+    url: Optional[str] = Field(None, description="Full URL to post")
+
+    # Engagement metrics from Reddit
+    score: int = Field(default=0, description="Upvotes (net score)")
+    upvote_ratio: float = Field(default=0.0, ge=0.0, le=1.0, description="Upvote ratio")
+    num_comments: int = Field(default=0, ge=0, description="Number of comments")
+    created_utc: Optional[datetime] = Field(None, description="When post was created")
+
+    # Pipeline scoring (populated by LLM nodes)
+    relevance_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Relevance to persona/topic")
+    relevance_reasoning: Optional[str] = Field(None, description="LLM reasoning for relevance score")
+    signal_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Signal vs noise score")
+    signal_reasoning: Optional[str] = Field(None, description="LLM reasoning for signal score")
+    intent_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Buyer intent/sophistication")
+    intent_reasoning: Optional[str] = Field(None, description="LLM reasoning for intent score")
+    combined_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Combined weighted score")
+
+    @property
+    def content_for_analysis(self) -> str:
+        """Combine title and body for LLM analysis."""
+        if self.body:
+            return f"{self.title}\n\n{self.body}"
+        return self.title
+
+
+class RedditComment(BaseModel):
+    """
+    A Reddit comment from a scraped post.
+
+    Optional enrichment for deeper analysis.
+    """
+    id: Optional[UUID] = None
+    reddit_id: str = Field(..., description="Reddit comment ID")
+    post_id: Optional[UUID] = Field(None, description="Parent post UUID")
+    parent_id: Optional[str] = Field(None, description="Parent comment ID for threading")
+    body: str = Field(..., description="Comment text")
+    author: Optional[str] = Field(None, description="Reddit username")
+    score: int = Field(default=0, description="Upvotes")
+    created_utc: Optional[datetime] = Field(None, description="When comment was posted")
+
+
+class RedditSentimentQuote(BaseModel):
+    """
+    An extracted quote categorized into sentiment buckets.
+
+    These quotes are extracted by Claude Opus 4.5 and can be
+    synced to persona fields for belief-first planning.
+    """
+    id: Optional[UUID] = None
+    post_id: Optional[UUID] = Field(None, description="Source post UUID")
+    comment_id: Optional[UUID] = Field(None, description="Source comment UUID if from comment")
+
+    quote_text: str = Field(..., description="Exact verbatim quote from post/comment")
+    source_type: str = Field(..., description="post_title, post_body, or comment")
+
+    # Categorization
+    sentiment_category: SentimentCategory = Field(..., description="Primary sentiment bucket")
+    sentiment_subtype: Optional[str] = Field(
+        None,
+        description="For DomainSentiment fields: emotional, social, or functional"
+    )
+
+    # AI extraction metadata
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Extraction confidence")
+    extraction_reasoning: Optional[str] = Field(None, description="Why this quote fits the category")
+
+    # Sync tracking
+    synced_to_persona: bool = Field(default=False, description="Whether synced to persona fields")
+    synced_at: Optional[datetime] = Field(None, description="When synced to persona")
+
+
+class RedditScrapeConfig(BaseModel):
+    """
+    Configuration for a Reddit scraping run.
+
+    Passed to the pipeline to control scraping and filtering behavior.
+    """
+    search_queries: List[str] = Field(..., min_length=1, description="Search queries to run")
+    subreddits: Optional[List[str]] = Field(None, description="Limit to specific subreddits")
+    timeframe: str = Field(
+        default="month",
+        description="Time range: hour, day, week, month, year, all"
+    )
+    sort_by: str = Field(
+        default="relevance",
+        description="Sort order: relevance, hot, top, new, comments"
+    )
+    max_posts: int = Field(default=500, ge=10, le=5000, description="Maximum posts to scrape")
+    include_nsfw: bool = Field(default=False, description="Include NSFW content")
+    scrape_comments: bool = Field(default=True, description="Also scrape comments")
+    max_comments_per_post: int = Field(default=50, ge=0, le=500, description="Max comments per post")
+
+    # Filtering thresholds
+    min_upvotes: int = Field(default=20, ge=0, description="Minimum post upvotes")
+    min_comments: int = Field(default=5, ge=0, description="Minimum comment count")
+    relevance_threshold: float = Field(default=0.6, ge=0.0, le=1.0, description="Min relevance score")
+    signal_threshold: float = Field(default=0.5, ge=0.0, le=1.0, description="Min signal score")
+    top_percentile: float = Field(default=0.20, ge=0.01, le=1.0, description="Top X% to keep")
+
+
+class RedditScrapeRunResult(BaseModel):
+    """
+    Summary result from a Reddit sentiment analysis run.
+
+    Returned by the pipeline after completion.
+    """
+    run_id: UUID = Field(..., description="Pipeline run UUID")
+    status: str = Field(..., description="completed, failed, etc.")
+
+    # Counts at each stage
+    posts_scraped: int = Field(default=0, description="Total posts from Apify")
+    posts_after_engagement: int = Field(default=0, description="After engagement filter")
+    posts_after_relevance: int = Field(default=0, description="After relevance filter")
+    posts_after_signal: int = Field(default=0, description="After signal filter")
+    posts_top_selected: int = Field(default=0, description="Top percentile selected")
+
+    # Quote extraction
+    quotes_extracted: int = Field(default=0, description="Total quotes extracted")
+    quotes_by_category: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Count per sentiment category"
+    )
+    quotes_synced: int = Field(default=0, description="Quotes synced to persona")
+
+    # Cost tracking
+    apify_cost: float = Field(default=0.0, description="Estimated Apify cost")
+    llm_cost_estimate: float = Field(default=0.0, description="Estimated LLM cost")
+
+    # Timing
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None

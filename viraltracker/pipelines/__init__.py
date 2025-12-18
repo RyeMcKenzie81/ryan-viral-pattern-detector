@@ -5,9 +5,15 @@ This package contains state-driven DAG workflows using pydantic-graph:
 - brand_onboarding: Scrape ads, analyze with AI, extract brand insights
 - template_ingestion: Scrape ads, queue for human review, create templates
 - belief_plan_execution: Execute Phase 1-2 belief testing plans
+- reddit_sentiment: Scrape Reddit, analyze sentiment, extract quotes
 """
 
-from .states import BrandOnboardingState, TemplateIngestionState, BeliefPlanExecutionState
+from .states import (
+    BrandOnboardingState,
+    TemplateIngestionState,
+    BeliefPlanExecutionState,
+    RedditSentimentState,
+)
 from .brand_onboarding import (
     brand_onboarding_graph,
     run_brand_onboarding,
@@ -32,12 +38,25 @@ from .belief_plan_execution import (
     GenerateImagesNode,
     ReviewAdsNode,
 )
+from .reddit_sentiment import (
+    reddit_sentiment_graph,
+    run_reddit_sentiment,
+    ScrapeRedditNode,
+    EngagementFilterNode,
+    RelevanceFilterNode,
+    SignalFilterNode,
+    IntentScoreNode,
+    TopSelectionNode,
+    CategorizeNode,
+    SaveNode,
+)
 
 __all__ = [
     # States
     "BrandOnboardingState",
     "TemplateIngestionState",
     "BeliefPlanExecutionState",
+    "RedditSentimentState",
     # Brand Onboarding
     "brand_onboarding_graph",
     "run_brand_onboarding",
@@ -59,4 +78,15 @@ __all__ = [
     "BuildPromptsNode",
     "GenerateImagesNode",
     "ReviewAdsNode",
+    # Reddit Sentiment
+    "reddit_sentiment_graph",
+    "run_reddit_sentiment",
+    "ScrapeRedditNode",
+    "EngagementFilterNode",
+    "RelevanceFilterNode",
+    "SignalFilterNode",
+    "IntentScoreNode",
+    "TopSelectionNode",
+    "CategorizeNode",
+    "SaveNode",
 ]

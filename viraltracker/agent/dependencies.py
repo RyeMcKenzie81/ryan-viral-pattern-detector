@@ -33,6 +33,7 @@ from ..services.template_queue_service import TemplateQueueService
 from ..services.persona_service import PersonaService
 from ..services.product_url_service import ProductURLService
 from ..services.content_pipeline.services.content_pipeline_service import ContentPipelineService
+from ..services.reddit_sentiment_service import RedditSentimentService
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class AgentDependencies(BaseModel):
     persona: PersonaService
     product_url: ProductURLService
     content_pipeline: ContentPipelineService
+    reddit_sentiment: RedditSentimentService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -270,6 +272,10 @@ class AgentDependencies(BaseModel):
         )
         logger.info("ContentPipelineService initialized")
 
+        # Initialize RedditSentimentService for Reddit sentiment analysis
+        reddit_sentiment = RedditSentimentService()
+        logger.info("RedditSentimentService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -291,6 +297,7 @@ class AgentDependencies(BaseModel):
             persona=persona,
             product_url=product_url,
             content_pipeline=content_pipeline,
+            reddit_sentiment=reddit_sentiment,
             docs=docs,
             project_name=project_name
         )

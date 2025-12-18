@@ -210,3 +210,99 @@ class BeliefPlanExecutionState:
     ads_generated: int = 0
     ads_reviewed: int = 0
     pipeline_run_id: Optional[str] = None  # For real-time progress updates
+
+
+@dataclass
+class RedditSentimentState:
+    """
+    State for Reddit domain sentiment analysis pipeline.
+
+    Pipeline: ScrapeReddit → EngagementFilter → RelevanceFilter →
+              SignalFilter → IntentScore → TopSelection →
+              Categorize → Save
+
+    This pipeline:
+    1. Scrapes Reddit posts via Apify
+    2. Filters by engagement (upvotes, comments)
+    3. Scores relevance using Claude Sonnet
+    4. Filters signal from noise using Claude Sonnet
+    5. Scores buyer intent/sophistication
+    6. Selects top 20% of posts
+    7. Categorizes into 6 sentiment buckets using Claude Opus 4.5
+    8. Extracts quotes and saves to DB
+    9. Optionally syncs to persona fields
+
+    Attributes:
+        search_queries: List of search terms to use
+        brand_id: Optional brand association
+        persona_id: Optional persona for auto-sync
+        subreddits: Optional subreddit filter
+        ...
+    """
+
+    # Input parameters (required)
+    search_queries: List[str]
+
+    # Input parameters (optional associations)
+    brand_id: Optional[UUID] = None
+    product_id: Optional[UUID] = None
+    persona_id: Optional[UUID] = None
+
+    # Configuration
+    subreddits: Optional[List[str]] = None
+    timeframe: str = "month"  # hour, day, week, month, year, all
+    sort_by: str = "relevance"  # relevance, hot, top, new, comments
+    max_posts: int = 500
+    min_upvotes: int = 20
+    min_comments: int = 5
+    relevance_threshold: float = 0.6
+    signal_threshold: float = 0.5
+    top_percentile: float = 0.20
+    scrape_comments: bool = True
+    auto_sync_to_persona: bool = True
+
+    # Context for LLM prompts
+    persona_context: Optional[str] = None
+    topic_context: Optional[str] = None
+    brand_context: Optional[str] = None
+    product_context: Optional[str] = None
+
+    # Pipeline data - populated by ScrapeRedditNode
+    run_id: Optional[UUID] = None
+    scraped_posts: List[Dict] = field(default_factory=list)
+    scraped_comments: List[Dict] = field(default_factory=list)
+
+    # Pipeline data - populated by EngagementFilterNode
+    engagement_filtered: List[Dict] = field(default_factory=list)
+
+    # Pipeline data - populated by RelevanceFilterNode
+    relevance_filtered: List[Dict] = field(default_factory=list)
+
+    # Pipeline data - populated by SignalFilterNode
+    signal_filtered: List[Dict] = field(default_factory=list)
+
+    # Pipeline data - populated by IntentScoreNode
+    intent_scored: List[Dict] = field(default_factory=list)
+
+    # Pipeline data - populated by TopSelectionNode
+    top_selected: List[Dict] = field(default_factory=list)
+
+    # Pipeline data - populated by CategorizeNode
+    categorized_quotes: Dict[str, List[Dict]] = field(default_factory=dict)
+
+    # Tracking
+    current_step: str = "pending"
+    error: Optional[str] = None
+
+    # Metrics
+    posts_scraped: int = 0
+    posts_after_engagement: int = 0
+    posts_after_relevance: int = 0
+    posts_after_signal: int = 0
+    posts_top_selected: int = 0
+    quotes_extracted: int = 0
+    quotes_synced: int = 0
+
+    # Cost tracking
+    apify_cost: float = 0.0
+    llm_cost_estimate: float = 0.0
