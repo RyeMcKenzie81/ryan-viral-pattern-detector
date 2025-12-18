@@ -47,7 +47,7 @@ def init_observability():
     import os
     token = os.environ.get("LOGFIRE_TOKEN")
     if not token:
-        logging.info("[LOGFIRE] LOGFIRE_TOKEN not set, skipping")
+        logging.error("[LOGFIRE] LOGFIRE_TOKEN not set, skipping")  # Use error level for Railway visibility
         return False
 
     try:
@@ -77,7 +77,7 @@ def init_observability():
         )
 
         logfire.instrument_pydantic()
-        logfire.info("Logfire initialized at runtime")
+        logging.error("[LOGFIRE] Initialized successfully at runtime")  # Use error level for Railway visibility
         return True
 
     except Exception as e:
