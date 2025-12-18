@@ -41,6 +41,7 @@ from .belief_plan_execution import (
 from .reddit_sentiment import (
     reddit_sentiment_graph,
     run_reddit_sentiment,
+    run_reddit_sentiment_from_apify,
     ScrapeRedditNode,
     EngagementFilterNode,
     RelevanceFilterNode,
@@ -81,6 +82,7 @@ __all__ = [
     # Reddit Sentiment
     "reddit_sentiment_graph",
     "run_reddit_sentiment",
+    "run_reddit_sentiment_from_apify",
     "ScrapeRedditNode",
     "EngagementFilterNode",
     "RelevanceFilterNode",

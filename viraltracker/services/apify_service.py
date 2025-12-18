@@ -164,6 +164,42 @@ class ApifyService:
             memory_mbytes=memory_mbytes
         )
 
+    def get_run_results(self, run_id: str) -> ApifyRunResult:
+        """
+        Fetch results from an existing Apify run.
+
+        Useful for recovering data from a previous run without re-running the actor.
+
+        Args:
+            run_id: The Apify run ID (e.g., "FWOdh8fceEdMrRMBs")
+
+        Returns:
+            ApifyRunResult with the run's dataset items
+        """
+        if not self.client:
+            raise ValueError("APIFY_TOKEN not configured")
+
+        logger.info(f"Fetching results from existing run: {run_id}")
+
+        # Get run info to find the dataset ID
+        run = self.client.run(run_id).get()
+        dataset_id = run["defaultDatasetId"]
+        status = run["status"]
+
+        logger.info(f"Run status: {status}, dataset: {dataset_id}")
+
+        # Fetch items from dataset
+        items = list(self.client.dataset(dataset_id).iterate_items())
+        logger.info(f"Fetched {len(items)} items from dataset {dataset_id}")
+
+        return ApifyRunResult(
+            run_id=run_id,
+            dataset_id=dataset_id,
+            status=status,
+            items=items,
+            items_count=len(items)
+        )
+
     def estimate_cost(self, items_count: int, cost_per_1000: float = 0.75) -> float:
         """
         Estimate cost for Apify results.

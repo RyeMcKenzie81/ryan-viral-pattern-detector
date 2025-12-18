@@ -195,6 +195,73 @@ class RedditSentimentService:
         logger.info(f"Scraped {len(posts)} posts and {len(comments)} comments")
         return posts, comments
 
+    def recover_from_apify_run(
+        self,
+        apify_run_id: str
+    ) -> Tuple[List[RedditPost], List[RedditComment]]:
+        """
+        Recover data from an existing Apify run.
+
+        Useful when pipeline fails after scraping - avoids re-running the expensive scrape.
+
+        Args:
+            apify_run_id: The Apify run ID (e.g., "FWOdh8fceEdMrRMBs")
+
+        Returns:
+            Tuple of (posts, comments)
+        """
+        logger.info(f"Recovering data from Apify run: {apify_run_id}")
+
+        result = self.apify.get_run_results(apify_run_id)
+
+        posts = []
+        comments = []
+
+        for item in result.items:
+            if item.get("kind") == "post":
+                created_utc = None
+                if item.get("created_utc"):
+                    if isinstance(item["created_utc"], str):
+                        created_utc = datetime.fromisoformat(
+                            item["created_utc"].replace("Z", "+00:00")
+                        )
+                    else:
+                        created_utc = datetime.fromtimestamp(item["created_utc"])
+
+                posts.append(RedditPost(
+                    reddit_id=item.get("id", ""),
+                    subreddit=item.get("subreddit", ""),
+                    title=item.get("title", ""),
+                    body=item.get("body") or item.get("selftext"),
+                    author=item.get("author"),
+                    url=item.get("url"),
+                    score=item.get("score", 0),
+                    upvote_ratio=item.get("upvote_ratio", 0.0),
+                    num_comments=item.get("num_comments", 0),
+                    created_utc=created_utc,
+                ))
+            elif item.get("kind") == "comment":
+                created_utc = None
+                if item.get("created_utc"):
+                    if isinstance(item["created_utc"], str):
+                        created_utc = datetime.fromisoformat(
+                            item["created_utc"].replace("Z", "+00:00")
+                        )
+                    else:
+                        created_utc = datetime.fromtimestamp(item["created_utc"])
+
+                comments.append(RedditComment(
+                    reddit_id=item.get("id", ""),
+                    parent_id=item.get("postId"),
+                    body=item.get("body", ""),
+                    author=item.get("author"),
+                    score=item.get("score", 0),
+                    created_utc=created_utc,
+                ))
+
+        logger.info(f"Recovered {len(posts)} posts and {len(comments)} comments from Apify run {apify_run_id}")
+        return posts, comments
+
     # =========================================================================
     # FILTERING (Deterministic)
     # =========================================================================

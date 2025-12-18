@@ -652,3 +652,102 @@ async def run_reddit_sentiment(
     )
 
     return result.output
+
+
+async def run_reddit_sentiment_from_apify(
+    apify_run_id: str,
+    brand_id: UUID = None,
+    product_id: UUID = None,
+    persona_id: UUID = None,
+    min_upvotes: int = 20,
+    min_comments: int = 5,
+    relevance_threshold: float = 0.6,
+    signal_threshold: float = 0.5,
+    top_percentile: float = 0.20,
+    auto_sync_to_persona: bool = True,
+    persona_context: str = None,
+    topic_context: str = None,
+    brand_context: str = None,
+    product_context: str = None,
+) -> dict:
+    """
+    Run Reddit sentiment analysis using data from an existing Apify run.
+
+    Useful for recovering from a failed pipeline run without re-scraping.
+
+    Args:
+        apify_run_id: The Apify run ID to recover data from (e.g., "FWOdh8fceEdMrRMBs")
+        brand_id: Optional brand UUID for association
+        product_id: Optional product UUID
+        persona_id: Optional persona UUID for auto-sync
+        min_upvotes: Minimum upvotes for engagement filter
+        min_comments: Minimum comments for engagement filter
+        relevance_threshold: Minimum relevance score (0-1)
+        signal_threshold: Minimum signal score (0-1)
+        top_percentile: Top percentage to keep (0.01-1.0)
+        auto_sync_to_persona: Whether to sync quotes to persona
+        persona_context: Description of target persona
+        topic_context: Description of topic/domain
+        brand_context: Brand description for extraction
+        product_context: Product category description
+
+    Returns:
+        Dict with run results and statistics
+    """
+    from ..agent.dependencies import AgentDependencies
+
+    deps = AgentDependencies.create()
+
+    # Recover data from existing Apify run
+    logger.info(f"Recovering data from Apify run: {apify_run_id}")
+    posts, comments = deps.reddit_sentiment.recover_from_apify_run(apify_run_id)
+
+    # Create run record
+    run_id = deps.reddit_sentiment.create_run(
+        search_queries=[f"recovered_from:{apify_run_id}"],
+        subreddits=None,
+        timeframe="recovered",
+        sort_by="relevance",
+        max_posts=len(posts),
+        min_upvotes=min_upvotes,
+        min_comments=min_comments,
+        brand_id=brand_id,
+        product_id=product_id,
+        persona_id=persona_id,
+        persona_context=persona_context,
+        topic_context=topic_context,
+        brand_context=brand_context,
+        product_context=product_context,
+    )
+
+    # Create state with pre-loaded data
+    state = RedditSentimentState(
+        search_queries=[f"recovered_from:{apify_run_id}"],
+        brand_id=brand_id,
+        product_id=product_id,
+        persona_id=persona_id,
+        min_upvotes=min_upvotes,
+        min_comments=min_comments,
+        relevance_threshold=relevance_threshold,
+        signal_threshold=signal_threshold,
+        top_percentile=top_percentile,
+        auto_sync_to_persona=auto_sync_to_persona,
+        persona_context=persona_context,
+        topic_context=topic_context,
+        brand_context=brand_context,
+        product_context=product_context,
+        # Pre-populate with recovered data
+        run_id=run_id,
+        scraped_posts=[p.model_dump() for p in posts],
+        scraped_comments=[c.model_dump() for c in comments],
+        posts_scraped=len(posts),
+    )
+
+    # Start from EngagementFilterNode (skip scraping)
+    result = await reddit_sentiment_graph.run(
+        EngagementFilterNode(),
+        state=state,
+        deps=deps
+    )
+
+    return result.output
