@@ -47,8 +47,7 @@ def init_observability():
     import os
     token = os.environ.get("LOGFIRE_TOKEN")
     if not token:
-        logging.error("[LOGFIRE] LOGFIRE_TOKEN not set, skipping")  # Use error level for Railway visibility
-        return False
+        return {"status": "skipped", "reason": "LOGFIRE_TOKEN not set"}
 
     try:
         import logfire
@@ -63,7 +62,7 @@ def init_observability():
             service_name="viraltracker",
             environment=env,
             send_to_logfire=True,
-            console=False,  # Don't duplicate to console
+            console=False,
         )
 
         # Wire up stdlib logging to logfire
@@ -77,16 +76,15 @@ def init_observability():
         )
 
         logfire.instrument_pydantic()
-        logging.error("[LOGFIRE] Initialized successfully at runtime")  # Use error level for Railway visibility
-        return True
+        logfire.info("Logfire initialized")
+        return {"status": "success", "project": project, "environment": env}
 
     except Exception as e:
-        logging.error(f"[LOGFIRE] Failed to configure: {e}")
-        return False
+        return {"status": "error", "reason": str(e)}
 
 
 # Initialize observability (runs once per process)
-init_observability()
+_logfire_status = init_observability()
 
 
 # ============================================================================
@@ -503,6 +501,15 @@ def render_sidebar():
 
     with st.sidebar:
         st.title("⚙️ Settings")
+
+        # Show logfire status (debug)
+        with st.expander("🔥 Observability Status", expanded=False):
+            if _logfire_status["status"] == "success":
+                st.success(f"Logfire: {_logfire_status['project']} ({_logfire_status['environment']})")
+            elif _logfire_status["status"] == "skipped":
+                st.warning(f"Logfire skipped: {_logfire_status['reason']}")
+            else:
+                st.error(f"Logfire error: {_logfire_status['reason']}")
 
         # Project configuration
         st.subheader("Project")
