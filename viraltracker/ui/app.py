@@ -32,6 +32,7 @@ import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import logging
 import pandas as pd
 import streamlit as st
 
@@ -39,9 +40,53 @@ from viraltracker.agent import agent, AgentDependencies
 from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult
 from viraltracker.core.database import get_supabase_client
 
-# Initialize Logfire for observability (if LOGFIRE_TOKEN is set)
-from viraltracker.core.observability import setup_logfire
-setup_logfire()
+
+@st.cache_resource
+def init_observability():
+    """Initialize Logfire at runtime, once per process (Streamlit-compatible)."""
+    import os
+    token = os.environ.get("LOGFIRE_TOKEN")
+    if not token:
+        logging.info("[LOGFIRE] LOGFIRE_TOKEN not set, skipping")
+        return False
+
+    try:
+        import logfire
+
+        # Configure logfire
+        project = os.environ.get("LOGFIRE_PROJECT_NAME", "viraltracker")
+        env = os.environ.get("LOGFIRE_ENVIRONMENT", "production")
+
+        logfire.configure(
+            token=token,
+            project_name=project,
+            service_name="viraltracker",
+            environment=env,
+            send_to_logfire=True,
+            console=False,  # Don't duplicate to console
+        )
+
+        # Wire up stdlib logging to logfire
+        logging.basicConfig(
+            level=logging.INFO,
+            handlers=[
+                logfire.LogfireLoggingHandler(),
+                logging.StreamHandler(),
+            ],
+            force=True,
+        )
+
+        logfire.instrument_pydantic()
+        logfire.info("Logfire initialized at runtime")
+        return True
+
+    except Exception as e:
+        logging.error(f"[LOGFIRE] Failed to configure: {e}")
+        return False
+
+
+# Initialize observability (runs once per process)
+init_observability()
 
 
 # ============================================================================
