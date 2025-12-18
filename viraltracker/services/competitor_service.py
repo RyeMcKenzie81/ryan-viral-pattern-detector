@@ -10,6 +10,7 @@ This service handles:
 - Persona synthesis at competitor or product level
 """
 
+import json
 import logging
 import re
 from typing import List, Dict, Optional, Any, Tuple
