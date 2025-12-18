@@ -587,7 +587,8 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
                             template_id=UUID(template_id) if template_id else None,
                             belief_plan_id=ctx.state.belief_plan_id,
                             meta_headline=prompt.get("meta_headline"),
-                            meta_primary_text=prompt.get("meta_primary_text")
+                            meta_primary_text=prompt.get("meta_primary_text"),
+                            template_name=prompt.get("template_name")
                         )
 
                 except Exception as e:

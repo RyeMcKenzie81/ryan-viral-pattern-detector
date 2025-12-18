@@ -566,7 +566,8 @@ class AdCreationService:
         template_id: Optional[UUID] = None,
         belief_plan_id: Optional[UUID] = None,
         meta_headline: Optional[str] = None,
-        meta_primary_text: Optional[str] = None
+        meta_primary_text: Optional[str] = None,
+        template_name: Optional[str] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -592,6 +593,7 @@ class AdCreationService:
             belief_plan_id: UUID of belief plan this ad belongs to (Phase 1-2)
             meta_headline: Headline for Meta ad placement (below image)
             meta_primary_text: Primary text for Meta ad placement (above image)
+            template_name: Name of template for display
 
         Returns:
             UUID of generated ad record
@@ -645,6 +647,8 @@ class AdCreationService:
             data["meta_headline"] = meta_headline
         if meta_primary_text is not None:
             data["meta_primary_text"] = meta_primary_text
+        if template_name is not None:
+            data["template_name"] = template_name
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

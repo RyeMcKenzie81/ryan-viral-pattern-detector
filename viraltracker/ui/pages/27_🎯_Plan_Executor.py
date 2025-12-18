@@ -349,6 +349,19 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
         render_results_by_angle(st.session_state.executor_last_result)
 
 
+def update_ad_status(ad_id: str, new_status: str) -> bool:
+    """Update the final_status of a generated ad."""
+    db = get_supabase_client()
+    try:
+        db.table("generated_ads").update({
+            "final_status": new_status
+        }).eq("id", ad_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to update status: {e}")
+        return False
+
+
 def load_ads_for_plan(plan_id: str) -> dict:
     """Load generated ads from database grouped by angle."""
     db = get_supabase_client()
@@ -356,7 +369,7 @@ def load_ads_for_plan(plan_id: str) -> dict:
         # Get ads with angle info
         result = db.table("generated_ads").select(
             "id, storage_path, final_status, meta_headline, meta_primary_text, "
-            "angle_id, template_id, belief_angles(id, name, belief_statement)"
+            "angle_id, template_id, template_name, belief_angles(id, name, belief_statement)"
         ).eq("belief_plan_id", plan_id).order("created_at").execute()
 
         if not result.data:
@@ -390,6 +403,7 @@ def load_ads_for_plan(plan_id: str) -> dict:
             ads_by_angle[angle_id]["ads"].append({
                 "ad_id": ad.get("id"),
                 "storage_path": ad.get("storage_path"),
+                "template_name": ad.get("template_name", "Unknown"),
                 "meta_headline": ad.get("meta_headline"),
                 "meta_primary_text": ad.get("meta_primary_text"),
                 "final_status": status
@@ -519,8 +533,10 @@ def render_results_by_angle(result: dict):
                     else:
                         st.warning("No image")
 
-                    # Status badge
+                    # Status badge and manual approve/reject
                     status = ad.get("final_status", "pending")
+                    ad_id = ad.get("ad_id")
+
                     if status == "approved":
                         st.success("Approved")
                     elif status == "rejected":
@@ -529,6 +545,19 @@ def render_results_by_angle(result: dict):
                         st.error(f"Failed: {ad.get('error', '')[:50]}")
                     else:
                         st.info("Pending")
+
+                    # Manual approve/reject buttons
+                    if ad_id and status != "approved":
+                        btn_cols = st.columns(2)
+                        with btn_cols[0]:
+                            if st.button("✓", key=f"approve_{ad_id}_{angle_id}", help="Approve"):
+                                if update_ad_status(ad_id, "approved"):
+                                    st.rerun()
+                        with btn_cols[1]:
+                            if status != "rejected":
+                                if st.button("✗", key=f"reject_{ad_id}_{angle_id}", help="Reject"):
+                                    if update_ad_status(ad_id, "rejected"):
+                                        st.rerun()
 
                     # Template info
                     st.caption(f"Template: {ad.get('template_name', 'Unknown')}")
