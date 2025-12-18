@@ -11,9 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Cache bust - change this value to force rebuild
+ARG CACHE_BUST=2024121801
+
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN echo "Cache bust: $CACHE_BUST" && pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
