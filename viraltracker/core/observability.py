@@ -56,22 +56,24 @@ def setup_logfire(
         logger.debug("Logfire already configured")
         return True
 
+    import sys
+
     try:
         import logfire
-        print("[LOGFIRE] logfire module imported successfully")
+        print("[LOGFIRE] logfire module imported successfully", flush=True)
     except ImportError:
-        print("[LOGFIRE] ERROR: logfire not installed. Run: pip install logfire")
+        print("[LOGFIRE] ERROR: logfire not installed. Run: pip install logfire", flush=True)
         logger.warning("Logfire not installed. Run: pip install logfire")
         return False
 
     # Check for token
     token = os.environ.get("LOGFIRE_TOKEN")
     if not token:
-        print("[LOGFIRE] LOGFIRE_TOKEN not set, skipping Logfire configuration")
+        print("[LOGFIRE] LOGFIRE_TOKEN not set, skipping Logfire configuration", flush=True)
         logger.info("LOGFIRE_TOKEN not set, skipping Logfire configuration")
         return False
     else:
-        print(f"[LOGFIRE] LOGFIRE_TOKEN found (length: {len(token)})")
+        print(f"[LOGFIRE] LOGFIRE_TOKEN found (length: {len(token)})", flush=True)
 
     # Get configuration from env or params
     project = project_name or os.environ.get("LOGFIRE_PROJECT_NAME", "viraltracker")
@@ -91,12 +93,12 @@ def setup_logfire(
         logfire.instrument_pydantic()
 
         _logfire_configured = True
-        print(f"[LOGFIRE] ✅ Configured successfully: project={project}, environment={env}")
+        print(f"[LOGFIRE] Configured successfully: project={project}, environment={env}", flush=True)
         logger.info(f"Logfire configured: project={project}, environment={env}")
         return True
 
     except Exception as e:
-        print(f"[LOGFIRE] ❌ Failed to configure: {e}")
+        print(f"[LOGFIRE] Failed to configure: {e}", flush=True)
         logger.error(f"Failed to configure Logfire: {e}")
         return False
 
