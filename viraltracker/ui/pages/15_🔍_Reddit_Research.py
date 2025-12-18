@@ -464,12 +464,19 @@ def render_history():
 
             if st.button("View Quotes", key=f"view_{run['id']}"):
                 st.session_state.reddit_selected_run = run["id"]
+                # Load quotes to get category counts
+                quotes = get_run_quotes(run["id"])
+                quotes_by_cat = {}
+                for q in quotes:
+                    cat = q.get("sentiment_category", "UNKNOWN")
+                    quotes_by_cat[cat] = quotes_by_cat.get(cat, 0) + 1
+
                 st.session_state.reddit_results = {
                     "status": "success",
                     "run_id": run["id"],
                     "posts_scraped": run.get("posts_scraped", 0),
                     "quotes_extracted": run.get("quotes_extracted", 0),
-                    "quotes_by_category": {},  # Will be loaded from DB
+                    "quotes_by_category": quotes_by_cat,
                 }
                 st.rerun()
 
