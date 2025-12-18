@@ -77,7 +77,7 @@ class ScrapeRedditNode(BaseNode[RedditSentimentState]):
 
             # Update run status
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "scraping", current_step="ScrapeRedditNode"
+                ctx.state.run_id, "running", current_step="ScrapeRedditNode"
             )
 
             # Scrape Reddit
@@ -153,7 +153,7 @@ class EngagementFilterNode(BaseNode[RedditSentimentState]):
 
             # Update run status
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "filtering",
+                ctx.state.run_id, "running",
                 current_step="EngagementFilterNode",
                 posts_scraped=ctx.state.posts_scraped,
                 posts_after_engagement=len(filtered)
@@ -217,7 +217,7 @@ class RelevanceFilterNode(BaseNode[RedditSentimentState]):
             ctx.state.posts_after_relevance = len(filtered)
 
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "filtering",
+                ctx.state.run_id, "running",
                 current_step="RelevanceFilterNode",
                 posts_after_relevance=len(filtered)
             )
@@ -278,7 +278,7 @@ class SignalFilterNode(BaseNode[RedditSentimentState]):
             ctx.state.posts_after_signal = len(filtered)
 
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "analyzing",
+                ctx.state.run_id, "running",
                 current_step="SignalFilterNode",
                 posts_after_signal=len(filtered)
             )
@@ -335,7 +335,7 @@ class IntentScoreNode(BaseNode[RedditSentimentState]):
             ctx.state.intent_scored = [p.model_dump() for p in scored]
 
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "analyzing",
+                ctx.state.run_id, "running",
                 current_step="IntentScoreNode"
             )
 
@@ -382,7 +382,7 @@ class TopSelectionNode(BaseNode[RedditSentimentState]):
             ctx.state.posts_top_selected = len(top_posts)
 
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "categorizing",
+                ctx.state.run_id, "running",
                 current_step="TopSelectionNode",
                 posts_top_selected=len(top_posts)
             )
@@ -426,7 +426,7 @@ class CategorizeNode(BaseNode[RedditSentimentState]):
         ctx: GraphRunContext[RedditSentimentState, AgentDependencies]
     ) -> "SaveNode":
         logger.info(f"Step 7: Categorizing {len(ctx.state.top_selected)} posts")
-        ctx.state.current_step = "categorizing"
+        ctx.state.current_step = "running"
 
         try:
             from ..services.models import RedditPost
@@ -457,7 +457,7 @@ class CategorizeNode(BaseNode[RedditSentimentState]):
             )
 
             ctx.deps.reddit_sentiment.update_run_status(
-                ctx.state.run_id, "extracting",
+                ctx.state.run_id, "running",
                 current_step="CategorizeNode",
                 quotes_extracted=ctx.state.quotes_extracted
             )
