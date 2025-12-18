@@ -538,8 +538,8 @@ if st.session_state.workflow_result:
 
                     # Review details in expander
                     with st.expander("Review Details"):
-                        claude = ad.get('claude_review', {})
-                        gemini = ad.get('gemini_review', {})
+                        claude = ad.get('claude_review') or {}
+                        gemini = ad.get('gemini_review') or {}
 
                         st.markdown(f"**Claude:** {claude.get('status', 'N/A')}")
                         if claude.get('reasoning'):
