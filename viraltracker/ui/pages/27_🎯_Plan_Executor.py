@@ -543,7 +543,7 @@ def render_results_by_angle(result: dict):
                             st.text_area(
                                 "Headline",
                                 value=headline,
-                                height=60,
+                                height=68,
                                 key=f"headline_{ad.get('ad_id', i)}_{angle_id}",
                                 disabled=True
                             )
@@ -551,7 +551,7 @@ def render_results_by_angle(result: dict):
                             st.text_area(
                                 "Primary",
                                 value=primary,
-                                height=80,
+                                height=100,
                                 key=f"primary_{ad.get('ad_id', i)}_{angle_id}",
                                 disabled=True
                             )
