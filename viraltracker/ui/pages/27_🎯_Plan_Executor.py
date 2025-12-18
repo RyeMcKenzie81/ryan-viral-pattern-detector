@@ -468,32 +468,28 @@ def render_results_by_angle(result: dict):
                     # Template info
                     st.caption(f"Template: {ad.get('template_name', 'Unknown')}")
 
-                    # Copy scaffolds in expandable sections
-                    with st.expander("Meta Copy"):
-                        headline = ad.get("meta_headline", "")
-                        primary = ad.get("meta_primary_text", "")
+                    # Copy scaffolds (shown directly - no nested expander)
+                    headline = ad.get("meta_headline", "")
+                    primary = ad.get("meta_primary_text", "")
 
+                    if headline or primary:
+                        st.markdown("**Meta Copy:**")
                         if headline:
                             st.text_area(
-                                "Headline (below image)",
+                                "Headline",
                                 value=headline,
                                 height=60,
-                                key=f"headline_{ad.get('ad_id', i)}",
+                                key=f"headline_{ad.get('ad_id', i)}_{angle_id}",
                                 disabled=True
                             )
-                        else:
-                            st.caption("No headline")
-
                         if primary:
                             st.text_area(
-                                "Primary Text (above image)",
+                                "Primary",
                                 value=primary,
-                                height=100,
-                                key=f"primary_{ad.get('ad_id', i)}",
+                                height=80,
+                                key=f"primary_{ad.get('ad_id', i)}_{angle_id}",
                                 disabled=True
                             )
-                        else:
-                            st.caption("No primary text")
 
 
 # ============================================
