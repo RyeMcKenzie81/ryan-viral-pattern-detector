@@ -22,8 +22,8 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from collections import deque
 
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types
 
 from viraltracker.core.config import FinderConfig
 from viraltracker.core.database import get_supabase_client
@@ -121,8 +121,8 @@ class CommentGenerator:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
-        # Configure Gemini
-        genai.configure(api_key=self.api_key)
+        # Configure Gemini client
+        self.client = genai.Client(api_key=self.api_key)
 
         # Load prompts
         self.prompts = self._load_prompts()
@@ -162,19 +162,29 @@ class CommentGenerator:
             prompt = self._build_prompt(tweet.text, topic, config)
 
             # Call Gemini
-            model_name = config.generation.get('model', 'models/gemini-flash-latest')
+            model_name = config.generation.get('model', 'gemini-2.0-flash')
             temperature = config.generation.get('temperature', 0.2)
             max_tokens = config.generation.get('max_tokens', 80)
 
-            model = genai.GenerativeModel(model_name)
-
             # Configure safety settings to be less restrictive for business discussions
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            }
+            safety_settings = [
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+            ]
 
             # V1.1: Rate limiting with exponential backoff
             max_retries = 3
@@ -187,14 +197,15 @@ class CommentGenerator:
                     self.rate_limiter.wait_if_needed()
 
                     # Make API call
-                    response = model.generate_content(
-                        prompt,
-                        generation_config={
-                            'temperature': temperature,
-                            'max_output_tokens': 8192,  # Large buffer for JSON response with 5 suggestions
-                            'response_mime_type': 'application/json'
-                        },
-                        safety_settings=safety_settings
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=[prompt],
+                        config=types.GenerateContentConfig(
+                            temperature=temperature,
+                            max_output_tokens=8192,  # Large buffer for JSON response with 5 suggestions
+                            response_mime_type='application/json',
+                            safety_settings=safety_settings,
+                        )
                     )
 
                     # Record successful call

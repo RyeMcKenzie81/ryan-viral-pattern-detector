@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import uuid
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from ..core.config import Config
 
@@ -86,8 +87,7 @@ class ContentGenerator:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment")
 
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model)
+        self.client = genai.Client(api_key=api_key)
 
         logger.info(f"ContentGenerator initialized with model: {model}")
 

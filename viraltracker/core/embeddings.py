@@ -14,13 +14,15 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict
 import hashlib
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
 # Gemini embedding model and dimensions
-EMBED_MODEL = "models/text-embedding-004"
-EMBED_DIM = 768  # Gemini text-embedding-004 output dimension
+# Using gemini-embedding-001 with output_dimensionality=768 for backward compatibility
+EMBED_MODEL = "gemini-embedding-001"
+EMBED_DIM = 768  # Match existing cached embeddings dimension
 
 
 @dataclass
@@ -45,8 +47,8 @@ class Embedder:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
-        # Configure Gemini
-        genai.configure(api_key=self.api_key)
+        # Create Gemini client
+        self.client = genai.Client(api_key=self.api_key)
 
         # Ensure cache directory exists
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
@@ -76,19 +78,19 @@ class Embedder:
                 # Retry logic
                 for attempt in range(3):
                     try:
-                        result = genai.embed_content(
+                        result = self.client.models.embed_content(
                             model=EMBED_MODEL,
-                            content=batch,
-                            task_type=task_type
+                            contents=batch,
+                            config=types.EmbedContentConfig(
+                                task_type=task_type,
+                                output_dimensionality=EMBED_DIM  # Match existing 768-dim embeddings
+                            )
                         )
 
-                        # Extract embeddings
-                        if hasattr(result, 'embedding'):
-                            # Single text response
-                            embeddings.append(result['embedding'])
-                        else:
-                            # Batch response
-                            embeddings.extend([e for e in result['embedding']])
+                        # Extract embeddings from new SDK response format
+                        # result.embeddings is a list of ContentEmbedding objects
+                        for embedding_obj in result.embeddings:
+                            embeddings.append(embedding_obj.values)
 
                         break  # Success, exit retry loop
 

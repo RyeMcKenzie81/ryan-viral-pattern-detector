@@ -10,13 +10,11 @@ click==8.3.0
 colorama==0.4.6
 cryptography==46.0.2
 deprecation==2.1.0
-google-ai-generativelanguage==0.6.6
 google-api-core==2.25.2
 google-api-python-client==2.184.0
 google-auth==2.41.1
 google-auth-httplib2==0.2.0
 google-genai==1.50.1
-google-generativeai==0.7.2
 googleapis-common-protos==1.70.0
 grpcio==1.75.1
 grpcio-status==1.62.3
@@ -36,7 +34,7 @@ packaging==24.2
 pandas==2.3.3
 postgrest==2.21.1
 proto-plus==1.26.1
-protobuf==4.25.8
+protobuf==5.29.5
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pycparser==2.23
@@ -97,8 +95,15 @@ nest-asyncio>=1.5.0
 # Web Scraping Dependencies
 firecrawl-py>=1.0.0
 
-# Logfire Observability - DISABLED
-# Conflict: google-ai-generativelanguage 0.6.6 requires protobuf<5.0
-#           opentelemetry-proto 1.38.0 requires protobuf>=5.0
-# The observability.py module handles this gracefully with no-op fallback
-# TODO: Re-enable after upgrading google-ai-generativelanguage to 0.9.0+
+# Logfire Observability
+logfire==4.14.2
+logfire-api==4.14.2
+opentelemetry-api==1.38.0
+opentelemetry-sdk==1.38.0
+opentelemetry-proto==1.38.0
+opentelemetry-exporter-otlp-proto-common==1.38.0
+opentelemetry-exporter-otlp-proto-http==1.38.0
+opentelemetry-instrumentation==0.59b0
+opentelemetry-instrumentation-httpx==0.59b0
+opentelemetry-semantic-conventions==0.59b0
+opentelemetry-util-http==0.59b0

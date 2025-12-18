@@ -118,15 +118,17 @@ def _generate_exemplars(description: str, count: int = 5) -> List[str]:
     Returns:
         List of generated exemplar strings
     """
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    # Configure Gemini if not already done
+    # Get API key
     api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_GEMINI_API_KEY')
     if not api_key:
         print("Warning: GEMINI_API_KEY not set, skipping exemplar auto-generation")
         return []
 
-    genai.configure(api_key=api_key)
+    # Create client
+    client = genai.Client(api_key=api_key)
 
     prompt = f"""Generate {count} tweet-length exemplars (15-25 words each) that discuss: {description}
 
@@ -138,13 +140,13 @@ Requirements:
 - Return only the exemplars, one per line"""
 
     try:
-        model = genai.GenerativeModel('models/gemini-flash-latest')
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                'temperature': 0.7,
-                'max_output_tokens': 300
-            }
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=300
+            )
         )
 
         # Parse response into list

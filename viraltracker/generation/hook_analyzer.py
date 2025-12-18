@@ -21,7 +21,8 @@ from dataclasses import dataclass
 import json
 import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from ..core.config import Config
 
@@ -123,8 +124,7 @@ class HookAnalyzer:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment")
 
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model)
+        self.client = genai.Client(api_key=api_key)
 
         logger.info(f"HookAnalyzer initialized with model: {model}")
 
@@ -144,7 +144,10 @@ class HookAnalyzer:
 
         # Call Gemini
         logger.debug(f"Analyzing tweet: {tweet_text[:50]}...")
-        response = self.model.generate_content(prompt)
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=[prompt]
+        )
 
         # Parse response
         analysis = self._parse_response(tweet_text, response.text)

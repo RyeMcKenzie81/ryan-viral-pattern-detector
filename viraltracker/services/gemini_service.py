@@ -10,7 +10,8 @@ import time
 import json
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from ..core.config import Config
 from .models import HookAnalysis
@@ -65,9 +66,8 @@ class GeminiService:
 
         self.model_name = model
 
-        # Configure Gemini
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(model)
+        # Configure Gemini client
+        self.client = genai.Client(api_key=self.api_key)
 
         # Rate limiting
         self._last_call_time = 0.0
@@ -121,7 +121,10 @@ class GeminiService:
             try:
                 # Call Gemini
                 logger.debug(f"Analyzing tweet: {tweet_text[:50]}...")
-                response = self.model.generate_content(prompt)
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt]
+                )
 
                 # Parse response
                 analysis = self._parse_response(tweet_text, response.text, tweet_id)
@@ -305,7 +308,10 @@ IMPORTANT:
         while retry_count <= max_retries:
             try:
                 logger.debug(f"Generating {content_type} content from {len(hook_analyses)} hooks...")
-                response = self.model.generate_content(prompt)
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt]
+                )
                 return response.text
 
             except Exception as e:
@@ -484,11 +490,14 @@ Generate the article now:"""
 
                 # Use dedicated image generation model (not the default text model)
                 # Temperature controls randomness - lower = more deterministic
-                image_model = genai.GenerativeModel(
-                    "models/gemini-3-pro-image-preview",
-                    generation_config=genai.GenerationConfig(temperature=temperature)
+                response = self.client.models.generate_content(
+                    model="gemini-3-pro-image-preview",
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        temperature=temperature,
+                        response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
+                    )
                 )
-                response = image_model.generate_content(contents)
 
                 # Try to extract actual model used from response metadata
                 try:
@@ -612,7 +621,10 @@ Generate the article now:"""
                 image = Image.open(BytesIO(image_bytes))
 
                 # Call Gemini Vision API
-                response = self.model.generate_content([prompt, image])
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, image]
+                )
 
                 # Check for blocked or empty response before accessing .text
                 if not response.candidates:
@@ -724,7 +736,10 @@ Generate the article now:"""
         while retry_count <= max_retries:
             try:
                 logger.debug(f"Analyzing text with Gemini (prompt: {prompt[:50]}...)")
-                response = self.model.generate_content(full_prompt)
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[full_prompt]
+                )
 
                 # Check for blocked or empty response (avoids "whichOneof" error)
                 if not response.candidates:
