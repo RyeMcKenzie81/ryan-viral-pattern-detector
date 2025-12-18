@@ -23,6 +23,11 @@ Environment variables required:
     DB_PATH: (optional) Path to database, defaults to viraltracker.db
     PROJECT_NAME: (optional) Project name, defaults to yakety-pack-instagram
 """
+# Debug: unbuffered output test
+import sys
+print("VIRALTRACKER APP.PY LOADING", flush=True)
+sys.stderr.write("VIRALTRACKER STDERR TEST\n")
+sys.stderr.flush()
 
 import asyncio
 import base64
@@ -40,51 +45,8 @@ from viraltracker.agent import agent, AgentDependencies
 from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult
 from viraltracker.core.database import get_supabase_client
 
-
-@st.cache_resource
-def init_observability():
-    """Initialize Logfire at runtime, once per process (Streamlit-compatible)."""
-    import os
-    token = os.environ.get("LOGFIRE_TOKEN")
-    if not token:
-        return {"status": "skipped", "reason": "LOGFIRE_TOKEN not set"}
-
-    try:
-        import logfire
-
-        # Configure logfire
-        project = os.environ.get("LOGFIRE_PROJECT_NAME", "viraltracker")
-        env = os.environ.get("LOGFIRE_ENVIRONMENT", "production")
-
-        logfire.configure(
-            token=token,
-            project_name=project,
-            service_name="viraltracker",
-            environment=env,
-            send_to_logfire=True,
-            console=False,
-        )
-
-        # Wire up stdlib logging to logfire
-        logging.basicConfig(
-            level=logging.INFO,
-            handlers=[
-                logfire.LogfireLoggingHandler(),
-                logging.StreamHandler(),
-            ],
-            force=True,
-        )
-
-        logfire.instrument_pydantic()
-        logfire.info("Logfire initialized")
-        return {"status": "success", "project": project, "environment": env}
-
-    except Exception as e:
-        return {"status": "error", "reason": str(e)}
-
-
-# Initialize observability (runs once per process)
-_logfire_status = init_observability()
+# Logfire status will be set after st.set_page_config
+_logfire_status = {"status": "pending"}
 
 
 # ============================================================================
@@ -436,6 +398,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize observability (must be after set_page_config)
+@st.cache_resource
+def init_observability():
+    """Initialize Logfire at runtime, once per process."""
+    token = os.environ.get("LOGFIRE_TOKEN")
+    if not token:
+        print("[LOGFIRE] Token not set, skipping", flush=True)
+        return {"status": "skipped", "reason": "LOGFIRE_TOKEN not set"}
+
+    try:
+        import logfire
+
+        project = os.environ.get("LOGFIRE_PROJECT_NAME", "viraltracker")
+        env = os.environ.get("LOGFIRE_ENVIRONMENT", "production")
+
+        logfire.configure(
+            token=token,
+            project_name=project,
+            service_name="viraltracker",
+            environment=env,
+            send_to_logfire=True,
+            console=False,
+        )
+
+        logging.basicConfig(
+            level=logging.INFO,
+            handlers=[
+                logfire.LogfireLoggingHandler(),
+                logging.StreamHandler(sys.stderr),
+            ],
+            force=True,
+        )
+
+        logfire.instrument_pydantic()
+        print(f"[LOGFIRE] Initialized: {project} ({env})", flush=True)
+        return {"status": "success", "project": project, "environment": env}
+
+    except Exception as e:
+        print(f"[LOGFIRE] Error: {e}", flush=True)
+        return {"status": "error", "reason": str(e)}
+
+_logfire_status = init_observability()
+
 # Authentication - must be after page config
 from viraltracker.ui.auth import require_auth
 require_auth()
@@ -508,8 +513,10 @@ def render_sidebar():
                 st.success(f"Logfire: {_logfire_status['project']} ({_logfire_status['environment']})")
             elif _logfire_status["status"] == "skipped":
                 st.warning(f"Logfire skipped: {_logfire_status['reason']}")
-            else:
+            elif _logfire_status["status"] == "error":
                 st.error(f"Logfire error: {_logfire_status['reason']}")
+            else:
+                st.info(f"Logfire status: {_logfire_status['status']}")
 
         # Project configuration
         st.subheader("Project")
