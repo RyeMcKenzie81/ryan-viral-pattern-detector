@@ -698,19 +698,26 @@ async def run_reddit_sentiment_from_apify(
 
     deps = AgentDependencies.create()
 
+    from ..services.models import RedditScrapeConfig
+
     # Recover data from existing Apify run
     logger.info(f"Recovering data from Apify run: {apify_run_id}")
     posts, comments = deps.reddit_sentiment.recover_from_apify_run(apify_run_id)
 
-    # Create run record
-    run_id = deps.reddit_sentiment.create_run(
+    # Create config for run record
+    config = RedditScrapeConfig(
         search_queries=[f"recovered_from:{apify_run_id}"],
         subreddits=None,
-        timeframe="recovered",
+        timeframe="all",
         sort_by="relevance",
         max_posts=len(posts),
         min_upvotes=min_upvotes,
         min_comments=min_comments,
+    )
+
+    # Create run record
+    run_id = deps.reddit_sentiment.create_run(
+        config=config,
         brand_id=brand_id,
         product_id=product_id,
         persona_id=persona_id,
