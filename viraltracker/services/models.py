@@ -11,7 +11,7 @@ These models provide type-safe, validated data structures for:
 All models use Pydantic v2 for validation, serialization, and JSON schema generation.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from collections import Counter
@@ -1485,9 +1485,17 @@ class RedditScrapeConfig(BaseModel):
     Configuration for a Reddit scraping run.
 
     Passed to the pipeline to control scraping and filtering behavior.
+    At least one of search_queries or subreddits must be provided.
     """
-    search_queries: List[str] = Field(..., min_length=1, description="Search queries to run")
-    subreddits: Optional[List[str]] = Field(None, description="Limit to specific subreddits")
+    search_queries: List[str] = Field(default_factory=list, description="Search queries (optional if subreddits provided)")
+    subreddits: Optional[List[str]] = Field(None, description="Subreddits to scrape (optional if search_queries provided)")
+
+    @model_validator(mode="after")
+    def require_queries_or_subreddits(self) -> "RedditScrapeConfig":
+        """Ensure at least one of search_queries or subreddits is provided."""
+        if not self.search_queries and not self.subreddits:
+            raise ValueError("At least one of search_queries or subreddits must be provided")
+        return self
     timeframe: str = Field(
         default="month",
         description="Time range: hour, day, week, month, year, all"

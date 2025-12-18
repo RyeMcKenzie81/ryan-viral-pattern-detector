@@ -113,10 +113,12 @@ class RedditSentimentService:
         Returns:
             Tuple of (posts, comments)
         """
-        logger.info(f"Scraping Reddit with queries: {config.search_queries}")
+        if config.search_queries:
+            logger.info(f"Scraping Reddit with queries: {config.search_queries}")
+        if config.subreddits:
+            logger.info(f"Scraping subreddits: {config.subreddits}")
 
         run_input = {
-            "queries": config.search_queries,
             "maxPosts": config.max_posts,
             "sort": config.sort_by,
             "timeframe": config.timeframe,
@@ -125,11 +127,18 @@ class RedditSentimentService:
             "maxComments": config.max_comments_per_post,
         }
 
-        # Add subreddit filtering if specified
+        # Add queries if provided
+        if config.search_queries:
+            run_input["queries"] = config.search_queries
+
+        # Add subreddit filtering/scraping
         if config.subreddits:
             run_input["subredditName"] = config.subreddits[0]
             if len(config.subreddits) > 1:
                 run_input["subredditKeywords"] = config.subreddits[1:]
+            # For subreddit-only mode (no queries), use subreddit names as queries
+            if not config.search_queries:
+                run_input["queries"] = config.subreddits
 
         result = self.apify.run_actor(
             actor_id=REDDIT_SCRAPER_ACTOR,

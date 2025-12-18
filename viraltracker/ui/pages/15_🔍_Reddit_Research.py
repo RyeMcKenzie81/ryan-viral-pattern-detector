@@ -280,10 +280,6 @@ def render_run_button(brand_id: Optional[str], persona_id: Optional[str]):
         if q.strip()
     ]
 
-    if not queries:
-        st.warning("Please enter at least one search query")
-        return
-
     # Parse subreddits
     subreddits = None
     if st.session_state.reddit_subreddits:
@@ -291,6 +287,11 @@ def render_run_button(brand_id: Optional[str], persona_id: Optional[str]):
             s.strip() for s in st.session_state.reddit_subreddits.split(",")
             if s.strip()
         ]
+
+    # Require at least one of: search queries OR subreddits
+    if not queries and not subreddits:
+        st.warning("Please enter search queries or specify subreddits")
+        return
 
     # Cost estimate
     estimated_cost = (st.session_state.reddit_max_posts / 1000) * 1.50 + 0.85
