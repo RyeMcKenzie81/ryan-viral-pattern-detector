@@ -23,12 +23,7 @@ Environment variables required:
     DB_PATH: (optional) Path to database, defaults to viraltracker.db
     PROJECT_NAME: (optional) Project name, defaults to yakety-pack-instagram
 """
-# Debug: unbuffered output test
 import sys
-print("VIRALTRACKER APP.PY LOADING", flush=True)
-sys.stderr.write("VIRALTRACKER STDERR TEST\n")
-sys.stderr.flush()
-
 import asyncio
 import base64
 import json
@@ -45,8 +40,8 @@ from viraltracker.agent import agent, AgentDependencies
 from viraltracker.services.models import OutlierResult, HookAnalysisResult, TweetExportResult, AdCreationResult
 from viraltracker.core.database import get_supabase_client
 
-# Logfire status will be set after st.set_page_config
-_logfire_status = {"status": "pending"}
+# Logfire status - set after st.set_page_config by init_observability()
+_logfire_status = {"status": "pending"}  # Placeholder until init runs
 
 
 # ============================================================================
@@ -404,18 +399,16 @@ def init_observability():
     """Initialize Logfire at runtime, once per process."""
     token = os.environ.get("LOGFIRE_TOKEN")
     if not token:
-        print("[LOGFIRE] Token not set, skipping", flush=True)
         return {"status": "skipped", "reason": "LOGFIRE_TOKEN not set"}
 
     try:
         import logfire
 
-        project = os.environ.get("LOGFIRE_PROJECT_NAME", "viraltracker")
         env = os.environ.get("LOGFIRE_ENVIRONMENT", "production")
 
+        # Note: project_name is deprecated - project is determined by token
         logfire.configure(
             token=token,
-            project_name=project,
             service_name="viraltracker",
             environment=env,
             send_to_logfire=True,
@@ -432,11 +425,10 @@ def init_observability():
         )
 
         logfire.instrument_pydantic()
-        print(f"[LOGFIRE] Initialized: {project} ({env})", flush=True)
-        return {"status": "success", "project": project, "environment": env}
+        logfire.info("Logfire observability initialized")
+        return {"status": "success", "environment": env}
 
     except Exception as e:
-        print(f"[LOGFIRE] Error: {e}", flush=True)
         return {"status": "error", "reason": str(e)}
 
 _logfire_status = init_observability()
@@ -510,7 +502,7 @@ def render_sidebar():
         # Show logfire status (debug)
         with st.expander("🔥 Observability Status", expanded=False):
             if _logfire_status["status"] == "success":
-                st.success(f"Logfire: {_logfire_status['project']} ({_logfire_status['environment']})")
+                st.success(f"Logfire: {_logfire_status['environment']}")
             elif _logfire_status["status"] == "skipped":
                 st.warning(f"Logfire skipped: {_logfire_status['reason']}")
             elif _logfire_status["status"] == "error":
