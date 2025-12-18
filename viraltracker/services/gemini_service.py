@@ -633,8 +633,14 @@ Generate the article now:"""
                     raise Exception(f"Gemini response blocked: {block_reason}")
 
                 # Check if the candidate was blocked
+                # FinishReason.STOP = normal completion, MAX_TOKENS = hit limit (usually OK)
+                # SAFETY, RECITATION, OTHER = blocked
                 candidate = response.candidates[0]
-                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (None, 1):  # 1 = STOP (normal)
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None,
+                    types.FinishReason.STOP,
+                    types.FinishReason.MAX_TOKENS
+                ):
                     finish_reason = candidate.finish_reason
                     logger.error(f"Gemini candidate blocked. Finish reason: {finish_reason}")
                     raise Exception(f"Gemini response blocked: finish_reason={finish_reason}")
@@ -747,8 +753,14 @@ Generate the article now:"""
                     logger.error(f"Gemini text response blocked or empty. Block reason: {block_reason}")
                     raise Exception(f"Gemini response blocked: {block_reason}")
 
+                # FinishReason.STOP = normal completion, MAX_TOKENS = hit limit (usually OK)
+                # SAFETY, RECITATION, OTHER = blocked
                 candidate = response.candidates[0]
-                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (None, 1):
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None,
+                    types.FinishReason.STOP,
+                    types.FinishReason.MAX_TOKENS
+                ):
                     finish_reason = candidate.finish_reason
                     logger.error(f"Gemini text candidate blocked. Finish reason: {finish_reason}")
                     raise Exception(f"Gemini response blocked: finish_reason={finish_reason}")
