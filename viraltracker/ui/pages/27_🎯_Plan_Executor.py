@@ -363,9 +363,21 @@ def update_ad_status(ad_id: str, new_status: str) -> bool:
 
 
 def load_ads_for_plan(plan_id: str) -> dict:
-    """Load generated ads from database grouped by angle."""
+    """Load generated ads from database grouped by angle, plus plan context."""
     db = get_supabase_client()
     try:
+        # Get plan with persona and JTBD info
+        plan_result = db.table("belief_plans").select(
+            "id, name, personas_4d(name, snapshot), belief_jtbd_framed(name, progress_statement)"
+        ).eq("id", plan_id).execute()
+
+        persona_info = {}
+        jtbd_info = {}
+        if plan_result.data:
+            plan = plan_result.data[0]
+            persona_info = plan.get("personas_4d") or {}
+            jtbd_info = plan.get("belief_jtbd_framed") or {}
+
         # Get ads with angle info
         result = db.table("generated_ads").select(
             "id, storage_path, final_status, meta_headline, meta_primary_text, "
@@ -373,7 +385,7 @@ def load_ads_for_plan(plan_id: str) -> dict:
         ).eq("belief_plan_id", plan_id).order("created_at").execute()
 
         if not result.data:
-            return {}
+            return {"ads_by_angle": {}, "persona": persona_info, "jtbd": jtbd_info}
 
         # Group by angle
         ads_by_angle = {}
@@ -409,11 +421,15 @@ def load_ads_for_plan(plan_id: str) -> dict:
                 "final_status": status
             })
 
-        return ads_by_angle
+        return {
+            "ads_by_angle": ads_by_angle,
+            "persona": persona_info,
+            "jtbd": jtbd_info
+        }
 
     except Exception as e:
         st.error(f"Failed to load ads: {e}")
-        return {}
+        return {"ads_by_angle": {}, "persona": {}, "jtbd": {}}
 
 
 def render_run_history(plan_id: str):
@@ -462,11 +478,13 @@ def render_run_history(plan_id: str):
             # View Results button for completed runs
             if status == "complete":
                 if st.button("View Results", key=f"view_results_{run_id}", use_container_width=True):
-                    ads_by_angle = load_ads_for_plan(plan_id)
-                    if ads_by_angle:
+                    result_data = load_ads_for_plan(plan_id)
+                    if result_data.get("ads_by_angle"):
                         st.session_state.executor_last_result = {
                             "status": "complete",
-                            "ads_by_angle": ads_by_angle
+                            "ads_by_angle": result_data.get("ads_by_angle", {}),
+                            "persona": result_data.get("persona", {}),
+                            "jtbd": result_data.get("jtbd", {})
                         }
                         st.rerun()
 
@@ -474,12 +492,36 @@ def render_run_history(plan_id: str):
 def render_results_by_angle(result: dict):
     """Render generated ads grouped by angle with their copy scaffolds."""
     ads_by_angle = result.get("ads_by_angle", {})
+    persona = result.get("persona", {})
+    jtbd = result.get("jtbd", {})
 
     if not ads_by_angle:
         st.info("No results to display.")
         return
 
     st.subheader("Generated Ads by Angle")
+
+    # Show Persona and JTBD context
+    context_col1, context_col2 = st.columns(2)
+    with context_col1:
+        if persona:
+            st.markdown(f"**Persona:** {persona.get('name', 'Unknown')}")
+            if persona.get("snapshot"):
+                snapshot = persona["snapshot"]
+                st.caption(f"*{snapshot[:150]}...*" if len(snapshot) > 150 else f"*{snapshot}*")
+        else:
+            st.markdown("**Persona:** Not set")
+
+    with context_col2:
+        if jtbd:
+            st.markdown(f"**JTBD:** {jtbd.get('name', 'Unknown')}")
+            if jtbd.get("progress_statement"):
+                progress = jtbd["progress_statement"]
+                st.caption(f"*{progress[:150]}...*" if len(progress) > 150 else f"*{progress}*")
+        else:
+            st.markdown("**JTBD:** Not set")
+
+    st.divider()
     st.write("Review ads organized by the belief angle they test. Copy scaffolds shown for each ad.")
 
     for angle_id, angle_data in ads_by_angle.items():
