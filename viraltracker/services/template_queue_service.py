@@ -409,11 +409,15 @@ class TemplateQueueService:
                 "last_used_at": datetime.utcnow().isoformat()
             }).eq("id", str(template_id)).execute()
 
-        # Link to ad_run if provided
+        # Link to ad_run if provided (column may not exist in all deployments)
         if ad_run_id:
-            self.supabase.table("ad_runs").update({
-                "source_template_id": str(template_id)
-            }).eq("id", str(ad_run_id)).execute()
+            try:
+                self.supabase.table("ad_runs").update({
+                    "source_template_id": str(template_id)
+                }).eq("id", str(ad_run_id)).execute()
+            except Exception as e:
+                # source_template_id column may not exist - log but don't fail
+                logger.warning(f"Could not link template to ad_run (column may not exist): {e}")
 
         logger.info(f"Recorded usage for template: {template_id}")
 
