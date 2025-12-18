@@ -349,6 +349,59 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
         render_results_by_angle(st.session_state.executor_last_result)
 
 
+def load_ads_for_plan(plan_id: str) -> dict:
+    """Load generated ads from database grouped by angle."""
+    db = get_supabase_client()
+    try:
+        # Get ads with angle info
+        result = db.table("generated_ads").select(
+            "id, storage_path, final_status, meta_headline, meta_primary_text, "
+            "angle_id, template_id, belief_angles(id, name, belief_statement)"
+        ).eq("belief_plan_id", plan_id).order("created_at").execute()
+
+        if not result.data:
+            return {}
+
+        # Group by angle
+        ads_by_angle = {}
+        for ad in result.data:
+            angle_info = ad.get("belief_angles") or {}
+            angle_id = ad.get("angle_id") or "unknown"
+            angle_name = angle_info.get("name", "Unknown Angle")
+            belief_statement = angle_info.get("belief_statement", "")
+
+            if angle_id not in ads_by_angle:
+                ads_by_angle[angle_id] = {
+                    "angle_id": angle_id,
+                    "angle_name": angle_name,
+                    "belief_statement": belief_statement,
+                    "ads": [],
+                    "approved": 0,
+                    "rejected": 0,
+                    "failed": 0
+                }
+
+            status = ad.get("final_status", "pending")
+            if status == "approved":
+                ads_by_angle[angle_id]["approved"] += 1
+            elif status == "rejected":
+                ads_by_angle[angle_id]["rejected"] += 1
+
+            ads_by_angle[angle_id]["ads"].append({
+                "ad_id": ad.get("id"),
+                "storage_path": ad.get("storage_path"),
+                "meta_headline": ad.get("meta_headline"),
+                "meta_primary_text": ad.get("meta_primary_text"),
+                "final_status": status
+            })
+
+        return ads_by_angle
+
+    except Exception as e:
+        st.error(f"Failed to load ads: {e}")
+        return {}
+
+
 def render_run_history(plan_id: str):
     """Render history of execution runs for this plan."""
     runs = get_pipeline_runs(plan_id)
@@ -363,6 +416,7 @@ def render_run_history(plan_id: str):
         status = run.get("status", "unknown")
         started = run.get("started_at", "")
         snapshot = run.get("state_snapshot", {}) or {}
+        run_id = run.get("id", "")
 
         # Format date
         try:
@@ -390,6 +444,17 @@ def render_run_history(plan_id: str):
 
             if run.get("error_message"):
                 st.error(f"Error: {run['error_message']}")
+
+            # View Results button for completed runs
+            if status == "complete":
+                if st.button("View Results", key=f"view_results_{run_id}", use_container_width=True):
+                    ads_by_angle = load_ads_for_plan(plan_id)
+                    if ads_by_angle:
+                        st.session_state.executor_last_result = {
+                            "status": "complete",
+                            "ads_by_angle": ads_by_angle
+                        }
+                        st.rerun()
 
 
 def render_results_by_angle(result: dict):
