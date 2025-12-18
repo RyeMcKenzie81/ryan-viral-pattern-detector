@@ -1238,7 +1238,7 @@ with tab_landing:
         selected_competitor_id,
         selected_product_id,
         lp_stats.get("scraped", 0) + lp_stats.get("analyzed", 0),
-        competitor_name
+        selected_competitor_name
     )
 
 # ----------------------------------------------------------------------------

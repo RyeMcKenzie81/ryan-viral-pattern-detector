@@ -1843,7 +1843,7 @@ Return ONLY valid JSON."""
             # Call Claude Opus 4.5
             client = Anthropic()
             response = client.messages.create(
-                model="claude-opus-4-5-20250514",
+                model="claude-opus-4-5-20251101",
                 max_tokens=8000,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -1861,7 +1861,7 @@ Return ONLY valid JSON."""
             # Add metadata
             analysis["page_id"] = str(landing_page_id)
             analysis["url"] = page.get("url", "")
-            analysis["model_used"] = "claude-opus-4-5-20250514"
+            analysis["model_used"] = "claude-opus-4-5-20251101"
             analysis["analyzed_at"] = datetime.utcnow().isoformat()
 
             # Save to database

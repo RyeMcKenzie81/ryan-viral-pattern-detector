@@ -3025,7 +3025,7 @@ class BrandResearchService:
             # Call Claude Opus 4.5
             client = Anthropic()
             response = client.messages.create(
-                model="claude-opus-4-5-20250514",
+                model="claude-opus-4-5-20251101",
                 max_tokens=8000,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -3043,7 +3043,7 @@ class BrandResearchService:
             # Add metadata
             analysis["page_id"] = str(page_id)
             analysis["url"] = page.get("url", "")
-            analysis["model_used"] = "claude-opus-4-5-20250514"
+            analysis["model_used"] = "claude-opus-4-5-20251101"
             analysis["analyzed_at"] = datetime.utcnow().isoformat()
 
             # Save to database
@@ -3290,7 +3290,7 @@ class BrandResearchService:
                 "average_score": aggregation.get("overall", {}).get("average_score"),
                 "most_common_issues": aggregation.get("overall", {}).get("most_common_issues", []),
                 "strongest_layers": aggregation.get("overall", {}).get("strongest_layers", []),
-                "model_used": "claude-opus-4-5-20250514",
+                "model_used": "claude-opus-4-5-20251101",
                 "generated_at": datetime.utcnow().isoformat()
             }
 
