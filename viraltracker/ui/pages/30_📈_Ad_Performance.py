@@ -237,6 +237,8 @@ def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
                 # No ID pattern found - this is a legacy ad
                 unmatched.append(ad)
 
+        # Sort by spend descending (highest spend first)
+        unmatched.sort(key=lambda x: float(x.get("spend") or 0), reverse=True)
         return unmatched
     except Exception as e:
         st.error(f"Failed to get legacy ads: {e}")
