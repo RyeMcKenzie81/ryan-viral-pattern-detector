@@ -1566,7 +1566,10 @@ class MetaAdPerformance(BaseModel):
     meta_ad_account_id: str = Field(..., description="Meta ad account ID (e.g., act_123456789)")
     meta_ad_id: str = Field(..., description="Meta ad ID")
     meta_campaign_id: str = Field(..., description="Meta campaign ID")
+    meta_adset_id: Optional[str] = Field(None, description="Meta ad set ID")
     ad_name: Optional[str] = Field(None, description="Ad name (for matching)")
+    adset_name: Optional[str] = Field(None, description="Ad set name")
+    ad_status: Optional[str] = Field(None, description="Ad status: ACTIVE, PAUSED, DELETED, etc.")
     date: datetime = Field(..., description="Date of this performance snapshot")
 
     # Core metrics
@@ -1574,6 +1577,7 @@ class MetaAdPerformance(BaseModel):
     impressions: Optional[int] = Field(None, ge=0, description="Total impressions")
     reach: Optional[int] = Field(None, ge=0, description="Unique people reached")
     frequency: Optional[float] = Field(None, ge=0, description="Average times shown per person")
+    cpm: Optional[float] = Field(None, ge=0, description="Cost per 1000 impressions")
 
     # Link metrics
     link_clicks: Optional[int] = Field(None, ge=0, description="Clicks on links")
@@ -1603,6 +1607,26 @@ class MetaAdPerformance(BaseModel):
     # Tracking
     brand_id: Optional[UUID] = Field(None, description="Associated brand ID")
     fetched_at: Optional[datetime] = Field(None, description="When this data was fetched")
+
+
+class MetaAdSet(BaseModel):
+    """
+    Cached ad set metadata from Meta Ads API.
+
+    Ad sets sit between campaigns and ads in Meta's hierarchy.
+    """
+    id: Optional[UUID] = Field(None, description="Internal UUID")
+    meta_ad_account_id: str = Field(..., description="Meta ad account ID")
+    meta_adset_id: str = Field(..., description="Meta ad set ID")
+    meta_campaign_id: str = Field(..., description="Parent campaign ID")
+    name: Optional[str] = Field(None, description="Ad set name")
+    status: Optional[str] = Field(None, description="ACTIVE, PAUSED, DELETED, ARCHIVED")
+    optimization_goal: Optional[str] = Field(None, description="CONVERSIONS, LINK_CLICKS, etc.")
+    billing_event: Optional[str] = Field(None, description="IMPRESSIONS, LINK_CLICKS, etc.")
+    daily_budget: Optional[float] = Field(None, ge=0, description="Daily budget")
+    lifetime_budget: Optional[float] = Field(None, ge=0, description="Lifetime budget")
+    brand_id: Optional[UUID] = Field(None, description="Associated brand ID")
+    synced_at: Optional[datetime] = Field(None, description="When this data was synced")
 
 
 class MetaAdMapping(BaseModel):

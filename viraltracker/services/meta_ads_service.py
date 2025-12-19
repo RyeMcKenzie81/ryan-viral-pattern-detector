@@ -41,12 +41,15 @@ class MetaAdsService:
     INSIGHT_FIELDS = [
         "ad_id",
         "ad_name",
+        "adset_id",
+        "adset_name",
         "campaign_id",
         "campaign_name",
         "spend",
         "impressions",
         "reach",
         "frequency",
+        "cpm",
         "clicks",
         "outbound_clicks",
         "outbound_clicks_ctr",
@@ -359,16 +362,26 @@ class MetaAdsService:
         Returns:
             Normalized dict with flat metric fields
         """
+        # Calculate CPM if not provided by API
+        spend = self._parse_float(insight.get("spend"))
+        impressions = self._parse_int(insight.get("impressions"))
+        cpm = self._parse_float(insight.get("cpm"))
+        if cpm is None and spend and impressions and impressions > 0:
+            cpm = (spend / impressions) * 1000
+
         result = {
             "meta_ad_id": insight.get("ad_id"),
             "ad_name": insight.get("ad_name"),
+            "meta_adset_id": insight.get("adset_id"),
+            "adset_name": insight.get("adset_name"),
             "meta_campaign_id": insight.get("campaign_id"),
             "campaign_name": insight.get("campaign_name"),
             "date": insight.get("date_start"),
-            "spend": self._parse_float(insight.get("spend")),
-            "impressions": self._parse_int(insight.get("impressions")),
+            "spend": spend,
+            "impressions": impressions,
             "reach": self._parse_int(insight.get("reach")),
             "frequency": self._parse_float(insight.get("frequency")),
+            "cpm": cpm,
             "link_clicks": self._extract_outbound_clicks(insight),
             "link_ctr": self._parse_float(
                 insight.get("outbound_clicks_ctr", [{}])[0].get("value")
@@ -532,6 +545,8 @@ class MetaAdsService:
                 record = {
                     "meta_ad_account_id": insight.get("meta_ad_account_id", self._default_ad_account_id),
                     "meta_ad_id": insight["meta_ad_id"],
+                    "meta_adset_id": insight.get("meta_adset_id"),
+                    "adset_name": insight.get("adset_name"),
                     "meta_campaign_id": insight["meta_campaign_id"],
                     "ad_name": insight.get("ad_name"),
                     "date": insight["date"],
@@ -539,6 +554,7 @@ class MetaAdsService:
                     "impressions": insight.get("impressions"),
                     "reach": insight.get("reach"),
                     "frequency": insight.get("frequency"),
+                    "cpm": insight.get("cpm"),
                     "link_clicks": insight.get("link_clicks"),
                     "link_ctr": insight.get("link_ctr"),
                     "link_cpc": insight.get("link_cpc"),

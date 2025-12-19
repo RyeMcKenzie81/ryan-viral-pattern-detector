@@ -27,6 +27,7 @@ from .models import (
     # Meta Ads Performance Models
     MetaAdPerformance,
     MetaAdMapping,
+    MetaAdSet,
     MetaCampaign,
     BrandAdAccount,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "get_meta_ads_service",  # Lazy import function
     "MetaAdPerformance",
     "MetaAdMapping",
+    "MetaAdSet",
     "MetaCampaign",
     "BrandAdAccount",
 ]

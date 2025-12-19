@@ -104,11 +104,14 @@ def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
             "total_clicks": 0,
             "avg_ctr": 0,
             "avg_cpc": 0,
+            "avg_cpm": 0,
             "total_purchases": 0,
             "total_revenue": 0,
             "avg_roas": 0,
             "total_add_to_carts": 0,
-            "ad_count": 0
+            "ad_count": 0,
+            "campaign_count": 0,
+            "adset_count": 0
         }
 
     total_spend = sum(float(d.get("spend") or 0) for d in data)
@@ -121,10 +124,13 @@ def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
     # Calculate averages
     avg_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
     avg_cpc = (total_spend / total_clicks) if total_clicks > 0 else 0
+    avg_cpm = (total_spend / total_impressions * 1000) if total_impressions > 0 else 0
     avg_roas = (total_revenue / total_spend) if total_spend > 0 else 0
 
-    # Count unique ads
+    # Count unique entities
     unique_ads = set(d.get("meta_ad_id") for d in data if d.get("meta_ad_id"))
+    unique_campaigns = set(d.get("meta_campaign_id") for d in data if d.get("meta_campaign_id"))
+    unique_adsets = set(d.get("meta_adset_id") for d in data if d.get("meta_adset_id"))
 
     return {
         "total_spend": total_spend,
@@ -132,11 +138,14 @@ def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
         "total_clicks": total_clicks,
         "avg_ctr": avg_ctr,
         "avg_cpc": avg_cpc,
+        "avg_cpm": avg_cpm,
         "total_purchases": total_purchases,
         "total_revenue": total_revenue,
         "avg_roas": avg_roas,
         "total_add_to_carts": total_add_to_carts,
-        "ad_count": len(unique_ads)
+        "ad_count": len(unique_ads),
+        "campaign_count": len(unique_campaigns),
+        "adset_count": len(unique_adsets)
     }
 
 
@@ -174,7 +183,7 @@ async def sync_ads_from_meta(
 
 def render_metric_cards(metrics: Dict[str, Any]):
     """Render metric summary cards."""
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         st.metric(
@@ -204,36 +213,63 @@ def render_metric_cards(metrics: Dict[str, Any]):
             help="Cost Per Click"
         )
 
-    # Second row
-    col5, col6, col7, col8 = st.columns(4)
-
     with col5:
+        st.metric(
+            "CPM",
+            f"${metrics.get('avg_cpm', 0):.2f}",
+            help="Cost Per 1000 Impressions"
+        )
+
+    # Second row
+    col6, col7, col8, col9, col10 = st.columns(5)
+
+    with col6:
         st.metric(
             "Impressions",
             f"{metrics['total_impressions']:,}",
             help="Total ad impressions"
         )
 
-    with col6:
+    with col7:
         st.metric(
             "Link Clicks",
             f"{metrics['total_clicks']:,}",
             help="Total link clicks"
         )
 
-    with col7:
+    with col8:
         st.metric(
             "Add to Carts",
             f"{metrics['total_add_to_carts']:,}",
             help="Total add to cart events"
         )
 
-    with col8:
+    with col9:
         st.metric(
             "Purchases",
             f"{metrics['total_purchases']:,}",
             help="Total purchase events"
         )
+
+    with col10:
+        st.metric(
+            "Revenue",
+            f"${metrics['total_revenue']:,.2f}",
+            help="Total purchase revenue"
+        )
+
+
+def get_status_emoji(status: str) -> str:
+    """Get emoji for ad status."""
+    status_map = {
+        "ACTIVE": "🟢",
+        "PAUSED": "⚪",
+        "DELETED": "🔴",
+        "ARCHIVED": "📦",
+        "PENDING_REVIEW": "🟡",
+        "DISAPPROVED": "❌",
+    }
+    return status_map.get(status.upper() if status else "", "⚫")
 
 
 def render_ads_table(data: List[Dict], show_link_button: bool = False):
@@ -247,11 +283,15 @@ def render_ads_table(data: List[Dict], show_link_button: bool = False):
     # Prepare data for display
     rows = []
     for d in data:
+        status = d.get("ad_status", "")
+        status_display = f"{get_status_emoji(status)} {status}" if status else "-"
         rows.append({
+            "Status": status_display,
             "Date": d.get("date", ""),
             "Ad Name": d.get("ad_name", "Unknown")[:50],
             "Spend": f"${float(d.get('spend') or 0):,.2f}",
             "Impr.": f"{int(d.get('impressions') or 0):,}",
+            "CPM": f"${float(d.get('cpm') or 0):.2f}",
             "Clicks": int(d.get("link_clicks") or 0),
             "CTR": f"{float(d.get('link_ctr') or 0):.2f}%",
             "CPC": f"${float(d.get('link_cpc') or 0):.2f}",
@@ -268,12 +308,171 @@ def render_ads_table(data: List[Dict], show_link_button: bool = False):
         use_container_width=True,
         hide_index=True,
         column_config={
+            "Status": st.column_config.TextColumn("Status", width="small"),
             "Ad Name": st.column_config.TextColumn("Ad Name", width="medium"),
             "Spend": st.column_config.TextColumn("Spend", width="small"),
+            "CPM": st.column_config.TextColumn("CPM", width="small"),
             "CTR": st.column_config.TextColumn("CTR", width="small"),
             "ROAS": st.column_config.TextColumn("ROAS", width="small"),
         }
     )
+
+
+def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
+    """Aggregate performance data by campaign."""
+    from collections import defaultdict
+    campaigns = defaultdict(lambda: {
+        "spend": 0, "impressions": 0, "link_clicks": 0,
+        "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
+        "ad_count": 0, "adset_ids": set(), "ad_ids": set()
+    })
+
+    for d in data:
+        cid = d.get("meta_campaign_id")
+        if not cid:
+            continue
+        c = campaigns[cid]
+        c["campaign_name"] = d.get("campaign_name", "Unknown")
+        c["spend"] += float(d.get("spend") or 0)
+        c["impressions"] += int(d.get("impressions") or 0)
+        c["link_clicks"] += int(d.get("link_clicks") or 0)
+        c["add_to_carts"] += int(d.get("add_to_carts") or 0)
+        c["purchases"] += int(d.get("purchases") or 0)
+        c["purchase_value"] += float(d.get("purchase_value") or 0)
+        if d.get("meta_adset_id"):
+            c["adset_ids"].add(d.get("meta_adset_id"))
+        if d.get("meta_ad_id"):
+            c["ad_ids"].add(d.get("meta_ad_id"))
+
+    result = []
+    for cid, c in campaigns.items():
+        ctr = (c["link_clicks"] / c["impressions"] * 100) if c["impressions"] > 0 else 0
+        cpm = (c["spend"] / c["impressions"] * 1000) if c["impressions"] > 0 else 0
+        roas = (c["purchase_value"] / c["spend"]) if c["spend"] > 0 else 0
+        result.append({
+            "meta_campaign_id": cid,
+            "campaign_name": c["campaign_name"],
+            "spend": c["spend"],
+            "impressions": c["impressions"],
+            "link_clicks": c["link_clicks"],
+            "ctr": ctr,
+            "cpm": cpm,
+            "add_to_carts": c["add_to_carts"],
+            "purchases": c["purchases"],
+            "roas": roas,
+            "adset_count": len(c["adset_ids"]),
+            "ad_count": len(c["ad_ids"]),
+        })
+
+    return sorted(result, key=lambda x: x["spend"], reverse=True)
+
+
+def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
+    """Aggregate performance data by ad set."""
+    from collections import defaultdict
+    adsets = defaultdict(lambda: {
+        "spend": 0, "impressions": 0, "link_clicks": 0,
+        "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
+        "ad_ids": set()
+    })
+
+    for d in data:
+        asid = d.get("meta_adset_id")
+        if not asid:
+            continue
+        a = adsets[asid]
+        a["adset_name"] = d.get("adset_name", "Unknown")
+        a["campaign_name"] = d.get("campaign_name", "")
+        a["meta_campaign_id"] = d.get("meta_campaign_id", "")
+        a["spend"] += float(d.get("spend") or 0)
+        a["impressions"] += int(d.get("impressions") or 0)
+        a["link_clicks"] += int(d.get("link_clicks") or 0)
+        a["add_to_carts"] += int(d.get("add_to_carts") or 0)
+        a["purchases"] += int(d.get("purchases") or 0)
+        a["purchase_value"] += float(d.get("purchase_value") or 0)
+        if d.get("meta_ad_id"):
+            a["ad_ids"].add(d.get("meta_ad_id"))
+
+    result = []
+    for asid, a in adsets.items():
+        ctr = (a["link_clicks"] / a["impressions"] * 100) if a["impressions"] > 0 else 0
+        cpm = (a["spend"] / a["impressions"] * 1000) if a["impressions"] > 0 else 0
+        roas = (a["purchase_value"] / a["spend"]) if a["spend"] > 0 else 0
+        result.append({
+            "meta_adset_id": asid,
+            "adset_name": a["adset_name"],
+            "campaign_name": a["campaign_name"],
+            "meta_campaign_id": a["meta_campaign_id"],
+            "spend": a["spend"],
+            "impressions": a["impressions"],
+            "link_clicks": a["link_clicks"],
+            "ctr": ctr,
+            "cpm": cpm,
+            "add_to_carts": a["add_to_carts"],
+            "purchases": a["purchases"],
+            "roas": roas,
+            "ad_count": len(a["ad_ids"]),
+        })
+
+    return sorted(result, key=lambda x: x["spend"], reverse=True)
+
+
+def render_campaigns_table(data: List[Dict]):
+    """Render campaigns summary table."""
+    import pandas as pd
+
+    if not data:
+        st.info("No campaign data available.")
+        return
+
+    campaigns = aggregate_by_campaign(data)
+    rows = []
+    for c in campaigns:
+        rows.append({
+            "Campaign": c["campaign_name"][:40],
+            "Spend": f"${c['spend']:,.2f}",
+            "Impr.": f"{c['impressions']:,}",
+            "CPM": f"${c['cpm']:.2f}",
+            "Clicks": c["link_clicks"],
+            "CTR": f"{c['ctr']:.2f}%",
+            "ATC": c["add_to_carts"],
+            "Purchases": c["purchases"],
+            "ROAS": f"{c['roas']:.2f}x",
+            "Ad Sets": c["adset_count"],
+            "Ads": c["ad_count"],
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_adsets_table(data: List[Dict]):
+    """Render ad sets summary table."""
+    import pandas as pd
+
+    if not data:
+        st.info("No ad set data available.")
+        return
+
+    adsets = aggregate_by_adset(data)
+    rows = []
+    for a in adsets:
+        rows.append({
+            "Ad Set": a["adset_name"][:35],
+            "Campaign": a["campaign_name"][:25],
+            "Spend": f"${a['spend']:,.2f}",
+            "Impr.": f"{a['impressions']:,}",
+            "CPM": f"${a['cpm']:.2f}",
+            "Clicks": a["link_clicks"],
+            "CTR": f"{a['ctr']:.2f}%",
+            "ATC": a["add_to_carts"],
+            "Purchases": a["purchases"],
+            "ROAS": f"{a['roas']:.2f}x",
+            "Ads": a["ad_count"],
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def render_sync_section(brand_id: str, ad_account: Dict):
@@ -415,14 +614,31 @@ render_metric_cards(metrics)
 
 st.divider()
 
-# Tabs for different views
-tab1, tab2 = st.tabs(["📊 All Meta Ads", "🔗 Linked Ads"])
+# Hierarchy count display
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.caption(f"📁 {metrics.get('campaign_count', 0)} Campaigns")
+with col2:
+    st.caption(f"📂 {metrics.get('adset_count', 0)} Ad Sets")
+with col3:
+    st.caption(f"📄 {metrics.get('ad_count', 0)} Ads")
+
+# Tabs for hierarchy views (like Facebook Ads Manager)
+tab1, tab2, tab3, tab4 = st.tabs(["📁 Campaigns", "📂 Ad Sets", "📄 Ads", "🔗 Linked"])
 
 with tab1:
-    st.subheader(f"All Ads ({metrics['ad_count']} unique ads)")
-    render_ads_table(perf_data)
+    st.subheader("Campaigns")
+    render_campaigns_table(perf_data)
 
 with tab2:
+    st.subheader("Ad Sets")
+    render_adsets_table(perf_data)
+
+with tab3:
+    st.subheader(f"All Ads ({metrics['ad_count']} unique)")
+    render_ads_table(perf_data)
+
+with tab4:
     st.subheader("Linked Ads (ViralTracker ↔ Meta)")
     linked = get_linked_ads(brand_id)
 
