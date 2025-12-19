@@ -382,7 +382,12 @@ class MetaAdsService:
             return {}
 
     def _fetch_thumbnails_sync(self, ad_ids: List[str]) -> Dict[str, str]:
-        """Synchronous call to fetch ad thumbnails."""
+        """
+        Synchronous call to fetch ad images/thumbnails.
+
+        For image ads: fetches full resolution image_url
+        For video ads: fetches thumbnail_url
+        """
         from facebook_business.adobjects.ad import Ad
         from facebook_business.adobjects.adcreative import AdCreative
 
@@ -402,32 +407,54 @@ class MetaAdsService:
                 if not creative_id:
                     continue
 
-                # Step 2: Fetch the creative to get thumbnail
+                # Step 2: Fetch the creative with all relevant fields
                 creative = AdCreative(creative_id)
                 creative_info = creative.api_get(fields=[
                     "id",
                     "thumbnail_url",
                     "image_url",
-                    "object_story_spec"
+                    "image_hash",
+                    "video_id",
+                    "object_story_spec",
+                    "object_type"
                 ])
 
-                # Try thumbnail_url first, then image_url
-                thumb = creative_info.get("thumbnail_url") or creative_info.get("image_url")
+                # Check if this is a video ad
+                is_video = bool(creative_info.get("video_id"))
+                object_type = creative_info.get("object_type", "")
+                if "VIDEO" in object_type.upper():
+                    is_video = True
 
-                # If still no thumb, try to get from object_story_spec
-                if not thumb:
-                    story_spec = creative_info.get("object_story_spec", {})
-                    link_data = story_spec.get("link_data", {})
-                    thumb = link_data.get("image_url") or link_data.get("picture")
+                image_url = None
 
-                if thumb:
-                    thumbnails[ad_id] = thumb
-                    logger.debug(f"Got thumbnail for {ad_id}")
+                if is_video:
+                    # For video ads, use thumbnail
+                    image_url = creative_info.get("thumbnail_url")
+                    logger.debug(f"Ad {ad_id} is video, using thumbnail")
                 else:
-                    logger.debug(f"No thumbnail found for {ad_id}")
+                    # For image ads, prefer full resolution image_url
+                    image_url = creative_info.get("image_url")
+
+                    # Fallback to object_story_spec for full image
+                    if not image_url:
+                        story_spec = creative_info.get("object_story_spec", {})
+                        link_data = story_spec.get("link_data", {})
+                        # image_url is typically full resolution
+                        image_url = link_data.get("image_url") or link_data.get("picture")
+
+                    # Last resort: thumbnail
+                    if not image_url:
+                        image_url = creative_info.get("thumbnail_url")
+
+                    logger.debug(f"Ad {ad_id} is image, using full resolution")
+
+                if image_url:
+                    thumbnails[ad_id] = image_url
+                else:
+                    logger.debug(f"No image found for {ad_id}")
 
             except Exception as e:
-                logger.warning(f"Could not fetch thumbnail for {ad_id}: {e}")
+                logger.warning(f"Could not fetch image for {ad_id}: {e}")
                 continue
 
         return thumbnails
