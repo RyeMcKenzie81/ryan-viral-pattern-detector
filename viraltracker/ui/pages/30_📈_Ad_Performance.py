@@ -1782,23 +1782,25 @@ elif selected_tab == "🔗 Linked":
             st.info(f"📊 **Search Results**: Found {debug['legacy_count']} legacy ads, {debug['gen_count']} generated ads, **{debug['match_count']} matches**")
 
             if debug['match_count'] == 0:
-                with st.expander("🔍 Debug: Why no matches?", expanded=True):
-                    st.write("**Sample Legacy Ad Names (from Meta):**")
-                    for name in debug['sample_legacy']:
-                        st.code(name)
+                st.markdown("---")
+                st.markdown("**🔍 Debug: Why no matches?**")
 
-                    st.write("**Simple Numeric Filenames in Generated Ads:**")
-                    simple = debug.get('simple_numeric_filenames', [])
-                    if simple:
-                        st.code(", ".join(simple[:20]))
-                    else:
-                        st.warning("No simple numeric filenames (like '1', '1.png') found in generated_ads!")
+                st.write("**Sample Legacy Ad Names (from Meta):**")
+                for name in debug['sample_legacy']:
+                    st.code(name)
 
-                    st.write("**Sample Lookup Keys (what we're matching against):**")
-                    keys = debug.get('lookup_keys_sample', [])
-                    st.code(", ".join(keys[:15]))
+                st.write("**Simple Numeric Filenames in Generated Ads:**")
+                simple = debug.get('simple_numeric_filenames', [])
+                if simple:
+                    st.code(", ".join(simple[:20]))
+                else:
+                    st.warning("No simple numeric filenames (like '1', '1.png') found in generated_ads!")
 
-                    st.caption("For a match, the ad name must contain a number (like '1') that matches a generated ad filename.")
+                st.write("**Sample Lookup Keys (what we're matching against):**")
+                keys = debug.get('lookup_keys_sample', [])
+                st.code(", ".join(keys[:15]))
+
+                st.caption("For a match, the ad name must contain a number (like '1') that matches a generated ad filename.")
 
         # Show matches
         if st.session_state.get("ad_perf_legacy_matches"):
