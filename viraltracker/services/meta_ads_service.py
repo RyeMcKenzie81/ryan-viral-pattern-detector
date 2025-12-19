@@ -493,29 +493,49 @@ class MetaAdsService:
         """
         Try to extract a generated_ad_id from the Meta ad name.
 
-        Looks for an 8-character hex pattern at the start of the name,
-        which should match our filename format: d4e5f6a7-WP-C3-SQ.png
+        Supports two filename formats:
+        - New: d4e5f6a7-WP-C3-SQ.png (8-char ID first)
+        - Old: WP-C3-a1b2c3-d4e5f6-SQ.png (6-char ID in 4th position)
 
         Args:
             ad_name: The Meta ad name
 
         Returns:
-            8-char ID if found, None otherwise
+            6-8 char ID if found, None otherwise
         """
         if not ad_name:
             return None
 
-        # Look for 8 hex chars at start or after common delimiters
-        patterns = [
+        ad_name_lower = ad_name.lower()
+
+        # Pattern 1: New format - 8 hex chars at start
+        # Example: d4e5f6a7-WP-C3-SQ.png or "d4e5f6a7 - Summer Sale"
+        patterns_8char = [
             r"^([a-f0-9]{8})",  # Start of string
             r"[\s\-_]([a-f0-9]{8})[\s\-_]",  # Between delimiters
             r"[\s\-_]([a-f0-9]{8})$",  # End of string
         ]
 
-        for pattern in patterns:
-            match = re.search(pattern, ad_name.lower())
+        for pattern in patterns_8char:
+            match = re.search(pattern, ad_name_lower)
             if match:
                 return match.group(1)
+
+        # Pattern 2: Old format - 6 hex chars, typically in filename structure
+        # Example: WP-C3-a1b2c3-d4e5f6-SQ.png
+        # Look for the 4th segment which is the ad_id
+        old_format_match = re.search(
+            r"[A-Za-z]{2,4}-[A-Za-z0-9]{2,4}-[a-f0-9]{6}-([a-f0-9]{6})-[A-Za-z]{2}",
+            ad_name_lower
+        )
+        if old_format_match:
+            return old_format_match.group(1)
+
+        # Pattern 3: Any 6 hex chars between hyphens (more flexible)
+        # This catches variations of the old format
+        six_char_match = re.search(r"-([a-f0-9]{6})-", ad_name_lower)
+        if six_char_match:
+            return six_char_match.group(1)
 
         return None
 
@@ -692,18 +712,20 @@ class MetaAdsService:
         # Get unlinked Meta ads
         unlinked = await self.get_unlinked_ads(brand_id)
 
-        # Fetch all generated ads and build lookup by first 8 chars of ID
+        # Fetch all generated ads and build lookups by ID prefixes
         gen_result = supabase.table("generated_ads").select(
             "id, storage_path, hook_text"
         ).execute()
 
-        # Build lookup: first 8 chars of UUID -> ad record
-        gen_ads_by_prefix = {}
+        # Build lookups: both 6 and 8 char prefixes -> ad record
+        gen_ads_by_8char = {}
+        gen_ads_by_6char = {}
         for ad in (gen_result.data or []):
-            ad_id = str(ad.get("id", ""))
+            ad_id = str(ad.get("id", "")).replace("-", "")  # Remove hyphens
             if len(ad_id) >= 8:
-                prefix = ad_id[:8].lower()
-                gen_ads_by_prefix[prefix] = ad
+                gen_ads_by_8char[ad_id[:8].lower()] = ad
+            if len(ad_id) >= 6:
+                gen_ads_by_6char[ad_id[:6].lower()] = ad
 
         matches = []
         for meta_ad in unlinked:
@@ -711,8 +733,12 @@ class MetaAdsService:
             extracted_id = self.find_matching_generated_ad_id(ad_name)
 
             if extracted_id:
-                # Look up in our prefix map
-                matched_ad = gen_ads_by_prefix.get(extracted_id.lower())
+                # Look up in our prefix maps (try 8-char first, then 6-char)
+                extracted_lower = extracted_id.lower()
+                if len(extracted_id) == 8:
+                    matched_ad = gen_ads_by_8char.get(extracted_lower)
+                else:
+                    matched_ad = gen_ads_by_6char.get(extracted_lower)
 
                 if matched_ad:
                     matches.append({
