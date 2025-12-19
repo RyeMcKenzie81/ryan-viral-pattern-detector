@@ -201,6 +201,48 @@ def delete_ad_link(meta_ad_id: str) -> bool:
         return False
 
 
+def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
+    """
+    Get Meta ads from a specific campaign that don't have ID patterns in their names
+    and are not yet linked to generated ads.
+    """
+    try:
+        db = get_supabase_client()
+        service = get_meta_ads_service()
+
+        # Get all linked meta_ad_ids
+        linked_result = db.table("meta_ad_mapping").select("meta_ad_id").execute()
+        linked_ids = set(r["meta_ad_id"] for r in (linked_result.data or []))
+
+        # Get ads from the specific campaign
+        result = db.table("meta_ads_performance").select(
+            "meta_ad_id, ad_name, campaign_name, thumbnail_url, spend, impressions"
+        ).eq("brand_id", brand_id).ilike("campaign_name", f"%{campaign_name}%").execute()
+
+        # Filter to unlinked ads without ID patterns
+        unmatched = []
+        seen_ids = set()
+        for ad in (result.data or []):
+            meta_ad_id = ad.get("meta_ad_id")
+            ad_name = ad.get("ad_name", "")
+
+            # Skip if already linked or already seen
+            if meta_ad_id in linked_ids or meta_ad_id in seen_ids:
+                continue
+            seen_ids.add(meta_ad_id)
+
+            # Check if the ad name has an ID pattern (if so, auto-match should handle it)
+            extracted_id = service.find_matching_generated_ad_id(ad_name)
+            if not extracted_id:
+                # No ID pattern found - this is a legacy ad
+                unmatched.append(ad)
+
+        return unmatched
+    except Exception as e:
+        st.error(f"Failed to get legacy ads: {e}")
+        return []
+
+
 def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
     """Get a signed URL for a storage path."""
     if not storage_path:
@@ -1641,6 +1683,105 @@ elif selected_tab == "🔗 Linked":
     # Show linked ads table
     linked = get_linked_ads(brand_id)
     render_linked_ads_table(perf_data, linked)
+
+    # Legacy Ads Section - Manual linking for ads without ID patterns
+    st.divider()
+    with st.expander("📦 Legacy Ads (Manual Linking)", expanded=False):
+        st.caption("Link Meta ads that don't have ID patterns in their names")
+
+        # Campaign filter for legacy ads
+        legacy_campaign = st.text_input(
+            "Campaign name to search:",
+            value="M5 - Collagen - ADV+ - Reboot - Dec 5",
+            help="Enter part of the campaign name to filter legacy ads"
+        )
+
+        if st.button("🔍 Find Legacy Ads", key="find_legacy"):
+            with st.spinner("Searching for unmatched legacy ads..."):
+                legacy_ads = get_legacy_unmatched_ads(brand_id, legacy_campaign)
+                st.session_state.ad_perf_legacy_ads = legacy_ads
+
+        # Show legacy ads if we have them
+        if st.session_state.get("ad_perf_legacy_ads"):
+            legacy_ads = st.session_state.ad_perf_legacy_ads
+            st.write(f"**Found {len(legacy_ads)} unmatched ads** in campaigns matching '{legacy_campaign}'")
+
+            if legacy_ads:
+                # Get generated ads for linking options
+                db = get_supabase_client()
+                gen_result = db.table("generated_ads").select(
+                    "id, storage_path, hook_text, created_at"
+                ).eq("brand_id", brand_id).order("created_at", desc=True).limit(100).execute()
+                generated_ads = gen_result.data or []
+
+                for i, legacy_ad in enumerate(legacy_ads):
+                    st.markdown("---")
+                    col1, col2, col3 = st.columns([1, 2, 2])
+
+                    with col1:
+                        st.markdown("**Meta Ad**")
+                        thumb = legacy_ad.get("thumbnail_url")
+                        if thumb:
+                            st.image(thumb, width=100)
+                        else:
+                            st.caption("📷 No thumbnail")
+                        st.caption(f"`{legacy_ad.get('ad_name', 'Unknown')[:40]}`")
+                        spend = legacy_ad.get("spend")
+                        if spend:
+                            st.caption(f"Spend: ${float(spend):.2f}")
+
+                    with col2:
+                        st.markdown("**Select Generated Ad to Link**")
+                        # Create options for selectbox
+                        options = ["-- Select --"] + [
+                            f"{str(ad['id'])[:8]}... | {(ad.get('hook_text') or 'No hook')[:30]}"
+                            for ad in generated_ads
+                        ]
+                        selected = st.selectbox(
+                            "Generated Ad:",
+                            options,
+                            key=f"legacy_select_{legacy_ad.get('meta_ad_id')}",
+                            label_visibility="collapsed"
+                        )
+
+                        # Show thumbnail of selected generated ad
+                        if selected != "-- Select --":
+                            selected_idx = options.index(selected) - 1  # -1 for "-- Select --"
+                            if selected_idx >= 0 and selected_idx < len(generated_ads):
+                                gen_ad = generated_ads[selected_idx]
+                                signed_url = get_signed_url(gen_ad.get("storage_path"))
+                                if signed_url:
+                                    st.image(signed_url, width=100)
+
+                    with col3:
+                        st.markdown("**Action**")
+                        if selected != "-- Select --":
+                            selected_idx = options.index(selected) - 1
+                            if selected_idx >= 0 and selected_idx < len(generated_ads):
+                                gen_ad = generated_ads[selected_idx]
+                                if st.button("✓ Link", key=f"legacy_link_{legacy_ad.get('meta_ad_id')}", type="primary"):
+                                    # Get campaign ID from performance data
+                                    perf_record = next(
+                                        (p for p in perf_data if p.get("meta_ad_id") == legacy_ad.get("meta_ad_id")),
+                                        {}
+                                    )
+                                    success = create_ad_link(
+                                        generated_ad_id=str(gen_ad["id"]),
+                                        meta_ad_id=legacy_ad.get("meta_ad_id"),
+                                        meta_campaign_id=perf_record.get("meta_campaign_id", "unknown"),
+                                        meta_ad_account_id=ad_account['meta_ad_account_id'],
+                                        linked_by="manual_legacy"
+                                    )
+                                    if success:
+                                        st.success(f"Linked!")
+                                        # Remove from list
+                                        st.session_state.ad_perf_legacy_ads = [
+                                            a for a in legacy_ads
+                                            if a.get("meta_ad_id") != legacy_ad.get("meta_ad_id")
+                                        ]
+                                        st.rerun()
+                        else:
+                            st.caption("Select a generated ad first")
 
 
 # Footer with data info
