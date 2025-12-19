@@ -484,7 +484,7 @@ def render_campaigns_table(data: List[Dict]):
     rows = []
     for c in campaigns:
         rows.append({
-            "Campaign": c["campaign_name"][:40],
+            "Campaign": (c["campaign_name"] or "Unknown")[:40],
             "Spend": f"${c['spend']:,.2f}",
             "Impr.": f"{c['impressions']:,}",
             "CPM": f"${c['cpm']:.2f}",
@@ -513,8 +513,8 @@ def render_adsets_table(data: List[Dict]):
     rows = []
     for a in adsets:
         rows.append({
-            "Ad Set": a["adset_name"][:35],
-            "Campaign": a["campaign_name"][:25],
+            "Ad Set": (a["adset_name"] or "Unknown")[:35],
+            "Campaign": (a["campaign_name"] or "Unknown")[:25],
             "Spend": f"${a['spend']:,.2f}",
             "Impr.": f"{a['impressions']:,}",
             "CPM": f"${a['cpm']:.2f}",
