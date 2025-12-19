@@ -191,6 +191,27 @@ def delete_ad_link(meta_ad_id: str) -> bool:
         return False
 
 
+def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
+    """Get a signed URL for a storage path."""
+    if not storage_path:
+        return None
+    try:
+        db = get_supabase_client()
+        # Parse bucket and path from storage_path
+        # Format could be "generated-ads/path/to/file.png" or just "path/to/file.png"
+        if storage_path.startswith("generated-ads/"):
+            bucket = "generated-ads"
+            path = storage_path[len("generated-ads/"):]
+        else:
+            bucket = "generated-ads"
+            path = storage_path
+
+        result = db.storage.from_(bucket).create_signed_url(path, expires_in)
+        return result.get("signedURL")
+    except Exception:
+        return None
+
+
 def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
     """Aggregate performance metrics across all ads."""
     if not data:
@@ -1010,12 +1031,13 @@ def render_setup_instructions():
 # =============================================================================
 
 def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
-    """Render auto-match suggestions with confirm/reject buttons."""
+    """Render auto-match suggestions with thumbnails and confirm/reject buttons."""
     if not suggestions:
         st.info("No matches found. Try naming your Meta ads with the 8-character ID from the filename.")
         return
 
     st.subheader(f"🔍 Found {len(suggestions)} Potential Matches")
+    st.caption("Verify the generated ad thumbnail matches what you uploaded to Meta")
 
     for i, match in enumerate(suggestions):
         meta_ad = match.get("meta_ad", {})
@@ -1024,28 +1046,47 @@ def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
         confidence = match.get("confidence", "low")
 
         with st.container():
-            cols = st.columns([3, 2, 2, 1])
+            # Layout: [Meta Ad Info] [Arrow] [Generated Ad Thumbnail] [Actions]
+            cols = st.columns([3, 0.5, 2, 1.5])
 
             with cols[0]:
-                st.markdown(f"**Meta Ad:** {meta_ad.get('ad_name', 'Unknown')[:40]}")
-                st.caption(f"ID pattern: `{matched_id}`")
+                st.markdown("**Meta Ad**")
+                st.markdown(f"`{meta_ad.get('ad_name', 'Unknown')[:50]}`")
+                st.caption(f"Campaign: {meta_ad.get('campaign_name', 'Unknown')[:30]}")
+                st.caption(f"Detected ID: `{matched_id}`")
 
             with cols[1]:
-                if suggested:
-                    st.markdown(f"**Match:** `{suggested['id'][:8]}...`")
-                    st.caption(suggested.get("hook_text", "")[:30])
-                else:
-                    st.markdown("*No matching generated ad*")
+                st.markdown("")
+                st.markdown("**→**")
 
             with cols[2]:
+                st.markdown("**Generated Ad**")
+                if suggested:
+                    # Show thumbnail
+                    storage_path = suggested.get("storage_path")
+                    if storage_path:
+                        signed_url = get_signed_url(storage_path)
+                        if signed_url:
+                            st.image(signed_url, width=120)
+                        else:
+                            st.caption("(thumbnail unavailable)")
+                    st.caption(f"ID: `{suggested['id'][:8]}...`")
+                    hook = suggested.get("hook_text", "")
+                    if hook:
+                        st.caption(f"Hook: {hook[:40]}...")
+                else:
+                    st.warning("No matching ad found")
+                    st.caption("ID detected but no generated ad with that prefix")
+
+            with cols[3]:
+                st.markdown("")
                 if confidence == "high":
                     st.success("✓ High confidence")
                 else:
                     st.warning("? Low confidence")
 
-            with cols[3]:
                 if suggested:
-                    if st.button("✓ Link", key=f"confirm_match_{i}", type="primary"):
+                    if st.button("✓ Confirm Link", key=f"confirm_match_{i}", type="primary", use_container_width=True):
                         success = create_ad_link(
                             generated_ad_id=suggested["id"],
                             meta_ad_id=meta_ad.get("meta_ad_id"),
@@ -1056,6 +1097,8 @@ def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
                         if success:
                             st.success("Linked!")
                             st.rerun()
+                    if st.button("✗ Skip", key=f"skip_match_{i}", use_container_width=True):
+                        pass  # Just a visual skip, they can ignore
 
             st.divider()
 
