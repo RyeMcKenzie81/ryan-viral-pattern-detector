@@ -400,7 +400,7 @@ class MetaAdsService:
 
                 creative_data = ad_data.get("creative")
                 if not creative_data:
-                    logger.debug(f"No creative for ad {ad_id}")
+                    logger.warning(f"No creative for ad {ad_id}")
                     continue
 
                 creative_id = creative_data.get("id")
@@ -416,7 +416,9 @@ class MetaAdsService:
                     "image_hash",
                     "video_id",
                     "object_story_spec",
-                    "object_type"
+                    "object_type",
+                    "asset_feed_spec",
+                    "effective_object_story_id"
                 ])
 
                 # Check if this is a video ad
@@ -430,28 +432,40 @@ class MetaAdsService:
                 if is_video:
                     # For video ads, use thumbnail
                     image_url = creative_info.get("thumbnail_url")
-                    logger.debug(f"Ad {ad_id} is video, using thumbnail")
                 else:
-                    # For image ads, prefer full resolution image_url
+                    # For image ads, try multiple sources for full resolution
+
+                    # 1. Direct image_url
                     image_url = creative_info.get("image_url")
 
-                    # Fallback to object_story_spec for full image
+                    # 2. object_story_spec.link_data
                     if not image_url:
                         story_spec = creative_info.get("object_story_spec", {})
                         link_data = story_spec.get("link_data", {})
-                        # image_url is typically full resolution
                         image_url = link_data.get("image_url") or link_data.get("picture")
 
-                    # Last resort: thumbnail
+                        # Also check photo_data for photo posts
+                        if not image_url:
+                            photo_data = story_spec.get("photo_data", {})
+                            image_url = photo_data.get("url") or photo_data.get("image_url")
+
+                    # 3. asset_feed_spec for dynamic ads
+                    if not image_url:
+                        asset_feed = creative_info.get("asset_feed_spec", {})
+                        images = asset_feed.get("images", [])
+                        if images and len(images) > 0:
+                            image_url = images[0].get("url")
+
+                    # 4. Last resort: thumbnail_url
                     if not image_url:
                         image_url = creative_info.get("thumbnail_url")
-
-                    logger.debug(f"Ad {ad_id} is image, using full resolution")
+                        if image_url:
+                            logger.debug(f"Ad {ad_id}: falling back to thumbnail")
 
                 if image_url:
                     thumbnails[ad_id] = image_url
                 else:
-                    logger.debug(f"No image found for {ad_id}")
+                    logger.warning(f"No image found for ad {ad_id}, creative {creative_id}")
 
             except Exception as e:
                 logger.warning(f"Could not fetch image for {ad_id}: {e}")
