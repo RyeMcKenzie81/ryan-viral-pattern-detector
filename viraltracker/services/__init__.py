@@ -34,7 +34,12 @@ from .models import (
 from .planning_service import PlanningService
 from .template_evaluation_service import TemplateEvaluationService
 from .copy_scaffold_service import CopyScaffoldService
-from .meta_ads_service import MetaAdsService
+
+# Lazy import to avoid import errors breaking app initialization
+def get_meta_ads_service():
+    """Lazy import MetaAdsService to avoid circular import issues."""
+    from .meta_ads_service import MetaAdsService
+    return MetaAdsService
 
 __all__ = [
     "Tweet",
@@ -59,7 +64,7 @@ __all__ = [
     "AngleCopySet",
     "TemplateEvaluation",
     # Meta Ads Performance
-    "MetaAdsService",
+    "get_meta_ads_service",  # Lazy import function
     "MetaAdPerformance",
     "MetaAdMapping",
     "MetaCampaign",

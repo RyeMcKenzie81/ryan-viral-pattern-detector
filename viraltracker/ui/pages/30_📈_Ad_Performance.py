@@ -37,7 +37,7 @@ def get_supabase_client():
 
 
 def get_meta_ads_service():
-    """Get MetaAdsService instance."""
+    """Get MetaAdsService instance (lazy import to avoid init issues)."""
     from viraltracker.services.meta_ads_service import MetaAdsService
     return MetaAdsService()
 
