@@ -1487,10 +1487,15 @@ elif selected_tab == "🔗 Linked":
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
             with st.spinner("Fetching thumbnails and scanning for matches..."):
                 try:
-                    # First, fetch any missing thumbnails from Meta
-                    thumb_count = asyncio.run(fetch_missing_thumbnails(brand_id))
+                    # Fetch ALL missing thumbnails (loop until done)
+                    total_thumbs = 0
+                    while True:
+                        batch_count = asyncio.run(fetch_missing_thumbnails(brand_id))
+                        total_thumbs += batch_count
+                        if batch_count < 50:  # No more to fetch
+                            break
                     # Store result for display
-                    st.session_state.ad_perf_last_thumb_count = thumb_count
+                    st.session_state.ad_perf_last_thumb_count = total_thumbs
                     # Then find matches
                     matches = asyncio.run(find_auto_matches(brand_id))
                     st.session_state.ad_perf_match_suggestions = matches
