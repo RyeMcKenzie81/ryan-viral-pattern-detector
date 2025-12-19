@@ -389,12 +389,28 @@ class MetaAdsService:
         for ad_id in ad_ids:
             try:
                 ad = Ad(ad_id)
-                ad_data = ad.api_get(fields=["id", "creative{thumbnail_url}"])
+                # Try multiple approaches to get thumbnail
+                ad_data = ad.api_get(fields=[
+                    "id",
+                    "creative{thumbnail_url,image_url}",
+                    "preview_shareable_link"
+                ])
+
+                # Try creative.thumbnail_url first
                 creative = ad_data.get("creative", {})
-                if creative and "thumbnail_url" in creative:
-                    thumbnails[ad_id] = creative["thumbnail_url"]
+                if creative:
+                    thumb = creative.get("thumbnail_url") or creative.get("image_url")
+                    if thumb:
+                        thumbnails[ad_id] = thumb
+                        continue
+
+                # Fallback: try preview link (not ideal but something)
+                preview = ad_data.get("preview_shareable_link")
+                if preview:
+                    logger.debug(f"No thumbnail for {ad_id}, has preview link")
+
             except Exception as e:
-                logger.debug(f"Could not fetch thumbnail for {ad_id}: {e}")
+                logger.warning(f"Could not fetch thumbnail for {ad_id}: {e}")
                 continue
 
         return thumbnails
