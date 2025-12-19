@@ -1895,6 +1895,103 @@ elif selected_tab == "🔗 Linked":
                         ]
                         st.rerun()
 
+        # Manual Linking Section - show unlinked ads with spend
+        st.markdown("---")
+        st.markdown("### 🔗 Manual Linking")
+        st.caption("Link Meta ads manually by selecting the matching generated ad")
+
+        # Get unlinked legacy ads (reuse from above or fetch fresh)
+        if 'legacy_ads' not in dir() or not legacy_ads:
+            legacy_ads = get_legacy_unmatched_ads(brand_id, legacy_campaign)
+
+        if legacy_ads:
+            # Show top spending unlinked ads
+            st.write(f"**{len(legacy_ads)} unlinked ads** (sorted by spend)")
+
+            for idx, meta_ad in enumerate(legacy_ads[:10]):  # Show top 10 by spend
+                spend = float(meta_ad.get("spend") or 0)
+                ad_name = meta_ad.get("ad_name", "Unknown")
+                meta_ad_id = meta_ad.get("meta_ad_id")
+
+                col1, col2, col3 = st.columns([2, 1, 1])
+
+                with col1:
+                    thumb = meta_ad.get("thumbnail_url")
+                    if thumb:
+                        st.image(thumb, width=80)
+                    st.caption(f"`{ad_name[:50]}`")
+
+                with col2:
+                    st.metric("Spend", f"${spend:.2f}")
+
+                with col3:
+                    # Manual link button - opens a selectbox
+                    link_key = f"manual_link_select_{meta_ad_id}"
+                    if st.button("🔗 Link", key=f"manual_link_btn_{idx}"):
+                        st.session_state[f"show_link_for_{meta_ad_id}"] = True
+
+                # Show generated ad selector if button was clicked
+                if st.session_state.get(f"show_link_for_{meta_ad_id}"):
+                    st.markdown("**Select generated ad to link:**")
+
+                    # Get generated ads for selection
+                    db = get_supabase_client()
+                    gen_result = db.table("generated_ads").select(
+                        "id, storage_path, hook_text, created_at"
+                    ).order("created_at", desc=True).limit(100).execute()
+                    gen_ads_list = gen_result.data or []
+
+                    # Create options with hook text preview
+                    options = ["-- Select an ad --"]
+                    for ga in gen_ads_list:
+                        hook = (ga.get("hook_text") or "No hook")[:40]
+                        path = ga.get("storage_path", "").split("/")[-1]
+                        date = (ga.get("created_at") or "")[:10]
+                        options.append(f"{path} | {hook}... | {date}")
+
+                    selected = st.selectbox(
+                        "Generated Ad",
+                        options,
+                        key=f"gen_select_{meta_ad_id}",
+                        label_visibility="collapsed"
+                    )
+
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if selected != "-- Select an ad --" and st.button("✓ Confirm Link", key=f"confirm_{meta_ad_id}", type="primary"):
+                            # Find the selected generated ad
+                            sel_idx = options.index(selected) - 1
+                            if sel_idx >= 0:
+                                gen_ad = gen_ads_list[sel_idx]
+                                success = create_ad_link(
+                                    generated_ad_id=str(gen_ad["id"]),
+                                    meta_ad_id=meta_ad_id,
+                                    meta_campaign_id="unknown",
+                                    meta_ad_account_id=ad_account['meta_ad_account_id'],
+                                    linked_by="manual"
+                                )
+                                if success:
+                                    st.success("Linked!")
+                                    del st.session_state[f"show_link_for_{meta_ad_id}"]
+                                    st.rerun()
+                    with col_b:
+                        if st.button("Cancel", key=f"cancel_{meta_ad_id}"):
+                            del st.session_state[f"show_link_for_{meta_ad_id}"]
+                            st.rerun()
+
+                    # Show preview of selected ad
+                    if selected != "-- Select an ad --":
+                        sel_idx = options.index(selected) - 1
+                        if sel_idx >= 0:
+                            gen_ad = gen_ads_list[sel_idx]
+                            signed_url = get_signed_url(gen_ad.get("storage_path"))
+                            if signed_url:
+                                st.image(signed_url, width=150, caption="Preview")
+
+                st.markdown("---")
+        else:
+            st.success("✅ All legacy ads are linked!")
+
 
 # Footer with data info
 if perf_data:
