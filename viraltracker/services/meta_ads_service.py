@@ -384,30 +384,47 @@ class MetaAdsService:
     def _fetch_thumbnails_sync(self, ad_ids: List[str]) -> Dict[str, str]:
         """Synchronous call to fetch ad thumbnails."""
         from facebook_business.adobjects.ad import Ad
+        from facebook_business.adobjects.adcreative import AdCreative
 
         thumbnails = {}
         for ad_id in ad_ids:
             try:
+                # Step 1: Get the creative ID from the ad
                 ad = Ad(ad_id)
-                # Try multiple approaches to get thumbnail
-                ad_data = ad.api_get(fields=[
+                ad_data = ad.api_get(fields=["id", "creative"])
+
+                creative_data = ad_data.get("creative")
+                if not creative_data:
+                    logger.debug(f"No creative for ad {ad_id}")
+                    continue
+
+                creative_id = creative_data.get("id")
+                if not creative_id:
+                    continue
+
+                # Step 2: Fetch the creative to get thumbnail
+                creative = AdCreative(creative_id)
+                creative_info = creative.api_get(fields=[
                     "id",
-                    "creative{thumbnail_url,image_url}",
-                    "preview_shareable_link"
+                    "thumbnail_url",
+                    "image_url",
+                    "object_story_spec"
                 ])
 
-                # Try creative.thumbnail_url first
-                creative = ad_data.get("creative", {})
-                if creative:
-                    thumb = creative.get("thumbnail_url") or creative.get("image_url")
-                    if thumb:
-                        thumbnails[ad_id] = thumb
-                        continue
+                # Try thumbnail_url first, then image_url
+                thumb = creative_info.get("thumbnail_url") or creative_info.get("image_url")
 
-                # Fallback: try preview link (not ideal but something)
-                preview = ad_data.get("preview_shareable_link")
-                if preview:
-                    logger.debug(f"No thumbnail for {ad_id}, has preview link")
+                # If still no thumb, try to get from object_story_spec
+                if not thumb:
+                    story_spec = creative_info.get("object_story_spec", {})
+                    link_data = story_spec.get("link_data", {})
+                    thumb = link_data.get("image_url") or link_data.get("picture")
+
+                if thumb:
+                    thumbnails[ad_id] = thumb
+                    logger.debug(f"Got thumbnail for {ad_id}")
+                else:
+                    logger.debug(f"No thumbnail found for {ad_id}")
 
             except Exception as e:
                 logger.warning(f"Could not fetch thumbnail for {ad_id}: {e}")
