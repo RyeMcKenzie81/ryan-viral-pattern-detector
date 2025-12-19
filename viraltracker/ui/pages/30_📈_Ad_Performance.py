@@ -272,33 +272,88 @@ def get_status_emoji(status: str) -> str:
     return status_map.get(status.upper() if status else "", "⚫")
 
 
+def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
+    """Aggregate performance data by ad (across all dates in range)."""
+    from collections import defaultdict
+    ads = defaultdict(lambda: {
+        "spend": 0, "impressions": 0, "link_clicks": 0,
+        "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
+    })
+
+    for d in data:
+        aid = d.get("meta_ad_id")
+        if not aid:
+            continue
+        a = ads[aid]
+        a["ad_name"] = d.get("ad_name", "Unknown")
+        a["ad_status"] = d.get("ad_status", "")
+        a["adset_name"] = d.get("adset_name", "")
+        a["campaign_name"] = d.get("campaign_name", "")
+        a["meta_adset_id"] = d.get("meta_adset_id", "")
+        a["meta_campaign_id"] = d.get("meta_campaign_id", "")
+        a["spend"] += float(d.get("spend") or 0)
+        a["impressions"] += int(d.get("impressions") or 0)
+        a["link_clicks"] += int(d.get("link_clicks") or 0)
+        a["add_to_carts"] += int(d.get("add_to_carts") or 0)
+        a["purchases"] += int(d.get("purchases") or 0)
+        a["purchase_value"] += float(d.get("purchase_value") or 0)
+
+    result = []
+    for aid, a in ads.items():
+        ctr = (a["link_clicks"] / a["impressions"] * 100) if a["impressions"] > 0 else 0
+        cpm = (a["spend"] / a["impressions"] * 1000) if a["impressions"] > 0 else 0
+        cpc = (a["spend"] / a["link_clicks"]) if a["link_clicks"] > 0 else 0
+        roas = (a["purchase_value"] / a["spend"]) if a["spend"] > 0 else 0
+        result.append({
+            "meta_ad_id": aid,
+            "ad_name": a["ad_name"],
+            "ad_status": a["ad_status"],
+            "adset_name": a["adset_name"],
+            "campaign_name": a["campaign_name"],
+            "meta_adset_id": a["meta_adset_id"],
+            "meta_campaign_id": a["meta_campaign_id"],
+            "spend": a["spend"],
+            "impressions": a["impressions"],
+            "link_clicks": a["link_clicks"],
+            "ctr": ctr,
+            "cpm": cpm,
+            "cpc": cpc,
+            "add_to_carts": a["add_to_carts"],
+            "purchases": a["purchases"],
+            "roas": roas,
+        })
+
+    return sorted(result, key=lambda x: x["spend"], reverse=True)
+
+
 def render_ads_table(data: List[Dict], show_link_button: bool = False):
-    """Render ads performance table."""
+    """Render ads performance table with aggregated data."""
     import pandas as pd
 
     if not data:
         st.info("No ad data available for selected period.")
         return
 
+    # Aggregate by ad across all dates
+    ads = aggregate_by_ad(data)
+
     # Prepare data for display
     rows = []
-    for d in data:
-        status = d.get("ad_status", "")
+    for a in ads:
+        status = a.get("ad_status", "")
         status_display = f"{get_status_emoji(status)} {status}" if status else "-"
         rows.append({
             "Status": status_display,
-            "Date": d.get("date", ""),
-            "Ad Name": d.get("ad_name", "Unknown")[:50],
-            "Spend": f"${float(d.get('spend') or 0):,.2f}",
-            "Impr.": f"{int(d.get('impressions') or 0):,}",
-            "CPM": f"${float(d.get('cpm') or 0):.2f}",
-            "Clicks": int(d.get("link_clicks") or 0),
-            "CTR": f"{float(d.get('link_ctr') or 0):.2f}%",
-            "CPC": f"${float(d.get('link_cpc') or 0):.2f}",
-            "ATC": int(d.get("add_to_carts") or 0),
-            "Purchases": int(d.get("purchases") or 0),
-            "ROAS": f"{float(d.get('roas') or 0):.2f}x" if d.get("roas") else "-",
-            "Meta Ad ID": d.get("meta_ad_id", "")[:15] + "..."
+            "Ad Name": a.get("ad_name", "Unknown")[:50],
+            "Spend": f"${a['spend']:,.2f}",
+            "Impr.": f"{a['impressions']:,}",
+            "CPM": f"${a['cpm']:.2f}",
+            "Clicks": a["link_clicks"],
+            "CTR": f"{a['ctr']:.2f}%",
+            "CPC": f"${a['cpc']:.2f}",
+            "ATC": a["add_to_carts"],
+            "Purchases": a["purchases"],
+            "ROAS": f"{a['roas']:.2f}x" if a["roas"] else "-",
         })
 
     df = pd.DataFrame(rows)

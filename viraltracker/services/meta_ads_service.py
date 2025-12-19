@@ -548,6 +548,7 @@ class MetaAdsService:
                     "meta_adset_id": insight.get("meta_adset_id"),
                     "adset_name": insight.get("adset_name"),
                     "meta_campaign_id": insight["meta_campaign_id"],
+                    "campaign_name": insight.get("campaign_name"),
                     "ad_name": insight.get("ad_name"),
                     "date": insight["date"],
                     "spend": insight.get("spend"),
