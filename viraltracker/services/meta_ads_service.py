@@ -604,18 +604,29 @@ class MetaAdsService:
 
         supabase = get_supabase_client()
 
-        query = supabase.table("meta_ads_performance").select(
-            "*"
-        ).not_.in_(
-            "meta_ad_id",
-            supabase.table("meta_ad_mapping").select("meta_ad_id")
-        )
+        # First get all linked meta_ad_ids
+        linked_result = supabase.table("meta_ad_mapping").select("meta_ad_id").execute()
+        linked_ids = [r["meta_ad_id"] for r in (linked_result.data or [])]
+
+        # Get all performance records, optionally filtered by brand
+        query = supabase.table("meta_ads_performance").select("*")
 
         if brand_id:
             query = query.eq("brand_id", str(brand_id))
 
         result = query.execute()
-        return result.data if result.data else []
+        all_ads = result.data or []
+
+        # Filter out linked ads and deduplicate by meta_ad_id
+        seen = set()
+        unlinked = []
+        for ad in all_ads:
+            meta_id = ad.get("meta_ad_id")
+            if meta_id and meta_id not in linked_ids and meta_id not in seen:
+                seen.add(meta_id)
+                unlinked.append(ad)
+
+        return unlinked
 
     async def create_ad_mapping(
         self,
