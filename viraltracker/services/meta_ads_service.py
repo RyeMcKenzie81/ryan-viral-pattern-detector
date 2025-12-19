@@ -392,6 +392,7 @@ class MetaAdsService:
         from facebook_business.adobjects.adcreative import AdCreative
 
         thumbnails = {}
+        print(f"[THUMBNAILS] _fetch_thumbnails_sync called with {len(ad_ids)} ads")
         for ad_id in ad_ids:
             try:
                 # Step 1: Get the creative ID from the ad
@@ -400,7 +401,7 @@ class MetaAdsService:
 
                 creative_data = ad_data.get("creative")
                 if not creative_data:
-                    logger.warning(f"No creative for ad {ad_id}")
+                    print(f"[THUMBNAILS] No creative for ad {ad_id}")
                     continue
 
                 creative_id = creative_data.get("id")
@@ -753,28 +754,45 @@ class MetaAdsService:
         from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
+        print(f"[THUMBNAILS] Starting update_missing_thumbnails for brand {brand_id}")
 
-        # Find ads without thumbnails
+        # Find ads without thumbnails (check for NULL)
         query = supabase.table("meta_ads_performance").select(
-            "meta_ad_id"
+            "meta_ad_id, thumbnail_url"
         ).is_("thumbnail_url", "null")
 
         if brand_id:
             query = query.eq("brand_id", str(brand_id))
 
         result = query.limit(limit).execute()
+        print(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} ads with NULL thumbnail")
 
         if not result.data:
+            # Also check for empty string thumbnails
+            query2 = supabase.table("meta_ads_performance").select(
+                "meta_ad_id, thumbnail_url"
+            ).eq("thumbnail_url", "")
+
+            if brand_id:
+                query2 = query2.eq("brand_id", str(brand_id))
+
+            result = query2.limit(limit).execute()
+            print(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} ads with empty thumbnail")
+
+        if not result.data:
+            print("[THUMBNAILS] No ads need thumbnails")
             return 0
 
         # Get unique ad IDs
         ad_ids = list(set(r["meta_ad_id"] for r in result.data))
-        logger.info(f"Fetching thumbnails for {len(ad_ids)} ads")
+        print(f"[THUMBNAILS] Fetching thumbnails for {len(ad_ids)} unique ads")
 
         # Fetch thumbnails from Meta
         thumbnails = await self.fetch_ad_thumbnails(ad_ids)
+        print(f"[THUMBNAILS] Meta returned {len(thumbnails)} thumbnails")
 
         if not thumbnails:
+            print("[THUMBNAILS] No thumbnails returned from Meta API")
             return 0
 
         # Update database records
@@ -786,9 +804,9 @@ class MetaAdsService:
                 }).eq("meta_ad_id", ad_id).execute()
                 updated += 1
             except Exception as e:
-                logger.error(f"Failed to update thumbnail for {ad_id}: {e}")
+                print(f"[THUMBNAILS] Failed to update {ad_id}: {e}")
 
-        logger.info(f"Updated {updated} thumbnails")
+        print(f"[THUMBNAILS] Updated {updated} thumbnails in database")
         return updated
 
     async def get_unlinked_ads(self, brand_id: Optional[UUID] = None) -> List[Dict[str, Any]]:

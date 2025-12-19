@@ -1066,9 +1066,12 @@ def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
                 if meta_thumbnail:
                     st.image(meta_thumbnail, width=120)
                 else:
-                    st.caption("📷 (no thumbnail)")
+                    # Show why thumbnail is missing
+                    meta_ad_id = meta_ad.get("meta_ad_id", "unknown")
+                    st.caption(f"📷 No thumbnail")
+                    st.caption(f"Ad ID: `{meta_ad_id[:15]}...`")
                 st.caption(f"`{meta_ad.get('ad_name', 'Unknown')[:40]}`")
-                st.caption(f"ID: `{matched_id}`")
+                st.caption(f"Matched ID: `{matched_id}`")
 
             with cols[1]:
                 st.markdown("")
@@ -1479,13 +1482,15 @@ elif selected_tab == "🔗 Linked":
     st.subheader("Linked Ads (ViralTracker ↔ Meta)")
 
     # Find Matches button
-    col1, col2 = st.columns([1, 4])
+    col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
             with st.spinner("Fetching thumbnails and scanning for matches..."):
                 try:
                     # First, fetch any missing thumbnails from Meta
-                    asyncio.run(fetch_missing_thumbnails(brand_id))
+                    thumb_count = asyncio.run(fetch_missing_thumbnails(brand_id))
+                    # Store result for display
+                    st.session_state.ad_perf_last_thumb_count = thumb_count
                     # Then find matches
                     matches = asyncio.run(find_auto_matches(brand_id))
                     st.session_state.ad_perf_match_suggestions = matches
@@ -1494,7 +1499,48 @@ elif selected_tab == "🔗 Linked":
                     st.error(f"Failed to find matches: {e}")
 
     with col2:
-        st.caption("Fetches Meta ad thumbnails and scans for ID patterns")
+        if st.button("🔧 Debug Thumbnails", use_container_width=True):
+            st.session_state.ad_perf_debug_thumbs = True
+            st.rerun()
+
+    with col3:
+        # Show last fetch result
+        if "ad_perf_last_thumb_count" in st.session_state:
+            st.caption(f"Last fetch: {st.session_state.ad_perf_last_thumb_count} thumbnails")
+
+    # Debug panel
+    if st.session_state.get("ad_perf_debug_thumbs"):
+        st.markdown("### 🔧 Thumbnail Debug")
+        with st.spinner("Checking thumbnail status..."):
+            try:
+                db = get_supabase_client()
+                # Count ads by thumbnail status
+                all_ads = db.table("meta_ads_performance").select(
+                    "meta_ad_id, thumbnail_url, ad_name"
+                ).eq("brand_id", brand_id).execute()
+
+                total = len(all_ads.data) if all_ads.data else 0
+                with_thumb = sum(1 for a in (all_ads.data or []) if a.get("thumbnail_url"))
+                without_thumb = total - with_thumb
+
+                st.write(f"**Total ads:** {total}")
+                st.write(f"**With thumbnail:** {with_thumb}")
+                st.write(f"**Without thumbnail:** {without_thumb}")
+
+                if without_thumb > 0:
+                    st.markdown("**Sample ads missing thumbnails:**")
+                    missing = [a for a in (all_ads.data or []) if not a.get("thumbnail_url")][:5]
+                    for a in missing:
+                        st.code(f"ID: {a.get('meta_ad_id')}\nName: {a.get('ad_name', 'Unknown')[:50]}")
+
+                if st.button("Close Debug"):
+                    st.session_state.ad_perf_debug_thumbs = False
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Debug error: {e}")
+
+        st.divider()
 
     st.divider()
 
