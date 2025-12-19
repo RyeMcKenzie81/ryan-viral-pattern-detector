@@ -33,6 +33,32 @@ if "ad_perf_selected_adset" not in st.session_state:
 if "ad_perf_active_tab" not in st.session_state:
     st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked
 
+# CSS to style link buttons
+st.markdown("""
+<style>
+    /* Style buttons to look like links */
+    .link-button button {
+        background: none !important;
+        border: none !important;
+        padding: 0 !important;
+        color: #1a73e8 !important;
+        text-decoration: none !important;
+        cursor: pointer !important;
+        font-size: inherit !important;
+        text-align: left !important;
+    }
+    .link-button button:hover {
+        text-decoration: underline !important;
+        color: #1557b0 !important;
+    }
+    /* Table row styling */
+    .table-row {
+        border-bottom: 1px solid #e0e0e0;
+        padding: 8px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 # =============================================================================
 # Helper Functions
@@ -563,7 +589,7 @@ def render_filter_bar():
 
 
 def render_campaigns_table_fb(data: List[Dict]):
-    """Render campaigns table with selectable rows."""
+    """Render campaigns table with clickable link-style names."""
     import pandas as pd
 
     campaigns = aggregate_by_campaign(data)
@@ -572,65 +598,70 @@ def render_campaigns_table_fb(data: List[Dict]):
         st.info("No campaign data available.")
         return
 
-    st.caption("Select a campaign row to view its ad sets")
+    # Table header
+    cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+    cols[0].markdown("**Campaign**")
+    cols[1].markdown("**Spend**")
+    cols[2].markdown("**Impr**")
+    cols[3].markdown("**CPM**")
+    cols[4].markdown("**Clicks**")
+    cols[5].markdown("**CTR**")
+    cols[6].markdown("**ATC**")
+    cols[7].markdown("**Purch**")
+    cols[8].markdown("**ROAS**")
+    cols[9].markdown("**Sets**")
 
-    # Build dataframe
-    rows = []
-    campaign_ids = []  # Track IDs separately for selection
+    # Data rows
+    total_spend = 0
+    total_impr = 0
+    total_clicks = 0
+    total_atc = 0
+    total_purch = 0
+
     for c in campaigns:
-        campaign_ids.append(c["meta_campaign_id"])
-        rows.append({
-            "Campaign": (c["campaign_name"] or "Unknown")[:45],
-            "Spend": f"${c['spend']:,.2f}",
-            "Impressions": f"{c['impressions']:,}",
-            "CPM": f"${c['cpm']:.2f}",
-            "Clicks": f"{c['link_clicks']:,}",
-            "CTR": f"{c['ctr']:.2f}%",
-            "ATC": c["add_to_carts"],
-            "Purchases": c["purchases"],
-            "ROAS": f"{c['roas']:.2f}x" if c['roas'] > 0 else "-",
-            "Sets": c["adset_count"],
-            "Ads": c["ad_count"],
-        })
+        campaign_name = (c["campaign_name"] or "Unknown")[:40]
+        campaign_id = c["meta_campaign_id"]
 
-    df = pd.DataFrame(rows)
+        total_spend += c["spend"]
+        total_impr += c["impressions"]
+        total_clicks += c["link_clicks"]
+        total_atc += c["add_to_carts"]
+        total_purch += c["purchases"]
 
-    # Display with row selection
-    selection = st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="campaigns_table"
-    )
+        cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1, 1])
 
-    # Handle row selection
-    if selection and selection.selection and selection.selection.rows:
-        selected_idx = selection.selection.rows[0]
-        selected_campaign_id = campaign_ids[selected_idx]
-        selected_campaign_name = rows[selected_idx]["Campaign"]
-        st.session_state.ad_perf_selected_campaign = (selected_campaign_id, selected_campaign_name)
-        st.session_state.ad_perf_selected_adset = None
-        st.session_state.ad_perf_active_tab = 1  # Switch to Ad Sets tab
-        st.rerun()
+        # Link-styled button for campaign name
+        with cols[0]:
+            with st.container():
+                st.markdown('<div class="link-button">', unsafe_allow_html=True)
+                if st.button(campaign_name, key=f"camp_{campaign_id}"):
+                    st.session_state.ad_perf_selected_campaign = (campaign_id, campaign_name)
+                    st.session_state.ad_perf_selected_adset = None
+                    st.session_state.ad_perf_active_tab = 1
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        cols[1].write(f"${c['spend']:,.0f}")
+        cols[2].write(f"{c['impressions']:,}")
+        cols[3].write(f"${c['cpm']:.2f}")
+        cols[4].write(f"{c['link_clicks']:,}")
+        cols[5].write(f"{c['ctr']:.1f}%")
+        cols[6].write(f"{c['add_to_carts']}")
+        cols[7].write(f"{c['purchases']}")
+        cols[8].write(f"{c['roas']:.1f}x" if c['roas'] > 0 else "-")
+        cols[9].write(f"{c['adset_count']}")
 
     # Totals row
-    total_spend = sum(c["spend"] for c in campaigns)
-    total_impr = sum(c["impressions"] for c in campaigns)
-    total_clicks = sum(c["link_clicks"] for c in campaigns)
-    total_atc = sum(c["add_to_carts"] for c in campaigns)
-    total_purch = sum(c["purchases"] for c in campaigns)
+    st.divider()
     total_ctr = (total_clicks / total_impr * 100) if total_impr > 0 else 0
-
     st.markdown(f"""
-    **Totals ({len(campaigns)} campaigns):** Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** ·
-    Clicks: **{total_clicks:,}** · CTR: **{total_ctr:.2f}%** · ATC: **{total_atc:,}** · Purchases: **{total_purch:,}**
+    **Totals ({len(campaigns)}):** Spend **${total_spend:,.2f}** · Impr **{total_impr:,}** ·
+    Clicks **{total_clicks:,}** · CTR **{total_ctr:.1f}%** · ATC **{total_atc:,}** · Purchases **{total_purch:,}**
     """)
 
 
 def render_adsets_table_fb(data: List[Dict]):
-    """Render ad sets table with selectable rows."""
+    """Render ad sets table with clickable link-style names."""
     import pandas as pd
 
     # Apply campaign filter if set
@@ -644,59 +675,65 @@ def render_adsets_table_fb(data: List[Dict]):
         st.info("No ad set data available." + (" Try clearing filters." if selected_campaign else ""))
         return
 
-    st.caption("Select an ad set row to view its ads")
+    # Table header
+    cols = st.columns([3, 2, 1, 1, 1, 1, 1, 1, 1, 1])
+    cols[0].markdown("**Ad Set**")
+    cols[1].markdown("**Campaign**")
+    cols[2].markdown("**Spend**")
+    cols[3].markdown("**Impr**")
+    cols[4].markdown("**CPM**")
+    cols[5].markdown("**Clicks**")
+    cols[6].markdown("**CTR**")
+    cols[7].markdown("**ATC**")
+    cols[8].markdown("**Purch**")
+    cols[9].markdown("**ROAS**")
 
-    # Build dataframe
-    rows = []
-    adset_ids = []  # Track IDs separately for selection
+    # Data rows
+    total_spend = 0
+    total_impr = 0
+    total_clicks = 0
+    total_atc = 0
+    total_purch = 0
+
     for a in adsets:
-        adset_ids.append(a["meta_adset_id"])
-        rows.append({
-            "Ad Set": (a["adset_name"] or "Unknown")[:40],
-            "Campaign": (a["campaign_name"] or "")[:25],
-            "Spend": f"${a['spend']:,.2f}",
-            "Impressions": f"{a['impressions']:,}",
-            "CPM": f"${a['cpm']:.2f}",
-            "Clicks": f"{a['link_clicks']:,}",
-            "CTR": f"{a['ctr']:.2f}%",
-            "ATC": a["add_to_carts"],
-            "Purchases": a["purchases"],
-            "ROAS": f"{a['roas']:.2f}x" if a['roas'] > 0 else "-",
-            "Ads": a["ad_count"],
-        })
+        adset_name = (a["adset_name"] or "Unknown")[:35]
+        adset_id = a["meta_adset_id"]
+        campaign_name = (a["campaign_name"] or "")[:20]
 
-    df = pd.DataFrame(rows)
+        total_spend += a["spend"]
+        total_impr += a["impressions"]
+        total_clicks += a["link_clicks"]
+        total_atc += a["add_to_carts"]
+        total_purch += a["purchases"]
 
-    # Display with row selection
-    selection = st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="adsets_table"
-    )
+        cols = st.columns([3, 2, 1, 1, 1, 1, 1, 1, 1, 1])
 
-    # Handle row selection
-    if selection and selection.selection and selection.selection.rows:
-        selected_idx = selection.selection.rows[0]
-        selected_adset_id = adset_ids[selected_idx]
-        selected_adset_name = rows[selected_idx]["Ad Set"]
-        st.session_state.ad_perf_selected_adset = (selected_adset_id, selected_adset_name)
-        st.session_state.ad_perf_active_tab = 2  # Switch to Ads tab
-        st.rerun()
+        # Link-styled button for adset name
+        with cols[0]:
+            with st.container():
+                st.markdown('<div class="link-button">', unsafe_allow_html=True)
+                if st.button(adset_name, key=f"adset_{adset_id}"):
+                    st.session_state.ad_perf_selected_adset = (adset_id, adset_name)
+                    st.session_state.ad_perf_active_tab = 2
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        cols[1].write(campaign_name)
+        cols[2].write(f"${a['spend']:,.0f}")
+        cols[3].write(f"{a['impressions']:,}")
+        cols[4].write(f"${a['cpm']:.2f}")
+        cols[5].write(f"{a['link_clicks']:,}")
+        cols[6].write(f"{a['ctr']:.1f}%")
+        cols[7].write(f"{a['add_to_carts']}")
+        cols[8].write(f"{a['purchases']}")
+        cols[9].write(f"{a['roas']:.1f}x" if a['roas'] > 0 else "-")
 
     # Totals row
-    total_spend = sum(a["spend"] for a in adsets)
-    total_impr = sum(a["impressions"] for a in adsets)
-    total_clicks = sum(a["link_clicks"] for a in adsets)
-    total_atc = sum(a["add_to_carts"] for a in adsets)
-    total_purch = sum(a["purchases"] for a in adsets)
+    st.divider()
     total_ctr = (total_clicks / total_impr * 100) if total_impr > 0 else 0
-
     st.markdown(f"""
-    **Totals ({len(adsets)} ad sets):** Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** ·
-    Clicks: **{total_clicks:,}** · CTR: **{total_ctr:.2f}%** · ATC: **{total_atc:,}** · Purchases: **{total_purch:,}**
+    **Totals ({len(adsets)}):** Spend **${total_spend:,.2f}** · Impr **{total_impr:,}** ·
+    Clicks **{total_clicks:,}** · CTR **{total_ctr:.1f}%** · ATC **{total_atc:,}** · Purchases **{total_purch:,}**
     """)
 
 
