@@ -692,24 +692,32 @@ class MetaAdsService:
         # Get unlinked Meta ads
         unlinked = await self.get_unlinked_ads(brand_id)
 
+        # Fetch all generated ads and build lookup by first 8 chars of ID
+        gen_result = supabase.table("generated_ads").select(
+            "id, storage_path, hook_text"
+        ).execute()
+
+        # Build lookup: first 8 chars of UUID -> ad record
+        gen_ads_by_prefix = {}
+        for ad in (gen_result.data or []):
+            ad_id = str(ad.get("id", ""))
+            if len(ad_id) >= 8:
+                prefix = ad_id[:8].lower()
+                gen_ads_by_prefix[prefix] = ad
+
         matches = []
         for meta_ad in unlinked:
             ad_name = meta_ad.get("ad_name")
             extracted_id = self.find_matching_generated_ad_id(ad_name)
 
             if extracted_id:
-                # Try to find a matching generated ad
-                # The generated_ad.id starts with the extracted_id
-                result = supabase.table("generated_ads").select(
-                    "id, storage_path, hook_text"
-                ).ilike(
-                    "id", f"{extracted_id}%"
-                ).limit(1).execute()
+                # Look up in our prefix map
+                matched_ad = gen_ads_by_prefix.get(extracted_id.lower())
 
-                if result.data:
+                if matched_ad:
                     matches.append({
                         "meta_ad": meta_ad,
-                        "suggested_match": result.data[0],
+                        "suggested_match": matched_ad,
                         "confidence": "high",
                         "matched_id": extracted_id,
                     })
