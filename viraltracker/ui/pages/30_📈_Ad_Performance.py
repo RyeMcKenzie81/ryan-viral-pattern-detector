@@ -1725,8 +1725,19 @@ elif selected_tab == "🔗 Linked":
                 import re
                 for meta_ad in legacy_ads:
                     ad_name = meta_ad.get("ad_name", "")
-                    # Look for patterns like "1.png", "2.png", "image1.png" etc
+
+                    # Look for patterns - both with and without extensions
+                    # Also look for standalone numbers like "1", "2", "3"
                     filename_patterns = re.findall(r'(\d+\.png|\d+\.jpg|\d+\.jpeg|[a-zA-Z0-9_-]+\.png|[a-zA-Z0-9_-]+\.jpg)', ad_name.lower())
+
+                    # Also extract standalone numbers (e.g., ad name is just "1" or "2")
+                    # But only if it's the whole name or a clear standalone pattern
+                    standalone_nums = re.findall(r'^(\d+)$|[^\w](\d+)[^\w]|^(\d+)[^\w]|[^\w](\d+)$', ad_name)
+                    for match_tuple in standalone_nums:
+                        for num in match_tuple:
+                            if num:
+                                filename_patterns.append(num)
+                                filename_patterns.append(f"{num}.png")
 
                     matched_gen_ad = None
                     matched_filename = None
@@ -1736,7 +1747,7 @@ elif selected_tab == "🔗 Linked":
                             matched_filename = pattern
                             break
                         # Try without extension
-                        name_no_ext = pattern.rsplit(".", 1)[0]
+                        name_no_ext = pattern.rsplit(".", 1)[0] if "." in pattern else pattern
                         if name_no_ext in gen_ads_by_filename:
                             matched_gen_ad = gen_ads_by_filename[name_no_ext]
                             matched_filename = pattern
@@ -1751,12 +1762,18 @@ elif selected_tab == "🔗 Linked":
                         })
 
                 st.session_state.ad_perf_legacy_matches = matches
+
+                # Find simple numeric filenames for debug
+                simple_filenames = [k for k in gen_ads_by_filename.keys() if re.match(r'^\d+$', k) or re.match(r'^\d+\.png$', k)]
+
                 st.session_state.ad_perf_legacy_debug = {
                     "legacy_count": len(legacy_ads),
                     "gen_count": len(generated_ads),
                     "match_count": len(matches),
-                    "sample_legacy": [a.get("ad_name", "")[:50] for a in legacy_ads[:3]],
-                    "sample_gen": [a.get("storage_path", "").split("/")[-1] for a in list(generated_ads)[:5]]
+                    "sample_legacy": [a.get("ad_name", "")[:50] for a in legacy_ads[:5]],
+                    "sample_gen": [a.get("storage_path", "").split("/")[-1] for a in list(generated_ads)[:5]],
+                    "simple_numeric_filenames": simple_filenames[:20],
+                    "lookup_keys_sample": list(gen_ads_by_filename.keys())[:30]
                 }
 
         # Always show debug info if available
@@ -1765,14 +1782,23 @@ elif selected_tab == "🔗 Linked":
             st.info(f"📊 **Search Results**: Found {debug['legacy_count']} legacy ads, {debug['gen_count']} generated ads, **{debug['match_count']} matches**")
 
             if debug['match_count'] == 0:
-                with st.expander("🔍 Debug: Why no matches?"):
-                    st.write("**Sample Legacy Ad Names:**")
+                with st.expander("🔍 Debug: Why no matches?", expanded=True):
+                    st.write("**Sample Legacy Ad Names (from Meta):**")
                     for name in debug['sample_legacy']:
                         st.code(name)
-                    st.write("**Sample Generated Ad Filenames:**")
-                    for name in debug['sample_gen']:
-                        st.code(name)
-                    st.caption("For a match, the ad name must contain a filename pattern (like '1.png') that matches a generated ad filename.")
+
+                    st.write("**Simple Numeric Filenames in Generated Ads:**")
+                    simple = debug.get('simple_numeric_filenames', [])
+                    if simple:
+                        st.code(", ".join(simple[:20]))
+                    else:
+                        st.warning("No simple numeric filenames (like '1', '1.png') found in generated_ads!")
+
+                    st.write("**Sample Lookup Keys (what we're matching against):**")
+                    keys = debug.get('lookup_keys_sample', [])
+                    st.code(", ".join(keys[:15]))
+
+                    st.caption("For a match, the ad name must contain a number (like '1') that matches a generated ad filename.")
 
         # Show matches
         if st.session_state.get("ad_perf_legacy_matches"):
