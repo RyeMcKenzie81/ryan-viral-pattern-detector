@@ -39,11 +39,11 @@ CREATE TABLE IF NOT EXISTS meta_ads_performance (
     spend NUMERIC(12, 2),
     impressions INTEGER,
     reach INTEGER,
-    frequency NUMERIC(6, 3),
+    frequency NUMERIC(10, 3),
 
     -- Link metrics
     link_clicks INTEGER,
-    link_ctr NUMERIC(6, 4),         -- outbound_clicks_ctr
+    link_ctr NUMERIC(10, 4),        -- outbound_clicks_ctr
     link_cpc NUMERIC(10, 4),        -- cost_per_outbound_click
 
     -- Conversion metrics
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS meta_ads_performance (
     purchases INTEGER,
     purchase_value NUMERIC(12, 2),
     roas NUMERIC(8, 4),             -- purchase_roas
-    conversion_rate NUMERIC(6, 4),  -- calculated: purchases / link_clicks * 100
+    conversion_rate NUMERIC(10, 4), -- calculated: purchases / link_clicks * 100
 
     -- Video metrics (nullable, for video ads)
     video_views INTEGER,
