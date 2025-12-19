@@ -24,11 +24,17 @@ from .models import (
     CopyScaffold,
     AngleCopySet,
     TemplateEvaluation,
+    # Meta Ads Performance Models
+    MetaAdPerformance,
+    MetaAdMapping,
+    MetaCampaign,
+    BrandAdAccount,
 )
 
 from .planning_service import PlanningService
 from .template_evaluation_service import TemplateEvaluationService
 from .copy_scaffold_service import CopyScaffoldService
+from .meta_ads_service import MetaAdsService
 
 __all__ = [
     "Tweet",
@@ -52,4 +58,10 @@ __all__ = [
     "CopyScaffold",
     "AngleCopySet",
     "TemplateEvaluation",
+    # Meta Ads Performance
+    "MetaAdsService",
+    "MetaAdPerformance",
+    "MetaAdMapping",
+    "MetaCampaign",
+    "BrandAdAccount",
 ]

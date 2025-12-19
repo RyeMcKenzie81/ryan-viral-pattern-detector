@@ -318,26 +318,30 @@ class AdCreationService:
         extension: str = "png"
     ) -> str:
         """
-        Generate structured ad filename.
+        Generate structured ad filename with ad_id first for Meta Ads matching.
 
-        Format: {brand_code}-{product_code}-{run_id_short}-{ad_id_short}-{format}.{ext}
-        Example: WP-C3-a1b2c3-d4e5f6-SQ.png
+        Format: {ad_id_8char}-{brand_code}-{product_code}-{format}.{ext}
+        Example: d4e5f6a7-WP-C3-SQ.png
+
+        The ad_id is placed first (8 chars) so users can easily copy it to the
+        Meta ad name when uploading, enabling auto-matching in the performance
+        feedback loop.
 
         Args:
             brand_code: Brand code (e.g., "WP")
             product_code: Product code (e.g., "C3")
-            ad_run_id: UUID of the ad run
+            ad_run_id: UUID of the ad run (not included in filename, used in folder path)
             ad_id: UUID of the generated ad
             format_code: Format code (SQ, ST, PT, LS)
             extension: File extension (default: png)
 
         Returns:
-            Structured filename
+            Structured filename with ad_id first
         """
-        run_short = str(ad_run_id).replace("-", "")[:6]
-        ad_short = str(ad_id).replace("-", "")[:6]
+        # Use 8 chars for ~2.8 trillion combinations (collision-safe)
+        ad_short = str(ad_id).replace("-", "")[:8]
 
-        return f"{brand_code}-{product_code}-{run_short}-{ad_short}-{format_code}.{extension}"
+        return f"{ad_short}-{brand_code}-{product_code}-{format_code}.{extension}"
 
     # ============================================
     # IMAGE UPLOAD

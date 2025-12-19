@@ -1549,3 +1549,106 @@ class RedditScrapeRunResult(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
+
+
+# ============================================================================
+# Meta Ads Performance Models
+# ============================================================================
+
+class MetaAdPerformance(BaseModel):
+    """
+    Daily performance snapshot for a Meta (Facebook/Instagram) ad.
+
+    Stores all key metrics for the feedback loop including spend, ROAS, CTR,
+    and conversion metrics. Video metrics are optional.
+    """
+    id: Optional[UUID] = Field(None, description="Internal UUID")
+    meta_ad_account_id: str = Field(..., description="Meta ad account ID (e.g., act_123456789)")
+    meta_ad_id: str = Field(..., description="Meta ad ID")
+    meta_campaign_id: str = Field(..., description="Meta campaign ID")
+    ad_name: Optional[str] = Field(None, description="Ad name (for matching)")
+    date: datetime = Field(..., description="Date of this performance snapshot")
+
+    # Core metrics
+    spend: Optional[float] = Field(None, ge=0, description="Total spend in currency")
+    impressions: Optional[int] = Field(None, ge=0, description="Total impressions")
+    reach: Optional[int] = Field(None, ge=0, description="Unique people reached")
+    frequency: Optional[float] = Field(None, ge=0, description="Average times shown per person")
+
+    # Link metrics
+    link_clicks: Optional[int] = Field(None, ge=0, description="Clicks on links")
+    link_ctr: Optional[float] = Field(None, ge=0, description="Link CTR (outbound_clicks_ctr)")
+    link_cpc: Optional[float] = Field(None, ge=0, description="Cost per link click")
+
+    # Conversion metrics
+    add_to_carts: Optional[int] = Field(None, ge=0, description="Add to cart events")
+    cost_per_add_to_cart: Optional[float] = Field(None, ge=0, description="Cost per add to cart")
+    purchases: Optional[int] = Field(None, ge=0, description="Purchase events")
+    purchase_value: Optional[float] = Field(None, ge=0, description="Total purchase value")
+    roas: Optional[float] = Field(None, ge=0, description="Return on ad spend")
+    conversion_rate: Optional[float] = Field(None, ge=0, description="Purchases / link clicks * 100")
+
+    # Video metrics (nullable)
+    video_views: Optional[int] = Field(None, ge=0, description="3-second video views")
+    video_avg_watch_time: Optional[float] = Field(None, ge=0, description="Average watch time in seconds")
+    video_p25_watched: Optional[int] = Field(None, ge=0, description="Videos watched to 25%")
+    video_p50_watched: Optional[int] = Field(None, ge=0, description="Videos watched to 50%")
+    video_p75_watched: Optional[int] = Field(None, ge=0, description="Videos watched to 75%")
+    video_p100_watched: Optional[int] = Field(None, ge=0, description="Videos watched to 100%")
+
+    # Raw data for extensibility
+    raw_actions: Optional[Dict[str, Any]] = Field(None, description="Full actions array from Meta")
+    raw_costs: Optional[Dict[str, Any]] = Field(None, description="Full cost_per_action_type array")
+
+    # Tracking
+    brand_id: Optional[UUID] = Field(None, description="Associated brand ID")
+    fetched_at: Optional[datetime] = Field(None, description="When this data was fetched")
+
+
+class MetaAdMapping(BaseModel):
+    """
+    Links a ViralTracker generated ad to a Meta ad for performance tracking.
+
+    The link can be created automatically (by matching the 8-char ID in ad name)
+    or manually by the user.
+    """
+    id: Optional[UUID] = Field(None, description="Internal UUID")
+    generated_ad_id: UUID = Field(..., description="ViralTracker generated_ads.id")
+    meta_ad_id: str = Field(..., description="Meta ad ID")
+    meta_ad_account_id: str = Field(..., description="Meta ad account ID")
+    meta_campaign_id: str = Field(..., description="Meta campaign ID")
+    creative_hash: Optional[str] = Field(None, description="Meta image_hash (for future use)")
+    linked_at: Optional[datetime] = Field(None, description="When the link was created")
+    linked_by: str = Field(default="manual", description="'auto' or 'manual'")
+
+
+class MetaCampaign(BaseModel):
+    """
+    Cached campaign metadata from Meta Ads API.
+
+    Used for display and filtering in the performance dashboard.
+    """
+    id: Optional[UUID] = Field(None, description="Internal UUID")
+    meta_ad_account_id: str = Field(..., description="Meta ad account ID")
+    meta_campaign_id: str = Field(..., description="Meta campaign ID")
+    name: Optional[str] = Field(None, description="Campaign name")
+    status: Optional[str] = Field(None, description="ACTIVE, PAUSED, DELETED, ARCHIVED")
+    objective: Optional[str] = Field(None, description="Campaign objective (CONVERSIONS, etc.)")
+    daily_budget: Optional[float] = Field(None, ge=0, description="Daily budget in currency")
+    lifetime_budget: Optional[float] = Field(None, ge=0, description="Lifetime budget in currency")
+    brand_id: Optional[UUID] = Field(None, description="Associated brand ID")
+    synced_at: Optional[datetime] = Field(None, description="When this data was synced")
+
+
+class BrandAdAccount(BaseModel):
+    """
+    Links a brand to a Meta ad account.
+
+    Supports multiple accounts per brand for future expansion.
+    """
+    id: Optional[UUID] = Field(None, description="Internal UUID")
+    brand_id: UUID = Field(..., description="Brand ID")
+    meta_ad_account_id: str = Field(..., description="Meta ad account ID (e.g., act_123456789)")
+    account_name: Optional[str] = Field(None, description="Display name for the account")
+    is_primary: bool = Field(default=True, description="Primary account for this brand")
+    created_at: Optional[datetime] = Field(None, description="When this link was created")

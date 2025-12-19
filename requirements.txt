@@ -95,6 +95,9 @@ nest-asyncio>=1.5.0
 # Web Scraping Dependencies
 firecrawl-py>=1.0.0
 
+# Meta Ads API
+facebook-business>=24.0.0
+
 # Logfire Observability
 logfire==4.14.2
 logfire-api==4.14.2

@@ -37,6 +37,10 @@ class Config:
     # ElevenLabs (Audio Production)
     ELEVENLABS_API_KEY: str = os.getenv('ELEVENLABS_API_KEY', '')
 
+    # Meta Ads API (Facebook/Instagram)
+    META_GRAPH_API_TOKEN: str = os.getenv('META_GRAPH_API_TOKEN', '')
+    META_AD_ACCOUNT_ID: str = os.getenv('META_AD_ACCOUNT_ID', '')  # e.g., "act_123456789"
+
     # Scraping defaults
     DEFAULT_DAYS_BACK: int = int(os.getenv('DAYS_BACK', '120'))
     DEFAULT_CONCURRENCY: int = int(os.getenv('CONCURRENCY', '5'))
