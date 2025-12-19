@@ -33,6 +33,12 @@ if "ad_perf_selected_adset" not in st.session_state:
 if "ad_perf_active_tab" not in st.session_state:
     st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked
 
+# Session state for linking
+if "ad_perf_match_suggestions" not in st.session_state:
+    st.session_state.ad_perf_match_suggestions = None  # List of match suggestions
+if "ad_perf_linking_ad" not in st.session_state:
+    st.session_state.ad_perf_linking_ad = None  # Meta ad being manually linked
+
 
 
 # =============================================================================
@@ -96,12 +102,93 @@ def get_linked_ads(brand_id: str) -> List[Dict]:
     try:
         db = get_supabase_client()
         result = db.table("meta_ad_mapping").select(
-            "*, generated_ads(id, storage_path, status)"
+            "*, generated_ads(id, storage_path, hook_text, final_status)"
         ).execute()
         return result.data or []
     except Exception as e:
         st.error(f"Failed to fetch linked ads: {e}")
         return []
+
+
+def get_linked_meta_ad_ids() -> set:
+    """Get set of Meta ad IDs that are already linked."""
+    try:
+        db = get_supabase_client()
+        result = db.table("meta_ad_mapping").select("meta_ad_id").execute()
+        return set(r["meta_ad_id"] for r in (result.data or []))
+    except Exception:
+        return set()
+
+
+def get_generated_ads_for_linking(brand_id: str, limit: int = 100) -> List[Dict]:
+    """Get generated ads for manual linking picker."""
+    try:
+        db = get_supabase_client()
+        # Get ads through ad_runs -> products -> brand
+        result = db.table("generated_ads").select(
+            "id, storage_path, hook_text, final_status, created_at, "
+            "ad_runs(id, product_id, products(id, name, brand_id))"
+        ).eq("final_status", "approved").order(
+            "created_at", desc=True
+        ).limit(limit).execute()
+
+        # Filter to only ads for this brand
+        ads = []
+        for ad in (result.data or []):
+            ad_run = ad.get("ad_runs") or {}
+            product = ad_run.get("products") or {}
+            if str(product.get("brand_id")) == brand_id:
+                ads.append({
+                    "id": ad["id"],
+                    "storage_path": ad.get("storage_path"),
+                    "hook_text": ad.get("hook_text", "")[:50],
+                    "product_name": product.get("name", "Unknown"),
+                    "created_at": ad.get("created_at", "")[:10],
+                })
+        return ads
+    except Exception as e:
+        st.error(f"Failed to fetch generated ads: {e}")
+        return []
+
+
+async def find_auto_matches(brand_id: str) -> List[Dict]:
+    """Find auto-match suggestions using MetaAdsService."""
+    service = get_meta_ads_service()
+    return await service.auto_match_ads(brand_id=UUID(brand_id))
+
+
+def create_ad_link(
+    generated_ad_id: str,
+    meta_ad_id: str,
+    meta_campaign_id: str,
+    meta_ad_account_id: str,
+    linked_by: str = "manual"
+) -> bool:
+    """Create a link between generated ad and Meta ad."""
+    try:
+        db = get_supabase_client()
+        db.table("meta_ad_mapping").insert({
+            "generated_ad_id": generated_ad_id,
+            "meta_ad_id": meta_ad_id,
+            "meta_campaign_id": meta_campaign_id,
+            "meta_ad_account_id": meta_ad_account_id,
+            "linked_by": linked_by,
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to create link: {e}")
+        return False
+
+
+def delete_ad_link(meta_ad_id: str) -> bool:
+    """Remove a link between generated ad and Meta ad."""
+    try:
+        db = get_supabase_client()
+        db.table("meta_ad_mapping").delete().eq("meta_ad_id", meta_ad_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to remove link: {e}")
+        return False
 
 
 def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
@@ -919,6 +1006,259 @@ def render_setup_instructions():
 
 
 # =============================================================================
+# Linking UI Components
+# =============================================================================
+
+def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
+    """Render auto-match suggestions with confirm/reject buttons."""
+    if not suggestions:
+        st.info("No matches found. Try naming your Meta ads with the 8-character ID from the filename.")
+        return
+
+    st.subheader(f"🔍 Found {len(suggestions)} Potential Matches")
+
+    for i, match in enumerate(suggestions):
+        meta_ad = match.get("meta_ad", {})
+        suggested = match.get("suggested_match")
+        matched_id = match.get("matched_id", "")
+        confidence = match.get("confidence", "low")
+
+        with st.container():
+            cols = st.columns([3, 2, 2, 1])
+
+            with cols[0]:
+                st.markdown(f"**Meta Ad:** {meta_ad.get('ad_name', 'Unknown')[:40]}")
+                st.caption(f"ID pattern: `{matched_id}`")
+
+            with cols[1]:
+                if suggested:
+                    st.markdown(f"**Match:** `{suggested['id'][:8]}...`")
+                    st.caption(suggested.get("hook_text", "")[:30])
+                else:
+                    st.markdown("*No matching generated ad*")
+
+            with cols[2]:
+                if confidence == "high":
+                    st.success("✓ High confidence")
+                else:
+                    st.warning("? Low confidence")
+
+            with cols[3]:
+                if suggested:
+                    if st.button("✓ Link", key=f"confirm_match_{i}", type="primary"):
+                        success = create_ad_link(
+                            generated_ad_id=suggested["id"],
+                            meta_ad_id=meta_ad.get("meta_ad_id"),
+                            meta_campaign_id=meta_ad.get("meta_campaign_id", ""),
+                            meta_ad_account_id=ad_account_id,
+                            linked_by="auto_filename"
+                        )
+                        if success:
+                            st.success("Linked!")
+                            st.rerun()
+
+            st.divider()
+
+
+def render_manual_link_modal(meta_ad: Dict, brand_id: str, ad_account_id: str):
+    """Render modal for manually linking a Meta ad to a generated ad."""
+    st.subheader("🔗 Link to Generated Ad")
+
+    st.markdown(f"**Meta Ad:** {meta_ad.get('ad_name', 'Unknown')}")
+    st.caption(f"Campaign: {meta_ad.get('campaign_name', 'Unknown')}")
+
+    # Get generated ads for this brand
+    generated_ads = get_generated_ads_for_linking(brand_id)
+
+    if not generated_ads:
+        st.warning("No approved generated ads found for this brand.")
+        if st.button("Cancel"):
+            st.session_state.ad_perf_linking_ad = None
+            st.rerun()
+        return
+
+    # Create options for selectbox
+    options = ["-- Select a generated ad --"]
+    for ad in generated_ads:
+        label = f"{ad['id'][:8]}... | {ad['product_name']} | {ad['hook_text']}"
+        options.append(label)
+
+    selected = st.selectbox(
+        "Choose generated ad to link",
+        options,
+        key="manual_link_select"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.ad_perf_linking_ad = None
+            st.rerun()
+
+    with col2:
+        link_disabled = selected == options[0]
+        if st.button("🔗 Create Link", type="primary", use_container_width=True, disabled=link_disabled):
+            # Find the selected ad
+            selected_idx = options.index(selected) - 1  # -1 for the placeholder
+            selected_ad = generated_ads[selected_idx]
+
+            success = create_ad_link(
+                generated_ad_id=selected_ad["id"],
+                meta_ad_id=meta_ad.get("meta_ad_id"),
+                meta_campaign_id=meta_ad.get("meta_campaign_id", ""),
+                meta_ad_account_id=ad_account_id,
+                linked_by="manual"
+            )
+            if success:
+                st.success("✓ Ad linked successfully!")
+                st.session_state.ad_perf_linking_ad = None
+                st.rerun()
+
+
+def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
+    """Render the Linked ads tab with performance data."""
+    import pandas as pd
+
+    if not linked_ads:
+        st.info("No ads linked yet.")
+        st.markdown("""
+        **How to link ads:**
+        1. **Auto-match**: Click "Find Matches" to scan Meta ad names for IDs
+        2. **Manual**: Click the 🔗 button on any ad in the Ads tab
+        """)
+        return
+
+    # Build a map of meta_ad_id -> generated_ad info
+    link_map = {}
+    for link in linked_ads:
+        meta_id = link.get("meta_ad_id")
+        gen_ad = link.get("generated_ads") or {}
+        link_map[meta_id] = {
+            "generated_ad_id": gen_ad.get("id", "")[:8] if gen_ad.get("id") else "",
+            "hook_text": gen_ad.get("hook_text", "")[:30],
+            "linked_by": link.get("linked_by", "manual"),
+        }
+
+    # Filter performance data to linked ads only
+    linked_meta_ids = set(link_map.keys())
+    linked_perf = [d for d in perf_data if d.get("meta_ad_id") in linked_meta_ids]
+
+    if not linked_perf:
+        st.warning("Linked ads found but no performance data in selected date range.")
+        st.caption(f"{len(linked_ads)} ads are linked. Sync data to see their performance.")
+        return
+
+    # Aggregate by ad
+    ads = aggregate_by_ad(linked_perf)
+
+    # Build table with link info
+    rows = []
+    for a in ads:
+        meta_id = a.get("meta_ad_id", "")
+        link_info = link_map.get(meta_id, {})
+        link_type = "🤖" if link_info.get("linked_by") == "auto_filename" else "👤"
+
+        rows.append({
+            "Link": link_type,
+            "Generated ID": link_info.get("generated_ad_id", "-"),
+            "Meta Ad": (a["ad_name"] or "Unknown")[:35],
+            "Spend": f"${a['spend']:,.2f}",
+            "Impr": f"{a['impressions']:,}",
+            "Clicks": a["link_clicks"],
+            "CTR": f"{a['ctr']:.2f}%",
+            "Purchases": a["purchases"],
+            "ROAS": f"{a['roas']:.2f}x" if a["roas"] else "-",
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Summary
+    total_spend = sum(a["spend"] for a in ads)
+    total_purchases = sum(a["purchases"] for a in ads)
+    st.markdown(f"**{len(ads)} linked ads** · Spend: **${total_spend:,.2f}** · Purchases: **{total_purchases:,}**")
+
+
+def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id: str):
+    """Render ads table with link/unlink buttons."""
+    import pandas as pd
+
+    # Apply filters
+    selected_campaign = st.session_state.ad_perf_selected_campaign
+    selected_adset = st.session_state.ad_perf_selected_adset
+
+    if selected_campaign:
+        data = [d for d in data if d.get("meta_campaign_id") == selected_campaign[0]]
+    if selected_adset:
+        data = [d for d in data if d.get("meta_adset_id") == selected_adset[0]]
+
+    if not data:
+        st.info("No ad data available." + (" Try clearing filters." if selected_campaign or selected_adset else ""))
+        return
+
+    # Get linked ad IDs
+    linked_ids = get_linked_meta_ad_ids()
+
+    # Aggregate by ad
+    ads = aggregate_by_ad(data)
+
+    # Display ads with link status
+    for i, a in enumerate(ads):
+        meta_id = a.get("meta_ad_id", "")
+        is_linked = meta_id in linked_ids
+        status = a.get("ad_status", "")
+        status_display = f"{get_status_emoji(status)} " if status else ""
+
+        cols = st.columns([0.5, 3, 1, 1, 1, 1, 1, 1, 1])
+
+        with cols[0]:
+            if is_linked:
+                if st.button("🔗", key=f"unlink_{i}", help="Click to unlink"):
+                    if delete_ad_link(meta_id):
+                        st.rerun()
+            else:
+                if st.button("○", key=f"link_{i}", help="Click to link"):
+                    st.session_state.ad_perf_linking_ad = {
+                        "meta_ad_id": meta_id,
+                        "ad_name": a.get("ad_name", "Unknown"),
+                        "campaign_name": a.get("campaign_name", ""),
+                        "meta_campaign_id": a.get("meta_campaign_id", ""),
+                    }
+                    st.rerun()
+
+        with cols[1]:
+            st.markdown(f"{status_display}**{(a['ad_name'] or 'Unknown')[:40]}**")
+
+        with cols[2]:
+            st.caption(f"${a['spend']:,.0f}")
+
+        with cols[3]:
+            st.caption(f"{a['impressions']:,}")
+
+        with cols[4]:
+            st.caption(f"{a['ctr']:.1f}%")
+
+        with cols[5]:
+            st.caption(f"${a['cpc']:.2f}")
+
+        with cols[6]:
+            st.caption(f"{a['add_to_carts']}")
+
+        with cols[7]:
+            st.caption(f"{a['purchases']}")
+
+        with cols[8]:
+            st.caption(f"{a['roas']:.1f}x" if a['roas'] else "-")
+
+    # Totals
+    total_spend = sum(a["spend"] for a in ads)
+    total_impr = sum(a["impressions"] for a in ads)
+    total_clicks = sum(a["link_clicks"] for a in ads)
+    st.markdown(f"**{len(ads)} ads** · Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** · Clicks: **{total_clicks:,}**")
+
+
+# =============================================================================
 # Main Page
 # =============================================================================
 
@@ -1012,6 +1352,26 @@ if new_tab_index != st.session_state.ad_perf_active_tab:
 
 st.divider()
 
+# Check if manual linking modal should be shown
+if st.session_state.ad_perf_linking_ad:
+    render_manual_link_modal(
+        st.session_state.ad_perf_linking_ad,
+        brand_id,
+        ad_account['meta_ad_account_id']
+    )
+    st.stop()
+
+# Check if match suggestions should be shown
+if st.session_state.ad_perf_match_suggestions is not None:
+    render_match_suggestions(
+        st.session_state.ad_perf_match_suggestions,
+        ad_account['meta_ad_account_id']
+    )
+    if st.button("← Back to Ads"):
+        st.session_state.ad_perf_match_suggestions = None
+        st.rerun()
+    st.stop()
+
 # Render content based on selected tab
 if selected_tab == "📁 Campaigns":
     render_campaigns_table_fb(perf_data)
@@ -1020,26 +1380,53 @@ elif selected_tab == "📂 Ad Sets":
     render_adsets_table_fb(perf_data)
 
 elif selected_tab == "📄 Ads":
-    render_ads_table_fb(perf_data)
+    # Add header row
+    st.caption("○ = Unlinked · 🔗 = Linked (click to change)")
+    cols = st.columns([0.5, 3, 1, 1, 1, 1, 1, 1, 1])
+    with cols[0]:
+        st.caption("")
+    with cols[1]:
+        st.caption("**Ad Name**")
+    with cols[2]:
+        st.caption("**Spend**")
+    with cols[3]:
+        st.caption("**Impr**")
+    with cols[4]:
+        st.caption("**CTR**")
+    with cols[5]:
+        st.caption("**CPC**")
+    with cols[6]:
+        st.caption("**ATC**")
+    with cols[7]:
+        st.caption("**Purch**")
+    with cols[8]:
+        st.caption("**ROAS**")
+
+    render_ads_table_with_linking(perf_data, brand_id, ad_account['meta_ad_account_id'])
 
 elif selected_tab == "🔗 Linked":
     st.subheader("Linked Ads (ViralTracker ↔ Meta)")
-    linked = get_linked_ads(brand_id)
 
-    if linked:
-        st.info(f"{len(linked)} ads linked to ViralTracker generated ads")
-        # Filter performance data to only linked ads
-        linked_ad_ids = set(l.get("meta_ad_id") for l in linked)
-        linked_perf = [d for d in perf_data if d.get("meta_ad_id") in linked_ad_ids]
-        render_ads_table(linked_perf)
-    else:
-        st.info("No ads linked yet. Use the auto-match feature to link Meta ads to your generated ads.")
-        st.markdown("""
-        **How linking works:**
-        1. When you create ads in ViralTracker, the filename starts with an 8-character ID
-        2. Copy this ID to your Meta ad name when uploading
-        3. Use the auto-match feature to automatically link them
-        """)
+    # Find Matches button
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔍 Find Matches", type="primary", use_container_width=True):
+            with st.spinner("Scanning Meta ad names for ID patterns..."):
+                try:
+                    matches = asyncio.run(find_auto_matches(brand_id))
+                    st.session_state.ad_perf_match_suggestions = matches
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to find matches: {e}")
+
+    with col2:
+        st.caption("Scan unlinked Meta ads for 8-character ID patterns to auto-match")
+
+    st.divider()
+
+    # Show linked ads table
+    linked = get_linked_ads(brand_id)
+    render_linked_ads_table(perf_data, linked)
 
 
 # Footer with data info
