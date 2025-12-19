@@ -1751,11 +1751,28 @@ elif selected_tab == "🔗 Linked":
                         })
 
                 st.session_state.ad_perf_legacy_matches = matches
-                if matches:
-                    st.success(f"Found {len(matches)} filename matches!")
-                else:
-                    st.warning(f"No filename matches found. Legacy ads: {len(legacy_ads)}, Generated ads: {len(generated_ads)}")
-                st.rerun()
+                st.session_state.ad_perf_legacy_debug = {
+                    "legacy_count": len(legacy_ads),
+                    "gen_count": len(generated_ads),
+                    "match_count": len(matches),
+                    "sample_legacy": [a.get("ad_name", "")[:50] for a in legacy_ads[:3]],
+                    "sample_gen": [a.get("storage_path", "").split("/")[-1] for a in list(generated_ads)[:5]]
+                }
+
+        # Always show debug info if available
+        debug = st.session_state.get("ad_perf_legacy_debug")
+        if debug:
+            st.info(f"📊 **Search Results**: Found {debug['legacy_count']} legacy ads, {debug['gen_count']} generated ads, **{debug['match_count']} matches**")
+
+            if debug['match_count'] == 0:
+                with st.expander("🔍 Debug: Why no matches?"):
+                    st.write("**Sample Legacy Ad Names:**")
+                    for name in debug['sample_legacy']:
+                        st.code(name)
+                    st.write("**Sample Generated Ad Filenames:**")
+                    for name in debug['sample_gen']:
+                        st.code(name)
+                    st.caption("For a match, the ad name must contain a filename pattern (like '1.png') that matches a generated ad filename.")
 
         # Show matches
         if st.session_state.get("ad_perf_legacy_matches"):
