@@ -1707,11 +1707,11 @@ elif selected_tab == "🔗 Linked":
             st.write(f"**Found {len(legacy_ads)} unmatched ads** in campaigns matching '{legacy_campaign}'")
 
             if legacy_ads:
-                # Get generated ads for linking options
+                # Get generated ads for linking options (all recent ads)
                 db = get_supabase_client()
                 gen_result = db.table("generated_ads").select(
                     "id, storage_path, hook_text, created_at"
-                ).eq("brand_id", brand_id).order("created_at", desc=True).limit(100).execute()
+                ).order("created_at", desc=True).limit(200).execute()
                 generated_ads = gen_result.data or []
 
                 for i, legacy_ad in enumerate(legacy_ads):
