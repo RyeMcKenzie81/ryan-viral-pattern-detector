@@ -182,6 +182,10 @@ def create_ad_link(
         }).execute()
         return True
     except Exception as e:
+        error_str = str(e)
+        if "duplicate key" in error_str or "23505" in error_str:
+            st.warning("This ad is already linked!")
+            return True  # Return True so we still remove it from suggestions
         st.error(f"Failed to create link: {e}")
         return False
 
@@ -1107,10 +1111,22 @@ def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
                             linked_by="auto_filename"
                         )
                         if success:
+                            # Remove this suggestion from the list
+                            if st.session_state.ad_perf_match_suggestions:
+                                st.session_state.ad_perf_match_suggestions = [
+                                    s for s in st.session_state.ad_perf_match_suggestions
+                                    if s.get("meta_ad", {}).get("meta_ad_id") != meta_ad.get("meta_ad_id")
+                                ]
                             st.success("Linked!")
                             st.rerun()
                     if st.button("✗ Skip", key=f"skip_match_{i}", use_container_width=True):
-                        pass  # Just ignore
+                        # Remove from suggestions without linking
+                        if st.session_state.ad_perf_match_suggestions:
+                            st.session_state.ad_perf_match_suggestions = [
+                                s for s in st.session_state.ad_perf_match_suggestions
+                                if s.get("meta_ad", {}).get("meta_ad_id") != meta_ad.get("meta_ad_id")
+                            ]
+                        st.rerun()
 
             st.divider()
 
