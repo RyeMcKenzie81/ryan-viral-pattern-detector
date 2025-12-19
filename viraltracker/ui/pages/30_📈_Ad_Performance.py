@@ -1537,49 +1537,89 @@ elif selected_tab == "🔗 Linked":
                 st.markdown("---")
                 st.markdown("**Test single ad thumbnail fetch:**")
                 test_ad_id = st.text_input("Enter Meta Ad ID to test:", value="120235403371890742")
-                if st.button("🧪 Test Fetch"):
-                    with st.spinner("Fetching from Meta API..."):
+
+                col_test1, col_test2 = st.columns(2)
+                with col_test1:
+                    if st.button("🧪 Test Fetch from Meta"):
+                        with st.spinner("Fetching from Meta API..."):
+                            try:
+                                from facebook_business.api import FacebookAdsApi
+                                from facebook_business.adobjects.ad import Ad
+                                from facebook_business.adobjects.adcreative import AdCreative
+                                from viraltracker.core.config import Config
+
+                                # Initialize API
+                                FacebookAdsApi.init(access_token=Config.META_GRAPH_API_TOKEN)
+
+                                st.write(f"**Step 1:** Fetching ad {test_ad_id}...")
+                                ad = Ad(test_ad_id)
+                                ad_data = ad.api_get(fields=["id", "name", "creative", "status"])
+                                st.json(dict(ad_data))
+
+                                creative_data = ad_data.get("creative")
+                                if creative_data:
+                                    creative_id = creative_data.get("id")
+                                    st.write(f"**Step 2:** Fetching creative {creative_id}...")
+                                    creative = AdCreative(creative_id)
+                                    creative_info = creative.api_get(fields=[
+                                        "id", "name", "thumbnail_url", "image_url",
+                                        "image_hash", "video_id", "object_type",
+                                        "object_story_spec"
+                                    ])
+                                    st.json(dict(creative_info))
+
+                                    # Try to find image
+                                    thumb = creative_info.get("thumbnail_url")
+                                    img = creative_info.get("image_url")
+                                    st.write(f"**thumbnail_url:** {thumb}")
+                                    st.write(f"**image_url:** {img}")
+
+                                    if thumb:
+                                        st.image(thumb, caption="Thumbnail", width=150)
+                                    if img:
+                                        st.image(img, caption="Image URL", width=150)
+
+                                    # Store for update button
+                                    st.session_state.debug_fetched_url = img or thumb
+                                else:
+                                    st.warning("No creative found on this ad")
+
+                            except Exception as e:
+                                st.error(f"Test failed: {e}")
+
+                with col_test2:
+                    if st.button("📋 Check Database Value"):
                         try:
-                            from facebook_business.api import FacebookAdsApi
-                            from facebook_business.adobjects.ad import Ad
-                            from facebook_business.adobjects.adcreative import AdCreative
-                            from viraltracker.core.config import Config
+                            db_result = db.table("meta_ads_performance").select(
+                                "meta_ad_id, ad_name, thumbnail_url"
+                            ).eq("meta_ad_id", test_ad_id).limit(1).execute()
 
-                            # Initialize API
-                            FacebookAdsApi.init(access_token=Config.META_GRAPH_API_TOKEN)
-
-                            st.write(f"**Step 1:** Fetching ad {test_ad_id}...")
-                            ad = Ad(test_ad_id)
-                            ad_data = ad.api_get(fields=["id", "name", "creative", "status"])
-                            st.json(dict(ad_data))
-
-                            creative_data = ad_data.get("creative")
-                            if creative_data:
-                                creative_id = creative_data.get("id")
-                                st.write(f"**Step 2:** Fetching creative {creative_id}...")
-                                creative = AdCreative(creative_id)
-                                creative_info = creative.api_get(fields=[
-                                    "id", "name", "thumbnail_url", "image_url",
-                                    "image_hash", "video_id", "object_type",
-                                    "object_story_spec"
-                                ])
-                                st.json(dict(creative_info))
-
-                                # Try to find image
-                                thumb = creative_info.get("thumbnail_url")
-                                img = creative_info.get("image_url")
-                                st.write(f"**thumbnail_url:** {thumb}")
-                                st.write(f"**image_url:** {img}")
-
-                                if thumb:
-                                    st.image(thumb, caption="Thumbnail", width=150)
-                                if img:
-                                    st.image(img, caption="Image URL", width=150)
+                            if db_result.data:
+                                db_ad = db_result.data[0]
+                                st.write(f"**Ad Name:** {db_ad.get('ad_name', 'N/A')[:50]}")
+                                db_thumb = db_ad.get('thumbnail_url')
+                                st.write(f"**Stored thumbnail_url:** {db_thumb or '(NULL/empty)'}")
+                                if db_thumb:
+                                    st.image(db_thumb, caption="Current stored image", width=150)
                             else:
-                                st.warning("No creative found on this ad")
-
+                                st.warning(f"Ad {test_ad_id} not found in database")
                         except Exception as e:
-                            st.error(f"Test failed: {e}")
+                            st.error(f"Database check failed: {e}")
+
+                # Update button if we have a fetched URL
+                if st.session_state.get("debug_fetched_url"):
+                    fetched_url = st.session_state.debug_fetched_url
+                    st.write(f"**Fetched URL:** {fetched_url[:80]}...")
+                    if st.button("💾 Save this URL to Database"):
+                        try:
+                            db.table("meta_ads_performance").update({
+                                "thumbnail_url": fetched_url
+                            }).eq("meta_ad_id", test_ad_id).execute()
+                            st.success(f"Updated thumbnail for {test_ad_id}")
+                            st.session_state.debug_fetched_url = None
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Update failed: {e}")
 
                 if st.button("Close Debug"):
                     st.session_state.ad_perf_debug_thumbs = False
