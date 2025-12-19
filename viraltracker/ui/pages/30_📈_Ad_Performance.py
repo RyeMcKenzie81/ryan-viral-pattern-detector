@@ -564,8 +564,13 @@ def render_filter_bar():
 
 
 def render_campaigns_table_fb(data: List[Dict]):
-    """Render campaigns table with drill-down buttons."""
+    """Render campaigns table with clickable names using AG Grid."""
     import pandas as pd
+    try:
+        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+        use_aggrid = True
+    except ImportError:
+        use_aggrid = False
 
     campaigns = aggregate_by_campaign(data)
 
@@ -573,41 +578,75 @@ def render_campaigns_table_fb(data: List[Dict]):
         st.info("No campaign data available.")
         return
 
-    # Build display dataframe
+    # Build dataframe with IDs
     rows = []
     for c in campaigns:
         rows.append({
+            "id": c["meta_campaign_id"],
             "Campaign": (c["campaign_name"] or "Unknown")[:45],
-            "Spend": f"${c['spend']:,.2f}",
-            "Impr": f"{c['impressions']:,}",
-            "CPM": f"${c['cpm']:.2f}",
-            "Clicks": f"{c['link_clicks']:,}",
-            "CTR": f"{c['ctr']:.2f}%",
+            "Spend": c["spend"],
+            "Impr": c["impressions"],
+            "CPM": c["cpm"],
+            "Clicks": c["link_clicks"],
+            "CTR": c["ctr"],
             "ATC": c["add_to_carts"],
             "Purch": c["purchases"],
-            "ROAS": f"{c['roas']:.2f}x" if c['roas'] > 0 else "-",
+            "ROAS": c["roas"],
             "Sets": c["adset_count"],
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Drill-down selector
-    st.markdown("**Drill down to ad sets:**")
-    campaign_options = {(c["campaign_name"] or "Unknown")[:45]: c["meta_campaign_id"] for c in campaigns}
-    selected = st.selectbox(
-        "Select campaign",
-        options=[""] + list(campaign_options.keys()),
-        format_func=lambda x: "Choose a campaign..." if x == "" else x,
-        key="campaign_drill_select",
-        label_visibility="collapsed"
-    )
+    if use_aggrid:
+        # Configure AG Grid
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_column("id", hide=True)
+        gb.configure_column("Campaign",
+            cellStyle={'color': '#1a73e8', 'cursor': 'pointer', 'textDecoration': 'underline'},
+            width=250
+        )
+        gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=100)
+        gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=100)
+        gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=80)
+        gb.configure_column("Clicks", valueFormatter="value.toLocaleString()", width=80)
+        gb.configure_column("CTR", valueFormatter="value.toFixed(2) + '%'", width=70)
+        gb.configure_column("ROAS", valueFormatter="value > 0 ? value.toFixed(2) + 'x' : '-'", width=70)
+        gb.configure_selection(selection_mode="single", use_checkbox=False)
+        gb.configure_grid_options(domLayout='autoHeight')
 
-    if selected and selected != "":
-        st.session_state.ad_perf_selected_campaign = (campaign_options[selected], selected)
-        st.session_state.ad_perf_selected_adset = None
-        st.session_state.ad_perf_active_tab = 1
-        st.rerun()
+        grid_options = gb.build()
+
+        # Display grid
+        grid_response = AgGrid(
+            df,
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            fit_columns_on_grid_load=True,
+            theme="streamlit",
+            key="campaigns_grid"
+        )
+
+        # Handle row selection
+        selected_rows = grid_response.get("selected_rows", None)
+        if selected_rows is not None and len(selected_rows) > 0:
+            selected_row = selected_rows.iloc[0] if hasattr(selected_rows, 'iloc') else selected_rows[0]
+            campaign_id = selected_row.get("id") or selected_row.get("_selectedRowNodeInfo", {}).get("nodeRowIndex")
+            campaign_name = selected_row.get("Campaign", "Unknown")
+            if campaign_id:
+                st.session_state.ad_perf_selected_campaign = (str(campaign_id), campaign_name)
+                st.session_state.ad_perf_selected_adset = None
+                st.session_state.ad_perf_active_tab = 1
+                st.rerun()
+    else:
+        # Fallback to regular dataframe
+        display_df = df.drop(columns=["id"]).copy()
+        display_df["Spend"] = display_df["Spend"].apply(lambda x: f"${x:,.2f}")
+        display_df["Impr"] = display_df["Impr"].apply(lambda x: f"{x:,}")
+        display_df["CPM"] = display_df["CPM"].apply(lambda x: f"${x:.2f}")
+        display_df["CTR"] = display_df["CTR"].apply(lambda x: f"{x:.2f}%")
+        display_df["ROAS"] = display_df["ROAS"].apply(lambda x: f"{x:.2f}x" if x > 0 else "-")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.info("Install `streamlit-aggrid` for clickable campaign names")
 
     # Totals
     total_spend = sum(c["spend"] for c in campaigns)
@@ -624,8 +663,13 @@ def render_campaigns_table_fb(data: List[Dict]):
 
 
 def render_adsets_table_fb(data: List[Dict]):
-    """Render ad sets table with drill-down selector."""
+    """Render ad sets table with clickable names using AG Grid."""
     import pandas as pd
+    try:
+        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+        use_aggrid = True
+    except ImportError:
+        use_aggrid = False
 
     # Apply campaign filter if set
     selected_campaign = st.session_state.ad_perf_selected_campaign
@@ -638,41 +682,76 @@ def render_adsets_table_fb(data: List[Dict]):
         st.info("No ad set data available." + (" Try clearing filters." if selected_campaign else ""))
         return
 
-    # Build display dataframe
+    # Build dataframe with IDs
     rows = []
     for a in adsets:
         rows.append({
+            "id": a["meta_adset_id"],
             "Ad Set": (a["adset_name"] or "Unknown")[:40],
             "Campaign": (a["campaign_name"] or "")[:25],
-            "Spend": f"${a['spend']:,.2f}",
-            "Impr": f"{a['impressions']:,}",
-            "CPM": f"${a['cpm']:.2f}",
-            "Clicks": f"{a['link_clicks']:,}",
-            "CTR": f"{a['ctr']:.2f}%",
+            "Spend": a["spend"],
+            "Impr": a["impressions"],
+            "CPM": a["cpm"],
+            "Clicks": a["link_clicks"],
+            "CTR": a["ctr"],
             "ATC": a["add_to_carts"],
             "Purch": a["purchases"],
-            "ROAS": f"{a['roas']:.2f}x" if a['roas'] > 0 else "-",
+            "ROAS": a["roas"],
             "Ads": a["ad_count"],
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Drill-down selector
-    st.markdown("**Drill down to ads:**")
-    adset_options = {(a["adset_name"] or "Unknown")[:40]: a["meta_adset_id"] for a in adsets}
-    selected = st.selectbox(
-        "Select ad set",
-        options=[""] + list(adset_options.keys()),
-        format_func=lambda x: "Choose an ad set..." if x == "" else x,
-        key="adset_drill_select",
-        label_visibility="collapsed"
-    )
+    if use_aggrid:
+        # Configure AG Grid
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_column("id", hide=True)
+        gb.configure_column("Ad Set",
+            cellStyle={'color': '#1a73e8', 'cursor': 'pointer', 'textDecoration': 'underline'},
+            width=220
+        )
+        gb.configure_column("Campaign", width=150)
+        gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=100)
+        gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=90)
+        gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=70)
+        gb.configure_column("Clicks", valueFormatter="value.toLocaleString()", width=70)
+        gb.configure_column("CTR", valueFormatter="value.toFixed(2) + '%'", width=60)
+        gb.configure_column("ROAS", valueFormatter="value > 0 ? value.toFixed(2) + 'x' : '-'", width=60)
+        gb.configure_selection(selection_mode="single", use_checkbox=False)
+        gb.configure_grid_options(domLayout='autoHeight')
 
-    if selected and selected != "":
-        st.session_state.ad_perf_selected_adset = (adset_options[selected], selected)
-        st.session_state.ad_perf_active_tab = 2
-        st.rerun()
+        grid_options = gb.build()
+
+        # Display grid
+        grid_response = AgGrid(
+            df,
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            fit_columns_on_grid_load=True,
+            theme="streamlit",
+            key="adsets_grid"
+        )
+
+        # Handle row selection
+        selected_rows = grid_response.get("selected_rows", None)
+        if selected_rows is not None and len(selected_rows) > 0:
+            selected_row = selected_rows.iloc[0] if hasattr(selected_rows, 'iloc') else selected_rows[0]
+            adset_id = selected_row.get("id")
+            adset_name = selected_row.get("Ad Set", "Unknown")
+            if adset_id:
+                st.session_state.ad_perf_selected_adset = (str(adset_id), adset_name)
+                st.session_state.ad_perf_active_tab = 2
+                st.rerun()
+    else:
+        # Fallback to regular dataframe
+        display_df = df.drop(columns=["id"]).copy()
+        display_df["Spend"] = display_df["Spend"].apply(lambda x: f"${x:,.2f}")
+        display_df["Impr"] = display_df["Impr"].apply(lambda x: f"{x:,}")
+        display_df["CPM"] = display_df["CPM"].apply(lambda x: f"${x:.2f}")
+        display_df["CTR"] = display_df["CTR"].apply(lambda x: f"{x:.2f}%")
+        display_df["ROAS"] = display_df["ROAS"].apply(lambda x: f"{x:.2f}x" if x > 0 else "-")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.info("Install `streamlit-aggrid` for clickable ad set names")
 
     # Totals
     total_spend = sum(a["spend"] for a in adsets)
