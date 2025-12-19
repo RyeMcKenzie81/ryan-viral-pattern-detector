@@ -1487,12 +1487,13 @@ elif selected_tab == "🔗 Linked":
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
             with st.spinner("Fetching thumbnails and scanning for matches..."):
                 try:
-                    # Fetch ALL missing thumbnails (loop until done)
+                    # Fetch ALL missing thumbnails (loop until no more updated)
                     total_thumbs = 0
-                    while True:
+                    max_iterations = 20  # Safety limit
+                    for _ in range(max_iterations):
                         batch_count = asyncio.run(fetch_missing_thumbnails(brand_id))
                         total_thumbs += batch_count
-                        if batch_count < 50:  # No more to fetch
+                        if batch_count == 0:  # No more to fetch
                             break
                     # Store result for display
                     st.session_state.ad_perf_last_thumb_count = total_thumbs
