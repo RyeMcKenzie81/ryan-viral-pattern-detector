@@ -1725,13 +1725,19 @@ elif selected_tab == "🔗 Linked":
                 import re
                 for meta_ad in legacy_ads:
                     ad_name = meta_ad.get("ad_name", "")
+                    filename_patterns = []
 
-                    # Look for patterns - both with and without extensions
-                    # Also look for standalone numbers like "1", "2", "3"
-                    filename_patterns = re.findall(r'(\d+\.png|\d+\.jpg|\d+\.jpeg|[a-zA-Z0-9_-]+\.png|[a-zA-Z0-9_-]+\.jpg)', ad_name.lower())
+                    # Pattern 1: [m5-system]_X.png format (e.g., "[image][m5-system]_3.png-12_December")
+                    m5_match = re.search(r'\[m5-system\]_(\d+)\.png', ad_name, re.IGNORECASE)
+                    if m5_match:
+                        num = m5_match.group(1)
+                        filename_patterns.append(f"{num}.png")
+                        filename_patterns.append(num)
 
-                    # Also extract standalone numbers (e.g., ad name is just "1" or "2")
-                    # But only if it's the whole name or a clear standalone pattern
+                    # Pattern 2: General filename patterns like "1.png", "2.jpg"
+                    filename_patterns.extend(re.findall(r'(\d+\.png|\d+\.jpg|\d+\.jpeg)', ad_name.lower()))
+
+                    # Pattern 3: Standalone numbers
                     standalone_nums = re.findall(r'^(\d+)$|[^\w](\d+)[^\w]|^(\d+)[^\w]|[^\w](\d+)$', ad_name)
                     for match_tuple in standalone_nums:
                         for num in match_tuple:
