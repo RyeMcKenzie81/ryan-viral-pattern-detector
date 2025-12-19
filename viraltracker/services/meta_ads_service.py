@@ -349,6 +349,56 @@ class MetaAdsService:
         # Convert to list of dicts
         return [dict(i) for i in insights]
 
+    async def fetch_ad_thumbnails(
+        self,
+        ad_ids: List[str],
+        ad_account_id: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Fetch thumbnail URLs for a list of ad IDs.
+
+        Args:
+            ad_ids: List of Meta ad IDs
+            ad_account_id: Ad account ID (for rate limiting context)
+
+        Returns:
+            Dict mapping ad_id -> thumbnail_url
+        """
+        if not ad_ids:
+            return {}
+
+        self._ensure_sdk()
+        await self._rate_limit()
+
+        try:
+            thumbnails = await asyncio.to_thread(
+                self._fetch_thumbnails_sync,
+                ad_ids
+            )
+            logger.info(f"Fetched {len(thumbnails)} ad thumbnails")
+            return thumbnails
+        except Exception as e:
+            logger.error(f"Failed to fetch ad thumbnails: {e}")
+            return {}
+
+    def _fetch_thumbnails_sync(self, ad_ids: List[str]) -> Dict[str, str]:
+        """Synchronous call to fetch ad thumbnails."""
+        from facebook_business.adobjects.ad import Ad
+
+        thumbnails = {}
+        for ad_id in ad_ids:
+            try:
+                ad = Ad(ad_id)
+                ad_data = ad.api_get(fields=["id", "creative{thumbnail_url}"])
+                creative = ad_data.get("creative", {})
+                if creative and "thumbnail_url" in creative:
+                    thumbnails[ad_id] = creative["thumbnail_url"]
+            except Exception as e:
+                logger.debug(f"Could not fetch thumbnail for {ad_id}: {e}")
+                continue
+
+        return thumbnails
+
     def normalize_metrics(self, insight: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize Meta API response to flat metrics dict.
@@ -593,6 +643,7 @@ class MetaAdsService:
                     "video_p100_watched": insight.get("video_p100_watched"),
                     "raw_actions": insight.get("raw_actions"),
                     "raw_costs": insight.get("raw_costs"),
+                    "thumbnail_url": insight.get("thumbnail_url"),
                     "brand_id": str(brand_id) if brand_id else None,
                 }
 
@@ -609,6 +660,62 @@ class MetaAdsService:
 
         logger.info(f"Saved {saved_count}/{len(insights)} performance records")
         return saved_count
+
+    async def update_missing_thumbnails(
+        self,
+        brand_id: Optional[UUID] = None,
+        limit: int = 50
+    ) -> int:
+        """
+        Fetch and update thumbnail URLs for ads that don't have them.
+
+        Args:
+            brand_id: Optional filter by brand
+            limit: Maximum ads to update (to avoid rate limits)
+
+        Returns:
+            Number of thumbnails updated
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+
+        # Find ads without thumbnails
+        query = supabase.table("meta_ads_performance").select(
+            "meta_ad_id"
+        ).is_("thumbnail_url", "null")
+
+        if brand_id:
+            query = query.eq("brand_id", str(brand_id))
+
+        result = query.limit(limit).execute()
+
+        if not result.data:
+            return 0
+
+        # Get unique ad IDs
+        ad_ids = list(set(r["meta_ad_id"] for r in result.data))
+        logger.info(f"Fetching thumbnails for {len(ad_ids)} ads")
+
+        # Fetch thumbnails from Meta
+        thumbnails = await self.fetch_ad_thumbnails(ad_ids)
+
+        if not thumbnails:
+            return 0
+
+        # Update database records
+        updated = 0
+        for ad_id, thumbnail_url in thumbnails.items():
+            try:
+                supabase.table("meta_ads_performance").update({
+                    "thumbnail_url": thumbnail_url
+                }).eq("meta_ad_id", ad_id).execute()
+                updated += 1
+            except Exception as e:
+                logger.error(f"Failed to update thumbnail for {ad_id}: {e}")
+
+        logger.info(f"Updated {updated} thumbnails")
+        return updated
 
     async def get_unlinked_ads(self, brand_id: Optional[UUID] = None) -> List[Dict[str, Any]]:
         """
