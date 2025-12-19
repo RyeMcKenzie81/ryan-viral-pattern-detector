@@ -107,7 +107,7 @@ class MetaAdsService:
         Returns:
             Meta ad account ID (e.g., "act_123456789") or None if not set up
         """
-        from ..core.supabase import get_supabase_client
+        from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
 
@@ -143,7 +143,7 @@ class MetaAdsService:
         Returns:
             Created record
         """
-        from ..core.supabase import get_supabase_client
+        from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
 
@@ -521,7 +521,7 @@ class MetaAdsService:
         Returns:
             Number of records saved
         """
-        from ..core.supabase import get_supabase_client
+        from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
         saved_count = 0
@@ -583,7 +583,7 @@ class MetaAdsService:
         Returns:
             List of unlinked ad dicts
         """
-        from ..core.supabase import get_supabase_client
+        from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
 
@@ -621,7 +621,7 @@ class MetaAdsService:
         Returns:
             Created mapping record
         """
-        from ..core.supabase import get_supabase_client
+        from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
 
@@ -657,7 +657,7 @@ class MetaAdsService:
         Returns:
             List of match suggestions with confidence
         """
-        from ..core.supabase import get_supabase_client
+        from ..core.database import get_supabase_client
 
         supabase = get_supabase_client()
 
