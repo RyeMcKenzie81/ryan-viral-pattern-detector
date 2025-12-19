@@ -1751,6 +1751,11 @@ elif selected_tab == "🔗 Linked":
                         })
 
                 st.session_state.ad_perf_legacy_matches = matches
+                if matches:
+                    st.success(f"Found {len(matches)} filename matches!")
+                else:
+                    st.warning(f"No filename matches found. Legacy ads: {len(legacy_ads)}, Generated ads: {len(generated_ads)}")
+                st.rerun()
 
         # Show matches
         if st.session_state.get("ad_perf_legacy_matches"):
