@@ -1533,6 +1533,54 @@ elif selected_tab == "🔗 Linked":
                     for a in missing:
                         st.code(f"ID: {a.get('meta_ad_id')}\nName: {a.get('ad_name', 'Unknown')[:50]}")
 
+                # Test single ad fetch
+                st.markdown("---")
+                st.markdown("**Test single ad thumbnail fetch:**")
+                test_ad_id = st.text_input("Enter Meta Ad ID to test:", value="120235403371890742")
+                if st.button("🧪 Test Fetch"):
+                    with st.spinner("Fetching from Meta API..."):
+                        try:
+                            from facebook_business.api import FacebookAdsApi
+                            from facebook_business.adobjects.ad import Ad
+                            from facebook_business.adobjects.adcreative import AdCreative
+                            from viraltracker.core.config import Config
+
+                            # Initialize API
+                            FacebookAdsApi.init(access_token=Config.META_GRAPH_API_TOKEN)
+
+                            st.write(f"**Step 1:** Fetching ad {test_ad_id}...")
+                            ad = Ad(test_ad_id)
+                            ad_data = ad.api_get(fields=["id", "name", "creative", "status"])
+                            st.json(dict(ad_data))
+
+                            creative_data = ad_data.get("creative")
+                            if creative_data:
+                                creative_id = creative_data.get("id")
+                                st.write(f"**Step 2:** Fetching creative {creative_id}...")
+                                creative = AdCreative(creative_id)
+                                creative_info = creative.api_get(fields=[
+                                    "id", "name", "thumbnail_url", "image_url",
+                                    "image_hash", "video_id", "object_type",
+                                    "object_story_spec"
+                                ])
+                                st.json(dict(creative_info))
+
+                                # Try to find image
+                                thumb = creative_info.get("thumbnail_url")
+                                img = creative_info.get("image_url")
+                                st.write(f"**thumbnail_url:** {thumb}")
+                                st.write(f"**image_url:** {img}")
+
+                                if thumb:
+                                    st.image(thumb, caption="Thumbnail", width=150)
+                                if img:
+                                    st.image(img, caption="Image URL", width=150)
+                            else:
+                                st.warning("No creative found on this ad")
+
+                        except Exception as e:
+                            st.error(f"Test failed: {e}")
+
                 if st.button("Close Debug"):
                     st.session_state.ad_perf_debug_thumbs = False
                     st.rerun()
