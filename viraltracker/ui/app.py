@@ -397,12 +397,17 @@ st.set_page_config(
 @st.cache_resource
 def init_observability():
     """Initialize Logfire at runtime, once per process."""
+    import sys
+    print("LOGFIRE INIT STARTING", file=sys.stderr, flush=True)
+
     token = os.environ.get("LOGFIRE_TOKEN")
     if not token:
+        print("LOGFIRE SKIPPED: No token", file=sys.stderr, flush=True)
         return {"status": "skipped", "reason": "LOGFIRE_TOKEN not set"}
 
     try:
         import logfire
+        print(f"LOGFIRE: Token found (len={len(token)})", file=sys.stderr, flush=True)
 
         env = os.environ.get("LOGFIRE_ENVIRONMENT", "production")
 
@@ -414,6 +419,7 @@ def init_observability():
             send_to_logfire=True,
             console=False,
         )
+        print("LOGFIRE: Configured", file=sys.stderr, flush=True)
 
         logging.basicConfig(
             level=logging.INFO,
@@ -423,15 +429,19 @@ def init_observability():
             ],
             force=True,
         )
+        print("LOGFIRE: Logging configured", file=sys.stderr, flush=True)
 
         logfire.instrument_pydantic()
         logfire.info("Logfire observability initialized")
+        print("LOGFIRE INIT SUCCESS", file=sys.stderr, flush=True)
         return {"status": "success", "environment": env}
 
     except Exception as e:
+        print(f"LOGFIRE INIT ERROR: {e}", file=sys.stderr, flush=True)
         return {"status": "error", "reason": str(e)}
 
 _logfire_status = init_observability()
+print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 
 # Authentication - must be after page config
 from viraltracker.ui.auth import require_auth
