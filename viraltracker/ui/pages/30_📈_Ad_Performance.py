@@ -25,6 +25,16 @@ st.set_page_config(
 from viraltracker.ui.auth import require_auth
 require_auth()
 
+# Session state for drill-down navigation
+if "ad_perf_campaign_id" not in st.session_state:
+    st.session_state.ad_perf_campaign_id = None
+if "ad_perf_campaign_name" not in st.session_state:
+    st.session_state.ad_perf_campaign_name = None
+if "ad_perf_adset_id" not in st.session_state:
+    st.session_state.ad_perf_adset_id = None
+if "ad_perf_adset_name" not in st.session_state:
+    st.session_state.ad_perf_adset_name = None
+
 
 # =============================================================================
 # Helper Functions
@@ -530,6 +540,151 @@ def render_adsets_table(data: List[Dict]):
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+def render_breadcrumbs():
+    """Render breadcrumb navigation for drill-down."""
+    campaign_id = st.session_state.ad_perf_campaign_id
+    campaign_name = st.session_state.ad_perf_campaign_name
+    adset_id = st.session_state.ad_perf_adset_id
+    adset_name = st.session_state.ad_perf_adset_name
+
+    cols = st.columns([1, 1, 1, 6])
+
+    with cols[0]:
+        if st.button("📁 All Campaigns", use_container_width=True):
+            st.session_state.ad_perf_campaign_id = None
+            st.session_state.ad_perf_campaign_name = None
+            st.session_state.ad_perf_adset_id = None
+            st.session_state.ad_perf_adset_name = None
+            st.rerun()
+
+    if campaign_id:
+        with cols[1]:
+            label = f"📂 {(campaign_name or 'Campaign')[:20]}"
+            if st.button(label, use_container_width=True):
+                st.session_state.ad_perf_adset_id = None
+                st.session_state.ad_perf_adset_name = None
+                st.rerun()
+
+    if adset_id:
+        with cols[2]:
+            label = f"📄 {(adset_name or 'Ad Set')[:20]}"
+            st.button(label, use_container_width=True, disabled=True)
+
+
+def render_drilldown_campaigns(data: List[Dict]):
+    """Render campaigns table with clickable rows for drill-down."""
+    import pandas as pd
+
+    campaigns = aggregate_by_campaign(data)
+
+    if not campaigns:
+        st.info("No campaign data available.")
+        return
+
+    st.caption(f"Click a campaign to view its ad sets")
+
+    for c in campaigns:
+        campaign_name = c["campaign_name"] or "Unknown"
+        campaign_id = c["meta_campaign_id"]
+
+        with st.container():
+            cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1])
+
+            with cols[0]:
+                if st.button(f"📁 {campaign_name[:35]}", key=f"camp_{campaign_id}", use_container_width=True):
+                    st.session_state.ad_perf_campaign_id = campaign_id
+                    st.session_state.ad_perf_campaign_name = campaign_name
+                    st.rerun()
+
+            with cols[1]:
+                st.metric("Spend", f"${c['spend']:,.0f}", label_visibility="collapsed")
+            with cols[2]:
+                st.metric("Impr", f"{c['impressions']:,}", label_visibility="collapsed")
+            with cols[3]:
+                st.metric("CTR", f"{c['ctr']:.1f}%", label_visibility="collapsed")
+            with cols[4]:
+                st.metric("ROAS", f"{c['roas']:.1f}x", label_visibility="collapsed")
+            with cols[5]:
+                st.metric("ATC", f"{c['add_to_carts']}", label_visibility="collapsed")
+            with cols[6]:
+                st.metric("Purch", f"{c['purchases']}", label_visibility="collapsed")
+            with cols[7]:
+                st.caption(f"{c['adset_count']} sets · {c['ad_count']} ads")
+
+
+def render_drilldown_adsets(data: List[Dict], campaign_id: str):
+    """Render ad sets for a specific campaign with clickable rows."""
+    import pandas as pd
+
+    # Filter data to selected campaign
+    filtered = [d for d in data if d.get("meta_campaign_id") == campaign_id]
+    adsets = aggregate_by_adset(filtered)
+
+    if not adsets:
+        st.info("No ad sets found for this campaign.")
+        return
+
+    st.caption(f"Click an ad set to view its ads")
+
+    for a in adsets:
+        adset_name = a["adset_name"] or "Unknown"
+        adset_id = a["meta_adset_id"]
+
+        with st.container():
+            cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1])
+
+            with cols[0]:
+                if st.button(f"📂 {adset_name[:35]}", key=f"adset_{adset_id}", use_container_width=True):
+                    st.session_state.ad_perf_adset_id = adset_id
+                    st.session_state.ad_perf_adset_name = adset_name
+                    st.rerun()
+
+            with cols[1]:
+                st.metric("Spend", f"${a['spend']:,.0f}", label_visibility="collapsed")
+            with cols[2]:
+                st.metric("Impr", f"{a['impressions']:,}", label_visibility="collapsed")
+            with cols[3]:
+                st.metric("CTR", f"{a['ctr']:.1f}%", label_visibility="collapsed")
+            with cols[4]:
+                st.metric("ROAS", f"{a['roas']:.1f}x", label_visibility="collapsed")
+            with cols[5]:
+                st.metric("ATC", f"{a['add_to_carts']}", label_visibility="collapsed")
+            with cols[6]:
+                st.metric("Purch", f"{a['purchases']}", label_visibility="collapsed")
+            with cols[7]:
+                st.caption(f"{a['ad_count']} ads")
+
+
+def render_drilldown_ads(data: List[Dict], adset_id: str):
+    """Render ads for a specific ad set."""
+    # Filter data to selected ad set
+    filtered = [d for d in data if d.get("meta_adset_id") == adset_id]
+    render_ads_table(filtered)
+
+
+def render_drilldown_view(data: List[Dict]):
+    """Render the appropriate drill-down level based on session state."""
+    campaign_id = st.session_state.ad_perf_campaign_id
+    adset_id = st.session_state.ad_perf_adset_id
+
+    # Render breadcrumbs
+    render_breadcrumbs()
+    st.divider()
+
+    if adset_id:
+        # Level 3: Show ads for selected ad set
+        st.subheader(f"📄 Ads in {st.session_state.ad_perf_adset_name or 'Ad Set'}")
+        render_drilldown_ads(data, adset_id)
+    elif campaign_id:
+        # Level 2: Show ad sets for selected campaign
+        st.subheader(f"📂 Ad Sets in {st.session_state.ad_perf_campaign_name or 'Campaign'}")
+        render_drilldown_adsets(data, campaign_id)
+    else:
+        # Level 1: Show all campaigns
+        st.subheader("📁 Campaigns")
+        render_drilldown_campaigns(data)
+
+
 def render_sync_section(brand_id: str, ad_account: Dict):
     """Render the sync controls section."""
     st.subheader("Sync Data from Meta")
@@ -678,22 +833,14 @@ with col2:
 with col3:
     st.caption(f"📄 {metrics.get('ad_count', 0)} Ads")
 
-# Tabs for hierarchy views (like Facebook Ads Manager)
-tab1, tab2, tab3, tab4 = st.tabs(["📁 Campaigns", "📂 Ad Sets", "📄 Ads", "🔗 Linked"])
+# Tabs: Drill-down hierarchy vs Linked ads
+tab1, tab2 = st.tabs(["📊 Performance", "🔗 Linked Ads"])
 
 with tab1:
-    st.subheader("Campaigns")
-    render_campaigns_table(perf_data)
+    # Drill-down navigation: Campaigns → Ad Sets → Ads
+    render_drilldown_view(perf_data)
 
 with tab2:
-    st.subheader("Ad Sets")
-    render_adsets_table(perf_data)
-
-with tab3:
-    st.subheader(f"All Ads ({metrics['ad_count']} unique)")
-    render_ads_table(perf_data)
-
-with tab4:
     st.subheader("Linked Ads (ViralTracker ↔ Meta)")
     linked = get_linked_ads(brand_id)
 
