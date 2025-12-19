@@ -1774,14 +1774,30 @@ elif selected_tab == "🔗 Linked":
                 # Find simple numeric filenames for debug
                 simple_filenames = [k for k in gen_ads_by_filename.keys() if re.match(r'^\d+$', k) or re.match(r'^\d+\.png$', k)]
 
+                # Debug: show what patterns were extracted from first few ads
+                extraction_debug = []
+                for ad in legacy_ads[:5]:
+                    ad_name = ad.get("ad_name", "")
+                    patterns = []
+                    m5_match = re.search(r'\[m5-system\]_(\d+)\.png', ad_name, re.IGNORECASE)
+                    if m5_match:
+                        patterns.append(f"{m5_match.group(1)}.png")
+                        patterns.append(m5_match.group(1))
+                    extraction_debug.append({
+                        "ad_name": ad_name[:60],
+                        "extracted": patterns,
+                        "in_lookup": [p for p in patterns if p in gen_ads_by_filename]
+                    })
+
                 st.session_state.ad_perf_legacy_debug = {
                     "legacy_count": len(legacy_ads),
                     "gen_count": len(generated_ads),
                     "match_count": len(matches),
-                    "sample_legacy": [a.get("ad_name", "")[:50] for a in legacy_ads[:5]],
+                    "sample_legacy": [a.get("ad_name", "")[:60] for a in legacy_ads[:5]],
                     "sample_gen": [a.get("storage_path", "").split("/")[-1] for a in list(generated_ads)[:5]],
                     "simple_numeric_filenames": simple_filenames[:20],
-                    "lookup_keys_sample": list(gen_ads_by_filename.keys())[:30]
+                    "lookup_keys_sample": list(gen_ads_by_filename.keys())[:30],
+                    "extraction_debug": extraction_debug
                 }
 
         # Always show debug info if available
@@ -1793,9 +1809,15 @@ elif selected_tab == "🔗 Linked":
                 st.markdown("---")
                 st.markdown("**🔍 Debug: Why no matches?**")
 
-                st.write("**Sample Legacy Ad Names (from Meta):**")
-                for name in debug['sample_legacy']:
-                    st.code(name)
+                st.write("**Pattern Extraction Test (first 5 ads):**")
+                for item in debug.get('extraction_debug', []):
+                    extracted = item.get('extracted', [])
+                    in_lookup = item.get('in_lookup', [])
+                    if extracted:
+                        status = "✅ Found in DB" if in_lookup else "❌ NOT in DB"
+                        st.code(f"{item['ad_name']}\n  → Extracted: {extracted}\n  → {status}")
+                    else:
+                        st.code(f"{item['ad_name']}\n  → ❌ No pattern extracted!")
 
                 st.write("**Simple Numeric Filenames in Generated Ads:**")
                 simple = debug.get('simple_numeric_filenames', [])
@@ -1804,11 +1826,7 @@ elif selected_tab == "🔗 Linked":
                 else:
                     st.warning("No simple numeric filenames (like '1', '1.png') found in generated_ads!")
 
-                st.write("**Sample Lookup Keys (what we're matching against):**")
-                keys = debug.get('lookup_keys_sample', [])
-                st.code(", ".join(keys[:15]))
-
-                st.caption("For a match, the ad name must contain a number (like '1') that matches a generated ad filename.")
+                st.caption("Pattern looks for `[m5-system]_X.png` where X is a number.")
 
         # Show matches
         if st.session_state.get("ad_perf_legacy_matches"):
