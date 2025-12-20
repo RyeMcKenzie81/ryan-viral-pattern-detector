@@ -812,13 +812,53 @@ def render_ads_table(data: List[Dict], show_link_button: bool = False):
     )
 
 
+def derive_delivery_status(ad_statuses: set) -> str:
+    """
+    Derive delivery status from a set of ad statuses.
+
+    Returns: 'Active', 'Paused', 'Off', or status if only one type.
+    """
+    if not ad_statuses:
+        return ""
+
+    # Normalize statuses
+    normalized = set()
+    for s in ad_statuses:
+        if s:
+            normalized.add(s.upper())
+
+    if not normalized:
+        return ""
+
+    # If any ad is ACTIVE, the parent is Active
+    if "ACTIVE" in normalized:
+        return "Active"
+
+    # If all are PAUSED
+    if normalized == {"PAUSED"}:
+        return "Paused"
+
+    # If all are same status
+    if len(normalized) == 1:
+        status = normalized.pop().title()
+        return status
+
+    # Mixed - show the "best" status
+    for check in ["PENDING_REVIEW", "PAUSED", "ARCHIVED", "DELETED"]:
+        if check in normalized:
+            return check.replace("_", " ").title()
+
+    return "Off"
+
+
 def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by campaign."""
     from collections import defaultdict
     campaigns = defaultdict(lambda: {
         "spend": 0, "impressions": 0, "link_clicks": 0,
         "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
-        "ad_count": 0, "adset_ids": set(), "ad_ids": set()
+        "ad_count": 0, "adset_ids": set(), "ad_ids": set(),
+        "ad_statuses": set()
     })
 
     for d in data:
@@ -837,6 +877,8 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
             c["adset_ids"].add(d.get("meta_adset_id"))
         if d.get("meta_ad_id"):
             c["ad_ids"].add(d.get("meta_ad_id"))
+        if d.get("ad_status"):
+            c["ad_statuses"].add(d.get("ad_status"))
 
     result = []
     for cid, c in campaigns.items():
@@ -856,6 +898,7 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
             "roas": roas,
             "adset_count": len(c["adset_ids"]),
             "ad_count": len(c["ad_ids"]),
+            "delivery": derive_delivery_status(c["ad_statuses"]),
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
@@ -867,7 +910,7 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
     adsets = defaultdict(lambda: {
         "spend": 0, "impressions": 0, "link_clicks": 0,
         "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
-        "ad_ids": set()
+        "ad_ids": set(), "ad_statuses": set()
     })
 
     for d in data:
@@ -886,6 +929,8 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
         a["purchase_value"] += float(d.get("purchase_value") or 0)
         if d.get("meta_ad_id"):
             a["ad_ids"].add(d.get("meta_ad_id"))
+        if d.get("ad_status"):
+            a["ad_statuses"].add(d.get("ad_status"))
 
     result = []
     for asid, a in adsets.items():
@@ -906,6 +951,7 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
             "purchases": a["purchases"],
             "roas": roas,
             "ad_count": len(a["ad_ids"]),
+            "delivery": derive_delivery_status(a["ad_statuses"]),
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
@@ -1011,9 +1057,11 @@ def render_campaigns_table_fb(data: List[Dict]):
     # Build dataframe with IDs
     rows = []
     for c in campaigns:
+        delivery = c.get("delivery", "")
         rows.append({
             "id": c["meta_campaign_id"],
             "Campaign": (c["campaign_name"] or "Unknown")[:45],
+            "Delivery": delivery,
             "Spend": c["spend"],
             "Impr": c["impressions"],
             "CPM": c["cpm"],
@@ -1033,14 +1081,26 @@ def render_campaigns_table_fb(data: List[Dict]):
         gb.configure_column("id", hide=True)
         gb.configure_column("Campaign",
             cellStyle={'color': '#1a73e8', 'cursor': 'pointer', 'textDecoration': 'underline'},
-            width=250
+            width=220
         )
+        # Delivery column with colored dot
+        delivery_js = JsCode("""
+            function(params) {
+                if (!params.value) return '';
+                var color = '#6c757d';
+                if (params.value === 'Active') color = '#28a745';
+                else if (params.value === 'Paused') color = '#6c757d';
+                else if (params.value === 'Pending Review') color = '#ffc107';
+                return '<span style="color:' + color + '">●</span> ' + params.value;
+            }
+        """)
+        gb.configure_column("Delivery", cellRenderer=delivery_js, width=100)
         gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=100)
-        gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=100)
-        gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=80)
-        gb.configure_column("Clicks", valueFormatter="value.toLocaleString()", width=80)
-        gb.configure_column("CTR", valueFormatter="value.toFixed(2) + '%'", width=70)
-        gb.configure_column("ROAS", valueFormatter="value > 0 ? value.toFixed(2) + 'x' : '-'", width=70)
+        gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=90)
+        gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=70)
+        gb.configure_column("Clicks", valueFormatter="value.toLocaleString()", width=70)
+        gb.configure_column("CTR", valueFormatter="value.toFixed(2) + '%'", width=60)
+        gb.configure_column("ROAS", valueFormatter="value > 0 ? value.toFixed(2) + 'x' : '-'", width=60)
         gb.configure_selection(selection_mode="single", use_checkbox=False)
         gb.configure_grid_options(domLayout='autoHeight')
 
@@ -1115,9 +1175,11 @@ def render_adsets_table_fb(data: List[Dict]):
     # Build dataframe with IDs
     rows = []
     for a in adsets:
+        delivery = a.get("delivery", "")
         rows.append({
             "id": a["meta_adset_id"],
             "Ad Set": (a["adset_name"] or "Unknown")[:40],
+            "Delivery": delivery,
             "Campaign": (a["campaign_name"] or "")[:25],
             "Spend": a["spend"],
             "Impr": a["impressions"],
@@ -1133,20 +1195,33 @@ def render_adsets_table_fb(data: List[Dict]):
     df = pd.DataFrame(rows)
 
     if use_aggrid:
+        from st_aggrid import JsCode
         # Configure AG Grid
         gb = GridOptionsBuilder.from_dataframe(df)
         gb.configure_column("id", hide=True)
         gb.configure_column("Ad Set",
             cellStyle={'color': '#1a73e8', 'cursor': 'pointer', 'textDecoration': 'underline'},
-            width=220
+            width=200
         )
-        gb.configure_column("Campaign", width=150)
-        gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=100)
-        gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=90)
-        gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=70)
-        gb.configure_column("Clicks", valueFormatter="value.toLocaleString()", width=70)
-        gb.configure_column("CTR", valueFormatter="value.toFixed(2) + '%'", width=60)
-        gb.configure_column("ROAS", valueFormatter="value > 0 ? value.toFixed(2) + 'x' : '-'", width=60)
+        # Delivery column with colored dot
+        delivery_js = JsCode("""
+            function(params) {
+                if (!params.value) return '';
+                var color = '#6c757d';
+                if (params.value === 'Active') color = '#28a745';
+                else if (params.value === 'Paused') color = '#6c757d';
+                else if (params.value === 'Pending Review') color = '#ffc107';
+                return '<span style="color:' + color + '">●</span> ' + params.value;
+            }
+        """)
+        gb.configure_column("Delivery", cellRenderer=delivery_js, width=100)
+        gb.configure_column("Campaign", width=130)
+        gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=90)
+        gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=80)
+        gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=60)
+        gb.configure_column("Clicks", valueFormatter="value.toLocaleString()", width=60)
+        gb.configure_column("CTR", valueFormatter="value.toFixed(2) + '%'", width=55)
+        gb.configure_column("ROAS", valueFormatter="value > 0 ? value.toFixed(2) + 'x' : '-'", width=55)
         gb.configure_selection(selection_mode="single", use_checkbox=False)
         gb.configure_grid_options(domLayout='autoHeight')
 
@@ -1589,14 +1664,58 @@ def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id
     # Aggregate by ad
     ads = aggregate_by_ad(data)
 
+    # Sort: Active ads first when no filter applied, then by spend
+    if not selected_campaign and not selected_adset:
+        # Active first, then by spend
+        ads = sorted(ads, key=lambda x: (
+            0 if x.get("ad_status", "").upper() == "ACTIVE" else 1,
+            -x.get("spend", 0)
+        ))
+
+    # Header row
+    header_cols = st.columns([0.5, 2.5, 1, 1, 1, 1, 1, 1, 1, 1])
+    with header_cols[0]:
+        st.caption("🔗")
+    with header_cols[1]:
+        st.caption("**Ad**")
+    with header_cols[2]:
+        st.caption("**Delivery**")
+    with header_cols[3]:
+        st.caption("**Spend**")
+    with header_cols[4]:
+        st.caption("**Impr**")
+    with header_cols[5]:
+        st.caption("**CTR**")
+    with header_cols[6]:
+        st.caption("**CPC**")
+    with header_cols[7]:
+        st.caption("**ATC**")
+    with header_cols[8]:
+        st.caption("**Purch**")
+    with header_cols[9]:
+        st.caption("**ROAS**")
+
     # Display ads with link status
     for i, a in enumerate(ads):
         meta_id = a.get("meta_ad_id", "")
         is_linked = meta_id in linked_ids
         status = a.get("ad_status", "")
-        status_display = f"{get_status_emoji(status)} " if status else ""
 
-        cols = st.columns([0.5, 3, 1, 1, 1, 1, 1, 1, 1])
+        # Delivery display with color
+        if status:
+            status_upper = status.upper()
+            if status_upper == "ACTIVE":
+                delivery_html = "<span style='color:#28a745'>● Active</span>"
+            elif status_upper == "PAUSED":
+                delivery_html = "<span style='color:#6c757d'>● Paused</span>"
+            elif status_upper == "PENDING_REVIEW":
+                delivery_html = "<span style='color:#ffc107'>● Pending</span>"
+            else:
+                delivery_html = f"<span style='color:#6c757d'>● {status.title()}</span>"
+        else:
+            delivery_html = ""
+
+        cols = st.columns([0.5, 2.5, 1, 1, 1, 1, 1, 1, 1, 1])
 
         with cols[0]:
             if is_linked:
@@ -1614,34 +1733,38 @@ def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id
                     st.rerun()
 
         with cols[1]:
-            st.markdown(f"{status_display}**{(a['ad_name'] or 'Unknown')[:40]}**")
+            st.markdown(f"**{(a['ad_name'] or 'Unknown')[:35]}**")
 
         with cols[2]:
-            st.caption(f"${a['spend']:,.0f}")
+            st.markdown(delivery_html, unsafe_allow_html=True)
 
         with cols[3]:
-            st.caption(f"{a['impressions']:,}")
+            st.caption(f"${a['spend']:,.0f}")
 
         with cols[4]:
-            st.caption(f"{a['ctr']:.1f}%")
+            st.caption(f"{a['impressions']:,}")
 
         with cols[5]:
-            st.caption(f"${a['cpc']:.2f}")
+            st.caption(f"{a['ctr']:.1f}%")
 
         with cols[6]:
-            st.caption(f"{a['add_to_carts']}")
+            st.caption(f"${a['cpc']:.2f}")
 
         with cols[7]:
-            st.caption(f"{a['purchases']}")
+            st.caption(f"{a['add_to_carts']}")
 
         with cols[8]:
+            st.caption(f"{a['purchases']}")
+
+        with cols[9]:
             st.caption(f"{a['roas']:.1f}x" if a['roas'] else "-")
 
     # Totals
     total_spend = sum(a["spend"] for a in ads)
     total_impr = sum(a["impressions"] for a in ads)
     total_clicks = sum(a["link_clicks"] for a in ads)
-    st.markdown(f"**{len(ads)} ads** · Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** · Clicks: **{total_clicks:,}**")
+    active_count = sum(1 for a in ads if a.get("ad_status", "").upper() == "ACTIVE")
+    st.markdown(f"**{len(ads)} ads** ({active_count} active) · Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** · Clicks: **{total_clicks:,}**")
 
 
 # =============================================================================
