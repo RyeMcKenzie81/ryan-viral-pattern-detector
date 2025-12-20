@@ -1938,55 +1938,45 @@ elif selected_tab == "🔗 Linked":
                     db = get_supabase_client()
                     gen_result = db.table("generated_ads").select(
                         "id, storage_path, hook_text, created_at"
-                    ).order("created_at", desc=True).limit(100).execute()
+                    ).order("created_at", desc=True).limit(50).execute()
                     gen_ads_list = gen_result.data or []
 
-                    # Create options with hook text preview
-                    options = ["-- Select an ad --"]
-                    for ga in gen_ads_list:
-                        hook = (ga.get("hook_text") or "No hook")[:40]
-                        path = ga.get("storage_path", "").split("/")[-1]
-                        date = (ga.get("created_at") or "")[:10]
-                        options.append(f"{path} | {hook}... | {date}")
+                    # Show as visual grid - 5 columns
+                    cols_per_row = 5
+                    for row_start in range(0, min(20, len(gen_ads_list)), cols_per_row):
+                        cols = st.columns(cols_per_row)
+                        for col_idx, col in enumerate(cols):
+                            ad_idx = row_start + col_idx
+                            if ad_idx < len(gen_ads_list):
+                                ga = gen_ads_list[ad_idx]
+                                with col:
+                                    signed_url = get_signed_url(ga.get("storage_path"))
+                                    if signed_url:
+                                        st.image(signed_url, width=100)
+                                    else:
+                                        st.caption("📷")
 
-                    selected = st.selectbox(
-                        "Generated Ad",
-                        options,
-                        key=f"gen_select_{meta_ad_id}",
-                        label_visibility="collapsed"
-                    )
+                                    # Show filename
+                                    filename = ga.get("storage_path", "").split("/")[-1][:15]
+                                    st.caption(f"`{filename}`")
 
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        if selected != "-- Select an ad --" and st.button("✓ Confirm Link", key=f"confirm_{meta_ad_id}", type="primary"):
-                            # Find the selected generated ad
-                            sel_idx = options.index(selected) - 1
-                            if sel_idx >= 0:
-                                gen_ad = gen_ads_list[sel_idx]
-                                success = create_ad_link(
-                                    generated_ad_id=str(gen_ad["id"]),
-                                    meta_ad_id=meta_ad_id,
-                                    meta_campaign_id="unknown",
-                                    meta_ad_account_id=ad_account['meta_ad_account_id'],
-                                    linked_by="manual"
-                                )
-                                if success:
-                                    st.success("Linked!")
-                                    del st.session_state[f"show_link_for_{meta_ad_id}"]
-                                    st.rerun()
-                    with col_b:
-                        if st.button("Cancel", key=f"cancel_{meta_ad_id}"):
-                            del st.session_state[f"show_link_for_{meta_ad_id}"]
-                            st.rerun()
+                                    # Link button for this ad
+                                    if st.button("Select", key=f"sel_{meta_ad_id}_{ad_idx}", type="secondary"):
+                                        success = create_ad_link(
+                                            generated_ad_id=str(ga["id"]),
+                                            meta_ad_id=meta_ad_id,
+                                            meta_campaign_id="unknown",
+                                            meta_ad_account_id=ad_account['meta_ad_account_id'],
+                                            linked_by="manual"
+                                        )
+                                        if success:
+                                            st.success("Linked!")
+                                            del st.session_state[f"show_link_for_{meta_ad_id}"]
+                                            st.rerun()
 
-                    # Show preview of selected ad
-                    if selected != "-- Select an ad --":
-                        sel_idx = options.index(selected) - 1
-                        if sel_idx >= 0:
-                            gen_ad = gen_ads_list[sel_idx]
-                            signed_url = get_signed_url(gen_ad.get("storage_path"))
-                            if signed_url:
-                                st.image(signed_url, width=150, caption="Preview")
+                    if st.button("Cancel", key=f"cancel_{meta_ad_id}"):
+                        del st.session_state[f"show_link_for_{meta_ad_id}"]
+                        st.rerun()
 
                 st.markdown("---")
         else:
