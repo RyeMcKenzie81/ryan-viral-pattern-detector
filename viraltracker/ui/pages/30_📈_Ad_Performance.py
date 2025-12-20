@@ -637,11 +637,28 @@ def render_top_performers(data: List[Dict]):
     if not data:
         return
 
+    # Filter option - default to active only
+    include_inactive = st.checkbox(
+        "Include inactive ads",
+        value=False,
+        key="performers_include_inactive",
+        help="Show paused/deleted ads in rankings"
+    )
+
+    # Filter data to active ads only if checkbox not checked
+    if not include_inactive:
+        filtered_data = [d for d in data if d.get("ad_status", "").upper() == "ACTIVE"]
+        if not filtered_data:
+            st.info("No active ads found. Check 'Include inactive ads' to see all ads.")
+            return
+    else:
+        filtered_data = data
+
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("🏆 Top Performers (by ROAS)")
-        top_ads = get_top_performers(data, metric="roas", top_n=5)
+        top_ads = get_top_performers(filtered_data, metric="roas", top_n=5)
 
         if top_ads:
             for i, ad in enumerate(top_ads, 1):
@@ -662,7 +679,7 @@ def render_top_performers(data: List[Dict]):
 
     with col2:
         st.subheader("⚠️ Needs Attention (low ROAS)")
-        worst_ads = get_worst_performers(data, metric="roas", bottom_n=5, min_spend=10.0)
+        worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
 
         if worst_ads:
             for i, ad in enumerate(worst_ads, 1):
