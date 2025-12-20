@@ -1969,38 +1969,70 @@ elif selected_tab == "🔗 Linked":
                     else:
                         st.caption(f"Found {len(gen_ads_list)} legacy ads with numeric filenames")
 
+                        # Pagination
+                        page_size = 30
+                        page_key = f"page_{meta_ad_id}"
+                        if page_key not in st.session_state:
+                            st.session_state[page_key] = 0
+
+                        total_pages = (len(gen_ads_list) + page_size - 1) // page_size
+                        current_page = st.session_state[page_key]
+
+                        # Page navigation
+                        if total_pages > 1:
+                            nav_cols = st.columns([1, 2, 1])
+                            with nav_cols[0]:
+                                if current_page > 0:
+                                    if st.button("← Prev", key=f"prev_{meta_ad_id}"):
+                                        st.session_state[page_key] -= 1
+                                        st.rerun()
+                            with nav_cols[1]:
+                                st.caption(f"Page {current_page + 1} of {total_pages}")
+                            with nav_cols[2]:
+                                if current_page < total_pages - 1:
+                                    if st.button("Next →", key=f"next_{meta_ad_id}"):
+                                        st.session_state[page_key] += 1
+                                        st.rerun()
+
+                        # Get ads for current page
+                        start_idx = current_page * page_size
+                        end_idx = min(start_idx + page_size, len(gen_ads_list))
+                        page_ads = gen_ads_list[start_idx:end_idx]
+
                     # Show as visual grid - 5 columns
-                    cols_per_row = 5
-                    for row_start in range(0, min(20, len(gen_ads_list)), cols_per_row):
-                        cols = st.columns(cols_per_row)
-                        for col_idx, col in enumerate(cols):
-                            ad_idx = row_start + col_idx
-                            if ad_idx < len(gen_ads_list):
-                                ga = gen_ads_list[ad_idx]
-                                with col:
-                                    signed_url = get_signed_url(ga.get("storage_path"))
-                                    if signed_url:
-                                        st.image(signed_url, width=100)
-                                    else:
-                                        st.caption("📷")
+                    if gen_ads_list:
+                        cols_per_row = 5
+                        for row_start in range(0, len(page_ads), cols_per_row):
+                            cols = st.columns(cols_per_row)
+                            for col_idx, col in enumerate(cols):
+                                ad_idx = row_start + col_idx
+                                if ad_idx < len(page_ads):
+                                    ga = page_ads[ad_idx]
+                                    global_idx = start_idx + ad_idx  # For unique key
+                                    with col:
+                                        signed_url = get_signed_url(ga.get("storage_path"))
+                                        if signed_url:
+                                            st.image(signed_url, width=100)
+                                        else:
+                                            st.caption("📷")
 
-                                    # Show filename
-                                    filename = ga.get("storage_path", "").split("/")[-1][:15]
-                                    st.caption(f"`{filename}`")
+                                        # Show filename
+                                        filename = ga.get("storage_path", "").split("/")[-1][:15]
+                                        st.caption(f"`{filename}`")
 
-                                    # Link button for this ad
-                                    if st.button("Select", key=f"sel_{meta_ad_id}_{ad_idx}", type="secondary"):
-                                        success = create_ad_link(
-                                            generated_ad_id=str(ga["id"]),
-                                            meta_ad_id=meta_ad_id,
-                                            meta_campaign_id="unknown",
-                                            meta_ad_account_id=ad_account['meta_ad_account_id'],
-                                            linked_by="manual"
-                                        )
-                                        if success:
-                                            st.success("Linked!")
-                                            del st.session_state[f"show_link_for_{meta_ad_id}"]
-                                            st.rerun()
+                                        # Link button for this ad
+                                        if st.button("Select", key=f"sel_{meta_ad_id}_{global_idx}", type="secondary"):
+                                            success = create_ad_link(
+                                                generated_ad_id=str(ga["id"]),
+                                                meta_ad_id=meta_ad_id,
+                                                meta_campaign_id="unknown",
+                                                meta_ad_account_id=ad_account['meta_ad_account_id'],
+                                                linked_by="manual"
+                                            )
+                                            if success:
+                                                st.success("Linked!")
+                                                del st.session_state[f"show_link_for_{meta_ad_id}"]
+                                                st.rerun()
 
                     if st.button("Cancel", key=f"cancel_{meta_ad_id}"):
                         del st.session_state[f"show_link_for_{meta_ad_id}"]
