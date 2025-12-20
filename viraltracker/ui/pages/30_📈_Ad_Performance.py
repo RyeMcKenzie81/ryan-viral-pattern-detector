@@ -648,9 +648,12 @@ def render_top_performers(data: List[Dict]):
                 roas = ad.get("roas", 0)
                 spend = ad.get("spend", 0)
                 name = (ad.get("ad_name") or "Unknown")[:40]
+                campaign = (ad.get("campaign_name") or "")[:30]
+                adset = (ad.get("adset_name") or "")[:25]
 
                 if roas > 0:
                     st.markdown(f"**{i}. {name}**")
+                    st.caption(f"📁 {campaign} › {adset}")
                     st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
         else:
             st.info("No data for top performers")
@@ -664,8 +667,11 @@ def render_top_performers(data: List[Dict]):
                 roas = ad.get("roas", 0)
                 spend = ad.get("spend", 0)
                 name = (ad.get("ad_name") or "Unknown")[:40]
+                campaign = (ad.get("campaign_name") or "")[:30]
+                adset = (ad.get("adset_name") or "")[:25]
 
                 st.markdown(f"**{i}. {name}**")
+                st.caption(f"📁 {campaign} › {adset}")
                 st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
         else:
             st.info("No underperforming ads (or none with min $10 spend)")
