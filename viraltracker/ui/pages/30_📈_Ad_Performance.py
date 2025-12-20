@@ -847,7 +847,7 @@ def derive_delivery_status(ad_statuses: set) -> str:
     if not normalized:
         return ""
 
-    # If any ad is ACTIVE, the parent is Active
+    # Only "ACTIVE" counts as active - not COMPLETED, WITH_ISSUES, etc.
     if "ACTIVE" in normalized:
         return "Active"
 
@@ -855,13 +855,27 @@ def derive_delivery_status(ad_statuses: set) -> str:
     if normalized == {"PAUSED"}:
         return "Paused"
 
+    # Campaign ended statuses
+    if "CAMPAIGN_PAUSED" in normalized or "ADSET_PAUSED" in normalized:
+        return "Paused"
+
     # If all are same status
     if len(normalized) == 1:
-        status = normalized.pop().title()
-        return status
+        status = list(normalized)[0]
+        # Map common statuses
+        status_map = {
+            "COMPLETED": "Completed",
+            "WITH_ISSUES": "Issues",
+            "IN_PROCESS": "Processing",
+            "PENDING_REVIEW": "Pending",
+            "DISAPPROVED": "Disapproved",
+            "DELETED": "Deleted",
+            "ARCHIVED": "Archived",
+        }
+        return status_map.get(status, status.replace("_", " ").title())
 
-    # Mixed - show the "best" status
-    for check in ["PENDING_REVIEW", "PAUSED", "ARCHIVED", "DELETED"]:
+    # Mixed - show most relevant
+    for check in ["PENDING_REVIEW", "WITH_ISSUES", "PAUSED", "COMPLETED", "ARCHIVED", "DELETED"]:
         if check in normalized:
             return check.replace("_", " ").title()
 
@@ -1075,10 +1089,24 @@ def render_campaigns_table_fb(data: List[Dict]):
     rows = []
     for c in campaigns:
         delivery = c.get("delivery", "")
+        # Add emoji to delivery text
+        if delivery == "Active":
+            delivery_display = "🟢 Active"
+        elif delivery == "Paused":
+            delivery_display = "⚪ Paused"
+        elif delivery == "Completed":
+            delivery_display = "✅ Completed"
+        elif delivery in ["Pending", "Pending Review"]:
+            delivery_display = "🟡 Pending"
+        elif delivery:
+            delivery_display = f"⚪ {delivery}"
+        else:
+            delivery_display = ""
+
         rows.append({
             "id": c["meta_campaign_id"],
             "Campaign": (c["campaign_name"] or "Unknown")[:45],
-            "Delivery": delivery,
+            "Delivery": delivery_display,
             "Spend": c["spend"],
             "Impr": c["impressions"],
             "CPM": c["cpm"],
@@ -1100,18 +1128,7 @@ def render_campaigns_table_fb(data: List[Dict]):
             cellStyle={'color': '#1a73e8', 'cursor': 'pointer', 'textDecoration': 'underline'},
             width=220
         )
-        # Delivery column with colored dot
-        delivery_js = JsCode("""
-            function(params) {
-                if (!params.value) return '';
-                var color = '#6c757d';
-                if (params.value === 'Active') color = '#28a745';
-                else if (params.value === 'Paused') color = '#6c757d';
-                else if (params.value === 'Pending Review') color = '#ffc107';
-                return '<span style="color:' + color + '">●</span> ' + params.value;
-            }
-        """)
-        gb.configure_column("Delivery", cellRenderer=delivery_js, width=100)
+        gb.configure_column("Delivery", width=110)
         gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=100)
         gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=90)
         gb.configure_column("CPM", valueFormatter="'$' + value.toFixed(2)", width=70)
@@ -1194,10 +1211,24 @@ def render_adsets_table_fb(data: List[Dict]):
     rows = []
     for a in adsets:
         delivery = a.get("delivery", "")
+        # Add emoji to delivery text
+        if delivery == "Active":
+            delivery_display = "🟢 Active"
+        elif delivery == "Paused":
+            delivery_display = "⚪ Paused"
+        elif delivery == "Completed":
+            delivery_display = "✅ Completed"
+        elif delivery in ["Pending", "Pending Review"]:
+            delivery_display = "🟡 Pending"
+        elif delivery:
+            delivery_display = f"⚪ {delivery}"
+        else:
+            delivery_display = ""
+
         rows.append({
             "id": a["meta_adset_id"],
             "Ad Set": (a["adset_name"] or "Unknown")[:40],
-            "Delivery": delivery,
+            "Delivery": delivery_display,
             "Campaign": (a["campaign_name"] or "")[:25],
             "Spend": a["spend"],
             "Impr": a["impressions"],
@@ -1213,7 +1244,6 @@ def render_adsets_table_fb(data: List[Dict]):
     df = pd.DataFrame(rows)
 
     if use_aggrid:
-        from st_aggrid import JsCode
         # Configure AG Grid
         gb = GridOptionsBuilder.from_dataframe(df)
         gb.configure_column("id", hide=True)
@@ -1221,18 +1251,7 @@ def render_adsets_table_fb(data: List[Dict]):
             cellStyle={'color': '#1a73e8', 'cursor': 'pointer', 'textDecoration': 'underline'},
             width=200
         )
-        # Delivery column with colored dot
-        delivery_js = JsCode("""
-            function(params) {
-                if (!params.value) return '';
-                var color = '#6c757d';
-                if (params.value === 'Active') color = '#28a745';
-                else if (params.value === 'Paused') color = '#6c757d';
-                else if (params.value === 'Pending Review') color = '#ffc107';
-                return '<span style="color:' + color + '">●</span> ' + params.value;
-            }
-        """)
-        gb.configure_column("Delivery", cellRenderer=delivery_js, width=100)
+        gb.configure_column("Delivery", width=110)
         gb.configure_column("Campaign", width=130)
         gb.configure_column("Spend", valueFormatter="'$' + value.toLocaleString(undefined, {minimumFractionDigits: 2})", width=90)
         gb.configure_column("Impr", valueFormatter="value.toLocaleString()", width=80)
