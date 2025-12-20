@@ -650,9 +650,11 @@ def render_top_performers(data: List[Dict]):
                 name = (ad.get("ad_name") or "Unknown")[:40]
                 campaign = (ad.get("campaign_name") or "")[:30]
                 adset = (ad.get("adset_name") or "")[:25]
+                status = ad.get("ad_status", "")
+                status_emoji = get_status_emoji(status) if status else ""
 
                 if roas > 0:
-                    st.markdown(f"**{i}. {name}**")
+                    st.markdown(f"**{i}. {status_emoji} {name}**")
                     st.caption(f"📁 {campaign} › {adset}")
                     st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
         else:
@@ -669,8 +671,10 @@ def render_top_performers(data: List[Dict]):
                 name = (ad.get("ad_name") or "Unknown")[:40]
                 campaign = (ad.get("campaign_name") or "")[:30]
                 adset = (ad.get("adset_name") or "")[:25]
+                status = ad.get("ad_status", "")
+                status_emoji = get_status_emoji(status) if status else ""
 
-                st.markdown(f"**{i}. {name}**")
+                st.markdown(f"**{i}. {status_emoji} {name}**")
                 st.caption(f"📁 {campaign} › {adset}")
                 st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
         else:

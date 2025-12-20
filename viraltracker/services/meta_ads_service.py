@@ -678,10 +678,68 @@ class MetaAdsService:
 
         return None
 
+    async def fetch_ad_statuses(
+        self,
+        ad_ids: List[str],
+        ad_account_id: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Fetch effective_status for a list of ad IDs from Meta API.
+
+        Args:
+            ad_ids: List of Meta ad IDs
+            ad_account_id: Ad account ID (for rate limiting context)
+
+        Returns:
+            Dict mapping ad_id -> effective_status (ACTIVE, PAUSED, DELETED, etc.)
+        """
+        if not ad_ids:
+            return {}
+
+        self._ensure_sdk()
+
+        # Deduplicate ad IDs
+        unique_ids = list(set(ad_ids))
+
+        try:
+            statuses = await asyncio.to_thread(
+                self._fetch_ad_statuses_sync,
+                unique_ids
+            )
+            logger.info(f"Fetched statuses for {len(statuses)} ads")
+            return statuses
+        except Exception as e:
+            logger.error(f"Failed to fetch ad statuses: {e}")
+            return {}
+
+    def _fetch_ad_statuses_sync(self, ad_ids: List[str]) -> Dict[str, str]:
+        """Synchronous call to fetch ad statuses."""
+        from facebook_business.adobjects.ad import Ad
+
+        statuses = {}
+
+        # Batch fetch to reduce API calls (up to 50 at a time)
+        batch_size = 50
+        for i in range(0, len(ad_ids), batch_size):
+            batch_ids = ad_ids[i:i + batch_size]
+
+            for ad_id in batch_ids:
+                try:
+                    ad = Ad(ad_id)
+                    ad_data = ad.api_get(fields=["id", "effective_status"])
+                    status = ad_data.get("effective_status", "UNKNOWN")
+                    statuses[ad_id] = status
+                except Exception as e:
+                    logger.warning(f"Failed to fetch status for ad {ad_id}: {e}")
+                    continue
+
+        return statuses
+
     async def sync_performance_to_db(
         self,
         insights: List[Dict[str, Any]],
-        brand_id: Optional[UUID] = None
+        brand_id: Optional[UUID] = None,
+        fetch_statuses: bool = True
     ) -> int:
         """
         Save performance insights to database.
@@ -689,6 +747,7 @@ class MetaAdsService:
         Args:
             insights: Normalized insight dicts from get_ad_insights()
             brand_id: Optional brand to associate with
+            fetch_statuses: Whether to fetch current ad statuses from Meta API
 
         Returns:
             Number of records saved
@@ -698,12 +757,22 @@ class MetaAdsService:
         supabase = get_supabase_client()
         saved_count = 0
 
+        # Fetch ad statuses if requested
+        ad_statuses = {}
+        if fetch_statuses and insights:
+            unique_ad_ids = list(set(i.get("meta_ad_id") for i in insights if i.get("meta_ad_id")))
+            if unique_ad_ids:
+                logger.info(f"Fetching statuses for {len(unique_ad_ids)} unique ads...")
+                ad_statuses = await self.fetch_ad_statuses(unique_ad_ids)
+
         for insight in insights:
             try:
+                ad_id = insight["meta_ad_id"]
+
                 # Prepare record - use account ID from insight (set during get_ad_insights)
                 record = {
                     "meta_ad_account_id": insight.get("meta_ad_account_id", self._default_ad_account_id),
-                    "meta_ad_id": insight["meta_ad_id"],
+                    "meta_ad_id": ad_id,
                     "meta_adset_id": insight.get("meta_adset_id"),
                     "adset_name": insight.get("adset_name"),
                     "meta_campaign_id": insight["meta_campaign_id"],
@@ -734,6 +803,7 @@ class MetaAdsService:
                     "raw_costs": insight.get("raw_costs"),
                     "thumbnail_url": insight.get("thumbnail_url"),
                     "brand_id": str(brand_id) if brand_id else None,
+                    "ad_status": ad_statuses.get(ad_id),  # Add status if fetched
                 }
 
                 # Upsert (on conflict with meta_ad_id + date)
@@ -747,7 +817,7 @@ class MetaAdsService:
             except Exception as e:
                 logger.error(f"Failed to save insight for {insight.get('meta_ad_id')}: {e}")
 
-        logger.info(f"Saved {saved_count}/{len(insights)} performance records")
+        logger.info(f"Saved {saved_count}/{len(insights)} performance records (with {len(ad_statuses)} statuses)")
         return saved_count
 
     async def update_missing_thumbnails(
