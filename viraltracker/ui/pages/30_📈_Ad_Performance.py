@@ -1130,7 +1130,8 @@ def render_campaigns_table_fb(data: List[Dict]):
             update_mode=GridUpdateMode.SELECTION_CHANGED,
             fit_columns_on_grid_load=True,
             theme="streamlit",
-            key="campaigns_grid"
+            key="campaigns_grid",
+            allow_unsafe_jscode=True
         )
 
         # Handle row selection
@@ -1251,7 +1252,8 @@ def render_adsets_table_fb(data: List[Dict]):
             update_mode=GridUpdateMode.SELECTION_CHANGED,
             fit_columns_on_grid_load=True,
             theme="streamlit",
-            key="adsets_grid"
+            key="adsets_grid",
+            allow_unsafe_jscode=True
         )
 
         # Handle row selection
