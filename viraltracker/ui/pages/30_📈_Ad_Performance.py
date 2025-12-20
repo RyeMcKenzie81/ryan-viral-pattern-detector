@@ -647,9 +647,36 @@ def render_top_performers(data: List[Dict]):
 
     # Filter data to active ads only if checkbox not checked
     if not include_inactive:
-        filtered_data = [d for d in data if d.get("ad_status", "").upper() == "ACTIVE"]
+        # Get the most recent date in the data to determine "recent" activity
+        from datetime import datetime, timedelta
+        all_dates = [d.get("date") for d in data if d.get("date")]
+        if all_dates:
+            max_date = max(all_dates)
+            try:
+                max_date_dt = datetime.strptime(max_date, "%Y-%m-%d")
+                recent_cutoff = (max_date_dt - timedelta(days=3)).strftime("%Y-%m-%d")
+            except:
+                recent_cutoff = None
+        else:
+            recent_cutoff = None
+
+        # Filter to ads that are both ACTIVE status AND have recent data
+        # This excludes ads in ended campaigns that still show status=ACTIVE
+        if recent_cutoff:
+            recent_ad_ids = set(
+                d.get("meta_ad_id") for d in data
+                if d.get("date") and d.get("date") >= recent_cutoff
+            )
+            filtered_data = [
+                d for d in data
+                if d.get("ad_status", "").upper() == "ACTIVE"
+                and d.get("meta_ad_id") in recent_ad_ids
+            ]
+        else:
+            filtered_data = [d for d in data if d.get("ad_status", "").upper() == "ACTIVE"]
+
         if not filtered_data:
-            st.info("No active ads found. Check 'Include inactive ads' to see all ads.")
+            st.info("No currently active ads found. Check 'Include inactive ads' to see all ads.")
             return
     else:
         filtered_data = data
@@ -885,12 +912,18 @@ def derive_delivery_status(ad_statuses: set) -> str:
 def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by campaign."""
     from collections import defaultdict
+    from datetime import datetime, timedelta
+
     campaigns = defaultdict(lambda: {
         "spend": 0, "impressions": 0, "link_clicks": 0,
         "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
         "ad_count": 0, "adset_ids": set(), "ad_ids": set(),
-        "ad_statuses": set()
+        "ad_statuses": set(), "max_date": None
     })
+
+    # Find the global max date to determine "recent"
+    all_dates = [d.get("date") for d in data if d.get("date")]
+    global_max_date = max(all_dates) if all_dates else None
 
     for d in data:
         cid = d.get("meta_campaign_id")
@@ -910,12 +943,36 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
             c["ad_ids"].add(d.get("meta_ad_id"))
         if d.get("ad_status"):
             c["ad_statuses"].add(d.get("ad_status"))
+        # Track most recent date for this campaign
+        date = d.get("date")
+        if date and (c["max_date"] is None or date > c["max_date"]):
+            c["max_date"] = date
+
+    # Calculate recency cutoff (3 days before most recent data)
+    recent_cutoff = None
+    if global_max_date:
+        try:
+            max_dt = datetime.strptime(global_max_date, "%Y-%m-%d")
+            recent_cutoff = (max_dt - timedelta(days=3)).strftime("%Y-%m-%d")
+        except:
+            pass
 
     result = []
     for cid, c in campaigns.items():
         ctr = (c["link_clicks"] / c["impressions"] * 100) if c["impressions"] > 0 else 0
         cpm = (c["spend"] / c["impressions"] * 1000) if c["impressions"] > 0 else 0
         roas = (c["purchase_value"] / c["spend"]) if c["spend"] > 0 else 0
+
+        # Determine delivery - check if campaign has recent activity
+        has_recent_activity = (
+            recent_cutoff and c["max_date"] and c["max_date"] >= recent_cutoff
+        )
+        delivery = derive_delivery_status(c["ad_statuses"])
+
+        # If no recent activity but shows as Active, mark as Ended
+        if delivery == "Active" and not has_recent_activity:
+            delivery = "Ended"
+
         result.append({
             "meta_campaign_id": cid,
             "campaign_name": c["campaign_name"],
@@ -929,7 +986,7 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
             "roas": roas,
             "adset_count": len(c["adset_ids"]),
             "ad_count": len(c["ad_ids"]),
-            "delivery": derive_delivery_status(c["ad_statuses"]),
+            "delivery": delivery,
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
@@ -938,11 +995,17 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
 def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by ad set."""
     from collections import defaultdict
+    from datetime import datetime, timedelta
+
     adsets = defaultdict(lambda: {
         "spend": 0, "impressions": 0, "link_clicks": 0,
         "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
-        "ad_ids": set(), "ad_statuses": set()
+        "ad_ids": set(), "ad_statuses": set(), "max_date": None
     })
+
+    # Find the global max date to determine "recent"
+    all_dates = [d.get("date") for d in data if d.get("date")]
+    global_max_date = max(all_dates) if all_dates else None
 
     for d in data:
         asid = d.get("meta_adset_id")
@@ -962,12 +1025,36 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
             a["ad_ids"].add(d.get("meta_ad_id"))
         if d.get("ad_status"):
             a["ad_statuses"].add(d.get("ad_status"))
+        # Track most recent date for this adset
+        date = d.get("date")
+        if date and (a["max_date"] is None or date > a["max_date"]):
+            a["max_date"] = date
+
+    # Calculate recency cutoff (3 days before most recent data)
+    recent_cutoff = None
+    if global_max_date:
+        try:
+            max_dt = datetime.strptime(global_max_date, "%Y-%m-%d")
+            recent_cutoff = (max_dt - timedelta(days=3)).strftime("%Y-%m-%d")
+        except:
+            pass
 
     result = []
     for asid, a in adsets.items():
         ctr = (a["link_clicks"] / a["impressions"] * 100) if a["impressions"] > 0 else 0
         cpm = (a["spend"] / a["impressions"] * 1000) if a["impressions"] > 0 else 0
         roas = (a["purchase_value"] / a["spend"]) if a["spend"] > 0 else 0
+
+        # Determine delivery - check if adset has recent activity
+        has_recent_activity = (
+            recent_cutoff and a["max_date"] and a["max_date"] >= recent_cutoff
+        )
+        delivery = derive_delivery_status(a["ad_statuses"])
+
+        # If no recent activity but shows as Active, mark as Ended
+        if delivery == "Active" and not has_recent_activity:
+            delivery = "Ended"
+
         result.append({
             "meta_adset_id": asid,
             "adset_name": a["adset_name"],
@@ -982,7 +1069,7 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
             "purchases": a["purchases"],
             "roas": roas,
             "ad_count": len(a["ad_ids"]),
-            "delivery": derive_delivery_status(a["ad_statuses"]),
+            "delivery": delivery,
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
@@ -1094,6 +1181,8 @@ def render_campaigns_table_fb(data: List[Dict]):
             delivery_display = "🟢 Active"
         elif delivery == "Paused":
             delivery_display = "⚪ Paused"
+        elif delivery == "Ended":
+            delivery_display = "⏹️ Ended"
         elif delivery == "Completed":
             delivery_display = "✅ Completed"
         elif delivery in ["Pending", "Pending Review"]:
@@ -1216,6 +1305,8 @@ def render_adsets_table_fb(data: List[Dict]):
             delivery_display = "🟢 Active"
         elif delivery == "Paused":
             delivery_display = "⚪ Paused"
+        elif delivery == "Ended":
+            delivery_display = "⏹️ Ended"
         elif delivery == "Completed":
             delivery_display = "✅ Completed"
         elif delivery in ["Pending", "Pending Review"]:
