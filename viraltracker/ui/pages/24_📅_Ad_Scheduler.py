@@ -114,8 +114,9 @@ def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str
     """Fetch scheduled jobs with optional filters."""
     try:
         db = get_supabase_client()
+        # Join products for ad_creation jobs and brands directly for meta_sync/scorecard jobs
         query = db.table("scheduled_jobs").select(
-            "*, products(name, brands(name))"
+            "*, products(name, brands(name)), brands!scheduled_jobs_brand_id_fkey(name)"
         )
         if brand_id:
             query = query.eq("brand_id", brand_id)
@@ -432,15 +433,28 @@ def render_schedule_list():
     # Display jobs as cards
     for job in jobs:
         product_info = job.get('products', {}) or {}
-        brand_info = product_info.get('brands', {}) or {}
+        # Get brand info - from products join for ad_creation, direct join for others
+        brand_info = product_info.get('brands', {}) or job.get('brands', {}) or {}
+        job_type = job.get('job_type', 'ad_creation')
 
         with st.container():
             col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
 
             with col1:
                 status_emoji = {'active': '🟢', 'paused': '⏸️', 'completed': '✅'}.get(job['status'], '❓')
-                st.markdown(f"### {status_emoji} {job['name']}")
-                st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+                # Add job type indicator for non-ad jobs
+                type_badge = ""
+                if job_type == 'meta_sync':
+                    type_badge = "🔄 "
+                elif job_type == 'scorecard':
+                    type_badge = "📊 "
+                st.markdown(f"### {status_emoji} {type_badge}{job['name']}")
+
+                # Show brand → product for ad_creation, just brand for others
+                if job_type == 'ad_creation':
+                    st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+                else:
+                    st.caption(f"{brand_info.get('name', 'Unknown')}")
 
             with col2:
                 schedule_desc = cron_to_description(job.get('cron_expression'), job['schedule_type'])
@@ -456,9 +470,21 @@ def render_schedule_list():
                     runs += f" / {job['max_runs']}"
                 st.markdown(f"**Runs:** {runs}")
 
-                template_mode = job.get('template_mode', 'unused')
-                template_info = f"{job.get('template_count', '?')} templates" if template_mode == 'unused' else f"{len(job.get('template_ids', []))} templates"
-                st.caption(f"Mode: {template_mode} ({template_info})")
+                # Show template info for ad_creation jobs, parameters for others
+                if job_type == 'ad_creation':
+                    template_mode = job.get('template_mode', 'unused')
+                    if template_mode == 'unused':
+                        template_info = f"{job.get('template_count', '?')} templates"
+                    else:
+                        template_ids = job.get('template_ids') or []
+                        template_info = f"{len(template_ids)} templates"
+                    st.caption(f"Mode: {template_mode} ({template_info})")
+                elif job_type == 'meta_sync':
+                    params = job.get('parameters', {}) or {}
+                    st.caption(f"Syncs last {params.get('days_back', 7)} days")
+                elif job_type == 'scorecard':
+                    params = job.get('parameters', {}) or {}
+                    st.caption(f"Analyzes last {params.get('days_back', 7)} days")
 
             with col4:
                 if st.button("View", key=f"view_{job['id']}", use_container_width=True):
