@@ -114,9 +114,9 @@ def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str
     """Fetch scheduled jobs with optional filters."""
     try:
         db = get_supabase_client()
-        # Join products for ad_creation jobs and brands directly for meta_sync/scorecard jobs
+        # Get jobs with products join
         query = db.table("scheduled_jobs").select(
-            "*, products(name, brands(name)), brands!scheduled_jobs_brand_id_fkey(name)"
+            "*, products(name, brands(name))"
         )
         if brand_id:
             query = query.eq("brand_id", brand_id)
@@ -125,7 +125,22 @@ def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str
         if status:
             query = query.eq("status", status)
         result = query.order("created_at", desc=True).execute()
-        return result.data or []
+        jobs = result.data or []
+
+        # For jobs without products (meta_sync, scorecard), fetch brand name separately
+        brand_ids_needed = set()
+        for job in jobs:
+            if not job.get('products') and job.get('brand_id'):
+                brand_ids_needed.add(job['brand_id'])
+
+        if brand_ids_needed:
+            brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids_needed)).execute()
+            brand_map = {b['id']: b for b in (brands_result.data or [])}
+            for job in jobs:
+                if not job.get('products') and job.get('brand_id'):
+                    job['brands'] = brand_map.get(job['brand_id'], {})
+
+        return jobs
     except Exception as e:
         st.error(f"Failed to fetch scheduled jobs: {e}")
         return []
