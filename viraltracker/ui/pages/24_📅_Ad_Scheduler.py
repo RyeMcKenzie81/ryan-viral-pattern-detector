@@ -1387,7 +1387,7 @@ def render_schedule_detail():
                     st.error(f"Error: {run['error_message']}")
 
                 if run.get('logs'):
-                    st.text_area("Logs", run['logs'], height=100)
+                    st.text_area("Logs", run['logs'], height=100, key=f"logs_{run['id']}")
 
 
 # ============================================================================
