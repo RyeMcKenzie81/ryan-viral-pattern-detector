@@ -315,12 +315,12 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
     try:
         # Get templates to use
-        if job['template_mode'] == 'unused':
+        if job.get('template_mode') == 'unused':
             template_count = job.get('template_count', 5)
             templates = get_unused_templates(product_id, template_count)
             logs.append(f"Selected {len(templates)} unused templates")
         else:
-            templates = job.get('template_ids', [])
+            templates = job.get('template_ids') or []
             logs.append(f"Using {len(templates)} specific templates")
 
         if not templates:
@@ -570,10 +570,10 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
     """
     job_id = job['id']
     job_name = job['name']
-    brand_id = job['brand_id']
-    brand_info = job.get('brands', {}) or {}
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
     brand_name = brand_info.get('name', 'Unknown')
-    params = job.get('parameters', {})
+    params = job.get('parameters') or {}
 
     logger.info(f"Starting Meta sync job: {job_name} for brand {brand_name}")
 
@@ -689,10 +689,10 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
     """
     job_id = job['id']
     job_name = job['name']
-    brand_id = job['brand_id']
-    brand_info = job.get('brands', {}) or {}
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
     brand_name = brand_info.get('name', 'Unknown')
-    params = job.get('parameters', {})
+    params = job.get('parameters') or {}
 
     logger.info(f"Starting scorecard job: {job_name} for brand {brand_name}")
 
