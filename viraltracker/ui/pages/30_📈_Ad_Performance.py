@@ -320,6 +320,159 @@ def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
     }
 
 
+def aggregate_time_series(data: List[Dict]) -> Dict[str, List[Dict]]:
+    """
+    Aggregate performance data by date for time-series charts.
+
+    Returns dict with keys: dates, spend, roas, ctr, cpc, impressions, clicks
+    """
+    from collections import defaultdict
+
+    daily = defaultdict(lambda: {
+        "spend": 0, "impressions": 0, "link_clicks": 0,
+        "purchases": 0, "purchase_value": 0
+    })
+
+    for d in data:
+        date = d.get("date")
+        if not date:
+            continue
+        day = daily[date]
+        day["spend"] += float(d.get("spend") or 0)
+        day["impressions"] += int(d.get("impressions") or 0)
+        day["link_clicks"] += int(d.get("link_clicks") or 0)
+        day["purchases"] += int(d.get("purchases") or 0)
+        day["purchase_value"] += float(d.get("purchase_value") or 0)
+
+    # Sort by date and build lists
+    sorted_dates = sorted(daily.keys())
+
+    result = {
+        "dates": sorted_dates,
+        "spend": [],
+        "impressions": [],
+        "clicks": [],
+        "ctr": [],
+        "cpc": [],
+        "roas": [],
+    }
+
+    for date in sorted_dates:
+        d = daily[date]
+        result["spend"].append(d["spend"])
+        result["impressions"].append(d["impressions"])
+        result["clicks"].append(d["link_clicks"])
+
+        # Calculate rates
+        ctr = (d["link_clicks"] / d["impressions"] * 100) if d["impressions"] > 0 else 0
+        cpc = (d["spend"] / d["link_clicks"]) if d["link_clicks"] > 0 else 0
+        roas = (d["purchase_value"] / d["spend"]) if d["spend"] > 0 else 0
+
+        result["ctr"].append(round(ctr, 2))
+        result["cpc"].append(round(cpc, 2))
+        result["roas"].append(round(roas, 2))
+
+    return result
+
+
+def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -> List[Dict]:
+    """
+    Get top N performing ads by a specified metric.
+
+    Args:
+        data: Performance data list
+        metric: Metric to sort by (roas, ctr, spend, purchases)
+        top_n: Number of top performers to return
+    """
+    ads = aggregate_by_ad(data)
+
+    # Sort by metric (descending)
+    if metric == "roas":
+        sorted_ads = sorted(ads, key=lambda x: x.get("roas", 0), reverse=True)
+    elif metric == "ctr":
+        sorted_ads = sorted(ads, key=lambda x: x.get("ctr", 0), reverse=True)
+    elif metric == "spend":
+        sorted_ads = sorted(ads, key=lambda x: x.get("spend", 0), reverse=True)
+    elif metric == "purchases":
+        sorted_ads = sorted(ads, key=lambda x: x.get("purchases", 0), reverse=True)
+    else:
+        sorted_ads = ads
+
+    return sorted_ads[:top_n]
+
+
+def get_worst_performers(data: List[Dict], metric: str = "roas", bottom_n: int = 5, min_spend: float = 10.0) -> List[Dict]:
+    """
+    Get bottom N performing ads by a specified metric.
+
+    Args:
+        data: Performance data list
+        metric: Metric to sort by (roas, ctr)
+        bottom_n: Number of worst performers to return
+        min_spend: Minimum spend threshold to be included
+    """
+    ads = aggregate_by_ad(data)
+
+    # Filter by minimum spend
+    ads_with_spend = [a for a in ads if a.get("spend", 0) >= min_spend]
+
+    # Sort by metric (ascending for worst)
+    if metric == "roas":
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("roas", 0))
+    elif metric == "ctr":
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("ctr", 0))
+    else:
+        sorted_ads = ads_with_spend
+
+    return sorted_ads[:bottom_n]
+
+
+def export_to_csv(data: List[Dict]) -> str:
+    """
+    Export performance data to CSV format string.
+
+    Returns CSV content as string.
+    """
+    import io
+    import csv
+
+    if not data:
+        return ""
+
+    # Aggregate by ad
+    ads = aggregate_by_ad(data)
+
+    # Define columns
+    columns = [
+        "Ad Name", "Campaign", "Ad Set", "Status",
+        "Spend", "Impressions", "CPM", "Clicks", "CTR",
+        "CPC", "Add to Carts", "Purchases", "ROAS"
+    ]
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(columns)
+
+    for ad in ads:
+        writer.writerow([
+            ad.get("ad_name", "Unknown"),
+            ad.get("campaign_name", ""),
+            ad.get("adset_name", ""),
+            ad.get("ad_status", ""),
+            f"{ad.get('spend', 0):.2f}",
+            ad.get("impressions", 0),
+            f"{ad.get('cpm', 0):.2f}",
+            ad.get("link_clicks", 0),
+            f"{ad.get('ctr', 0):.2f}%",
+            f"{ad.get('cpc', 0):.2f}",
+            ad.get("add_to_carts", 0),
+            ad.get("purchases", 0),
+            f"{ad.get('roas', 0):.2f}",
+        ])
+
+    return output.getvalue()
+
+
 async def sync_ads_from_meta(
     brand_id: str,
     ad_account_id: str,
@@ -427,6 +580,111 @@ def render_metric_cards(metrics: Dict[str, Any]):
             "Revenue",
             f"${metrics['total_revenue']:,.2f}",
             help="Total purchase revenue"
+        )
+
+
+def render_time_series_charts(data: List[Dict]):
+    """Render time-series charts for key metrics."""
+    import pandas as pd
+
+    if not data:
+        st.info("No data available for charts.")
+        return
+
+    ts_data = aggregate_time_series(data)
+
+    if not ts_data["dates"]:
+        st.info("No time-series data available.")
+        return
+
+    # Create DataFrame
+    df = pd.DataFrame({
+        "Date": ts_data["dates"],
+        "Spend ($)": ts_data["spend"],
+        "ROAS": ts_data["roas"],
+        "CTR (%)": ts_data["ctr"],
+        "CPC ($)": ts_data["cpc"],
+        "Impressions": ts_data["impressions"],
+        "Clicks": ts_data["clicks"],
+    })
+
+    # Metric selector
+    metric_options = ["Spend ($)", "ROAS", "CTR (%)", "CPC ($)", "Impressions", "Clicks"]
+    selected_metrics = st.multiselect(
+        "Select metrics to display",
+        metric_options,
+        default=["Spend ($)", "ROAS"],
+        key="ts_chart_metrics"
+    )
+
+    if not selected_metrics:
+        st.info("Select at least one metric to display.")
+        return
+
+    # Render charts
+    for metric in selected_metrics:
+        chart_df = df[["Date", metric]].copy()
+        chart_df = chart_df.set_index("Date")
+
+        st.subheader(f"{metric} Over Time")
+        st.line_chart(chart_df, height=250)
+
+
+def render_top_performers(data: List[Dict]):
+    """Render top and worst performers section."""
+    import pandas as pd
+
+    if not data:
+        return
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("🏆 Top Performers (by ROAS)")
+        top_ads = get_top_performers(data, metric="roas", top_n=5)
+
+        if top_ads:
+            for i, ad in enumerate(top_ads, 1):
+                roas = ad.get("roas", 0)
+                spend = ad.get("spend", 0)
+                name = (ad.get("ad_name") or "Unknown")[:40]
+
+                if roas > 0:
+                    st.markdown(f"**{i}. {name}**")
+                    st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
+        else:
+            st.info("No data for top performers")
+
+    with col2:
+        st.subheader("⚠️ Needs Attention (low ROAS)")
+        worst_ads = get_worst_performers(data, metric="roas", bottom_n=5, min_spend=10.0)
+
+        if worst_ads:
+            for i, ad in enumerate(worst_ads, 1):
+                roas = ad.get("roas", 0)
+                spend = ad.get("spend", 0)
+                name = (ad.get("ad_name") or "Unknown")[:40]
+
+                st.markdown(f"**{i}. {name}**")
+                st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
+        else:
+            st.info("No underperforming ads (or none with min $10 spend)")
+
+
+def render_csv_export(data: List[Dict]):
+    """Render CSV export button."""
+    if not data:
+        return
+
+    csv_content = export_to_csv(data)
+
+    if csv_content:
+        st.download_button(
+            label="📥 Export to CSV",
+            data=csv_content,
+            file_name=f"meta_ads_performance_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            help="Download performance data as CSV"
         )
 
 
@@ -1435,6 +1693,22 @@ metrics = aggregate_metrics(perf_data)
 
 # Metric cards
 render_metric_cards(metrics)
+
+# Export button below metrics
+render_csv_export(perf_data)
+
+st.divider()
+
+# Enhanced Views - Charts and Analysis (collapsible)
+with st.expander("📊 Charts & Analysis", expanded=False):
+    # Tabs for different views
+    chart_tab, performers_tab = st.tabs(["📈 Time Series", "🏆 Top/Bottom Performers"])
+
+    with chart_tab:
+        render_time_series_charts(perf_data)
+
+    with performers_tab:
+        render_top_performers(perf_data)
 
 st.divider()
 

@@ -237,6 +237,74 @@ def get_ad_creation_service():
     return AdCreationService()
 
 
+def get_performance_for_ads(ad_ids: list) -> dict:
+    """
+    Get Meta performance data for a list of generated ad IDs.
+
+    Returns dict mapping generated_ad_id -> performance summary dict.
+    """
+    if not ad_ids:
+        return {}
+
+    try:
+        db = get_supabase_client()
+
+        # Get mappings for these ads
+        result = db.table("meta_ad_mapping").select(
+            "generated_ad_id, meta_ad_id, meta_ad_account_id"
+        ).in_("generated_ad_id", ad_ids).execute()
+
+        if not result.data:
+            return {}
+
+        # Get meta_ad_ids
+        meta_ad_ids = [r["meta_ad_id"] for r in result.data]
+        gen_to_meta = {r["generated_ad_id"]: r["meta_ad_id"] for r in result.data}
+
+        # Get aggregated performance data for these meta ads
+        perf_result = db.table("meta_ads_performance").select(
+            "meta_ad_id, spend, impressions, link_clicks, purchases, purchase_value"
+        ).in_("meta_ad_id", meta_ad_ids).execute()
+
+        if not perf_result.data:
+            return {}
+
+        # Aggregate by meta_ad_id
+        from collections import defaultdict
+        meta_agg = defaultdict(lambda: {
+            "spend": 0, "impressions": 0, "clicks": 0, "purchases": 0, "revenue": 0
+        })
+
+        for p in perf_result.data:
+            mid = p.get("meta_ad_id")
+            meta_agg[mid]["spend"] += float(p.get("spend") or 0)
+            meta_agg[mid]["impressions"] += int(p.get("impressions") or 0)
+            meta_agg[mid]["clicks"] += int(p.get("link_clicks") or 0)
+            meta_agg[mid]["purchases"] += int(p.get("purchases") or 0)
+            meta_agg[mid]["revenue"] += float(p.get("purchase_value") or 0)
+
+        # Map back to generated_ad_id
+        performance = {}
+        for gen_id, meta_id in gen_to_meta.items():
+            agg = meta_agg.get(meta_id)
+            if agg and agg["spend"] > 0:
+                roas = agg["revenue"] / agg["spend"] if agg["spend"] > 0 else 0
+                ctr = (agg["clicks"] / agg["impressions"] * 100) if agg["impressions"] > 0 else 0
+                performance[gen_id] = {
+                    "spend": agg["spend"],
+                    "impressions": agg["impressions"],
+                    "clicks": agg["clicks"],
+                    "purchases": agg["purchases"],
+                    "roas": roas,
+                    "ctr": ctr,
+                    "linked": True
+                }
+
+        return performance
+    except Exception as e:
+        return {}
+
+
 def get_existing_variants(ad_id: str) -> list:
     """Get list of variant sizes that already exist for an ad."""
     try:
@@ -643,6 +711,17 @@ else:
                 if not ads:
                     st.info("No ads found for this run.")
                 else:
+                    # Fetch performance data for these ads
+                    ad_ids = [str(a.get('id')) for a in ads if a.get('id')]
+                    performance_data = get_performance_for_ads(ad_ids) if ad_ids else {}
+
+                    # Show performance summary if any ads have data
+                    if performance_data:
+                        linked_count = len(performance_data)
+                        total_spend = sum(p.get("spend", 0) for p in performance_data.values())
+                        total_purchases = sum(p.get("purchases", 0) for p in performance_data.values())
+                        st.info(f"📊 **Performance:** {linked_count} ads linked · ${total_spend:,.2f} spend · {total_purchases} purchases")
+
                     # Display ads in a grid
                     cols_per_row = 3
                     for i in range(0, len(ads), cols_per_row):
@@ -682,6 +761,19 @@ else:
 
                                     agree_icon = "✅" if ad.get('reviewers_agree') else "⚠️"
                                     st.caption(f"Claude: {claude_score} | Gemini: {gemini_score} {agree_icon}")
+
+                                    # Performance data (if linked to Meta)
+                                    ad_id = ad.get('id')
+                                    perf = performance_data.get(str(ad_id)) if ad_id else None
+                                    if perf:
+                                        roas = perf.get("roas", 0)
+                                        spend = perf.get("spend", 0)
+                                        purchases = perf.get("purchases", 0)
+                                        roas_color = "green" if roas >= 2 else "orange" if roas >= 1 else "red"
+                                        st.markdown(
+                                            f"<span style='color:{roas_color};font-weight:bold;'>📈 ROAS: {roas:.2f}x</span> · ${spend:,.0f} · {purchases} purch",
+                                            unsafe_allow_html=True
+                                        )
 
                                     # Model info (if available)
                                     model_used = ad.get('model_used')
