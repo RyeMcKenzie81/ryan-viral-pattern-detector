@@ -67,14 +67,29 @@ def get_due_jobs() -> List[Dict]:
 
         # Fetch all due jobs (job_type routing handled in execute_job)
         result = db.table("scheduled_jobs").select(
-            "*, products(id, name, brand_id, brands(id, name, brand_colors)), brands!scheduled_jobs_brand_id_fkey(id, name)"
+            "*, products(id, name, brand_id, brands(id, name, brand_colors))"
         ).eq(
             "status", "active"
         ).lte(
             "next_run_at", now
         ).execute()
 
-        return result.data or []
+        jobs = result.data or []
+
+        # For jobs without products (meta_sync, scorecard), fetch brand name separately
+        brand_ids_needed = set()
+        for job in jobs:
+            if not job.get('products') and job.get('brand_id'):
+                brand_ids_needed.add(job['brand_id'])
+
+        if brand_ids_needed:
+            brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids_needed)).execute()
+            brand_map = {b['id']: b for b in (brands_result.data or [])}
+            for job in jobs:
+                if not job.get('products') and job.get('brand_id'):
+                    job['brands'] = brand_map.get(job['brand_id'], {})
+
+        return jobs
     except Exception as e:
         logger.error(f"Failed to fetch due jobs: {e}")
         return []
@@ -580,41 +595,35 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Syncing Meta Ads for brand: {brand_name}")
         logs.append(f"Days back: {days_back}")
 
-        # Get the ad account for this brand
-        db = get_supabase_client()
-        account_result = db.table("brand_ad_accounts").select(
-            "meta_ad_account_id, account_name"
-        ).eq("brand_id", brand_id).eq("is_primary", True).limit(1).execute()
-
-        if not account_result.data:
-            raise Exception(f"No ad account configured for brand {brand_name}")
-
-        ad_account = account_result.data[0]
-        ad_account_id = ad_account['meta_ad_account_id']
-        logs.append(f"Ad account: {ad_account.get('account_name', ad_account_id)}")
-
-        # Calculate date range
-        from datetime import date
-        date_end = date.today()
-        date_start = date_end - timedelta(days=days_back)
-
-        logs.append(f"Date range: {date_start} to {date_end}")
-
-        # Import and run the sync
+        # Import the service
         from viraltracker.services.meta_ads_service import MetaAdsService
+        from uuid import UUID
         service = MetaAdsService()
 
-        # Run sync (this is an async function)
-        result = await service.sync_performance_to_db(
-            ad_account_id=ad_account_id,
-            brand_id=brand_id,
-            date_start=date_start.isoformat(),
-            date_end=date_end.isoformat()
+        logs.append(f"Fetching insights for last {days_back} days...")
+
+        # Step 1: Fetch insights from Meta API
+        insights = await service.get_ad_insights(
+            brand_id=UUID(brand_id),
+            days_back=days_back
         )
 
-        ads_synced = result.get('ads_synced', 0)
-        rows_inserted = result.get('rows_inserted', 0)
-        logs.append(f"Synced {ads_synced} ads, {rows_inserted} data rows")
+        if not insights:
+            logs.append("No insights returned from Meta API")
+            ads_synced = 0
+            rows_inserted = 0
+        else:
+            logs.append(f"Fetched {len(insights)} insight records")
+
+            # Step 2: Save to database
+            rows_inserted = await service.sync_performance_to_db(
+                insights=insights,
+                brand_id=UUID(brand_id)
+            )
+
+            # Count unique ads
+            ads_synced = len(set(i.get('ad_id') for i in insights if i.get('ad_id')))
+            logs.append(f"Synced {ads_synced} ads, {rows_inserted} data rows")
 
         # Update job run as completed
         update_job_run(run_id, {
