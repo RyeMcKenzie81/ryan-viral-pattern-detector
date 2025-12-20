@@ -1932,14 +1932,42 @@ elif selected_tab == "🔗 Linked":
 
                 # Show generated ad selector if button was clicked
                 if st.session_state.get(f"show_link_for_{meta_ad_id}"):
-                    st.markdown("**Select generated ad to link:**")
+                    st.markdown("**Select generated ad to link (legacy ads with numeric filenames):**")
 
                     # Get generated ads for selection
                     db = get_supabase_client()
                     gen_result = db.table("generated_ads").select(
                         "id, storage_path, hook_text, created_at"
-                    ).order("created_at", desc=True).limit(50).execute()
-                    gen_ads_list = gen_result.data or []
+                    ).order("created_at", desc=True).limit(500).execute()
+                    all_gen_ads = gen_result.data or []
+
+                    # Filter to only legacy ads (simple numeric filenames like 1.png, 2.png)
+                    # and filter by brand (check if storage_path contains brand name)
+                    import re
+                    gen_ads_list = []
+                    for ga in all_gen_ads:
+                        path = ga.get("storage_path", "")
+                        filename = path.split("/")[-1].lower() if path else ""
+                        # Check if it's a simple numeric filename (1.png, 2.png, etc.)
+                        if re.match(r'^\d+\.png$', filename) or re.match(r'^\d+\.jpg$', filename):
+                            # Also try to filter by brand - check if path contains brand-related terms
+                            # Wonder Paws brand might have "wonderpaws", "wonder-paws", "wp" in path
+                            path_lower = path.lower()
+                            if "wonderpaws" in path_lower or "wonder" in path_lower or "wp" in path_lower or "paws" in path_lower:
+                                gen_ads_list.append(ga)
+
+                    # If no brand-filtered results, show all numeric filename ads
+                    if not gen_ads_list:
+                        for ga in all_gen_ads:
+                            path = ga.get("storage_path", "")
+                            filename = path.split("/")[-1].lower() if path else ""
+                            if re.match(r'^\d+\.png$', filename) or re.match(r'^\d+\.jpg$', filename):
+                                gen_ads_list.append(ga)
+
+                    if not gen_ads_list:
+                        st.warning("No legacy ads (1.png, 2.png, etc.) found in generated_ads")
+                    else:
+                        st.caption(f"Found {len(gen_ads_list)} legacy ads with numeric filenames")
 
                     # Show as visual grid - 5 columns
                     cols_per_row = 5
