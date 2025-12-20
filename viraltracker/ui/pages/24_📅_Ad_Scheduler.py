@@ -1196,15 +1196,24 @@ def render_schedule_detail():
         return
 
     product_info = job.get('products', {}) or {}
-    brand_info = product_info.get('brands', {}) or {}
+    brand_info = product_info.get('brands', {}) or job.get('brands', {}) or {}
+    job_type = job.get('job_type', 'ad_creation')
 
     # Header
     col1, col2 = st.columns([4, 2])
 
     with col1:
         status_emoji = {'active': '🟢', 'paused': '⏸️', 'completed': '✅'}.get(job['status'], '❓')
-        st.title(f"{status_emoji} {job['name']}")
-        st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+        type_badge = ""
+        if job_type == 'meta_sync':
+            type_badge = "🔄 "
+        elif job_type == 'scorecard':
+            type_badge = "📊 "
+        st.title(f"{status_emoji} {type_badge}{job['name']}")
+        if job_type == 'ad_creation':
+            st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+        else:
+            st.caption(f"{brand_info.get('name', 'Unknown')}")
 
     with col2:
         if st.button("← Back to List"):
@@ -1270,61 +1279,75 @@ def render_schedule_detail():
         st.markdown(f"**Runs Completed:** {runs_text}")
 
     with col2:
-        st.markdown("### Templates")
-        st.markdown(f"**Mode:** {job.get('template_mode', 'unused').capitalize()}")
+        if job_type == 'ad_creation':
+            st.markdown("### Templates")
+            template_mode = job.get('template_mode') or 'unused'
+            st.markdown(f"**Mode:** {template_mode.capitalize()}")
 
-        if job['template_mode'] == 'unused':
-            st.markdown(f"**Per Run:** {job.get('template_count', 'N/A')} templates")
-        else:
-            template_ids = job.get('template_ids', [])
-            st.markdown(f"**Selected:** {len(template_ids)} templates")
-
-    st.divider()
-
-    # Parameters
-    st.markdown("### Ad Creation Parameters")
-    params = job.get('parameters', {})
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown(f"**Variations:** {params.get('num_variations', 'N/A')}")
-        st.markdown(f"**Content:** {params.get('content_source', 'N/A')}")
-    with col2:
-        st.markdown(f"**Colors:** {params.get('color_mode', 'N/A')}")
-        st.markdown(f"**Images:** {params.get('image_selection_mode', 'N/A')}")
-    with col3:
-        st.markdown(f"**Export:** {params.get('export_destination', 'none')}")
-        if params.get('export_email'):
-            st.caption(params['export_email'])
-    with col4:
-        persona_id = params.get('persona_id')
-        if persona_id:
-            # Try to get persona name
-            personas = get_personas_for_product(job['product_id'])
-            persona = next((p for p in personas if p['id'] == persona_id), None)
-            persona_name = persona['name'] if persona else persona_id[:8]
-            st.markdown(f"**Persona:** {persona_name}")
-        else:
-            st.markdown("**Persona:** None")
-
-        # Display variant if set
-        variant_id = params.get('variant_id')
-        if variant_id:
-            # Try to get variant name
-            variants = get_variants_for_product(job['product_id'])
-            variant = next((v for v in variants if v['id'] == variant_id), None)
-            variant_name = variant['name'] if variant else variant_id[:8]
-            st.markdown(f"**Variant:** {variant_name}")
-        else:
-            st.markdown("**Variant:** Default")
-
-    # Display additional instructions if set
-    add_instructions = params.get('additional_instructions')
-    if add_instructions:
-        st.markdown("**Additional Instructions:**")
-        st.caption(add_instructions[:200] + ('...' if len(add_instructions) > 200 else ''))
+            if template_mode == 'unused':
+                st.markdown(f"**Per Run:** {job.get('template_count', 'N/A')} templates")
+            else:
+                template_ids = job.get('template_ids') or []
+                st.markdown(f"**Selected:** {len(template_ids)} templates")
+        elif job_type == 'meta_sync':
+            st.markdown("### Sync Settings")
+            params = job.get('parameters', {}) or {}
+            st.markdown(f"**Days Back:** {params.get('days_back', 7)}")
+        elif job_type == 'scorecard':
+            st.markdown("### Scorecard Settings")
+            params = job.get('parameters', {}) or {}
+            st.markdown(f"**Days Back:** {params.get('days_back', 7)}")
+            st.markdown(f"**Min Spend:** ${params.get('min_spend', 10.0)}")
+            if params.get('export_email'):
+                st.markdown(f"**Email:** {params['export_email']}")
 
     st.divider()
+
+    # Parameters - only show for ad_creation jobs
+    if job_type == 'ad_creation':
+        st.markdown("### Ad Creation Parameters")
+        params = job.get('parameters', {}) or {}
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown(f"**Variations:** {params.get('num_variations', 'N/A')}")
+            st.markdown(f"**Content:** {params.get('content_source', 'N/A')}")
+        with col2:
+            st.markdown(f"**Colors:** {params.get('color_mode', 'N/A')}")
+            st.markdown(f"**Images:** {params.get('image_selection_mode', 'N/A')}")
+        with col3:
+            st.markdown(f"**Export:** {params.get('export_destination', 'none')}")
+            if params.get('export_email'):
+                st.caption(params['export_email'])
+        with col4:
+            persona_id = params.get('persona_id')
+            if persona_id:
+                # Try to get persona name
+                personas = get_personas_for_product(job['product_id'])
+                persona = next((p for p in personas if p['id'] == persona_id), None)
+                persona_name = persona['name'] if persona else persona_id[:8]
+                st.markdown(f"**Persona:** {persona_name}")
+            else:
+                st.markdown("**Persona:** None")
+
+            # Display variant if set
+            variant_id = params.get('variant_id')
+            if variant_id:
+                # Try to get variant name
+                variants = get_variants_for_product(job['product_id'])
+                variant = next((v for v in variants if v['id'] == variant_id), None)
+                variant_name = variant['name'] if variant else variant_id[:8]
+                st.markdown(f"**Variant:** {variant_name}")
+            else:
+                st.markdown("**Variant:** Default")
+
+        # Display additional instructions if set
+        add_instructions = params.get('additional_instructions')
+        if add_instructions:
+            st.markdown("**Additional Instructions:**")
+            st.caption(add_instructions[:200] + ('...' if len(add_instructions) > 200 else ''))
+
+        st.divider()
 
     # Run history
     st.markdown("### Run History")
