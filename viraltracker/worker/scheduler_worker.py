@@ -1,10 +1,13 @@
 """
-Scheduler Worker - Background process for executing scheduled ad generation jobs.
+Scheduler Worker - Background process for executing scheduled jobs.
 
 This worker:
 1. Polls scheduled_jobs table every minute for due jobs
-2. Executes ad creation workflow for each template
-3. Tracks template usage for the "unused" feature
+2. Routes jobs by job_type:
+   - ad_creation: Execute ad creation workflow for each template
+   - meta_sync: Sync Meta Ads performance data for a brand
+   - scorecard: Generate weekly performance scorecard
+3. Tracks template usage for the "unused" feature (ad_creation)
 4. Handles email/Slack exports
 5. Updates job run history
 
@@ -62,8 +65,9 @@ def get_due_jobs() -> List[Dict]:
         db = get_supabase_client()
         now = datetime.now(PST).isoformat()
 
+        # Fetch all due jobs (job_type routing handled in execute_job)
         result = db.table("scheduled_jobs").select(
-            "*, products(id, name, brand_id, brands(id, name, brand_colors))"
+            "*, products(id, name, brand_id, brands(id, name, brand_colors)), brands!scheduled_jobs_brand_id_fkey(id, name)"
         ).eq(
             "status", "active"
         ).lte(
@@ -252,7 +256,25 @@ def calculate_next_run(cron_expression: str) -> Optional[datetime]:
 # ============================================================================
 
 async def execute_job(job: Dict) -> Dict[str, Any]:
-    """Execute a single scheduled job."""
+    """Route and execute a scheduled job based on job_type."""
+    job_type = job.get('job_type', 'ad_creation')
+    job_id = job['id']
+    job_name = job['name']
+
+    logger.info(f"Routing job: {job_name} (type: {job_type}, ID: {job_id})")
+
+    # Route to appropriate handler
+    if job_type == 'meta_sync':
+        return await execute_meta_sync_job(job)
+    elif job_type == 'scorecard':
+        return await execute_scorecard_job(job)
+    else:
+        # Default to ad_creation for backward compatibility
+        return await execute_ad_creation_job(job)
+
+
+async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
+    """Execute an ad creation job."""
     job_id = job['id']
     job_name = job['name']
     product_id = job['product_id']
@@ -517,6 +539,342 @@ async def handle_export(
 
         except Exception as e:
             logger.error(f"Slack export failed: {e}")
+
+
+# ============================================================================
+# Meta Sync Job Handler
+# ============================================================================
+
+async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a Meta Ads sync job.
+
+    Parameters (from job['parameters']):
+        days_back: int - Number of days to sync (default: 7)
+        include_inactive: bool - Include paused/deleted ads (default: False)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job['brand_id']
+    brand_info = job.get('brands', {}) or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters', {})
+
+    logger.info(f"Starting Meta sync job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        days_back = params.get('days_back', 7)
+
+        logs.append(f"Syncing Meta Ads for brand: {brand_name}")
+        logs.append(f"Days back: {days_back}")
+
+        # Get the ad account for this brand
+        db = get_supabase_client()
+        account_result = db.table("brand_ad_accounts").select(
+            "meta_ad_account_id, account_name"
+        ).eq("brand_id", brand_id).eq("is_primary", True).limit(1).execute()
+
+        if not account_result.data:
+            raise Exception(f"No ad account configured for brand {brand_name}")
+
+        ad_account = account_result.data[0]
+        ad_account_id = ad_account['meta_ad_account_id']
+        logs.append(f"Ad account: {ad_account.get('account_name', ad_account_id)}")
+
+        # Calculate date range
+        from datetime import date
+        date_end = date.today()
+        date_start = date_end - timedelta(days=days_back)
+
+        logs.append(f"Date range: {date_start} to {date_end}")
+
+        # Import and run the sync
+        from viraltracker.services.meta_ads_service import MetaAdsService
+        service = MetaAdsService()
+
+        # Run sync (this is an async function)
+        result = await service.sync_performance_to_db(
+            ad_account_id=ad_account_id,
+            brand_id=brand_id,
+            date_start=date_start.isoformat(),
+            date_end=date_end.isoformat()
+        )
+
+        ads_synced = result.get('ads_synced', 0)
+        rows_inserted = result.get('rows_inserted', 0)
+        logs.append(f"Synced {ads_synced} ads, {rows_inserted} data rows")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job: increment runs_completed, calculate next_run
+        runs_completed = job.get('runs_completed', 0) + 1
+        max_runs = job.get('max_runs')
+
+        job_updates = {"runs_completed": runs_completed}
+
+        if max_runs and runs_completed >= max_runs:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+            logs.append(f"Job completed: reached max runs ({max_runs})")
+        elif job['schedule_type'] == 'recurring':
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                job_updates["next_run_at"] = next_run.isoformat()
+                logs.append(f"Next run scheduled: {next_run}")
+        else:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+
+        update_job(job_id, job_updates)
+
+        logger.info(f"Completed Meta sync job: {job_name} - {ads_synced} ads synced")
+        return {"success": True, "ads_synced": ads_synced, "rows_inserted": rows_inserted}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Meta sync job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Scorecard Job Handler
+# ============================================================================
+
+async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a weekly performance scorecard job.
+
+    Generates AI-powered performance analysis and recommendations,
+    then sends via email/Slack.
+
+    Parameters (from job['parameters']):
+        days_back: int - Analysis period (default: 7)
+        export_email: str - Email to send report
+        min_spend: float - Minimum spend to include ad (default: 10.0)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job['brand_id']
+    brand_info = job.get('brands', {}) or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters', {})
+
+    logger.info(f"Starting scorecard job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        days_back = params.get('days_back', 7)
+        min_spend = params.get('min_spend', 10.0)
+        export_email = params.get('export_email')
+
+        logs.append(f"Generating scorecard for: {brand_name}")
+        logs.append(f"Analysis period: {days_back} days")
+        logs.append(f"Min spend filter: ${min_spend}")
+
+        # Get performance data
+        db = get_supabase_client()
+        from datetime import date
+        date_end = date.today()
+        date_start = date_end - timedelta(days=days_back)
+
+        # Fetch aggregated performance data
+        perf_result = db.table("meta_ads_performance").select(
+            "meta_ad_id, ad_name, campaign_name, adset_name, "
+            "spend, impressions, link_clicks, purchases, purchase_value, ad_status"
+        ).eq("brand_id", brand_id).gte(
+            "date", date_start.isoformat()
+        ).lte(
+            "date", date_end.isoformat()
+        ).execute()
+
+        if not perf_result.data:
+            logs.append("No performance data found for this period")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            return {"success": True, "message": "No data to analyze"}
+
+        # Aggregate by ad
+        from collections import defaultdict
+        ad_metrics = defaultdict(lambda: {
+            "spend": 0, "impressions": 0, "clicks": 0,
+            "purchases": 0, "revenue": 0
+        })
+
+        for row in perf_result.data:
+            ad_id = row['meta_ad_id']
+            ad_metrics[ad_id]['name'] = row.get('ad_name', 'Unknown')
+            ad_metrics[ad_id]['campaign'] = row.get('campaign_name', '')
+            ad_metrics[ad_id]['adset'] = row.get('adset_name', '')
+            ad_metrics[ad_id]['status'] = row.get('ad_status', '')
+            ad_metrics[ad_id]['spend'] += float(row.get('spend') or 0)
+            ad_metrics[ad_id]['impressions'] += int(row.get('impressions') or 0)
+            ad_metrics[ad_id]['clicks'] += int(row.get('link_clicks') or 0)
+            ad_metrics[ad_id]['purchases'] += int(row.get('purchases') or 0)
+            ad_metrics[ad_id]['revenue'] += float(row.get('purchase_value') or 0)
+
+        # Calculate ROAS and filter by min spend
+        ads_analyzed = []
+        for ad_id, metrics in ad_metrics.items():
+            if metrics['spend'] >= min_spend:
+                roas = metrics['revenue'] / metrics['spend'] if metrics['spend'] > 0 else 0
+                ctr = (metrics['clicks'] / metrics['impressions'] * 100) if metrics['impressions'] > 0 else 0
+                ads_analyzed.append({
+                    'id': ad_id,
+                    'name': metrics['name'],
+                    'campaign': metrics['campaign'],
+                    'spend': metrics['spend'],
+                    'roas': roas,
+                    'ctr': ctr,
+                    'purchases': metrics['purchases'],
+                    'status': metrics['status']
+                })
+
+        # Sort by ROAS
+        ads_analyzed.sort(key=lambda x: x['roas'], reverse=True)
+
+        logs.append(f"Analyzed {len(ads_analyzed)} ads with ${min_spend}+ spend")
+
+        # Generate scorecard summary
+        total_spend = sum(a['spend'] for a in ads_analyzed)
+        total_revenue = sum(a['spend'] * a['roas'] for a in ads_analyzed)
+        avg_roas = total_revenue / total_spend if total_spend > 0 else 0
+
+        # Categorize ads
+        top_performers = [a for a in ads_analyzed if a['roas'] >= 2.0][:5]
+        needs_attention = [a for a in ads_analyzed if a['roas'] < 1.0][:5]
+        active_ads = [a for a in ads_analyzed if a['status'] == 'ACTIVE']
+
+        scorecard = {
+            'brand': brand_name,
+            'period': f"{date_start} to {date_end}",
+            'total_spend': total_spend,
+            'total_revenue': total_revenue,
+            'avg_roas': avg_roas,
+            'ads_analyzed': len(ads_analyzed),
+            'active_ads': len(active_ads),
+            'top_performers': top_performers,
+            'needs_attention': needs_attention
+        }
+
+        logs.append(f"Total spend: ${total_spend:,.2f}")
+        logs.append(f"Average ROAS: {avg_roas:.2f}x")
+        logs.append(f"Top performers: {len(top_performers)}")
+        logs.append(f"Needs attention: {len(needs_attention)}")
+
+        # Send report via email if configured
+        if export_email:
+            try:
+                # Format scorecard as email
+                report_lines = [
+                    f"Weekly Ad Performance Scorecard - {brand_name}",
+                    f"Period: {date_start} to {date_end}",
+                    "",
+                    "SUMMARY",
+                    f"  Total Spend: ${total_spend:,.2f}",
+                    f"  Average ROAS: {avg_roas:.2f}x",
+                    f"  Ads Analyzed: {len(ads_analyzed)}",
+                    "",
+                    "TOP PERFORMERS (ROAS >= 2x)",
+                ]
+                for ad in top_performers:
+                    report_lines.append(f"  - {ad['name'][:40]}: {ad['roas']:.2f}x ROAS, ${ad['spend']:,.2f} spend")
+
+                report_lines.append("")
+                report_lines.append("NEEDS ATTENTION (ROAS < 1x)")
+                for ad in needs_attention:
+                    report_lines.append(f"  - {ad['name'][:40]}: {ad['roas']:.2f}x ROAS, ${ad['spend']:,.2f} spend")
+
+                report_text = "\n".join(report_lines)
+
+                # TODO: Send via email service (for now, just log)
+                logs.append(f"Report would be sent to: {export_email}")
+                logger.info(f"Scorecard report:\n{report_text}")
+
+            except Exception as e:
+                logs.append(f"Failed to send email: {e}")
+                logger.error(f"Scorecard email failed: {e}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        runs_completed = job.get('runs_completed', 0) + 1
+        max_runs = job.get('max_runs')
+
+        job_updates = {"runs_completed": runs_completed}
+
+        if max_runs and runs_completed >= max_runs:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+        elif job['schedule_type'] == 'recurring':
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                job_updates["next_run_at"] = next_run.isoformat()
+        else:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+
+        update_job(job_id, job_updates)
+
+        logger.info(f"Completed scorecard job: {job_name}")
+        return {"success": True, "scorecard": scorecard}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Scorecard job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        return {"success": False, "error": error_msg}
 
 
 # ============================================================================

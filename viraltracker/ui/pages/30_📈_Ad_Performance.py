@@ -1514,6 +1514,126 @@ def render_sync_section(brand_id: str, ad_account: Dict):
             except Exception as e:
                 st.error(f"Sync failed: {e}")
 
+    # Scheduling section
+    render_sync_scheduling(brand_id)
+
+
+def render_sync_scheduling(brand_id: str):
+    """Render the automated sync scheduling UI."""
+    import pytz
+
+    with st.expander("⏰ Automated Sync Schedule", expanded=False):
+        db = get_supabase_client()
+
+        # Check for existing meta_sync job for this brand
+        existing_job = None
+        try:
+            result = db.table("scheduled_jobs").select("*").eq(
+                "brand_id", brand_id
+            ).eq("job_type", "meta_sync").eq("status", "active").limit(1).execute()
+            existing_job = result.data[0] if result.data else None
+        except Exception:
+            pass
+
+        if existing_job:
+            # Show existing schedule
+            st.info(f"**Active Schedule:** {existing_job['name']}")
+            params = existing_job.get('parameters', {})
+            cron = existing_job.get('cron_expression', '')
+
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                st.caption(f"Syncs last **{params.get('days_back', 7)} days** of data")
+            with col2:
+                if cron:
+                    # Parse cron to display time
+                    parts = cron.split()
+                    if len(parts) >= 2:
+                        hour = int(parts[1])
+                        st.caption(f"Runs daily at **{hour}:00 PST**")
+            with col3:
+                if st.button("🗑️ Remove", key="remove_sync_schedule"):
+                    try:
+                        db.table("scheduled_jobs").update({
+                            "status": "completed"
+                        }).eq("id", existing_job['id']).execute()
+                        st.success("Schedule removed!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+
+            # Show last run info
+            try:
+                runs = db.table("scheduled_job_runs").select(
+                    "status, started_at, completed_at, logs"
+                ).eq("scheduled_job_id", existing_job['id']).order(
+                    "started_at", desc=True
+                ).limit(1).execute()
+
+                if runs.data:
+                    last_run = runs.data[0]
+                    status_emoji = "✅" if last_run['status'] == 'completed' else "❌"
+                    st.caption(f"Last run: {status_emoji} {last_run['status']} at {last_run.get('started_at', 'N/A')[:16]}")
+            except Exception:
+                pass
+
+        else:
+            # Create new schedule form
+            st.markdown("Set up automatic daily sync of your Meta Ads performance data.")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                sync_hour = st.selectbox(
+                    "Run at (PST)",
+                    options=list(range(24)),
+                    index=6,  # Default 6 AM
+                    format_func=lambda x: f"{x}:00 {'AM' if x < 12 else 'PM'}" if x != 12 else "12:00 PM",
+                    key="sync_schedule_hour"
+                )
+
+            with col2:
+                days_back = st.selectbox(
+                    "Days to sync",
+                    options=[3, 7, 14, 30],
+                    index=1,  # Default 7 days
+                    key="sync_days_back"
+                )
+
+            if st.button("📅 Enable Daily Sync", type="primary"):
+                try:
+                    PST = pytz.timezone('America/Los_Angeles')
+                    now = datetime.now(PST)
+
+                    # Calculate next run time
+                    next_run = now.replace(hour=sync_hour, minute=0, second=0, microsecond=0)
+                    if next_run <= now:
+                        next_run = next_run + timedelta(days=1)
+
+                    # Create cron expression (minute hour * * *)
+                    cron_expr = f"0 {sync_hour} * * *"
+
+                    # Insert job
+                    db.table("scheduled_jobs").insert({
+                        "brand_id": brand_id,
+                        "product_id": None,  # Not needed for meta_sync
+                        "name": "Daily Meta Ads Sync",
+                        "job_type": "meta_sync",
+                        "schedule_type": "recurring",
+                        "cron_expression": cron_expr,
+                        "next_run_at": next_run.isoformat(),
+                        "template_mode": None,  # Not needed for meta_sync
+                        "parameters": {
+                            "days_back": days_back
+                        }
+                    }).execute()
+
+                    st.success(f"Daily sync scheduled for {sync_hour}:00 PST!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Failed to create schedule: {e}")
+
 
 def render_setup_instructions():
     """Render setup instructions when no ad account is linked."""
