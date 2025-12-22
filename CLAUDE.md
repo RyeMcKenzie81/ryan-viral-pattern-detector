@@ -8,6 +8,12 @@ Before making changes, review these docs:
 - `/docs/architecture.md` - System design and layered architecture
 - `/docs/claude_code_guide.md` - Tool development patterns and best practices
 
+## Tech Debt & Future Work
+
+See [docs/TECH_DEBT.md](docs/TECH_DEBT.md) for tracked improvements and future enhancements.
+
+**How it works**: When you identify something that should be improved but isn't urgent, add it to the tech debt file with context and complexity notes. Review periodically when starting new work.
+
 ---
 
 ## Development Workflow (ALWAYS FOLLOW)
