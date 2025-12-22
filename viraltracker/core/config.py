@@ -83,6 +83,12 @@ class Config:
     FAST_MODEL = "claude-sonnet-4-20250514"
     ORCHESTRATOR_MODEL = "openai:gpt-4o"  # Target change for orchestrator
 
+    # Future capability-based models (User defined)
+    CREATIVE_MODEL = "models/gemini-3-pro"
+    VISION_MODEL = "models/gemini-nano-banano-3"
+    VISION_BACKUP_MODEL = "openai:gpt-5.2"
+    BASIC_MODEL = "models/gemini-3-flash"
+
     @classmethod
     def get_model(cls, key: str) -> str:
         """
@@ -115,10 +121,24 @@ class Config:
             "ORCHESTRATOR": cls.ORCHESTRATOR_MODEL,
             "COMPLEX": cls.COMPLEX_MODEL,
             "FAST": cls.FAST_MODEL,
-            # Future: "TWITTER": cls.DEFAULT_MODEL,
-            # Future: "TOPIC_DISCOVERY": cls.COMPLEX_MODEL,
+            
+            # Capability Mappings
+            "CREATIVE": cls.CREATIVE_MODEL,
+            "VISION": cls.VISION_MODEL,
+            "VISION_BACKUP": cls.VISION_BACKUP_MODEL,
+            "BASIC": cls.BASIC_MODEL,
+            
+            # Specific Agent Mappings (inheriting from capabilities where appropriate)
+            # We treat these as independent defaults unless we add recursive logic
+            # But to ensure AD_CREATION follows CREATIVE dynamically if not set:
+            "AD_CREATION": cls.CREATIVE_MODEL, 
         }
         
+        # Special case for inheritance if needed, otherwise it just uses the string value
+        if key_upper == "AD_CREATION" and not env_model:
+             # Recursively get CREATIVE to pick up its overrides
+             return cls.get_model("CREATIVE")
+
         if key_upper in mappings:
             return mappings[key_upper]
             

@@ -1460,7 +1460,8 @@ Extract and return JSON with:
 Return ONLY valid JSON."""
 
             message = anthropic.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                # Use Basic model for filtering/analysis
+                model=Config.get_model("basic"),
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}]
             )

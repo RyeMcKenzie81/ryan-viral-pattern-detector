@@ -1083,7 +1083,8 @@ class BrandResearchService:
             anthropic_client = Anthropic()
 
             message = anthropic_client.messages.create(
-                model="claude-opus-4-5-20251101",
+                # Use Creative model for deep research
+                model=Config.get_model("creative"),
                 max_tokens=4000,
                 messages=[{
                     "role": "user",
@@ -3025,7 +3026,8 @@ class BrandResearchService:
             # Call Claude Opus 4.5
             client = Anthropic()
             response = client.messages.create(
-                model="claude-opus-4-5-20251101",
+                # Use Creative model for deep research
+                model=Config.get_model("creative"),
                 max_tokens=8000,
                 messages=[{"role": "user", "content": prompt}]
             )

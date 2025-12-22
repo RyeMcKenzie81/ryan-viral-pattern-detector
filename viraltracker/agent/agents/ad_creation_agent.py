@@ -17,9 +17,11 @@ from ..dependencies import AgentDependencies
 
 logger = logging.getLogger(__name__)
 
+from ...core.config import Config
+
 # Create Ad Creation Agent
 ad_creation_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model=Config.get_model("ad_creation"),
     deps_type=AgentDependencies,
     system_prompt="""You are the Ad Creation specialist agent.
 
@@ -539,7 +541,7 @@ async def analyze_reference_ad(
             pass  # Default to PNG
 
         message = anthropic_client.messages.create(
-            model="claude-opus-4-5-20251101",
+            model=Config.get_model("vision"),
             max_tokens=4000,
             messages=[{
                 "role": "user",
@@ -790,7 +792,8 @@ async def select_hooks(
         max_retries = 3
         last_error = None
 
-        # Use Claude Opus for better hook selection and adaptation quality
+        # Use configured creative model for hook selection and adaptation
+        from ...core.config import Config
         from anthropic import Anthropic
         import asyncio
 
@@ -798,9 +801,9 @@ async def select_hooks(
 
         for attempt in range(max_retries):
             try:
-                # Call Claude Opus 4.5 for hook selection
+                # Call AI for hook selection
                 message = anthropic_client.messages.create(
-                    model="claude-opus-4-5-20251101",
+                    model=Config.get_model("creative"),
                     max_tokens=4096,
                     messages=[
                         {
@@ -1978,9 +1981,9 @@ async def review_ad_claude(
         # Encode image as base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
 
-        # Call Claude with vision
+        # Call AI with vision
         message = anthropic_client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model=Config.get_model("vision"),
             max_tokens=2000,
             messages=[{
                 "role": "user",
@@ -2432,7 +2435,7 @@ async def extract_template_angle(
             pass  # Default to PNG
 
         message = anthropic_client.messages.create(
-            model="claude-opus-4-5-20251101",
+            model=Config.get_model("vision"),
             max_tokens=4000,
             messages=[{
                 "role": "user",
@@ -2786,9 +2789,9 @@ async def generate_benefit_variations(
 
         for attempt in range(max_retries):
             try:
-                # Use Claude Opus 4.5 for best copy quality
+                # Use configured creative model for best copy quality
                 message = anthropic_client.messages.create(
-                    model="claude-opus-4-5-20251101",
+                    model=Config.get_model("creative"),
                     max_tokens=4000,
                     messages=[{
                         "role": "user",

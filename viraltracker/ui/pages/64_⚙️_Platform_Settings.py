@@ -79,6 +79,56 @@ if selected_default != current_default:
         st.success(f"Updated DEFAULT_MODEL to {selected_default}")
         st.rerun()
 
+# Capability Overrides
+st.markdown("### Capability Overrides")
+st.markdown("Configure underlying models for specific capabilities.")
+
+capabilities = {
+    "CREATIVE": "Creative (Writing, Hooks)",
+    "VISION": "Vision (Analysis, Review)",
+    "VISION_BACKUP": "Vision Backup",
+    "BASIC": "Basic Logic"
+}
+
+for key, label in capabilities.items():
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        current_model = os.getenv(f"{key}_MODEL", "Default (Inherit)")
+        
+        # Add "Default (Inherit)" - logic to determine what it inherits from
+        # In reality, they have their own defaults in Config, but we show "Default" as "Not Overridden"
+        
+        options = ["Default (Inherit)"] + [m for m in AVAILABLE_MODELS if m != "Default (Inherit)"]
+        
+        index = 0
+        if current_model in options:
+            index = options.index(current_model)
+        elif current_model != "Default (Inherit)":
+            options.append(current_model)
+            index = options.index(current_model)
+            
+        selected = st.selectbox(
+            f"{label}",
+            options=options,
+            index=index,
+            key=f"select_cap_{key}"
+        )
+
+    with col2:
+        st.write("") 
+        st.write("") 
+        if selected != current_model:
+            if st.button(f"Save {key}", key=f"btn_cap_{key}"):
+                if selected == "Default (Inherit)":
+                    dotenv.unset_key(".env", f"{key}_MODEL")
+                    del os.environ[f"{key}_MODEL"]
+                    st.success(f"Reset {key} to Default")
+                else:
+                    update_env_file(f"{key}_MODEL", selected)
+                    st.success(f"Updated {key} to {selected}")
+                st.rerun()
+
 # Specialist Agent Overrides
 st.markdown("### Specialist Agent Overrides")
 st.markdown("Override the default model for specific agents.")
