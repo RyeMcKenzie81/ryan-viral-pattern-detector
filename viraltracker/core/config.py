@@ -87,7 +87,7 @@ class Config:
     # Pydantic AI requires 'google-gla:' prefix for models/ string format
     CREATIVE_MODEL = "google-gla:models/gemini-3-pro-preview"
     VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview" 
-    VISION_BACKUP_MODEL = "openai:gpt-5.2" 
+    VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11" 
     BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 
     @classmethod
