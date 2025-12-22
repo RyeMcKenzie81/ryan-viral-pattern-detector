@@ -79,6 +79,58 @@ if selected_default != current_default:
         st.success(f"Updated DEFAULT_MODEL to {selected_default}")
         st.rerun()
 
+# Specialist Agent Overrides
+st.markdown("### Specialist Agent Overrides")
+st.markdown("Override the default model for specific agents.")
+
+agents = {
+    "TWITTER": "Twitter Agent",
+    "TIKTOK": "TikTok Agent",
+    "YOUTUBE": "YouTube Agent",
+    "FACEBOOK": "Facebook Agent",
+    "ANALYSIS": "Analysis Agent",
+    "AUDIO_PRODUCTION": "Audio Production Agent"
+}
+
+for key, label in agents.items():
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        current_model = os.getenv(f"{key}_MODEL", "Default (Inherit)")
+        
+        # Add "Default (Inherit)" option if not present
+        options = ["Default (Inherit)"] + [m for m in AVAILABLE_MODELS if m != "Default (Inherit)"]
+        
+        # If current model is a real model string, ensure it's selected
+        index = 0
+        if current_model in options:
+            index = options.index(current_model)
+        elif current_model != "Default (Inherit)":
+            options.append(current_model)
+            index = options.index(current_model)
+            
+        selected = st.selectbox(
+            f"{label}",
+            options=options,
+            index=index,
+            key=f"select_{key}"
+        )
+
+    with col2:
+        st.write("") # Spacer
+        st.write("") # Spacer
+        if selected != current_model:
+            if st.button(f"Save {key}", key=f"btn_{key}"):
+                if selected == "Default (Inherit)":
+                    # Remove from .env to fallback to default
+                    dotenv.unset_key(".env", f"{key}_MODEL")
+                    del os.environ[f"{key}_MODEL"]
+                    st.success(f"Reset {key} to Default")
+                else:
+                    update_env_file(f"{key}_MODEL", selected)
+                    st.success(f"Updated {key} to {selected}")
+                st.rerun()
+
 # Display current configuration summary
 st.markdown("---")
 st.subheader("Current Configuration Snapshot")
