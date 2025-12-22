@@ -84,10 +84,11 @@ class Config:
     ORCHESTRATOR_MODEL = "openai:gpt-4o"  # Target change for orchestrator
 
     # Future capability-based models (User defined)
-    CREATIVE_MODEL = "models/gemini-3-pro"
-    VISION_MODEL = "models/gemini-nano-banano-3"
-    VISION_BACKUP_MODEL = "openai:gpt-5.2"
-    BASIC_MODEL = "models/gemini-3-flash"
+    # Pydantic AI requires 'google-gla:' prefix for models/ string format
+    CREATIVE_MODEL = "google-gla:models/gemini-3-pro-preview"
+    VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview" 
+    VISION_BACKUP_MODEL = "openai:gpt-5.2" 
+    BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 
     @classmethod
     def get_model(cls, key: str) -> str:

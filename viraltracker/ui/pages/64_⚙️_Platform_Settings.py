@@ -22,12 +22,16 @@ st.info("Manage which AI models power different parts of the platform.")
 
 # Define available models
 AVAILABLE_MODELS = [
-    "claude-sonnet-4-5-20250929",
-    "claude-opus-4-5-20251101",
-    "claude-sonnet-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
     "openai:gpt-4o",
-    "openai:gpt-4-turbo",
-    "models/gemini-2.5-pro"
+    "openai:gpt-4o-mini",
+    "openai:o1-preview",
+    "openai:o1-mini",
+    "google-gla:models/gemini-3-pro-preview",
+    "google-gla:models/gemini-3-pro-image-preview",
+    "google-gla:models/gemini-3-flash-preview",
 ]
 
 # Helper to update .env file
