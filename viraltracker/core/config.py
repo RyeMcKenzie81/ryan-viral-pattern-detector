@@ -73,6 +73,58 @@ class Config:
         """Get configuration value"""
         return getattr(cls, key, default)
 
+    # ========================================================================
+    # Model Configuration
+    # ========================================================================
+    
+    # Model Defaults
+    DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+    COMPLEX_MODEL = "claude-opus-4-5-20251101"
+    FAST_MODEL = "claude-sonnet-4-20250514"
+    ORCHESTRATOR_MODEL = "openai:gpt-4o"  # Target change for orchestrator
+
+    @classmethod
+    def get_model(cls, key: str) -> str:
+        """
+        Get the configured LLM model for a specific component.
+        
+        Resolution Order:
+        1. Environment Variable: {KEY}_MODEL (e.g. ORCHESTRATOR_MODEL)
+        2. Default mapping in this method
+        3. Config.DEFAULT_MODEL
+        
+        Args:
+            key: component name (e.g., 'orchestrator', 'twitter', 'content_pipeline')
+                 keys are case-insensitive.
+        
+        Returns:
+            Model string identifier (e.g., 'openai:gpt-4o', 'claude-sonnet-...')
+        """
+        key_upper = key.upper()
+        
+        # 1. Check Environment Variable
+        env_var_name = f"{key_upper}_MODEL"
+        env_model = os.getenv(env_var_name)
+        if env_model:
+            return env_model
+            
+        # 2. Check Default Mappings
+        # This allows us to have different defaults for different components
+        # without requiring env vars for everything
+        mappings = {
+            "ORCHESTRATOR": cls.ORCHESTRATOR_MODEL,
+            "COMPLEX": cls.COMPLEX_MODEL,
+            "FAST": cls.FAST_MODEL,
+            # Future: "TWITTER": cls.DEFAULT_MODEL,
+            # Future: "TOPIC_DISCOVERY": cls.COMPLEX_MODEL,
+        }
+        
+        if key_upper in mappings:
+            return mappings[key_upper]
+            
+        # 3. Fallback to Global Default
+        return cls.DEFAULT_MODEL
+
 
 # Comment Finder Configuration
 
