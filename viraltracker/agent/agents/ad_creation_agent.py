@@ -2798,7 +2798,7 @@ async def generate_benefit_variations(
                 result_text = result.output
 
                 # Strip markdown code fences if present
-                result_text = result.strip()
+                result_text = result_text.strip()
                 if result_text.startswith("```"):
                     result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
                     if result_text.endswith("```"):
