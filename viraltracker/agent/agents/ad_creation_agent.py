@@ -582,7 +582,7 @@ async def analyze_reference_ad(
             ]
         )
         
-        analysis_result = result.data
+        analysis_result = result.output
 
         # Strip markdown code fences if present (Gemini/Claude sometimes wraps JSON in ```json...```)
         analysis_result_clean = analysis_result.strip()
@@ -832,7 +832,7 @@ async def select_hooks(
                     selection_prompt + "\n\nReturn ONLY valid JSON array, no markdown fences, no other text."
                 )
                 
-                selection_result = result.data
+                selection_result = result.output
 
                 # Strip markdown code fences if present (Bug #10 fix)
                 result_text = selection_result.strip()
@@ -2009,7 +2009,7 @@ async def review_ad_claude(
             ]
         )
         
-        review_text = result.data
+        review_text = result.output
 
         # Strip markdown code fences if present (Bug #13 fix)
         # Claude sometimes wraps JSON in ```json ... ```
@@ -2452,16 +2452,7 @@ async def extract_template_angle(
         
         analysis_result = result.data
 
-        # Strip markdown code fences if present
-        result_clean = analysis_result.strip()
-        if result_clean.startswith('```'):
-            first_newline = result_clean.find('\n')
-            last_fence = result_clean.rfind('```')
-            if first_newline != -1 and last_fence > first_newline:
-                result_clean = result_clean[first_newline + 1:last_fence].strip()
-
-        # Parse JSON response
-        angle_dict = json.loads(result_clean)
+        angle_dict = json.loads(result.output.strip())
 
         logger.info(f"Extracted template angle: type={angle_dict.get('angle_type')}, "
                    f"tone={angle_dict.get('tone')}")
@@ -2793,7 +2784,7 @@ async def generate_benefit_variations(
                 result = await variation_agent.run(
                     generation_prompt + "\n\nReturn ONLY valid JSON array, no other text."
                 )
-                result_text = result.data
+                result_text = result.output
 
                 # Strip markdown code fences if present
                 result_text = result.strip()
