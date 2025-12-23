@@ -2453,7 +2453,17 @@ async def extract_template_angle(
         
 
 
-        angle_dict = json.loads(result.output.strip())
+        result_text = result.output
+        
+        # Strip markdown code fences if present
+        result_clean = result_text.strip()
+        if result_clean.startswith('```'):
+            first_newline = result_clean.find('\n')
+            last_fence = result_clean.rfind('```')
+            if first_newline != -1 and last_fence > first_newline:
+                result_clean = result_clean[first_newline + 1:last_fence].strip()
+
+        angle_dict = json.loads(result_clean)
 
         logger.info(f"Extracted template angle: type={angle_dict.get('angle_type')}, "
                    f"tone={angle_dict.get('tone')}")
