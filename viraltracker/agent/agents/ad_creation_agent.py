@@ -2451,7 +2451,7 @@ async def extract_template_angle(
             ]
         )
         
-        analysis_result = result.data
+
 
         angle_dict = json.loads(result.output.strip())
 
