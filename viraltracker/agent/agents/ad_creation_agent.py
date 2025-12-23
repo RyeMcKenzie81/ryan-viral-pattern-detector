@@ -2416,6 +2416,7 @@ async def extract_template_angle(
         # Call Vision AI using Pydantic AI Agent
         from pydantic_ai import Agent
         from pydantic_ai.messages import BinaryContent
+        import base64
 
         # Detect image format
         media_type = "image/png"
