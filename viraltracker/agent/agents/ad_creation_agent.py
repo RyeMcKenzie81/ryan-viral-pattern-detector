@@ -515,55 +515,76 @@ async def analyze_reference_ad(
         }
         """
 
-        # Call Claude Opus 4.5 Vision API for best analysis quality
-        from anthropic import Anthropic
+        # Call Vision AI using Pydantic AI Agent
+        from pydantic_ai import Agent
         import base64
-
-        anthropic_client = Anthropic()
-
-        # Convert image data to base64 if needed
-        if isinstance(image_data, bytes):
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-        else:
-            image_base64 = image_data
 
         # Detect image format from base64 header or assume PNG
         media_type = "image/png"
         try:
-            raw_bytes = base64.b64decode(image_base64[:32] + '==')
-            if raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
-                media_type = "image/webp"
-            elif raw_bytes[:3] == b'\xff\xd8\xff':
+            # Simple header check
+            if image_base64.startswith('/9j/'):
                 media_type = "image/jpeg"
-            elif raw_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                media_type = "image/png"
+            elif image_base64.startswith('iVBORw0KGgo'):
+                 media_type = "image/png"
+            elif image_base64.startswith('R0lGOD'):
+                media_type = "image/gif"
+            elif image_base64.startswith('UklGR'):
+                media_type = "image/webp"
         except Exception:
-            pass  # Default to PNG
+            pass 
 
-        message = anthropic_client.messages.create(
+        # Create temporary agent for this specific vision task
+        vision_agent = Agent(
             model=Config.get_model("vision"),
-            max_tokens=4000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": f"{analysis_prompt}\n\nReturn ONLY valid JSON, no other text."
-                    }
-                ]
-            }]
+            system_prompt="You are a simplified vision analysis expert. Return ONLY valid JSON."
         )
-        analysis_result = message.content[0].text
 
-        # Strip markdown code fences if present (Claude sometimes wraps JSON in ```json...```)
+        logger.info(f"Running vision analysis with model: {vision_agent.model}")
+
+        # Construct Prompt content with Image
+        # Note: Pydantic AI 0.0.18+ supports list of content parts including images
+        # We need to construct the message properly based on how Pydantic AI expects it
+        # For now, we'll try the standard run() with user_content list if supported, 
+        # or separate system prompt instruction if image input is complex.
+        # But `agent.run()` typically takes a string or list of messages.
+        # Let's try passing the image as a BinaryContent or similar if the library supports it,
+        # OR just rely on the model adapter if it handles image URLs/base64 in text.
+        # 
+        # Wait, Pydantic AI's `run` method usually takes `user_prompt` (str) or `message_history`.
+        # To send an image, we usually need to use a model-specific structure OR 
+        # the `BinaryContent` if using standard Pydantic models.
+        # 
+        # Let's look at how we were passing it to Anthropic: 
+        # {"type": "image", "source": {"type": "base64", ...}}
+        # 
+        # Update: Pydantic AI recently added proper support for multi-modal via `BinaryContent`.
+        # from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+        
+        from pydantic_ai.messages import BinaryContent
+        
+        # Decode base64 to bytes if it's a string, because BinaryContent takes bytes
+        if isinstance(image_data, str):
+             image_bytes = base64.b64decode(image_data)
+        else:
+             image_bytes = image_data
+             
+        # Run agent
+        # We pass a list containing the image and the prompt
+        # Note: If Pydantic AI version in env doesn't support list for `user_prompt`, 
+        # we might need to use `deps` or a specific model approach. 
+        # Assuming modern Pydantic AI:
+        
+        result = await vision_agent.run(
+            [
+                analysis_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                BinaryContent(data=image_bytes, media_type=media_type)
+            ]
+        )
+        
+        analysis_result = result.data
+
+        # Strip markdown code fences if present (Gemini/Claude sometimes wraps JSON in ```json...```)
         analysis_result_clean = analysis_result.strip()
         if analysis_result_clean.startswith('```'):
             # Find the first newline after the opening fence
@@ -793,27 +814,25 @@ async def select_hooks(
         last_error = None
 
         # Use configured creative model for hook selection and adaptation
+        # Use Pydantic AI Agent
+        from pydantic_ai import Agent
         from ...core.config import Config
-        from anthropic import Anthropic
         import asyncio
 
-        anthropic_client = Anthropic()
+        # Create temporary agent
+        hook_agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are a persuasive copywriting expert. Return ONLY valid JSON."
+        )
 
         for attempt in range(max_retries):
             try:
-                # Call AI for hook selection
-                message = anthropic_client.messages.create(
-                    model=Config.get_model("creative"),
-                    max_tokens=4096,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": f"{selection_prompt}\n\nReturn ONLY valid JSON array, no markdown fences, no other text."
-                        }
-                    ]
+                # Run agent
+                result = await hook_agent.run(
+                    selection_prompt + "\n\nReturn ONLY valid JSON array, no markdown fences, no other text."
                 )
-
-                selection_result = message.content[0].text
+                
+                selection_result = result.data
 
                 # Strip markdown code fences if present (Bug #10 fix)
                 result_text = selection_result.strip()
@@ -831,7 +850,7 @@ async def select_hooks(
                 selected_hooks = json.loads(result_text)
 
                 logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
-                           f"{[h.get('category') for h in selected_hooks]} (model: claude-opus-4-5)")
+                           f"{[h.get('category') for h in selected_hooks]} (model: {Config.get_model('creative')})")
 
                 return selected_hooks
 
@@ -1186,7 +1205,7 @@ async def analyze_product_image(
             "best_use_cases": ["hero", "testimonial"],
             "dominant_colors": ["#8B4513", "#F5F5F5"],
             "detected_issues": [],
-            "analysis_model": "claude-opus-4-5-20251101",
+            "analysis_model": Config.get_model("vision"),
             "analysis_version": "v1"
         }
 
@@ -1960,12 +1979,16 @@ async def review_ad_claude(
         }}
         """
 
-        # Call Claude Vision API via Anthropic client
-        # Note: We use the Anthropic API directly for vision review
-        from anthropic import Anthropic
+        # Call Vision AI using Pydantic AI Agent
+        from pydantic_ai import Agent
+        from pydantic_ai.messages import BinaryContent
         import base64
 
-        anthropic_client = Anthropic()
+        # Create temporary agent
+        vision_agent = Agent(
+            model=Config.get_model("vision"),
+            system_prompt="You are an expert creative director. Return ONLY valid JSON."
+        )
 
         # Detect actual image format from magic bytes (Bug #12 fix)
         media_type = "image/png"  # Default fallback
@@ -1978,34 +2001,15 @@ async def review_ad_claude(
         elif image_data[:6] in (b'GIF87a', b'GIF89a'):
             media_type = "image/gif"
 
-        # Encode image as base64
-        image_base64 = base64.b64encode(image_data).decode('utf-8')
-
-        # Call AI with vision
-        message = anthropic_client.messages.create(
-            model=Config.get_model("vision"),
-            max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": review_prompt
-                    }
-                ]
-            }]
+        # Run agent
+        result = await vision_agent.run(
+            [
+                review_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                BinaryContent(data=image_data, media_type=media_type)
+            ]
         )
-
-        # Parse response
-        review_text = message.content[0].text
+        
+        review_text = result.data
 
         # Strip markdown code fences if present (Bug #13 fix)
         # Claude sometimes wraps JSON in ```json ... ```
@@ -2409,53 +2413,44 @@ async def extract_template_angle(
         }}
         """
 
-        # Call Claude Opus 4.5 Vision API for best analysis quality
-        from anthropic import Anthropic
-        import base64
+        # Call Vision AI using Pydantic AI Agent
+        from pydantic_ai import Agent
+        from pydantic_ai.messages import BinaryContent
 
-        anthropic_client = Anthropic()
-
-        # Convert image data to base64 if needed
-        if isinstance(image_data, bytes):
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-        else:
-            image_base64 = image_data
-
-        # Detect image format from base64 header or assume PNG
+        # Detect image format
         media_type = "image/png"
         try:
-            raw_bytes = base64.b64decode(image_base64[:32] + '==')
-            if raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
-                media_type = "image/webp"
-            elif raw_bytes[:3] == b'\xff\xd8\xff':
+            if image_base64.startswith('/9j/'):
                 media_type = "image/jpeg"
-            elif raw_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                media_type = "image/png"
+            elif image_base64.startswith('iVBORw0KGgo'):
+                 media_type = "image/png"
+            elif image_base64.startswith('R0lGOD'):
+                media_type = "image/gif"
+            elif image_base64.startswith('UklGR'):
+                media_type = "image/webp"
         except Exception:
-            pass  # Default to PNG
+            pass 
 
-        message = anthropic_client.messages.create(
+        # Create temporary agent
+        vision_agent = Agent(
             model=Config.get_model("vision"),
-            max_tokens=4000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": f"{extraction_prompt}\n\nReturn ONLY valid JSON, no other text."
-                    }
-                ]
-            }]
+            system_prompt="You are a marketing analysis expert. Return ONLY valid JSON."
         )
-        analysis_result = message.content[0].text
+
+        # Decode base64
+        if isinstance(image_data, str):
+             image_bytes = base64.b64decode(image_data)
+        else:
+             image_bytes = image_data
+
+        result = await vision_agent.run(
+            [
+                extraction_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                BinaryContent(data=image_bytes, media_type=media_type)
+            ]
+        )
+        
+        analysis_result = result.data
 
         # Strip markdown code fences if present
         result_clean = analysis_result.strip()
@@ -2779,26 +2774,26 @@ async def generate_benefit_variations(
         ]
         """
 
-        # Call Claude Opus 4.5 for high-quality copy generation
-        from anthropic import Anthropic
+        # Call Pydantic AI Agent for high-quality copy generation
+        from pydantic_ai import Agent
+        from ...core.config import Config
         import asyncio
 
-        anthropic_client = Anthropic()
+        variation_agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are a persuasive copywriting expert. Return ONLY valid JSON."
+        )
+
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
             try:
-                # Use configured creative model for best copy quality
-                message = anthropic_client.messages.create(
-                    model=Config.get_model("creative"),
-                    max_tokens=4000,
-                    messages=[{
-                        "role": "user",
-                        "content": f"{generation_prompt}\n\nReturn ONLY valid JSON array, no other text."
-                    }]
+                # Use configured creative model
+                result = await variation_agent.run(
+                    generation_prompt + "\n\nReturn ONLY valid JSON array, no other text."
                 )
-                result = message.content[0].text
+                result_text = result.data
 
                 # Strip markdown code fences if present
                 result_text = result.strip()
