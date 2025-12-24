@@ -55,17 +55,17 @@ class SoraService:
         prompt: str, 
         model: str, 
         duration_seconds: int = 5,
-        resolution: str = "1080p",
+        resolution: str = "1280x720",
         aspect_ratio: str = "16:9"
     ) -> Dict[str, Any]:
         """
-        Generate a video from a text prompt.
+        Generate a video from a text prompt using Sora 2 API (Async Polling).
         
         Args:
             prompt: Text description of the video
             model: Sora model to use
-            duration_seconds: Length in seconds (default 5, max typically 20)
-            resolution: Video resolution (default 1080p)
+            duration_seconds: Length in seconds
+            resolution: Video resolution (e.g. "1280x720", "1920x1080")
             aspect_ratio: Aspect ratio (default 16:9)
             
         Returns:
@@ -74,62 +74,101 @@ class SoraService:
         if not self.api_key:
             raise ValueError("OpenAI API key not configured")
             
-        logger.info(f"Generating video with {model} ({duration_seconds}s): {prompt[:50]}...")
-        
-        # Use direct HTTP request since client.video is not available in current SDK
         import httpx
+        import asyncio
         
-        url = "https://api.openai.com/v1/video/generations"
+        # 1. Start Generation Job
+        base_url = "https://api.openai.com/v1/videos"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
+        # Map resolution from simple presets if needed, or pass through
+        # Note: Sora 2 accepts 'size' like "1280x720"
+        if resolution == "1080p":
+            size = "1920x1080"
+        else:
+            size = resolution
+
         payload = {
             "model": model,
             "prompt": prompt,
-            "quality": "standard",
-            "response_format": "url",
-            "size": resolution,
-            # Pass duration only if model supports it (Sora 2 implies it might)
-            # For now passing it as top level, if API rejects, we might need to adjust
-            # "duration": duration_seconds 
+            "size": size,
+            "seconds": duration_seconds 
         }
         
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as http_client:
-                response = await http_client.post(url, headers=headers, json=payload)
+        logger.info(f"Starting Sora job: {model}, {duration_seconds}s, {size}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # POST to create job
+            response = await client.post(base_url, headers=headers, json=payload)
+            
+            if response.status_code != 200:
+                logger.error(f"Sora Start Failed ({response.status_code}): {response.text}")
+                raise Exception(f"Failed to start video generation: {response.text}")
+            
+            data = response.json()
+            job_id = data.get("id")
+            if not job_id:
+                raise Exception(f"No job ID in response: {data}")
                 
-                # Check for error
-                if response.status_code != 200:
-                    error_text = response.text
-                    logger.error(f"Sora API Error ({response.status_code}): {error_text}")
-                    raise Exception(f"OpenAI API returned {response.status_code}: {error_text}")
+            logger.info(f"Sora job started: {job_id}")
+            
+            # 2. Poll for Completion
+            attempts = 0
+            max_attempts = 120  # 2 minutes max (assuming 1s poll)
+            
+            while attempts < max_attempts:
+                # Poll status
+                poll_resp = await client.get(f"{base_url}/{job_id}", headers=headers)
                 
-                data = response.json()
+                if poll_resp.status_code != 200:
+                    logger.warning(f"Polling failed ({poll_resp.status_code}), retrying...")
+                    await asyncio.sleep(2)
+                    attempts += 1
+                    continue
                 
-                # OpenAI typically returns a list of results in 'data'
-                # Example: {"created": ..., "data": [{"url": "..."}]}
-                if "data" in data and len(data["data"]) > 0:
-                     video_url = data["data"][0]["url"]
+                job_data = poll_resp.json()
+                status = job_data.get("status")
+                
+                if status == "completed":
+                    result_data = job_data.get("result", {})
+                    # Adjust based on actual response structure (often result.url or videos[0].url)
+                    video_url = result_data.get("url")
+                    
+                    # Sometimes it's directly in the object or under 'videos'
+                    if not video_url and "videos" in result_data:
+                        videos = result_data["videos"]
+                        if videos:
+                            video_url = videos[0].get("url")
+                            
+                    if not video_url:
+                         # Fallback search in root
+                         video_url = job_data.get("url") or job_data.get("output", {}).get("url")
+
+                    if not video_url:
+                         raise Exception(f"Job completed but URL not found: {job_data}")
+                         
+                    return {
+                        "url": video_url,
+                        "model": model,
+                        "duration": duration_seconds,
+                        "cost": self.estimate_cost(duration_seconds, model),
+                        "prompt": prompt,
+                        "raw_response": job_data
+                    }
+                    
+                elif status == "failed":
+                    error = job_data.get("error", "Unknown error")
+                    raise Exception(f"Video generation failed: {error}")
+                
+                elif status in ["processing", "pending", "queued"]:
+                    await asyncio.sleep(2) # Wait 2s between polls
+                    attempts += 1
                 else:
-                    # Fallback for unexpected structure
-                    logger.warning(f"Unexpected response structure: {data.keys()}")
-                    # If 'url' is at root?
-                    video_url = data.get("url")
-                
-                if not video_url:
-                    raise Exception(f"No video URL found in response: {str(data)[:200]}")
+                    logger.warning(f"Unknown status '{status}', waiting...")
+                    await asyncio.sleep(2)
+                    attempts += 1
             
-            return {
-                "url": video_url,
-                "model": model,
-                "duration": duration_seconds,
-                "cost": self.estimate_cost(duration_seconds, model),
-                "prompt": prompt,
-                "raw_response": data
-            }
-            
-        except Exception as e:
-            logger.error(f"Sora generation failed: {e}")
-            raise
+            raise TimeoutError("Video generation timed out after polling.")
