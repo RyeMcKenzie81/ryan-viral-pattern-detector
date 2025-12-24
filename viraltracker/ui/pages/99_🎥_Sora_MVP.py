@@ -11,13 +11,14 @@ from viraltracker.services.content_pipeline.services.sora_service import SoraSer
 from viraltracker.ui.auth import require_auth
 
 # Auth protection
-require_auth()
-
+# Auth protection
 st.set_page_config(
     page_title="Sora Video Generator (MVP)",
     page_icon="🎥",
     layout="wide"
 )
+
+require_auth()
 
 # Header
 st.title("🎥 Sora Video Generator (MVP)")
