@@ -112,7 +112,7 @@ with col1:
                 brand_id = brand_map[selected_brand_name]
                 
                 # 2. Fetch Products
-                products_resp = supabase.table("products").select("id, name, main_image_storage_path").eq("brand_id", brand_id).execute()
+                products_resp = supabase.table("products").select("id, name").eq("brand_id", brand_id).execute()
                 products = products_resp.data or []
                 product_map = {p["name"]: p for p in products}
                 
@@ -120,31 +120,6 @@ with col1:
                 
                 if selected_product_name:
                     product = product_map[selected_product_name]
-                    storage_path = product.get("main_image_storage_path")
-                    
-                    if storage_path:
-                        # Parse bucket/path (e.g. "products/xyz.jpg")
-                        if "/" in storage_path:
-                            bucket, path = storage_path.split("/", 1)
-                        else:
-                            # Fallback if just filename in legacy data
-                            bucket = "products" 
-                            path = storage_path
-                            
-                        # Get Public URL for Preview
-                        try:
-                            public_url = supabase.storage.from_(bucket).get_public_url(path)
-                            st.image(public_url, caption=f"Product: {product['name']}", width=200)
-                            
-                            # Download bytes for API
-                            if generate_btn: # Only download when needed
-                                with st.spinner("Downloading asset..."):
-                                    ref_img_data = supabase.storage.from_(bucket).download(path)
-                                    # Detect mime (simple fallback)
-                                    if path.lower().endswith(".png"):
-                                        ref_img_mime = "image/png"
-                                    elif path.lower().endswith(".webp"):
-                                        ref_img_mime = "image/webp"
                         except Exception as e:
                             st.error(f"Failed to load preview: {e}")
                     else:
