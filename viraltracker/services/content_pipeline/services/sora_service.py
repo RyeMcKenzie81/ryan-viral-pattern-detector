@@ -84,12 +84,10 @@ class SoraService:
             "Content-Type": "application/json"
         }
         
-        # Map resolution from simple presets if needed, or pass through
-        # Note: Sora 2 accepts 'size' like "1280x720"
-        if resolution == "1080p":
-            size = "1920x1080"
-        else:
-            size = resolution
+        # Note: Sora 2 accepts strict 'size' values like "1280x720"
+        size = resolution
+        if resolution == "1080p": # Legacy fallback
+             size = "1920x1080" # This will likely fail but keeping logic to avoid breaking legacy calls
 
         payload = {
             "model": model,

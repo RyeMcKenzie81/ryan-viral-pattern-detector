@@ -45,12 +45,12 @@ with st.expander("Configuration", expanded=True):
         )
 
         # Aspect Ratio / Size
+        # Strict API limits: '720x1280', '1280x720', '1024x1792', '1792x1024'
         resolution_options = {
-            "1280x720": "img/landscape (1280x720) 16:9",
-            "1920x1080": "img/landscape_hd (1920x1080) 16:9",
-            "720x1280": "img/portrait (720x1280) 9:16",
-            "1080x1920": "img/portrait_hd (1080x1920) 9:16",
-            "1024x1024": "img/square (1024x1024) 1:1"
+            "1280x720": "Landscape (1280x720) 16:9",
+            "1792x1024": "Wide Landscape (1792x1024) ~1.75:1",
+            "720x1280": "Portrait (720x1280) 9:16",
+            "1024x1792": "Tall Portrait (1024x1792) ~1:1.75"
         }
         selected_res = st.selectbox(
             "Video Format",
