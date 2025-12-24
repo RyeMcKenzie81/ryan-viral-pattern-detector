@@ -82,6 +82,10 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("Prompt")
+    
+    # Reference Image Uploader
+    uploaded_file = st.file_uploader("Reference Image (Optional)", type=['jpg', 'png', 'webp'])
+    
     prompt = st.text_area(
         "Describe your video",
         height=150,
@@ -103,6 +107,13 @@ if generate_btn:
     else:
         status_container.info(f"Generating ({dry_run=})... this may take a minute.")
         
+        # Prepare image data if present
+        ref_img_data = None
+        ref_img_mime = "image/jpeg"
+        if uploaded_file:
+            ref_img_data = uploaded_file.getvalue()
+            ref_img_mime = uploaded_file.type
+            
         try:
             if dry_run:
                 # Mock simulation
@@ -132,7 +143,9 @@ if generate_btn:
                             prompt=prompt,
                             model=selected_model_key,
                             duration_seconds=duration,
-                            resolution=selected_res
+                            resolution=selected_res,
+                            reference_image_data=ref_img_data,
+                            reference_image_mime=ref_img_mime
                         )
                     
                     result = asyncio.run(run_gen())

@@ -56,7 +56,9 @@ class SoraService:
         model: str, 
         duration_seconds: int = 5,
         resolution: str = "1280x720",
-        aspect_ratio: str = "16:9"
+        aspect_ratio: str = "16:9",
+        reference_image_data: Optional[bytes] = None,
+        reference_image_mime: str = "image/jpeg"
     ) -> Dict[str, Any]:
         """
         Generate a video from a text prompt using Sora 2 API (Async Polling).
@@ -67,6 +69,8 @@ class SoraService:
             duration_seconds: Length in seconds
             resolution: Video resolution (e.g. "1280x720", "1920x1080")
             aspect_ratio: Aspect ratio (default 16:9)
+            reference_image_data: Optional bytes of a reference image
+            reference_image_mime: Mime type of the reference image
             
         Returns:
             Dictionary containing the video URL and other metadata
@@ -80,8 +84,8 @@ class SoraService:
         # 1. Start Generation Job
         base_url = "https://api.openai.com/v1/videos"
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {self.api_key}"
+            # Content-Type header will be set automatically by httpx for JSON or Multipart
         }
         
         # Note: Sora 2 accepts strict 'size' values like "1280x720"
@@ -89,19 +93,33 @@ class SoraService:
         if resolution == "1080p": # Legacy fallback
              size = "1920x1080" # This will likely fail but keeping logic to avoid breaking legacy calls
 
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "size": size,
-            "seconds": str(duration_seconds) # Docs example shows string "8"
-        }
-        
-        logger.info(f"Starting Sora job: {model}, {duration_seconds}s, {size}")
+        logger.info(f"Starting Sora job: {model}, {duration_seconds}s, {size} (Image: {bool(reference_image_data)})")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # POST to create job
-            response = await client.post(base_url, headers=headers, json=payload)
-            
+            if reference_image_data:
+                # Use Multipart/Form-Data
+                # Note: valid params must be passed stringified in 'data'
+                data_payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "size": size,
+                    "seconds": str(duration_seconds)
+                }
+                files_payload = {
+                    "input_reference": ("reference_image", reference_image_data, reference_image_mime)
+                }
+                response = await client.post(base_url, headers=headers, data=data_payload, files=files_payload)
+            else:
+                # Use JSON
+                headers["Content-Type"] = "application/json"
+                json_payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "size": size,
+                    "seconds": str(duration_seconds)
+                }
+                response = await client.post(base_url, headers=headers, json=json_payload)
+
             if response.status_code != 200:
                 logger.error(f"Sora Start Failed ({response.status_code}): {response.text}")
                 raise Exception(f"Failed to start video generation: {response.text}")
