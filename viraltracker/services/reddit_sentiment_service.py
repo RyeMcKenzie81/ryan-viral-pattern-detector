@@ -21,7 +21,9 @@ from typing import List, Dict, Optional, Any, Tuple
 from uuid import UUID
 from datetime import datetime
 
-import anthropic
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -81,14 +83,7 @@ class RedditSentimentService:
         """
         self.apify = apify_service or ApifyService()
         self.supabase: Client = get_supabase_client()
-
-        # Initialize Anthropic client
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set - LLM operations will fail")
-            self.anthropic = None
-        else:
-            self.anthropic = anthropic.Anthropic(api_key=api_key)
+        logger.info("RedditSentimentService initialized")
 
         logger.info("RedditSentimentService initialized")
 
@@ -316,26 +311,25 @@ class RedditSentimentService:
         Returns:
             Posts with relevance scores above threshold
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return []
 
         logger.info(f"Scoring relevance for {len(posts)} posts")
         results = []
 
+        # Pydantic AI Agent (Reddit/Basic)
+        agent = Agent(
+            model=Config.get_model("reddit"),
+            system_prompt="You are an expert content filter."
+        )
+
         # Process in batches of 10 for efficiency
         for batch in self._batch(posts, 10):
             prompt = self._build_relevance_prompt(batch, persona_context, topic_context)
 
-            response = self.anthropic.messages.create(
-                model=FAST_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            result = agent.run_sync(prompt)
 
-            scores = self._parse_batch_scores(response.content[0].text, len(batch))
+            scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
                 score = score_data.get("score", 0.0)
@@ -371,25 +365,25 @@ class RedditSentimentService:
         Returns:
             High-signal posts only
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return []
 
         logger.info(f"Filtering signal for {len(posts)} posts")
         results = []
 
+        # Pydantic AI Agent (Reddit/Basic)
+        agent = Agent(
+            model=Config.get_model("reddit"),
+            system_prompt="You are an expert content filter."
+        )
+
         for batch in self._batch(posts, 10):
             prompt = self._build_signal_prompt(batch)
 
-            response = self.anthropic.messages.create(
-                model=FAST_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            scores = self._parse_batch_scores(response.content[0].text, len(batch))
+            result = await agent.run(prompt)
+            
+            # Using result.output instead of response.content
+            scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
                 score = score_data.get("score", 0.0)
@@ -424,24 +418,22 @@ class RedditSentimentService:
         Returns:
             All posts with intent scores added
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return []
 
         logger.info(f"Scoring buyer intent for {len(posts)} posts")
 
+        # Pydantic AI Agent (Reddit/Basic)
+        agent = Agent(
+            model=Config.get_model("reddit"),
+            system_prompt="You are an expert intent analyst."
+        )
+
         for batch in self._batch(posts, 10):
             prompt = self._build_intent_prompt(batch)
 
-            response = self.anthropic.messages.create(
-                model=FAST_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            scores = self._parse_batch_scores(response.content[0].text, len(batch))
+            result = await agent.run(prompt)
+            scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
                 post.intent_score = score_data.get("score", 0.0)
@@ -515,9 +507,6 @@ class RedditSentimentService:
         Returns:
             Dict mapping category to list of extracted quotes
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return {cat: [] for cat in SentimentCategory}
 
@@ -527,17 +516,19 @@ class RedditSentimentService:
             cat: [] for cat in SentimentCategory
         }
 
+        # Pydantic AI Agent (Complex/Opus)
+        agent = Agent(
+            model=Config.get_model("complex"),
+            system_prompt="You are an expert sentiment analyst. Return ONLY valid JSON."
+        )
+
         # Process in smaller batches for deeper analysis
         for batch in self._batch(posts, 5):
             prompt = self._build_extraction_prompt(batch, brand_context, product_context)
 
-            response = self.anthropic.messages.create(
-                model=DEEP_MODEL,
-                max_tokens=4000,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            result = await agent.run(prompt)
 
-            extracted = self._parse_extraction_response(response.content[0].text, batch)
+            extracted = self._parse_extraction_response(result.output, batch)
 
             for category, quotes in extracted.items():
                 all_quotes[category].extend(quotes)

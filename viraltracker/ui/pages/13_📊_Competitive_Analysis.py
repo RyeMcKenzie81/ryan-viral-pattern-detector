@@ -95,11 +95,10 @@ def run_competitive_analysis_sync(
     competitor_amazon_analyses: List[Dict]
 ) -> Dict:
     """Run AI-powered competitive analysis."""
-    from anthropic import Anthropic
+    from viraltracker.core.config import Config
+    from pydantic_ai import Agent
     from viraltracker.core.database import reset_supabase_client
     reset_supabase_client()
-
-    anthropic = Anthropic()
 
     # Prepare brand persona summary
     brand_summary = []
@@ -226,22 +225,27 @@ Based on this analysis, provide a comprehensive competitive analysis in the foll
 
 Return ONLY valid JSON, no markdown formatting."""
 
-    response = anthropic.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}]
+    # Pydantic AI Agent (Complex Model for deep analysis)
+    agent = Agent(
+        model=Config.get_model("complex"),
+        system_prompt="You are a competitive marketing analyst. Return ONLY valid JSON."
     )
 
-    response_text = response.content[0].text.strip()
+    try:
+        # Run sync for Streamlit
+        result = agent.run_sync(prompt)
+        response_text = result.output.strip()
 
-    # Clean up response
-    if response_text.startswith("```"):
-        response_text = response_text.split("```")[1]
-        if response_text.startswith("json"):
-            response_text = response_text[4:]
-        response_text = response_text.strip()
+        # Clean up response
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
 
-    return json.loads(response_text)
+        return json.loads(response_text)
+    except Exception as e:
+        raise Exception(f"Analysis failed: {e}")
 
 
 # =============================================================================

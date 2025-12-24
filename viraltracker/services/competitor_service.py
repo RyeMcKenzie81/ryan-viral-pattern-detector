@@ -19,6 +19,10 @@ from datetime import datetime
 
 from supabase import Client
 from ..core.database import get_supabase_client
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
+
 
 logger = logging.getLogger(__name__)
 
@@ -1416,7 +1420,7 @@ class CompetitorService:
             Analysis data dict or None if failed
         """
         from datetime import datetime
-        from anthropic import Anthropic
+
 
         try:
             # Get landing page content
@@ -1431,8 +1435,7 @@ class CompetitorService:
             page = result.data[0]
             content = page["scraped_content"]
 
-            # Analyze with Claude
-            anthropic = Anthropic()
+            # Analyze with Pydantic AI Agent
             prompt = f"""Analyze this competitor landing page content and extract key marketing elements.
 
 URL: {page['url']}
@@ -1459,14 +1462,13 @@ Extract and return JSON with:
 
 Return ONLY valid JSON."""
 
-            message = anthropic.messages.create(
-                # Use Basic model for filtering/analysis
+            agent = Agent(
                 model=Config.get_model("basic"),
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
+                system_prompt="You are a marketing analysis expert. Return ONLY valid JSON."
             )
-
-            response_text = message.content[0].text
+            
+            result = await agent.run(prompt)
+            response_text = result.output
 
             # Parse response
             import json
@@ -1802,7 +1804,7 @@ Return ONLY valid JSON."""
             13-layer analysis dict or None if failed
         """
         import re
-        from anthropic import Anthropic
+
 
         # Import the prompt from brand_research_service
         from .brand_research_service import BELIEF_FIRST_ANALYSIS_PROMPT
@@ -1842,15 +1844,14 @@ Return ONLY valid JSON."""
                 content=content
             )
 
-            # Call Claude Opus 4.5
-            client = Anthropic()
-            response = client.messages.create(
-                model="claude-opus-4-5-20251101",
-                max_tokens=8000,
-                messages=[{"role": "user", "content": prompt}]
+            # Call Pydantic AI Agent (Complex assumption)
+            agent = Agent(
+                model=Config.get_model("complex"),
+                system_prompt="You are an expert market analyst. Return ONLY valid JSON."
             )
-
-            response_text = response.content[0].text
+            
+            result = await agent.run(prompt)
+            response_text = result.output
 
             # Parse JSON response
             json_match = re.search(r'\{[\s\S]*\}', response_text)
@@ -2431,7 +2432,7 @@ Return ONLY valid JSON."""
         Returns:
             Dict with analysis results including themed testimonials
         """
-        import anthropic
+
         import json
 
         # Get reviews
@@ -2474,15 +2475,14 @@ Return ONLY valid JSON."""
             review_count=len(reviews)
         )
 
-        # Call Claude
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}]
+        # Call Pydantic AI Agent (Default capability)
+        agent = Agent(
+            model=Config.get_model("default"),
+            system_prompt="You are a simplified expert analysis system. Return ONLY valid JSON."
         )
-
-        response_text = response.content[0].text
+        
+        result = await agent.run(prompt)
+        response_text = result.output
 
         # Parse JSON response
         try:
@@ -2501,7 +2501,8 @@ Return ONLY valid JSON."""
             competitor_id=competitor_id,
             competitor_product_id=competitor_product_id,
             analysis=analysis,
-            reviews_count=len(reviews)
+            reviews_count=len(reviews),
+            model_used=Config.get_model("default")
         )
 
         return analysis
@@ -2685,7 +2686,8 @@ Return ONLY the JSON object, no other text."""
         competitor_id: UUID,
         competitor_product_id: Optional[UUID],
         analysis: Dict[str, Any],
-        reviews_count: int
+        reviews_count: int,
+        model_used: str = "claude-sonnet-4-20250514"
     ) -> None:
         """Save the rich analysis to competitor_amazon_review_analysis table."""
         try:
@@ -2716,7 +2718,7 @@ Return ONLY the JSON object, no other text."""
                 "objections": {"themes": analysis.get("buying_objections", [])},
                 "language_patterns": {"themes": analysis.get("desired_features", [])},
                 "transformation": {"themes": analysis.get("failed_solutions", [])},
-                "model_used": "claude-sonnet-4-20250514",
+                "model_used": model_used,
                 "analyzed_at": datetime.utcnow().isoformat()
             }
 

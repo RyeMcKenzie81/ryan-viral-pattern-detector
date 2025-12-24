@@ -26,8 +26,14 @@ class Config:
     # Gemini
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
     GEMINI_VIDEO_MODEL: str = 'models/gemini-2.5-pro'  # Gemini 2.5 Pro for video analysis
+    GEMINI_IMAGE_MODEL: str = 'gemini-2.0-flash-exp'  # Gemini 2.0 Flash for image analysis
 
-    # Email (Resend)
+    # OpenAI / Sora
+    OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
+    SORA_MODELS: Dict[str, float] = {
+        'sora-2-2025-10-06': 0.10,
+        'sora-2-pro-2025-10-06': 0.50
+    }
     RESEND_API_KEY: str = os.getenv('RESEND_API_KEY', '')
     EMAIL_FROM: str = os.getenv('EMAIL_FROM', 'noreply@viraltracker.io')
 
@@ -133,6 +139,13 @@ class Config:
             # We treat these as independent defaults unless we add recursive logic
             # But to ensure AD_CREATION follows CREATIVE dynamically if not set:
             "AD_CREATION": cls.CREATIVE_MODEL, 
+
+            # Service & Pipeline Mappings
+            "REDDIT": cls.BASIC_MODEL,        # Basic sentiment analysis
+            "COMIC": cls.CREATIVE_MODEL,      # Creative writing
+            "SCRIPT": cls.CREATIVE_MODEL,     # Creative writing
+            "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Creative writing
+            "PLANNING": cls.COMPLEX_MODEL,    # Complex reasoning
         }
         
         # Special case for inheritance if needed, otherwise it just uses the string value

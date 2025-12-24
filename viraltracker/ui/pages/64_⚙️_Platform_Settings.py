@@ -45,120 +45,16 @@ def update_env_file(key: str, value: str):
     # Reload env vars in process
     os.environ[key] = value
 
-# Orchestrator Config
-st.markdown("### Orchestrator Agent")
-st.markdown("The main routing agent that directs user requests.")
-
-current_orchestrator = os.getenv("ORCHESTRATOR_MODEL", "openai:gpt-4o")
-# Check if current value is in list, if not add it (handling custom models)
-if current_orchestrator not in AVAILABLE_MODELS:
-    AVAILABLE_MODELS.append(current_orchestrator)
-
-selected_orchestrator = st.selectbox(
-    "Orchestrator Model",
-    options=AVAILABLE_MODELS,
-    index=AVAILABLE_MODELS.index(current_orchestrator)
-)
-
-if selected_orchestrator != current_orchestrator:
-    if st.button("Save Orchestrator Model"):
-        update_env_file("ORCHESTRATOR_MODEL", selected_orchestrator)
-        st.success(f"Updated ORCHESTRATOR_MODEL to {selected_orchestrator}")
-        st.rerun()
-
-# Default Model Config
-st.markdown("### Default Fallback Model")
-st.markdown("Used by agents when no specific model is configured.")
-
-current_default = os.getenv("DEFAULT_MODEL", Config.DEFAULT_MODEL)
-if current_default not in AVAILABLE_MODELS:
-    AVAILABLE_MODELS.append(current_default)
-
-selected_default = st.selectbox(
-    "Default Model",
-    options=AVAILABLE_MODELS,
-    index=AVAILABLE_MODELS.index(current_default)
-)
-
-if selected_default != current_default:
-    if st.button("Save Default Model"):
-        update_env_file("DEFAULT_MODEL", selected_default)
-        st.success(f"Updated DEFAULT_MODEL to {selected_default}")
-        st.rerun()
-
-# Capability Overrides
-st.markdown("### Capability Overrides")
-st.markdown("Configure underlying models for specific capabilities.")
-
-capabilities = {
-    "CREATIVE": "Creative (Writing, Hooks)",
-    "VISION": "Vision (Analysis, Review)",
-    "VISION_BACKUP": "Vision Backup",
-    "BASIC": "Basic Logic"
-}
-
-for key, label in capabilities.items():
+def render_model_selector(key: str, label: str):
+    """Render a selectbox for a model configuration."""
     col1, col2 = st.columns([3, 1])
     
     with col1:
         current_model = os.getenv(f"{key}_MODEL", "Default (Inherit)")
         
         # Add "Default (Inherit)" - logic to determine what it inherits from
-        # In reality, they have their own defaults in Config, but we show "Default" as "Not Overridden"
-        
         options = ["Default (Inherit)"] + [m for m in AVAILABLE_MODELS if m != "Default (Inherit)"]
         
-        index = 0
-        if current_model in options:
-            index = options.index(current_model)
-        elif current_model != "Default (Inherit)":
-            options.append(current_model)
-            index = options.index(current_model)
-            
-        selected = st.selectbox(
-            f"{label}",
-            options=options,
-            index=index,
-            key=f"select_cap_{key}"
-        )
-
-    with col2:
-        st.write("") 
-        st.write("") 
-        if selected != current_model:
-            if st.button(f"Save {key}", key=f"btn_cap_{key}"):
-                if selected == "Default (Inherit)":
-                    dotenv.unset_key(".env", f"{key}_MODEL")
-                    del os.environ[f"{key}_MODEL"]
-                    st.success(f"Reset {key} to Default")
-                else:
-                    update_env_file(f"{key}_MODEL", selected)
-                    st.success(f"Updated {key} to {selected}")
-                st.rerun()
-
-# Specialist Agent Overrides
-st.markdown("### Specialist Agent Overrides")
-st.markdown("Override the default model for specific agents.")
-
-agents = {
-    "TWITTER": "Twitter Agent",
-    "TIKTOK": "TikTok Agent",
-    "YOUTUBE": "YouTube Agent",
-    "FACEBOOK": "Facebook Agent",
-    "ANALYSIS": "Analysis Agent",
-    "AUDIO_PRODUCTION": "Audio Production Agent"
-}
-
-for key, label in agents.items():
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        current_model = os.getenv(f"{key}_MODEL", "Default (Inherit)")
-        
-        # Add "Default (Inherit)" option if not present
-        options = ["Default (Inherit)"] + [m for m in AVAILABLE_MODELS if m != "Default (Inherit)"]
-        
-        # If current model is a real model string, ensure it's selected
         index = 0
         if current_model in options:
             index = options.index(current_model)
@@ -174,12 +70,11 @@ for key, label in agents.items():
         )
 
     with col2:
-        st.write("") # Spacer
-        st.write("") # Spacer
+        st.write("") 
+        st.write("") 
         if selected != current_model:
             if st.button(f"Save {key}", key=f"btn_{key}"):
                 if selected == "Default (Inherit)":
-                    # Remove from .env to fallback to default
                     dotenv.unset_key(".env", f"{key}_MODEL")
                     del os.environ[f"{key}_MODEL"]
                     st.success(f"Reset {key} to Default")
@@ -188,6 +83,91 @@ for key, label in agents.items():
                     st.success(f"Updated {key} to {selected}")
                 st.rerun()
 
+# Create Tabs
+tab_core, tab_agents, tab_services, tab_pipelines = st.tabs([
+    "Core Capabilities", 
+    "Social Agents", 
+    "Backend Services", 
+    "Content Pipelines"
+])
+
+with tab_core:
+    st.markdown("### Core Capabilities")
+    st.markdown("These settings define the default behavior for broad categories of tasks.")
+    
+    # Orchestrator Config (Special handling as it's not a capability override per se)
+    st.markdown("#### Orchestrator")
+    current_orch = os.getenv("ORCHESTRATOR_MODEL", "openai:gpt-4o")
+    orch_opts = AVAILABLE_MODELS if current_orch in AVAILABLE_MODELS else AVAILABLE_MODELS + [current_orch]
+    selected_orch = st.selectbox("Orchestrator Model", orch_opts, index=orch_opts.index(current_orch))
+    if selected_orch != current_orch:
+        if st.button("Save Orchestrator"):
+            update_env_file("ORCHESTRATOR_MODEL", selected_orch)
+            st.rerun()
+            
+    st.markdown("#### Default Fallback")
+    current_def = os.getenv("DEFAULT_MODEL", Config.DEFAULT_MODEL)
+    def_opts = AVAILABLE_MODELS if current_def in AVAILABLE_MODELS else AVAILABLE_MODELS + [current_def]
+    selected_def = st.selectbox("Default Model", def_opts, index=def_opts.index(current_def))
+    if selected_def != current_def:
+        if st.button("Save Default"):
+            update_env_file("DEFAULT_MODEL", selected_def)
+            st.rerun()
+
+    st.markdown("#### Capability Overrides")
+    capabilities = {
+        "CREATIVE": "Creative (Writing, Hooks)",
+        "VISION": "Vision (Analysis, Review)",
+        "VISION_BACKUP": "Vision Backup",
+        "BASIC": "Basic Logic",
+        "COMPLEX": "Complex Reasoning"
+    }
+    for key, label in capabilities.items():
+        render_model_selector(key, label)
+
+with tab_agents:
+    st.markdown("### Social & Specialized Agents")
+    st.markdown("Override defaults for specific highly-specialized agents.")
+    
+    agents = {
+        "TWITTER": "Twitter Agent",
+        "TIKTOK": "TikTok Agent",
+        "YOUTUBE": "YouTube Agent",
+        "FACEBOOK": "Facebook Agent",
+        "AD_CREATION": "Ad Creation Agent",
+        "ANALYSIS": "Analysis Agent",
+        "AUDIO_PRODUCTION": "Audio Production Agent"
+    }
+    for key, label in agents.items():
+        render_model_selector(key, label)
+
+with tab_services:
+    st.markdown("### Backend Services")
+    st.markdown("Control the intelligence behind core backend logic.")
+    
+    services = {
+        "COMPETITOR": "Competitor Analysis Service",
+        "BRAND_RESEARCH": "Brand Research Service",
+        "AMAZON_REVIEW": "Amazon Review Service",
+        "PERSONA": "Persona Service",
+        "REDDIT": "Reddit Sentiment Service",
+        "PLANNING": "Planning Service"
+    }
+    for key, label in services.items():
+        render_model_selector(key, label)
+
+with tab_pipelines:
+    st.markdown("### Content Pipelines")
+    st.markdown("Models used for specific content generation workflows.")
+    
+    pipelines = {
+        "COMIC": "Comic Generation Pipeline",
+        "SCRIPT": "Video Script Pipeline",
+        "COPY_SCAFFOLD": "Copy Scaffold Service"
+    }
+    for key, label in pipelines.items():
+        render_model_selector(key, label)
+
 # Display current configuration summary
 st.markdown("---")
 st.subheader("Current Configuration Snapshot")
@@ -195,5 +175,5 @@ st.code(f"""
 ORCHESTRATOR_MODEL = {Config.get_model("orchestrator")}
 DEFAULT_MODEL      = {Config.get_model("default")}
 COMPLEX_MODEL      = {Config.get_model("complex")}
-FAST_MODEL         = {Config.get_model("fast")}
+BASIC_MODEL        = {Config.get_model("basic")}
 """, language="properties")

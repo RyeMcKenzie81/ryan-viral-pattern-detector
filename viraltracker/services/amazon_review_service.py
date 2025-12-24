@@ -23,6 +23,10 @@ from dataclasses import dataclass
 
 from ..core.database import get_supabase_client
 from .apify_service import ApifyService
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
+
 
 logger = logging.getLogger(__name__)
 
@@ -575,7 +579,7 @@ class AmazonReviewService:
             Analysis results dictionary or None if no reviews
         """
         import json
-        from anthropic import Anthropic
+
 
         # Fetch reviews with all fields needed for rich formatting
         result = self.supabase.table("amazon_reviews").select(
@@ -600,24 +604,22 @@ class AmazonReviewService:
         ).eq("id", str(product_id)).single().execute()
         brand_id = product.data["brand_id"]
 
-        # Call Claude for analysis
-        client = Anthropic()
+        # Pydantic AI Agent (Creative)
+        agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are an expert at customer insights. Return ONLY valid JSON."
+        )
 
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8000,
-                messages=[{
-                    "role": "user",
-                    "content": REVIEW_ANALYSIS_PROMPT.format(
-                        reviews_text=reviews_text,
-                        review_count=len(reviews)
-                    )
-                }]
+            result = await agent.run(
+                REVIEW_ANALYSIS_PROMPT.format(
+                    reviews_text=reviews_text,
+                    review_count=len(reviews)
+                )
             )
 
             # Parse response
-            analysis_text = response.content[0].text
+            analysis_text = result.output
 
             # Extract JSON from response
             json_match = re.search(r'\{[\s\S]*\}', analysis_text)
