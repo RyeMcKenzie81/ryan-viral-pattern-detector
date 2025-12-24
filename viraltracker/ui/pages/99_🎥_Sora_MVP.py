@@ -45,8 +45,8 @@ with st.expander("Configuration", expanded=True):
         )
     
     with col_conf2:
-        # Duration
-        duration = st.slider("Duration (seconds)", min_value=5, max_value=20, value=5, step=1)
+        # Duration - Sora 2 only supports 4, 8, 12 seconds
+        duration = st.select_slider("Duration (seconds)", options=[4, 8, 12], value=4)
         
         # Dry Run Toggle
         dry_run = st.checkbox("Dry Run (Simulate API Call)", value=True, help="Uncheck to spend real money")
