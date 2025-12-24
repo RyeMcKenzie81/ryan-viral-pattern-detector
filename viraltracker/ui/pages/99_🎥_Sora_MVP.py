@@ -120,11 +120,38 @@ with col1:
                 
                 if selected_product_name:
                     product = product_map[selected_product_name]
-                        except Exception as e:
-                            st.error(f"Failed to load preview: {e}")
-                    else:
-                        st.warning("No main image set for this product.")
+                    
+                    # 3. Fetch Product Images (from product_images table)
+                    try:
+                        images_resp = supabase.table("product_images").select("storage_path, is_main").eq("product_id", product["id"]).order("is_main", desc=True).execute()
+                        images = images_resp.data or []
                         
+                        if images:
+                            # Default to the first one (Main or first available)
+                            target_image = images[0] 
+                            storage_path = target_image.get("storage_path")
+                            
+                            if storage_path:
+                                db_storage_path = storage_path # Store for generation time
+                                
+                                # Parse bucket/path
+                                if "/" in storage_path:
+                                    bucket, path = storage_path.split("/", 1)
+                                else:
+                                    bucket = "products" 
+                                    path = storage_path
+                                    
+                                # Get Public URL for Preview
+                                try:
+                                    public_url = supabase.storage.from_(bucket).get_public_url(path)
+                                    st.image(public_url, caption=f"Product: {product['name']}", width=200)
+                                except Exception as e:
+                                    st.error(f"Failed to load preview: {e}")
+                        else:
+                            st.warning("No images found for this product.")
+                    except Exception as e:
+                        st.error(f"Failed to fetch images: {e}")
+
         except Exception as e:
             st.error(f"Database Error: {e}")
 
