@@ -71,34 +71,63 @@ class SoraService:
         Returns:
             Dictionary containing the video URL and other metadata
         """
-        if not self.client:
+        if not self.api_key:
             raise ValueError("OpenAI API key not configured")
             
         logger.info(f"Generating video with {model} ({duration_seconds}s): {prompt[:50]}...")
         
+        # Use direct HTTP request since client.video is not available in current SDK
+        import httpx
+        
+        url = "https://api.openai.com/v1/video/generations"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "quality": "standard",
+            "response_format": "url",
+            "size": resolution,
+            # Pass duration only if model supports it (Sora 2 implies it might)
+            # For now passing it as top level, if API rejects, we might need to adjust
+            # "duration": duration_seconds 
+        }
+        
         try:
-            # Note: This uses the standard OpenAI video generation structure
-            # Adjust if Sora 2 specific SDK methods differ significantly
-            response = await self.client.video.generations.create(
-                model=model,
-                prompt=prompt,
-                quality="standard", # or "hd" depending on needs/cost
-                response_format="url",
-                size=f"{resolution}", # This might need specific format like "1920x1080"
-                # Duration parameter handling depends on specific API version
-                # Some versions might imply duration or take it as a param
-                # We'll need to verify if 'duration' is a top-level param
-            )
-            
-            # OpenAI typically returns a list of results
-            video_url = response.data[0].url
+            async with httpx.AsyncClient(timeout=120.0) as http_client:
+                response = await http_client.post(url, headers=headers, json=payload)
+                
+                # Check for error
+                if response.status_code != 200:
+                    error_text = response.text
+                    logger.error(f"Sora API Error ({response.status_code}): {error_text}")
+                    raise Exception(f"OpenAI API returned {response.status_code}: {error_text}")
+                
+                data = response.json()
+                
+                # OpenAI typically returns a list of results in 'data'
+                # Example: {"created": ..., "data": [{"url": "..."}]}
+                if "data" in data and len(data["data"]) > 0:
+                     video_url = data["data"][0]["url"]
+                else:
+                    # Fallback for unexpected structure
+                    logger.warning(f"Unexpected response structure: {data.keys()}")
+                    # If 'url' is at root?
+                    video_url = data.get("url")
+                
+                if not video_url:
+                    raise Exception(f"No video URL found in response: {str(data)[:200]}")
             
             return {
                 "url": video_url,
                 "model": model,
                 "duration": duration_seconds,
                 "cost": self.estimate_cost(duration_seconds, model),
-                "prompt": prompt
+                "prompt": prompt,
+                "raw_response": data
             }
             
         except Exception as e:
