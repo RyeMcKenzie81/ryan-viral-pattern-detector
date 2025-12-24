@@ -95,7 +95,7 @@ class SoraService:
             "model": model,
             "prompt": prompt,
             "size": size,
-            "seconds": duration_seconds 
+            "seconds": str(duration_seconds) # Docs example shows string "8"
         }
         
         logger.info(f"Starting Sora job: {model}, {duration_seconds}s, {size}")
@@ -133,25 +133,20 @@ class SoraService:
                 status = job_data.get("status")
                 
                 if status == "completed":
-                    result_data = job_data.get("result", {})
-                    # Adjust based on actual response structure (often result.url or videos[0].url)
-                    video_url = result_data.get("url")
+                    logger.info(f"Job {job_id} completed. Downloading content...")
                     
-                    # Sometimes it's directly in the object or under 'videos'
-                    if not video_url and "videos" in result_data:
-                        videos = result_data["videos"]
-                        if videos:
-                            video_url = videos[0].get("url")
-                            
-                    if not video_url:
-                         # Fallback search in root
-                         video_url = job_data.get("url") or job_data.get("output", {}).get("url")
-
-                    if not video_url:
-                         raise Exception(f"Job completed but URL not found: {job_data}")
+                    # 3. Download Content (Docs: GET /videos/{id}/content)
+                    content_url = f"{base_url}/{job_id}/content"
+                    # Note: We need to increase timeout for download
+                    content_resp = await client.get(content_url, headers=headers, follow_redirects=True, timeout=60.0)
+                    
+                    if content_resp.status_code != 200:
+                         raise Exception(f"Failed to download video content: {content_resp.status_code}")
                          
+                    video_bytes = content_resp.content
+                    
                     return {
-                        "url": video_url,
+                        "video_data": video_bytes, # Return bytes for UI
                         "model": model,
                         "duration": duration_seconds,
                         "cost": self.estimate_cost(duration_seconds, model),
@@ -163,7 +158,7 @@ class SoraService:
                     error = job_data.get("error", "Unknown error")
                     raise Exception(f"Video generation failed: {error}")
                 
-                elif status in ["processing", "pending", "queued"]:
+                elif status in ["processing", "pending", "queued", "in_progress"]:
                     await asyncio.sleep(2) # Wait 2s between polls
                     attempts += 1
                 else:

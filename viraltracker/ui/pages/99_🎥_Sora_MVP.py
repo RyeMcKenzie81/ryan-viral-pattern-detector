@@ -123,11 +123,15 @@ if generate_btn:
                 status_container.success(f"Generation Complete! Cost: ${result['cost']:.2f}")
 
             # Display Result
-            if result.get("url"):
+            if result.get("video_data"):
+                # Display binary video
+                video_container.video(result["video_data"], format="video/mp4")
+            elif result.get("url"):
+                # Fallback URL (e.g. for dry run)
                 video_container.video(result["url"])
                 
-                with st.expander("Raw API Response", expanded=False):
-                    st.json(result)
+            with st.expander("Raw API Response", expanded=False):
+                st.json(result.get("raw_response") or result)
                     
         except Exception as e:
             status_container.error(f"Generation Failed: {str(e)}")
