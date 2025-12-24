@@ -24,7 +24,7 @@ from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, field
 
-from ..core.config import Config
+from viraltracker.core.config import Config
 from pydantic_ai import Agent
 import asyncio
 

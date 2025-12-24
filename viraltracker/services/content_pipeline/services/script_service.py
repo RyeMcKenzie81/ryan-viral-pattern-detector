@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
 
-from ..core.config import Config
+from viraltracker.core.config import Config
 from pydantic_ai import Agent
 import asyncio
 

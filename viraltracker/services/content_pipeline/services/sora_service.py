@@ -6,7 +6,7 @@ import logging
 from typing import Optional, Dict, Any
 from openai import AsyncOpenAI
 
-from ...core.config import Config
+from viraltracker.core.config import Config
 
 logger = logging.getLogger(__name__)
 
