@@ -43,6 +43,21 @@ with st.expander("Configuration", expanded=True):
             options=model_options,
             format_func=lambda x: f"{x} (${Config.SORA_MODELS[x]:.2f}/s)"
         )
+
+        # Aspect Ratio / Size
+        resolution_options = {
+            "1280x720": "img/landscape (1280x720) 16:9",
+            "1920x1080": "img/landscape_hd (1920x1080) 16:9",
+            "720x1280": "img/portrait (720x1280) 9:16",
+            "1080x1920": "img/portrait_hd (1080x1920) 9:16",
+            "1024x1024": "img/square (1024x1024) 1:1"
+        }
+        selected_res = st.selectbox(
+            "Video Format",
+            options=list(resolution_options.keys()),
+            format_func=lambda x: resolution_options[x],
+            index=0
+        )
     
     with col_conf2:
         # Duration - Sora 2 only supports 4, 8, 12 seconds
@@ -116,7 +131,8 @@ if generate_btn:
                         return await service.generate_video(
                             prompt=prompt,
                             model=selected_model_key,
-                            duration_seconds=duration
+                            duration_seconds=duration,
+                            resolution=selected_res
                         )
                     
                     result = asyncio.run(run_gen())
