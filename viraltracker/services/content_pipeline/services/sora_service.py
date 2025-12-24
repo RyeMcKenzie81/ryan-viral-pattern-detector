@@ -133,53 +133,80 @@ class SoraService:
             
             # 2. Poll for Completion
             attempts = 0
-            max_attempts = 120  # 2 minutes max (assuming 1s poll)
+            poll_interval = 5  # 5 seconds between polls
+            max_duration_seconds = 900  # 15 minutes max
+            max_attempts = max_duration_seconds // poll_interval
+            
+            error_streak = 0
             
             while attempts < max_attempts:
                 # Poll status
-                poll_resp = await client.get(f"{base_url}/{job_id}", headers=headers)
-                
-                if poll_resp.status_code != 200:
-                    logger.warning(f"Polling failed ({poll_resp.status_code}), retrying...")
-                    await asyncio.sleep(2)
-                    attempts += 1
-                    continue
-                
-                job_data = poll_resp.json()
-                status = job_data.get("status")
-                
-                if status == "completed":
-                    logger.info(f"Job {job_id} completed. Downloading content...")
+                try:
+                    poll_resp = await client.get(f"{base_url}/{job_id}", headers=headers, timeout=10.0)
                     
-                    # 3. Download Content (Docs: GET /videos/{id}/content)
-                    content_url = f"{base_url}/{job_id}/content"
-                    # Note: We need to increase timeout for download
-                    content_resp = await client.get(content_url, headers=headers, follow_redirects=True, timeout=60.0)
+                    if poll_resp.status_code >= 500:
+                        logger.warning(f"Polling server error ({poll_resp.status_code}), retrying in 10s...")
+                        error_streak += 1
+                        if error_streak > 20: # Stop if 20 consecutive server errors
+                             raise Exception("Too many consecutive API server errors.")
+                        await asyncio.sleep(10)
+                        attempts += 1 # Still count against total time roughly
+                        continue
+                        
+                    if poll_resp.status_code != 200:
+                        logger.warning(f"Polling failed ({poll_resp.status_code}), retrying...")
+                        await asyncio.sleep(poll_interval)
+                        attempts += 1
+                        continue
                     
-                    if content_resp.status_code != 200:
-                         raise Exception(f"Failed to download video content: {content_resp.status_code}")
-                         
-                    video_bytes = content_resp.content
+                    # Reset streak on success
+                    error_streak = 0
                     
-                    return {
-                        "video_data": video_bytes, # Return bytes for UI
-                        "model": model,
-                        "duration": duration_seconds,
-                        "cost": self.estimate_cost(duration_seconds, model),
-                        "prompt": prompt,
-                        "raw_response": job_data
-                    }
+                    job_data = poll_resp.json()
+                    status = job_data.get("status")
                     
-                elif status == "failed":
-                    error = job_data.get("error", "Unknown error")
-                    raise Exception(f"Video generation failed: {error}")
-                
-                elif status in ["processing", "pending", "queued", "in_progress"]:
-                    await asyncio.sleep(2) # Wait 2s between polls
-                    attempts += 1
-                else:
-                    logger.warning(f"Unknown status '{status}', waiting...")
-                    await asyncio.sleep(2)
+                    if status == "completed":
+                        logger.info(f"Job {job_id} completed. Downloading content...")
+                        
+                        # 3. Download Content (Docs: GET /videos/{id}/content)
+                        content_url = f"{base_url}/{job_id}/content"
+                        # Note: We need to increase timeout for download significantly for large video files
+                        content_resp = await client.get(content_url, headers=headers, follow_redirects=True, timeout=120.0)
+                        
+                        if content_resp.status_code != 200:
+                             raise Exception(f"Failed to download video content: {content_resp.status_code}")
+                             
+                        video_bytes = content_resp.content
+                        
+                        return {
+                            "video_data": video_bytes, # Return bytes for UI
+                            "model": model,
+                            "duration": duration_seconds,
+                            "cost": self.estimate_cost(duration_seconds, model),
+                            "prompt": prompt,
+                            "raw_response": job_data
+                        }
+                        
+                    elif status == "failed":
+                        error = job_data.get("error", "Unknown error")
+                        raise Exception(f"Video generation failed: {error}")
+                    
+                    elif status in ["processing", "pending", "queued", "in_progress"]:
+                        # Normal wait
+                        await asyncio.sleep(poll_interval)
+                        attempts += 1
+                    else:
+                        logger.warning(f"Unknown status '{status}', waiting...")
+                        await asyncio.sleep(poll_interval)
+                        attempts += 1
+                        
+                except Exception as e:
+                    # Handle network errors during polling (timeouts, connection issues)
+                    logger.warning(f"Polling connection error: {e}. Retrying...")
+                    error_streak += 1
+                    if error_streak > 10:
+                        raise e
+                    await asyncio.sleep(10)
                     attempts += 1
             
-            raise TimeoutError("Video generation timed out after polling.")
+            raise TimeoutError(f"Video generation timed out after {max_duration_seconds} seconds.")
