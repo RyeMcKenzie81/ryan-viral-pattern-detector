@@ -127,8 +127,17 @@ with col1:
                         images = images_resp.data or []
                         
                         if images:
-                            # Default to the first one (Main or first available)
-                            target_image = images[0] 
+                            # Create options for selector
+                            img_options = {}
+                            for idx, img in enumerate(images):
+                                label = f"Image {idx+1}"
+                                if img.get("is_main"):
+                                    label += " (Main)"
+                                img_options[label] = img
+                            
+                            selected_img_label = st.selectbox("Select Reference Image", options=list(img_options.keys()))
+                            target_image = img_options[selected_img_label]
+                            
                             storage_path = target_image.get("storage_path")
                             
                             if storage_path:
@@ -144,7 +153,7 @@ with col1:
                                 # Get Public URL for Preview
                                 try:
                                     public_url = supabase.storage.from_(bucket).get_public_url(path)
-                                    st.image(public_url, caption=f"Product: {product['name']}", width=200)
+                                    st.image(public_url, caption=f"Selected: {selected_img_label}", width=300)
                                 except Exception as e:
                                     st.error(f"Failed to load preview: {e}")
                         else:
