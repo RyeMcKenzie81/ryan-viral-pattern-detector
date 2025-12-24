@@ -234,6 +234,45 @@ if generate_btn:
             else:
                 # Real API Call
                 with st.spinner("Talking to OpenAI..."):
+                    
+                    # ---------------------------------------------------------
+                    # RESIZE LOGIC: Ensure reference matches target resolution
+                    # ---------------------------------------------------------
+                    final_ref_data = ref_img_data
+                    final_ref_mime = ref_img_mime
+                    
+                    if ref_img_data:
+                        try:
+                            from PIL import Image
+                            import io
+                            
+                            # Parse target WxH from selected_res string (e.g. "1280x720")
+                            # Format is typically "1280x720 (Landscape)" -> split by space
+                            res_str = selected_res.split(" ")[0]
+                            w_str, h_str = res_str.split("x")
+                            target_w, target_h = int(w_str), int(h_str)
+                            
+                            with st.spinner(f"Resizing input to {target_w}x{target_h}..."):
+                                # Open image
+                                img = Image.open(io.BytesIO(ref_img_data))
+                                
+                                # Convert to RGB if needed (e.g. if RGBA or P)
+                                if img.mode != "RGB":
+                                    img = img.convert("RGB")
+                                    
+                                # Resize (LANCZOS for quality)
+                                # Note: This forces the aspect ratio. Crop-to-fit is better but forcing is safer for API compliance.
+                                img_resized = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                                
+                                # Save to bytes (JPEG is usually safest for APIs)
+                                out_io = io.BytesIO()
+                                img_resized.save(out_io, format="JPEG", quality=95)
+                                final_ref_data = out_io.getvalue()
+                                final_ref_mime = "image/jpeg"
+                                
+                        except Exception as e:
+                            st.warning(f"Auto-resize failed: {e}. Sending original image.")
+
                     # Async wrapper for Streamlit
                     async def run_gen():
                         return await service.generate_video(
@@ -241,8 +280,8 @@ if generate_btn:
                             model=selected_model_key,
                             duration_seconds=duration,
                             resolution=selected_res,
-                            reference_image_data=ref_img_data,
-                            reference_image_mime=ref_img_mime
+                            reference_image_data=final_ref_data,
+                            reference_image_mime=final_ref_mime
                         )
                     
                     result = asyncio.run(run_gen())
