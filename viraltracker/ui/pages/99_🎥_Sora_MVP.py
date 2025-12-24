@@ -31,34 +31,35 @@ if "sora_service" not in st.session_state:
 
 service = st.session_state.sora_service
 
-# Sidebar Configuration
-with st.sidebar:
-    st.header("Configuration")
+# Configuration
+with st.expander("Configuration", expanded=True):
+    col_conf1, col_conf2, col_conf3 = st.columns(3)
     
-    # Model Selection
-    model_options = list(Config.SORA_MODELS.keys())
-    selected_model_key = st.radio(
-        "Select Model",
-        options=model_options,
-        format_func=lambda x: f"{x} (${Config.SORA_MODELS[x]:.2f}/s)"
-    )
+    with col_conf1:
+        # Model Selection
+        model_options = list(Config.SORA_MODELS.keys())
+        selected_model_key = st.radio(
+            "Select Model",
+            options=model_options,
+            format_func=lambda x: f"{x} (${Config.SORA_MODELS[x]:.2f}/s)"
+        )
     
-    # Duration
-    duration = st.slider("Duration (seconds)", min_value=5, max_value=20, value=5, step=1)
-    
-    # Cost Estimation
-    estimated_cost = service.estimate_cost(duration, selected_model_key)
-    
-    st.divider()
-    st.metric("Estimated Cost", f"${estimated_cost:.2f}")
-    
-    if selected_model_key == 'sora-2-pro-2025-10-06':
-        st.warning("⚠️ PRO model is expensive ($0.50/s). A 20s clip costs $10.")
-    else:
-        st.success("✅ Standard model ($0.10/s). A 20s clip costs $2.")
+    with col_conf2:
+        # Duration
+        duration = st.slider("Duration (seconds)", min_value=5, max_value=20, value=5, step=1)
+        
+        # Dry Run Toggle
+        dry_run = st.checkbox("Dry Run (Simulate API Call)", value=True, help="Uncheck to spend real money")
 
-    # Dry Run Toggle
-    dry_run = st.checkbox("Dry Run (Simulate API Call)", value=True, help="Uncheck to spend real money")
+    with col_conf3:
+        # Cost Estimation
+        estimated_cost = service.estimate_cost(duration, selected_model_key)
+        st.metric("Estimated Cost", f"${estimated_cost:.2f}")
+        
+        if selected_model_key == 'sora-2-pro-2025-10-06':
+            st.warning("⚠️ PRO model ($0.50/s)")
+        else:
+            st.success("✅ Standard model ($0.10/s)")
 
 
 # Main Interface
