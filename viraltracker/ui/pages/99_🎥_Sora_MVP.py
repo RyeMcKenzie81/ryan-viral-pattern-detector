@@ -83,8 +83,76 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("Prompt")
     
-    # Reference Image Uploader
-    uploaded_file = st.file_uploader("Reference Image (Optional)", type=['jpg', 'png', 'webp'])
+    # Reference Image Source
+    ref_source = st.radio("Reference Image Source", ["Upload File", "Database Asset"], horizontal=True)
+    
+    ref_img_data = None
+    ref_img_mime = "image/jpeg"
+    
+    if ref_source == "Upload File":
+        uploaded_file = st.file_uploader("Reference Image (Optional)", type=['jpg', 'png', 'webp'])
+        if uploaded_file:
+            ref_img_data = uploaded_file.getvalue()
+            ref_img_mime = uploaded_file.type
+            st.image(uploaded_file, caption="Preview", width=200)
+            
+    else: # Database Asset
+        from viraltracker.core.database import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # 1. Fetch Brands
+        try:
+            brands_resp = supabase.table("brands").select("id, name").order("name").execute()
+            brands = brands_resp.data or []
+            brand_map = {b["name"]: b["id"] for b in brands}
+            
+            selected_brand_name = st.selectbox("Select Brand", options=list(brand_map.keys()))
+            
+            if selected_brand_name:
+                brand_id = brand_map[selected_brand_name]
+                
+                # 2. Fetch Products
+                products_resp = supabase.table("products").select("id, name, main_image_storage_path").eq("brand_id", brand_id).execute()
+                products = products_resp.data or []
+                product_map = {p["name"]: p for p in products}
+                
+                selected_product_name = st.selectbox("Select Product", options=list(product_map.keys()))
+                
+                if selected_product_name:
+                    product = product_map[selected_product_name]
+                    storage_path = product.get("main_image_storage_path")
+                    
+                    if storage_path:
+                        # Parse bucket/path (e.g. "products/xyz.jpg")
+                        if "/" in storage_path:
+                            bucket, path = storage_path.split("/", 1)
+                        else:
+                            # Fallback if just filename in legacy data
+                            bucket = "products" 
+                            path = storage_path
+                            
+                        # Get Public URL for Preview
+                        try:
+                            public_url = supabase.storage.from_(bucket).get_public_url(path)
+                            st.image(public_url, caption=f"Product: {product['name']}", width=200)
+                            
+                            # Download bytes for API
+                            if generate_btn: # Only download when needed
+                                with st.spinner("Downloading asset..."):
+                                    ref_img_data = supabase.storage.from_(bucket).download(path)
+                                    # Detect mime (simple fallback)
+                                    if path.lower().endswith(".png"):
+                                        ref_img_mime = "image/png"
+                                    elif path.lower().endswith(".webp"):
+                                        ref_img_mime = "image/webp"
+                        except Exception as e:
+                            st.error(f"Failed to load preview: {e}")
+                    else:
+                        st.warning("No main image set for this product.")
+                        
+        except Exception as e:
+            st.error(f"Database Error: {e}")
+
     
     prompt = st.text_area(
         "Describe your video",
@@ -107,17 +175,35 @@ if generate_btn:
     else:
         status_container.info(f"Generating ({dry_run=})... this may take a minute.")
         
-        # Prepare image data if present
-        ref_img_data = None
-        ref_img_mime = "image/jpeg"
-        if uploaded_file:
-            ref_img_data = uploaded_file.getvalue()
-            ref_img_mime = uploaded_file.type
-            
+        # Fetch DB image bytes if needed
+        if ref_source == "Database Asset" and db_storage_path:
+             try:
+                 from viraltracker.core.database import get_supabase_client
+                 supabase = get_supabase_client()
+                 
+                 if "/" in db_storage_path:
+                     bucket, path = db_storage_path.split("/", 1)
+                 else:
+                     bucket = "products" 
+                     path = db_storage_path
+                     
+                 ref_img_data = supabase.storage.from_(bucket).download(path)
+                 
+                 # Simple mime detection
+                 if path.lower().endswith(".png"):
+                     ref_img_mime = "image/png"
+                 elif path.lower().endswith(".webp"):
+                     ref_img_mime = "image/webp"
+                 else:
+                     ref_img_mime = "image/jpeg"
+             except Exception as e:
+                 status_container.error(f"Failed to download asset: {e}")
+                 st.stop()
+
         try:
+            import time # Import time for dry run simulation
             if dry_run:
                 # Mock simulation
-                import time
                 progress_bar = st.progress(0)
                 for i in range(100):
                     time.sleep(0.02)
