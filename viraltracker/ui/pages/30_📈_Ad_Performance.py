@@ -565,6 +565,7 @@ async def analyze_ad_creative(
     creative_type: str = "image",  # image or video
     ad_copy: str = "",
     headline: str = "",
+    ad_id: Optional[UUID] = None
 ) -> Dict[str, Any]:
     """
     Analyze ad creative and copy to extract strategy.
@@ -575,6 +576,7 @@ async def analyze_ad_creative(
         creative_type: 'image' or 'video'
         ad_copy: Primary text
         headline: Ad headline
+        ad_id: Optional UUID of the ad for tracking
         
     Returns:
         Dict with analysis results (angle, belief, hooks, etc.)
@@ -584,6 +586,7 @@ async def analyze_ad_creative(
     # 1. Analyze Creative (Vision)
     vision_analysis = {}
     if creative_file or creative_url:
+        st.write(f"DEBUG: Starting visual analysis. URL: {creative_url}, ID: {ad_id}")
         if creative_type == "video":
             # For video, we need bytes or URL
             if creative_file:
@@ -607,8 +610,11 @@ async def analyze_ad_creative(
                         if resp.status_code == 200:
                             img_bytes = resp.content
                             vision_analysis = await service.analyze_image(image_bytes=img_bytes)
+                        else:
+                            st.warning(f"Failed to download image: {resp.status_code}")
                 except Exception as e:
                     print(f"Failed to download image from URL {creative_url}: {e}")
+                    st.error(f"Image download failed: {e}")
 
     
     # 2. Analyze Copy
@@ -616,19 +622,31 @@ async def analyze_ad_creative(
     if ad_copy or headline:
         full_text = f"{headline}\n\n{ad_copy}"
         # Refactored: service now supports optional ad_id for manual analysis
-        copy_analysis = await service.analyze_copy(ad_copy=full_text)
+        copy_analysis = await service.analyze_copy(ad_copy=full_text, ad_id=ad_id)
 
 
         
-    # 3. Merge/Synthesize (Simple merge for now)
-    # The copy analysis usually has the best "Angle/Belief" extraction.
-    # Vision adds visual hooks.
-    
+    # 3. Merge/Synthesize (Smarter merge)
+    def resolve_best(key_copy, key_vision, invalid_values=None):
+        invalid = invalid_values or ["None", "Unknown", "null", "Error", None, ""]
+        val_c = copy_analysis.get(key_copy)
+        val_v = vision_analysis.get(key_vision)
+        
+        # Check validity (simple check: valid if not in invalid list and doesn't start with Error)
+        def is_valid(v):
+            if v in invalid: return False
+            if isinstance(v, str) and (v.startswith("Error:") or v.startswith("[image]")): return False
+            return True
+            
+        if is_valid(val_v): return val_v
+        if is_valid(val_c): return val_c
+        return val_v or val_c # Fallback
+
     result = {
-        "angle": copy_analysis.get("advertising_angle") or vision_analysis.get("advertising_angle"),
-        "belief": copy_analysis.get("belief_statement") or vision_analysis.get("key_belief"),
+        "angle": resolve_best("advertising_angle", "advertising_angle"),
+        "belief": resolve_best("belief_statement", "key_belief"),
         "hooks": copy_analysis.get("hooks", []) + vision_analysis.get("hooks", []),
-        "awareness_level": copy_analysis.get("awareness_level") or vision_analysis.get("awareness_level"),
+        "awareness_level": resolve_best("awareness_level", "awareness_level"),
         "raw_copy": copy_analysis,
         "raw_vision": vision_analysis
     }
@@ -931,11 +949,21 @@ def render_top_performers(data: List[Dict]):
                              # Get Creative URL from ad data (image_url or thumbnail_url)
                              creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
                              
+                             # Try to convert ID to UUID for tracking, otherwise None
+                             from uuid import UUID as PyUUID
+                             ad_uuid = None
+                             try:
+                                 if meta_ad_id:
+                                     ad_uuid = PyUUID(str(meta_ad_id))
+                             except:
+                                 pass # Not a UUID (likely a Meta numeric ID)
+
                              res = asyncio.run(analyze_ad_creative(
                                  ad_copy=final_copy,
                                  headline=target_ad.get("headline", ""),
                                  creative_url=creative_url,
-                                 creative_type="image" # Default to image for now unless we detect video
+                                 creative_type="image", # Default to image for now unless we detect video
+                                 ad_id=ad_uuid
                              ))
                              st.session_state.ad_analysis_result = res
                          except Exception as e:
@@ -1021,6 +1049,12 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
         a["add_to_carts"] += int(d.get("add_to_carts") or 0)
         a["purchases"] += int(d.get("purchases") or 0)
         a["purchase_value"] += float(d.get("purchase_value") or 0)
+        
+        # Capture creative details (first non-empty value wins or overwrite)
+        if d.get("image_url"): a["image_url"] = d.get("image_url")
+        if d.get("thumbnail_url"): a["thumbnail_url"] = d.get("thumbnail_url")
+        if d.get("headline"): a["headline"] = d.get("headline")
+        if d.get("body"): a["body"] = d.get("body")
 
     result = []
     for aid, a in ads.items():
@@ -1045,6 +1079,10 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
             "add_to_carts": a["add_to_carts"],
             "purchases": a["purchases"],
             "roas": roas,
+            "image_url": a.get("image_url"),
+            "thumbnail_url": a.get("thumbnail_url"),
+            "headline": a.get("headline"),
+            "body": a.get("body"),
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
