@@ -3317,6 +3317,7 @@ async def complete_ad_workflow(
                 selected_hooks.append({
                     "hook_id": angle_data.get("id", ""),
                     "hook_text": angle_data.get("belief_statement", ""),
+                    "adapted_text": angle_data.get("belief_statement", ""),  # Required by workflow
                     "angle_name": angle_data.get("name", ""),
                     "explanation": angle_data.get("explanation", ""),
                     "variation_number": i + 1,
