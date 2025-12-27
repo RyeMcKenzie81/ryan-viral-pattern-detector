@@ -14,7 +14,7 @@ The goal is to test beliefs (angles), not writing talent.
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 from uuid import UUID
 
