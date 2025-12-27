@@ -217,6 +217,8 @@ def render_live_progress(plan_id: str) -> bool:
     if status != "running":
         return False
     
+    run_id = latest.get("id")
+    
     # Active run found - display progress
     snapshot = latest.get("state_snapshot", {}) or {}
     generated = snapshot.get("ads_generated", 0)
@@ -239,11 +241,26 @@ def render_live_progress(plan_id: str) -> bool:
     with col3:
         st.metric("Progress", f"{int(progress * 100)}%")
     
-    st.info("⏳ Execution is running in the background. Click 'Refresh Status' to update.")
+    st.info("⏳ Execution is running in the background. Click 'Refresh Status' to update, or 'Cancel' if it's stuck.")
     
-    # Manual refresh button instead of blocking sleep
-    if st.button("🔄 Refresh Status", key="refresh_progress"):
-        st.rerun()
+    # Action buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Refresh Status", key="refresh_progress", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("❌ Cancel Run", key="cancel_run", type="secondary", use_container_width=True):
+            if run_id:
+                try:
+                    db = get_supabase_client()
+                    db.table("pipeline_runs").update({
+                        "status": "cancelled",
+                        "error_message": "Cancelled by user"
+                    }).eq("id", run_id).execute()
+                    st.success("Run cancelled. You can now restart.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to cancel: {e}")
     
     return True  # Active run exists
 
