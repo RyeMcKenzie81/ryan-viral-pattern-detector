@@ -603,9 +603,16 @@ class BrandResearchService:
         try:
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
-            model_name = Config.GEMINI_VIDEO_MODEL
-
-            logger.info(f"Uploading video to Gemini: {temp_path}")
+            
+            # Dynamic model selection from Config (Platform Settings)
+            # Remove 'google-gla:' prefix if present for raw client usage, although genai.Client usually handles 'models/'
+            config_model = Config.get_model("vision")
+            if config_model.startswith("google-gla:"):
+                model_name = config_model.replace("google-gla:", "")
+            else:
+                 model_name = Config.GEMINI_VIDEO_MODEL # Default to GEMINI_VIDEO_MODEL if prefix not found
+                 
+            logger.info(f"Analyzing video with model: {model_name}")
 
             # Upload video file to Gemini
             video_file = client.files.upload(file=str(temp_path))
