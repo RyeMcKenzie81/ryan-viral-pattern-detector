@@ -263,13 +263,25 @@ def build_production_prompt(
             
     if product_size:
         situation += f" (Product Scale: {product_size} package)"
+        
+    # Inject Variation Context to prevent visual repetition
+    settings = [
+        "in a well-lit home environment",
+        "outdoors in natural light",
+        "in a cozy, comfortable setting",
+        "during a daily lifestyle activity",
+        "in a bright, clean domestic space"
+    ]
+    setting = settings[variation_index % len(settings)]
+    situation += f", located {setting}"
 
     # Build structured JSON prompt for Production
     json_prompt = {
         "task": {
             "action": "create_production_creative",
             "variation_index": variation_index,
-            "template_type": template_type
+            "template_type": template_type,
+            "visual_variation": setting
         },
 
         "content": {
@@ -332,7 +344,8 @@ def build_production_prompt(
                 "Show the benefit/solution state",
                 f"Match persona: {persona_snapshot}",
                 "Place text in clear areas (like header/footer or negative space)",
-                f"Product size is {product_size}" if product_size else "Show product at realistic scale"
+                f"Product size is {product_size}" if product_size else "Show product at realistic scale",
+                "Vary the human model pose and background details"
             ],
             "DO_NOT": [
                  "Make text small or unreadable",
