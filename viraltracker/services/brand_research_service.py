@@ -423,17 +423,12 @@ class BrandResearchService:
             raise ValueError("GEMINI_API_KEY must be set in environment")
 
         try:
-            logger.info("DEBUG: Initializing genai client...")
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
-            
-            logger.info("DEBUG: Getting model name...")
             # Use dynamically configured model if possible, else default
             model_name = Config.get_model("vision") 
-            logger.info(f"DEBUG: Model name resolved: {model_name}")
 
             # Prepare image
-            logger.info("DEBUG: Preparing image...")
             if image_bytes:
                 image = Image.open(BytesIO(image_bytes))
             elif image_base64:
@@ -452,12 +447,10 @@ class BrandResearchService:
             logger.info(f"Image decoded: {image.size[0]}x{image.size[1]}, mode={image.mode}")
 
             # Generate analysis using Gemini
-            logger.info(f"DEBUG: Calling generate_content with model {model_name}...")
             response = client.models.generate_content(
                 model=model_name,
                 contents=[image, IMAGE_ANALYSIS_PROMPT]
             )
-            logger.info("DEBUG: generate_content returned.")
 
             analysis_text = response.text.strip()
 

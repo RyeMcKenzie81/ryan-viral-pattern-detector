@@ -604,26 +604,16 @@ async def analyze_ad_creative(
             elif creative_url:
                 # Download image from URL to bytes
                 import httpx
-                import traceback
                 try:
-                    st.write("DEBUG: [1] Initializing httpx client...")
                     async with httpx.AsyncClient(timeout=30.0) as client:
-                        st.write(f"DEBUG: [2] Fetching URL: {creative_url}")
                         resp = await client.get(creative_url)
-                        st.write(f"DEBUG: [3] Response status: {resp.status_code}")
-                        
                         if resp.status_code == 200:
                             img_bytes = resp.content
-                            st.write(f"DEBUG: [4] Got {len(img_bytes)} bytes. Calling analyze_image...")
                             vision_analysis = await service.analyze_image(image_bytes=img_bytes, skip_save=True)
-                            st.write("DEBUG: [5] analyze_image returned.")
                         else:
                             st.warning(f"Failed to download image: {resp.status_code}")
                 except Exception as e:
                     st.error(f"Image download failed: {e}")
-                    st.code(traceback.format_exc())
-
-    
     # 2. Analyze Copy
     copy_analysis = {}
     if ad_copy or headline:
@@ -634,10 +624,21 @@ async def analyze_ad_creative(
 
         
     # 3. Merge/Synthesize (Smarter merge)
-    def resolve_best(key_copy, key_vision, invalid_values=None):
+    # 3. Merge/Synthesize (Smarter merge)
+    
+    # Extract nested vision values
+    v_struct = vision_analysis.get("advertising_structure") or {}
+    v_angle = v_struct.get("advertising_angle")
+    v_level = v_struct.get("awareness_level")
+    
+    # Extract copy values - handle both flat and nested structure
+    c_struct = copy_analysis.get("advertising_structure") or {}
+    c_angle = copy_analysis.get("advertising_angle") or c_struct.get("advertising_angle")
+    c_level = copy_analysis.get("awareness_level") or c_struct.get("awareness_level")
+    c_belief = copy_analysis.get("belief_statement") 
+
+    def resolve_best(val_1, val_2, invalid_values=None):
         invalid = invalid_values or ["None", "Unknown", "null", "Error", None, ""]
-        val_c = copy_analysis.get(key_copy)
-        val_v = vision_analysis.get(key_vision)
         
         # Check validity (simple check: valid if not in invalid list and doesn't start with Error)
         def is_valid(v):
@@ -645,15 +646,15 @@ async def analyze_ad_creative(
             if isinstance(v, str) and (v.startswith("Error:") or v.startswith("[image]")): return False
             return True
             
-        if is_valid(val_v): return val_v
-        if is_valid(val_c): return val_c
-        return val_v or val_c # Fallback
+        if is_valid(val_1): return val_1
+        if is_valid(val_2): return val_2
+        return val_1 or val_2 # Fallback
 
     result = {
-        "angle": resolve_best("advertising_angle", "advertising_angle"),
-        "belief": resolve_best("belief_statement", "key_belief"),
+        "angle": resolve_best(v_angle, c_angle),
+        "belief": resolve_best(vision_analysis.get("key_belief") or vision_analysis.get("belief_statement"), c_belief),
         "hooks": copy_analysis.get("hooks", []) + vision_analysis.get("hooks", []),
-        "awareness_level": resolve_best("awareness_level", "awareness_level"),
+        "awareness_level": resolve_best(v_level, c_level),
         "raw_copy": copy_analysis,
         "raw_vision": vision_analysis
     }
