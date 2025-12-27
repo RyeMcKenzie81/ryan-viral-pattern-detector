@@ -604,17 +604,24 @@ async def analyze_ad_creative(
             elif creative_url:
                 # Download image from URL to bytes
                 import httpx
+                import traceback
                 try:
+                    st.write("DEBUG: [1] Initializing httpx client...")
                     async with httpx.AsyncClient(timeout=30.0) as client:
+                        st.write(f"DEBUG: [2] Fetching URL: {creative_url}")
                         resp = await client.get(creative_url)
+                        st.write(f"DEBUG: [3] Response status: {resp.status_code}")
+                        
                         if resp.status_code == 200:
                             img_bytes = resp.content
+                            st.write(f"DEBUG: [4] Got {len(img_bytes)} bytes. Calling analyze_image...")
                             vision_analysis = await service.analyze_image(image_bytes=img_bytes, skip_save=True)
+                            st.write("DEBUG: [5] analyze_image returned.")
                         else:
                             st.warning(f"Failed to download image: {resp.status_code}")
                 except Exception as e:
-                    print(f"Failed to download image from URL {creative_url}: {e}")
                     st.error(f"Image download failed: {e}")
+                    st.code(traceback.format_exc())
 
     
     # 2. Analyze Copy
