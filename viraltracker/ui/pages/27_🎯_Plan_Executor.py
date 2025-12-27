@@ -9,6 +9,7 @@ This page allows users to:
 """
 
 import asyncio
+import time
 import streamlit as st
 from datetime import datetime
 from uuid import UUID
@@ -201,6 +202,50 @@ def get_latest_run(plan_id: str):
         return result.data[0] if result.data else None
     except Exception:
         return None
+
+
+def render_live_progress(plan_id: str) -> bool:
+    """
+    Render live progress for an active pipeline run.
+    Returns True if there's an active run (to trigger auto-refresh).
+    """
+    latest = get_latest_run(plan_id)
+    if not latest:
+        return False
+    
+    status = latest.get("status", "")
+    if status != "running":
+        return False
+    
+    # Active run found - display progress
+    snapshot = latest.get("state_snapshot", {}) or {}
+    generated = snapshot.get("ads_generated", 0)
+    total = snapshot.get("total_ads_planned", 0) or 1  # Avoid div by 0
+    current_step = snapshot.get("current_step", "processing")
+    
+    st.divider()
+    st.subheader("🔄 Execution In Progress")
+    
+    # Progress bar
+    progress = min(generated / total, 1.0) if total > 0 else 0
+    st.progress(progress, text=f"Generated {generated}/{total} ads")
+    
+    # Details
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Status", status.upper())
+    with col2:
+        st.metric("Current Step", current_step)
+    with col3:
+        st.metric("Progress", f"{int(progress * 100)}%")
+    
+    st.info("⏳ Auto-refreshing every 5 seconds... Do not navigate away.")
+    
+    # Auto-refresh after 5 seconds
+    time.sleep(5)
+    st.rerun()
+    
+    return True  # Active run exists
 
 
 def get_public_url(storage_path: str) -> str:
@@ -689,12 +734,16 @@ if selected_brand_id:
                     elif not details["templates"]:
                         st.error("This plan has no templates. Add templates in the Ad Planning page.")
                     else:
-                        # Execution form
-                        render_execution_form(
-                            selected_plan_id,
-                            len(details["angles"]),
-                            len(details["templates"])
-                        )
+                        # Check for active running execution first
+                        is_running = render_live_progress(selected_plan_id)
+                        
+                        # Only show execution form if no active run
+                        if not is_running:
+                            render_execution_form(
+                                selected_plan_id,
+                                len(details["angles"]),
+                                len(details["templates"])
+                            )
 
                     st.divider()
 
