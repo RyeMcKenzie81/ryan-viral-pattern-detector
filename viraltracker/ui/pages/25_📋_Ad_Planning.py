@@ -118,8 +118,11 @@ def init_session_state():
         if not st.session_state.selected_jtbd_id:
             try:
                 from viraltracker.core.database import get_supabase_client
-                db = get_supabase_client()
+                from viraltracker.services.planning_service import PlanningService
+                from uuid import UUID
                 
+                db = get_supabase_client()
+                service = PlanningService()
                 debug_log = []
                 
                 # Brand
@@ -135,51 +138,50 @@ def init_session_state():
                 if brand_id:
                     # Product
                     if not st.session_state.selected_product_id:
-                        products = db.table("products").select("id").eq("brand_id", brand_id).limit(1).execute()
-                        if products.data:
-                            st.session_state.selected_product_id = products.data[0]["id"]
-                            debug_log.append(f"Auto-selected Product: {products.data[0]['id']}")
+                        products = service.get_products_for_brand(UUID(brand_id))
+                        if products:
+                            st.session_state.selected_product_id = str(products[0]["id"])
+                            debug_log.append(f"Auto-selected Product: {products[0]['id']}")
                         else:
                             debug_log.append(f"No products found for brand {brand_id}")
                     
                     product_id = st.session_state.selected_product_id
                     if product_id:
-                        # Offer
+                        # Offer (Optional - may not exist)
                         if not st.session_state.selected_offer_id:
-                            offers = db.table("offers").select("id").eq("product_id", product_id).limit(1).execute()
-                            if offers.data:
-                                st.session_state.selected_offer_id = offers.data[0]["id"]
-                                debug_log.append(f"Auto-selected Offer: {offers.data[0]['id']}")
+                            offers = service.get_offers_for_product(UUID(product_id))
+                            if offers:
+                                st.session_state.selected_offer_id = str(offers[0].id)
+                                debug_log.append(f"Auto-selected Offer: {offers[0].id}")
                             else:
-                                debug_log.append(f"No offers found for product {product_id}")
+                                debug_log.append(f"No offers found for product {product_id} (optional)")
                         
-                        offer_id = st.session_state.selected_offer_id
-                        if offer_id:
-                            # Persona (from persona_framed which is linked to offer)
-                            if not st.session_state.selected_persona_id:
-                                personas = db.table("persona_framed").select("id").eq("offer_id", offer_id).limit(1).execute()
-                                if personas.data:
-                                    st.session_state.selected_persona_id = personas.data[0]["id"]
-                                    debug_log.append(f"Auto-selected Persona: {personas.data[0]['id']}")
+                        # Persona (from product personas)
+                        if not st.session_state.selected_persona_id:
+                            personas = service.get_personas_for_product(UUID(product_id))
+                            if personas:
+                                st.session_state.selected_persona_id = str(personas[0]["id"])
+                                debug_log.append(f"Auto-selected Persona: {personas[0]['id']}")
+                            else:
+                                debug_log.append(f"No personas found for product {product_id}")
+                        
+                        persona_id = st.session_state.selected_persona_id
+                        if persona_id:
+                            # JTBD (from persona + product)
+                            if not st.session_state.selected_jtbd_id:
+                                jtbds = service.get_jtbd_for_persona_product(UUID(persona_id), UUID(product_id))
+                                if jtbds:
+                                    st.session_state.selected_jtbd_id = str(jtbds[0].id)
+                                    debug_log.append(f"Auto-selected JTBD: {jtbds[0].id}")
                                 else:
-                                    debug_log.append(f"No personas found for offer {offer_id}")
-                            
-                            persona_id = st.session_state.selected_persona_id
-                            if persona_id:
-                                # JTBD
-                                if not st.session_state.selected_jtbd_id:
-                                    jtbds = db.table("jtbd_framed").select("id").eq("persona_framed_id", persona_id).limit(1).execute()
-                                    if jtbds.data:
-                                        st.session_state.selected_jtbd_id = jtbds.data[0]["id"]
-                                        debug_log.append(f"Auto-selected JTBD: {jtbds.data[0]['id']}")
-                                    else:
-                                        debug_log.append(f"No JTBDs found for persona {persona_id}")
+                                    debug_log.append(f"No JTBDs found for persona {persona_id}")
                 
                 # Store debug log for display
                 st.session_state._bridge_debug_log = debug_log
                 
             except Exception as e:
-                st.session_state._bridge_debug_log = [f"Error: {e}"]
+                import traceback
+                st.session_state._bridge_debug_log = [f"Error: {e}", traceback.format_exc()]
 
 
 
