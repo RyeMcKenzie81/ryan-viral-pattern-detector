@@ -751,8 +751,20 @@ def render_analysis_result(result: Dict):
         
         with col_act2:
             st.info("👆 Click to instantly start a 30-ad test campaign based on this winning angle.")
+            
+    # Check for low quality analysis due to missing text
+    if angle in ["Unknown Angle", "None"] or belief in ["No belief detected", "None"]:
+        st.warning("⚠️ Analysis yielded limited results. This often happens when analyzing based only on the Ad Name.")
+        st.markdown("""
+        **Try this instead:**
+        1. Copy the actual **Primary Text** from this ad in Ads Manager.
+        2. Go to the **🧪 Manual Analysis** tab above.
+        3. Paste the text there for a deep analysis.
+        """)
 
-    with st.expander("Detailed Insights", expanded=False):
+    # Use checkbox instead of expander to avoid "nested expander" errors
+    # (Since this component is often rendered inside the 'Charts & Analysis' expander)
+    if st.checkbox("View Detailed Insights"):
         st.markdown(f"**Awareness Level:** {result.get('awareness_level', 'Unknown')}")
         
         st.markdown("**Identified Hooks:**")
@@ -760,6 +772,7 @@ def render_analysis_result(result: Dict):
             st.write(f"- {hook.get('type', 'Hook')}: *{hook.get('text', '')}*")
             
         st.json(result)
+
 
 
 
