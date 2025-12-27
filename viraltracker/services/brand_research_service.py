@@ -387,8 +387,9 @@ class BrandResearchService:
 
     async def analyze_image(
         self,
-        asset_id: UUID,
-        image_base64: str,
+        asset_id: Optional[UUID] = None,
+        image_base64: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
         brand_id: Optional[UUID] = None,
         facebook_ad_id: Optional[UUID] = None,
         mime_type: str = "image/jpeg",
@@ -396,26 +397,16 @@ class BrandResearchService:
     ) -> Dict:
         """
         Analyze image with Gemini Vision.
-
-        Uses Gemini instead of Claude Vision to support larger files (up to 20MB)
-        and more lenient mime type handling.
-
-        Extracts:
-        - Layout/format type
-        - Text overlays and hooks
-        - Benefits and USPs
-        - Persona signals
-        - Brand voice characteristics
-        - Visual style elements
-
+        
         Args:
-            asset_id: UUID of the scraped_ad_assets record
-            image_base64: Base64 encoded image data
+            asset_id: Optional UUID of the scraped_ad_assets record
+            image_base64: Optional Base64 encoded image data
+            image_bytes: Optional raw image bytes (takes precedence if provided)
             brand_id: Optional brand to link analysis to
             facebook_ad_id: Optional facebook_ads record to link
-            mime_type: MIME type of the image (used for logging only)
-            skip_save: If True, don't save to brand_ad_analysis (for competitor use)
-
+            mime_type: MIME type of the image
+            skip_save: If True, don't save to brand_ad_analysis
+            
         Returns:
             Analysis result dict
         """
@@ -423,7 +414,7 @@ class BrandResearchService:
         from PIL import Image
         from io import BytesIO
 
-        logger.info(f"Analyzing image asset: {asset_id} (using Gemini)")
+        logger.info(f"Analyzing image asset: {asset_id or 'on-fly'} (using Gemini)")
 
         # Get API key
         api_key = os.getenv("GEMINI_API_KEY")
@@ -433,18 +424,24 @@ class BrandResearchService:
         try:
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
-            model_name = Config.GEMINI_IMAGE_MODEL
+            # Use dynamically configured model if possible, else default
+            model_name = Config.get_model("vision") 
 
-            # Decode base64 to PIL Image
-            # Clean and decode base64 image
-            clean_data = image_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
-            # Add padding if necessary
-            missing_padding = len(clean_data) % 4
-            if missing_padding:
-                clean_data += '=' * (4 - missing_padding)
+            # Prepare image
+            if image_bytes:
+                image = Image.open(BytesIO(image_bytes))
+            elif image_base64:
+                # Decode base64 to PIL Image
+                clean_data = image_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+                # Add padding if necessary
+                missing_padding = len(clean_data) % 4
+                if missing_padding:
+                    clean_data += '=' * (4 - missing_padding)
 
-            image_bytes = base64.b64decode(clean_data)
-            image = Image.open(BytesIO(image_bytes))
+                img_data = base64.b64decode(clean_data)
+                image = Image.open(BytesIO(img_data))
+            else:
+                raise ValueError("Either image_bytes or image_base64 must be provided")
 
             logger.info(f"Image decoded: {image.size[0]}x{image.size[1]}, mode={image.mode}")
 
