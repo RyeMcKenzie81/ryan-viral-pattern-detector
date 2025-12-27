@@ -109,20 +109,27 @@ def init_session_state():
     # If injected data exists, auto-navigate to Step 6 (Angles) so user can use it immediately
     # Also auto-select the first available Brand/Product/Offer/Persona/JTBD if not set
     if "injected_angle_data" in st.session_state and st.session_state.injected_angle_data:
-        if st.session_state.planning_step < 6:
+        # Always jump to step 6
+        if st.session_state.planning_step != 6:
             st.session_state.planning_step = 6
             st.session_state.show_injected_angle_banner = True
-            
-            # Auto-select prerequisites if not already set
+        
+        # Auto-select prerequisites if JTBD is not set (run every time until we have a JTBD)
+        if not st.session_state.selected_jtbd_id:
             try:
                 from viraltracker.core.database import get_supabase_client
                 db = get_supabase_client()
+                
+                debug_log = []
                 
                 # Brand
                 if not st.session_state.selected_brand_id:
                     brands = db.table("brands").select("id").limit(1).execute()
                     if brands.data:
                         st.session_state.selected_brand_id = brands.data[0]["id"]
+                        debug_log.append(f"Auto-selected Brand: {brands.data[0]['id']}")
+                    else:
+                        debug_log.append("No brands found in DB")
                 
                 brand_id = st.session_state.selected_brand_id
                 if brand_id:
@@ -131,6 +138,9 @@ def init_session_state():
                         products = db.table("products").select("id").eq("brand_id", brand_id).limit(1).execute()
                         if products.data:
                             st.session_state.selected_product_id = products.data[0]["id"]
+                            debug_log.append(f"Auto-selected Product: {products.data[0]['id']}")
+                        else:
+                            debug_log.append(f"No products found for brand {brand_id}")
                     
                     product_id = st.session_state.selected_product_id
                     if product_id:
@@ -139,6 +149,9 @@ def init_session_state():
                             offers = db.table("offers").select("id").eq("product_id", product_id).limit(1).execute()
                             if offers.data:
                                 st.session_state.selected_offer_id = offers.data[0]["id"]
+                                debug_log.append(f"Auto-selected Offer: {offers.data[0]['id']}")
+                            else:
+                                debug_log.append(f"No offers found for product {product_id}")
                         
                         offer_id = st.session_state.selected_offer_id
                         if offer_id:
@@ -147,6 +160,9 @@ def init_session_state():
                                 personas = db.table("persona_framed").select("id").eq("offer_id", offer_id).limit(1).execute()
                                 if personas.data:
                                     st.session_state.selected_persona_id = personas.data[0]["id"]
+                                    debug_log.append(f"Auto-selected Persona: {personas.data[0]['id']}")
+                                else:
+                                    debug_log.append(f"No personas found for offer {offer_id}")
                             
                             persona_id = st.session_state.selected_persona_id
                             if persona_id:
@@ -155,9 +171,15 @@ def init_session_state():
                                     jtbds = db.table("jtbd_framed").select("id").eq("persona_framed_id", persona_id).limit(1).execute()
                                     if jtbds.data:
                                         st.session_state.selected_jtbd_id = jtbds.data[0]["id"]
+                                        debug_log.append(f"Auto-selected JTBD: {jtbds.data[0]['id']}")
+                                    else:
+                                        debug_log.append(f"No JTBDs found for persona {persona_id}")
+                
+                # Store debug log for display
+                st.session_state._bridge_debug_log = debug_log
+                
             except Exception as e:
-                # If auto-selection fails, just proceed - user will see the warning
-                pass
+                st.session_state._bridge_debug_log = [f"Error: {e}"]
 
 
 
@@ -629,6 +651,19 @@ def render_step_6_angles():
 
     if not st.session_state.selected_jtbd_id:
         st.warning("Please select a JTBD first.")
+        
+        # Show debug log if available
+        if st.session_state.get("_bridge_debug_log"):
+            with st.expander("🔧 Debug: Auto-selection Log"):
+                for log_entry in st.session_state._bridge_debug_log:
+                    st.write(log_entry)
+                st.write(f"**Current selections:**")
+                st.write(f"- Brand ID: {st.session_state.selected_brand_id}")
+                st.write(f"- Product ID: {st.session_state.selected_product_id}")
+                st.write(f"- Offer ID: {st.session_state.selected_offer_id}")
+                st.write(f"- Persona ID: {st.session_state.selected_persona_id}")
+                st.write(f"- JTBD ID: {st.session_state.selected_jtbd_id}")
+        
         return
 
     service = get_planning_service()
