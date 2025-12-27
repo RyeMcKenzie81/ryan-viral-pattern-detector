@@ -586,22 +586,30 @@ async def analyze_ad_creative(
     if creative_file or creative_url:
         if creative_type == "video":
             # For video, we need bytes or URL
-            # Note: Service expects bytes for upload or download URL
             if creative_file:
                 # If it's a Streamlit UploadedFile, get bytes
                 video_bytes = creative_file.getvalue() if hasattr(creative_file, "getvalue") else creative_file
                 vision_analysis = await service.analyze_video(video_bytes=video_bytes)
             elif creative_url:
-                # Download first if URL provided (service helper might exist, but doing manually for safety)
-                # For now assuming service handles download internally if we had that method exposed,
-                # but analyze_video takes bytes. So we'll skip complex URL handling for this MVP step
-                # and focus on UploadedFile for Manual, and assuming we can get bytes for Integrated.
-                pass 
+                # Use the new analyze_video_from_url for direct handling
+                vision_analysis = await service.analyze_video_from_url(video_url=creative_url)
         else:
             # Image
             if creative_file:
                 img_bytes = creative_file.getvalue() if hasattr(creative_file, "getvalue") else creative_file
                 vision_analysis = await service.analyze_image(image_bytes=img_bytes)
+            elif creative_url:
+                # Download image from URL to bytes
+                import httpx
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.get(creative_url)
+                        if resp.status_code == 200:
+                            img_bytes = resp.content
+                            vision_analysis = await service.analyze_image(image_bytes=img_bytes)
+                except Exception as e:
+                    print(f"Failed to download image from URL {creative_url}: {e}")
+
     
     # 2. Analyze Copy
     copy_analysis = {}
@@ -920,9 +928,14 @@ def render_top_performers(data: List[Dict]):
                              # Fallback to ad name if body text not found
                              final_copy = body_text if body_text else target_ad.get("ad_name", "")
                              
+                             # Get Creative URL from ad data (image_url or thumbnail_url)
+                             creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
+                             
                              res = asyncio.run(analyze_ad_creative(
                                  ad_copy=final_copy,
-                                 headline=target_ad.get("headline", "")
+                                 headline=target_ad.get("headline", ""),
+                                 creative_url=creative_url,
+                                 creative_type="image" # Default to image for now unless we detect video
                              ))
                              st.session_state.ad_analysis_result = res
                          except Exception as e:
