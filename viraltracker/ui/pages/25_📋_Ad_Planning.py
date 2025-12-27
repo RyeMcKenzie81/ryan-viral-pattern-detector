@@ -156,25 +156,61 @@ def init_session_state():
                             else:
                                 debug_log.append(f"No offers found for product {product_id} (optional)")
                         
-                        # Persona (from product personas)
+                        # Persona (from product personas) - CREATE IF MISSING
                         if not st.session_state.selected_persona_id:
                             personas = service.get_personas_for_product(UUID(product_id))
                             if personas:
                                 st.session_state.selected_persona_id = str(personas[0]["id"])
                                 debug_log.append(f"Auto-selected Persona: {personas[0]['id']}")
                             else:
-                                debug_log.append(f"No personas found for product {product_id}")
+                                # CREATE placeholder persona
+                                debug_log.append(f"No personas found - creating placeholder...")
+                                try:
+                                    # Create persona in personas_4d
+                                    persona_result = db.table("personas_4d").insert({
+                                        "brand_id": brand_id,
+                                        "name": "Quick Capture Persona",
+                                        "snapshot": "Auto-generated placeholder from Ad Analysis bridge. Edit in Personas page.",
+                                        "source": "bridge_auto"
+                                    }).execute()
+                                    new_persona_id = persona_result.data[0]["id"]
+                                    
+                                    # Link to product via product_personas junction
+                                    db.table("product_personas").insert({
+                                        "product_id": product_id,
+                                        "persona_id": new_persona_id,
+                                        "is_primary": True
+                                    }).execute()
+                                    
+                                    st.session_state.selected_persona_id = new_persona_id
+                                    debug_log.append(f"Created placeholder Persona: {new_persona_id}")
+                                except Exception as pe:
+                                    debug_log.append(f"Failed to create persona: {pe}")
                         
                         persona_id = st.session_state.selected_persona_id
                         if persona_id:
-                            # JTBD (from persona + product)
+                            # JTBD (from persona + product) - CREATE IF MISSING
                             if not st.session_state.selected_jtbd_id:
                                 jtbds = service.get_jtbd_for_persona_product(UUID(persona_id), UUID(product_id))
                                 if jtbds:
                                     st.session_state.selected_jtbd_id = str(jtbds[0].id)
                                     debug_log.append(f"Auto-selected JTBD: {jtbds[0].id}")
                                 else:
-                                    debug_log.append(f"No JTBDs found for persona {persona_id}")
+                                    # CREATE placeholder JTBD
+                                    debug_log.append(f"No JTBDs found - creating placeholder...")
+                                    try:
+                                        new_jtbd = service.create_jtbd_framed(
+                                            persona_id=UUID(persona_id),
+                                            product_id=UUID(product_id),
+                                            name="Quick Capture JTBD",
+                                            description="Auto-generated placeholder from Ad Analysis bridge.",
+                                            progress_statement="When I see a winning ad, I want to capture the insight, so I can replicate success.",
+                                            source="bridge_auto"
+                                        )
+                                        st.session_state.selected_jtbd_id = str(new_jtbd.id)
+                                        debug_log.append(f"Created placeholder JTBD: {new_jtbd.id}")
+                                    except Exception as je:
+                                        debug_log.append(f"Failed to create JTBD: {je}")
                 
                 # Store debug log for display
                 st.session_state._bridge_debug_log = debug_log
