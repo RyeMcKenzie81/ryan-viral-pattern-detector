@@ -191,7 +191,194 @@ def build_phase12_prompt(
         "variation_index": variation_index
     }
 
+def build_production_prompt(
+    angle: Dict,
+    template: Dict,
+    persona_data: Optional[Dict],
+    jtbd_data: Optional[Dict],
+    variation_index: int,
+    canvas_size: str
+) -> Dict:
+    """
+    Build a PRODUCTION creative prompt in Nano Banana format (Phase 3).
+    
+    This format instructs the model to:
+    1. Render text (headline, primary text) DIRECTLY on the image
+    2. Show the "after" state or solution (product context allowed)
+    3. Use sales-focused copy
+    """
+    layout_analysis = template.get("layout_analysis", {}) or {}
+    template_type = layout_analysis.get("template_type", "production_creative")
+    template_colors = layout_analysis.get("color_palette", layout_analysis.get("colors", {}))
+    
+    # Get copy from angle's copy_set
+    copy_set = angle.get("copy_set", {}) or {}
+    headlines = copy_set.get("headline_variants", []) or []
+    primary_texts = copy_set.get("primary_text_variants", []) or []
+    
+    # Cycle through copy variants
+    headline = ""
+    primary_text = ""
+    if headlines:
+        headline = headlines[variation_index % len(headlines)].get("text", "")
+    if primary_texts:
+        primary_text = primary_texts[variation_index % len(primary_texts)].get("text", "")
+        
+    # Build situation context
+    persona_snapshot = "person"
+    if persona_data:
+        persona_snapshot = persona_data.get("snapshot") or persona_data.get("name") or "person"
+    
+    situation = f"A {persona_snapshot} experiencing the solution/benefit"
+    if jtbd_data:
+        progress = jtbd_data.get("progress_statement") or jtbd_data.get("name", "")
+        if progress:
+            situation += f" related to: {progress}"
 
+    # Build structured JSON prompt for Production
+    json_prompt = {
+        "task": {
+            "action": "create_production_creative",
+            "variation_index": variation_index,
+            "template_type": template_type
+        },
+
+        "content": {
+            "headline": {
+                "text": headline,
+                "placement": "prominent_overlay",
+                "purpose": "hook_attention",
+                "render_requirement": "MUST render this text exactly, pixel-perfect legible"
+            } if headline else None,
+            "primary_text": {
+                "text": primary_text,
+                "placement": "supporting_text",
+                "purpose": "convey_benefit",
+                "render_requirement": "Render if space allows, otherwise prioritize image"
+            } if primary_text else None,
+            "situation": situation,
+            "belief_being_tested": angle.get("belief_statement")
+        },
+
+        "style": {
+            "canvas_size": canvas_size,
+            "format_type": template_type,
+            "colors": {
+                "mode": "brand_aligned",
+                "palette": template_colors if isinstance(template_colors, list) else [],
+                "instruction": "Use template colors for text and graphical elements"
+            } if template_colors else None,
+            "reference": "Use attached template as LAYOUT guide - place text where template has text"
+        },
+
+        "rules": {
+            "text": {
+                "render_exactly": [headline, primary_text],
+                "requirement": "Text MUST be pixel-perfect legible and readable",
+                "contrast": "ensure_high_contrast_with_background"
+            },
+            "product": {
+                "show_product": True,
+                "requirement": "Product placement allowed if it fits the scene naturally"
+            },
+            "lighting": {
+                "match_scene": True,
+                "requirement": "Professional, high-quality ad lighting"
+            }
+        },
+
+        "instructions": {
+            "CRITICAL": [
+                f"RENDER TEXT EXACTLY: '{headline}'",
+                "Text must be legible overlay on image",
+                "High quality production creative style"
+            ],
+            "DO": [
+                "Show the benefit/solution state",
+                f"Match persona: {persona_snapshot}",
+                "Place text in clear areas (like header/footer or negative space)"
+            ],
+            "DO_NOT": [
+                 "Make text small or unreadable",
+                 "Clutter the image",
+                 "Distort product or faces"
+            ]
+        }
+    }
+    
+    # Remove None values
+    def remove_none(d):
+        if isinstance(d, dict):
+            return {k: remove_none(v) for k, v in d.items() if v is not None}
+        elif isinstance(d, list):
+            return [remove_none(i) for i in d if i is not None]
+        return d
+
+    json_prompt = remove_none(json_prompt)
+
+    return {
+        "json_prompt": json_prompt,
+        "full_prompt": json.dumps(json_prompt, indent=2),
+        "template_storage_path": template.get("storage_path"),
+        "template_name": template.get("name"),
+        "template_id": template.get("id"),
+        "angle_id": angle.get("id"),
+        "angle_name": angle.get("name"),
+        "belief_statement": angle.get("belief_statement"),
+        "hook_text": headline,
+        "meta_headline": "Shop Now" if headline else "",  # Generic CTA for meta
+        "meta_primary_text": primary_text,
+        "variation_index": variation_index
+    }
+
+
+def build_phase12_prompt(
+    angle: Dict,
+    template: Dict,
+    persona_data: Optional[Dict],
+    jtbd_data: Optional[Dict],
+    variation_index: int,
+    canvas_size: str
+) -> Dict:
+    """
+    Build a single Phase 1-2 belief testing prompt (Observation/Recognition).
+    """
+    return build_nano_banana_prompt(
+        angle, template, persona_data, jtbd_data, variation_index, canvas_size
+    )
+
+
+def build_nano_banana_prompts_batch(
+    angles: List[Dict],
+    templates: List[Dict],
+    persona_data: Optional[Dict],
+    jtbd_data: Optional[Dict],
+    variations: int,
+    canvas_size: str,
+    execution_phase: str = "phase_1_2"
+) -> List[Dict]:
+    """
+    Build a batch of prompts for all angle x template combinations.
+    """
+    prompts = []
+    
+    # Determine which builder to use
+    is_production = execution_phase == "phase_3_production"
+    
+    for angle in angles:
+        for template in templates:
+            for i in range(variations):
+                if is_production:
+                    prompt = build_production_prompt(
+                        angle, template, persona_data, jtbd_data, i, canvas_size
+                    )
+                else:
+                    prompt = build_nano_banana_prompt(
+                        angle, template, persona_data, jtbd_data, i, canvas_size
+                    )
+                prompts.append(prompt)
+                
+    return prompts
 async def review_phase12_ad(
     ctx: GraphRunContext,
     storage_path: str,
@@ -351,12 +538,7 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
 @dataclass
 class BuildPromptsNode(BaseNode[BeliefPlanExecutionState]):
     """
-    Step 2: Build prompts for all angle × template × variation combos.
-
-    Creates prompts that:
-    - Use template as style reference (not final image)
-    - Include only anchor text on image
-    - Store copy scaffold text for Meta ad fields
+    Step 2: Build prompts for all angle x template combinations.
     """
 
     async def run(
@@ -367,19 +549,15 @@ class BuildPromptsNode(BaseNode[BeliefPlanExecutionState]):
         ctx.state.current_step = "building_prompts"
 
         try:
-            prompts = []
-            for angle in ctx.state.angles:
-                for template in ctx.state.templates:
-                    for v in range(ctx.state.variations_per_angle):
-                        prompt = build_phase12_prompt(
-                            angle=angle,
-                            template=template,
-                            persona_data=ctx.state.persona_data,
-                            jtbd_data=ctx.state.jtbd_data,
-                            variation_index=v,
-                            canvas_size=ctx.state.canvas_size
-                        )
-                        prompts.append(prompt)
+            prompts = build_nano_banana_prompts_batch(
+                angles=ctx.state.angles,
+                templates=ctx.state.templates,
+                persona_data=ctx.state.persona_data,
+                jtbd_data=ctx.state.jtbd_data,
+                variations=ctx.state.variations_per_angle,
+                canvas_size=ctx.state.canvas_size,
+                execution_phase=ctx.state.execution_phase
+            )
 
             ctx.state.prompts = prompts
             ctx.state.total_ads_planned = len(prompts)
@@ -706,6 +884,29 @@ belief_plan_execution_graph = Graph(
     name="belief_plan_execution"
 )
 
+@dataclass
+class BeliefPlanExecutionState:
+    belief_plan_id: UUID
+    phase_id: str  # "plan_execution"
+    variations_per_angle: int
+    total_ads_planned: int
+    canvas_size: str
+    execution_phase: str  # "phase_1_2" or "phase_3_production"
+    
+    # State tracking
+    current_step: str = "init"
+    prompts: List[Dict] = field(default_factory=list)
+    generated_ads: List[Dict] = field(default_factory=list)
+    ads_generated: int = 0
+    ads_reviewed: int = 0
+    approved_count: int = 0
+    rejected_count: int = 0
+    error: Optional[str] = None
+    
+    # Run context
+    pipeline_run_id: Optional[str] = None
+    ad_run_id: Optional[UUID] = None
+
 
 # ============================================================================
 # CONVENIENCE FUNCTION
@@ -714,8 +915,9 @@ belief_plan_execution_graph = Graph(
 async def run_belief_plan_execution(
     belief_plan_id: UUID,
     variations_per_angle: int = 3,
-    canvas_size: str = "1080x1080px"
-) -> dict:
+    canvas_size: str = "1080x1080px",
+    execution_phase: str = "phase_1_2"
+) -> Dict:
     """
     Run the belief plan execution pipeline.
 
@@ -726,6 +928,7 @@ async def run_belief_plan_execution(
         belief_plan_id: UUID of the belief plan to execute
         variations_per_angle: How many variations per angle×template combo
         canvas_size: Output image dimensions
+        execution_phase: "phase_1_2" (belief testing) or "phase_3_production" (creative)
 
     Returns:
         Pipeline result with status, counts, and ad_run_id
@@ -733,7 +936,8 @@ async def run_belief_plan_execution(
     Example:
         >>> result = await run_belief_plan_execution(
         ...     belief_plan_id=UUID("..."),
-        ...     variations_per_angle=3
+        ...     variations_per_angle=3,
+        ...     execution_phase="phase_3_production"
         ... )
         >>> print(result["status"])  # "complete"
         >>> print(result["approved"])  # 45
@@ -741,9 +945,12 @@ async def run_belief_plan_execution(
     from ..agent.dependencies import AgentDependencies
     from ..core.database import get_supabase_client
     from datetime import datetime
+    from typing import List, Dict, Optional
+    from dataclasses import dataclass, field
+    from uuid import UUID
 
-    print(f"[PIPELINE] Starting belief plan execution for plan {belief_plan_id}", flush=True)
-    logger.info(f"Starting belief plan execution for plan {belief_plan_id}")
+    print(f"[PIPELINE] Starting belief plan execution for plan {belief_plan_id} (Phase: {execution_phase})", flush=True)
+    logger.info(f"Starting belief plan execution for plan {belief_plan_id} (Phase: {execution_phase})")
 
     # Get database client for tracking
     db = get_supabase_client()
@@ -756,12 +963,10 @@ async def run_belief_plan_execution(
             "pipeline_name": "belief_plan_execution",
             "belief_plan_id": str(belief_plan_id),
             "status": "running",
-            "current_node": "LoadPlanNode",
             "started_at": datetime.utcnow().isoformat(),
             "state_snapshot": {
-                "current_step": "starting",
-                "variations_per_angle": variations_per_angle,
-                "canvas_size": canvas_size
+                "current_step": "initializing",
+                "phase": execution_phase
             }
         }
         insert_result = db.table("pipeline_runs").insert(run_record).execute()

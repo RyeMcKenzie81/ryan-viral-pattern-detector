@@ -169,27 +169,24 @@ def get_pipeline_runs(plan_id: str):
 # EXECUTION
 # ============================================
 
-async def execute_plan(plan_id: str, variations: int, canvas_size: str):
-    """Execute the belief plan pipeline."""
+def run_execution(plan_id: str, variations: int, canvas_size: str, execution_phase: str = "phase_1_2"):
+    """
+    Execute the plan using the Belief Plan pipeline.
+    
+    Args:
+        plan_id: ID of belief plan
+        variations: Number of variations per angle-template
+        canvas_size: Format for output images (e.g. "1080x1080px")
+        execution_phase: "phase_1_2" (belief testing) or "phase_3_production" (creative)
+    """
     from viraltracker.pipelines.belief_plan_execution import run_belief_plan_execution
-
-    result = await run_belief_plan_execution(
-        belief_plan_id=UUID(plan_id),
+    
+    return asyncio.run(run_belief_plan_execution(
+        belief_plan_id=UUID(plan_id), 
         variations_per_angle=variations,
-        canvas_size=canvas_size
-    )
-    return result
-
-
-def run_execution(plan_id: str, variations: int, canvas_size: str):
-    """Wrapper to run async execution."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        result = loop.run_until_complete(execute_plan(plan_id, variations, canvas_size))
-        return result
-    finally:
-        loop.close()
+        canvas_size=canvas_size,
+        execution_phase=execution_phase
+    ))
 
 
 def get_latest_run(plan_id: str):
@@ -368,6 +365,12 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
         )
 
     with col3:
+        execution_phase = st.radio(
+            "Execution Phase",
+            options=["phase_1_2", "phase_3_production"],
+            format_func=lambda x: "Phase 1-2: Belief Testing" if x == "phase_1_2" else "Phase 3: Production Creatives",
+            help="Phase 1-2: No text on image (observation). Phase 3: Text rendered on image (production)."
+        )
         total_ads = num_angles * num_templates * variations
         st.metric("Total Ads to Generate", total_ads)
 
@@ -380,9 +383,10 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
             st.session_state.executor_last_result = None
             with st.spinner(f"Generating {total_ads} ads... This may take a while."):
                 try:
-                    result = run_execution(plan_id, variations, canvas_size)
+                    result = run_execution(plan_id, variations, canvas_size, execution_phase)
                     st.session_state.executor_running = False
                     st.session_state.executor_last_result = result
+
 
                     if result.get("status") == "complete":
                         st.success(f"Execution complete! Generated {result.get('total_generated', 0)} ads.")
