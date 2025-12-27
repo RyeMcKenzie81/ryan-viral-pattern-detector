@@ -239,11 +239,11 @@ def render_live_progress(plan_id: str) -> bool:
     with col3:
         st.metric("Progress", f"{int(progress * 100)}%")
     
-    st.info("⏳ Auto-refreshing every 5 seconds... Do not navigate away.")
+    st.info("⏳ Execution is running in the background. Click 'Refresh Status' to update.")
     
-    # Auto-refresh after 5 seconds
-    time.sleep(5)
-    st.rerun()
+    # Manual refresh button instead of blocking sleep
+    if st.button("🔄 Refresh Status", key="refresh_progress"):
+        st.rerun()
     
     return True  # Active run exists
 
