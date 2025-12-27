@@ -94,7 +94,7 @@ class Config:
     # BUT standard google-genai client fails with it.
     CREATIVE_MODEL = "google-gla:models/gemini-3-pro-preview"
     # Using widely available model for vision to fix 404 error
-    VISION_MODEL = "models/gemini-2.0-flash-exp" 
+    VISION_MODEL = "models/gemini-1.5-pro" 
     VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11" 
     BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 
