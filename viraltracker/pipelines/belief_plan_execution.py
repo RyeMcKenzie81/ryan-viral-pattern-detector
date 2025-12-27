@@ -197,7 +197,9 @@ def build_production_prompt(
     persona_data: Optional[Dict],
     jtbd_data: Optional[Dict],
     variation_index: int,
-    canvas_size: str
+    canvas_size: str,
+    product_images: List[Dict] = [],
+    product_variants: List[Dict] = []
 ) -> Dict:
     """
     Build a PRODUCTION creative prompt in Nano Banana format (Phase 3).
@@ -206,6 +208,7 @@ def build_production_prompt(
     1. Render text (headline, primary text) DIRECTLY on the image
     2. Show the "after" state or solution (product context allowed)
     3. Use sales-focused copy
+    4. PRESERVE product packaging exactly using reference images
     """
     layout_analysis = template.get("layout_analysis", {}) or {}
     template_type = layout_analysis.get("template_type", "production_creative")
@@ -224,6 +227,29 @@ def build_production_prompt(
     if primary_texts:
         primary_text = primary_texts[variation_index % len(primary_texts)].get("text", "")
         
+    # Select Product Image
+    product_image_path = None
+    if product_images:
+        # Try finding main image
+        main_img = next((img for img in product_images if img.get('is_main')), None)
+        if not main_img:
+            main_img = product_images[0]
+        product_image_path = main_img.get('storage_path')
+        
+    # Select Product Size (for scale context)
+    product_size = None
+    if product_variants:
+        # Try finding default variant
+        def_var = next((v for v in product_variants if v.get('is_default')), None)
+        if not def_var and product_variants:
+             def_var = product_variants[0]
+        
+        if def_var:
+             size_val = def_var.get('size_value')
+             size_unit = def_var.get('size_unit')
+             if size_val and size_unit:
+                 product_size = f"{size_val} {size_unit}"
+
     # Build situation context
     persona_snapshot = "person"
     if persona_data:
@@ -234,6 +260,9 @@ def build_production_prompt(
         progress = jtbd_data.get("progress_statement") or jtbd_data.get("name", "")
         if progress:
             situation += f" related to: {progress}"
+            
+    if product_size:
+        situation += f" (Product Scale: {product_size} package)"
 
     # Build structured JSON prompt for Production
     json_prompt = {
@@ -277,6 +306,11 @@ def build_production_prompt(
                 "requirement": "Text MUST be pixel-perfect legible and readable",
                 "contrast": "ensure_high_contrast_with_background"
             },
+            "product_image": {
+                  "preserve_exactly": True,
+                  "no_modifications": True,
+                  "instruction": "Render packaging EXACTLY as shown in reference. Do not change text, logo, or colors."
+             } if product_image_path else {},
             "product": {
                 "show_product": True,
                 "requirement": "Product placement allowed if it fits the scene naturally"
@@ -291,17 +325,20 @@ def build_production_prompt(
             "CRITICAL": [
                 f"RENDER TEXT EXACTLY: '{headline}'",
                 "Text must be legible overlay on image",
-                "High quality production creative style"
+                "High quality production creative style",
+                "PRESERVE PRODUCT PACKAGING EXACTLY" if product_image_path else "Show product clearly"
             ],
             "DO": [
                 "Show the benefit/solution state",
                 f"Match persona: {persona_snapshot}",
-                "Place text in clear areas (like header/footer or negative space)"
+                "Place text in clear areas (like header/footer or negative space)",
+                f"Product size is {product_size}" if product_size else "Show product at realistic scale"
             ],
             "DO_NOT": [
                  "Make text small or unreadable",
                  "Clutter the image",
-                 "Distort product or faces"
+                 "Distort product or faces",
+                 "Alter the product packaging logos or text"
             ]
         }
     }
@@ -315,8 +352,9 @@ def build_production_prompt(
         return d
 
     json_prompt = remove_none(json_prompt)
-
-    return {
+    
+    # Prepare result dict
+    result = {
         "json_prompt": json_prompt,
         "full_prompt": json.dumps(json_prompt, indent=2),
         "template_storage_path": template.get("storage_path"),
@@ -326,10 +364,13 @@ def build_production_prompt(
         "angle_name": angle.get("name"),
         "belief_statement": angle.get("belief_statement"),
         "hook_text": headline,
-        "meta_headline": "Shop Now" if headline else "",  # Generic CTA for meta
+        "meta_headline": "Shop Now" if headline else "", 
         "meta_primary_text": primary_text,
-        "variation_index": variation_index
+        "variation_index": variation_index,
+        "product_image_paths": [product_image_path] if product_image_path else []
     }
+
+    return result
 
 
 def build_phase12_prompt(
@@ -355,7 +396,9 @@ def build_nano_banana_prompts_batch(
     jtbd_data: Optional[Dict],
     variations: int,
     canvas_size: str,
-    execution_phase: str = "phase_1_2"
+    execution_phase: str = "phase_1_2",
+    product_images: List[Dict] = [],
+    product_variants: List[Dict] = []
 ) -> List[Dict]:
     """
     Build a batch of prompts for all angle x template combinations.
@@ -370,7 +413,9 @@ def build_nano_banana_prompts_batch(
             for i in range(variations):
                 if is_production:
                     prompt = build_production_prompt(
-                        angle, template, persona_data, jtbd_data, i, canvas_size
+                        angle, template, persona_data, jtbd_data, i, canvas_size,
+                        product_images=product_images,
+                        product_variants=product_variants
                     )
                 else:
                     prompt = build_nano_banana_prompt(
@@ -485,9 +530,10 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
                 ctx.state.current_step = "failed"
                 return End({"status": "error", "error": "Plan not found"})
 
-            # Validate Phase 1-2
+            # Validate Phase 1-2 (unless we are in Execution Phase 3)
             phase_id = plan_data.get("plan", {}).get("phase_id", 1)
-            if phase_id not in [1, 2]:
+            # Relax validation: If we are in "phase_3_production" execution mode, we allow using a Phase 1/2 plan base.
+            if ctx.state.execution_phase != "phase_3_production" and phase_id not in [1, 2]:
                 ctx.state.error = f"This pipeline is for Phase 1-2 only. Plan is Phase {phase_id}."
                 ctx.state.current_step = "failed"
                 return End({"status": "error", "error": ctx.state.error})
@@ -523,6 +569,24 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
                     )
                 except Exception as e:
                     logger.warning(f"Could not load persona: {e}")
+            
+            # Load Product Images & Variants (For Phase 3 Production)
+            product_id = plan_data.get("plan", {}).get("product_id")
+            if product_id:
+                try:
+                    # Fetch Product Images
+                    pi_res = ctx.deps.ad_creation.supabase.table("product_images").select("*").eq("product_id", product_id).execute()
+                    ctx.state.product_images = pi_res.data if pi_res.data else []
+                    
+                    # Fetch Product Variants (for size/volume info)
+                    pv_res = ctx.deps.ad_creation.supabase.table("product_variants").select("*").eq("product_id", product_id).execute()
+                    ctx.state.product_variants = pv_res.data if pv_res.data else []
+                    
+                    logger.info(f"Loaded {len(ctx.state.product_images)} product images and {len(ctx.state.product_variants)} variants for product {product_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to load product assets: {e}")
+                    ctx.state.product_images = []
+                    ctx.state.product_variants = []
 
             ctx.state.current_step = "plan_loaded"
             logger.info(f"Loaded plan with {len(angles)} angles, {len(templates)} templates")
@@ -556,7 +620,9 @@ class BuildPromptsNode(BaseNode[BeliefPlanExecutionState]):
                 jtbd_data=ctx.state.jtbd_data,
                 variations=ctx.state.variations_per_angle,
                 canvas_size=ctx.state.canvas_size,
-                execution_phase=ctx.state.execution_phase
+                execution_phase=ctx.state.execution_phase,
+                product_images=ctx.state.product_images,
+                product_variants=ctx.state.product_variants
             )
 
             ctx.state.prompts = prompts
@@ -634,12 +700,30 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
                         raise ValueError("Template has no storage_path")
 
                     template_image = await ctx.deps.ad_creation.get_image_as_base64(template_path)
+                    
+                    reference_images = [template_image]
+                    
+                    # Handle Product Images (if any)
+                    product_image_paths = prompt.get("product_image_paths", [])
+                    if product_image_paths:
+                        for path in product_image_paths:
+                            try:
+                                prod_img = await ctx.deps.ad_creation.get_image_as_base64(path)
+                                reference_images.append(prod_img)
+                                logger.info(f"    Added product reference: {path}")
+                            except Exception as e:
+                                logger.warning(f"    Failed to load product image {path}: {e}")
 
-                    # Generate image with ONLY template as reference (no product)
+                    # Determine temperature
+                    # Lower temperature (0.3) if using product images for better preservation
+                    temperature = 0.3 if product_image_paths else 0.4
+
+                    # Generate image with references
                     result = await ctx.deps.gemini.generate_image(
                         prompt=prompt["full_prompt"],
-                        reference_images=[template_image],
-                        return_metadata=True
+                        reference_images=reference_images,
+                        return_metadata=True,
+                        temperature=temperature
                     )
 
                     # Upload to storage
@@ -884,28 +968,7 @@ belief_plan_execution_graph = Graph(
     name="belief_plan_execution"
 )
 
-@dataclass
-class BeliefPlanExecutionState:
-    belief_plan_id: UUID
-    phase_id: str  # "plan_execution"
-    variations_per_angle: int
-    total_ads_planned: int
-    canvas_size: str
-    execution_phase: str  # "phase_1_2" or "phase_3_production"
-    
-    # State tracking
-    current_step: str = "init"
-    prompts: List[Dict] = field(default_factory=list)
-    generated_ads: List[Dict] = field(default_factory=list)
-    ads_generated: int = 0
-    ads_reviewed: int = 0
-    approved_count: int = 0
-    rejected_count: int = 0
-    error: Optional[str] = None
-    
-    # Run context
-    pipeline_run_id: Optional[str] = None
-    ad_run_id: Optional[UUID] = None
+
 
 
 # ============================================================================
@@ -990,12 +1053,12 @@ async def run_belief_plan_execution(
         # Create initial state with pipeline_run_id for real-time progress updates
         state = BeliefPlanExecutionState(
             belief_plan_id=belief_plan_id,
-            phase_id="plan_execution",
+            phase_id=1,  # Default to 1 (int) to match state definition
             variations_per_angle=variations_per_angle,
             total_ads_planned=0,
             canvas_size=canvas_size,
-            execution_phase=execution_phase,
-            pipeline_run_id=run_id
+            execution_phase=execution_phase,  # Pass the phase ("phase_1_2" or "phase_3_production")
+            pipeline_run_id=str(run_id) if run_id else None
         )
 
         # Run the graph

@@ -187,10 +187,16 @@ class BeliefPlanExecutionState:
     # Populated by LoadPlanNode
     plan_data: Optional[Dict] = None
     phase_id: int = 1
+    execution_phase: str = "phase_1_2"  # "phase_1_2" or "phase_3_production"
+    
     angles: List[Dict] = field(default_factory=list)
     templates: List[Dict] = field(default_factory=list)
     persona_data: Optional[Dict] = None
     jtbd_data: Optional[Dict] = None
+    
+    # Populated by LoadPlanNode for Phase 3
+    product_images: List[Dict] = field(default_factory=list)
+    product_variants: List[Dict] = field(default_factory=list)
 
     # Populated by BuildPromptsNode
     prompts: List[Dict] = field(default_factory=list)
