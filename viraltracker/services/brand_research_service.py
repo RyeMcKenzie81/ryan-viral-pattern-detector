@@ -395,8 +395,29 @@ class BrandResearchService:
         mime_type: str = "image/jpeg",
         skip_save: bool = False
     ) -> Dict:
+        """Async wrapper for analyze_image_sync."""
+        return self.analyze_image_sync(
+            asset_id=asset_id,
+            image_base64=image_base64,
+            image_bytes=image_bytes,
+            brand_id=brand_id,
+            facebook_ad_id=facebook_ad_id,
+            mime_type=mime_type,
+            skip_save=skip_save
+        )
+
+    def analyze_image_sync(
+        self,
+        asset_id: Optional[UUID] = None,
+        image_base64: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        brand_id: Optional[UUID] = None,
+        facebook_ad_id: Optional[UUID] = None,
+        mime_type: str = "image/jpeg",
+        skip_save: bool = False
+    ) -> Dict:
         """
-        Analyze image with Gemini Vision.
+        Analyze ad image with Gemini Vision (Synchronous).
         
         Args:
             asset_id: Optional UUID of the scraped_ad_assets record
@@ -415,7 +436,6 @@ class BrandResearchService:
         from io import BytesIO
 
         logger.info(f"Analyzing image asset: {asset_id or 'on-fly'} (using Gemini)")
-        logger.info(f"DEBUG: analyze_image called. skip_save={skip_save}, has_bytes={bool(image_bytes)}")
 
         # Get API key
         api_key = os.getenv("GEMINI_API_KEY")
@@ -462,7 +482,7 @@ class BrandResearchService:
                     analysis_text = analysis_text[first_newline + 1:last_fence].strip()
 
             analysis_dict = json.loads(analysis_text)
-
+            
             # Save to database (skip for competitor analysis - they save separately)
             # Also skip if no asset_id provided (on-the-fly analysis)
             if not skip_save and asset_id:
@@ -475,7 +495,7 @@ class BrandResearchService:
                     tokens_used=response.usage_metadata.total_token_count if response.usage_metadata else 0,
                     model_used=model_name
                 )
-
+            
             logger.info(f"Image analysis complete: format={analysis_dict.get('format_type')}")
             return analysis_dict
 
@@ -824,6 +844,77 @@ class BrandResearchService:
             logger.error(f"Failed to parse copy analysis response: {e}")
             logger.error(f"Raw response was: {response_text[:500]}...")
             raise ValueError(f"Invalid JSON response: {e}")
+        except Exception as e:
+            logger.error(f"Copy analysis failed: {e}")
+            raise
+
+    def analyze_copy_sync(
+        self,
+        ad_copy: str,
+        headline: Optional[str] = None,
+        ad_id: Optional[UUID] = None,
+        brand_id: Optional[UUID] = None
+    ) -> Dict:
+        """
+        Analyze ad copy text with Claude (Synchronous).
+        
+        Args:
+            ad_copy: The ad body text
+            headline: Optional headline text
+            ad_id: Optional UUID of the facebook_ads record (if linked)
+            brand_id: Optional brand to link analysis to
+            
+        Returns:
+            Analysis result dict
+        """
+        logger.info(f"Analyzing copy for ad (sync): {ad_id}")
+
+        # Combine headline and body
+        full_copy = ""
+        if headline:
+            full_copy = f"Headline: {headline}\n\n"
+        full_copy += ad_copy
+
+        if not full_copy.strip():
+            logger.warning(f"Empty copy for ad: {ad_id}")
+            return {"error": "Empty ad copy"}
+
+        try:
+            # Pydantic AI Agent
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are an expert copywriter. Return ONLY valid JSON."
+            )
+
+            prompt = COPY_ANALYSIS_PROMPT.format(ad_copy=full_copy)
+
+            # Synchronous run
+            result = agent.run_sync(prompt)
+            usage = result.usage()
+            tokens_used = usage.total_tokens if usage else 0
+            
+            # Parse response
+            response_text = result.output.strip()
+            if response_text.startswith('```'):
+                first_newline = response_text.find('\n')
+                last_fence = response_text.rfind('```')
+                if first_newline != -1 and last_fence > first_newline:
+                    response_text = response_text[first_newline + 1:last_fence].strip()
+
+            analysis_dict = json.loads(response_text)
+
+            # Save to database
+            self._save_copy_analysis(
+                ad_id=ad_id,
+                brand_id=brand_id,
+                raw_response=analysis_dict,
+                tokens_used=tokens_used,
+                model_used=Config.get_model("creative")
+            )
+
+            logger.info(f"Copy analysis complete for ad: {ad_id}")
+            return analysis_dict
+
         except Exception as e:
             logger.error(f"Copy analysis failed: {e}")
             raise
