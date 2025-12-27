@@ -82,7 +82,42 @@ class ResultCache(BaseModel):
 
 
 class AgentDependencies(BaseModel):
-    # ... (existing fields)
+    """
+    Typed dependencies for Pydantic AI agent.
+
+    Attributes:
+        twitter: TwitterService for Twitter operations
+        gemini: GeminiService for AI analysis
+        stats: StatsService for metrics
+        scraping: ScrapingService for generic scraping
+        comment: CommentService for replying
+        tiktok: TikTokService for TikTok operations
+        youtube: YouTubeService for YouTube video scraping operations
+        facebook: FacebookService for Facebook Ads scraping operations
+        project_name: Name of the project being analyzed (e.g., 'yakety-pack-instagram')
+        result_cache: Shared result cache for inter-agent communication
+    """
+    model_config = {"arbitrary_types_allowed": True}
+
+    twitter: TwitterService
+    gemini: GeminiService
+    stats: StatsService
+    scraping: ScrapingService
+    comment: CommentService
+    tiktok: TikTokService
+    youtube: YouTubeService
+    facebook: FacebookService
+    ad_creation: AdCreationService
+    email: EmailService
+    slack: SlackService
+    elevenlabs: ElevenLabsService
+    ffmpeg: FFmpegService
+    audio_production: AudioProductionService
+    ad_scraping: AdScrapingService
+    brand_research: BrandResearchService
+    template_queue: TemplateQueueService
+    persona: PersonaService
+    product_url: ProductURLService
     content_pipeline: ContentPipelineService
     reddit_sentiment: RedditSentimentService
     sora: SoraService
@@ -98,16 +133,136 @@ class AgentDependencies(BaseModel):
         gemini_model: str = "models/gemini-3-pro-image-preview",
         rate_limit_rpm: int = 9,
     ) -> "AgentDependencies":
-        # ... (logging)
+        """
+        Factory method to create AgentDependencies with initialized services.
+        """
+        logger.info(f"Initializing agent dependencies for project: {project_name}")
 
-        # ... (Service initializations)
+        # Initialize TwitterService (uses environment variables for credentials)
+        twitter = TwitterService()
+        logger.info("TwitterService initialized")
 
-        # Initialize SoraService for OpenAI video generation
+        # Initialize GeminiService with optional custom API key
+        gemini = GeminiService(api_key=gemini_api_key, model=gemini_model)
+        gemini.set_rate_limit(rate_limit_rpm)
+        logger.info(f"GeminiService initialized (model: {gemini_model}, rate limit: {rate_limit_rpm} req/min)")
+
+        # Initialize StatsService (no initialization needed, static methods)
+        stats = StatsService()
+        logger.info("StatsService initialized")
+
+        # Initialize ScrapingService for Twitter scraping
+        scraping = ScrapingService()
+        logger.info("ScrapingService initialized")
+
+        # Initialize CommentService for comment opportunities
+        comment = CommentService()
+        logger.info("CommentService initialized")
+
+        # Initialize TikTokService for TikTok operations
+        tiktok = TikTokService()
+        logger.info("TikTokService initialized")
+
+        # Initialize YouTubeService for YouTube operations
+        youtube = YouTubeService()
+        logger.info("YouTubeService initialized")
+
+        # Initialize FacebookService for Facebook Ads operations
+        facebook = FacebookService()
+        logger.info("FacebookService initialized")
+
+        # Initialize AdCreationService for ad creative generation
+        ad_creation = AdCreationService()
+        logger.info("AdCreationService initialized")
+
+        # Initialize EmailService for email notifications
+        email = EmailService()
+        logger.info(f"EmailService initialized (enabled={email.enabled})")
+
+        # Initialize SlackService for Slack notifications
+        slack = SlackService()
+        logger.info(f"SlackService initialized (enabled={slack.enabled})")
+
+        # Initialize ElevenLabsService for audio generation
+        elevenlabs = ElevenLabsService()
+        logger.info(f"ElevenLabsService initialized (enabled={elevenlabs.enabled})")
+
+        # Initialize FFmpegService for audio processing
+        ffmpeg = FFmpegService()
+        logger.info(f"FFmpegService initialized (available={ffmpeg.available})")
+
+        # Initialize AudioProductionService for production workflow
+        audio_production = AudioProductionService()
+        logger.info("AudioProductionService initialized")
+
+        # Initialize AdScrapingService for downloading FB ad assets
+        ad_scraping = AdScrapingService()
+        logger.info("AdScrapingService initialized")
+
+        # Initialize BrandResearchService for AI analysis of brand ads
+        brand_research = BrandResearchService()
+        logger.info("BrandResearchService initialized")
+
+        # Initialize TemplateQueueService for template approval workflow
+        template_queue = TemplateQueueService()
+        logger.info("TemplateQueueService initialized")
+
+        # Initialize PersonaService for 4D persona management
+        persona = PersonaService()
+        logger.info("PersonaService initialized")
+
+        # Initialize ProductURLService for URL-to-product mapping
+        product_url = ProductURLService()
+        logger.info("ProductURLService initialized")
+
+        # Initialize DocService for knowledge base (optional - requires OPENAI_API_KEY)
+        docs = None
+        supabase = None
+        if os.getenv("OPENAI_API_KEY"):
+            try:
+                supabase = get_supabase_client()
+                docs = DocService(supabase=supabase)
+                logger.info("DocService initialized (knowledge base enabled)")
+            except Exception as e:
+                logger.warning(f"DocService initialization failed: {e}")
+        else:
+            logger.info("DocService skipped (OPENAI_API_KEY not set)")
+
+        # Initialize ContentPipelineService for content pipeline workflow
+        content_pipeline = ContentPipelineService(
+            supabase_client=supabase,
+            docs_service=docs
+        )
+        logger.info("ContentPipelineService initialized")
+
+        # Initialize RedditSentimentService for Reddit sentiment analysis
+        reddit_sentiment = RedditSentimentService()
+        logger.info("RedditSentimentService initialized")
+        
+        # Initialize SoraService
         sora = SoraService()
         logger.info("SoraService initialized")
 
         return cls(
-            # ... (other services)
+            twitter=twitter,
+            gemini=gemini,
+            stats=stats,
+            scraping=scraping,
+            comment=comment,
+            tiktok=tiktok,
+            youtube=youtube,
+            facebook=facebook,
+            ad_creation=ad_creation,
+            email=email,
+            slack=slack,
+            elevenlabs=elevenlabs,
+            ffmpeg=ffmpeg,
+            audio_production=audio_production,
+            ad_scraping=ad_scraping,
+            brand_research=brand_research,
+            template_queue=template_queue,
+            persona=persona,
+            product_url=product_url,
             content_pipeline=content_pipeline,
             reddit_sentiment=reddit_sentiment,
             sora=sora,
@@ -124,3 +279,7 @@ class AgentDependencies(BaseModel):
             f"TikTokService, YouTubeService, FacebookService, AdCreationService, EmailService, SlackService, "
             f"SoraService, DocService({docs_status})], result_cache={self.result_cache})"
         )
+
+    def __repr__(self) -> str:
+        """Detailed representation for debugging."""
+        return self.__str__()
