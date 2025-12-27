@@ -803,7 +803,6 @@ def render_step_6_angles():
                     explanation=st.session_state.new_angle_explanation
                 )
                 st.session_state.selected_angle_ids.append(str(new_angle.id))
-                st.session_state.selected_angle_ids.append(str(new_angle.id))
                 
                 # Clear form and injected data
                 st.session_state.new_angle_name = ""
