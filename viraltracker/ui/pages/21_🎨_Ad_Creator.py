@@ -70,6 +70,15 @@ if 'selected_persona_id' not in st.session_state:
     st.session_state.selected_persona_id = None
 if 'selected_variant_id' not in st.session_state:
     st.session_state.selected_variant_id = None
+# Belief First mode state
+if 'selected_offer_id' not in st.session_state:
+    st.session_state.selected_offer_id = None
+if 'selected_jtbd_id' not in st.session_state:
+    st.session_state.selected_jtbd_id = None
+if 'selected_angle_id' not in st.session_state:
+    st.session_state.selected_angle_id = None
+if 'selected_angle_data' not in st.session_state:
+    st.session_state.selected_angle_data = None
 if 'additional_instructions' not in st.session_state:
     st.session_state.additional_instructions = ""
 if 'selected_templates_for_generation' not in st.session_state:
@@ -314,7 +323,8 @@ async def run_workflow(
     brand_name: str = None,
     persona_id: str = None,
     variant_id: str = None,
-    additional_instructions: str = None
+    additional_instructions: str = None,
+    angle_data: dict = None
 ):
     """Run the ad creation workflow with optional export.
 
@@ -323,7 +333,7 @@ async def run_workflow(
         reference_ad_base64: Base64-encoded reference ad image
         filename: Original filename of the reference ad
         num_variations: Number of ad variations to generate (1-15)
-        content_source: "hooks" or "recreate_template"
+        content_source: "hooks", "recreate_template", or "belief_first"
         color_mode: "original", "complementary", or "brand"
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: "auto" or "manual"
@@ -336,6 +346,7 @@ async def run_workflow(
         persona_id: Optional persona UUID for targeted ad copy
         variant_id: Optional variant UUID for specific flavor/size
         additional_instructions: Optional run-specific instructions for ad generation
+        angle_data: Dict with angle info for belief_first mode {id, name, belief_statement, explanation}
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -367,7 +378,8 @@ async def run_workflow(
         selected_image_paths=selected_image_paths,
         persona_id=persona_id,
         variant_id=variant_id,
-        additional_instructions=additional_instructions
+        additional_instructions=additional_instructions,
+        angle_data=angle_data
     )
 
     # Handle exports if configured
@@ -563,24 +575,30 @@ else:
 
     st.subheader("1. Content Source")
 
-    # Reset to hooks if belief_plan was selected (now deprecated)
+    # Reset to hooks if old deprecated value was selected
     if st.session_state.content_source == "belief_plan":
         st.session_state.content_source = "hooks"
 
+    content_options = ["hooks", "recreate_template", "belief_first"]
+    current_index = content_options.index(st.session_state.content_source) if st.session_state.content_source in content_options else 0
+
     content_source = st.radio(
         "How should we create the ad variations?",
-        options=["hooks", "recreate_template"],
-        index=["hooks", "recreate_template"].index(st.session_state.content_source),
+        options=content_options,
+        index=current_index,
         format_func=lambda x: {
             "hooks": "🎣 Hooks - Use persuasive hooks from your database",
-            "recreate_template": "🔄 Recreate - Vary template by product benefits"
+            "recreate_template": "🔄 Recreate - Vary template by product benefits",
+            "belief_first": "🎯 Belief First - Use angles from Ad Planning"
         }.get(x, x),
         horizontal=True,
         help="Choose how to generate ad copy variations"
     )
     st.session_state.content_source = content_source
 
-    st.info("💡 **For Phase 1-2 belief plans**, use the [Plan Executor](/Plan_Executor) page instead.")
+    # Show info banner only for hooks/recreate modes
+    if content_source != "belief_first":
+        st.info("💡 **For structured belief testing**, select 'Belief First' above or use the [Plan Executor](/Plan_Executor) page.")
 
     st.divider()
 
@@ -618,6 +636,131 @@ else:
     selected_product = next((p for p in products if p['id'] == selected_product_id), None)
     if selected_product:
         st.caption(f"Target Audience: {selected_product.get('target_audience', 'Not specified')}")
+
+    # ============================================================================
+    # BELIEF FIRST: Cascading Selectors (Offer → Persona → JTBD → Angle)
+    # ============================================================================
+    if content_source == "belief_first" and selected_product_id:
+        st.divider()
+        st.subheader("2b. Belief Framework")
+        st.caption("Select the belief angle to use for ad generation")
+
+        from viraltracker.services.planning_service import PlanningService
+        from uuid import UUID
+        planning_service = PlanningService()
+
+        # A) Offer (Optional)
+        offers = planning_service.get_offers_for_product(UUID(selected_product_id))
+        offer_options = {"None (skip offer)": None}
+        if offers:
+            offer_options.update({o.name: str(o.id) for o in offers})
+
+        selected_offer_label = st.selectbox(
+            "Offer (Optional)",
+            options=list(offer_options.keys()),
+            help="Select a promotional offer if applicable",
+            key="belief_offer_selector"
+        )
+        st.session_state.selected_offer_id = offer_options[selected_offer_label]
+
+        # B) Persona (Required)
+        personas = planning_service.get_personas_for_product(UUID(selected_product_id))
+        if not personas:
+            st.warning("No personas found for this product. Create one in Brand Research first.")
+            st.session_state.selected_persona_id = None
+        else:
+            persona_options = {p['name']: p['id'] for p in personas}
+            # Find current selection or default to first
+            current_persona_label = None
+            if st.session_state.selected_persona_id:
+                for label, pid in persona_options.items():
+                    if pid == st.session_state.selected_persona_id:
+                        current_persona_label = label
+                        break
+
+            selected_persona_label = st.selectbox(
+                "Persona *",
+                options=list(persona_options.keys()),
+                index=list(persona_options.keys()).index(current_persona_label) if current_persona_label else 0,
+                help="Select the target persona",
+                key="belief_persona_selector"
+            )
+            st.session_state.selected_persona_id = persona_options[selected_persona_label]
+
+        # C) JTBD (Required) - filtered by persona + product
+        if st.session_state.selected_persona_id:
+            jtbds = planning_service.get_jtbd_for_persona_product(
+                UUID(st.session_state.selected_persona_id),
+                UUID(selected_product_id)
+            )
+            if not jtbds:
+                st.warning("No JTBDs found for this persona/product. Create one in Ad Planning first.")
+                st.session_state.selected_jtbd_id = None
+            else:
+                jtbd_options = {j.name: str(j.id) for j in jtbds}
+                # Find current selection or default to first
+                current_jtbd_label = None
+                if st.session_state.selected_jtbd_id:
+                    for label, jid in jtbd_options.items():
+                        if jid == st.session_state.selected_jtbd_id:
+                            current_jtbd_label = label
+                            break
+
+                selected_jtbd_label = st.selectbox(
+                    "Job To Be Done *",
+                    options=list(jtbd_options.keys()),
+                    index=list(jtbd_options.keys()).index(current_jtbd_label) if current_jtbd_label else 0,
+                    help="Select the job-to-be-done that frames the angles",
+                    key="belief_jtbd_selector"
+                )
+                st.session_state.selected_jtbd_id = jtbd_options[selected_jtbd_label]
+
+        # D) Angle (Required) - filtered by JTBD
+        if st.session_state.selected_jtbd_id:
+            angles = planning_service.get_angles_for_jtbd(UUID(st.session_state.selected_jtbd_id))
+            if not angles:
+                st.warning("No angles found for this JTBD. Create one in Ad Planning first.")
+                st.session_state.selected_angle_id = None
+                st.session_state.selected_angle_data = None
+            else:
+                angle_options = {}
+                for a in angles:
+                    belief_preview = a.belief_statement[:50] + "..." if len(a.belief_statement) > 50 else a.belief_statement
+                    label = f"{a.name}: {belief_preview}"
+                    angle_options[label] = str(a.id)
+
+                # Find current selection or default to first
+                current_angle_label = None
+                if st.session_state.selected_angle_id:
+                    for label, aid in angle_options.items():
+                        if aid == st.session_state.selected_angle_id:
+                            current_angle_label = label
+                            break
+
+                selected_angle_label = st.selectbox(
+                    "Angle *",
+                    options=list(angle_options.keys()),
+                    index=list(angle_options.keys()).index(current_angle_label) if current_angle_label else 0,
+                    help="Select the belief angle to test",
+                    key="belief_angle_selector"
+                )
+                st.session_state.selected_angle_id = angle_options[selected_angle_label]
+
+                # Store full angle data for passing to workflow
+                selected_angle = next((a for a in angles if str(a.id) == st.session_state.selected_angle_id), None)
+                if selected_angle:
+                    st.session_state.selected_angle_data = {
+                        "id": str(selected_angle.id),
+                        "name": selected_angle.name,
+                        "belief_statement": selected_angle.belief_statement,
+                        "explanation": selected_angle.explanation or "",
+                    }
+
+                    # Show selected angle details
+                    with st.expander("Angle Details", expanded=True):
+                        st.markdown(f"**Belief:** {selected_angle.belief_statement}")
+                        if selected_angle.explanation:
+                            st.markdown(f"**Why it works:** {selected_angle.explanation}")
 
     st.divider()
 
@@ -1274,6 +1417,8 @@ else:
                 has_webhook = bool(Config.SLACK_WEBHOOK_URL) or bool(export_slack_webhook)
                 if not has_webhook:
                     validation_error = "Please enter a Slack webhook URL or configure SLACK_WEBHOOK_URL"
+            elif content_source == "belief_first" and not st.session_state.selected_angle_data:
+                validation_error = "Please select an angle for Belief First mode (Persona → JTBD → Angle)"
 
             if validation_error:
                 st.error(validation_error)
@@ -1318,6 +1463,9 @@ else:
             variant_id = st.session_state.selected_variant_id
             add_instructions = st.session_state.additional_instructions
 
+            # Get angle_data for belief_first mode
+            angle_data = st.session_state.selected_angle_data if content_source == "belief_first" else None
+
             # Run the workflow
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -1336,7 +1484,8 @@ else:
                 brand_name=brd_name,
                 persona_id=persona_id,
                 variant_id=variant_id,
-                additional_instructions=add_instructions
+                additional_instructions=add_instructions,
+                angle_data=angle_data
             ))
 
             # Record template usage if a scraped template was used

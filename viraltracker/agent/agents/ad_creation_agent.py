@@ -2971,7 +2971,8 @@ async def complete_ad_workflow(
     selected_image_paths: Optional[List[str]] = None,
     persona_id: Optional[str] = None,
     variant_id: Optional[str] = None,
-    additional_instructions: Optional[str] = None
+    additional_instructions: Optional[str] = None,
+    angle_data: Optional[Dict] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2986,7 +2987,8 @@ async def complete_ad_workflow(
        - If content_source="hooks": Selects N diverse hooks from database
        - If content_source="recreate_template": Extracts template angle and
          generates variations from product benefits/USPs
-       - Both modes use persona data to inform copy when available
+       - If content_source="belief_first": Uses provided angle's belief statement
+       - All modes use persona data to inform copy when available
     7. Generates N ad variations (ONE AT A TIME)
     8. Dual AI review (Claude + Gemini) for each ad
     9. Applies OR logic: either reviewer approving = approved
@@ -3007,6 +3009,7 @@ async def complete_ad_workflow(
         content_source: Source for ad content variations:
             - "hooks": Use hooks from database (default)
             - "recreate_template": Extract template angle and use product benefits
+            - "belief_first": Use provided angle's belief statement
         color_mode: Color scheme to use ("original", "complementary", "brand")
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: How to select product images:
@@ -3019,6 +3022,8 @@ async def complete_ad_workflow(
             variant name and description are used to customize ad copy for that specific variant.
         additional_instructions: Optional run-specific instructions for ad generation. Combined
             with brand's ad_creation_notes to guide the AI in creating ads.
+        angle_data: Dict with angle info for belief_first mode. Required when
+            content_source="belief_first". Structure: {id, name, belief_statement, explanation}
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3209,7 +3214,7 @@ async def complete_ad_workflow(
                 active_only=True
             )
         else:
-            logger.info("Stage 3: Skipping hooks (using recreate_template mode)")
+            logger.info(f"Stage 3: Skipping hooks (using {content_source} mode)")
 
         # STAGE 4: Get ad brief template
         logger.info("Stage 4: Fetching ad brief template...")
@@ -3265,7 +3270,7 @@ async def complete_ad_workflow(
                 count=num_variations,
                 persona_data=persona_data
             )
-        else:
+        elif content_source == "recreate_template":
             # Recreate template flow
             if not used_cache:
                 # Stage 6a only needed if we didn't get from cache
@@ -3296,6 +3301,29 @@ async def complete_ad_workflow(
                 count=num_variations,
                 persona_data=persona_data
             )
+
+        elif content_source == "belief_first":
+            # Belief-first mode: use provided angle's belief statement
+            if not angle_data:
+                raise ValueError("angle_data is required for belief_first content source")
+
+            logger.info(f"Stage 6: Using belief-first mode with angle: {angle_data.get('name', 'Unknown')}")
+            logger.info(f"  Belief: {angle_data.get('belief_statement', '')[:100]}...")
+
+            # Generate variations using the angle's belief statement
+            # Create hook-like structures from the angle data for each variation
+            selected_hooks = []
+            for i in range(num_variations):
+                selected_hooks.append({
+                    "hook_id": angle_data.get("id", ""),
+                    "hook_text": angle_data.get("belief_statement", ""),
+                    "angle_name": angle_data.get("name", ""),
+                    "explanation": angle_data.get("explanation", ""),
+                    "variation_number": i + 1,
+                    "content_type": "belief_angle"
+                })
+
+            logger.info(f"Created {len(selected_hooks)} belief-based variations")
 
         # Save selected hooks/variations to database
         await ctx.deps.ad_creation.update_ad_run(
@@ -3538,11 +3566,11 @@ async def complete_ad_workflow(
                        f"Gemini={gemini_review.get('status')}, Final={final_status}")
 
             # Determine hook_id - None for benefit variations (recreate_template mode)
-            # because they don't reference actual hooks in the database
+            # and for belief_first mode because they don't reference actual hooks in the database
             if content_source == "hooks":
                 hook_id = UUID(selected_hook['hook_id'])
             else:
-                hook_id = None  # Benefit-based variations don't have real hook_ids
+                hook_id = None  # Benefit-based and belief-first variations don't have real hook_ids
 
             # Update database with reviews and model metadata
             await ctx.deps.ad_creation.save_generated_ad(
@@ -3586,7 +3614,12 @@ async def complete_ad_workflow(
         review_failed_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'review_failed')
 
         # Build summary
-        content_source_label = "hooks" if content_source == "hooks" else "template recreation (benefits/USPs)"
+        content_source_labels = {
+            "hooks": "hooks",
+            "recreate_template": "template recreation (benefits/USPs)",
+            "belief_first": f"belief-first angle: {angle_data.get('name', 'Unknown') if angle_data else 'Unknown'}"
+        }
+        content_source_label = content_source_labels.get(content_source, content_source)
         summary = f"""
 Ad creation workflow completed for {product_dict.get('name')}.
 
