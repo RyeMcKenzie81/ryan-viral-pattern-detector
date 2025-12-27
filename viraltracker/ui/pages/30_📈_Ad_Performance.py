@@ -929,6 +929,8 @@ def render_top_performers(data: List[Dict]):
             
             if selected_label:
                 target_ad = options[selected_label]
+                st.write(f"DEBUG: Target Ad Keys: {list(target_ad.keys())}")
+                st.write(f"DEBUG: Target Ad Data (Sample): {str(target_ad)[:500]}")
                 if st.button(f"🔍 Analyze Strategy: {target_ad.get('ad_name')}"):
                     # In a real scenario, we would stream the creative URL from the ad data.
                     # Since existing data might not have the full creative bytes/url ready for immediate download without token,
@@ -949,6 +951,22 @@ def render_top_performers(data: List[Dict]):
                              # Get Creative URL from ad data (image_url or thumbnail_url)
                              creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
                              
+                             # If missing, try to fetch on-the-fly
+                             if not creative_url:
+                                 st.info("Fetching ad creative from Meta...")
+                                 try:
+                                     from viraltracker.services.meta_ads_service import MetaAdsService
+                                     meta_service = MetaAdsService()
+                                     # Assuming we have meta_ad_id
+                                     aid = target_ad.get("meta_ad_id")
+                                     if aid:
+                                         thumbs = await meta_service.fetch_ad_thumbnails([aid])
+                                         creative_url = thumbs.get(aid)
+                                         if creative_url:
+                                             st.success("Fetched creative URL from Meta")
+                                 except Exception as e:
+                                     st.warning(f"Could not fetch creative from Meta: {e}")
+
                              # If not http, assume storage path (unless empty)
                              if creative_url and not creative_url.startswith("http"):
                                  signed = get_signed_url(creative_url)
