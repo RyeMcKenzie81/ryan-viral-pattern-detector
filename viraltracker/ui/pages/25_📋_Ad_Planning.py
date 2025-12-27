@@ -106,12 +106,11 @@ def init_session_state():
             st.session_state[key] = default
 
 
-    # If injected data exists, ensure we are on the right step (Step 6) or move towards it
-    # But usually, the user will flow through Steps 1-5 first.
-    # We just ensure the data is waiting for them in Step 6.
+    # If injected data exists, auto-navigate to Step 6 (Angles) so user can use it immediately
     if "injected_angle_data" in st.session_state and st.session_state.injected_angle_data:
-        # Auto-expand the "Add New Angle" tab in Step 6 by setting logic there
-        pass
+        if st.session_state.planning_step < 6:
+            st.session_state.planning_step = 6
+            st.session_state.show_injected_angle_banner = True
 
 
 
@@ -569,6 +568,17 @@ def render_step_6_angles():
     """Step 6: Define Angles (5-7)."""
     st.header("Step 6: Define Angles (5-7)")
     st.write("Create 5-7 angles to test. Each angle is a belief/explanation for why the job exists and why your solution works.")
+    
+    # Show banner if user came from Ad Analysis with pre-filled data
+    if st.session_state.get("show_injected_angle_banner"):
+        st.success("""
+        ✨ **Insight Loaded from Ad Analysis!**  
+        We've pre-filled the angle form below with the extracted strategy.  
+        Click "Add Angle" to save it, then continue building your plan.
+        
+        *Note: You can use the sidebar or "Back" button to configure Brand, Product, Offer, etc. if needed.*
+        """)
+        st.session_state.show_injected_angle_banner = False  # Show once
 
     if not st.session_state.selected_jtbd_id:
         st.warning("Please select a JTBD first.")
