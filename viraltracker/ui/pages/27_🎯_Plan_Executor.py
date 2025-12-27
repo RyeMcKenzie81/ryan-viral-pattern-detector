@@ -254,7 +254,7 @@ def render_live_progress(plan_id: str) -> bool:
                 try:
                     db = get_supabase_client()
                     db.table("pipeline_runs").update({
-                        "status": "cancelled",
+                        "status": "failed",
                         "error_message": "Cancelled by user"
                     }).eq("id", run_id).execute()
                     st.success("Run cancelled. You can now restart.")
