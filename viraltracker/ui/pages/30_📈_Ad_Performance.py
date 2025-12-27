@@ -609,7 +609,7 @@ async def analyze_ad_creative(
                         resp = await client.get(creative_url)
                         if resp.status_code == 200:
                             img_bytes = resp.content
-                            vision_analysis = await service.analyze_image(image_bytes=img_bytes)
+                            vision_analysis = await service.analyze_image(image_bytes=img_bytes, skip_save=True)
                         else:
                             st.warning(f"Failed to download image: {resp.status_code}")
                 except Exception as e:

@@ -463,7 +463,8 @@ class BrandResearchService:
             analysis_dict = json.loads(analysis_text)
 
             # Save to database (skip for competitor analysis - they save separately)
-            if not skip_save:
+            # Also skip if no asset_id provided (on-the-fly analysis)
+            if not skip_save and asset_id:
                 self._save_analysis(
                     asset_id=asset_id,
                     brand_id=brand_id,
