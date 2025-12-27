@@ -91,8 +91,10 @@ class Config:
 
     # Future capability-based models (User defined)
     # Pydantic AI requires 'google-gla:' prefix for models/ string format
+    # BUT standard google-genai client fails with it.
     CREATIVE_MODEL = "google-gla:models/gemini-3-pro-preview"
-    VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview" 
+    # Using widely available model for vision to fix 404 error
+    VISION_MODEL = "models/gemini-2.0-flash-exp" 
     VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11" 
     BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 
