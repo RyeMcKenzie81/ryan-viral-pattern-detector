@@ -472,11 +472,34 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
                         product_id=product_uuid,
                         canvas_size=ctx.state.canvas_size
                     )
+                    
+                    # Create database record for the generated ad
+                    saved_ad_id = await ctx.deps.ad_creation.save_generated_ad(
+                        ad_run_id=ad_run_id,
+                        prompt_index=i + 1,
+                        prompt_text=prompt.get("full_prompt", ""),
+                        prompt_spec={"canvas": ctx.state.canvas_size, "prompt": prompt},
+                        hook_id=None,
+                        hook_text=prompt.get("hook_text", ""),
+                        storage_path=storage_path,
+                        final_status="pending",
+                        model_requested=result.get("model_requested", ""),
+                        model_used=result.get("model_used", ""),
+                        generation_time_ms=result.get("generation_time_ms"),
+                        generation_retries=result.get("generation_retries", 0),
+                        ad_id=ad_id,
+                        angle_id=UUID(prompt.get("angle_id")) if prompt.get("angle_id") else None,
+                        template_id=UUID(prompt.get("template_id")) if prompt.get("template_id") else None,
+                        belief_plan_id=ctx.state.belief_plan_id,
+                        meta_headline=prompt.get("hook_text", ""),
+                        meta_primary_text=prompt.get("full_prompt", "")[:500] if prompt.get("full_prompt") else None,
+                        template_name=prompt.get("template_name", "")
+                    )
 
                     ctx.state.generated_ads.append({
                         "prompt_index": i + 1,
                         "storage_path": storage_path,
-                        "ad_id": str(ad_id),
+                        "ad_id": str(saved_ad_id or ad_id),
                         "prompt": prompt,
                         "generation_time_ms": result.get("generation_time_ms"),
                         "model_used": result.get("model_used")
