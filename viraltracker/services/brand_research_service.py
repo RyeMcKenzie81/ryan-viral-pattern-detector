@@ -61,6 +61,7 @@ Extract the following information and return as JSON:
 
     "advertising_structure": {
         "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "belief_statement": "The core belief/assumption the audience must accept to want this product",
         "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
         "messaging_angles": [
             {
@@ -241,6 +242,7 @@ Return ONLY valid JSON:
 
     "advertising_structure": {{
         "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "belief_statement": "The core belief/assumption the audience must accept to want this product",
         "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
         "messaging_angles": [
             {{
