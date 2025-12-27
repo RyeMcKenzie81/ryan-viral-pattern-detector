@@ -70,6 +70,48 @@ def get_brand_research_service():
     return BrandResearchService()
 
 
+def fetch_real_ad_copy(meta_ad_id: str) -> Optional[str]:
+    """
+    Try to fetch the real ad body text from the facebook_ads table.
+    
+    Args:
+        meta_ad_id: The Meta Ad ID string
+        
+    Returns:
+        The body text if found, else None
+    """
+    try:
+        db = get_supabase_client()
+        # Look up by id (which corresponds to meta_ad_id in our schema usually, 
+        # or we check if facebook_ads.id is the meta_id. 
+        # In this project, facebook_ads.id seems to be the UUID, and it has a 'ad_id' column for Meta ID?
+        # Let's check schema assumption. Usually 'id' is UUID.
+        # But 'meta_ads_performance' joins on 'meta_ad_id'. 
+        # Let's query based on 'ad_id' column in facebook_ads which usually holds the platform ID.
+        
+        result = db.table("facebook_ads").select("snapshot").eq("ad_id", meta_ad_id).limit(1).execute()
+        
+        if result.data:
+            snapshot = result.data[0].get("snapshot")
+            if isinstance(snapshot, str):
+                import json
+                snapshot = json.loads(snapshot)
+            
+            # Extract body text
+            if isinstance(snapshot, dict):
+                body = snapshot.get("body", {})
+                if isinstance(body, dict):
+                    return body.get("text")
+                elif isinstance(body, str):
+                    return body
+                    
+        return None
+    except Exception as e:
+        # Fail silently and fall back to ad name
+        return None
+
+
+
 
 
 
@@ -871,16 +913,15 @@ def render_top_performers(data: List[Dict]):
                         # Dummy call for MVP integration if URL missing, or use Ad Copy if available
                         # In production this would fetch the actual creative.
                          try:
-                             # Try to get copy from ad name or dummy it if not stored in perf table (it usually isn't fully)
-                             # We'll rely on the user knowing they might need to paste it if it's not in our DB yet.
-                             # BUT for "Integrated" feeling, let's look up if we have it linked.
+                             # Try to fetch real body text from DB first
+                             meta_ad_id = target_ad.get("meta_ad_id") or target_ad.get("ad_id")
+                             body_text = fetch_real_ad_copy(str(meta_ad_id)) if meta_ad_id else None
                              
-                             # For now, let's push them to the Manual tab with pre-filled name? 
-                             # Or just run copy analysis on the name/campaign as a proxy?
-                             # Better: Just analyze the text available.
+                             # Fallback to ad name if body text not found
+                             final_copy = body_text if body_text else target_ad.get("ad_name", "")
                              
                              res = asyncio.run(analyze_ad_creative(
-                                 ad_copy=target_ad.get("ad_name", ""), # Often contains hook
+                                 ad_copy=final_copy,
                                  headline=target_ad.get("headline", "")
                              ))
                              st.session_state.ad_analysis_result = res
