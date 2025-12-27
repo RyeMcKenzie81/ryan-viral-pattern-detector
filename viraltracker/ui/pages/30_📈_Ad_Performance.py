@@ -949,6 +949,17 @@ def render_top_performers(data: List[Dict]):
                              # Get Creative URL from ad data (image_url or thumbnail_url)
                              creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
                              
+                             # If not http, assume storage path (unless empty)
+                             if creative_url and not creative_url.startswith("http"):
+                                 signed = get_signed_url(creative_url)
+                                 if signed: 
+                                     st.write(f"DEBUG: Signed storage path '{creative_url}' -> '{signed[:20]}...'")
+                                     creative_url = signed
+                                 else:
+                                     st.warning(f"Could not sign URL for path: {creative_url}")
+                             
+                             st.write(f"DEBUG: Final Analysis URL: {creative_url}") # Debug for user
+
                              # Try to convert ID to UUID for tracking, otherwise None
                              from uuid import UUID as PyUUID
                              ad_uuid = None
