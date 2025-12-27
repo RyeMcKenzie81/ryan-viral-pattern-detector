@@ -3068,7 +3068,7 @@ async def complete_ad_workflow(
             raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
 
         # Validate content_source
-        valid_content_sources = ["hooks", "recreate_template"]
+        valid_content_sources = ["hooks", "recreate_template", "belief_first"]
         if content_source not in valid_content_sources:
             raise ValueError(f"content_source must be one of {valid_content_sources}, got {content_source}")
 

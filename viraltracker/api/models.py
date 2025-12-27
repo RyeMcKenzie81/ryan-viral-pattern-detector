@@ -220,8 +220,8 @@ class AdCreationRequest(BaseModel):
     )
     content_source: str = Field(
         default="hooks",
-        description="Source for ad content: 'hooks' (use hooks from database) or 'recreate_template' (extract template angle and use product benefits)",
-        pattern="^(hooks|recreate_template)$"
+        description="Source for ad content: 'hooks' (use hooks from database), 'recreate_template' (extract template angle and use product benefits), or 'belief_first' (use belief angle from Ad Planning)",
+        pattern="^(hooks|recreate_template|belief_first)$"
     )
 
     class Config:
