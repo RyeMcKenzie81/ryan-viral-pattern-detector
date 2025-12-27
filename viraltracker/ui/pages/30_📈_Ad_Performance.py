@@ -586,7 +586,6 @@ async def analyze_ad_creative(
     # 1. Analyze Creative (Vision)
     vision_analysis = {}
     if creative_file or creative_url:
-        st.write(f"DEBUG: Starting visual analysis. URL: {creative_url}, ID: {ad_id}")
         if creative_type == "video":
             # For video, we need bytes or URL
             if creative_file:
@@ -614,16 +613,13 @@ async def analyze_ad_creative(
                             st.warning(f"Failed to download image: {resp.status_code}")
                 except Exception as e:
                     st.error(f"Image download failed: {e}")
+
     # 2. Analyze Copy
     copy_analysis = {}
     if ad_copy or headline:
         full_text = f"{headline}\n\n{ad_copy}"
-        # Refactored: service now supports optional ad_id for manual analysis
         copy_analysis = await service.analyze_copy(ad_copy=full_text, ad_id=ad_id)
 
-
-        
-    # 3. Merge/Synthesize (Smarter merge)
     # 3. Merge/Synthesize (Smarter merge)
     
     # Extract nested vision values
@@ -640,7 +636,6 @@ async def analyze_ad_creative(
     def resolve_best(val_1, val_2, invalid_values=None):
         invalid = invalid_values or ["None", "Unknown", "null", "Error", None, ""]
         
-        # Check validity (simple check: valid if not in invalid list and doesn't start with Error)
         def is_valid(v):
             if v in invalid: return False
             if isinstance(v, str) and (v.startswith("Error:") or v.startswith("[image]")): return False
@@ -648,7 +643,7 @@ async def analyze_ad_creative(
             
         if is_valid(val_1): return val_1
         if is_valid(val_2): return val_2
-        return val_1 or val_2 # Fallback
+        return val_1 or val_2 
 
     result = {
         "angle": resolve_best(v_angle, c_angle),
