@@ -990,8 +990,11 @@ async def run_belief_plan_execution(
         # Create initial state with pipeline_run_id for real-time progress updates
         state = BeliefPlanExecutionState(
             belief_plan_id=belief_plan_id,
+            phase_id="plan_execution",
             variations_per_angle=variations_per_angle,
+            total_ads_planned=0,
             canvas_size=canvas_size,
+            execution_phase=execution_phase,
             pipeline_run_id=run_id
         )
 
