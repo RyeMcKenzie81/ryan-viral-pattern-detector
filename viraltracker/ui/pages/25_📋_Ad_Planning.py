@@ -97,13 +97,22 @@ def init_session_state():
         "validation_warnings": [],
         "validation_done": False,
 
-        # AI generation state
-        "generating": False,
+        # Bridge: Check for injected angle data from Analysis pages
+        "injected_angle_data": None,  # {name, belief, explanation}
     }
 
     for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
+
+
+    # If injected data exists, ensure we are on the right step (Step 6) or move towards it
+    # But usually, the user will flow through Steps 1-5 first.
+    # We just ensure the data is waiting for them in Step 6.
+    if "injected_angle_data" in st.session_state and st.session_state.injected_angle_data:
+        # Auto-expand the "Add New Angle" tab in Step 6 by setting logic there
+        pass
+
 
 
 init_session_state()
@@ -624,6 +633,19 @@ def render_step_6_angles():
 
     with tab1:
         st.subheader("Add New Angle")
+        if st.session_state.injected_angle_data:
+            # Pre-fill from injected data
+            data = st.session_state.injected_angle_data
+            if not st.session_state.new_angle_name:
+                st.session_state.new_angle_name = data.get("name", "")
+            if not st.session_state.new_angle_belief:
+                st.session_state.new_angle_belief = data.get("belief", "")
+            if not st.session_state.new_angle_explanation and data.get("explanation"):
+                st.session_state.new_angle_explanation = data.get("explanation", "")
+            
+            st.info(f"✨ Insight Loaded: **{data.get('name')}**")
+            st.caption("Review the extracted strategy below and click 'Add Angle'.")
+
         st.session_state.new_angle_name = st.text_input(
             "Angle Name",
             value=st.session_state.new_angle_name,
@@ -640,6 +662,7 @@ def render_step_6_angles():
             placeholder="Why this angle might resonate..."
         )
 
+
         if st.button("Add Angle", key="add_angle_btn"):
             if st.session_state.new_angle_name and st.session_state.new_angle_belief:
                 # Save to database immediately
@@ -650,11 +673,17 @@ def render_step_6_angles():
                     explanation=st.session_state.new_angle_explanation
                 )
                 st.session_state.selected_angle_ids.append(str(new_angle.id))
-                # Clear form
+                st.session_state.selected_angle_ids.append(str(new_angle.id))
+                
+                # Clear form and injected data
                 st.session_state.new_angle_name = ""
                 st.session_state.new_angle_belief = ""
                 st.session_state.new_angle_explanation = ""
+                if "injected_angle_data" in st.session_state:
+                    st.session_state.injected_angle_data = None
+                
                 st.rerun()
+
 
     with tab2:
         st.subheader("AI Angle Suggestions")

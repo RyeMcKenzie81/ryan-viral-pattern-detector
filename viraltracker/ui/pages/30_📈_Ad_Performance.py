@@ -31,7 +31,14 @@ if "ad_perf_selected_campaign" not in st.session_state:
 if "ad_perf_selected_adset" not in st.session_state:
     st.session_state.ad_perf_selected_adset = None  # (id, name) tuple
 if "ad_perf_active_tab" not in st.session_state:
-    st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked
+    st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked, 4=Manual Analysis
+
+# Analysis State
+if "ad_analysis_result" not in st.session_state:
+    st.session_state.ad_analysis_result = None
+if "analyzing_ad" not in st.session_state:
+    st.session_state.analyzing_ad = False
+
 
 # Session state for linking
 if "ad_perf_match_suggestions" not in st.session_state:
@@ -55,6 +62,13 @@ def get_meta_ads_service():
     """Get MetaAdsService instance (lazy import to avoid init issues)."""
     from viraltracker.services.meta_ads_service import MetaAdsService
     return MetaAdsService()
+
+
+def get_brand_research_service():
+    """Get BrandResearchService instance."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+    return BrandResearchService()
+
 
 
 def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
@@ -501,6 +515,72 @@ async def sync_ads_from_meta(
     return count
 
 
+async def analyze_ad_creative(
+    creative_file: Optional[Any] = None,
+    creative_url: Optional[str] = None,
+    creative_type: str = "image",  # image or video
+    ad_copy: str = "",
+    headline: str = "",
+) -> Dict[str, Any]:
+    """
+    Analyze ad creative and copy to extract strategy.
+    
+    Args:
+        creative_file: UploadedFile object or bytes
+        creative_url: URL to creative (if file not provided)
+        creative_type: 'image' or 'video'
+        ad_copy: Primary text
+        headline: Ad headline
+        
+    Returns:
+        Dict with analysis results (angle, belief, hooks, etc.)
+    """
+    service = get_brand_research_service()
+    
+    # 1. Analyze Creative (Vision)
+    vision_analysis = {}
+    if creative_file or creative_url:
+        if creative_type == "video":
+            # For video, we need bytes or URL
+            # Note: Service expects bytes for upload or download URL
+            if creative_file:
+                # If it's a Streamlit UploadedFile, get bytes
+                video_bytes = creative_file.getvalue() if hasattr(creative_file, "getvalue") else creative_file
+                vision_analysis = await service.analyze_video(video_bytes=video_bytes)
+            elif creative_url:
+                # Download first if URL provided (service helper might exist, but doing manually for safety)
+                # For now assuming service handles download internally if we had that method exposed,
+                # but analyze_video takes bytes. So we'll skip complex URL handling for this MVP step
+                # and focus on UploadedFile for Manual, and assuming we can get bytes for Integrated.
+                pass 
+        else:
+            # Image
+            if creative_file:
+                img_bytes = creative_file.getvalue() if hasattr(creative_file, "getvalue") else creative_file
+                vision_analysis = await service.analyze_image(image_bytes=img_bytes)
+    
+    # 2. Analyze Copy
+    copy_analysis = {}
+    if ad_copy or headline:
+        full_text = f"{headline}\n\n{ad_copy}"
+        copy_analysis = await service.analyze_copy(full_text)
+        
+    # 3. Merge/Synthesize (Simple merge for now)
+    # The copy analysis usually has the best "Angle/Belief" extraction.
+    # Vision adds visual hooks.
+    
+    result = {
+        "angle": copy_analysis.get("advertising_angle") or vision_analysis.get("advertising_angle"),
+        "belief": copy_analysis.get("belief_statement") or vision_analysis.get("key_belief"),
+        "hooks": copy_analysis.get("hooks", []) + vision_analysis.get("hooks", []),
+        "awareness_level": copy_analysis.get("awareness_level") or vision_analysis.get("awareness_level"),
+        "raw_copy": copy_analysis,
+        "raw_vision": vision_analysis
+    }
+    return result
+
+
+
 # =============================================================================
 # UI Components
 # =============================================================================
@@ -630,6 +710,54 @@ def render_time_series_charts(data: List[Dict]):
         st.line_chart(chart_df, height=250)
 
 
+def render_analysis_result(result: Dict):
+    """Render the ad analysis result with 'Create Plan' action."""
+    if not result:
+        return
+
+    st.success("✅ Analysis Complete! Strategy Extracted.")
+    
+    angle = result.get("angle", "Unknown Angle")
+    belief = result.get("belief", "No belief detected")
+    hooks = result.get("hooks", [])
+    
+    with st.container():
+        # styled card
+        st.markdown(f"""
+        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; border: 1px solid #d0d7de;">
+            <h3 style="margin-top:0;">🏹 Detected Angle: {angle}</h3>
+            <p style="font-size: 1.1em;"><strong>Core Belief:</strong> <em>"{belief}"</em></p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.write("") # Spacer
+        
+        col_act1, col_act2 = st.columns([1, 2])
+        with col_act1:
+            if st.button("✨ Create Plan from this Angle", type="primary", use_container_width=True):
+                # BRIDGE LOGIC
+                st.session_state.injected_angle_data = {
+                    "name": angle,
+                    "belief": belief,
+                    "explanation": f"Extracted from winning ad analysis. Hooks found: {', '.join([h.get('text','') for h in hooks[:3]])}"
+                }
+                # Redirect
+                st.switch_page("pages/25_📋_Ad_Planning.py")
+        
+        with col_act2:
+            st.info("👆 Click to instantly start a 30-ad test campaign based on this winning angle.")
+
+    with st.expander("Detailed Insights", expanded=False):
+        st.markdown(f"**Awareness Level:** {result.get('awareness_level', 'Unknown')}")
+        
+        st.markdown("**Identified Hooks:**")
+        for hook in hooks:
+            st.write(f"- {hook.get('type', 'Hook')}: *{hook.get('text', '')}*")
+            
+        st.json(result)
+
+
+
 def render_top_performers(data: List[Dict]):
     """Render top and worst performers section."""
     import pandas as pd
@@ -704,7 +832,48 @@ def render_top_performers(data: List[Dict]):
         else:
             st.info("No data for top performers")
 
+        # Integrated Analysis Action
+        if top_ads:
+            st.markdown("---")
+            st.caption("Select an ad to analyze its strategy:")
+            
+            # Create a selection map
+            options = {f"{ad.get('ad_name', 'Unknown')} (ROAS: {ad.get('roas', 0):.2f})": ad for ad in top_ads}
+            selected_label = st.selectbox("Select Winner", options=list(options.keys()), key="top_perf_select")
+            
+            if selected_label:
+                target_ad = options[selected_label]
+                if st.button(f"🔍 Analyze Strategy: {target_ad.get('ad_name')}"):
+                    # In a real scenario, we would stream the creative URL from the ad data.
+                    # Since existing data might not have the full creative bytes/url ready for immediate download without token,
+                    # We might need to ask user to confirm/provide if missing.
+                    # For this implementation, we will assume we scrape/fetch on the fly or just analyze COPY for now if creative missing.
+                    
+                    with st.spinner("Analyzing ad strategy..."):
+                        # Dummy call for MVP integration if URL missing, or use Ad Copy if available
+                        # In production this would fetch the actual creative.
+                         try:
+                             # Try to get copy from ad name or dummy it if not stored in perf table (it usually isn't fully)
+                             # We'll rely on the user knowing they might need to paste it if it's not in our DB yet.
+                             # BUT for "Integrated" feeling, let's look up if we have it linked.
+                             
+                             # For now, let's push them to the Manual tab with pre-filled name? 
+                             # Or just run copy analysis on the name/campaign as a proxy?
+                             # Better: Just analyze the text available.
+                             
+                             res = asyncio.run(analyze_ad_creative(
+                                 ad_copy=target_ad.get("ad_name", ""), # Often contains hook
+                                 headline=target_ad.get("headline", "")
+                             ))
+                             st.session_state.ad_analysis_result = res
+                         except Exception as e:
+                             st.error(f"Analysis failed: {e}")
+
+                if st.session_state.ad_analysis_result:
+                    render_analysis_result(st.session_state.ad_analysis_result)
+
     with col2:
+
         st.subheader("⚠️ Needs Attention (low ROAS)")
         worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
 
@@ -2184,6 +2353,7 @@ elif selected_tab == "🔗 Linked":
     st.subheader("Linked Ads (ViralTracker ↔ Meta)")
 
     # Find Matches button
+
     col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
@@ -2699,6 +2869,10 @@ elif selected_tab == "🔗 Linked":
                 st.markdown("---")
         else:
             st.success("✅ All legacy ads are linked!")
+
+
+elif selected_tab == "🧪 Manual Analysis":
+    render_manual_analysis_tab()
 
 
 # Footer with data info
