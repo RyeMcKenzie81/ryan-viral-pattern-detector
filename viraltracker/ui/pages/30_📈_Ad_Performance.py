@@ -624,12 +624,13 @@ def analyze_ad_creative(
     v_struct = vision_analysis.get("advertising_structure") or {}
     v_angle = v_struct.get("advertising_angle")
     v_level = v_struct.get("awareness_level")
+    v_belief = v_struct.get("belief_statement")
     
     # Extract copy values - handle both flat and nested structure
     c_struct = copy_analysis.get("advertising_structure") or {}
     c_angle = copy_analysis.get("advertising_angle") or c_struct.get("advertising_angle")
     c_level = copy_analysis.get("awareness_level") or c_struct.get("awareness_level")
-    c_belief = copy_analysis.get("belief_statement") 
+    c_belief = copy_analysis.get("belief_statement") or c_struct.get("belief_statement")
 
     def resolve_best(val_1, val_2, invalid_values=None):
         invalid = invalid_values or ["None", "Unknown", "null", "Error", None, ""]
@@ -645,7 +646,7 @@ def analyze_ad_creative(
 
     result = {
         "angle": resolve_best(v_angle, c_angle),
-        "belief": resolve_best(vision_analysis.get("key_belief") or vision_analysis.get("belief_statement"), c_belief),
+        "belief": resolve_best(v_belief, c_belief),
         "hooks": copy_analysis.get("hooks", []) + vision_analysis.get("hooks", []),
         "awareness_level": resolve_best(v_level, c_level),
         "raw_copy": copy_analysis,
