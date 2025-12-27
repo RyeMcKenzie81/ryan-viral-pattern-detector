@@ -71,6 +71,8 @@ def get_brand_research_service():
 
 
 
+
+
 def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
     """Get the Meta ad account linked to a brand."""
     try:
@@ -563,7 +565,10 @@ async def analyze_ad_creative(
     copy_analysis = {}
     if ad_copy or headline:
         full_text = f"{headline}\n\n{ad_copy}"
-        copy_analysis = await service.analyze_copy(full_text)
+        # Refactored: service now supports optional ad_id for manual analysis
+        copy_analysis = await service.analyze_copy(ad_copy=full_text)
+
+
         
     # 3. Merge/Synthesize (Simple merge for now)
     # The copy analysis usually has the best "Angle/Belief" extraction.

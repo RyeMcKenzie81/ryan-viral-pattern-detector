@@ -746,9 +746,9 @@ class BrandResearchService:
 
     async def analyze_copy(
         self,
-        ad_id: UUID,
         ad_copy: str,
         headline: Optional[str] = None,
+        ad_id: Optional[UUID] = None,
         brand_id: Optional[UUID] = None
     ) -> Dict:
         """
@@ -757,9 +757,9 @@ class BrandResearchService:
         Extracts persona signals, pain points, benefits, hooks from ad text.
 
         Args:
-            ad_id: UUID of the facebook_ads record
             ad_copy: The ad body text
             headline: Optional headline text
+            ad_id: Optional UUID of the facebook_ads record (if linked)
             brand_id: Optional brand to link analysis to
 
         Returns:
@@ -919,9 +919,9 @@ class BrandResearchService:
 
             try:
                 analysis = await self.analyze_copy(
-                    ad_id=UUID(ad['id']),
                     ad_copy=ad_copy or '',
                     headline=headline,
+                    ad_id=UUID(ad['id']),
                     brand_id=brand_id
                 )
                 results.append({"ad_id": ad['id'], "analysis": analysis})
@@ -936,7 +936,7 @@ class BrandResearchService:
 
     def _save_copy_analysis(
         self,
-        ad_id: UUID,
+        ad_id: Optional[UUID],
         brand_id: Optional[UUID],
         raw_response: Dict,
         tokens_used: int = 0,
@@ -965,7 +965,7 @@ class BrandResearchService:
 
             record = {
                 "brand_id": str(brand_id) if brand_id else None,
-                "facebook_ad_id": str(ad_id),
+                "facebook_ad_id": str(ad_id) if ad_id else None,
                 "analysis_type": "copy_analysis",
                 "raw_response": raw_response,
                 "extracted_hooks": hooks_list,
