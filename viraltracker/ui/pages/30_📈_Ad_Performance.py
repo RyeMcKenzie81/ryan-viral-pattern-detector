@@ -960,7 +960,7 @@ def render_top_performers(data: List[Dict]):
                                      # Assuming we have meta_ad_id
                                      aid = target_ad.get("meta_ad_id")
                                      if aid:
-                                         thumbs = await meta_service.fetch_ad_thumbnails([aid])
+                                         thumbs = asyncio.run(meta_service.fetch_ad_thumbnails([aid]))
                                          creative_url = thumbs.get(aid)
                                          if creative_url:
                                              st.success("Fetched creative URL from Meta")
