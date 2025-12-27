@@ -59,6 +59,7 @@ def init_session_state():
         "new_offer_description": "",
         "new_offer_drivers": "",
         "offer_suggestions": [],
+        "generating": False,  # Flag for async generation operations
 
         # Step 4: Persona
         "selected_persona_id": None,
