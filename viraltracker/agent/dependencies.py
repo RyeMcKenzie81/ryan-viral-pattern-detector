@@ -39,7 +39,46 @@ from ..services.reddit_sentiment_service import RedditSentimentService
 logger = logging.getLogger(__name__)
 
 
-# ... (ResultCache remains unchanged)
+
+class ResultCache(BaseModel):
+    """
+    Shared result cache for inter-agent data passing.
+
+    Enables agents to share data and build on each other's results
+    without re-querying or re-scraping data.
+
+    Attributes:
+        last_twitter_query: Results from Twitter agent's last query
+        last_tiktok_query: Results from TikTok agent's last query
+        last_youtube_query: Results from YouTube agent's last query
+        last_facebook_query: Results from Facebook agent's last query
+        last_analysis: Results from Analysis agent's last analysis
+        custom: Arbitrary key-value storage for agent-specific data
+
+    Example:
+        >>> cache = ResultCache()
+        >>> cache.last_twitter_query = [tweet1, tweet2, tweet3]
+        >>> # Later, another agent can access these results
+        >>> tweets = cache.last_twitter_query
+        >>> cache.clear()  # Clear all cached results
+    """
+    model_config = {"arbitrary_types_allowed": True}
+
+    last_twitter_query: Optional[List[Any]] = None
+    last_tiktok_query: Optional[List[Any]] = None
+    last_youtube_query: Optional[List[Any]] = None
+    last_facebook_query: Optional[List[Any]] = None
+    last_analysis: Optional[Any] = None
+    custom: Dict[str, Any] = Field(default_factory=dict)
+
+    def clear(self) -> None:
+        """Clear all cached results."""
+        self.last_twitter_query = None
+        self.last_tiktok_query = None
+        self.last_youtube_query = None
+        self.last_facebook_query = None
+        self.last_analysis = None
+        self.custom = {}
 
 
 class AgentDependencies(BaseModel):
