@@ -16,6 +16,10 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+# Handle Streamlit's event loop for async operations
+import nest_asyncio
+nest_asyncio.apply()
+
 logger = logging.getLogger(__name__)
 
 # Page config
