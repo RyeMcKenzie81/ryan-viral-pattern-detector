@@ -25,16 +25,13 @@ Part of the Trash Panda Content Pipeline.
 
 import logging
 from dataclasses import dataclass
-from typing import Union, Dict, Any, TYPE_CHECKING
+from typing import Union, Dict, Any
 from uuid import UUID
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from .state import ContentPipelineState, WorkflowPath, HumanCheckpoint
-
-# Use TYPE_CHECKING to avoid circular import
-if TYPE_CHECKING:
-    from ...agent.dependencies import AgentDependencies
+from ...agent.dependencies import AgentDependencies
 
 logger = logging.getLogger(__name__)
 

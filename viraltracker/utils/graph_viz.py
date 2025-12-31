@@ -42,6 +42,11 @@ def _get_pipeline_registry() -> Dict[str, Dict[str, Any]]:
         LoadPlanNode,
         ScrapeRedditNode,
     )
+    from viraltracker.services.content_pipeline.orchestrator import (
+        content_pipeline_graph_mvp1,
+        content_pipeline_graph_mvp2,
+        TopicDiscoveryNode,
+    )
 
     return {
         "brand_onboarding": {
@@ -70,6 +75,20 @@ def _get_pipeline_registry() -> Dict[str, Dict[str, Any]]:
             "nodes": ["ScrapeRedditNode", "EngagementFilterNode", "RelevanceFilterNode",
                       "SignalFilterNode", "IntentScoreNode", "TopSelectionNode",
                       "CategorizeNode", "SaveNode"],
+        },
+        "content_pipeline_mvp1": {
+            "graph": content_pipeline_graph_mvp1,
+            "start_node": TopicDiscoveryNode,
+            "description": "Topic discovery pipeline (MVP 1)",
+            "nodes": ["TopicDiscoveryNode", "TopicEvaluationNode", "TopicSelectionNode"],
+        },
+        "content_pipeline_mvp2": {
+            "graph": content_pipeline_graph_mvp2,
+            "start_node": TopicDiscoveryNode,
+            "description": "Content pipeline through script approval (MVP 2)",
+            "nodes": ["TopicDiscoveryNode", "TopicEvaluationNode", "TopicSelectionNode",
+                      "ScriptGenerationNode", "ScriptReviewNode", "ScriptApprovalNode",
+                      "ELSConversionNode"],
         },
     }
 
