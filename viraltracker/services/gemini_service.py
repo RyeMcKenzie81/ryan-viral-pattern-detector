@@ -409,7 +409,8 @@ Generate the article now:"""
         reference_images: list = None,
         max_retries: int = 3,
         return_metadata: bool = False,
-        temperature: float = 0.4
+        temperature: float = 0.4,
+        image_size: str = "2K"
     ) -> str | dict:
         """
         Generate an image using Gemini 3 Pro Image Preview API.
@@ -423,6 +424,7 @@ Generate the article now:"""
             max_retries: Maximum retries on rate limit errors
             return_metadata: If True, return dict with image and generation metadata
             temperature: Generation temperature (0.0-1.0). Lower = more deterministic. Default 0.4.
+            image_size: Output resolution - "1K", "2K", or "4K". Default "2K" for better text quality.
 
         Returns:
             If return_metadata=False: Base64-encoded generated image (string)
@@ -490,12 +492,16 @@ Generate the article now:"""
 
                 # Use dedicated image generation model (not the default text model)
                 # Temperature controls randomness - lower = more deterministic
+                # image_size controls output resolution: "1K", "2K", or "4K"
                 response = self.client.models.generate_content(
                     model="gemini-3-pro-image-preview",
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=temperature,
                         response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
+                        image_config=types.ImageConfig(
+                            image_size=image_size
+                        )
                     )
                 )
 
