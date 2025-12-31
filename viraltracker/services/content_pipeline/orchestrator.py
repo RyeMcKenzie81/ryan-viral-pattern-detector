@@ -25,13 +25,14 @@ Part of the Trash Panda Content Pipeline.
 
 import logging
 from dataclasses import dataclass
-from typing import Union, Dict, Any
+from typing import ClassVar, Union, Dict, Any
 from uuid import UUID
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from .state import ContentPipelineState, WorkflowPath, HumanCheckpoint
 from ...agent.dependencies import AgentDependencies
+from ...pipelines.metadata import NodeMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,14 @@ class TopicDiscoveryNode(BaseNode[ContentPipelineState]):
 
     Thin wrapper - delegates to TopicDiscoveryService.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["brand_id", "topic_batch_size", "topic_focus_areas"],
+        outputs=["topic_suggestions"],
+        services=["content_pipeline.topic_service.discover_topics"],
+        llm="ChatGPT 5.1",
+        llm_purpose="Discover trending topics using extended thinking",
+    )
 
     async def run(
         self,
@@ -91,6 +100,14 @@ class TopicEvaluationNode(BaseNode[ContentPipelineState]):
 
     Thin wrapper - delegates to TopicDiscoveryService.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["topic_suggestions", "brand_id", "topic_score_threshold"],
+        outputs=["topic_suggestions"],
+        services=["content_pipeline.topic_service.evaluate_topics"],
+        llm="ChatGPT 5.1",
+        llm_purpose="Score and rank topics with reasoning",
+    )
 
     async def run(
         self,
@@ -140,6 +157,12 @@ class TopicSelectionNode(BaseNode[ContentPipelineState]):
     - Select a topic to proceed
     - Request more topics (loops back to TopicDiscoveryNode)
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["topic_suggestions", "quick_approve_enabled", "human_input"],
+        outputs=["selected_topic", "selected_topic_id", "awaiting_human"],
+        services=[],
+    )
 
     async def run(
         self,
@@ -215,6 +238,16 @@ class ScriptGenerationNode(BaseNode[ContentPipelineState]):
     Thin wrapper - delegates to ScriptGenerationService.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["selected_topic", "brand_id", "project_id", "script_revision_notes", "current_script_data"],
+        outputs=["current_script_data", "script_version_ids", "current_script_version_id"],
+        services=["content_pipeline.script_service.generate_script",
+                  "content_pipeline.script_service.revise_script",
+                  "content_pipeline.script_service.save_script_to_db"],
+        llm="Claude Opus 4.5",
+        llm_purpose="Generate full script content and storyboard from topic",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[ContentPipelineState, AgentDependencies]
@@ -277,6 +310,15 @@ class ScriptReviewNode(BaseNode[ContentPipelineState]):
     Thin wrapper - delegates to ScriptGenerationService.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["current_script_data", "brand_id", "current_script_version_id"],
+        outputs=["bible_checklist_results"],
+        services=["content_pipeline.script_service.review_script",
+                  "content_pipeline.script_service.save_review_to_db"],
+        llm="Claude Opus 4.5",
+        llm_purpose="Review script against brand bible checklist items",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[ContentPipelineState, AgentDependencies]
@@ -324,6 +366,13 @@ class ScriptApprovalNode(BaseNode[ContentPipelineState]):
     - Approve script (proceeds to ELS conversion)
     - Request revisions with notes (loops back to ScriptGenerationNode)
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["bible_checklist_results", "quick_approve_enabled", "human_input",
+                "current_script_version_id", "project_id"],
+        outputs=["awaiting_human", "script_revision_notes"],
+        services=["content_pipeline.script_service.approve_script"],
+    )
 
     async def run(
         self,
@@ -396,6 +445,12 @@ class ScriptApprovalNode(BaseNode[ContentPipelineState]):
 @dataclass
 class ELSConversionNode(BaseNode[ContentPipelineState]):
     """Step 7: Convert script to ELS format."""
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["current_script_data"],
+        outputs=[],
+        services=[],
+    )
 
     async def run(
         self,

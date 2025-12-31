@@ -264,6 +264,111 @@ def get_node_details(graph_name: str) -> List[Dict[str, Any]]:
     return node_details
 
 
+def get_node_metadata(graph_name: str) -> List[Dict[str, Any]]:
+    """
+    Get rich metadata about nodes in a graph.
+
+    Returns inputs, outputs, LLM usage, and services for each node.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        List of dicts with node name, metadata, position, etc.
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        available = ", ".join(registry.keys())
+        raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
+
+    info = registry[graph_name]
+    graph = info["graph"]
+
+    # Get node classes from the graph
+    node_classes = graph.node_defs
+
+    node_metadata = []
+    for i, node_class in enumerate(node_classes):
+        node_name = node_class.__name__
+
+        # Get metadata from class if available
+        metadata = getattr(node_class, "metadata", None)
+
+        node_info = {
+            "name": node_name,
+            "position": i + 1,
+            "is_start": i == 0,
+            "is_end": i == len(node_classes) - 1,
+            "docstring": (node_class.__doc__ or "").strip(),
+        }
+
+        if metadata:
+            node_info["inputs"] = metadata.inputs
+            node_info["outputs"] = metadata.outputs
+            node_info["services"] = metadata.services
+            node_info["llm"] = metadata.llm
+            node_info["llm_purpose"] = metadata.llm_purpose
+            node_info["uses_llm"] = metadata.uses_llm
+        else:
+            node_info["inputs"] = []
+            node_info["outputs"] = []
+            node_info["services"] = []
+            node_info["llm"] = None
+            node_info["llm_purpose"] = None
+            node_info["uses_llm"] = False
+
+        node_metadata.append(node_info)
+
+    return node_metadata
+
+
+def get_pipeline_llm_summary(graph_name: str) -> Dict[str, Any]:
+    """
+    Get a summary of LLM usage for a pipeline.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        Dict with llm_count, llm_models, and nodes_with_llm
+    """
+    node_metadata = get_node_metadata(graph_name)
+
+    llm_nodes = []
+    llm_models = set()
+
+    for node in node_metadata:
+        if node.get("uses_llm"):
+            llm_nodes.append(node["name"])
+            if node.get("llm"):
+                llm_models.add(node["llm"])
+
+    return {
+        "llm_count": len(llm_nodes),
+        "llm_models": list(llm_models),
+        "nodes_with_llm": llm_nodes,
+    }
+
+
+def get_graph_callers(graph_name: str) -> List[Dict[str, str]]:
+    """
+    Get the UI pages/tools that call this pipeline.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        List of caller dicts with type and page/function info
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        return []
+
+    return registry[graph_name].get("callers", [])
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(

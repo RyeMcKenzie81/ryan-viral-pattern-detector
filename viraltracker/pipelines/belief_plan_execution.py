@@ -15,11 +15,12 @@ The goal is to test beliefs (angles), not writing talent.
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import ClassVar, Dict, List, Optional, Union
 from uuid import UUID
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from .metadata import NodeMetadata
 from .states import BeliefPlanExecutionState
 from ..agent.dependencies import AgentDependencies
 
@@ -525,6 +526,12 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
     Validates that the plan is Phase 1-2 and loads all required data.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["belief_plan_id", "execution_phase"],
+        outputs=["plan_data", "angles", "templates", "persona_data", "jtbd_data", "product_images"],
+        services=["ad_creation.get_belief_plan_with_copy", "ad_creation.get_persona_for_ad_generation"],
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[BeliefPlanExecutionState, AgentDependencies]
@@ -618,6 +625,12 @@ class BuildPromptsNode(BaseNode[BeliefPlanExecutionState]):
     Step 2: Build prompts for all angle x template combinations.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["angles", "templates", "persona_data", "jtbd_data", "variations_per_angle", "canvas_size", "execution_phase"],
+        outputs=["prompts"],
+        services=[],  # Uses local helper functions, no service calls
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[BeliefPlanExecutionState, AgentDependencies]
@@ -666,6 +679,16 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
     - Only template as reference image (no product images)
     - Images show situations, not products
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["prompts", "plan_data", "belief_plan_id"],
+        outputs=["generated_ads", "ad_run_id", "ads_generated"],
+        services=["ad_creation.create_ad_run", "ad_creation.get_image_as_base64",
+                  "gemini.generate_image", "ad_creation.upload_generated_ad",
+                  "ad_creation.save_generated_ad"],
+        llm="Gemini 3 Pro",
+        llm_purpose="Generate ad images from structured prompts with reference templates",
+    )
 
     async def run(
         self,
@@ -830,6 +853,15 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
     - Matches template style
     - Only anchor text on image
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["generated_ads", "ad_run_id", "belief_plan_id"],
+        outputs=["approved_count", "rejected_count", "ads_reviewed"],
+        services=["ad_creation.get_image_as_base64", "gemini.analyze_image",
+                  "ad_creation.save_generated_ad", "ad_creation.update_ad_run"],
+        llm="Gemini",
+        llm_purpose="Review generated ads against phase-specific quality criteria",
+    )
 
     async def run(
         self,

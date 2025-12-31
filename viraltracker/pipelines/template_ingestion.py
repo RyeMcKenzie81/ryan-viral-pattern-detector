@@ -15,10 +15,12 @@ Part of the Brand Research Pipeline (Phase 2B).
 
 import logging
 from dataclasses import dataclass
+from typing import ClassVar
 from uuid import UUID
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from .metadata import NodeMetadata
 from .states import TemplateIngestionState
 from ..agent.dependencies import AgentDependencies
 
@@ -32,6 +34,12 @@ class ScrapeAdsNode(BaseNode[TemplateIngestionState]):
 
     Uses FacebookService to scrape ads via Apify.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["ad_library_url", "max_ads"],
+        outputs=["ad_ids"],
+        services=["facebook.search_ads", "ad_scraping.save_facebook_ad"],
+    )
 
     async def run(
         self,
@@ -135,6 +143,12 @@ class DownloadAssetsNode(BaseNode[TemplateIngestionState]):
     Uses AdScrapingService to download and store assets.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["ad_ids", "images_only"],
+        outputs=["image_asset_ids", "video_asset_ids", "total_images", "total_videos"],
+        services=["ad_scraping.scrape_and_store_assets"],
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[TemplateIngestionState, AgentDependencies]
@@ -234,6 +248,12 @@ class QueueForReviewNode(BaseNode[TemplateIngestionState]):
     The pipeline ends here - human reviews in Streamlit UI.
     After approval, templates appear in the library.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["image_asset_ids", "run_ai_analysis"],
+        outputs=["queued_count"],
+        services=["ad_scraping.queue_for_template_review"],
+    )
 
     async def run(
         self,

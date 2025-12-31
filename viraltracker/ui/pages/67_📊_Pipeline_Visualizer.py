@@ -32,8 +32,12 @@ def get_graph_viz():
         get_graph_mermaid_code,
         get_graph_image_bytes,
         get_node_details,
+        get_node_metadata,
+        get_pipeline_llm_summary,
+        get_graph_callers,
     )
-    return get_all_graphs_info, get_graph_mermaid_code, get_graph_image_bytes, get_node_details
+    return (get_all_graphs_info, get_graph_mermaid_code, get_graph_image_bytes,
+            get_node_details, get_node_metadata, get_pipeline_llm_summary, get_graph_callers)
 
 
 def get_logfire_status():
@@ -54,7 +58,8 @@ st.divider()
 
 # Load graph info
 try:
-    get_all_graphs_info, get_graph_mermaid_code, get_graph_image_bytes, get_node_details = get_graph_viz()
+    (get_all_graphs_info, get_graph_mermaid_code, get_graph_image_bytes,
+     get_node_details, get_node_metadata, get_pipeline_llm_summary, get_graph_callers) = get_graph_viz()
     graphs_info = get_all_graphs_info()
 except Exception as e:
     st.error(f"Failed to load graph information: {e}")
@@ -108,11 +113,23 @@ with tab1:
 
     for graph in graphs_info:
         with st.container():
-            col1, col2 = st.columns([1, 3])
+            # Get LLM summary and callers for this pipeline
+            llm_summary = get_pipeline_llm_summary(graph["name"])
+            callers = get_graph_callers(graph["name"])
+
+            col1, col2, col3 = st.columns([1, 2, 1])
 
             with col1:
                 st.markdown(f"### {graph['name'].replace('_', ' ').title()}")
                 st.metric("Nodes", graph["node_count"])
+
+                # LLM usage badge
+                if llm_summary["llm_count"] > 0:
+                    st.markdown(f"**LLM Nodes:** {llm_summary['llm_count']}")
+                    for model in llm_summary["llm_models"]:
+                        st.caption(f"• {model}")
+                else:
+                    st.caption("No LLM usage")
 
             with col2:
                 st.markdown(f"**{graph['description']}**")
@@ -121,6 +138,17 @@ with tab1:
                 # Show node flow
                 node_flow = " → ".join(graph["nodes"])
                 st.code(node_flow, language=None)
+
+            with col3:
+                st.markdown("**Triggered From:**")
+                if callers:
+                    for caller in callers:
+                        if caller.get("type") == "ui":
+                            st.markdown(f"📄 `{caller.get('page', 'Unknown')}`")
+                        else:
+                            st.markdown(f"🔧 `{caller.get('function', 'Unknown')}`")
+                else:
+                    st.caption("Not called from UI")
 
             st.divider()
 
@@ -174,25 +202,79 @@ with tab2:
 
             st.divider()
 
-            # Node details
+            # Callers info
+            callers = get_graph_callers(selected_pipeline)
+            if callers:
+                st.markdown("#### Triggered From")
+                for caller in callers:
+                    if caller.get("type") == "ui":
+                        st.markdown(f"📄 **UI Page:** `{caller.get('page', 'Unknown')}`")
+                    else:
+                        st.markdown(f"🔧 **Function:** `{caller.get('function', 'Unknown')}`")
+                st.divider()
+
+            # Node details with rich metadata
             st.markdown("#### Node Breakdown")
 
-            nodes = graph_info["nodes"]
-            for i, node in enumerate(nodes):
-                is_start = i == 0
-                is_end = i == len(nodes) - 1
+            # Get rich metadata
+            node_metadata_list = get_node_metadata(selected_pipeline)
 
-                with st.expander(f"**{i+1}. {node}**" + (" (Start)" if is_start else "") + (" (End)" if is_end else "")):
-                    st.markdown(f"**Position:** Step {i+1} of {len(nodes)}")
+            for node_meta in node_metadata_list:
+                is_start = node_meta["is_start"]
+                is_end = node_meta["is_end"]
+                node_name = node_meta["name"]
+                position = node_meta["position"]
 
-                    if is_start:
-                        st.info("This is the entry point for the pipeline.")
-                    if is_end:
-                        st.success("This is the final step before completion.")
+                # Build expander title with LLM indicator
+                title = f"**{position}. {node_name}**"
+                if is_start:
+                    title += " (Start)"
+                if is_end:
+                    title += " (End)"
+                if node_meta["uses_llm"]:
+                    title += f" 🤖 {node_meta['llm']}"
 
-                    # Show what comes next
+                with st.expander(title):
+                    # Description from docstring
+                    if node_meta.get("docstring"):
+                        st.markdown(f"*{node_meta['docstring'].split(chr(10))[0]}*")
+
+                    # Show metadata in columns
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.markdown("**Inputs:**")
+                        if node_meta["inputs"]:
+                            for inp in node_meta["inputs"]:
+                                st.markdown(f"  • `{inp}`")
+                        else:
+                            st.caption("  None")
+
+                        st.markdown("**Outputs:**")
+                        if node_meta["outputs"]:
+                            for out in node_meta["outputs"]:
+                                st.markdown(f"  • `{out}`")
+                        else:
+                            st.caption("  None")
+
+                    with col2:
+                        st.markdown("**Services:**")
+                        if node_meta["services"]:
+                            for svc in node_meta["services"]:
+                                st.markdown(f"  • `{svc}`")
+                        else:
+                            st.caption("  None")
+
+                        if node_meta["uses_llm"]:
+                            st.markdown("**LLM:**")
+                            st.markdown(f"  • {node_meta['llm']}")
+                            if node_meta["llm_purpose"]:
+                                st.caption(f"  Purpose: {node_meta['llm_purpose']}")
+
+                    # What comes next
                     if not is_end:
-                        st.markdown(f"**Next:** {nodes[i+1]}")
+                        next_node = node_metadata_list[position]["name"]
+                        st.markdown(f"**Next:** {next_node}")
 
             st.divider()
 

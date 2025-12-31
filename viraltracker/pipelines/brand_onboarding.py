@@ -15,11 +15,12 @@ Part of the Brand Research Pipeline (Phase 2A).
 
 import logging
 from dataclasses import dataclass
-from typing import Union
+from typing import ClassVar, Union
 from uuid import UUID
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from .metadata import NodeMetadata
 from .states import BrandOnboardingState
 from ..agent.dependencies import AgentDependencies
 
@@ -34,6 +35,12 @@ class ScrapeAdsNode(BaseNode[BrandOnboardingState]):
     Uses FacebookService to scrape ads via Apify, saving them
     to the facebook_ads table.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["ad_library_url", "brand_id", "max_ads"],
+        outputs=["ad_ids", "total_ads_scraped"],
+        services=["facebook.search_ads", "ad_scraping.save_facebook_ad"],
+    )
 
     async def run(
         self,
@@ -109,6 +116,12 @@ class DownloadAssetsNode(BaseNode[BrandOnboardingState]):
     and store them in Supabase storage.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["ad_ids", "brand_id"],
+        outputs=["image_asset_ids", "video_asset_ids", "total_images", "total_videos"],
+        services=["ad_scraping.scrape_and_store_assets"],
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[BrandOnboardingState, AgentDependencies]
@@ -169,6 +182,14 @@ class AnalyzeImagesNode(BaseNode[BrandOnboardingState]):
     extracting hooks, benefits, USPs, and visual style.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["image_asset_ids", "brand_id", "analyze_videos", "video_asset_ids"],
+        outputs=["image_analyses"],
+        services=["brand_research.analyze_images_batch"],
+        llm="Claude Vision",
+        llm_purpose="Extract hooks, benefits, USPs, and visual style from images",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[BrandOnboardingState, AgentDependencies]
@@ -208,6 +229,14 @@ class AnalyzeVideosNode(BaseNode[BrandOnboardingState]):
     Uses BrandResearchService to analyze videos,
     extracting transcripts, hooks, and storyboards.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["video_asset_ids"],
+        outputs=["video_analyses"],
+        services=["brand_research.analyze_videos_batch"],
+        llm="Gemini",
+        llm_purpose="Extract transcripts, hooks, and storyboards from videos (placeholder)",
+    )
 
     async def run(
         self,
@@ -250,6 +279,14 @@ class SynthesizeNode(BaseNode[BrandOnboardingState]):
     - Brand voice summary
     - Visual style guide
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["image_analyses", "video_analyses", "brand_id"],
+        outputs=["summary", "product_data"],
+        services=["brand_research.synthesize_insights", "brand_research.export_to_product_data"],
+        llm="Claude",
+        llm_purpose="Synthesize all analyses into comprehensive brand research summary",
+    )
 
     async def run(
         self,
