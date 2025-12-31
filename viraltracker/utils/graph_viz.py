@@ -283,10 +283,29 @@ def get_node_metadata(graph_name: str) -> List[Dict[str, Any]]:
         raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
 
     info = registry[graph_name]
-    graph = info["graph"]
 
-    # Get node classes from the graph
-    node_classes = graph.node_defs
+    # Get node classes from the registry
+    node_classes = info.get("node_classes", [])
+
+    # Fallback to node names if node_classes not available
+    if not node_classes:
+        node_names = info.get("nodes", [])
+        return [
+            {
+                "name": name,
+                "position": i + 1,
+                "is_start": i == 0,
+                "is_end": i == len(node_names) - 1,
+                "docstring": "",
+                "inputs": [],
+                "outputs": [],
+                "services": [],
+                "llm": None,
+                "llm_purpose": None,
+                "uses_llm": False,
+            }
+            for i, name in enumerate(node_names)
+        ]
 
     node_metadata = []
     for i, node_class in enumerate(node_classes):

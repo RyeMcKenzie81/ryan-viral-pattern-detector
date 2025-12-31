@@ -81,6 +81,8 @@ GRAPH_REGISTRY = {
         "description": "Scrape ads, analyze with AI, extract brand insights",
         "nodes": ["ScrapeAdsNode", "DownloadAssetsNode", "AnalyzeImagesNode",
                   "AnalyzeVideosNode", "SynthesizeNode"],
+        "node_classes": [ScrapeAdsNode, DownloadAssetsNode, AnalyzeImagesNode,
+                         AnalyzeVideosNode, SynthesizeNode],
         "callers": [],  # Not currently called from UI
     },
     "template_ingestion": {
@@ -89,6 +91,7 @@ GRAPH_REGISTRY = {
         "run_function": "run_template_ingestion",
         "description": "Scrape ads, queue for human review, create templates",
         "nodes": ["ScrapeAdsNode", "DownloadAssetsNode", "QueueForReviewNode"],
+        "node_classes": [TemplateScrapeAdsNode, TemplateDownloadAssetsNode, QueueForReviewNode],
         "callers": [{"type": "ui", "page": "28_📋_Template_Queue.py"}],
     },
     "belief_plan_execution": {
@@ -97,6 +100,7 @@ GRAPH_REGISTRY = {
         "run_function": "run_belief_plan_execution",
         "description": "Execute Phase 1-2 belief testing plans",
         "nodes": ["LoadPlanNode", "BuildPromptsNode", "GenerateImagesNode", "ReviewAdsNode"],
+        "node_classes": [LoadPlanNode, BuildPromptsNode, GenerateImagesNode, ReviewAdsNode],
         "callers": [{"type": "ui", "page": "27_🎯_Plan_Executor.py"}],
     },
     "reddit_sentiment": {
@@ -107,6 +111,9 @@ GRAPH_REGISTRY = {
         "nodes": ["ScrapeRedditNode", "EngagementFilterNode", "RelevanceFilterNode",
                   "SignalFilterNode", "IntentScoreNode", "TopSelectionNode",
                   "CategorizeNode", "SaveNode"],
+        "node_classes": [ScrapeRedditNode, EngagementFilterNode, RelevanceFilterNode,
+                         SignalFilterNode, IntentScoreNode, TopSelectionNode,
+                         CategorizeNode, SaveNode],
         "callers": [{"type": "ui", "page": "15_🔍_Reddit_Research.py"}],
     },
     "content_pipeline_mvp1": {
@@ -115,6 +122,7 @@ GRAPH_REGISTRY = {
         "run_function": "run_topic_discovery",
         "description": "Topic discovery pipeline (MVP 1)",
         "nodes": ["TopicDiscoveryNode", "TopicEvaluationNode", "TopicSelectionNode"],
+        "node_classes": [TopicDiscoveryNode, TopicEvaluationNode, TopicSelectionNode],
         "callers": [{"type": "ui", "page": "41_📝_Content_Pipeline.py"}],
     },
     "content_pipeline_mvp2": {
@@ -125,6 +133,9 @@ GRAPH_REGISTRY = {
         "nodes": ["TopicDiscoveryNode", "TopicEvaluationNode", "TopicSelectionNode",
                   "ScriptGenerationNode", "ScriptReviewNode", "ScriptApprovalNode",
                   "ELSConversionNode"],
+        "node_classes": [TopicDiscoveryNode, TopicEvaluationNode, TopicSelectionNode,
+                         ScriptGenerationNode, ScriptReviewNode, ScriptApprovalNode,
+                         ELSConversionNode],
         "callers": [{"type": "ui", "page": "41_📝_Content_Pipeline.py"}],
     },
 }
