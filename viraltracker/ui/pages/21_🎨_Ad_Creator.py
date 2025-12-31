@@ -79,6 +79,8 @@ if 'selected_angle_id' not in st.session_state:
     st.session_state.selected_angle_id = None
 if 'selected_angle_data' not in st.session_state:
     st.session_state.selected_angle_data = None
+if 'match_template_structure' not in st.session_state:
+    st.session_state.match_template_structure = False
 if 'additional_instructions' not in st.session_state:
     st.session_state.additional_instructions = ""
 if 'selected_templates_for_generation' not in st.session_state:
@@ -324,7 +326,8 @@ async def run_workflow(
     persona_id: str = None,
     variant_id: str = None,
     additional_instructions: str = None,
-    angle_data: dict = None
+    angle_data: dict = None,
+    match_template_structure: bool = False
 ):
     """Run the ad creation workflow with optional export.
 
@@ -347,6 +350,7 @@ async def run_workflow(
         variant_id: Optional variant UUID for specific flavor/size
         additional_instructions: Optional run-specific instructions for ad generation
         angle_data: Dict with angle info for belief_first mode {id, name, belief_statement, explanation}
+        match_template_structure: If True with belief_first, analyze template and adapt belief to match
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -379,7 +383,8 @@ async def run_workflow(
         persona_id=persona_id,
         variant_id=variant_id,
         additional_instructions=additional_instructions,
-        angle_data=angle_data
+        angle_data=angle_data,
+        match_template_structure=match_template_structure
     )
 
     # Handle exports if configured
@@ -761,6 +766,14 @@ else:
                         st.markdown(f"**Belief:** {selected_angle.belief_statement}")
                         if selected_angle.explanation:
                             st.markdown(f"**Why it works:** {selected_angle.explanation}")
+
+                    # Option to match reference template structure
+                    st.session_state.match_template_structure = st.checkbox(
+                        "Match reference template structure",
+                        value=st.session_state.get('match_template_structure', False),
+                        help="Analyze the reference ad's headline style and apply it to your belief statement",
+                        key="match_template_structure_checkbox"
+                    )
 
     st.divider()
 
@@ -1465,6 +1478,8 @@ else:
 
             # Get angle_data for belief_first mode
             angle_data = st.session_state.selected_angle_data if content_source == "belief_first" else None
+            # Get match_template_structure flag for belief_first mode
+            match_template = st.session_state.match_template_structure if content_source == "belief_first" else False
 
             # Run the workflow
             result = asyncio.run(run_workflow(
@@ -1485,7 +1500,8 @@ else:
                 persona_id=persona_id,
                 variant_id=variant_id,
                 additional_instructions=add_instructions,
-                angle_data=angle_data
+                angle_data=angle_data,
+                match_template_structure=match_template
             ))
 
             # Record template usage if a scraped template was used

@@ -2941,6 +2941,67 @@ async def generate_benefit_variations(
         raise Exception(f"Failed to generate benefit variations: {str(e)}")
 
 
+async def adapt_belief_to_template(
+    belief_statement: str,
+    template_angle: Dict[str, Any],
+    product: Dict[str, Any],
+    variation_number: int = 1
+) -> str:
+    """
+    Adapt a belief statement to match a template's structure/tone.
+
+    This helper function takes a belief statement (from the belief-first planning
+    framework) and rewrites it to match the structure of an extracted template
+    angle from a reference ad.
+
+    Args:
+        belief_statement: The core belief to communicate
+        template_angle: Extracted template structure from reference ad
+            (from extract_template_angle)
+        product: Product data for context
+        variation_number: Which variation (for diversity in output)
+
+    Returns:
+        Headline text that communicates the belief in the template's style
+    """
+    from pydantic_ai import Agent
+    from viraltracker.core.config import Config
+
+    prompt = f"""You are a direct response copywriter. Your task is to rewrite a belief statement
+to match a specific headline template structure.
+
+BELIEF TO COMMUNICATE:
+{belief_statement}
+
+TEMPLATE STRUCTURE:
+- Type: {template_angle.get('angle_type', 'unknown')}
+- Pattern: {template_angle.get('messaging_template', '')}
+- Tone: {template_angle.get('tone', 'casual')}
+- Key Elements: {', '.join(template_angle.get('key_elements', []))}
+- Guidance: {template_angle.get('adaptation_guidance', '')}
+
+PRODUCT: {product.get('name', '')}
+
+RULES:
+1. Keep the CORE BELIEF intact - the meaning must be preserved
+2. Apply the template's STRUCTURE and TONE
+3. Match approximate word count of template pattern
+4. Use first-person if template uses it ("I", "My")
+5. This is variation #{variation_number} - make it unique but on-message
+6. Do NOT invent claims, offers, or timeframes not in the belief
+7. Output ONLY the headline text, nothing else
+
+Write the adapted headline:"""
+
+    agent = Agent(
+        model=Config.get_model("CREATIVE"),
+        system_prompt="You are a direct response copywriter. Output only the headline text."
+    )
+
+    result = await agent.run(prompt)
+    return result.data.strip().strip('"').strip("'")
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
@@ -2972,7 +3033,8 @@ async def complete_ad_workflow(
     persona_id: Optional[str] = None,
     variant_id: Optional[str] = None,
     additional_instructions: Optional[str] = None,
-    angle_data: Optional[Dict] = None
+    angle_data: Optional[Dict] = None,
+    match_template_structure: bool = False
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -3024,6 +3086,9 @@ async def complete_ad_workflow(
             with brand's ad_creation_notes to guide the AI in creating ads.
         angle_data: Dict with angle info for belief_first mode. Required when
             content_source="belief_first". Structure: {id, name, belief_statement, explanation}
+        match_template_structure: If True with belief_first mode, extract the reference ad's
+            template structure and adapt the belief statement to match it. Creates headlines
+            that follow the template's style while communicating the belief.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3310,18 +3375,47 @@ async def complete_ad_workflow(
             logger.info(f"Stage 6: Using belief-first mode with angle: {angle_data.get('name', 'Unknown')}")
             logger.info(f"  Belief: {angle_data.get('belief_statement', '')[:100]}...")
 
+            # If match_template_structure is True, extract template and adapt beliefs
+            template_angle = None
+            if match_template_structure:
+                logger.info("  → Match template structure enabled - extracting template...")
+                template_angle = await extract_template_angle(
+                    ctx=ctx,
+                    reference_ad_storage_path=reference_ad_path,
+                    ad_analysis=ad_analysis
+                )
+                logger.info(f"  Template type: {template_angle.get('angle_type', 'unknown')}")
+                logger.info(f"  Template pattern: {template_angle.get('messaging_template', '')[:80]}...")
+
             # Generate variations using the angle's belief statement
             # Create hook-like structures from the angle data for each variation
             selected_hooks = []
+            belief_text = angle_data.get("belief_statement", "")
+
             for i in range(num_variations):
+                # If we have a template, adapt the belief to fit it
+                if template_angle and match_template_structure:
+                    logger.info(f"  Adapting belief to template (variation {i + 1})...")
+                    adapted_text = await adapt_belief_to_template(
+                        belief_statement=belief_text,
+                        template_angle=template_angle,
+                        product=product,
+                        variation_number=i + 1
+                    )
+                    logger.info(f"    → {adapted_text[:60]}...")
+                    content_type = "belief_angle_templated"
+                else:
+                    adapted_text = belief_text
+                    content_type = "belief_angle"
+
                 selected_hooks.append({
                     "hook_id": angle_data.get("id", ""),
-                    "hook_text": angle_data.get("belief_statement", ""),
-                    "adapted_text": angle_data.get("belief_statement", ""),  # Required by workflow
+                    "hook_text": belief_text,
+                    "adapted_text": adapted_text,
                     "angle_name": angle_data.get("name", ""),
                     "explanation": angle_data.get("explanation", ""),
                     "variation_number": i + 1,
-                    "content_type": "belief_angle"
+                    "content_type": content_type
                 })
 
             logger.info(f"Created {len(selected_hooks)} belief-based variations")
