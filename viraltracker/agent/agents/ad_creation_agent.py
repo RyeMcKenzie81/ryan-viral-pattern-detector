@@ -10,7 +10,7 @@ This agent orchestrates the complete workflow:
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 from pydantic_ai import Agent, RunContext
 from ..dependencies import AgentDependencies
