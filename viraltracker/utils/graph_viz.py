@@ -27,70 +27,16 @@ logger = logging.getLogger(__name__)
 
 def _get_pipeline_registry() -> Dict[str, Dict[str, Any]]:
     """
-    Lazy-load pipeline registry to avoid circular imports.
+    Load pipeline registry from viraltracker.pipelines.
+
+    The registry is maintained in pipelines/__init__.py - add new pipelines
+    there and they'll automatically appear in the visualizer.
 
     Returns:
-        Dictionary mapping pipeline names to their graph objects and start nodes.
+        Dictionary mapping pipeline names to their graph objects and metadata.
     """
-    from viraltracker.pipelines import (
-        brand_onboarding_graph,
-        template_ingestion_graph,
-        belief_plan_execution_graph,
-        reddit_sentiment_graph,
-        ScrapeAdsNode,
-        TemplateScrapeAdsNode,
-        LoadPlanNode,
-        ScrapeRedditNode,
-    )
-    from viraltracker.services.content_pipeline.orchestrator import (
-        content_pipeline_graph_mvp1,
-        content_pipeline_graph_mvp2,
-        TopicDiscoveryNode,
-    )
-
-    return {
-        "brand_onboarding": {
-            "graph": brand_onboarding_graph,
-            "start_node": ScrapeAdsNode,
-            "description": "Scrape ads, analyze with AI, extract brand insights",
-            "nodes": ["ScrapeAdsNode", "DownloadAssetsNode", "AnalyzeImagesNode",
-                      "AnalyzeVideosNode", "SynthesizeNode"],
-        },
-        "template_ingestion": {
-            "graph": template_ingestion_graph,
-            "start_node": TemplateScrapeAdsNode,
-            "description": "Scrape ads, queue for human review, create templates",
-            "nodes": ["ScrapeAdsNode", "DownloadAssetsNode", "QueueForReviewNode"],
-        },
-        "belief_plan_execution": {
-            "graph": belief_plan_execution_graph,
-            "start_node": LoadPlanNode,
-            "description": "Execute Phase 1-2 belief testing plans",
-            "nodes": ["LoadPlanNode", "BuildPromptsNode", "GenerateImagesNode", "ReviewAdsNode"],
-        },
-        "reddit_sentiment": {
-            "graph": reddit_sentiment_graph,
-            "start_node": ScrapeRedditNode,
-            "description": "Scrape Reddit, analyze sentiment, extract quotes",
-            "nodes": ["ScrapeRedditNode", "EngagementFilterNode", "RelevanceFilterNode",
-                      "SignalFilterNode", "IntentScoreNode", "TopSelectionNode",
-                      "CategorizeNode", "SaveNode"],
-        },
-        "content_pipeline_mvp1": {
-            "graph": content_pipeline_graph_mvp1,
-            "start_node": TopicDiscoveryNode,
-            "description": "Topic discovery pipeline (MVP 1)",
-            "nodes": ["TopicDiscoveryNode", "TopicEvaluationNode", "TopicSelectionNode"],
-        },
-        "content_pipeline_mvp2": {
-            "graph": content_pipeline_graph_mvp2,
-            "start_node": TopicDiscoveryNode,
-            "description": "Content pipeline through script approval (MVP 2)",
-            "nodes": ["TopicDiscoveryNode", "TopicEvaluationNode", "TopicSelectionNode",
-                      "ScriptGenerationNode", "ScriptReviewNode", "ScriptApprovalNode",
-                      "ELSConversionNode"],
-        },
-    }
+    from viraltracker.pipelines import GRAPH_REGISTRY
+    return GRAPH_REGISTRY
 
 
 # Lazy-loaded registry
