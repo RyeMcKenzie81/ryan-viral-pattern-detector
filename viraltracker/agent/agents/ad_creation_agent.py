@@ -2999,7 +2999,7 @@ Write the adapted headline:"""
     )
 
     result = await agent.run(prompt)
-    return result.data.strip().strip('"').strip("'")
+    return result.output.strip().strip('"').strip("'")
 
 
 @ad_creation_agent.tool(
