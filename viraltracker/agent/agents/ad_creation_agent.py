@@ -3399,7 +3399,7 @@ async def complete_ad_workflow(
                     adapted_text = await adapt_belief_to_template(
                         belief_statement=belief_text,
                         template_angle=template_angle,
-                        product=product,
+                        product=product_dict,
                         variation_number=i + 1
                     )
                     logger.info(f"    → {adapted_text[:60]}...")
