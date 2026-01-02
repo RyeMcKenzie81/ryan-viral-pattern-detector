@@ -18,7 +18,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 
-from viraltracker.config import get_supabase
+from viraltracker.core.database import get_supabase_client
 from viraltracker.services.models import ProductContext
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class ProductContextService:
 
     def __init__(self, supabase=None):
         """Initialize with optional Supabase client injection."""
-        self.supabase = supabase or get_supabase()
+        self.supabase = supabase or get_supabase_client()
 
     def get_product_context(self, product_id: UUID) -> Optional[ProductContext]:
         """
