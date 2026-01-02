@@ -1082,3 +1082,324 @@ Extract only genuine, insightful quotes - quality over quantity."""
         llm_cost = sonnet_cost + opus_cost
 
         return apify_cost, llm_cost
+
+    # =========================================================================
+    # BELIEF EXTRACTION METHODS
+    # =========================================================================
+
+    async def extract_belief_signals(
+        self,
+        posts: List[RedditPost],
+        signal_types: Optional[List[str]] = None,
+        topic_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract belief-relevant signals from Reddit posts for the belief pipeline.
+
+        This is specifically designed for the belief_first_reverse_engineer pipeline
+        to populate Research Canvas sections 1-9.
+
+        Args:
+            posts: List of RedditPost objects to analyze
+            signal_types: Types of signals to extract:
+                - "pain": Pain points and symptoms
+                - "solutions": Solutions attempted and outcomes
+                - "patterns": Pattern detection (triggers, improves, etc.)
+                - "language": Customer terminology
+                - "jtbd": JTBD candidates
+            topic_context: Context about the topic/product
+
+        Returns:
+            Dict with extracted signals structured for RedditResearchBundle:
+            {
+                "posts_analyzed_count": int,
+                "comments_analyzed_count": int,
+                "extracted_pain": [...],
+                "extracted_solutions_attempted": [...],
+                "pattern_detection": {...},
+                "extracted_language_bank": {...},
+                "jtbd_candidates": {...},
+                "hypothesis_support_scores": [...]
+            }
+        """
+        if signal_types is None:
+            signal_types = ["pain", "solutions", "patterns", "language", "jtbd"]
+
+        result = {
+            "posts_analyzed_count": len(posts),
+            "comments_analyzed_count": 0,
+            "extracted_pain": [],
+            "extracted_solutions_attempted": [],
+            "pattern_detection": {
+                "triggers": [],
+                "worsens": [],
+                "improves": [],
+                "helps": [],
+                "fails": [],
+            },
+            "extracted_language_bank": {},
+            "jtbd_candidates": {
+                "functional": [],
+                "emotional": [],
+                "identity": [],
+            },
+            "hypothesis_support_scores": [],
+        }
+
+        if not posts:
+            return result
+
+        # Process in batches
+        batch_size = 5
+        for batch in self._batch(posts, batch_size):
+            try:
+                batch_result = await self._extract_belief_signals_batch(
+                    batch, signal_types, topic_context
+                )
+                self._merge_belief_signals(result, batch_result)
+            except Exception as e:
+                logger.warning(f"Failed to extract belief signals from batch: {e}")
+
+        return result
+
+    async def _extract_belief_signals_batch(
+        self,
+        posts: List[RedditPost],
+        signal_types: List[str],
+        topic_context: Optional[str],
+    ) -> Dict[str, Any]:
+        """Extract belief signals from a batch of posts using LLM."""
+        prompt = self._build_belief_extraction_prompt(posts, signal_types, topic_context)
+
+        # Use Opus for deep extraction
+        agent = Agent(
+            DEEP_MODEL,
+            system_prompt="You are an expert at extracting belief-relevant signals from Reddit discussions for marketing research."
+        )
+
+        response = await agent.run(prompt)
+
+        # Parse the response
+        return self._parse_belief_extraction_response(response.data)
+
+    def _build_belief_extraction_prompt(
+        self,
+        posts: List[RedditPost],
+        signal_types: List[str],
+        topic_context: Optional[str],
+    ) -> str:
+        """Build prompt for belief signal extraction."""
+        posts_json = [
+            {
+                "index": i,
+                "title": p.title,
+                "body": p.body[:1500] if p.body else None,
+                "subreddit": p.subreddit,
+            }
+            for i, p in enumerate(posts)
+        ]
+
+        signal_instructions = []
+
+        if "pain" in signal_types:
+            signal_instructions.append("""
+1. **Pain Signals**: Extract specific symptoms, frustrations, complaints
+   - Physical symptoms with specificity ("every morning I wake up with...")
+   - Emotional frustrations ("I'm so tired of...")
+   - Behavioral workarounds ("I have to...")""")
+
+        if "solutions" in signal_types:
+            signal_instructions.append("""
+2. **Solutions Attempted**: What they've tried and outcomes
+   - What worked briefly ("X helped at first but...")
+   - What stopped working ("used to work, now...")
+   - What never worked ("tried X, complete waste")
+   - Why they think it failed ("I think it didn't work because...")""")
+
+        if "patterns" in signal_types:
+            signal_instructions.append("""
+3. **Pattern Signals**: Recurring sequences and correlations
+   - Triggers: What makes it worse ("every time I...", "whenever...")
+   - Improvers: What helps temporarily ("the only thing that helps...")
+   - Timing patterns ("worse in the morning", "after eating...")""")
+
+        if "language" in signal_types:
+            signal_instructions.append("""
+4. **Language Bank**: Customer terminology
+   - How they describe the problem (their exact words)
+   - Metaphors they use ("feels like...", "it's like...")
+   - Emotional intensity words""")
+
+        if "jtbd" in signal_types:
+            signal_instructions.append("""
+5. **JTBD Candidates**: Desired progress
+   - Functional: What they want to accomplish ("I just want to...")
+   - Emotional: How they want to feel ("I want to feel...")
+   - Identity: Who they want to become ("I want to be someone who...")""")
+
+        return f"""CONTEXT:
+{f"Topic: {topic_context}" if topic_context else "General market research"}
+
+TASK:
+Analyze these Reddit posts and extract belief-relevant signals for marketing research.
+
+WHAT TO EXTRACT:
+{''.join(signal_instructions)}
+
+POSTS TO ANALYZE:
+{json.dumps(posts_json, indent=2)}
+
+RETURN JSON:
+{{
+    "extracted_pain": [
+        {{"signal": "exact quote or paraphrase", "signal_type": "physical|emotional|behavioral", "post_index": 0, "confidence": 0.9}}
+    ],
+    "extracted_solutions_attempted": [
+        {{"signal": "what they tried", "outcome": "worked_briefly|stopped_working|never_worked", "why_failed": "their explanation", "post_index": 0}}
+    ],
+    "pattern_detection": {{
+        "triggers": ["trigger 1", "trigger 2"],
+        "worsens": ["factor 1"],
+        "improves": ["factor 1"],
+        "helps": ["thing 1"],
+        "fails": ["thing 1"]
+    }},
+    "extracted_language_bank": {{
+        "symptom_name": ["phrase 1", "phrase 2"]
+    }},
+    "jtbd_candidates": {{
+        "functional": ["want 1"],
+        "emotional": ["feeling 1"],
+        "identity": ["become 1"]
+    }}
+}}
+
+Focus on SPECIFIC, ACTIONABLE insights - not generic observations."""
+
+    def _parse_belief_extraction_response(
+        self,
+        response_text: str
+    ) -> Dict[str, Any]:
+        """Parse belief extraction LLM response."""
+        try:
+            text = response_text.strip()
+
+            # Handle markdown code blocks
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+
+            return json.loads(text)
+
+        except (json.JSONDecodeError, IndexError) as e:
+            logger.warning(f"Failed to parse belief extraction response: {e}")
+            return {
+                "extracted_pain": [],
+                "extracted_solutions_attempted": [],
+                "pattern_detection": {},
+                "extracted_language_bank": {},
+                "jtbd_candidates": {},
+            }
+
+    def _merge_belief_signals(
+        self,
+        result: Dict[str, Any],
+        batch_result: Dict[str, Any]
+    ) -> None:
+        """Merge batch results into main result dict."""
+        # Merge pain signals
+        result["extracted_pain"].extend(
+            batch_result.get("extracted_pain", [])
+        )
+
+        # Merge solutions
+        result["extracted_solutions_attempted"].extend(
+            batch_result.get("extracted_solutions_attempted", [])
+        )
+
+        # Merge patterns
+        batch_patterns = batch_result.get("pattern_detection", {})
+        for key in ["triggers", "worsens", "improves", "helps", "fails"]:
+            result["pattern_detection"][key].extend(
+                batch_patterns.get(key, [])
+            )
+
+        # Merge language bank
+        batch_language = batch_result.get("extracted_language_bank", {})
+        for symptom, phrases in batch_language.items():
+            if symptom not in result["extracted_language_bank"]:
+                result["extracted_language_bank"][symptom] = []
+            result["extracted_language_bank"][symptom].extend(phrases)
+
+        # Merge JTBD
+        batch_jtbd = batch_result.get("jtbd_candidates", {})
+        for category in ["functional", "emotional", "identity"]:
+            result["jtbd_candidates"][category].extend(
+                batch_jtbd.get(category, [])
+            )
+
+    async def search_for_belief_signals(
+        self,
+        subreddits: List[str],
+        search_queries: List[str],
+        signal_types: Optional[List[str]] = None,
+        limit: int = 50,
+        topic_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Combined scrape + extract method for belief pipeline.
+
+        Convenience method that:
+        1. Scrapes Reddit using provided queries/subreddits
+        2. Filters by engagement
+        3. Extracts belief signals
+
+        Args:
+            subreddits: List of subreddits to search
+            search_queries: Search terms
+            signal_types: Types of signals to extract
+            limit: Max posts to analyze
+            topic_context: Context about the topic
+
+        Returns:
+            RedditResearchBundle-compatible dict with all signals
+        """
+        # Build scrape config
+        config = RedditScrapeConfig(
+            search_queries=search_queries,
+            subreddits=subreddits,
+            max_posts=limit * 2,  # Get extra, filter down
+            timeframe="year",
+            min_upvotes=5,
+            min_comments=2,
+            scrape_comments=False,  # Just posts for speed
+        )
+
+        # Scrape
+        posts, _ = self.scrape_reddit(config)
+        logger.info(f"Scraped {len(posts)} posts from Reddit")
+
+        # Filter by engagement
+        filtered = self.filter_by_engagement(posts, min_upvotes=5, min_comments=2)
+        logger.info(f"Filtered to {len(filtered)} posts by engagement")
+
+        # Limit
+        if len(filtered) > limit:
+            filtered = filtered[:limit]
+
+        # Extract belief signals
+        result = await self.extract_belief_signals(
+            filtered,
+            signal_types=signal_types,
+            topic_context=topic_context,
+        )
+
+        # Add query metadata
+        result["queries_run"] = [
+            {"subreddit": sub, "search_term": query}
+            for sub in subreddits
+            for query in search_queries
+        ]
+
+        return result

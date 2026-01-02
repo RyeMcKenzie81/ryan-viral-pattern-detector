@@ -35,6 +35,8 @@ from ..services.product_url_service import ProductURLService
 from ..services.content_pipeline.services.content_pipeline_service import ContentPipelineService
 from ..services.content_pipeline.services.sora_service import SoraService
 from ..services.reddit_sentiment_service import RedditSentimentService
+from ..services.product_context_service import ProductContextService
+from ..services.belief_analysis_service import BeliefAnalysisService
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,8 @@ class AgentDependencies(BaseModel):
     product_url: ProductURLService
     content_pipeline: ContentPipelineService
     reddit_sentiment: RedditSentimentService
+    product_context: ProductContextService
+    belief_analysis: BeliefAnalysisService
     sora: SoraService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
@@ -238,7 +242,15 @@ class AgentDependencies(BaseModel):
         # Initialize RedditSentimentService for Reddit sentiment analysis
         reddit_sentiment = RedditSentimentService()
         logger.info("RedditSentimentService initialized")
-        
+
+        # Initialize ProductContextService for product context retrieval
+        product_context = ProductContextService()
+        logger.info("ProductContextService initialized")
+
+        # Initialize BeliefAnalysisService for belief-first canvas analysis
+        belief_analysis = BeliefAnalysisService()
+        logger.info("BeliefAnalysisService initialized")
+
         # Initialize SoraService
         sora = SoraService()
         logger.info("SoraService initialized")
@@ -265,6 +277,8 @@ class AgentDependencies(BaseModel):
             product_url=product_url,
             content_pipeline=content_pipeline,
             reddit_sentiment=reddit_sentiment,
+            product_context=product_context,
+            belief_analysis=belief_analysis,
             sora=sora,
             docs=docs,
             project_name=project_name

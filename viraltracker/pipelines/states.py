@@ -312,3 +312,110 @@ class RedditSentimentState:
     # Cost tracking
     apify_cost: float = 0.0
     llm_cost_estimate: float = 0.0
+
+
+@dataclass
+class BeliefReverseEngineerState:
+    """
+    State for belief-first reverse engineer pipeline.
+
+    Pipeline (draft_mode):
+    FetchProductContext → ParseMessages → LayerClassifier →
+    DraftCanvasAssembler → ClaimRiskAndBoundary → IntegrityCheck → Renderer
+
+    Pipeline (research_mode adds):
+    ... → RedditResearchPlan → RedditScrape → ResearchExtractor →
+    UMP_UMS_Updater → ClaimRiskAndBoundary → IntegrityCheck → Renderer
+
+    This pipeline:
+    1. Takes rough messaging inputs (hooks, claims)
+    2. Fetches product truth from DB
+    3. Classifies messages into belief-first layers
+    4. Assembles a draft Belief-First Master Canvas
+    5. (Optional) Runs Reddit research to populate sections 1-9
+    6. Checks for compliance risks and promise boundary violations
+    7. Validates integrity (research precedes framing, etc.)
+    8. Renders markdown output
+
+    Attributes:
+        product_id: Product to pull context from
+        messages: List of rough messaging hooks/claims
+        draft_mode: If True, skip Reddit research
+        research_mode: If True, run Reddit research pack
+        ...
+    """
+
+    # Input parameters (required)
+    product_id: UUID
+    messages: List[str]
+
+    # Mode flags
+    draft_mode: bool = True
+    research_mode: bool = False
+
+    # Optional hints
+    format_hint: Optional[str] = None  # ad, landing_page, video, email
+    persona_hint: Optional[str] = None  # ex: "GLP-1 user", "busy parent"
+
+    # Reddit config (required if research_mode=True)
+    subreddits: List[str] = field(default_factory=list)
+    search_terms: List[str] = field(default_factory=list)
+    scrape_config: Dict[str, Any] = field(default_factory=lambda: {
+        "max_posts_per_query": 25,
+        "max_comments_per_post": 50,
+        "min_score_threshold": 5,
+        "time_window_days": 365,
+        "include_top_level_comments_only": True,
+        "dedupe": True,
+    })
+
+    # Populated by FetchProductContextNode
+    product_context: Optional[Dict] = None
+
+    # Populated by ParseMessagesNode
+    parsed_messages: Optional[List[Dict]] = None
+
+    # Populated by LayerClassifierNode
+    message_classifications: Optional[List[Dict]] = None
+
+    # Populated by DraftCanvasAssemblerNode
+    draft_canvas: Optional[Dict] = None
+
+    # Populated by RedditResearchPlanNode (if research_mode)
+    research_plan: Optional[Dict] = None
+
+    # Populated by RedditScrapeNode (if research_mode)
+    reddit_raw: Optional[List[Dict]] = None
+
+    # Populated by ResearchExtractorNode (if research_mode)
+    reddit_bundle: Optional[Dict] = None
+
+    # Populated by UMP_UMS_UpdaterNode (if research_mode)
+    updated_canvas: Optional[Dict] = None
+
+    # Populated by ClaimRiskAndBoundaryNode
+    risk_flags: List[Dict] = field(default_factory=list)
+
+    # Populated by IntegrityCheckNode
+    integrity_results: Optional[List[Dict]] = None
+
+    # Populated by RendererNode
+    final_canvas: Optional[Dict] = None
+    rendered_markdown: Optional[str] = None
+
+    # Trace map for audit trail
+    trace_map: List[Dict] = field(default_factory=list)
+
+    # Gaps identified
+    research_needed: List[Dict] = field(default_factory=list)
+    proof_needed: List[Dict] = field(default_factory=list)
+
+    # Tracking
+    current_step: str = "pending"
+    error: Optional[str] = None
+    pipeline_run_id: Optional[str] = None
+
+    # Metrics
+    posts_analyzed: int = 0
+    comments_analyzed: int = 0
+    canvas_completeness_score: float = 0.0
