@@ -61,17 +61,40 @@ Enhanced `viraltracker/ui/pages/67_📊_Pipeline_Visualizer.py`:
 - `get_pipeline_llm_summary(graph_name)` - LLM usage summary
 - `get_graph_callers(graph_name)` - UI pages that trigger the pipeline
 
+## Bug Fix: node_classes in Registry
+
+After initial deployment, `get_node_metadata()` failed with:
+```
+AttributeError: 'str' object has no attribute '__name__'
+```
+
+**Root Cause:** `graph.node_defs` returned strings instead of actual classes.
+
+**Fix:** Added `node_classes` field to `GRAPH_REGISTRY` with actual class references:
+
+```python
+"reddit_sentiment": {
+    "graph": reddit_sentiment_graph,
+    "nodes": ["ScrapeRedditNode", ...],  # String names (for display)
+    "node_classes": [ScrapeRedditNode, ...],  # Actual classes (for metadata)
+    ...
+}
+```
+
+Updated `get_node_metadata()` to use `info.get("node_classes", [])` instead of `graph.node_defs`.
+
 ## Files Modified
 
 | File | Changes |
 |------|---------|
 | `viraltracker/pipelines/metadata.py` | Created NodeMetadata class |
+| `viraltracker/pipelines/__init__.py` | Added `node_classes` to GRAPH_REGISTRY |
 | `viraltracker/pipelines/brand_onboarding.py` | Added metadata to 5 nodes |
 | `viraltracker/pipelines/template_ingestion.py` | Added metadata to 3 nodes |
 | `viraltracker/pipelines/belief_plan_execution.py` | Added metadata to 4 nodes |
 | `viraltracker/pipelines/reddit_sentiment.py` | Added metadata to 8 nodes |
 | `viraltracker/services/content_pipeline/orchestrator.py` | Added metadata to 7 nodes |
-| `viraltracker/utils/graph_viz.py` | Added 3 new functions |
+| `viraltracker/utils/graph_viz.py` | Added 3 new functions + bug fix |
 | `viraltracker/ui/pages/67_📊_Pipeline_Visualizer.py` | Enhanced UI display |
 
 ## Testing
