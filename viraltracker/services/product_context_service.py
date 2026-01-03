@@ -90,13 +90,28 @@ class ProductContextService:
     def _fetch_product(self, product_id: UUID) -> Optional[Dict[str, Any]]:
         """Fetch base product from products table."""
         try:
+            # Start with essential columns, then try to get optional ones
             result = self.supabase.table("products").select(
-                "id, name, category, format, target_audience, "
-                "current_offer, promise_boundary, contraindications, "
-                "macros, brand_id, brands(id, name)"
+                "*"
             ).eq("id", str(product_id)).execute()
 
-            return result.data[0] if result.data else None
+            if not result.data:
+                return None
+
+            product = result.data[0]
+
+            # Try to get brand info separately if needed
+            if product.get("brand_id"):
+                try:
+                    brand_result = self.supabase.table("brands").select(
+                        "id, name"
+                    ).eq("id", product["brand_id"]).execute()
+                    if brand_result.data:
+                        product["brands"] = brand_result.data[0]
+                except Exception:
+                    pass  # Brand info is optional
+
+            return product
         except Exception as e:
             logger.error(f"Failed to fetch product {product_id}: {e}")
             return None
