@@ -334,6 +334,23 @@ def render_results_section(result: Dict):
         render_trace_map(result.get("trace_map", []))
 
 
+def safe_json_parse(value, default=None):
+    """Safely parse a value that might be JSON string or already a dict/list."""
+    import json
+    if default is None:
+        default = {}
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return default
+
+
 def render_canvas_view(result: Dict):
     """Render the canvas output."""
     # Show rendered markdown if available
@@ -343,23 +360,33 @@ def render_canvas_view(result: Dict):
         with st.expander("📝 Rendered Canvas (Markdown)", expanded=True):
             st.markdown(rendered_markdown)
 
-    # Show JSON structure
-    canvas = result.get("canvas", {})
+    # Show JSON structure - parse if string
+    canvas = safe_json_parse(result.get("canvas", {}))
+
+    # Also check for separate research_canvas/belief_canvas fields (from DB)
+    if not canvas or (not canvas.get("research_canvas") and not canvas.get("belief_canvas")):
+        research_canvas = safe_json_parse(result.get("research_canvas", {}))
+        belief_canvas = safe_json_parse(result.get("belief_canvas", {}))
+        if research_canvas or belief_canvas:
+            canvas = {"research_canvas": research_canvas, "belief_canvas": belief_canvas}
 
     if canvas:
         col1, col2 = st.columns(2)
 
         with col1:
             with st.expander("🔬 Research Canvas (Sections 1-9)", expanded=False):
-                st.json(canvas.get("research_canvas", {}))
+                st.json(safe_json_parse(canvas.get("research_canvas", {})))
 
         with col2:
             with st.expander("🎯 Belief Canvas (Sections 10-15)", expanded=False):
-                st.json(canvas.get("belief_canvas", {}))
+                st.json(safe_json_parse(canvas.get("belief_canvas", {})))
 
 
-def render_risk_flags(risk_flags: List):
+def render_risk_flags(risk_flags):
     """Render risk flags with severity indicators."""
+    # Parse if JSON string
+    risk_flags = safe_json_parse(risk_flags, default=[])
+
     if not risk_flags:
         st.success("No risk flags detected!")
         return
@@ -392,10 +419,13 @@ def render_risk_flags(risk_flags: List):
             st.markdown(f"  **Affected fields:** {', '.join(affected)}")
 
 
-def render_gaps(gaps: Dict):
+def render_gaps(gaps):
     """Render gaps analysis."""
-    research_needed = gaps.get("research_needed", [])
-    proof_needed = gaps.get("proof_needed", [])
+    # Parse if JSON string
+    gaps = safe_json_parse(gaps, default={})
+
+    research_needed = safe_json_parse(gaps.get("research_needed", []), default=[])
+    proof_needed = safe_json_parse(gaps.get("proof_needed", []), default=[])
 
     col1, col2 = st.columns(2)
 
@@ -422,8 +452,11 @@ def render_gaps(gaps: Dict):
             st.success("No proof gaps!")
 
 
-def render_trace_map(trace_map: List):
+def render_trace_map(trace_map):
     """Render the trace map showing field sources."""
+    # Parse if JSON string
+    trace_map = safe_json_parse(trace_map, default=[])
+
     if not trace_map:
         st.info("No trace map available.")
         return
