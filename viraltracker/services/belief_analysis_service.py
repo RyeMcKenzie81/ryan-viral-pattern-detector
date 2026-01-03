@@ -591,10 +591,13 @@ class BeliefAnalysisService:
         for i, classification in enumerate(classifications):
             msg = classification.get("message", "")
             msg_ref = f"message[{i}]"
-            primary_layer = classification.get("primary_layer", "OTHER")
+            # Handle both enum value (lowercase) and enum name (uppercase)
+            primary_layer = classification.get("primary_layer", "other")
+            if isinstance(primary_layer, str):
+                primary_layer = primary_layer.lower()
 
             # UMP seeds
-            if primary_layer == "UMP_SEED":
+            if primary_layer == "ump_seed":
                 if not bc["unique_mechanism"]["ump"].get("reframed_root_cause"):
                     bc["unique_mechanism"]["ump"]["reframed_root_cause"] = msg
                     trace_map.append({
@@ -605,7 +608,7 @@ class BeliefAnalysisService:
                     })
 
             # Benefits
-            elif primary_layer == "BENEFIT":
+            elif primary_layer == "benefit":
                 if not bc["progress_justification"]["benefits"].get("immediate"):
                     bc["progress_justification"]["benefits"]["immediate"] = msg
                     trace_map.append({
@@ -616,11 +619,44 @@ class BeliefAnalysisService:
                     })
 
             # Expression/Hook
-            elif primary_layer == "EXPRESSION":
+            elif primary_layer == "expression":
                 if not bc["expression"].get("core_hook"):
                     bc["expression"]["core_hook"] = msg
                     trace_map.append({
                         "field_path": "belief_canvas.expression.core_hook",
+                        "source": "message",
+                        "source_detail": msg_ref,
+                        "evidence_status": EvidenceStatus.INFERRED.value,
+                    })
+
+            # Proof
+            elif primary_layer == "proof":
+                if not bc["proof_stack"].get("testimonials"):
+                    bc["proof_stack"]["testimonials"] = [msg]
+                    trace_map.append({
+                        "field_path": "belief_canvas.proof_stack.testimonials",
+                        "source": "message",
+                        "source_detail": msg_ref,
+                        "evidence_status": EvidenceStatus.INFERRED.value,
+                    })
+
+            # Persona filter
+            elif primary_layer == "persona_filter":
+                if not bc["persona_filter"].get("target_description"):
+                    bc["persona_filter"]["target_description"] = msg
+                    trace_map.append({
+                        "field_path": "belief_canvas.persona_filter.target_description",
+                        "source": "message",
+                        "source_detail": msg_ref,
+                        "evidence_status": EvidenceStatus.INFERRED.value,
+                    })
+
+            # UMS seeds
+            elif primary_layer == "ums_seed":
+                if not bc["unique_mechanism"]["ums"].get("mechanism"):
+                    bc["unique_mechanism"]["ums"]["mechanism"] = msg
+                    trace_map.append({
+                        "field_path": "belief_canvas.unique_mechanism.ums.mechanism",
                         "source": "message",
                         "source_detail": msg_ref,
                         "evidence_status": EvidenceStatus.INFERRED.value,
