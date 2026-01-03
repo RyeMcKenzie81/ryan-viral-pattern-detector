@@ -316,6 +316,24 @@ def render_results_section(result: Dict):
     """Render the pipeline results."""
     st.subheader("📊 Results")
 
+    # Check for error status
+    status = result.get("status", "unknown")
+    error_message = result.get("error_message") or result.get("error")
+
+    if status == "failed" or status == "error":
+        st.error(f"❌ Pipeline failed: {error_message or 'Unknown error'}")
+        current_step = result.get("current_step", "unknown")
+        st.caption(f"Failed at step: {current_step}")
+        return
+
+    if status == "pending":
+        st.warning("⏳ This run is still pending or was never started.")
+        return
+
+    if status == "running":
+        st.info("🔄 This run is still in progress...")
+        return
+
     # Tabs for different views
     tab1, tab2, tab3, tab4 = st.tabs([
         "📄 Canvas", "⚠️ Risk Flags", "🔍 Gaps", "🔗 Trace Map"
