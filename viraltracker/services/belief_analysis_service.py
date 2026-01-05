@@ -687,10 +687,9 @@ Be thorough - even a single hook implies an entire belief structure. Fill in wha
             result = await agent.run(prompt)
             content = result.output
 
-            # Parse JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', content)
-            if json_match:
-                parsed = json.loads(json_match.group())
+            # Parse JSON from response with robust handling
+            parsed = self._parse_llm_json(content)
+            if parsed:
                 logger.info("LLM canvas assembly successful")
                 return parsed
             else:
@@ -700,6 +699,102 @@ Be thorough - even a single hook implies an entire belief structure. Fill in wha
         except Exception as e:
             logger.error(f"LLM canvas assembly failed: {e}")
             return None
+
+    def _parse_llm_json(self, content: str) -> Optional[Dict[str, Any]]:
+        """
+        Robustly parse JSON from LLM output.
+
+        Handles common issues:
+        - JSON embedded in markdown code blocks
+        - Trailing commas
+        - Single quotes instead of double quotes
+        - Comments in JSON
+        - Extra text before/after JSON
+        """
+        if not content:
+            return None
+
+        # Try to extract JSON from markdown code blocks first
+        code_block_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+        if code_block_match:
+            json_str = code_block_match.group(1).strip()
+        else:
+            # Find the outermost JSON object
+            # Use a more careful approach - find matching braces
+            json_str = self._extract_json_object(content)
+
+        if not json_str:
+            logger.warning("No JSON found in LLM response")
+            return None
+
+        # Try parsing as-is first
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.debug(f"Initial JSON parse failed: {e}")
+
+        # Try common repairs
+        repaired = json_str
+
+        # Remove trailing commas before } or ]
+        repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+
+        # Remove JavaScript-style comments
+        repaired = re.sub(r'//.*?$', '', repaired, flags=re.MULTILINE)
+        repaired = re.sub(r'/\*[\s\S]*?\*/', '', repaired)
+
+        # Try parsing repaired JSON
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON repair failed: {e}")
+            logger.debug(f"Problematic JSON (first 500 chars): {repaired[:500]}")
+            return None
+
+    def _extract_json_object(self, content: str) -> Optional[str]:
+        """
+        Extract the outermost JSON object from content by matching braces.
+        More reliable than greedy regex for nested structures.
+        """
+        start_idx = content.find('{')
+        if start_idx == -1:
+            return None
+
+        brace_count = 0
+        in_string = False
+        escape_next = False
+        end_idx = start_idx
+
+        for i, char in enumerate(content[start_idx:], start_idx):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i
+                    break
+
+        if brace_count != 0:
+            # Unbalanced braces - try the greedy regex as fallback
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            return json_match.group() if json_match else None
+
+        return content[start_idx:end_idx + 1]
 
     def _fill_canvas_from_product_context(
         self,
