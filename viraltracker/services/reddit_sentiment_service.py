@@ -1282,15 +1282,37 @@ Extract only genuine, insightful quotes - quality over quantity."""
         topic_context: Optional[str],
     ) -> str:
         """Build prompt for belief signal extraction."""
-        posts_json = [
-            {
+        # Handle both dict and RedditPost objects
+        posts_json = []
+        for i, p in enumerate(posts):
+            if isinstance(p, dict):
+                title = p.get("title", "")
+                body = p.get("body") or p.get("selftext") or ""
+                subreddit = p.get("subreddit", "")
+                comments = p.get("comments", [])
+            else:
+                title = p.title
+                body = p.body or ""
+                subreddit = p.subreddit
+                comments = []
+
+            # Include comments in the body for richer extraction
+            comment_text = ""
+            if comments:
+                comment_bodies = []
+                for c in comments[:10]:  # Top 10 comments
+                    c_body = c.get("body", "") if isinstance(c, dict) else (c.body if hasattr(c, 'body') else "")
+                    if c_body:
+                        comment_bodies.append(c_body)
+                if comment_bodies:
+                    comment_text = "\n\nTOP COMMENTS:\n" + "\n---\n".join(comment_bodies[:10])
+
+            posts_json.append({
                 "index": i,
-                "title": p.title,
-                "body": p.body[:1500] if p.body else None,
-                "subreddit": p.subreddit,
-            }
-            for i, p in enumerate(posts)
-        ]
+                "title": title,
+                "body": (body[:1200] if body else "") + (comment_text[:800] if comment_text else ""),
+                "subreddit": subreddit,
+            })
 
         signal_instructions = []
 
