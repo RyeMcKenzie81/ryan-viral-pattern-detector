@@ -431,7 +431,24 @@ class RedditResearchPlanNode(BaseNode[BeliefReverseEngineerState]):
             product_category = product_context.get("category", "")
             product_name = product_context.get("name", "")
 
-            # Build research plan
+            # Build research plan with merged config (user config overrides defaults)
+            default_config = {
+                "max_posts_per_query": 25,
+                "max_comments_per_post": 50,
+                "max_api_calls": 10,
+                "max_total_posts": 100,
+                "min_score_threshold": 5,
+                "min_upvotes": 10,
+                "min_comments": 3,
+                "relevance_threshold": 0.5,
+                "top_percentile": 0.30,
+                "time_window_days": 365,
+                "include_top_level_comments_only": True,
+                "dedupe": True,
+            }
+            # Merge user config over defaults
+            merged_config = {**default_config, **(ctx.state.scrape_config or {})}
+
             ctx.state.research_plan = {
                 "subreddits": ctx.state.subreddits,
                 "search_terms": ctx.state.search_terms,
@@ -442,17 +459,14 @@ class RedditResearchPlanNode(BaseNode[BeliefReverseEngineerState]):
                 },
                 "persona_hint": ctx.state.persona_hint,
                 "research_gaps": ctx.state.research_needed,
-                "config": ctx.state.scrape_config or {
-                    "max_posts_per_query": 25,
-                    "max_comments_per_post": 50,
-                    "min_score_threshold": 5,
-                    "time_window_days": 365,
-                    "include_top_level_comments_only": True,
-                    "dedupe": True,
-                },
+                "config": merged_config,
                 "signal_types": ["pain", "solutions", "patterns", "language", "jtbd"],
                 "status": "planned",
             }
+
+            logger.info(f"Research config: max_api_calls={merged_config['max_api_calls']}, "
+                       f"max_total_posts={merged_config['max_total_posts']}, "
+                       f"min_upvotes={merged_config['min_upvotes']}")
 
             # Add trace item
             ctx.state.trace_map.append({
@@ -512,6 +526,12 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
             subreddits = research_plan.get("subreddits", [])
             search_terms = research_plan.get("search_terms", [])
             config = research_plan.get("config", {})
+
+            # Debug logging
+            logger.info(f"Research plan received: {len(subreddits)} subreddits, {len(search_terms)} search terms")
+            logger.info(f"Subreddits: {subreddits}")
+            logger.info(f"Search terms: {search_terms}")
+            logger.info(f"Config: {config}")
 
             if not subreddits and not search_terms:
                 logger.warning("No subreddits or search terms in research plan")
