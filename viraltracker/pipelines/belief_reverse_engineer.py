@@ -521,20 +521,41 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
             topic_context += f"Topics: {', '.join(detected_topics)}"
 
             # Scrape Reddit using the sentiment service
+            # Apply guardrails
+            max_total_posts = config.get("max_total_posts", 100)
+            max_api_calls = config.get("max_api_calls", 10)
+            posts_per_query = min(config.get("max_posts_per_query", 25), 50)  # Hard cap at 50
+
             all_posts = []
+            api_calls_made = 0
+            hit_limit = False
+
             for subreddit in subreddits:
+                if hit_limit:
+                    break
                 for term in search_terms:
+                    # Check guardrails
+                    if api_calls_made >= max_api_calls:
+                        logger.warning(f"Hit max API calls limit ({max_api_calls})")
+                        hit_limit = True
+                        break
+                    if len(all_posts) >= max_total_posts:
+                        logger.warning(f"Hit max total posts limit ({max_total_posts})")
+                        hit_limit = True
+                        break
+
                     try:
                         posts = await ctx.deps.reddit_sentiment.scrape_subreddit(
                             subreddit=subreddit,
                             search_query=term,
-                            limit=config.get("max_posts_per_query", 25),
+                            limit=posts_per_query,
                             sort="relevance",
                             timeframe="year",
                             scrape_comments=True,
                         )
                         all_posts.extend(posts)
-                        logger.info(f"Scraped {len(posts)} posts from r/{subreddit} for '{term}'")
+                        api_calls_made += 1
+                        logger.info(f"Scraped {len(posts)} posts from r/{subreddit} for '{term}' (call {api_calls_made}/{max_api_calls})")
                     except Exception as e:
                         logger.warning(f"Failed to scrape r/{subreddit} for '{term}': {e}")
                         continue

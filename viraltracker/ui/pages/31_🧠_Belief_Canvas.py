@@ -155,6 +155,7 @@ async def run_pipeline(
     subreddits: List[str],
     search_terms: List[str],
     run_id: str,
+    scrape_config: Optional[Dict] = None,
     progress_callback=None,
 ):
     """Execute the belief reverse engineer pipeline."""
@@ -180,6 +181,7 @@ async def run_pipeline(
             persona_hint=persona_hint,
             subreddits=subreddits,
             search_terms=search_terms,
+            scrape_config=scrape_config,
         )
 
         # Extract result data
@@ -308,6 +310,57 @@ def render_mode_section():
                 help="E.g., protein shake, bloating, sugar crash",
             )
             st.session_state.belief_search_terms = search_terms
+
+        # Cost guardrails
+        st.markdown("**⚠️ Cost Guardrails** (Apify charges per API call)")
+
+        # Calculate estimated calls
+        sub_count = len([s.strip() for s in subreddits.split(",") if s.strip()]) if subreddits else 0
+        term_count = len([s.strip() for s in search_terms.split(",") if s.strip()]) if search_terms else 0
+        estimated_calls = sub_count * term_count
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            max_api_calls = st.number_input(
+                "Max API Calls",
+                min_value=1,
+                max_value=50,
+                value=st.session_state.get("belief_max_api_calls", 10),
+                help="Hard limit on number of Reddit scrape calls",
+            )
+            st.session_state.belief_max_api_calls = max_api_calls
+
+        with col2:
+            max_total_posts = st.number_input(
+                "Max Total Posts",
+                min_value=10,
+                max_value=500,
+                value=st.session_state.get("belief_max_total_posts", 100),
+                help="Stop after this many posts total",
+            )
+            st.session_state.belief_max_total_posts = max_total_posts
+
+        with col3:
+            posts_per_query = st.number_input(
+                "Posts per Query",
+                min_value=5,
+                max_value=50,
+                value=st.session_state.get("belief_posts_per_query", 25),
+                help="Max posts per subreddit/term combo",
+            )
+            st.session_state.belief_posts_per_query = posts_per_query
+
+        # Show estimate
+        if estimated_calls > 0:
+            actual_calls = min(estimated_calls, max_api_calls)
+            st.info(
+                f"📊 **Estimate:** {sub_count} subreddits × {term_count} terms = "
+                f"{estimated_calls} potential calls → capped at **{actual_calls}** calls "
+                f"(up to {actual_calls * posts_per_query} posts)"
+            )
+        else:
+            st.caption("Enter subreddits and search terms to see cost estimate")
 
     return draft_mode, research_mode
 
@@ -646,6 +699,14 @@ with col_input:
             subreddits = [s.strip() for s in st.session_state.belief_subreddits.split(",") if s.strip()]
             search_terms = [s.strip() for s in st.session_state.belief_search_terms.split(",") if s.strip()]
 
+            # Build scrape config with guardrails
+            scrape_config = {
+                "max_api_calls": st.session_state.get("belief_max_api_calls", 10),
+                "max_total_posts": st.session_state.get("belief_max_total_posts", 100),
+                "max_posts_per_query": st.session_state.get("belief_posts_per_query", 25),
+                "dedupe": True,
+            }
+
             # Create run record
             run_id = create_run(
                 product_id=product_id,
@@ -679,6 +740,7 @@ with col_input:
                     subreddits=subreddits,
                     search_terms=search_terms,
                     run_id=run_id,
+                    scrape_config=scrape_config,
                     progress_callback=update_progress,
                 ))
 
