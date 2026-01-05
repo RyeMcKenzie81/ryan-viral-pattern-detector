@@ -1271,8 +1271,9 @@ Extract only genuine, insightful quotes - quality over quantity."""
 
         response = await agent.run(prompt)
 
-        # Parse the response
-        return self._parse_belief_extraction_response(response.data)
+        # Parse the response - use response.output for pydantic-ai
+        logger.info(f"Belief extraction LLM response received, parsing...")
+        return self._parse_belief_extraction_response(response.output)
 
     def _build_belief_extraction_prompt(
         self,
@@ -1374,6 +1375,10 @@ Focus on SPECIFIC, ACTIONABLE insights - not generic observations."""
     ) -> Dict[str, Any]:
         """Parse belief extraction LLM response."""
         try:
+            if not response_text:
+                logger.warning("Belief extraction response is empty")
+                return self._empty_belief_response()
+
             text = response_text.strip()
 
             # Handle markdown code blocks
@@ -1382,17 +1387,35 @@ Focus on SPECIFIC, ACTIONABLE insights - not generic observations."""
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0]
 
-            return json.loads(text)
+            result = json.loads(text)
+
+            # Log what was extracted
+            pain_count = len(result.get("extracted_pain", []))
+            solution_count = len(result.get("extracted_solutions_attempted", []))
+            pattern_count = sum(len(v) for v in result.get("pattern_detection", {}).values() if isinstance(v, list))
+            jtbd_count = sum(len(v) for v in result.get("jtbd_candidates", {}).values() if isinstance(v, list))
+
+            logger.info(
+                f"Belief extraction parsed: {pain_count} pain signals, "
+                f"{solution_count} solutions, {pattern_count} patterns, {jtbd_count} JTBD"
+            )
+
+            return result
 
         except (json.JSONDecodeError, IndexError) as e:
             logger.warning(f"Failed to parse belief extraction response: {e}")
-            return {
-                "extracted_pain": [],
-                "extracted_solutions_attempted": [],
-                "pattern_detection": {},
-                "extracted_language_bank": {},
-                "jtbd_candidates": {},
-            }
+            logger.debug(f"Response text (first 500 chars): {response_text[:500] if response_text else 'None'}")
+            return self._empty_belief_response()
+
+    def _empty_belief_response(self) -> Dict[str, Any]:
+        """Return empty belief extraction response."""
+        return {
+            "extracted_pain": [],
+            "extracted_solutions_attempted": [],
+            "pattern_detection": {},
+            "extracted_language_bank": {},
+            "jtbd_candidates": {},
+        }
 
     def _merge_belief_signals(
         self,

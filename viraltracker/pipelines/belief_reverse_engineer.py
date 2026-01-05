@@ -869,10 +869,40 @@ class ResearchExtractorNode(BaseNode[BeliefReverseEngineerState]):
                     })
 
             ctx.state.current_step = "signals_extracted"
+
+            # Log comprehensive extraction summary
+            bundle = ctx.state.reddit_bundle
+            pain_count = len(bundle.get('extracted_pain', []))
+            solution_count = len(bundle.get('extracted_solutions_attempted', []))
+            pattern_detection = bundle.get('pattern_detection', {})
+            pattern_count = sum(len(v) for v in pattern_detection.values() if isinstance(v, list))
+            language_bank = bundle.get('extracted_language_bank', {})
+            language_count = sum(len(v) for v in language_bank.values() if isinstance(v, list))
+            jtbd = bundle.get('jtbd_candidates', {})
+            jtbd_count = sum(len(v) for v in jtbd.values() if isinstance(v, list))
+
             logger.info(
-                f"Extracted signals: {len(ctx.state.reddit_bundle.get('extracted_pain', []))} pain points, "
-                f"{len(ctx.state.reddit_bundle.get('extracted_solutions_attempted', []))} solutions"
+                f"=== REDDIT EXTRACTION RESULTS ===\n"
+                f"  Pain signals: {pain_count}\n"
+                f"  Solutions attempted: {solution_count}\n"
+                f"  Patterns detected: {pattern_count}\n"
+                f"  Language bank entries: {language_count}\n"
+                f"  JTBD candidates: {jtbd_count}"
             )
+
+            # Log sample pain signals for visibility
+            if bundle.get('extracted_pain'):
+                logger.info("Sample pain signals:")
+                for pain in bundle['extracted_pain'][:3]:
+                    signal = pain.get('signal', str(pain))[:100]
+                    logger.info(f"  - {signal}...")
+
+            # Log sample patterns
+            if pattern_detection.get('triggers'):
+                logger.info(f"Triggers found: {pattern_detection['triggers'][:5]}")
+            if pattern_detection.get('helps'):
+                logger.info(f"What helps: {pattern_detection['helps'][:5]}")
+
             return UMPUMSUpdaterNode()
 
         except Exception as e:
