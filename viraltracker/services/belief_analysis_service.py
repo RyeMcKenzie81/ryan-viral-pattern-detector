@@ -10,9 +10,12 @@ pipeline - nodes call into this service for all heavy lifting.
 
 import logging
 import json
+import re
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
+from pydantic_ai import Agent
+from viraltracker.core.config import Config
 from viraltracker.services.models import (
     ProductContext,
     MessageClassification,
@@ -466,6 +469,9 @@ class BeliefAnalysisService:
         """
         Assemble a draft Belief-First Master Canvas from messages and context.
 
+        Uses LLM (Claude Opus) to intelligently analyze messages and INFER
+        the belief structure, filling in gaps with reasonable hypotheses.
+
         Args:
             classifications: Layer classifications for each message (as dicts)
             product_context: Product truth from database (as dict)
@@ -477,8 +483,6 @@ class BeliefAnalysisService:
             Dict with canvas, research_needed, proof_needed
         """
         trace_map: List[Dict] = []
-        research_needed: List[Dict] = []
-        proof_needed: List[Dict] = []
 
         # Initialize canvas structure
         canvas = {
@@ -508,13 +512,31 @@ class BeliefAnalysisService:
         if product_context:
             self._fill_canvas_from_product_context(canvas, product_context, trace_map)
 
-        # Fill from message classifications (INFERRED data)
+        # If we have a pre-computed LLM response, use it
         if llm_response:
             self._fill_canvas_from_llm_response(canvas, llm_response, trace_map)
         else:
-            self._fill_canvas_from_classifications(
-                canvas, classifications, trace_map
+            # Use LLM to intelligently infer belief structure
+            llm_canvas = await self._llm_assemble_canvas(
+                classifications=classifications,
+                product_context=product_context,
+                format_hint=format_hint,
+                persona_hint=persona_hint,
             )
+
+            if llm_canvas:
+                self._fill_canvas_from_llm_response(canvas, llm_canvas, trace_map)
+                trace_map.append({
+                    "field_path": "belief_canvas",
+                    "source": "llm_inference",
+                    "source_detail": "Claude Opus analysis of messages + product context",
+                    "evidence_status": EvidenceStatus.INFERRED.value,
+                })
+            else:
+                # Fallback to rule-based if LLM fails
+                self._fill_canvas_from_classifications(
+                    canvas, classifications, trace_map
+                )
 
         # Apply hints
         if format_hint:
@@ -535,6 +557,149 @@ class BeliefAnalysisService:
             "proof_needed": proof_needed,
             "trace_map": trace_map,
         }
+
+    async def _llm_assemble_canvas(
+        self,
+        classifications: List[Dict[str, Any]],
+        product_context: Dict[str, Any],
+        format_hint: Optional[str] = None,
+        persona_hint: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Use LLM to intelligently analyze messages and infer belief structure.
+
+        This is the core intelligence - it takes rough messages and product context
+        and infers the full belief hierarchy (UMP, UMS, persona, benefits, etc.)
+        """
+        try:
+            # Build the prompt with all context
+            messages_text = "\n".join([
+                f"- Message {i+1} ({c.get('primary_layer', 'unknown')}): {c.get('message', '')}"
+                for i, c in enumerate(classifications)
+            ])
+
+            product_text = ""
+            if product_context:
+                product_text = f"""
+Product Name: {product_context.get('name', 'Unknown')}
+Category: {product_context.get('category', 'Unknown')}
+Ingredients: {json.dumps(product_context.get('ingredients', []))}
+Allowed Claims: {product_context.get('allowed_claims', [])}
+Disallowed Claims: {product_context.get('disallowed_claims', [])}
+"""
+
+            prompt = f"""Analyze these marketing messages and infer the complete belief-first hierarchy.
+
+## Messages to Analyze:
+{messages_text}
+
+## Product Context:
+{product_text}
+
+## Additional Context:
+- Format hint: {format_hint or 'not specified'}
+- Persona hint: {persona_hint or 'not specified'}
+
+## Your Task:
+Based on this messaging, INFER what belief structure is being used. Even if only one hook is provided,
+deduce what UMP (unique mechanism problem), UMS (unique mechanism solution), persona targeting,
+and benefits are IMPLIED by the messaging.
+
+Think about:
+1. What OLD BELIEF is being challenged? (UMP - what did they think was the cause?)
+2. What NEW BELIEF is being offered? (UMP - what's the REAL cause?)
+3. How does the product solve this? (UMS - the mechanism)
+4. Who is this targeting? (Persona - JTBD, constraints)
+5. What benefits are promised? (immediate, short-term, long-term)
+
+Return a JSON object with this structure:
+{{
+    "belief_canvas": {{
+        "belief_context": {{
+            "current_awareness_state": "problem_aware|solution_aware|etc",
+            "promise_boundary": "what is/isn't being claimed",
+            "why_now": "any urgency or timing elements"
+        }},
+        "persona_filter": {{
+            "jtbd": {{
+                "functional": "what job they need done",
+                "emotional": "how they want to feel",
+                "identity": "who they want to be"
+            }},
+            "constraints": ["time", "money", "energy", "identity"],
+            "dominant_constraint": "the main blocker addressed"
+        }},
+        "unique_mechanism": {{
+            "ump": {{
+                "old_accepted_explanation": "what they used to believe caused the problem",
+                "reframed_root_cause": "what the message says is the REAL cause",
+                "why_past_solutions_failed": "why other approaches didn't work",
+                "externalized_blame": "how it's not their fault",
+                "missing_1_percent": "the key insight they were missing"
+            }},
+            "ums": {{
+                "macro_solution_logic": "one-sentence solution logic",
+                "micro_mechanism": "how it works step by step"
+            }},
+            "reinterpreted_pain": "how the mechanism explains their past pain"
+        }},
+        "progress_justification": {{
+            "benefits": {{
+                "immediate": "what they get right away",
+                "short_term": "what they get in days/weeks",
+                "long_term": "what they get over time"
+            }},
+            "features": ["only if clearly stated in messages"]
+        }},
+        "proof_stack": {{
+            "solution_efficacy": {{"present": [], "missing": []}},
+            "identity_social": {{"present": [], "missing": []}}
+        }},
+        "expression": {{
+            "core_hook": "the main hook/headline",
+            "primary_angle": "the main messaging angle"
+        }}
+    }},
+    "research_canvas": {{
+        "market_context": {{
+            "category": "{product_context.get('category', 'unknown')}",
+            "detected_topics": ["inferred topics from messages"]
+        }},
+        "persona_context": {{
+            "inferred_persona": "who this is targeting"
+        }},
+        "observed_pain": {{
+            "symptoms_physical": ["inferred physical symptoms"],
+            "symptoms_emotional": ["inferred emotional pain"]
+        }},
+        "candidate_root_causes": ["hypothesized causes from the UMP"]
+    }}
+}}
+
+Be thorough - even a single hook implies an entire belief structure. Fill in what's implied."""
+
+            # Use Claude Opus for intelligent analysis
+            agent = Agent(
+                model=Config.get_model("belief_canvas") or "claude-sonnet-4-20250514",
+                system_prompt=DRAFT_CANVAS_SYSTEM_PROMPT
+            )
+
+            result = await agent.run(prompt)
+            content = result.output
+
+            # Parse JSON from response
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                logger.info("LLM canvas assembly successful")
+                return parsed
+            else:
+                logger.warning("Could not parse JSON from LLM response")
+                return None
+
+        except Exception as e:
+            logger.error(f"LLM canvas assembly failed: {e}")
+            return None
 
     def _fill_canvas_from_product_context(
         self,
