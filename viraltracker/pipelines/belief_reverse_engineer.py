@@ -485,21 +485,26 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
     """
     Node 6: Scrape Reddit based on research plan.
 
-    Uses RedditSentimentService to fetch posts and comments
-    from targeted subreddits with search queries.
+    Uses TWO-PASS scraping for cost efficiency:
+    1. First pass: Scrape posts only (no comments) - cheap
+    2. Filter posts locally by engagement and relevance
+    3. Second pass: Scrape comments only for filtered posts - targeted
+
+    This approach saves significant Apify costs by avoiding comment
+    scraping for posts that will be filtered out anyway.
     """
 
     metadata: ClassVar[NodeMetadata] = NodeMetadata(
         inputs=["research_plan", "scrape_config"],
         outputs=["reddit_raw", "posts_analyzed", "comments_analyzed"],
-        services=["reddit_sentiment.search_for_belief_signals"],
+        services=["reddit_sentiment.scrape_reddit", "reddit_sentiment.scrape_by_urls"],
     )
 
     async def run(
         self,
         ctx: GraphRunContext[BeliefReverseEngineerState, AgentDependencies]
     ) -> "ResearchExtractorNode":
-        logger.info("Node 6: Scraping Reddit")
+        logger.info("Node 6: Scraping Reddit (two-pass mode)")
         ctx.state.current_step = "scraping_reddit"
 
         try:
@@ -513,24 +518,28 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                 ctx.state.reddit_raw = []
                 return ResearchExtractorNode()
 
-            # Build topic context for scraping
+            # Build topic context for filtering
             product_context = research_plan.get("product_context", {})
             detected_topics = research_plan.get("detected_topics", [])
-            topic_context = f"Product: {product_context.get('name', 'Unknown')} "
-            topic_context += f"Category: {product_context.get('category', 'Unknown')} "
-            topic_context += f"Topics: {', '.join(detected_topics)}"
 
-            # Scrape Reddit using the sentiment service
             # Apply guardrails
             max_total_posts = config.get("max_total_posts", 100)
             max_api_calls = config.get("max_api_calls", 10)
             posts_per_query = min(config.get("max_posts_per_query", 25), 50)  # Hard cap at 50
+            max_comments_per_post = config.get("max_comments_per_post", 50)
 
-            # Quality filters (match existing Reddit Research tool)
-            min_upvotes = config.get("min_upvotes", 10)  # Lower than default 20 for belief research
-            min_comments = config.get("min_comments", 3)  # Lower than default 5
-            relevance_threshold = config.get("relevance_threshold", 0.5)  # Relevance to persona/topic
-            top_percentile = config.get("top_percentile", 0.30)  # Keep top 30%
+            # Quality filters
+            min_upvotes = config.get("min_upvotes", 10)
+            min_comments = config.get("min_comments", 3)
+            relevance_threshold = config.get("relevance_threshold", 0.5)
+            top_percentile = config.get("top_percentile", 0.30)
+
+            # =====================================================================
+            # PASS 1: Scrape posts only (no comments) - CHEAP
+            # =====================================================================
+            logger.info("=== PASS 1: Scraping posts only (no comments) ===")
+
+            from ..services.models import RedditPost, RedditScrapeConfig
 
             all_posts = []
             api_calls_made = 0
@@ -541,8 +550,8 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                     break
                 for term in search_terms:
                     # Check guardrails
-                    if api_calls_made >= max_api_calls:
-                        logger.warning(f"Hit max API calls limit ({max_api_calls})")
+                    if api_calls_made >= max_api_calls - 1:  # Reserve 1 call for pass 2
+                        logger.warning(f"Reserving last API call for pass 2, stopping pass 1")
                         hit_limit = True
                         break
                     if len(all_posts) >= max_total_posts:
@@ -551,17 +560,23 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                         break
 
                     try:
-                        posts = await ctx.deps.reddit_sentiment.scrape_subreddit(
-                            subreddit=subreddit,
-                            search_query=term,
-                            limit=posts_per_query,
-                            sort="relevance",
+                        # Create config for posts-only scrape
+                        scrape_config = RedditScrapeConfig(
+                            search_queries=[term],
+                            subreddits=[subreddit],
+                            max_posts=posts_per_query,
+                            sort_by="relevance",
                             timeframe="year",
-                            scrape_comments=True,
+                            scrape_comments=False,  # KEY: No comments in pass 1
+                            max_comments_per_post=0,
                         )
+                        posts, _ = ctx.deps.reddit_sentiment.scrape_reddit(scrape_config)
                         all_posts.extend(posts)
                         api_calls_made += 1
-                        logger.info(f"Scraped {len(posts)} posts from r/{subreddit} for '{term}' (call {api_calls_made}/{max_api_calls})")
+                        logger.info(
+                            f"Pass 1: Scraped {len(posts)} posts from r/{subreddit} "
+                            f"for '{term}' (call {api_calls_made}/{max_api_calls})"
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to scrape r/{subreddit} for '{term}': {e}")
                         continue
@@ -571,93 +586,146 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                 seen_ids = set()
                 unique_posts = []
                 for post in all_posts:
-                    post_id = post.get("id") or post.get("post_id")
+                    post_id = post.reddit_id if hasattr(post, 'reddit_id') else post.get("reddit_id")
                     if post_id and post_id not in seen_ids:
                         seen_ids.add(post_id)
                         unique_posts.append(post)
                 all_posts = unique_posts
 
-            logger.info(f"After dedupe: {len(all_posts)} unique posts")
+            logger.info(f"Pass 1 complete: {len(all_posts)} unique posts (0 comments)")
 
-            # Apply quality filters if we have posts
-            if all_posts and hasattr(ctx.deps.reddit_sentiment, 'filter_by_engagement'):
-                from ..services.models import RedditPost
+            # =====================================================================
+            # FILTER: Apply quality filters BEFORE scraping comments
+            # =====================================================================
+            logger.info("=== FILTERING: Applying quality filters ===")
 
-                # Convert to RedditPost objects for filtering
-                post_objects = []
-                for p in all_posts:
+            filtered_posts = all_posts
+
+            if filtered_posts:
+                # Step 1: Engagement filter
+                filtered_posts = ctx.deps.reddit_sentiment.filter_by_engagement(
+                    filtered_posts,
+                    min_upvotes=min_upvotes,
+                    min_comments=min_comments
+                )
+                logger.info(f"After engagement filter: {len(filtered_posts)} posts")
+
+                # Step 2: Relevance scoring (if enabled)
+                if filtered_posts and relevance_threshold > 0:
+                    product_ctx = ctx.state.product_context or {}
+                    persona_ctx = f"People interested in {product_ctx.get('name', 'this product')} "
+                    persona_ctx += f"in the {product_ctx.get('category', 'health')} category"
+                    topic_ctx = f"{product_ctx.get('name', '')} {' '.join(detected_topics)}"
+
                     try:
-                        if isinstance(p, dict):
-                            post_objects.append(RedditPost(**p))
-                        else:
-                            post_objects.append(p)
-                    except Exception:
-                        continue
+                        filtered_posts = await ctx.deps.reddit_sentiment.score_relevance(
+                            filtered_posts,
+                            persona_context=persona_ctx,
+                            topic_context=topic_ctx,
+                            threshold=relevance_threshold
+                        )
+                        logger.info(f"After relevance filter: {len(filtered_posts)} posts")
+                    except Exception as e:
+                        logger.warning(f"Relevance scoring failed, skipping: {e}")
 
-                if post_objects:
-                    # Step 1: Engagement filter
-                    filtered = ctx.deps.reddit_sentiment.filter_by_engagement(
-                        post_objects,
-                        min_upvotes=min_upvotes,
-                        min_comments=min_comments
-                    )
-                    logger.info(f"After engagement filter: {len(filtered)} posts")
+                # Step 3: Top percentile selection
+                if filtered_posts and top_percentile < 1.0:
+                    try:
+                        filtered_posts = ctx.deps.reddit_sentiment.select_top_percentile(
+                            filtered_posts,
+                            percentile=top_percentile
+                        )
+                        logger.info(f"After top {int(top_percentile*100)}% selection: {len(filtered_posts)} posts")
+                    except Exception as e:
+                        logger.warning(f"Top percentile selection failed, skipping: {e}")
 
-                    # Step 2: Relevance scoring (if we have context)
-                    if filtered and relevance_threshold > 0:
-                        product_ctx = ctx.state.product_context or {}
-                        persona_ctx = f"People interested in {product_ctx.get('name', 'this product')} "
-                        persona_ctx += f"in the {product_ctx.get('category', 'health')} category"
-                        topic_ctx = f"{product_ctx.get('name', '')} {' '.join(detected_topics)}"
+            # =====================================================================
+            # PASS 2: Scrape comments only for filtered posts - TARGETED
+            # =====================================================================
+            logger.info("=== PASS 2: Scraping comments for filtered posts ===")
 
-                        try:
-                            scored = await ctx.deps.reddit_sentiment.score_relevance(
-                                filtered,
-                                persona_context=persona_ctx,
-                                topic_context=topic_ctx,
-                                threshold=relevance_threshold
-                            )
-                            logger.info(f"After relevance filter: {len(scored)} posts")
-                            filtered = scored
-                        except Exception as e:
-                            logger.warning(f"Relevance scoring failed, skipping: {e}")
+            final_posts = []
+            total_comments = 0
 
-                    # Step 3: Top percentile selection
-                    if filtered and top_percentile < 1.0:
-                        try:
-                            selected = ctx.deps.reddit_sentiment.select_top_percentile(
-                                filtered,
-                                percentile=top_percentile
-                            )
-                            logger.info(f"After top {int(top_percentile*100)}% selection: {len(selected)} posts")
-                            filtered = selected
-                        except Exception as e:
-                            logger.warning(f"Top percentile selection failed, skipping: {e}")
+            if filtered_posts:
+                # Collect URLs of filtered posts
+                filtered_urls = []
+                for post in filtered_posts:
+                    url = post.url if hasattr(post, 'url') else post.get("url")
+                    if url:
+                        filtered_urls.append(url)
 
-                    # Convert back to dicts
-                    all_posts = [p.model_dump() if hasattr(p, 'model_dump') else p for p in filtered]
+                if filtered_urls:
+                    logger.info(f"Pass 2: Scraping comments for {len(filtered_urls)} filtered posts")
+                    api_calls_made += 1
 
-            ctx.state.reddit_raw = all_posts
+                    try:
+                        # Scrape comments for filtered posts by URL
+                        posts_with_comments, comments = ctx.deps.reddit_sentiment.scrape_by_urls(
+                            urls=filtered_urls,
+                            scrape_comments=True,
+                            max_comments_per_post=max_comments_per_post,
+                        )
 
-            # Count posts and comments
-            ctx.state.posts_analyzed = len(all_posts)
-            ctx.state.comments_analyzed = sum(
-                len(post.get("comments", []))
-                for post in all_posts
-            )
+                        # Match comments back to posts
+                        # The API returns posts and comments separately, need to attach
+                        comment_by_parent = {}
+                        for comment in comments:
+                            parent_id = comment.parent_id if hasattr(comment, 'parent_id') else comment.get("parent_id")
+                            if parent_id:
+                                if parent_id not in comment_by_parent:
+                                    comment_by_parent[parent_id] = []
+                                comment_by_parent[parent_id].append(
+                                    comment.model_dump() if hasattr(comment, 'model_dump') else comment
+                                )
+
+                        for post in posts_with_comments:
+                            post_dict = post.model_dump() if hasattr(post, 'model_dump') else post
+                            post_id = post_dict.get("reddit_id") or post_dict.get("id")
+                            post_dict["comments"] = comment_by_parent.get(post_id, [])
+                            total_comments += len(post_dict["comments"])
+                            final_posts.append(post_dict)
+
+                        logger.info(
+                            f"Pass 2 complete: {len(final_posts)} posts with "
+                            f"{total_comments} total comments"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Pass 2 failed, using posts without comments: {e}")
+                        # Fallback: use filtered posts without comments
+                        for post in filtered_posts:
+                            post_dict = post.model_dump() if hasattr(post, 'model_dump') else post
+                            post_dict["comments"] = []
+                            final_posts.append(post_dict)
+                else:
+                    logger.warning("No valid URLs found for pass 2")
+                    for post in filtered_posts:
+                        post_dict = post.model_dump() if hasattr(post, 'model_dump') else post
+                        post_dict["comments"] = []
+                        final_posts.append(post_dict)
+
+            # Store results
+            ctx.state.reddit_raw = final_posts
+            ctx.state.posts_analyzed = len(final_posts)
+            ctx.state.comments_analyzed = total_comments
 
             # Add trace item
             ctx.state.trace_map.append({
                 "field_path": "reddit_raw",
                 "source": "reddit_research",
-                "source_detail": f"{len(subreddits)} subreddits, {len(search_terms)} terms, {ctx.state.posts_analyzed} posts",
+                "source_detail": (
+                    f"Two-pass scrape: {len(subreddits)} subreddits, "
+                    f"{len(search_terms)} terms, {api_calls_made} API calls, "
+                    f"{len(all_posts)} posts found -> {len(final_posts)} filtered"
+                ),
                 "evidence_status": EvidenceStatus.OBSERVED.value,
             })
 
             ctx.state.current_step = "reddit_scraped"
             logger.info(
-                f"Scraped {ctx.state.posts_analyzed} posts with "
-                f"{ctx.state.comments_analyzed} comments"
+                f"Reddit scrape complete: {ctx.state.posts_analyzed} posts with "
+                f"{ctx.state.comments_analyzed} comments "
+                f"(saved ~{len(all_posts) - len(final_posts)} comment scrapes)"
             )
             return ResearchExtractorNode()
 

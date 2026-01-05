@@ -257,6 +257,98 @@ class RedditSentimentService:
         logger.info(f"Recovered {len(posts)} posts and {len(comments)} comments from Apify run {apify_run_id}")
         return posts, comments
 
+    def scrape_by_urls(
+        self,
+        urls: List[str],
+        scrape_comments: bool = True,
+        max_comments_per_post: int = 50,
+        timeout: int = 600
+    ) -> Tuple[List[RedditPost], List[RedditComment]]:
+        """
+        Scrape specific Reddit posts by URL.
+
+        Uses the Apify actor's URL mode to fetch posts and optionally their comments.
+        This is more efficient for two-pass scraping where we've already filtered posts.
+
+        Args:
+            urls: List of Reddit post URLs to scrape
+            scrape_comments: Whether to scrape comments (default True)
+            max_comments_per_post: Max comments per post (default 50)
+            timeout: Apify timeout in seconds
+
+        Returns:
+            Tuple of (posts, comments)
+
+        Example:
+            >>> urls = ["https://reddit.com/r/nutrition/comments/xyz123/..."]
+            >>> posts, comments = service.scrape_by_urls(urls, scrape_comments=True)
+        """
+        if not urls:
+            logger.warning("No URLs provided for scraping")
+            return [], []
+
+        logger.info(f"Scraping {len(urls)} Reddit URLs with comments={scrape_comments}")
+
+        run_input = {
+            "urls": urls,
+            "scrapeComments": scrape_comments,
+            "maxComments": max_comments_per_post,
+        }
+
+        result = self.apify.run_actor(
+            actor_id=REDDIT_SCRAPER_ACTOR,
+            run_input=run_input,
+            timeout=timeout
+        )
+
+        posts = []
+        comments = []
+
+        for item in result.items:
+            if item.get("kind") == "post":
+                created_utc = None
+                if item.get("created_utc"):
+                    if isinstance(item["created_utc"], str):
+                        created_utc = datetime.fromisoformat(
+                            item["created_utc"].replace("Z", "+00:00")
+                        )
+                    else:
+                        created_utc = datetime.fromtimestamp(item["created_utc"])
+
+                posts.append(RedditPost(
+                    reddit_id=item.get("id", ""),
+                    subreddit=item.get("subreddit", ""),
+                    title=item.get("title", ""),
+                    body=item.get("body") or item.get("selftext"),
+                    author=item.get("author"),
+                    url=item.get("url"),
+                    score=item.get("score", 0),
+                    upvote_ratio=item.get("upvote_ratio", 0.0),
+                    num_comments=item.get("num_comments", 0),
+                    created_utc=created_utc,
+                ))
+            elif item.get("kind") == "comment":
+                created_utc = None
+                if item.get("created_utc"):
+                    if isinstance(item["created_utc"], str):
+                        created_utc = datetime.fromisoformat(
+                            item["created_utc"].replace("Z", "+00:00")
+                        )
+                    else:
+                        created_utc = datetime.fromtimestamp(item["created_utc"])
+
+                comments.append(RedditComment(
+                    reddit_id=item.get("id", ""),
+                    parent_id=item.get("postId"),
+                    body=item.get("body", ""),
+                    author=item.get("author"),
+                    score=item.get("score", 0),
+                    created_utc=created_utc,
+                ))
+
+        logger.info(f"Scraped {len(posts)} posts and {len(comments)} comments from {len(urls)} URLs")
+        return posts, comments
+
     # =========================================================================
     # FILTERING (Deterministic)
     # =========================================================================
