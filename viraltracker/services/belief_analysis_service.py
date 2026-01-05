@@ -1952,15 +1952,20 @@ Be thorough - even a single hook implies an entire belief structure. Fill in wha
 
             for pain in extracted_pain:
                 if isinstance(pain, dict):
-                    pain_type = pain.get("type", "").lower()
-                    description = pain.get("description", "")
+                    # Handle both old format (type/description) and new format (signal_type/signal)
+                    pain_type = (pain.get("signal_type") or pain.get("type") or "").lower()
+                    description = pain.get("signal") or pain.get("description") or ""
+
+                    if not description:
+                        continue  # Skip empty entries
+
                     if "physical" in pain_type or "body" in pain_type:
                         symptoms_physical.append(description)
                     elif "emotional" in pain_type or "mental" in pain_type:
                         symptoms_emotional.append(description)
                     else:
                         stated_problems.append(description)
-                elif isinstance(pain, str):
+                elif isinstance(pain, str) and pain:
                     stated_problems.append(pain)
 
             if symptoms_physical:
@@ -1998,16 +2003,23 @@ Be thorough - even a single hook implies an entire belief structure. Fill in wha
 
             for sol in solutions:
                 if isinstance(sol, dict):
-                    outcome = sol.get("outcome", "").lower()
-                    description = sol.get("description", "")
-                    reason = sol.get("why_failed", "")
+                    outcome = (sol.get("outcome") or "").lower()
+                    # Handle both old format (description) and new format (signal)
+                    description = sol.get("signal") or sol.get("description") or ""
+                    reason = sol.get("why_failed") or ""
 
-                    if "worked" in outcome and "stopped" in outcome:
+                    if not description:
+                        continue  # Skip empty entries
+
+                    if "stopped" in outcome or "stop" in outcome:
                         stopped_working.append(description)
-                    elif "worked" in outcome:
+                    elif "worked" in outcome or "briefly" in outcome:
                         worked_briefly.append(description)
                     elif "never" in outcome or "didn't" in outcome:
                         never_worked.append(description)
+                    else:
+                        # Default to worked_briefly if unclear
+                        worked_briefly.append(description)
 
                     if reason:
                         failure_reasons.append(reason)
