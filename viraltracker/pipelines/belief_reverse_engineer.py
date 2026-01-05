@@ -538,6 +538,27 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                 ctx.state.reddit_raw = []
                 return ResearchExtractorNode()
 
+            # If no search terms provided, use detected topics or product name as search terms
+            if not search_terms:
+                detected_topics = research_plan.get("detected_topics", [])
+                product_context = research_plan.get("product_context", {})
+                product_name = product_context.get("name", "")
+
+                # Build fallback search terms from detected topics and product name
+                fallback_terms = []
+                if detected_topics:
+                    fallback_terms.extend(detected_topics[:3])  # Top 3 topics
+                if product_name and product_name not in fallback_terms:
+                    fallback_terms.append(product_name)
+
+                if fallback_terms:
+                    search_terms = fallback_terms
+                    logger.info(f"No search terms provided, using fallback: {search_terms}")
+                else:
+                    # Last resort: use empty string to get all posts from subreddit
+                    search_terms = [""]
+                    logger.info("No search terms or topics, will scrape subreddit feeds directly")
+
             # Build topic context for filtering
             product_context = research_plan.get("product_context", {})
             detected_topics = research_plan.get("detected_topics", [])
