@@ -526,6 +526,12 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
             max_api_calls = config.get("max_api_calls", 10)
             posts_per_query = min(config.get("max_posts_per_query", 25), 50)  # Hard cap at 50
 
+            # Quality filters (match existing Reddit Research tool)
+            min_upvotes = config.get("min_upvotes", 10)  # Lower than default 20 for belief research
+            min_comments = config.get("min_comments", 3)  # Lower than default 5
+            relevance_threshold = config.get("relevance_threshold", 0.5)  # Relevance to persona/topic
+            top_percentile = config.get("top_percentile", 0.30)  # Keep top 30%
+
             all_posts = []
             api_calls_made = 0
             hit_limit = False
@@ -570,6 +576,66 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                         seen_ids.add(post_id)
                         unique_posts.append(post)
                 all_posts = unique_posts
+
+            logger.info(f"After dedupe: {len(all_posts)} unique posts")
+
+            # Apply quality filters if we have posts
+            if all_posts and hasattr(ctx.deps.reddit_sentiment, 'filter_by_engagement'):
+                from ..services.models import RedditPost
+
+                # Convert to RedditPost objects for filtering
+                post_objects = []
+                for p in all_posts:
+                    try:
+                        if isinstance(p, dict):
+                            post_objects.append(RedditPost(**p))
+                        else:
+                            post_objects.append(p)
+                    except Exception:
+                        continue
+
+                if post_objects:
+                    # Step 1: Engagement filter
+                    filtered = ctx.deps.reddit_sentiment.filter_by_engagement(
+                        post_objects,
+                        min_upvotes=min_upvotes,
+                        min_comments=min_comments
+                    )
+                    logger.info(f"After engagement filter: {len(filtered)} posts")
+
+                    # Step 2: Relevance scoring (if we have context)
+                    if filtered and relevance_threshold > 0:
+                        product_ctx = ctx.state.product_context or {}
+                        persona_ctx = f"People interested in {product_ctx.get('name', 'this product')} "
+                        persona_ctx += f"in the {product_ctx.get('category', 'health')} category"
+                        topic_ctx = f"{product_ctx.get('name', '')} {' '.join(detected_topics)}"
+
+                        try:
+                            scored = await ctx.deps.reddit_sentiment.score_relevance(
+                                filtered,
+                                persona_context=persona_ctx,
+                                topic_context=topic_ctx,
+                                threshold=relevance_threshold
+                            )
+                            logger.info(f"After relevance filter: {len(scored)} posts")
+                            filtered = scored
+                        except Exception as e:
+                            logger.warning(f"Relevance scoring failed, skipping: {e}")
+
+                    # Step 3: Top percentile selection
+                    if filtered and top_percentile < 1.0:
+                        try:
+                            selected = ctx.deps.reddit_sentiment.select_top_percentile(
+                                filtered,
+                                percentile=top_percentile
+                            )
+                            logger.info(f"After top {int(top_percentile*100)}% selection: {len(selected)} posts")
+                            filtered = selected
+                        except Exception as e:
+                            logger.warning(f"Top percentile selection failed, skipping: {e}")
+
+                    # Convert back to dicts
+                    all_posts = [p.model_dump() if hasattr(p, 'model_dump') else p for p in filtered]
 
             ctx.state.reddit_raw = all_posts
 

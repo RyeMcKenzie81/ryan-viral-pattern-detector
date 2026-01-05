@@ -351,13 +351,60 @@ def render_mode_section():
             )
             st.session_state.belief_posts_per_query = posts_per_query
 
+        # Quality filters (like Reddit Research tool)
+        with st.expander("🎯 Quality Filters (LLM-powered)", expanded=False):
+            st.caption("These filters use Claude to score posts for relevance - improves quality but adds LLM cost")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                min_upvotes = st.number_input(
+                    "Min Upvotes",
+                    min_value=0,
+                    max_value=100,
+                    value=st.session_state.get("belief_min_upvotes", 10),
+                    help="Minimum upvotes for engagement filter",
+                )
+                st.session_state.belief_min_upvotes = min_upvotes
+
+                min_comments = st.number_input(
+                    "Min Comments",
+                    min_value=0,
+                    max_value=50,
+                    value=st.session_state.get("belief_min_comments", 3),
+                    help="Minimum comments for engagement filter",
+                )
+                st.session_state.belief_min_comments = min_comments
+
+            with col2:
+                relevance_threshold = st.slider(
+                    "Relevance Threshold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.get("belief_relevance_threshold", 0.5),
+                    step=0.1,
+                    help="LLM scores posts for relevance to product/topic (0=disabled)",
+                )
+                st.session_state.belief_relevance_threshold = relevance_threshold
+
+                top_percentile = st.slider(
+                    "Top Percentile",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=st.session_state.get("belief_top_percentile", 0.30),
+                    step=0.1,
+                    format="%.0f%%",
+                    help="Keep only top X% of posts after scoring",
+                )
+                st.session_state.belief_top_percentile = top_percentile
+
         # Show estimate
         if estimated_calls > 0:
             actual_calls = min(estimated_calls, max_api_calls)
             st.info(
                 f"📊 **Estimate:** {sub_count} subreddits × {term_count} terms = "
                 f"{estimated_calls} potential calls → capped at **{actual_calls}** calls "
-                f"(up to {actual_calls * posts_per_query} posts)"
+                f"(up to {actual_calls * posts_per_query} posts before filtering)"
             )
         else:
             st.caption("Enter subreddits and search terms to see cost estimate")
@@ -699,12 +746,18 @@ with col_input:
             subreddits = [s.strip() for s in st.session_state.belief_subreddits.split(",") if s.strip()]
             search_terms = [s.strip() for s in st.session_state.belief_search_terms.split(",") if s.strip()]
 
-            # Build scrape config with guardrails
+            # Build scrape config with guardrails and quality filters
             scrape_config = {
+                # Cost guardrails
                 "max_api_calls": st.session_state.get("belief_max_api_calls", 10),
                 "max_total_posts": st.session_state.get("belief_max_total_posts", 100),
                 "max_posts_per_query": st.session_state.get("belief_posts_per_query", 25),
                 "dedupe": True,
+                # Quality filters
+                "min_upvotes": st.session_state.get("belief_min_upvotes", 10),
+                "min_comments": st.session_state.get("belief_min_comments", 3),
+                "relevance_threshold": st.session_state.get("belief_relevance_threshold", 0.5),
+                "top_percentile": st.session_state.get("belief_top_percentile", 0.30),
             }
 
             # Create run record
