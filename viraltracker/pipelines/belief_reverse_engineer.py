@@ -602,6 +602,8 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
 
                     try:
                         # Create config for posts-only scrape
+                        # NOTE: max_comments_per_post must be >= 1 for Apify actor validation
+                        # Setting to 1 with scrape_comments=False means minimal cost
                         scrape_config = RedditScrapeConfig(
                             search_queries=[term],
                             subreddits=[subreddit],
@@ -609,7 +611,7 @@ class RedditScrapeNode(BaseNode[BeliefReverseEngineerState]):
                             sort_by="relevance",
                             timeframe="year",
                             scrape_comments=False,  # KEY: No comments in pass 1
-                            max_comments_per_post=0,
+                            max_comments_per_post=1,  # Apify requires >= 1
                         )
                         posts, _ = ctx.deps.reddit_sentiment.scrape_reddit(scrape_config)
                         all_posts.extend(posts)
