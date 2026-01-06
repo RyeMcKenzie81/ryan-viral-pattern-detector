@@ -46,6 +46,12 @@ def get_supabase_client():
     return get_supabase_client()
 
 
+def get_pattern_discovery_service():
+    """Get PatternDiscoveryService instance."""
+    from viraltracker.services.pattern_discovery_service import PatternDiscoveryService
+    return PatternDiscoveryService()
+
+
 # ============================================
 # SESSION STATE
 # ============================================
@@ -62,6 +68,12 @@ if 'ri_promote_candidate_id' not in st.session_state:
     st.session_state.ri_promote_candidate_id = None
 if 'ri_confirm_reject' not in st.session_state:
     st.session_state.ri_confirm_reject = None
+if 'ri_view_mode' not in st.session_state:
+    st.session_state.ri_view_mode = "candidates"  # "candidates" or "patterns"
+if 'ri_selected_pattern_id' not in st.session_state:
+    st.session_state.ri_selected_pattern_id = None
+if 'ri_promote_pattern_id' not in st.session_state:
+    st.session_state.ri_promote_pattern_id = None
 
 
 # ============================================
@@ -98,6 +110,21 @@ TYPE_LABELS = {
     "quote": "Quote",
     "ump": "Unique Mechanism (Problem)",
     "ums": "Unique Mechanism (Solution)",
+}
+
+PATTERN_TYPE_LABELS = {
+    "pain_cluster": "Pain Cluster",
+    "jtbd_cluster": "JTBD Cluster",
+    "quote_cluster": "Quote Cluster",
+    "emerging_topic": "Emerging Topic",
+    "correlation": "Correlation",
+}
+
+PATTERN_STATUS_BADGES = {
+    "discovered": ("🔵", "blue"),
+    "reviewed": ("🟡", "orange"),
+    "promoted": ("🟢", "green"),
+    "dismissed": ("⚫", "gray"),
 }
 
 
@@ -590,6 +617,282 @@ def render_candidate_list(candidates: List[Dict]):
 
 
 # ============================================
+# PATTERN DISCOVERY UI COMPONENTS
+# ============================================
+
+def render_discovery_status(product_id: str):
+    """Render pattern discovery status and controls."""
+    service = get_pattern_discovery_service()
+    status = service.get_discovery_status(UUID(product_id))
+
+    st.subheader("🔮 Pattern Discovery")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Total Candidates",
+            status.get("total_candidates", 0),
+            help="Candidates available for pattern analysis"
+        )
+
+    with col2:
+        st.metric(
+            "With Embeddings",
+            status.get("embedded_candidates", 0),
+            help="Candidates with generated embeddings"
+        )
+
+    with col3:
+        st.metric(
+            "Patterns Found",
+            status.get("total_patterns", 0),
+            help="Discovered pattern clusters"
+        )
+
+    # Readiness check
+    if not status.get("ready_for_discovery"):
+        needs_more = status.get("needs_more", 0)
+        st.warning(
+            f"Need {needs_more} more candidates for pattern discovery. "
+            f"(Minimum: {status.get('min_required', 10)})"
+        )
+        st.caption(
+            "Extract candidates from: Belief Reverse Engineer, Reddit Research, "
+            "Competitor Research, or Brand Research."
+        )
+        return False
+
+    return True
+
+
+def render_run_discovery(product_id: str):
+    """Render the run discovery button and controls."""
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("**Ready to discover patterns**")
+        st.caption(
+            "Pattern discovery uses AI embeddings to cluster similar candidates "
+            "and identify recurring themes across your research."
+        )
+
+    with col2:
+        if st.button("🔮 Run Discovery", type="primary", use_container_width=True):
+            with st.spinner("Generating embeddings and clustering..."):
+                try:
+                    service = get_pattern_discovery_service()
+
+                    # Ensure embeddings
+                    embedded_count = service.ensure_candidate_embeddings(UUID(product_id))
+                    if embedded_count > 0:
+                        st.info(f"Generated {embedded_count} new embeddings")
+
+                    # Discover patterns
+                    patterns = service.discover_patterns(UUID(product_id))
+
+                    if not patterns:
+                        st.warning("No patterns discovered. Try adding more candidates.")
+                        return
+
+                    # Save discovered patterns
+                    saved_count = 0
+                    for pattern in patterns:
+                        if service.save_discovered_pattern(pattern):
+                            saved_count += 1
+
+                    st.success(f"Discovered and saved {saved_count} patterns!")
+                    st.cache_data.clear()
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Discovery failed: {e}")
+
+
+def render_pattern_card(pattern: Dict, product_id: str):
+    """Render a single pattern card."""
+    pattern_id = pattern.get("id")
+    name = pattern.get("name", "Unknown Pattern")
+    description = pattern.get("theme_description", "")
+    pattern_type = pattern.get("pattern_type", "unknown")
+    status = pattern.get("status", "discovered")
+    confidence = pattern.get("confidence_score", 0)
+    novelty = pattern.get("novelty_score", 0)
+    candidate_count = pattern.get("candidate_count", 0)
+    evidence_count = pattern.get("evidence_count", 0)
+    source_breakdown = pattern.get("source_breakdown", {})
+
+    # Status badge
+    badge_emoji, badge_color = PATTERN_STATUS_BADGES.get(status, ("⚪", "gray"))
+    type_label = PATTERN_TYPE_LABELS.get(pattern_type, pattern_type)
+
+    with st.container():
+        col1, col2, col3 = st.columns([4, 2, 2])
+
+        with col1:
+            st.markdown(f"### {badge_emoji} {name}")
+            st.markdown(f"*{description[:200]}{'...' if len(description) > 200 else ''}*")
+
+            # Source breakdown
+            source_str = " | ".join([
+                f"{SOURCE_ICONS.get(k, '📝')} {v}"
+                for k, v in source_breakdown.items()
+            ])
+            st.caption(f"{type_label} | {candidate_count} candidates | Sources: {source_str}")
+
+        with col2:
+            # Scores
+            st.markdown(f"**Confidence:** {confidence:.0%}")
+            st.markdown(f"**Novelty:** {novelty:.0%}")
+            st.markdown(f"**Status:** :{badge_color}[{status}]")
+
+        with col3:
+            if status == "discovered":
+                # Promote button
+                if st.button("⬆️ Promote", key=f"promote_pattern_{pattern_id}"):
+                    st.session_state.ri_promote_pattern_id = pattern_id
+                    st.rerun()
+
+                # Dismiss button
+                if st.button("❌ Dismiss", key=f"dismiss_pattern_{pattern_id}"):
+                    service = get_pattern_discovery_service()
+                    service.update_pattern_status(UUID(pattern_id), "dismissed")
+                    st.cache_data.clear()
+                    st.rerun()
+
+            elif status == "promoted":
+                angle_id = pattern.get("promoted_angle_id")
+                if angle_id:
+                    st.success("✅ Promoted")
+                    st.caption(f"Angle: {str(angle_id)[:8]}...")
+
+        st.divider()
+
+
+def render_pattern_list(product_id: str):
+    """Render the patterns list."""
+    service = get_pattern_discovery_service()
+    patterns = service.get_patterns_for_product(UUID(product_id))
+
+    if not patterns:
+        st.info(
+            "No patterns discovered yet. Click 'Run Discovery' above "
+            "to analyze your candidates for recurring themes."
+        )
+        return
+
+    # Group by status
+    discovered = [p for p in patterns if p.get("status") == "discovered"]
+    promoted = [p for p in patterns if p.get("status") == "promoted"]
+    dismissed = [p for p in patterns if p.get("status") == "dismissed"]
+
+    # Render discovered first
+    if discovered:
+        st.subheader(f"🔵 Discovered ({len(discovered)})")
+        st.caption("New patterns ready for review")
+        for p in discovered:
+            render_pattern_card(p, product_id)
+
+    if promoted:
+        st.subheader(f"🟢 Promoted ({len(promoted)})")
+        st.caption("Patterns converted to angles")
+        for p in promoted:
+            render_pattern_card(p, product_id)
+
+    if dismissed:
+        with st.expander(f"⚫ Dismissed ({len(dismissed)})"):
+            for p in dismissed:
+                render_pattern_card(p, product_id)
+
+
+def render_promote_pattern_workflow(pattern_id: str, product_id: str):
+    """Render the promote pattern to angle workflow."""
+    service = get_pattern_discovery_service()
+    patterns = service.get_patterns_for_product(UUID(product_id))
+    pattern = next((p for p in patterns if p.get("id") == pattern_id), None)
+
+    if not pattern:
+        st.error("Pattern not found")
+        return
+
+    # Back button
+    if st.button("← Cancel"):
+        st.session_state.ri_promote_pattern_id = None
+        st.rerun()
+
+    st.header("⬆️ Promote Pattern to Angle")
+
+    # Pattern preview
+    st.markdown(f"**Pattern:** {pattern.get('name', 'Unknown')}")
+    st.info(f"*{pattern.get('theme_description', '')}*")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Candidates in Cluster", pattern.get("candidate_count", 0))
+    with col2:
+        st.metric("Novelty Score", f"{pattern.get('novelty_score', 0):.0%}")
+
+    st.divider()
+
+    # Step 1: Select Persona
+    st.subheader("Step 1: Select Persona")
+    personas = fetch_personas_for_product(product_id)
+
+    if not personas:
+        st.warning("No personas found for this product's brand. Create a persona first.")
+        return
+
+    persona_options = {p["name"]: p["id"] for p in personas}
+    selected_persona_name = st.selectbox(
+        "Persona",
+        options=list(persona_options.keys()),
+        key="promote_pattern_persona"
+    )
+    selected_persona_id = persona_options[selected_persona_name]
+
+    # Step 2: Select JTBD
+    st.subheader("Step 2: Select JTBD")
+    jtbds = fetch_jtbds_for_persona_product(selected_persona_id, product_id)
+
+    if not jtbds:
+        st.warning(
+            f"No JTBDs found for {selected_persona_name} + this product. "
+            "Create a JTBD first in Ad Planning."
+        )
+        return
+
+    jtbd_options = {j["name"]: j["id"] for j in jtbds}
+    selected_jtbd_name = st.selectbox(
+        "Job to Be Done",
+        options=list(jtbd_options.keys()),
+        key="promote_pattern_jtbd"
+    )
+    selected_jtbd_id = jtbd_options[selected_jtbd_name]
+
+    st.divider()
+
+    # Promote button
+    st.markdown("**Ready to create angle from pattern?**")
+
+    if st.button("✅ Create Angle", type="primary"):
+        try:
+            angle_id = service.promote_pattern_to_angle(
+                pattern_id=UUID(pattern_id),
+                jtbd_framed_id=UUID(selected_jtbd_id)
+            )
+            if angle_id:
+                st.success(f"Angle created! ID: {angle_id}")
+                st.session_state.ri_promote_pattern_id = None
+                st.cache_data.clear()
+                st.balloons()
+                st.rerun()
+            else:
+                st.error("Failed to create angle. Check logs.")
+        except Exception as e:
+            st.error(f"Error promoting pattern: {e}")
+
+
+# ============================================
 # MAIN PAGE
 # ============================================
 
@@ -616,9 +919,13 @@ st.divider()
 if st.session_state.ri_selected_candidate_id:
     render_evidence_viewer(st.session_state.ri_selected_candidate_id)
 
-# Check if in promote workflow
+# Check if in promote candidate workflow
 elif st.session_state.ri_promote_candidate_id:
     render_promote_workflow(st.session_state.ri_promote_candidate_id, product_id)
+
+# Check if in promote pattern workflow
+elif st.session_state.ri_promote_pattern_id:
+    render_promote_pattern_workflow(st.session_state.ri_promote_pattern_id, product_id)
 
 # Main view
 else:
@@ -627,32 +934,49 @@ else:
 
     st.divider()
 
-    # Recently promoted (sidebar-style)
-    col_main, col_side = st.columns([3, 1])
+    # View mode tabs
+    tab_candidates, tab_patterns = st.tabs(["📋 Candidates", "🔮 Patterns"])
 
-    with col_side:
-        render_recently_promoted(product_id)
+    with tab_candidates:
+        # Recently promoted (sidebar-style)
+        col_main, col_side = st.columns([3, 1])
 
-    with col_main:
-        # Filters
-        render_filters_section()
+        with col_side:
+            render_recently_promoted(product_id)
+
+        with col_main:
+            # Filters
+            render_filters_section()
+
+            st.divider()
+
+            # Fetch candidates
+            candidates = fetch_candidates(
+                product_id=product_id,
+                status=st.session_state.ri_status_filter,
+                source_type=st.session_state.ri_source_filter
+            )
+
+            # Apply confidence filter (post-fetch since not in service)
+            if st.session_state.ri_confidence_filter != "all":
+                candidates = [
+                    c for c in candidates
+                    if c.get("confidence") == st.session_state.ri_confidence_filter
+                ]
+
+            # Render list
+            st.subheader(f"📋 Candidates ({len(candidates)})")
+            render_candidate_list(candidates)
+
+    with tab_patterns:
+        # Pattern Discovery section
+        is_ready = render_discovery_status(product_id)
+
+        if is_ready:
+            st.divider()
+            render_run_discovery(product_id)
 
         st.divider()
 
-        # Fetch candidates
-        candidates = fetch_candidates(
-            product_id=product_id,
-            status=st.session_state.ri_status_filter,
-            source_type=st.session_state.ri_source_filter
-        )
-
-        # Apply confidence filter (post-fetch since not in service)
-        if st.session_state.ri_confidence_filter != "all":
-            candidates = [
-                c for c in candidates
-                if c.get("confidence") == st.session_state.ri_confidence_filter
-            ]
-
-        # Render list
-        st.subheader(f"📋 Candidates ({len(candidates)})")
-        render_candidate_list(candidates)
+        # Pattern list
+        render_pattern_list(product_id)
