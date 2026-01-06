@@ -334,8 +334,9 @@ class PatternDiscoveryService:
         embeddings = np.array(raw_embeddings, dtype=np.float64)
 
         # Calculate distance matrix (1 - cosine similarity)
+        # Clip to handle floating point precision issues (similarity can slightly exceed 1)
         similarity_matrix = cosine_similarity(embeddings)
-        distance_matrix = 1 - similarity_matrix
+        distance_matrix = np.clip(1 - similarity_matrix, 0, 2)
 
         # Run DBSCAN clustering
         clustering = DBSCAN(
