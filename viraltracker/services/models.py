@@ -1203,6 +1203,133 @@ class BeliefAngle(BaseModel):
     created_at: Optional[datetime] = None
 
 
+# ============================================================================
+# Angle Pipeline Models
+# ============================================================================
+
+class CandidateType(str, Enum):
+    """Types of angle candidates."""
+    PAIN_SIGNAL = "pain_signal"
+    PATTERN = "pattern"
+    JTBD = "jtbd"
+    AD_HYPOTHESIS = "ad_hypothesis"
+    QUOTE = "quote"
+    UMP = "ump"  # Unique Mechanism Problem
+    UMS = "ums"  # Unique Mechanism Solution
+
+
+class CandidateSourceType(str, Enum):
+    """Sources for angle candidates."""
+    BELIEF_REVERSE_ENGINEER = "belief_reverse_engineer"
+    REDDIT_RESEARCH = "reddit_research"
+    AD_PERFORMANCE = "ad_performance"
+    COMPETITOR_RESEARCH = "competitor_research"
+    BRAND_RESEARCH = "brand_research"
+
+
+class CandidateStatus(str, Enum):
+    """Workflow status for candidates."""
+    CANDIDATE = "candidate"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    MERGED = "merged"
+
+
+class CandidateConfidence(str, Enum):
+    """Confidence levels based on evidence count."""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class EvidenceType(str, Enum):
+    """Types of evidence supporting candidates."""
+    PAIN_SIGNAL = "pain_signal"
+    QUOTE = "quote"
+    PATTERN = "pattern"
+    SOLUTION = "solution"
+    HYPOTHESIS = "hypothesis"
+
+
+class AngleCandidateEvidence(BaseModel):
+    """Evidence supporting an angle candidate."""
+    id: Optional[UUID] = None
+    candidate_id: UUID
+
+    # Evidence content
+    evidence_type: str = Field(..., description="Type: pain_signal, quote, pattern, solution, hypothesis")
+    evidence_text: str = Field(..., description="The actual evidence text")
+
+    # Source details
+    source_type: str = Field(..., description="Source system that provided this evidence")
+    source_run_id: Optional[UUID] = Field(None, description="Run ID from source system")
+    source_post_id: Optional[str] = Field(None, description="Original post ID (e.g., Reddit post ID)")
+    source_url: Optional[str] = Field(None, description="URL to original source")
+
+    # Quality indicators
+    engagement_score: Optional[int] = Field(None, description="Engagement from source (upvotes, etc.)")
+    confidence_score: Optional[float] = Field(None, ge=0, le=1, description="LLM confidence 0-1")
+
+    created_at: Optional[datetime] = None
+
+
+class AngleCandidate(BaseModel):
+    """
+    Unified staging model for research insights before promotion to belief_angles.
+
+    Candidates come from 5 sources:
+    - Belief Reverse Engineer pipeline
+    - Reddit Research
+    - Ad Performance Analysis
+    - Competitor Research
+    - Brand/Consumer Research
+
+    Candidates are ranked by frequency_score (how many evidence items support them)
+    and can be promoted to belief_angles via the Research Insights UI.
+    """
+    id: Optional[UUID] = None
+    product_id: UUID
+    brand_id: Optional[UUID] = None
+
+    # Core content
+    name: str = Field(..., description="Short descriptive name for the candidate")
+    belief_statement: str = Field(..., description="The core belief/insight this candidate represents")
+    explanation: Optional[str] = Field(None, description="Additional context or explanation")
+    candidate_type: str = Field(..., description="Type: pain_signal, pattern, jtbd, ad_hypothesis, quote, ump, ums")
+
+    # Source tracking
+    source_type: str = Field(..., description="Source: belief_reverse_engineer, reddit_research, ad_performance, competitor_research, brand_research")
+    source_run_id: Optional[UUID] = Field(None, description="Run ID from source system")
+    competitor_id: Optional[UUID] = Field(None, description="Competitor ID if from competitor research")
+
+    # Frequency/confidence scoring
+    frequency_score: int = Field(default=1, ge=1, description="Number of evidence items")
+    confidence: str = Field(default="LOW", description="Confidence: LOW (1), MEDIUM (2-4), HIGH (5+)")
+
+    # Workflow status
+    status: str = Field(default="candidate", description="Status: candidate, approved, rejected, merged")
+    promoted_angle_id: Optional[UUID] = Field(None, description="Reference to belief_angles if promoted")
+
+    # Metadata
+    tags: Optional[List[str]] = Field(default=None, description="Optional tags for categorization")
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[UUID] = None
+
+    # Related data (populated when fetching full candidate)
+    evidence: List[AngleCandidateEvidence] = Field(default_factory=list, description="Supporting evidence")
+
+    @classmethod
+    def calculate_confidence(cls, evidence_count: int) -> str:
+        """Calculate confidence level based on evidence count."""
+        if evidence_count >= 5:
+            return CandidateConfidence.HIGH.value
+        elif evidence_count >= 2:
+            return CandidateConfidence.MEDIUM.value
+        return CandidateConfidence.LOW.value
+
+
 class PlanStatus(str):
     """Status for plans."""
     DRAFT = "draft"

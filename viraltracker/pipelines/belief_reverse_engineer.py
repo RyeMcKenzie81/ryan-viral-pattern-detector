@@ -5,12 +5,13 @@ This pipeline reverse-engineers messaging into the Belief-First Master Canvas:
 - draft_mode: Fill canvas from message inference + product DB (fast)
 - research_mode: Run Reddit research, then revise canvas with observed evidence
 
-Pipeline Nodes (11 total):
+Pipeline Nodes (12 total):
 Draft Mode (1-4):
   FetchProductContext → ParseMessages → LayerClassifier → DraftCanvasAssembler
 
-Research Mode (5-8, optional):
+Research Mode (5-8.5, optional):
   → RedditResearchPlan → RedditScrape → ResearchExtractor → UMP_UMS_Updater
+  → InsightSynthesis (creates angle_candidates from research signals)
 
 Final (9-11):
   → ClaimRiskAndBoundary → IntegrityCheck → Renderer
@@ -33,6 +34,7 @@ from ..services.models import (
     BeliefFirstMasterCanvas,
     TraceItem,
 )
+from ..services.belief_analysis_service import InsightSynthesizer
 
 logger = logging.getLogger(__name__)
 
@@ -938,7 +940,7 @@ class UMPUMSUpdaterNode(BaseNode[BeliefReverseEngineerState]):
     async def run(
         self,
         ctx: GraphRunContext[BeliefReverseEngineerState, AgentDependencies]
-    ) -> "ClaimRiskAndBoundaryNode":
+    ) -> "InsightSynthesisNode":
         logger.info("Node 8: Updating canvas with research findings")
         ctx.state.current_step = "updating_canvas"
 
@@ -1000,7 +1002,7 @@ class UMPUMSUpdaterNode(BaseNode[BeliefReverseEngineerState]):
 
             ctx.state.current_step = "canvas_updated"
             logger.info(f"Updated canvas sections: {', '.join(updated_sections) or 'none'}")
-            return ClaimRiskAndBoundaryNode()
+            return InsightSynthesisNode()
 
         except Exception as e:
             ctx.state.error = str(e)
@@ -1011,6 +1013,100 @@ class UMPUMSUpdaterNode(BaseNode[BeliefReverseEngineerState]):
                 "error": str(e),
                 "step": "update_canvas"
             })
+
+
+# =============================================================================
+# INSIGHT SYNTHESIS NODE (8.5) - Angle Pipeline Integration
+# =============================================================================
+
+
+@dataclass
+class InsightSynthesisNode(BaseNode[BeliefReverseEngineerState]):
+    """
+    Node 8.5: Synthesize extracted signals into angle candidates.
+
+    This node bridges the Belief Reverse Engineer pipeline with the
+    Angle Pipeline by creating angle_candidates from:
+    1. Pain signals → pain_signal candidates
+    2. Patterns (triggers, helpers, fails) → pattern candidates
+    3. JTBD candidates → jtbd candidates
+    4. Solution failures → ump candidates
+
+    The node handles deduplication by checking for similar existing
+    candidates before creating new ones.
+    """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["reddit_bundle", "product_id"],
+        outputs=["candidates_created", "candidates_updated", "synthesis_results"],
+        services=["InsightSynthesizer.synthesize_candidates_from_bundle"],
+    )
+
+    async def run(
+        self,
+        ctx: GraphRunContext[BeliefReverseEngineerState, AgentDependencies]
+    ) -> "ClaimRiskAndBoundaryNode":
+        logger.info("Node 8.5: Synthesizing research into angle candidates")
+        ctx.state.current_step = "synthesizing_insights"
+
+        try:
+            reddit_bundle = ctx.state.reddit_bundle or {}
+            product_id = ctx.state.product_id
+
+            # Skip if no research data
+            if not reddit_bundle:
+                logger.warning("No reddit_bundle to synthesize, skipping candidate creation")
+                ctx.state.candidates_created = 0
+                ctx.state.candidates_updated = 0
+                ctx.state.synthesis_results = {"skipped": True, "reason": "no_reddit_bundle"}
+                return ClaimRiskAndBoundaryNode()
+
+            # Get brand_id from product_context if available
+            product_context = ctx.state.product_context or {}
+            brand_id = product_context.get("brand_id")
+
+            # Synthesize candidates
+            synthesizer = InsightSynthesizer()
+            results = synthesizer.synthesize_candidates_from_bundle(
+                reddit_bundle=reddit_bundle,
+                product_id=product_id,
+                source_run_id=None,  # Could be added to state if needed
+                brand_id=brand_id,
+            )
+
+            # Store results in state
+            ctx.state.candidates_created = results.get("candidates_created", 0)
+            ctx.state.candidates_updated = results.get("candidates_updated", 0)
+            ctx.state.synthesis_results = results
+
+            # Add trace item
+            ctx.state.trace_map.append({
+                "field_path": "angle_candidates",
+                "source": "insight_synthesis",
+                "source_detail": (
+                    f"Created {results['candidates_created']} new candidates, "
+                    f"updated {results['candidates_updated']} existing. "
+                    f"By type: {results.get('by_type', {})}"
+                ),
+                "evidence_status": EvidenceStatus.OBSERVED.value,
+            })
+
+            ctx.state.current_step = "insights_synthesized"
+            logger.info(
+                f"Synthesized candidates: {ctx.state.candidates_created} created, "
+                f"{ctx.state.candidates_updated} updated"
+            )
+            return ClaimRiskAndBoundaryNode()
+
+        except Exception as e:
+            ctx.state.error = str(e)
+            ctx.state.current_step = "failed"
+            logger.error(f"Failed to synthesize insights: {e}")
+            # Non-fatal: continue to risk checking even if synthesis fails
+            ctx.state.candidates_created = 0
+            ctx.state.candidates_updated = 0
+            ctx.state.synthesis_results = {"error": str(e)}
+            return ClaimRiskAndBoundaryNode()
 
 
 # =============================================================================
@@ -1207,6 +1303,11 @@ class RendererNode(BaseNode[BeliefReverseEngineerState]):
                     "posts_analyzed": ctx.state.posts_analyzed,
                     "comments_analyzed": ctx.state.comments_analyzed,
                 },
+                "angle_pipeline": {
+                    "candidates_created": ctx.state.candidates_created,
+                    "candidates_updated": ctx.state.candidates_updated,
+                    "synthesis_results": ctx.state.synthesis_results,
+                },
                 "mode": "research" if ctx.state.research_mode else "draft",
             })
 
@@ -1282,6 +1383,7 @@ belief_reverse_engineer_graph = Graph(
         RedditScrapeNode,
         ResearchExtractorNode,
         UMPUMSUpdaterNode,
+        InsightSynthesisNode,  # Phase 2: Angle Pipeline integration
         ClaimRiskAndBoundaryNode,
         IntegrityCheckNode,
         RendererNode,

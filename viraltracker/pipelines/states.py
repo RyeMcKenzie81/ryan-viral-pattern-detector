@@ -419,3 +419,8 @@ class BeliefReverseEngineerState:
     posts_analyzed: int = 0
     comments_analyzed: int = 0
     canvas_completeness_score: float = 0.0
+
+    # Angle Pipeline Integration (Phase 2)
+    candidates_created: int = 0
+    candidates_updated: int = 0
+    synthesis_results: Optional[Dict] = None

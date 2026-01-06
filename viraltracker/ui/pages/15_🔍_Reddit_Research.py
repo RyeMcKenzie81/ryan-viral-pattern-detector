@@ -103,6 +103,41 @@ def get_run_quotes(run_id: str):
     return result.data or []
 
 
+def get_products_for_brand(brand_id: str):
+    """Fetch products for a brand."""
+    db = get_supabase()
+    result = db.table("products").select(
+        "id, name"
+    ).eq("brand_id", brand_id).order("name").execute()
+    return result.data or []
+
+
+def get_angle_candidate_service():
+    """Get AngleCandidateService instance."""
+    from viraltracker.services.angle_candidate_service import AngleCandidateService
+    return AngleCandidateService()
+
+
+def extract_candidates_from_run(run_id: str, product_id: str, brand_id: Optional[str] = None) -> Dict:
+    """Extract angle candidates from a Reddit run's quotes.
+
+    Args:
+        run_id: Reddit scrape run UUID
+        product_id: Product UUID to link candidates to
+        brand_id: Optional brand UUID
+
+    Returns:
+        Dict with extraction stats {created, updated, errors}
+    """
+    from uuid import UUID
+    service = get_angle_candidate_service()
+    return service.extract_from_reddit_quotes(
+        run_id=UUID(run_id),
+        product_id=UUID(product_id),
+        brand_id=UUID(brand_id) if brand_id else None,
+    )
+
+
 # ============================================
 # UI COMPONENTS
 # ============================================
@@ -421,6 +456,100 @@ def render_results():
                                 st.divider()
                     else:
                         st.info(f"No {cat_name.lower()} found")
+
+        # Angle Pipeline Extraction Section
+        render_candidate_extraction(run_id, results)
+
+
+def render_candidate_extraction(run_id: str, results: Dict):
+    """Render UI for extracting angle candidates from quotes."""
+    st.divider()
+    st.subheader("Extract to Angle Pipeline")
+    st.caption("Create angle candidates from extracted quotes for ad testing.")
+
+    # Get brand from session or results
+    brand_id = st.session_state.get("reddit_brand_selector_value")
+    if not brand_id:
+        # Try to get from run data
+        runs = get_recent_runs(limit=1)
+        for run in runs:
+            if run.get("id") == run_id and run.get("brands"):
+                brand_id = run["brands"].get("id")
+                break
+
+    # Need a brand to get products
+    if not brand_id:
+        brands = get_brands()
+        if not brands:
+            st.info("No brands configured. Create a brand first to extract candidates.")
+            return
+
+        brand_options = {b["name"]: b["id"] for b in brands}
+        selected_brand = st.selectbox(
+            "Select Brand for Extraction",
+            options=list(brand_options.keys()),
+            key="reddit_extract_brand"
+        )
+        brand_id = brand_options[selected_brand]
+
+    # Get products for brand
+    products = get_products_for_brand(brand_id)
+    if not products:
+        st.warning("No products found for this brand. Create a product first.")
+        return
+
+    product_options = {p["name"]: p["id"] for p in products}
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        selected_product = st.selectbox(
+            "Link Candidates to Product",
+            options=list(product_options.keys()),
+            key="reddit_extract_product",
+            help="Candidates will be linked to this product for angle testing"
+        )
+        product_id = product_options[selected_product]
+
+    with col2:
+        # Count extractable quotes
+        quotes_by_cat = results.get("quotes_by_category", {})
+        extractable = sum(
+            quotes_by_cat.get(cat, 0)
+            for cat in ["PAIN_POINT", "DESIRED_OUTCOME", "BUYING_OBJECTION", "FAILED_SOLUTION"]
+        )
+        st.metric("Extractable Quotes", extractable)
+
+    if extractable > 0:
+        if st.button(
+            "Extract to Angle Pipeline",
+            type="primary",
+            key="reddit_extract_btn",
+            help="Create angle candidates from pain points, desired outcomes, objections, and failed solutions"
+        ):
+            with st.spinner("Extracting candidates..."):
+                try:
+                    stats = extract_candidates_from_run(
+                        run_id=run_id,
+                        product_id=product_id,
+                        brand_id=brand_id
+                    )
+
+                    if stats.get("created", 0) > 0 or stats.get("updated", 0) > 0:
+                        st.success(
+                            f"Extraction complete! Created {stats.get('created', 0)} new candidates, "
+                            f"updated {stats.get('updated', 0)} existing."
+                        )
+                    else:
+                        st.info("No new candidates created. Quotes may already exist as candidates.")
+
+                    if stats.get("errors", 0) > 0:
+                        st.warning(f"{stats.get('errors', 0)} errors during extraction.")
+
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+    else:
+        st.info("No extractable quotes found (pain points, desired outcomes, objections, failed solutions).")
 
 
 def render_history():

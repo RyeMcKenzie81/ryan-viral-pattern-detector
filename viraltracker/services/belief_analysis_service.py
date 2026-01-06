@@ -2149,3 +2149,359 @@ Your job is to:
 - externalized_blame: Customer language for "it's not your fault"
 
 Return the complete updated canvas JSON."""
+
+
+# =============================================================================
+# INSIGHT SYNTHESIS - Angle Pipeline Integration
+# =============================================================================
+
+class InsightSynthesizer:
+    """
+    Synthesizes Reddit research signals into angle candidates.
+
+    Used by InsightSynthesisNode to:
+    1. Extract pain signals → pain_signal candidates
+    2. Extract patterns → pattern candidates
+    3. Extract JTBD → jtbd candidates
+    4. Handle deduplication via similarity checking
+    """
+
+    def __init__(self, angle_candidate_service=None):
+        """
+        Initialize with optional service injection.
+
+        Args:
+            angle_candidate_service: AngleCandidateService instance (lazy loaded if not provided)
+        """
+        self._angle_candidate_service = angle_candidate_service
+
+    @property
+    def angle_service(self):
+        """Lazy-load AngleCandidateService to avoid circular imports."""
+        if self._angle_candidate_service is None:
+            from .angle_candidate_service import AngleCandidateService
+            self._angle_candidate_service = AngleCandidateService()
+        return self._angle_candidate_service
+
+    def synthesize_candidates_from_bundle(
+        self,
+        reddit_bundle: Dict[str, Any],
+        product_id,
+        source_run_id=None,
+        brand_id=None,
+    ) -> Dict[str, Any]:
+        """
+        Extract angle candidates from a reddit_bundle.
+
+        Args:
+            reddit_bundle: RedditResearchBundle dict with extracted signals
+            product_id: Product UUID
+            source_run_id: Optional run ID for tracing
+            brand_id: Optional brand UUID
+
+        Returns:
+            Dict with:
+                - candidates_created: int
+                - candidates_updated: int (existing candidates with new evidence)
+                - candidates: list of created/updated AngleCandidate dicts
+                - by_type: dict counting candidates by type
+        """
+        from uuid import UUID
+
+        # Convert to UUID if string
+        if isinstance(product_id, str):
+            product_id = UUID(product_id)
+        if source_run_id and isinstance(source_run_id, str):
+            source_run_id = UUID(source_run_id)
+        if brand_id and isinstance(brand_id, str):
+            brand_id = UUID(brand_id)
+
+        results = {
+            "candidates_created": 0,
+            "candidates_updated": 0,
+            "candidates": [],
+            "by_type": {},
+        }
+
+        if not reddit_bundle:
+            logger.warning("Empty reddit_bundle, no candidates to create")
+            return results
+
+        # 1. Extract pain signals
+        pain_results = self._extract_pain_candidates(
+            reddit_bundle.get("extracted_pain", []),
+            product_id, source_run_id, brand_id
+        )
+        results["candidates"].extend(pain_results["candidates"])
+        results["candidates_created"] += pain_results["created"]
+        results["candidates_updated"] += pain_results["updated"]
+        results["by_type"]["pain_signal"] = pain_results["created"] + pain_results["updated"]
+
+        # 2. Extract pattern candidates
+        pattern_results = self._extract_pattern_candidates(
+            reddit_bundle.get("pattern_detection", {}),
+            product_id, source_run_id, brand_id
+        )
+        results["candidates"].extend(pattern_results["candidates"])
+        results["candidates_created"] += pattern_results["created"]
+        results["candidates_updated"] += pattern_results["updated"]
+        results["by_type"]["pattern"] = pattern_results["created"] + pattern_results["updated"]
+
+        # 3. Extract JTBD candidates
+        jtbd_results = self._extract_jtbd_candidates(
+            reddit_bundle.get("jtbd_candidates", {}),
+            product_id, source_run_id, brand_id
+        )
+        results["candidates"].extend(jtbd_results["candidates"])
+        results["candidates_created"] += jtbd_results["created"]
+        results["candidates_updated"] += jtbd_results["updated"]
+        results["by_type"]["jtbd"] = jtbd_results["created"] + jtbd_results["updated"]
+
+        # 4. Extract solution failure candidates (these inform UMP)
+        solution_results = self._extract_solution_failure_candidates(
+            reddit_bundle.get("extracted_solutions_attempted", []),
+            product_id, source_run_id, brand_id
+        )
+        results["candidates"].extend(solution_results["candidates"])
+        results["candidates_created"] += solution_results["created"]
+        results["candidates_updated"] += solution_results["updated"]
+        results["by_type"]["ump"] = solution_results["created"] + solution_results["updated"]
+
+        logger.info(
+            f"Synthesized {results['candidates_created']} new candidates, "
+            f"updated {results['candidates_updated']} existing"
+        )
+
+        return results
+
+    def _extract_pain_candidates(
+        self,
+        extracted_pain: List[Dict],
+        product_id,
+        source_run_id,
+        brand_id,
+    ) -> Dict[str, Any]:
+        """Extract pain signals into angle candidates."""
+        results = {"candidates": [], "created": 0, "updated": 0}
+
+        for pain in extracted_pain:
+            if not pain:
+                continue
+
+            # Handle both dict and string formats
+            if isinstance(pain, str):
+                signal = pain
+                signal_type = "general"
+            else:
+                signal = pain.get("signal") or pain.get("description") or ""
+                signal_type = pain.get("signal_type") or pain.get("type") or "general"
+
+            if not signal or len(signal) < 10:
+                continue  # Skip empty or too short
+
+            # Build candidate name from signal (truncated)
+            name = signal[:50] + "..." if len(signal) > 50 else signal
+            belief_statement = signal
+
+            # Check for similar existing candidate
+            candidate, was_created = self.angle_service.get_or_create_candidate(
+                product_id=product_id,
+                belief_statement=belief_statement,
+                name=name,
+                source_type="belief_reverse_engineer",
+                candidate_type="pain_signal",
+                brand_id=brand_id,
+                source_run_id=source_run_id,
+                explanation=f"Pain signal ({signal_type}) from Reddit research",
+                tags=[signal_type, "reddit_research"],
+            )
+
+            if was_created:
+                results["created"] += 1
+            else:
+                results["updated"] += 1
+                # Add evidence to existing candidate
+                self.angle_service.add_evidence(
+                    candidate_id=candidate.id,
+                    evidence_type="pain_signal",
+                    evidence_text=belief_statement,
+                    source_type="belief_reverse_engineer",
+                    source_run_id=source_run_id,
+                )
+
+            results["candidates"].append(candidate.model_dump() if hasattr(candidate, 'model_dump') else candidate)
+
+        return results
+
+    def _extract_pattern_candidates(
+        self,
+        pattern_detection: Dict[str, Any],
+        product_id,
+        source_run_id,
+        brand_id,
+    ) -> Dict[str, Any]:
+        """Extract patterns (triggers, what helps, what fails) into candidates."""
+        results = {"candidates": [], "created": 0, "updated": 0}
+
+        # Process each pattern type
+        pattern_types = [
+            ("triggers", "What triggers the problem"),
+            ("worsens", "What makes it worse"),
+            ("improves", "What temporarily improves it"),
+            ("helps", "What helps with the problem"),
+            ("fails", "What reliably fails"),
+        ]
+
+        for pattern_key, pattern_description in pattern_types:
+            patterns = pattern_detection.get(pattern_key, [])
+
+            for pattern in patterns:
+                if not pattern or len(str(pattern)) < 5:
+                    continue
+
+                pattern_str = str(pattern)
+                name = f"{pattern_key.title()}: {pattern_str[:40]}"
+                belief_statement = f"{pattern_description}: {pattern_str}"
+
+                candidate, was_created = self.angle_service.get_or_create_candidate(
+                    product_id=product_id,
+                    belief_statement=belief_statement,
+                    name=name,
+                    source_type="belief_reverse_engineer",
+                    candidate_type="pattern",
+                    brand_id=brand_id,
+                    source_run_id=source_run_id,
+                    explanation=f"Pattern ({pattern_key}) from Reddit research",
+                    tags=[pattern_key, "pattern", "reddit_research"],
+                )
+
+                if was_created:
+                    results["created"] += 1
+                else:
+                    results["updated"] += 1
+                    self.angle_service.add_evidence(
+                        candidate_id=candidate.id,
+                        evidence_type="pattern",
+                        evidence_text=pattern_str,
+                        source_type="belief_reverse_engineer",
+                        source_run_id=source_run_id,
+                    )
+
+                results["candidates"].append(candidate.model_dump() if hasattr(candidate, 'model_dump') else candidate)
+
+        return results
+
+    def _extract_jtbd_candidates(
+        self,
+        jtbd_candidates: Dict[str, Any],
+        product_id,
+        source_run_id,
+        brand_id,
+    ) -> Dict[str, Any]:
+        """Extract JTBD (functional, emotional, identity) into candidates."""
+        results = {"candidates": [], "created": 0, "updated": 0}
+
+        jtbd_types = ["functional", "emotional", "identity"]
+
+        for jtbd_type in jtbd_types:
+            jobs = jtbd_candidates.get(jtbd_type, [])
+
+            # Handle both list and single value
+            if isinstance(jobs, str):
+                jobs = [jobs]
+            elif not isinstance(jobs, list):
+                continue
+
+            for job in jobs:
+                if not job or len(str(job)) < 10:
+                    continue
+
+                job_str = str(job)
+                name = f"JTBD ({jtbd_type}): {job_str[:40]}"
+                belief_statement = f"Job to be done ({jtbd_type}): {job_str}"
+
+                candidate, was_created = self.angle_service.get_or_create_candidate(
+                    product_id=product_id,
+                    belief_statement=belief_statement,
+                    name=name,
+                    source_type="belief_reverse_engineer",
+                    candidate_type="jtbd",
+                    brand_id=brand_id,
+                    source_run_id=source_run_id,
+                    explanation=f"JTBD ({jtbd_type}) from Reddit research",
+                    tags=[jtbd_type, "jtbd", "reddit_research"],
+                )
+
+                if was_created:
+                    results["created"] += 1
+                else:
+                    results["updated"] += 1
+                    self.angle_service.add_evidence(
+                        candidate_id=candidate.id,
+                        evidence_type="jtbd",
+                        evidence_text=job_str,
+                        source_type="belief_reverse_engineer",
+                        source_run_id=source_run_id,
+                    )
+
+                results["candidates"].append(candidate.model_dump() if hasattr(candidate, 'model_dump') else candidate)
+
+        return results
+
+    def _extract_solution_failure_candidates(
+        self,
+        solutions_attempted: List[Dict],
+        product_id,
+        source_run_id,
+        brand_id,
+    ) -> Dict[str, Any]:
+        """Extract solution failures into UMP candidates (explains why past solutions failed)."""
+        results = {"candidates": [], "created": 0, "updated": 0}
+
+        for solution in solutions_attempted:
+            if not solution:
+                continue
+
+            # Handle both dict and string formats
+            if isinstance(solution, str):
+                description = solution
+                why_failed = ""
+            else:
+                description = solution.get("signal") or solution.get("description") or ""
+                why_failed = solution.get("why_failed") or ""
+
+            if not description and not why_failed:
+                continue
+
+            # The "why it failed" insight is valuable for UMP
+            if why_failed and len(why_failed) >= 10:
+                name = f"Why failed: {why_failed[:40]}"
+                belief_statement = f"Past solutions failed because: {why_failed}"
+
+                candidate, was_created = self.angle_service.get_or_create_candidate(
+                    product_id=product_id,
+                    belief_statement=belief_statement,
+                    name=name,
+                    source_type="belief_reverse_engineer",
+                    candidate_type="ump",
+                    brand_id=brand_id,
+                    source_run_id=source_run_id,
+                    explanation=f"UMP insight (why past solutions failed) from Reddit research",
+                    tags=["ump", "solution_failure", "reddit_research"],
+                )
+
+                if was_created:
+                    results["created"] += 1
+                else:
+                    results["updated"] += 1
+                    self.angle_service.add_evidence(
+                        candidate_id=candidate.id,
+                        evidence_type="solution",
+                        evidence_text=f"{description} - Failed because: {why_failed}",
+                        source_type="belief_reverse_engineer",
+                        source_run_id=source_run_id,
+                    )
+
+                results["candidates"].append(candidate.model_dump() if hasattr(candidate, 'model_dump') else candidate)
+
+        return results
