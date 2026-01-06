@@ -36,6 +36,9 @@ PST = pytz.timezone('America/Los_Angeles')
 # Graceful shutdown flag
 shutdown_requested = False
 
+# Maximum ads per scheduled run (configurable via system_settings)
+MAX_ADS_PER_SCHEDULED_RUN = 50
+
 
 def handle_shutdown(signum, frame):
     """Handle shutdown signals gracefully."""
@@ -217,6 +220,50 @@ def get_template_base64(storage_name: str) -> Optional[str]:
         return None
 
 
+def get_belief_plan(plan_id: str) -> Optional[Dict]:
+    """Fetch a belief plan with its angles and templates."""
+    try:
+        from viraltracker.services.planning_service import PlanningService
+        from uuid import UUID
+        service = PlanningService()
+        plan = service.get_plan(UUID(plan_id))
+        if plan:
+            return {
+                'id': str(plan.id),
+                'name': plan.name,
+                'product_id': str(plan.product_id),
+                'persona_id': str(plan.persona_id),
+                'jtbd_framed_id': str(plan.jtbd_framed_id),
+                'ads_per_angle': plan.ads_per_angle,
+                'angles': [
+                    {
+                        'id': str(a.id),
+                        'name': a.name,
+                        'belief_statement': a.belief_statement
+                    }
+                    for a in plan.angles
+                ],
+                'templates': plan.templates
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch belief plan {plan_id}: {e}")
+        return None
+
+
+def get_angles_by_ids(angle_ids: List[str]) -> List[Dict]:
+    """Fetch belief angles by their IDs."""
+    try:
+        db = get_supabase_client()
+        result = db.table("belief_angles").select(
+            "id, name, belief_statement, jtbd_framed_id"
+        ).in_("id", angle_ids).execute()
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch angles: {e}")
+        return []
+
+
 # ============================================================================
 # Cron Helpers
 # ============================================================================
@@ -289,13 +336,13 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
 
 
 async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
-    """Execute an ad creation job."""
+    """Execute an ad creation job with support for belief-first modes."""
     job_id = job['id']
     job_name = job['name']
     product_id = job['product_id']
     product_info = job.get('products', {}) or {}
     brand_info = product_info.get('brands', {}) or {}
-    params = job.get('parameters', {})
+    params = job.get('parameters', {}) or {}
 
     logger.info(f"Starting job: {job_name} (ID: {job_id})")
 
@@ -312,8 +359,14 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     logs = []
     ad_run_ids = []
     templates_used = []
+    angles_used = []
+    ads_generated = 0
 
     try:
+        # Determine content source mode
+        content_source = params.get('content_source', 'hooks')
+        logs.append(f"Content source: {content_source}")
+
         # Get templates to use
         if job.get('template_mode') == 'unused':
             template_count = job.get('template_count', 5)
@@ -335,91 +388,239 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         # Create dependencies
         deps = AgentDependencies.create(project_name="scheduler")
 
-        # Process each template sequentially
-        for idx, template_storage_name in enumerate(templates):
-            if shutdown_requested:
-                logs.append("Shutdown requested, stopping job execution")
-                break
+        # Get brand colors if using brand color mode
+        brand_colors_data = None
+        if params.get('color_mode') == 'brand':
+            brand_colors_data = brand_info.get('brand_colors')
 
-            logs.append(f"Processing template {idx + 1}/{len(templates)}: {template_storage_name}")
-            logger.info(f"Job {job_name}: Processing template {idx + 1}/{len(templates)}")
+        # Determine angles to process based on content_source
+        angles_to_process = []
 
-            # Download template
-            template_base64 = get_template_base64(template_storage_name)
-            if not template_base64:
-                logs.append(f"  Failed to download template: {template_storage_name}")
-                continue
+        if content_source == 'plan':
+            # Load belief plan and get its angles
+            plan_id = params.get('plan_id')
+            if not plan_id:
+                raise Exception("plan_id required for content_source='plan'")
 
-            # Create RunContext
-            ctx = RunContext(
-                deps=deps,
-                model=None,
-                usage=RunUsage()
-            )
+            plan = get_belief_plan(plan_id)
+            if not plan:
+                raise Exception(f"Belief plan not found: {plan_id}")
 
-            # Get brand colors if using brand color mode
-            brand_colors_data = None
-            if params.get('color_mode') == 'brand':
-                brand_colors_data = brand_info.get('brand_colors')
+            angles_to_process = plan.get('angles', [])
+            logs.append(f"Loaded plan '{plan['name']}' with {len(angles_to_process)} angles")
 
-            # Run ad creation workflow
-            try:
-                result = await complete_ad_workflow(
-                    ctx=ctx,
-                    product_id=product_id,
-                    reference_ad_base64=template_base64,
-                    reference_ad_filename=template_storage_name,
-                    project_id="",
-                    num_variations=params.get('num_variations', 5),
-                    content_source=params.get('content_source', 'hooks'),
-                    color_mode=params.get('color_mode', 'original'),
-                    brand_colors=brand_colors_data,
-                    image_selection_mode=params.get('image_selection_mode', 'auto'),
-                    selected_image_paths=None,  # Auto mode selects best 1-2 images
-                    persona_id=params.get('persona_id'),  # Optional persona for targeting
-                    variant_id=params.get('variant_id'),  # Optional variant (flavor, size, etc.)
-                    additional_instructions=params.get('additional_instructions')  # Optional run instructions
+            # Use plan's templates if specified, otherwise use job's templates
+            if plan.get('templates'):
+                # Plan has its own templates - we could use them, but for scheduler
+                # we typically use the job's template configuration
+                logs.append(f"Using job templates (plan has {len(plan['templates'])} templates)")
+
+        elif content_source == 'angles':
+            # Load specific angles by ID
+            angle_ids = params.get('angle_ids', [])
+            if not angle_ids:
+                raise Exception("angle_ids required for content_source='angles'")
+
+            angles_to_process = get_angles_by_ids(angle_ids)
+            logs.append(f"Loaded {len(angles_to_process)} direct angles")
+
+        # Calculate total ads and enforce limit
+        if angles_to_process:
+            num_variations = params.get('num_variations', 5)
+            total_potential_ads = len(angles_to_process) * len(templates) * num_variations
+            logs.append(f"Potential ads: {len(angles_to_process)} angles × {len(templates)} templates × {num_variations} variations = {total_potential_ads}")
+
+            if total_potential_ads > MAX_ADS_PER_SCHEDULED_RUN:
+                logs.append(f"⚠️ Exceeds limit of {MAX_ADS_PER_SCHEDULED_RUN}. Will stop after limit reached.")
+
+        # Process based on content source
+        if content_source in ['plan', 'angles']:
+            # Belief-first mode: Loop through angles × templates
+            for angle_idx, angle in enumerate(angles_to_process):
+                if shutdown_requested:
+                    logs.append("Shutdown requested, stopping job execution")
+                    break
+
+                if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
+                    logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                    break
+
+                angle_name = angle.get('name', 'Unknown')
+                angle_id = angle.get('id')
+                belief_statement = angle.get('belief_statement', '')
+                logs.append(f"\n--- Angle {angle_idx + 1}/{len(angles_to_process)}: {angle_name} ---")
+
+                for template_idx, template_storage_name in enumerate(templates):
+                    if shutdown_requested:
+                        break
+
+                    if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
+                        break
+
+                    logs.append(f"  Template {template_idx + 1}/{len(templates)}: {template_storage_name}")
+
+                    # Download template
+                    template_base64 = get_template_base64(template_storage_name)
+                    if not template_base64:
+                        logs.append(f"    Failed to download template")
+                        continue
+
+                    # Create RunContext
+                    ctx = RunContext(
+                        deps=deps,
+                        model=None,
+                        usage=RunUsage()
+                    )
+
+                    # Build additional instructions with angle context
+                    angle_instructions = f"ANGLE: {angle_name}\nBELIEF: {belief_statement}"
+                    full_instructions = angle_instructions
+                    if params.get('additional_instructions'):
+                        full_instructions += f"\n\n{params['additional_instructions']}"
+
+                    # Run ad creation workflow with angle-specific content
+                    try:
+                        result = await complete_ad_workflow(
+                            ctx=ctx,
+                            product_id=product_id,
+                            reference_ad_base64=template_base64,
+                            reference_ad_filename=template_storage_name,
+                            project_id="",
+                            num_variations=params.get('num_variations', 5),
+                            content_source='hooks',  # Use hooks mode but with angle as context
+                            color_mode=params.get('color_mode', 'original'),
+                            brand_colors=brand_colors_data,
+                            image_selection_mode=params.get('image_selection_mode', 'auto'),
+                            selected_image_paths=None,
+                            persona_id=params.get('persona_id') or params.get('belief_persona_id'),
+                            variant_id=params.get('variant_id'),
+                            additional_instructions=full_instructions
+                        )
+
+                        if result and result.get('ad_run_id'):
+                            ad_run_id = result['ad_run_id']
+                            ad_run_ids.append(ad_run_id)
+                            templates_used.append(template_storage_name)
+                            if angle_id and angle_id not in angles_used:
+                                angles_used.append(angle_id)
+
+                            # Record template usage
+                            record_template_usage(product_id, template_storage_name, ad_run_id)
+
+                            approved = result.get('approved_count', 0)
+                            rejected = result.get('rejected_count', 0)
+                            ads_generated += approved
+                            logs.append(f"    ✓ {approved} approved, {rejected} rejected")
+
+                            # Handle export
+                            export_dest = params.get('export_destination', 'none')
+                            if export_dest != 'none':
+                                await handle_export(
+                                    result=result,
+                                    params=params,
+                                    product_name=product_info.get('name', 'Product'),
+                                    brand_name=brand_info.get('name', 'Brand'),
+                                    deps=deps
+                                )
+                        else:
+                            logs.append(f"    No ad_run_id returned")
+
+                    except Exception as e:
+                        logs.append(f"    Error: {str(e)}")
+                        logger.error(f"Error processing angle {angle_name} + template {template_storage_name}: {e}")
+
+        else:
+            # Traditional mode (hooks, recreate_template): Loop through templates only
+            for idx, template_storage_name in enumerate(templates):
+                if shutdown_requested:
+                    logs.append("Shutdown requested, stopping job execution")
+                    break
+
+                if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
+                    logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                    break
+
+                logs.append(f"Processing template {idx + 1}/{len(templates)}: {template_storage_name}")
+                logger.info(f"Job {job_name}: Processing template {idx + 1}/{len(templates)}")
+
+                # Download template
+                template_base64 = get_template_base64(template_storage_name)
+                if not template_base64:
+                    logs.append(f"  Failed to download template: {template_storage_name}")
+                    continue
+
+                # Create RunContext
+                ctx = RunContext(
+                    deps=deps,
+                    model=None,
+                    usage=RunUsage()
                 )
 
-                if result and result.get('ad_run_id'):
-                    ad_run_id = result['ad_run_id']
-                    ad_run_ids.append(ad_run_id)
-                    templates_used.append(template_storage_name)
+                # Run ad creation workflow
+                try:
+                    result = await complete_ad_workflow(
+                        ctx=ctx,
+                        product_id=product_id,
+                        reference_ad_base64=template_base64,
+                        reference_ad_filename=template_storage_name,
+                        project_id="",
+                        num_variations=params.get('num_variations', 5),
+                        content_source=content_source,
+                        color_mode=params.get('color_mode', 'original'),
+                        brand_colors=brand_colors_data,
+                        image_selection_mode=params.get('image_selection_mode', 'auto'),
+                        selected_image_paths=None,
+                        persona_id=params.get('persona_id'),
+                        variant_id=params.get('variant_id'),
+                        additional_instructions=params.get('additional_instructions')
+                    )
 
-                    # Record template usage
-                    record_template_usage(product_id, template_storage_name, ad_run_id)
+                    if result and result.get('ad_run_id'):
+                        ad_run_id = result['ad_run_id']
+                        ad_run_ids.append(ad_run_id)
+                        templates_used.append(template_storage_name)
 
-                    approved = result.get('approved_count', 0)
-                    rejected = result.get('rejected_count', 0)
-                    flagged = result.get('flagged_count', 0)
-                    logs.append(f"  Completed: {approved} approved, {rejected} rejected, {flagged} flagged")
+                        # Record template usage
+                        record_template_usage(product_id, template_storage_name, ad_run_id)
 
-                    # Handle export
-                    export_dest = params.get('export_destination', 'none')
-                    if export_dest != 'none':
-                        await handle_export(
-                            result=result,
-                            params=params,
-                            product_name=product_info.get('name', 'Product'),
-                            brand_name=brand_info.get('name', 'Brand'),
-                            deps=deps
-                        )
-                        logs.append(f"  Exported to: {export_dest}")
-                else:
-                    logs.append(f"  No ad_run_id returned")
+                        approved = result.get('approved_count', 0)
+                        rejected = result.get('rejected_count', 0)
+                        flagged = result.get('flagged_count', 0)
+                        ads_generated += approved
+                        logs.append(f"  Completed: {approved} approved, {rejected} rejected, {flagged} flagged")
 
-            except Exception as e:
-                logs.append(f"  Error: {str(e)}")
-                logger.error(f"Error processing template {template_storage_name}: {e}")
+                        # Handle export
+                        export_dest = params.get('export_destination', 'none')
+                        if export_dest != 'none':
+                            await handle_export(
+                                result=result,
+                                params=params,
+                                product_name=product_info.get('name', 'Product'),
+                                brand_name=brand_info.get('name', 'Brand'),
+                                deps=deps
+                            )
+                            logs.append(f"  Exported to: {export_dest}")
+                    else:
+                        logs.append(f"  No ad_run_id returned")
+
+                except Exception as e:
+                    logs.append(f"  Error: {str(e)}")
+                    logger.error(f"Error processing template {template_storage_name}: {e}")
+
+        logs.append(f"\n=== Summary: {ads_generated} ads generated, {len(ad_run_ids)} runs created ===")
 
         # Job completed successfully
-        update_job_run(run_id, {
+        job_run_data = {
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "ad_run_ids": ad_run_ids,
             "templates_used": templates_used,
             "logs": "\n".join(logs)
-        })
+        }
+        # Include angles_used if belief-first mode was used
+        if angles_used:
+            job_run_data["angles_used"] = angles_used
+        update_job_run(run_id, job_run_data)
 
         # Update job: increment runs_completed, calculate next_run
         runs_completed = job.get('runs_completed', 0) + 1
@@ -448,11 +649,15 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         update_job(job_id, job_updates)
 
         logger.info(f"Completed job: {job_name}")
-        return {
+        result = {
             "success": True,
             "ad_run_ids": ad_run_ids,
-            "templates_used": templates_used
+            "templates_used": templates_used,
+            "ads_generated": ads_generated
         }
+        if angles_used:
+            result["angles_used"] = angles_used
+        return result
 
     except Exception as e:
         error_msg = str(e)
