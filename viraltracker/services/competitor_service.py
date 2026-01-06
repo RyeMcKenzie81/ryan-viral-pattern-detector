@@ -2445,7 +2445,8 @@ Return ONLY valid JSON."""
         if competitor_product_id:
             query = query.eq("competitor_product_id", str(competitor_product_id))
 
-        result = query.order("helpful_votes", desc=True).limit(500).execute()
+        # Limit to 200 most helpful reviews for reliable analysis
+        result = query.order("helpful_votes", desc=True).limit(200).execute()
         reviews = result.data or []
 
         if not reviews:
@@ -2486,12 +2487,29 @@ Return ONLY valid JSON."""
         result = await agent.run(prompt)
         response_text = result.output
 
-        # Parse JSON response
+        # Parse JSON response with repair attempts
         try:
             # Extract JSON from response
             json_match = re.search(r'\{[\s\S]*\}', response_text)
             if json_match:
-                analysis = json.loads(json_match.group())
+                json_str = json_match.group()
+                try:
+                    analysis = json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    # Try to repair common JSON issues
+                    logger.warning(f"JSON parse failed, attempting repair: {e}")
+
+                    # Remove trailing commas before } or ]
+                    repaired = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                    # Fix unescaped quotes in strings (basic attempt)
+                    # Try parsing again
+                    try:
+                        analysis = json.loads(repaired)
+                        logger.info("JSON repair successful")
+                    except json.JSONDecodeError:
+                        # Last resort: try to extract partial valid JSON
+                        logger.error(f"JSON repair failed, original error at char {e.pos}")
+                        return {"error": f"Failed to parse analysis: {e}"}
             else:
                 raise ValueError("No JSON found in response")
         except (json.JSONDecodeError, ValueError) as e:
