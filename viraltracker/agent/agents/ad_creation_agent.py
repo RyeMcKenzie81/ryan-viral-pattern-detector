@@ -3133,7 +3133,8 @@ async def complete_ad_workflow(
             raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
 
         # Validate content_source
-        valid_content_sources = ["hooks", "recreate_template", "belief_first"]
+        # 'plan' and 'angles' are belief-first variants from the scheduler
+        valid_content_sources = ["hooks", "recreate_template", "belief_first", "plan", "angles"]
         if content_source not in valid_content_sources:
             raise ValueError(f"content_source must be one of {valid_content_sources}, got {content_source}")
 
@@ -3367,10 +3368,11 @@ async def complete_ad_workflow(
                 persona_data=persona_data
             )
 
-        elif content_source == "belief_first":
+        elif content_source in ["belief_first", "plan", "angles"]:
             # Belief-first mode: use provided angle's belief statement
+            # 'plan' and 'angles' are scheduler variants that work the same way
             if not angle_data:
-                raise ValueError("angle_data is required for belief_first content source")
+                raise ValueError(f"angle_data is required for {content_source} content source")
 
             logger.info(f"Stage 6: Using belief-first mode with angle: {angle_data.get('name', 'Unknown')}")
             logger.info(f"  Belief: {angle_data.get('belief_statement', '')[:100]}...")
