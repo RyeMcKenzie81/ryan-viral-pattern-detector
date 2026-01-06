@@ -123,8 +123,18 @@ Added "Pattern Discovery - Suggested Actions for Low Confidence" feature idea
 
 | Test | Status | How to Test |
 |------|--------|-------------|
-| Platform Settings → Angle Pipeline tab | ⏳ | Navigate to Platform Settings, verify settings display and save |
-| Extraction Pipeline via code | ⏳ | Run `extract_candidates()` and check Logfire traces |
+| Platform Settings → Angle Pipeline tab | ✅ | Created `system_settings` table, settings now save |
+| Extraction Pipeline Logfire traces | ✅ | Verified via MCP - traces showing in Logfire |
+
+## Additional Fixes During Testing
+
+### 11. Missing system_settings Table
+
+**File:** `migrations/2026-01-06_create_system_settings_table.sql`
+
+**Issue:** Platform Settings tried to save to non-existent `system_settings` table
+
+**Fix:** Created migration with table, RLS policies, and default Angle Pipeline settings
 
 ## Commits
 
@@ -134,11 +144,13 @@ Added "Pattern Discovery - Suggested Actions for Low Confidence" feature idea
 - `6ee9b7a` - fix: Add 'plan' and 'angles' as valid content sources for scheduler
 - `f30e0ba` - fix: Add 'plan' and 'angles' to content_source Pydantic validation
 - `97f389e` - docs: Add validation consistency checklist to CLAUDE.md
+- `5be3efc` - docs: Add Checkpoint 11 - Testing & Bug Fixes
+- `5df995c` - feat: Add system_settings table migration
 
 ---
 
-## Next Steps
+## Final Status
 
-1. Test Platform Settings → Angle Pipeline tab
-2. Verify extraction pipeline Logfire traces
-3. Consider merging `feature/antigravity-setup` to `main`
+**All tests passed. Angle Pipeline is fully functional.**
+
+Merged `feature/antigravity-setup` → `main` on 2026-01-06.
