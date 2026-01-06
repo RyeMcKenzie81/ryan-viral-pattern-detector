@@ -496,3 +496,99 @@ return End({
 - **Visualization**: `docs/plans/trash-panda-content-pipeline/WORKFLOW_VISUALIZATION.md`
 - **Checkpoints**: `docs/plans/trash-panda-content-pipeline/CHECKPOINT_*.md`
 - **Existing Graph Example**: `viraltracker/pipelines/brand_onboarding.py`
+
+---
+
+## Angle Pipeline Feature
+
+The Angle Pipeline unifies research insights from 5 sources into testable belief angles for ad creation.
+
+> **Plan Document**: See `docs/plans/angle-pipeline/` for checkpoints
+> **Main UI**: Research Insights page (`32_💡_Research_Insights.py`)
+
+### Input Sources → `angle_candidates` Table
+
+| Source | Integration Point | What's Extracted |
+|--------|-------------------|------------------|
+| Belief Reverse Engineer | `InsightSynthesizer` in BRE pipeline | Pain signals, JTBDs, hypotheses |
+| Reddit Research | "Extract Candidates" button | Quotes, patterns, pain signals |
+| Ad Performance | "Save as Candidate" in analysis | Winning hooks, ad hypotheses |
+| Competitor Research | Auto-extraction from analysis | UMPs, UMSs, competitor angles |
+| Brand Research | Auto-extraction from analysis | Brand insights, customer voice |
+
+### Key Services
+
+```python
+# AngleCandidateService - CRUD, promotion, similarity detection
+from viraltracker.services.angle_candidate_service import AngleCandidateService
+service = AngleCandidateService()
+service.create_candidate(product_id, name, belief_statement, source_type, ...)
+service.promote_to_angle(candidate_id, jtbd_framed_id)
+
+# PatternDiscoveryService - Clustering and pattern analysis
+from viraltracker.services.pattern_discovery_service import PatternDiscoveryService
+service = PatternDiscoveryService()
+service.discover_patterns(product_id)  # Uses OpenAI embeddings + DBSCAN
+service.promote_pattern_to_angle(pattern_id, jtbd_framed_id)
+```
+
+### Database Tables
+
+```
+angle_candidates          - Unified staging for research insights
+├── frequency_score       - Evidence count (determines confidence)
+├── confidence            - LOW (1), MEDIUM (2-4), HIGH (5+)
+├── status                - candidate, approved, rejected, merged
+├── embedding             - VECTOR(1536) for similarity search
+└── promoted_angle_id     - Link to belief_angles if promoted
+
+angle_candidate_evidence  - Supporting evidence for candidates
+├── evidence_type         - pain_signal, quote, pattern, solution, hypothesis
+├── source_type           - Which input source
+└── engagement_score      - Upvotes, etc. from source
+
+discovered_patterns       - Auto-discovered pattern clusters
+├── confidence_score      - Evidence strength (0-1)
+├── novelty_score         - Uniqueness vs existing angles (0-1)
+├── centroid_embedding    - Cluster center for similarity
+└── candidate_ids         - Array of candidates in cluster
+```
+
+### Scheduler Integration
+
+The Ad Scheduler supports belief-first modes:
+
+```python
+# In scheduled_jobs.parameters JSONB:
+{
+    "content_source": "plan",      # Use a belief plan
+    "plan_id": "uuid"
+}
+# OR
+{
+    "content_source": "angles",    # Use direct angles
+    "angle_ids": ["uuid1", "uuid2"],
+    "belief_persona_id": "uuid",
+    "belief_jtbd_id": "uuid"
+}
+```
+
+**Limits:** `MAX_ADS_PER_SCHEDULED_RUN = 50`
+
+### UI Pages
+
+| Page | Purpose |
+|------|---------|
+| `32_💡_Research_Insights.py` | View candidates, discover patterns, promote to angles |
+| `24_📅_Ad_Scheduler.py` | Belief-first scheduling (plan or direct angles) |
+| `23_📋_Ad_Planning.py` | Create belief plans with angles + templates |
+
+### Workflow Summary
+
+1. **Gather** - Extract candidates from 5 research sources
+2. **Review** - View in Research Insights, sorted by confidence
+3. **Discover** - Run pattern discovery to find recurring themes
+4. **Promote** - Convert candidates/patterns to belief angles
+5. **Plan** - Create belief plan with angles + templates
+6. **Schedule** - Run scheduled ads with belief-first mode
+7. **Analyze** - Track angle performance, identify winners

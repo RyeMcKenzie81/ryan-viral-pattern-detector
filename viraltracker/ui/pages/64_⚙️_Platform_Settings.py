@@ -2,6 +2,7 @@
 import streamlit as st
 import os
 import dotenv
+from typing import Any
 from viraltracker.core.config import Config
 from viraltracker.ui.auth import require_auth
 
@@ -83,11 +84,12 @@ def render_model_selector(key: str, label: str):
                 st.rerun()
 
 # Create Tabs
-tab_core, tab_agents, tab_services, tab_pipelines = st.tabs([
-    "Core Capabilities", 
-    "Social Agents", 
-    "Backend Services", 
-    "Content Pipelines"
+tab_core, tab_agents, tab_services, tab_pipelines, tab_angle = st.tabs([
+    "Core Capabilities",
+    "Social Agents",
+    "Backend Services",
+    "Content Pipelines",
+    "Angle Pipeline"
 ])
 
 with tab_core:
@@ -167,9 +169,153 @@ with tab_pipelines:
     for key, label in pipelines.items():
         render_model_selector(key, label)
 
+with tab_angle:
+    st.markdown("### Angle Pipeline Settings")
+    st.markdown("Configure thresholds and limits for the angle candidate pipeline.")
+
+    # Helper to get/set system settings
+    def get_system_setting(key: str, default: Any) -> Any:
+        """Get a system setting from the database."""
+        try:
+            from viraltracker.core.database import get_supabase_client
+            db = get_supabase_client()
+            result = db.table("system_settings").select("value").eq("key", key).execute()
+            if result.data:
+                return result.data[0]["value"]
+            return default
+        except Exception:
+            return default
+
+    def set_system_setting(key: str, value: Any) -> bool:
+        """Set a system setting in the database."""
+        try:
+            from viraltracker.core.database import get_supabase_client
+            db = get_supabase_client()
+            db.table("system_settings").upsert({
+                "key": key,
+                "value": value
+            }, on_conflict="key").execute()
+            return True
+        except Exception as e:
+            st.error(f"Failed to save setting: {e}")
+            return False
+
+    st.markdown("#### Candidate Management")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Stale threshold
+        current_stale = int(get_system_setting("angle_pipeline.stale_threshold_days", 30))
+        new_stale = st.number_input(
+            "Stale Threshold (days)",
+            min_value=7,
+            max_value=365,
+            value=current_stale,
+            help="Candidates without new evidence for this many days are considered stale"
+        )
+        if new_stale != current_stale:
+            if st.button("Save Stale Threshold"):
+                if set_system_setting("angle_pipeline.stale_threshold_days", new_stale):
+                    st.success("Saved!")
+                    st.rerun()
+
+        # Evidence decay half-life
+        current_decay = int(get_system_setting("angle_pipeline.evidence_decay_halflife_days", 60))
+        new_decay = st.number_input(
+            "Evidence Decay Half-Life (days)",
+            min_value=14,
+            max_value=365,
+            value=current_decay,
+            help="How quickly evidence weight decays over time (for frequency scoring)"
+        )
+        if new_decay != current_decay:
+            if st.button("Save Evidence Decay"):
+                if set_system_setting("angle_pipeline.evidence_decay_halflife_days", new_decay):
+                    st.success("Saved!")
+                    st.rerun()
+
+    with col2:
+        # Min candidates for pattern discovery
+        current_min = int(get_system_setting("angle_pipeline.min_candidates_pattern_discovery", 10))
+        new_min = st.number_input(
+            "Min Candidates for Pattern Discovery",
+            min_value=5,
+            max_value=100,
+            value=current_min,
+            help="Minimum candidates needed before pattern discovery can run"
+        )
+        if new_min != current_min:
+            if st.button("Save Min Candidates"):
+                if set_system_setting("angle_pipeline.min_candidates_pattern_discovery", new_min):
+                    st.success("Saved!")
+                    st.rerun()
+
+        # Max ads per scheduled run
+        current_max_ads = int(get_system_setting("angle_pipeline.max_ads_per_scheduled_run", 50))
+        new_max_ads = st.number_input(
+            "Max Ads Per Scheduled Run",
+            min_value=10,
+            max_value=200,
+            value=current_max_ads,
+            help="Maximum ads generated in a single scheduled job run"
+        )
+        if new_max_ads != current_max_ads:
+            if st.button("Save Max Ads"):
+                if set_system_setting("angle_pipeline.max_ads_per_scheduled_run", new_max_ads):
+                    st.success("Saved!")
+                    st.rerun()
+
+    st.markdown("#### Pattern Discovery")
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        # DBSCAN epsilon
+        current_eps = float(get_system_setting("angle_pipeline.cluster_eps", 0.3))
+        new_eps = st.slider(
+            "Clustering Sensitivity (epsilon)",
+            min_value=0.1,
+            max_value=0.8,
+            value=current_eps,
+            step=0.05,
+            help="Lower = tighter clusters (more patterns), Higher = looser clusters (fewer patterns)"
+        )
+        if abs(new_eps - current_eps) > 0.01:
+            if st.button("Save Cluster Sensitivity"):
+                if set_system_setting("angle_pipeline.cluster_eps", new_eps):
+                    st.success("Saved!")
+                    st.rerun()
+
+    with col4:
+        # Min cluster size
+        current_min_cluster = int(get_system_setting("angle_pipeline.cluster_min_samples", 2))
+        new_min_cluster = st.number_input(
+            "Min Cluster Size",
+            min_value=2,
+            max_value=10,
+            value=current_min_cluster,
+            help="Minimum candidates needed to form a pattern cluster"
+        )
+        if new_min_cluster != current_min_cluster:
+            if st.button("Save Min Cluster Size"):
+                if set_system_setting("angle_pipeline.cluster_min_samples", new_min_cluster):
+                    st.success("Saved!")
+                    st.rerun()
+
+    st.markdown("#### Current Settings Summary")
+    st.code(f"""
+angle_pipeline.stale_threshold_days = {get_system_setting("angle_pipeline.stale_threshold_days", 30)}
+angle_pipeline.evidence_decay_halflife_days = {get_system_setting("angle_pipeline.evidence_decay_halflife_days", 60)}
+angle_pipeline.min_candidates_pattern_discovery = {get_system_setting("angle_pipeline.min_candidates_pattern_discovery", 10)}
+angle_pipeline.max_ads_per_scheduled_run = {get_system_setting("angle_pipeline.max_ads_per_scheduled_run", 50)}
+angle_pipeline.cluster_eps = {get_system_setting("angle_pipeline.cluster_eps", 0.3)}
+angle_pipeline.cluster_min_samples = {get_system_setting("angle_pipeline.cluster_min_samples", 2)}
+""", language="properties")
+
 # Display current configuration summary
 st.markdown("---")
-st.subheader("Current Configuration Snapshot")
+st.subheader("Current LLM Configuration Snapshot")
 st.code(f"""
 ORCHESTRATOR_MODEL = {Config.get_model("orchestrator")}
 DEFAULT_MODEL      = {Config.get_model("default")}
