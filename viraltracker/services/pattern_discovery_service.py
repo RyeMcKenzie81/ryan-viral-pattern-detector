@@ -14,7 +14,7 @@ Architecture:
 import os
 import json
 import logging
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Union
 from uuid import UUID
 from datetime import datetime
 
@@ -134,6 +134,13 @@ class PatternDiscoveryService:
             True if successful
         """
         try:
+            # Ensure embedding is a plain Python list (not numpy array)
+            # to prevent serialization issues
+            if hasattr(embedding, 'tolist'):
+                embedding = embedding.tolist()
+            elif isinstance(embedding, (list, tuple)):
+                embedding = [float(x) for x in embedding]
+
             self.supabase.table("angle_candidates").update({
                 "embedding": embedding
             }).eq("id", str(candidate_id)).execute()
@@ -141,6 +148,90 @@ class PatternDiscoveryService:
         except Exception as e:
             logger.error(f"Failed to update candidate embedding: {e}")
             return False
+
+    def _parse_embedding(self, emb: Any) -> Optional[List[float]]:
+        """
+        Parse an embedding from various formats back to a list of floats.
+
+        Handles:
+        - Already a list of floats
+        - JSON string of array
+        - numpy string repr like "np.str_('[...]')"
+        - String repr of list like "[0.1, 0.2, ...]"
+
+        Args:
+            emb: The embedding in any format
+
+        Returns:
+            List of floats or None if parsing failed
+        """
+        import ast
+        import re
+
+        logger.debug(f"_parse_embedding called with type: {type(emb)}")
+
+        # Already a list - just ensure all elements are floats
+        if isinstance(emb, list):
+            logger.debug(f"Embedding is list with {len(emb)} elements")
+            try:
+                return [float(x) for x in emb]
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to convert list elements to float: {e}")
+                return None
+
+        # Not a string and not a list - can't parse
+        if not isinstance(emb, str):
+            logger.warning(f"Embedding is unexpected type: {type(emb)}")
+            return None
+
+        logger.debug(f"Parsing string embedding (first 100 chars): {emb[:100]}")
+
+        # Try JSON first (most common case for properly stored embeddings)
+        try:
+            parsed = json.loads(emb)
+            if isinstance(parsed, list):
+                logger.debug(f"JSON parse successful, got list with {len(parsed)} elements")
+                return [float(x) for x in parsed]
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            logger.debug(f"JSON parse failed: {e}")
+
+        # Handle numpy string repr: np.str_('[...]')
+        clean_str = emb.strip()
+        if "np.str_(" in clean_str or "np.float" in clean_str:
+            logger.debug("Detected numpy string format, extracting...")
+            # Extract the content inside np.str_('...')
+            # Pattern: np.str_('[...]') or np.str_("[...]")
+            # Use greedy .* to match the full array
+            match = re.search(r"np\.str_\(['\"](\[.*\])['\"]\)", clean_str)
+            if match:
+                clean_str = match.group(1)
+                logger.debug(f"Regex extracted (first 100 chars): {clean_str[:100]}")
+            else:
+                logger.warning(f"np.str_ detected but regex didn't match. String start: {clean_str[:50]}")
+                # Try to extract just the array part
+                match = re.search(r"\[[\d\s,.\-e+]+\]", clean_str)
+                if match:
+                    clean_str = match.group(0)
+                    logger.debug(f"Fallback regex extracted (first 100 chars): {clean_str[:100]}")
+
+        # Remove any surrounding quotes
+        if (clean_str.startswith("'") and clean_str.endswith("'")) or \
+           (clean_str.startswith('"') and clean_str.endswith('"')):
+            clean_str = clean_str[1:-1]
+
+        # Try to parse as Python literal
+        try:
+            parsed = ast.literal_eval(clean_str)
+            if isinstance(parsed, list):
+                logger.debug(f"ast.literal_eval successful, got list with {len(parsed)} elements")
+                return [float(x) for x in parsed]
+            else:
+                logger.warning(f"ast.literal_eval returned {type(parsed)}, not list")
+        except (ValueError, SyntaxError) as e:
+            logger.warning(f"Failed to parse embedding string: {e}")
+            logger.warning(f"Problematic string (first 200 chars): {clean_str[:200]}")
+
+        return None
 
     def ensure_candidate_embeddings(
         self,
@@ -226,8 +317,21 @@ class PatternDiscoveryService:
             )
             return []
 
-        # Extract embeddings matrix
-        embeddings = np.array([c["embedding"] for c in candidates])
+        # Extract embeddings matrix - handle string serialization from database
+        raw_embeddings = []
+        for c in candidates:
+            emb = c["embedding"]
+            emb = self._parse_embedding(emb)
+            if emb is None:
+                logger.warning(f"Could not parse embedding for candidate {c['id']}")
+                continue
+            raw_embeddings.append(emb)
+
+        if len(raw_embeddings) < MIN_CANDIDATES_FOR_DISCOVERY:
+            logger.warning(f"Only {len(raw_embeddings)} valid embeddings after parsing")
+            return []
+
+        embeddings = np.array(raw_embeddings, dtype=np.float64)
 
         # Calculate distance matrix (1 - cosine similarity)
         similarity_matrix = cosine_similarity(embeddings)
