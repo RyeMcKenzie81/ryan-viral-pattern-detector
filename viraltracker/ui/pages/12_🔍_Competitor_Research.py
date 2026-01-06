@@ -215,7 +215,7 @@ def get_research_stats(
             stats['filtered_landing_pages'] = product_stats.get('landing_pages', 0)
             stats['filtered_amazon_urls'] = product_stats.get('amazon_urls', 0)
 
-        # Get landing pages analyzed count
+        # Get landing pages analyzed count (basic analysis)
         lp_query = db.table("competitor_landing_pages").select(
             "id", count="exact"
         ).eq("competitor_id", competitor_id).not_.is_("analyzed_at", "null")
@@ -225,6 +225,17 @@ def get_research_stats(
 
         lp_result = lp_query.execute()
         stats['landing_pages_analyzed'] = lp_result.count or 0
+
+        # Get landing pages with belief-first analysis (for extraction)
+        lp_bf_query = db.table("competitor_landing_pages").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id).not_.is_("belief_first_analysis", "null")
+
+        if product_id:
+            lp_bf_query = lp_bf_query.eq("competitor_product_id", product_id)
+
+        lp_bf_result = lp_bf_query.execute()
+        stats['landing_pages_belief_first'] = lp_bf_result.count or 0
 
         # Get Amazon reviews count
         reviews_result = db.table("competitor_amazon_reviews").select(
@@ -1648,12 +1659,17 @@ with tab_amazon:
             st.error(f"Failed to load analysis: {e}")
 
     # Angle Pipeline Extraction Section
+    # Show extraction if we have basic analyzed OR belief-first analyzed landing pages
+    has_landing_pages_for_extraction = (
+        stats.get('landing_pages_analyzed', 0) > 0 or
+        stats.get('landing_pages_belief_first', 0) > 0
+    )
     _render_competitor_extraction_section(
         competitor_id=selected_competitor_id,
         competitor_name=competitor.get("name", ""),
         brand_id=selected_brand_id,
         has_amazon=stats.get('has_amazon_analysis', False),
-        has_landing_pages=stats.get('landing_pages_analyzed', 0) > 0
+        has_landing_pages=has_landing_pages_for_extraction
     )
 
 
