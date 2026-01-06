@@ -359,24 +359,27 @@ def render_candidate_card(candidate: Dict, show_actions: bool = True):
 
         with col3:
             if show_actions and status == "candidate":
+                # Ensure candidate_id is string for session state
+                candidate_id_str = str(candidate_id) if candidate_id else None
+
                 # View Evidence button
                 if st.button("👁️ Evidence", key=f"view_{candidate_id}"):
-                    st.session_state.ri_selected_candidate_id = candidate_id
+                    st.session_state.ri_selected_candidate_id = candidate_id_str
                     st.rerun()
 
                 # Promote button
                 if st.button("⬆️ Promote", key=f"promote_{candidate_id}"):
-                    st.session_state.ri_promote_candidate_id = candidate_id
+                    st.session_state.ri_promote_candidate_id = candidate_id_str
                     st.rerun()
 
                 # Reject button with confirmation
-                if st.session_state.ri_confirm_reject == candidate_id:
+                if st.session_state.ri_confirm_reject == candidate_id_str:
                     st.warning("Confirm reject?")
                     c1, c2 = st.columns(2)
                     with c1:
                         if st.button("Yes", key=f"yes_{candidate_id}"):
                             service = get_angle_candidate_service()
-                            service.reject_candidate(UUID(candidate_id))
+                            service.reject_candidate(UUID(candidate_id_str))
                             st.session_state.ri_confirm_reject = None
                             st.cache_data.clear()
                             st.rerun()
@@ -386,7 +389,7 @@ def render_candidate_card(candidate: Dict, show_actions: bool = True):
                             st.rerun()
                 else:
                     if st.button("❌ Reject", key=f"reject_{candidate_id}"):
-                        st.session_state.ri_confirm_reject = candidate_id
+                        st.session_state.ri_confirm_reject = candidate_id_str
                         st.rerun()
             elif status == "approved":
                 angle_id = candidate.get("promoted_angle_id")

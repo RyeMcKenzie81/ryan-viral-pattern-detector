@@ -243,10 +243,22 @@ def get_research_stats(
         ).eq("competitor_id", competitor_id).execute()
         stats['amazon_reviews'] = reviews_result.count or 0
 
-        # Check if Amazon analysis exists
-        analysis_result = db.table("competitor_amazon_review_analysis").select(
+        # Check if Amazon analysis exists (check both with and without product filter)
+        analysis_query = db.table("competitor_amazon_review_analysis").select(
             "id"
-        ).eq("competitor_id", competitor_id).execute()
+        ).eq("competitor_id", competitor_id)
+
+        # If product selected, also check for product-specific analysis
+        if product_id:
+            analysis_result = analysis_query.eq("competitor_product_id", product_id).execute()
+            if not analysis_result.data:
+                # Fall back to competitor-level analysis (no product filter)
+                analysis_result = db.table("competitor_amazon_review_analysis").select(
+                    "id"
+                ).eq("competitor_id", competitor_id).execute()
+        else:
+            analysis_result = analysis_query.execute()
+
         stats['has_amazon_analysis'] = bool(analysis_result.data)
 
         return stats
