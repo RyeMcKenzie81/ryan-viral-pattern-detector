@@ -17,6 +17,7 @@ from typing import List, Dict, Optional, Any, Tuple
 from uuid import UUID
 from datetime import datetime
 
+from pydantic import BaseModel, Field
 from supabase import Client
 from ..core.database import get_supabase_client
 from ..core.config import Config
@@ -25,6 +26,36 @@ import asyncio
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Pydantic Models for Structured Amazon Review Analysis
+# ============================================================================
+
+class ReviewQuote(BaseModel):
+    """A quote from a review with context."""
+    quote: str = Field(description="Exact verbatim quote from the review")
+    author: str = Field(default="Anonymous", description="Author name if available")
+    rating: int = Field(default=0, description="Star rating 1-5")
+    context: str = Field(description="What this quote reveals about the customer")
+
+
+class AnalysisTheme(BaseModel):
+    """A theme identified in the reviews."""
+    theme: str = Field(description="Descriptive name for this theme")
+    score: float = Field(description="Importance score 1-10 based on frequency and intensity")
+    quotes: List[ReviewQuote] = Field(default_factory=list, description="3-5 supporting quotes")
+
+
+class AmazonReviewAnalysis(BaseModel):
+    """Structured analysis of Amazon reviews."""
+    pain_points: List[AnalysisTheme] = Field(default_factory=list, description="Life frustrations BEFORE using product")
+    jobs_to_be_done: List[AnalysisTheme] = Field(default_factory=list, description="What customers are trying to accomplish")
+    product_issues: List[AnalysisTheme] = Field(default_factory=list, description="Problems WITH this specific product")
+    desired_outcomes: List[AnalysisTheme] = Field(default_factory=list, description="What customers want to achieve")
+    buying_objections: List[AnalysisTheme] = Field(default_factory=list, description="Reasons for hesitation before purchase")
+    desired_features: List[AnalysisTheme] = Field(default_factory=list, description="Features customers wish existed")
+    failed_solutions: List[AnalysisTheme] = Field(default_factory=list, description="Other products/solutions that failed them")
 
 
 def _generate_slug(name: str) -> str:
@@ -2478,43 +2509,21 @@ Return ONLY valid JSON."""
             review_count=len(reviews)
         )
 
-        # Call Pydantic AI Agent (Default capability)
+        # Call Pydantic AI Agent with structured output (guarantees valid JSON)
         agent = Agent(
             model=Config.get_model("default"),
-            system_prompt="You are a simplified expert analysis system. Return ONLY valid JSON."
+            system_prompt="You are an expert at extracting customer insights from Amazon reviews. Analyze the reviews and extract themes with supporting quotes.",
+            output_type=AmazonReviewAnalysis
         )
-        
-        result = await agent.run(prompt)
-        response_text = result.output
 
-        # Parse JSON response with repair attempts
         try:
-            # Extract JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                json_str = json_match.group()
-                try:
-                    analysis = json.loads(json_str)
-                except json.JSONDecodeError as e:
-                    # Try to repair common JSON issues
-                    logger.warning(f"JSON parse failed, attempting repair: {e}")
-
-                    # Remove trailing commas before } or ]
-                    repaired = re.sub(r',(\s*[}\]])', r'\1', json_str)
-                    # Fix unescaped quotes in strings (basic attempt)
-                    # Try parsing again
-                    try:
-                        analysis = json.loads(repaired)
-                        logger.info("JSON repair successful")
-                    except json.JSONDecodeError:
-                        # Last resort: try to extract partial valid JSON
-                        logger.error(f"JSON repair failed, original error at char {e.pos}")
-                        return {"error": f"Failed to parse analysis: {e}"}
-            else:
-                raise ValueError("No JSON found in response")
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse analysis response: {e}")
-            return {"error": f"Failed to parse analysis: {e}"}
+            result = await agent.run(prompt)
+            # result.output is now a validated AmazonReviewAnalysis object
+            analysis = result.output.model_dump()
+            logger.info(f"Successfully analyzed reviews with {len(analysis.get('pain_points', []))} pain point themes")
+        except Exception as e:
+            logger.error(f"Analysis failed: {e}")
+            return {"error": f"Failed to analyze reviews: {e}"}
 
         # Save analysis to database
         self._save_competitor_amazon_analysis(
