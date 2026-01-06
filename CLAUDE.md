@@ -393,8 +393,45 @@ Pages are organized by feature area with numbered prefixes:
 - [ ] Relevant `/docs/` files updated if behavior changed
 - [ ] No debug code or unused imports
 - [ ] Error handling appropriate
+- [ ] **Validation consistent across all layers** (see below)
 - [ ] Changes committed with descriptive message
 - [ ] Changes pushed to GitHub
+
+---
+
+## Validation Consistency (CRITICAL)
+
+When adding or modifying enum-like values (content_source, candidate_type, status, etc.), **check ALL layers**:
+
+### Validation Layers to Check
+
+| Layer | Files | What to Look For |
+|-------|-------|------------------|
+| **API Models** | `viraltracker/api/models.py` | Pydantic `pattern=` regex, `Literal[]` types |
+| **Service Models** | `viraltracker/services/models.py` | Pydantic Field validators, Enum definitions |
+| **Agent Code** | `viraltracker/agent/agents/*.py` | Runtime validation lists, `if x not in [...]` |
+| **Worker Code** | `viraltracker/worker/*.py` | Validation before processing |
+| **UI Code** | `viraltracker/ui/pages/*.py` | Dropdown options, selectbox choices |
+
+### How to Audit
+
+```bash
+# Find all validation for a specific field
+grep -rn "content_source" viraltracker/ --include="*.py" | grep -E "(pattern|Literal|valid_|options|==)"
+
+# Find all enum-like lists
+grep -rn "\['hooks'.*'recreate" viraltracker/ --include="*.py"
+```
+
+### Example: Adding a new content_source
+
+When adding `'angles'` as a content_source, update:
+
+1. `api/models.py` - Pydantic regex: `pattern="^(hooks|recreate_template|...|angles)$"`
+2. `agent/agents/ad_creation_agent.py` - Runtime list: `valid_content_sources = [...]`
+3. `ui/pages/24_📅_Ad_Scheduler.py` - UI dropdown: `content_source_options = [...]`
+
+**Lesson learned:** Missing validation in ONE layer causes cryptic errors. The Pydantic API model rejected values before they even reached the agent code.
 
 ---
 
