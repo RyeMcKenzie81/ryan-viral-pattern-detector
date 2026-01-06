@@ -580,19 +580,40 @@ class PatternDiscoveryService:
         dominant_type: str
     ) -> str:
         """Generate a descriptive name for the pattern."""
-        # Extract key words from candidate names
-        names = [c.get("name", "") for c in candidates[:5]]
-        words = " ".join(names).split()
+        # Use the first candidate's name as the base (most representative)
+        # Truncate intelligently at word boundaries
+        first_name = candidates[0].get("name", "") if candidates else "Unknown"
 
-        # Find most common meaningful words
-        from collections import Counter
-        word_counts = Counter(w.lower() for w in words if len(w) > 3)
+        # Clean up the name - remove common prefixes and truncate nicely
+        base_name = first_name.strip()
 
-        if word_counts:
-            top_words = [w for w, _ in word_counts.most_common(3)]
-            base_name = " ".join(top_words).title()
-        else:
-            base_name = f"Pattern {candidates[0].get('name', 'Unknown')[:20]}"
+        # Truncate at ~40 chars, but at a word boundary
+        max_len = 40
+        if len(base_name) > max_len:
+            # Find last space before max_len
+            truncate_at = base_name.rfind(" ", 0, max_len)
+            if truncate_at > 15:  # Only truncate at word if reasonable
+                base_name = base_name[:truncate_at]
+            else:
+                base_name = base_name[:max_len]
+
+        # Add cluster size context if multiple candidates share theme
+        if len(candidates) > 2:
+            # Check if there's a common theme word across candidates
+            from collections import Counter
+            all_words = []
+            for c in candidates[:5]:
+                name = c.get("name", "").lower()
+                all_words.extend(w for w in name.split() if len(w) > 4)
+
+            word_counts = Counter(all_words)
+            if word_counts:
+                most_common_word, count = word_counts.most_common(1)[0]
+                # If a word appears in majority of candidates, it's a strong theme
+                if count >= len(candidates[:5]) * 0.6:
+                    # Use this as the theme if it's not already prominent
+                    if most_common_word.lower() not in base_name.lower():
+                        base_name = f"{most_common_word.title()} - {base_name}"
 
         type_prefix = {
             "pain_signal": "Pain:",
