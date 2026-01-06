@@ -264,6 +264,45 @@ def get_angles_by_ids(angle_ids: List[str]) -> List[Dict]:
         return []
 
 
+def get_offer_variant(offer_variant_id: str) -> Optional[Dict]:
+    """Fetch a product offer variant by ID."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_offer_variants").select(
+            "id, name, landing_page_url, pain_points, desires_goals, benefits, target_audience"
+        ).eq("id", offer_variant_id).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.error(f"Failed to fetch offer variant {offer_variant_id}: {e}")
+        return None
+
+
+def build_offer_variant_context(offer_variant: Dict) -> str:
+    """Build context string from offer variant data for ad generation."""
+    lines = []
+    lines.append("=== OFFER VARIANT CONTEXT ===")
+    lines.append(f"Landing Page: {offer_variant.get('landing_page_url', 'N/A')}")
+
+    pain_points = offer_variant.get('pain_points') or []
+    if pain_points:
+        lines.append(f"Target Pain Points: {', '.join(pain_points)}")
+
+    desires = offer_variant.get('desires_goals') or []
+    if desires:
+        lines.append(f"Target Desires: {', '.join(desires)}")
+
+    benefits = offer_variant.get('benefits') or []
+    if benefits:
+        lines.append(f"Key Benefits: {', '.join(benefits)}")
+
+    target_audience = offer_variant.get('target_audience')
+    if target_audience:
+        lines.append(f"Target Audience: {target_audience}")
+
+    lines.append("=== END OFFER CONTEXT ===")
+    return "\n".join(lines)
+
+
 # ============================================================================
 # Cron Helpers
 # ============================================================================
@@ -361,6 +400,21 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     templates_used = []
     angles_used = []
     ads_generated = 0
+
+    # Build offer variant context if specified
+    offer_variant_context = ""
+    offer_variant_id = params.get('offer_variant_id')
+    destination_url = params.get('destination_url')
+
+    if offer_variant_id:
+        offer_variant = get_offer_variant(offer_variant_id)
+        if offer_variant:
+            offer_variant_context = build_offer_variant_context(offer_variant)
+            destination_url = offer_variant.get('landing_page_url') or destination_url
+            logs.append(f"Offer variant: {offer_variant.get('name', 'Unknown')}")
+            logs.append(f"Destination URL: {destination_url}")
+        else:
+            logs.append(f"Warning: Offer variant {offer_variant_id} not found")
 
     try:
         # Determine content source mode
@@ -472,9 +526,11 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                         usage=RunUsage()
                     )
 
-                    # Build additional instructions with angle context
+                    # Build additional instructions with angle and offer variant context
                     angle_instructions = f"ANGLE: {angle_name}\nBELIEF: {belief_statement}"
                     full_instructions = angle_instructions
+                    if offer_variant_context:
+                        full_instructions += f"\n\n{offer_variant_context}"
                     if params.get('additional_instructions'):
                         full_instructions += f"\n\n{params['additional_instructions']}"
 
@@ -556,6 +612,16 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     usage=RunUsage()
                 )
 
+                # Build combined additional instructions with offer variant context
+                combined_instructions = ""
+                if offer_variant_context:
+                    combined_instructions = offer_variant_context
+                if params.get('additional_instructions'):
+                    if combined_instructions:
+                        combined_instructions += f"\n\n{params['additional_instructions']}"
+                    else:
+                        combined_instructions = params['additional_instructions']
+
                 # Run ad creation workflow
                 try:
                     result = await complete_ad_workflow(
@@ -572,7 +638,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                         selected_image_paths=None,
                         persona_id=params.get('persona_id'),
                         variant_id=params.get('variant_id'),
-                        additional_instructions=params.get('additional_instructions')
+                        additional_instructions=combined_instructions if combined_instructions else None
                     )
 
                     if result and result.get('ad_run_id'):

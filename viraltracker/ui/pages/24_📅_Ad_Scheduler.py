@@ -61,6 +61,10 @@ if 'sched_selected_jtbd_id' not in st.session_state:
 if 'sched_selected_angle_ids' not in st.session_state:
     st.session_state.sched_selected_angle_ids = []
 
+# Offer variant state
+if 'sched_selected_offer_variant_id' not in st.session_state:
+    st.session_state.sched_selected_offer_variant_id = None
+
 
 # ============================================================================
 # Database Functions
@@ -116,6 +120,19 @@ def get_variants_for_product(product_id: str):
         db = get_supabase_client()
         result = db.table("product_variants").select(
             "id, name, slug, variant_type, description, is_default, is_active"
+        ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
+def get_offer_variants_for_product(product_id: str):
+    """Get offer variants (landing pages) for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_offer_variants").select(
+            "id, name, slug, landing_page_url, pain_points, desires_goals, benefits, "
+            "target_audience, is_default, is_active"
         ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
         return result.data or []
     except Exception as e:
@@ -1287,7 +1304,91 @@ def render_create_schedule():
     st.divider()
 
     # ========================================================================
-    # Section 5.7: Additional Instructions (Optional)
+    # Section 5.7: Offer Variant / Landing Page (REQUIRED if variants exist)
+    # ========================================================================
+
+    st.subheader("Offer Variant / Landing Page")
+
+    # Fetch offer variants for selected product
+    offer_variants = get_offer_variants_for_product(selected_product_id) if selected_product_id else []
+
+    offer_variant_id = None
+    destination_url = None
+    has_offer_variants = len(offer_variants) > 0
+
+    if offer_variants:
+        st.markdown("🎯 **Select Landing Page & Messaging Context**")
+        st.caption("This product has multiple landing pages targeting different pain points. Selection is **required**.")
+
+        # Build offer variant options
+        offer_variant_options = {"Select an offer variant...": None}
+        for ov in offer_variants:
+            label = f"{ov['name']}"
+            if ov.get('is_default'):
+                label += " ⭐"
+            # Show URL preview
+            url_preview = ov['landing_page_url'][:40] + '...' if len(ov['landing_page_url']) > 40 else ov['landing_page_url']
+            label += f" ({url_preview})"
+            offer_variant_options[label] = ov['id']
+
+        # Get existing offer_variant_id from job params
+        existing_offer_variant_id = existing_params.get('offer_variant_id')
+
+        # Get current selection label
+        current_offer_variant_label = "Select an offer variant..."
+        if existing_offer_variant_id:
+            for label, ovid in offer_variant_options.items():
+                if ovid == existing_offer_variant_id:
+                    current_offer_variant_label = label
+                    break
+
+        selected_offer_variant_label = st.selectbox(
+            "Select Offer Variant",
+            options=list(offer_variant_options.keys()),
+            index=list(offer_variant_options.keys()).index(current_offer_variant_label) if current_offer_variant_label in offer_variant_options else 0,
+            help="Choose which landing page and messaging context to use for generated ads"
+        )
+        offer_variant_id = offer_variant_options[selected_offer_variant_label]
+
+        # Show variant preview if selected
+        if offer_variant_id:
+            selected_offer_variant = next((ov for ov in offer_variants if ov['id'] == offer_variant_id), None)
+            if selected_offer_variant:
+                destination_url = selected_offer_variant['landing_page_url']
+
+                with st.expander("Offer Variant Details", expanded=True):
+                    st.markdown(f"**🔗 Landing Page:** `{destination_url}`")
+
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        pain_points = selected_offer_variant.get('pain_points') or []
+                        if pain_points:
+                            st.markdown("**Pain Points:**")
+                            for pp in pain_points[:5]:
+                                st.caption(f"• {pp}")
+
+                    with col_b:
+                        desires = selected_offer_variant.get('desires_goals') or []
+                        if desires:
+                            st.markdown("**Desires/Goals:**")
+                            for d in desires[:5]:
+                                st.caption(f"• {d}")
+
+                    benefits = selected_offer_variant.get('benefits') or []
+                    if benefits:
+                        st.markdown("**Benefits:**")
+                        st.caption(", ".join(benefits[:5]))
+
+                st.success("✅ Ads will target this landing page with matching messaging")
+        else:
+            st.warning("⚠️ Please select an offer variant. This is required for products with multiple landing pages.")
+    else:
+        st.info("No offer variants configured. Ads will use the product's default URL.")
+
+    st.divider()
+
+    # ========================================================================
+    # Section 5.8: Additional Instructions (Optional)
     # ========================================================================
 
     st.subheader("Additional Instructions (Optional)")
@@ -1365,6 +1466,10 @@ def render_create_schedule():
             if content_source == 'angles' and not selected_angle_ids:
                 errors.append("Select at least one angle for angle-based scheduling")
 
+            # Offer variant validation - REQUIRED when product has offer variants
+            if has_offer_variants and not offer_variant_id:
+                errors.append("Offer variant selection is required. This product has multiple landing pages.")
+
             if errors:
                 for error in errors:
                     st.error(error)
@@ -1391,6 +1496,8 @@ def render_create_schedule():
                     'export_email': export_email if export_destination in ['email', 'both'] else None,
                     'persona_id': persona_id,
                     'variant_id': variant_id,
+                    'offer_variant_id': offer_variant_id,
+                    'destination_url': destination_url,
                     'additional_instructions': additional_instructions if additional_instructions else None
                 }
 
@@ -1608,6 +1715,26 @@ def render_schedule_detail():
                 st.markdown(f"**Variant:** {variant_name}")
             else:
                 st.markdown("**Variant:** Default")
+
+        # Display offer variant / landing page if set
+        offer_variant_id = params.get('offer_variant_id')
+        destination_url = params.get('destination_url')
+        if offer_variant_id or destination_url:
+            st.markdown("### Landing Page / Offer Variant")
+            if offer_variant_id:
+                offer_variants = get_offer_variants_for_product(job['product_id'])
+                ov = next((v for v in offer_variants if v['id'] == offer_variant_id), None)
+                if ov:
+                    st.markdown(f"**Offer:** {ov['name']}")
+                    st.markdown(f"**URL:** `{ov['landing_page_url']}`")
+                    pain_points = ov.get('pain_points') or []
+                    if pain_points:
+                        st.caption(f"Pain points: {', '.join(pain_points[:3])}")
+                else:
+                    st.markdown(f"**Offer ID:** {offer_variant_id[:8]}...")
+            elif destination_url:
+                st.markdown(f"**URL:** `{destination_url}`")
+            st.divider()
 
         # Display additional instructions if set
         add_instructions = params.get('additional_instructions')

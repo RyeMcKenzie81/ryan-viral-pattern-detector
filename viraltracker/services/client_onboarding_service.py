@@ -857,8 +857,31 @@ Return ONLY a JSON array of question strings."""
                             prod_data["target_audience"] = "\n".join(ta_parts)
 
                     prod_result = self.supabase.table("products").insert(prod_data).execute()
-                    product_ids.append(str(prod_result.data[0]["id"]))
-                    logger.info(f"Created product: {prod['name']}")
+                    created_product_id = prod_result.data[0]["id"]
+                    product_ids.append(str(created_product_id))
+                    logger.info(f"Created product: {prod['name']} ({created_product_id})")
+
+                    # Create offer variants for this product
+                    offer_variants = prod.get("offer_variants") or []
+                    if offer_variants:
+                        for ov in offer_variants:
+                            if ov.get("name") and ov.get("landing_page_url"):
+                                ov_data = {
+                                    "product_id": str(created_product_id),
+                                    "name": ov["name"],
+                                    "slug": self._slugify(ov["name"]),
+                                    "landing_page_url": ov["landing_page_url"],
+                                    "pain_points": ov.get("pain_points") or [],
+                                    "desires_goals": ov.get("desires_goals") or [],
+                                    "benefits": ov.get("benefits") or [],
+                                    "is_default": ov.get("is_default", False),
+                                    "is_active": True,
+                                }
+                                if ov.get("target_audience"):
+                                    ov_data["target_audience"] = ov["target_audience"]
+
+                                self.supabase.table("product_offer_variants").insert(ov_data).execute()
+                                logger.info(f"Created offer variant: {ov['name']} for product {prod['name']}")
 
             if product_ids:
                 created["product_ids"] = product_ids

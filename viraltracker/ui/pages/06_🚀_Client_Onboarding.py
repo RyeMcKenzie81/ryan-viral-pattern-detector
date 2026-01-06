@@ -533,6 +533,7 @@ def render_products_tab(session: dict):
                     "weight": {},
                     "target_audience": {},
                     "images": [],
+                    "offer_variants": [],  # Landing page variants with messaging
                 }
                 products.append(new_product)
                 service.update_section(UUID(session["id"]), "products", products)
@@ -650,6 +651,96 @@ def render_products_tab(session: dict):
                         height=80,
                         key=f"prod_desires_{i}",
                     )
+
+                # ============================================
+                # OFFER VARIANTS SECTION
+                # ============================================
+                st.markdown("---")
+                st.markdown("### 🎯 Offer Variants (Landing Pages)")
+                st.caption(
+                    "Add different landing pages for different marketing angles. "
+                    "Each variant has its own URL and messaging (pain points, desires)."
+                )
+
+                offer_variants = prod.get("offer_variants") or []
+
+                # Display existing offer variants
+                if offer_variants:
+                    for ov_idx, ov in enumerate(offer_variants):
+                        ov_col1, ov_col2 = st.columns([4, 1])
+                        with ov_col1:
+                            default_badge = " ⭐" if ov.get("is_default") else ""
+                            st.markdown(f"**{ov.get('name', 'Unnamed')}{default_badge}**")
+                            st.caption(f"🔗 {ov.get('landing_page_url', 'No URL')}")
+                            if ov.get("pain_points"):
+                                st.caption(f"Pain: {', '.join(ov['pain_points'][:3])}")
+                        with ov_col2:
+                            if st.button("🗑️", key=f"remove_ov_{i}_{ov_idx}", help="Remove variant"):
+                                offer_variants.pop(ov_idx)
+                                prod["offer_variants"] = offer_variants
+                                products[i] = prod
+                                service.update_section(UUID(session["id"]), "products", products)
+                                st.rerun()
+
+                # Add new offer variant form
+                with st.expander("➕ Add Offer Variant", expanded=len(offer_variants) == 0):
+                    ov_name = st.text_input(
+                        "Variant Name *",
+                        placeholder="e.g., Blood Pressure Angle",
+                        key=f"ov_name_{i}",
+                    )
+                    ov_url = st.text_input(
+                        "Landing Page URL *",
+                        placeholder="https://brand.com/blood-pressure",
+                        key=f"ov_url_{i}",
+                    )
+                    ov_pain = st.text_area(
+                        "Pain Points (one per line)",
+                        placeholder="High blood pressure\nCholesterol concerns\nHeart health worries",
+                        height=80,
+                        key=f"ov_pain_{i}",
+                    )
+                    ov_desires = st.text_area(
+                        "Desires/Goals (one per line)",
+                        placeholder="Better cardiovascular health\nMore energy\nPeace of mind",
+                        height=80,
+                        key=f"ov_desires_{i}",
+                    )
+                    ov_benefits = st.text_area(
+                        "Key Benefits (one per line)",
+                        placeholder="Supports healthy blood pressure\nPromotes circulation",
+                        height=60,
+                        key=f"ov_benefits_{i}",
+                    )
+                    ov_default = st.checkbox(
+                        "Set as default variant",
+                        value=len(offer_variants) == 0,  # First variant is default
+                        key=f"ov_default_{i}",
+                    )
+
+                    if st.button("➕ Add Variant", key=f"add_ov_{i}"):
+                        if ov_name and ov_url:
+                            # Clear other defaults if setting this as default
+                            if ov_default:
+                                for existing_ov in offer_variants:
+                                    existing_ov["is_default"] = False
+
+                            new_variant = {
+                                "name": ov_name,
+                                "landing_page_url": ov_url,
+                                "pain_points": [p.strip() for p in ov_pain.split("\n") if p.strip()],
+                                "desires_goals": [d.strip() for d in ov_desires.split("\n") if d.strip()],
+                                "benefits": [b.strip() for b in ov_benefits.split("\n") if b.strip()],
+                                "is_default": ov_default or len(offer_variants) == 0,
+                            }
+                            offer_variants.append(new_variant)
+                            prod["offer_variants"] = offer_variants
+                            products[i] = prod
+                            service.update_section(UUID(session["id"]), "products", products)
+                            st.success(f"Added variant: {ov_name}")
+                            st.rerun()
+                        else:
+                            st.warning("Please enter variant name and landing page URL")
 
                 # Save product updates
                 if st.button("💾 Save Product Details", key=f"save_prod_{i}"):
