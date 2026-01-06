@@ -35,8 +35,7 @@ logger = logging.getLogger(__name__)
 REQUIRED_FIELDS = {
     "brand_basics": ["name", "website_url"],
     "facebook_meta": ["page_url", "ad_library_url"],
-    "amazon_data": [],
-    "product_assets": [],
+    "products": [],  # Special handling: at least 1 product with name
     "competitors": [],
     "target_audience": ["pain_points", "desires_goals"],
 }
@@ -44,8 +43,7 @@ REQUIRED_FIELDS = {
 NICE_TO_HAVE_FIELDS = {
     "brand_basics": ["logo_storage_path", "brand_voice"],
     "facebook_meta": ["ad_account_id"],
-    "amazon_data": ["products"],
-    "product_assets": ["images", "dimensions", "weight"],
+    "products": [],  # Special handling: product details (amazon, dimensions, etc.)
     "competitors": ["competitors"],
     "target_audience": ["demographics"],
 }
@@ -61,8 +59,9 @@ VALID_STATUSES = [
 VALID_SECTIONS = [
     "brand_basics",
     "facebook_meta",
-    "amazon_data",
-    "product_assets",
+    "products",  # New: per-product data (replaces amazon_data and product_assets)
+    "amazon_data",  # Legacy: kept for backward compatibility
+    "product_assets",  # Legacy: kept for backward compatibility
     "competitors",
     "target_audience",
     "notes",
@@ -317,6 +316,11 @@ class ClientOnboardingService:
 
         Scoring: 70% weight on required fields, 30% on nice-to-have.
 
+        Special handling:
+        - products: At least 1 product with name = required
+        - products: Product details (amazon_url, dimensions) = nice-to-have
+        - competitors: Having any = nice-to-have
+
         Args:
             session: Full session dict
 
@@ -330,8 +334,10 @@ class ClientOnboardingService:
         missing_required = []
         missing_nice_to_have = []
 
-        # Check required fields
+        # Check required fields (skip products - handled specially below)
         for section, fields in REQUIRED_FIELDS.items():
+            if section == "products":
+                continue  # Handle products specially
             section_data = session.get(section) or {}
             for field in fields:
                 required_total += 1
@@ -340,8 +346,10 @@ class ClientOnboardingService:
                 else:
                     missing_required.append(f"{section}.{field}")
 
-        # Check nice-to-have fields
+        # Check nice-to-have fields (skip products - handled specially below)
         for section, fields in NICE_TO_HAVE_FIELDS.items():
+            if section == "products":
+                continue  # Handle products specially
             section_data = session.get(section) or {}
             for field in fields:
                 nice_to_have_total += 1
@@ -350,7 +358,7 @@ class ClientOnboardingService:
                 else:
                     missing_nice_to_have.append(f"{section}.{field}")
 
-        # Special handling for competitors and amazon products (array fields)
+        # Special handling for competitors (array field)
         competitors = session.get("competitors") or []
         if competitors:
             # Remove from missing if we have competitors
@@ -358,11 +366,46 @@ class ClientOnboardingService:
                 missing_nice_to_have.remove("competitors.competitors")
                 nice_to_have_filled += 1
 
-        amazon_data = session.get("amazon_data") or {}
-        if amazon_data.get("products"):
-            if "amazon_data.products" in missing_nice_to_have:
-                missing_nice_to_have.remove("amazon_data.products")
+        # Special handling for products (new Phase 10)
+        # Required: At least 1 product with name
+        # Nice-to-have: Product details (amazon_url, dimensions, weight, target_audience)
+        products = session.get("products") or []
+        required_total += 1  # At least 1 product
+        nice_to_have_total += 4  # amazon_url, dimensions, weight, target_audience per product
+
+        products_with_name = [p for p in products if p.get("name")]
+        if products_with_name:
+            required_filled += 1
+
+            # Check nice-to-have product details (use first product as indicator)
+            first_product = products_with_name[0]
+            if first_product.get("amazon_url") or first_product.get("asin"):
                 nice_to_have_filled += 1
+            else:
+                missing_nice_to_have.append("products.amazon_url")
+
+            if first_product.get("dimensions"):
+                nice_to_have_filled += 1
+            else:
+                missing_nice_to_have.append("products.dimensions")
+
+            if first_product.get("weight"):
+                nice_to_have_filled += 1
+            else:
+                missing_nice_to_have.append("products.weight")
+
+            if first_product.get("target_audience"):
+                nice_to_have_filled += 1
+            else:
+                missing_nice_to_have.append("products.target_audience")
+        else:
+            missing_required.append("products.name")
+            missing_nice_to_have.extend([
+                "products.amazon_url",
+                "products.dimensions",
+                "products.weight",
+                "products.target_audience",
+            ])
 
         # Calculate weighted score
         required_pct = (required_filled / required_total * 100) if required_total > 0 else 0
@@ -499,6 +542,10 @@ class ClientOnboardingService:
 
         report = self._calculate_completeness(session)
 
+        # Summarize products
+        products = session.get("products") or []
+        products_with_name = [p for p in products if p.get("name")]
+
         return {
             "session_id": str(session_id),
             "session_name": session.get("session_name"),
@@ -519,14 +566,12 @@ class ClientOnboardingService:
                     session.get("facebook_meta") or {},
                     ["page_url", "ad_library_url", "ad_account_id"],
                 ),
-                "amazon_data": self._summarize_section(
-                    session.get("amazon_data") or {},
-                    ["products"],
-                ),
-                "product_assets": self._summarize_section(
-                    session.get("product_assets") or {},
-                    ["images", "dimensions", "weight"],
-                ),
+                "products": {
+                    "filled": bool(products_with_name),
+                    "count": len(products_with_name),
+                    "has_amazon": any(p.get("amazon_url") or p.get("asin") for p in products),
+                    "has_dimensions": any(p.get("dimensions") for p in products),
+                },
                 "competitors": {
                     "filled": bool(session.get("competitors")),
                     "count": len(session.get("competitors") or []),
@@ -706,17 +751,18 @@ Return ONLY a JSON array of question strings."""
 
     def import_to_production(self, session_id: UUID) -> Dict[str, Any]:
         """
-        Import session data to production tables (brands, competitors).
+        Import session data to production tables (brands, products, competitors).
 
         Creates:
         - Brand record from brand_basics
+        - Product records from products array
         - Competitor records from competitors array
 
         Args:
             session_id: Session UUID
 
         Returns:
-            Dict with created IDs: {"brand_id": UUID, "competitor_ids": [...]}
+            Dict with created IDs: {"brand_id": UUID, "product_ids": [...], "competitor_ids": [...]}
 
         Raises:
             ValueError: If session not found or requirements not met
@@ -759,6 +805,63 @@ Return ONLY a JSON array of question strings."""
                     "status": "imported",
                 }
             ).eq("id", str(session_id)).execute()
+
+            # Create products
+            products = session.get("products") or []
+            product_ids = []
+            for prod in products:
+                if prod.get("name"):
+                    prod_data = {
+                        "brand_id": str(brand_id),
+                        "name": prod["name"],
+                        "slug": self._slugify(prod["name"]),
+                    }
+
+                    if prod.get("description"):
+                        prod_data["description"] = prod["description"]
+                    if prod.get("product_url"):
+                        prod_data["product_url"] = prod["product_url"]
+
+                    # Format dimensions as text (matches products table format)
+                    dimensions = prod.get("dimensions")
+                    if dimensions:
+                        dim_parts = []
+                        if dimensions.get("width"):
+                            dim_parts.append(f"W: {dimensions['width']}")
+                        if dimensions.get("height"):
+                            dim_parts.append(f"H: {dimensions['height']}")
+                        if dimensions.get("depth"):
+                            dim_parts.append(f"D: {dimensions['depth']}")
+                        if dim_parts:
+                            unit = dimensions.get("unit", "inches")
+                            prod_data["product_dimensions"] = f"{' x '.join(dim_parts)} ({unit})"
+
+                    # Format target audience as text
+                    target_audience = prod.get("target_audience")
+                    if target_audience:
+                        ta_parts = []
+                        demographics = target_audience.get("demographics")
+                        if demographics:
+                            demo_str = ", ".join(
+                                f"{k}: {v}" for k, v in demographics.items() if v
+                            )
+                            if demo_str:
+                                ta_parts.append(f"Demographics: {demo_str}")
+                        pain_points = target_audience.get("pain_points")
+                        if pain_points:
+                            ta_parts.append(f"Pain Points: {', '.join(pain_points)}")
+                        desires = target_audience.get("desires_goals")
+                        if desires:
+                            ta_parts.append(f"Desires/Goals: {', '.join(desires)}")
+                        if ta_parts:
+                            prod_data["target_audience"] = "\n".join(ta_parts)
+
+                    prod_result = self.supabase.table("products").insert(prod_data).execute()
+                    product_ids.append(str(prod_result.data[0]["id"]))
+                    logger.info(f"Created product: {prod['name']}")
+
+            if product_ids:
+                created["product_ids"] = product_ids
 
             # Create competitors
             competitors = session.get("competitors") or []

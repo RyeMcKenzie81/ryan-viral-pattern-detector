@@ -2,12 +2,12 @@
 Client Onboarding - Streamlit page for collecting client information.
 
 Features:
-- Multi-section data entry form (6 tabs)
+- Multi-section data entry form (5 tabs: Brand, Facebook, Products, Competitors, Audience)
+- Per-product data collection (Amazon URL, dimensions, target audience)
 - Auto-scraping with manual triggers
 - Completeness tracker in sidebar
 - Interview question generator
-- Onboarding summary view
-- Import to production functionality
+- Import to production (creates brand, products, competitors)
 
 Part of the Client Onboarding Pipeline.
 """
@@ -185,8 +185,7 @@ def render_sidebar(session: dict):
     section_names = {
         "brand_basics": "Brand Basics",
         "facebook_meta": "Facebook/Meta",
-        "amazon_data": "Amazon",
-        "product_assets": "Product Assets",
+        "products": "Products",
         "competitors": "Competitors",
         "target_audience": "Target Audience",
     }
@@ -194,7 +193,7 @@ def render_sidebar(session: dict):
     for section_key, section_label in section_names.items():
         section_status = sections.get(section_key, {})
 
-        if section_key == "competitors":
+        if section_key in ("competitors", "products"):
             filled = section_status.get("filled", False)
             count = section_status.get("count", 0)
             icon = "✅" if filled else "❌"
@@ -472,189 +471,212 @@ def render_facebook_tab(session: dict):
 
 
 # ============================================
-# TAB 3: AMAZON
+# TAB 3: PRODUCTS
 # ============================================
 
 
-def render_amazon_tab(session: dict):
-    """Render Amazon section."""
+def render_products_tab(session: dict):
+    """Render Products section - per-product data collection."""
     service = get_onboarding_service()
 
-    data = session.get("amazon_data") or {}
-    products = data.get("products") or []
+    products = session.get("products") or []
 
-    st.markdown("Add Amazon product URLs to extract ASINs and scrape reviews.")
+    st.markdown("Add products that will be advertised. Each product can have its own Amazon URL, dimensions, and target audience.")
 
-    # Add new product
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        new_url = st.text_input(
-            "Amazon Product URL",
-            placeholder="https://amazon.com/dp/B0XXXXX...",
-            key="new_amazon_url",
-        )
+    # Add product form
+    with st.form("add_product_form"):
+        st.markdown("**Add New Product**")
 
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("➕ Add Product", key="add_amazon_product"):
-            if new_url:
-                try:
-                    amazon_service = get_amazon_service()
-                    asin, domain = amazon_service.parse_amazon_url(new_url)
-                    if asin:
-                        # Check for duplicate
-                        existing_asins = [p.get("asin") for p in products]
-                        if asin in existing_asins:
-                            st.warning(f"ASIN {asin} already added")
-                        else:
-                            products.append(
-                                {
-                                    "url": new_url,
-                                    "asin": asin,
-                                    "domain": domain or "com",
-                                    "scraped_reviews_count": 0,
-                                }
-                            )
-                            data["products"] = products
-                            service.update_section(UUID(session["id"]), "amazon_data", data)
-                            st.success(f"Added ASIN: {asin}")
-                            st.rerun()
-                    else:
-                        st.error("Could not extract ASIN from URL")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            prod_name = st.text_input("Product Name *", key="new_prod_name")
+            prod_description = st.text_area(
+                "Description",
+                height=80,
+                placeholder="Brief description of the product...",
+                key="new_prod_description",
+            )
+            prod_url = st.text_input(
+                "Product URL",
+                placeholder="https://brand.com/product-name",
+                key="new_prod_url",
+            )
+
+        with col2:
+            amazon_url = st.text_input(
+                "Amazon URL",
+                placeholder="https://amazon.com/dp/B0XXXXX...",
+                key="new_prod_amazon_url",
+            )
+            st.caption("ASIN will be auto-extracted from the URL")
+
+        submitted = st.form_submit_button("➕ Add Product", type="primary")
+        if submitted:
+            if prod_name:
+                # Extract ASIN if Amazon URL provided
+                asin = None
+                if amazon_url:
+                    try:
+                        amazon_service = get_amazon_service()
+                        asin, _ = amazon_service.parse_amazon_url(amazon_url)
+                    except Exception:
+                        pass
+
+                new_product = {
+                    "name": prod_name,
+                    "description": prod_description,
+                    "product_url": prod_url,
+                    "amazon_url": amazon_url,
+                    "asin": asin,
+                    "dimensions": {},
+                    "weight": {},
+                    "target_audience": {},
+                    "images": [],
+                }
+                products.append(new_product)
+                service.update_section(UUID(session["id"]), "products", products)
+                st.success(f"Added product: {prod_name}")
+                st.rerun()
+            else:
+                st.warning("Please enter a product name")
 
     # Display existing products
     if products:
         st.markdown("---")
-        st.markdown("**Added Products**")
+        st.markdown(f"**Products ({len(products)})**")
 
         for i, prod in enumerate(products):
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.markdown(f"**{prod['asin']}** ({prod.get('domain', 'com')})")
-                if prod.get("scraped_reviews_count"):
-                    st.caption(f"✅ {prod['scraped_reviews_count']} reviews scraped")
-                else:
-                    st.caption("No reviews scraped yet")
+            with st.expander(f"📦 {prod.get('name', 'Unnamed')}", expanded=False):
+                col1, col2 = st.columns([3, 1])
 
-            with col2:
-                if st.button("🔍 Scrape", key=f"scrape_amazon_{i}"):
-                    st.info("Review scraping requires product import first")
+                with col1:
+                    # Basic info
+                    if prod.get("description"):
+                        st.caption(prod["description"])
+                    if prod.get("product_url"):
+                        st.markdown(f"🌐 Product URL: {prod['product_url']}")
+                    if prod.get("amazon_url"):
+                        asin_display = f" (ASIN: {prod['asin']})" if prod.get("asin") else ""
+                        st.markdown(f"📦 Amazon: {prod['amazon_url']}{asin_display}")
 
-            with col3:
-                if st.button("🗑️ Remove", key=f"remove_amazon_{i}"):
-                    products.pop(i)
-                    data["products"] = products
-                    service.update_section(UUID(session["id"]), "amazon_data", data)
+                    # Dimensions & Weight
+                    dims = prod.get("dimensions") or {}
+                    weight = prod.get("weight") or {}
+                    if dims.get("width") or dims.get("height") or weight.get("value"):
+                        st.markdown("---")
+                        dim_col1, dim_col2, dim_col3 = st.columns(3)
+                        with dim_col1:
+                            if dims:
+                                unit = dims.get("unit", "inches")
+                                dim_str = f"{dims.get('width', '?')} x {dims.get('height', '?')} x {dims.get('depth', '?')} {unit}"
+                                st.caption(f"📐 Dimensions: {dim_str}")
+                        with dim_col2:
+                            if weight.get("value"):
+                                st.caption(f"⚖️ Weight: {weight['value']} {weight.get('unit', 'lbs')}")
+
+                    # Target audience
+                    ta = prod.get("target_audience") or {}
+                    if ta.get("pain_points") or ta.get("desires_goals"):
+                        st.markdown("---")
+                        st.markdown("**Product-specific Target Audience:**")
+                        if ta.get("pain_points"):
+                            st.caption(f"Pain points: {', '.join(ta['pain_points'][:3])}...")
+                        if ta.get("desires_goals"):
+                            st.caption(f"Desires: {', '.join(ta['desires_goals'][:3])}...")
+
+                with col2:
+                    if st.button("🗑️ Remove", key=f"remove_prod_{i}"):
+                        products.pop(i)
+                        service.update_section(UUID(session["id"]), "products", products)
+                        st.rerun()
+
+                # Edit product details
+                st.markdown("---")
+                edit_col1, edit_col2 = st.columns(2)
+
+                with edit_col1:
+                    st.markdown("**Dimensions**")
+                    dims = prod.get("dimensions") or {}
+                    dim_c1, dim_c2, dim_c3 = st.columns(3)
+                    with dim_c1:
+                        width = st.text_input("Width", value=dims.get("width", ""), key=f"dim_w_{i}")
+                    with dim_c2:
+                        height = st.text_input("Height", value=dims.get("height", ""), key=f"dim_h_{i}")
+                    with dim_c3:
+                        depth = st.text_input("Depth", value=dims.get("depth", ""), key=f"dim_d_{i}")
+                    dim_unit = st.selectbox(
+                        "Unit",
+                        options=["inches", "cm"],
+                        index=0 if dims.get("unit", "inches") == "inches" else 1,
+                        key=f"dim_unit_{i}",
+                    )
+
+                    st.markdown("**Weight**")
+                    weight = prod.get("weight") or {}
+                    wt_c1, wt_c2 = st.columns(2)
+                    with wt_c1:
+                        weight_val = st.number_input(
+                            "Weight",
+                            value=float(weight.get("value", 0)),
+                            min_value=0.0,
+                            key=f"weight_val_{i}",
+                        )
+                    with wt_c2:
+                        weight_unit = st.selectbox(
+                            "Unit",
+                            options=["lbs", "kg", "oz", "g"],
+                            index=["lbs", "kg", "oz", "g"].index(weight.get("unit", "lbs"))
+                            if weight.get("unit") in ["lbs", "kg", "oz", "g"]
+                            else 0,
+                            key=f"weight_unit_{i}",
+                        )
+
+                with edit_col2:
+                    st.markdown("**Product Target Audience** (optional override)")
+                    st.caption("Leave blank to use brand-level target audience")
+                    ta = prod.get("target_audience") or {}
+
+                    pain_points_str = st.text_area(
+                        "Pain Points (one per line)",
+                        value="\n".join(ta.get("pain_points") or []),
+                        height=80,
+                        key=f"prod_pain_{i}",
+                    )
+
+                    desires_str = st.text_area(
+                        "Desires/Goals (one per line)",
+                        value="\n".join(ta.get("desires_goals") or []),
+                        height=80,
+                        key=f"prod_desires_{i}",
+                    )
+
+                # Save product updates
+                if st.button("💾 Save Product Details", key=f"save_prod_{i}"):
+                    prod["dimensions"] = {
+                        "width": width,
+                        "height": height,
+                        "depth": depth,
+                        "unit": dim_unit,
+                    }
+                    prod["weight"] = {
+                        "value": weight_val,
+                        "unit": weight_unit,
+                    }
+                    prod["target_audience"] = {
+                        "pain_points": [p.strip() for p in pain_points_str.split("\n") if p.strip()],
+                        "desires_goals": [d.strip() for d in desires_str.split("\n") if d.strip()],
+                    }
+                    products[i] = prod
+                    service.update_section(UUID(session["id"]), "products", products)
+                    st.success(f"Saved {prod['name']}!")
                     st.rerun()
     else:
-        st.info("No Amazon products added yet.")
+        st.info("No products added yet. Add at least one product to advertise.")
 
 
 # ============================================
-# TAB 4: PRODUCT ASSETS
-# ============================================
-
-
-def render_product_assets_tab(session: dict):
-    """Render Product Assets section."""
-    service = get_onboarding_service()
-
-    data = session.get("product_assets") or {}
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**Product Images**")
-        st.caption("Upload high-quality images with transparent backgrounds for ad generation.")
-
-        uploaded_files = st.file_uploader(
-            "Upload Images",
-            type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=True,
-            key="product_images",
-        )
-
-        if uploaded_files:
-            images = data.get("images") or []
-            cols = st.columns(4)
-            for i, f in enumerate(uploaded_files):
-                with cols[i % 4]:
-                    st.image(f, width=100)
-                    st.caption(f.name)
-                # Track uploaded files
-                if f.name not in [img.get("filename") for img in images]:
-                    images.append({"filename": f.name, "has_transparent_bg": False})
-            data["images"] = images
-            # TODO: Upload to Supabase storage
-
-    with col2:
-        st.markdown("**Product Dimensions**")
-        st.caption("Physical dimensions for accurate rendering at correct scale.")
-
-        dims = data.get("dimensions") or {}
-
-        dim_col1, dim_col2, dim_col3 = st.columns(3)
-        with dim_col1:
-            width = st.text_input("Width", value=dims.get("width", ""), key="dim_width")
-        with dim_col2:
-            height = st.text_input("Height", value=dims.get("height", ""), key="dim_height")
-        with dim_col3:
-            depth = st.text_input("Depth", value=dims.get("depth", ""), key="dim_depth")
-
-        dim_unit = st.selectbox(
-            "Unit",
-            options=["inches", "cm"],
-            index=0 if dims.get("unit", "inches") == "inches" else 1,
-            key="dim_unit",
-        )
-
-        st.markdown("---")
-        st.markdown("**Product Weight**")
-
-        weight_data = data.get("weight") or {}
-        weight_col1, weight_col2 = st.columns(2)
-        with weight_col1:
-            weight_val = st.number_input(
-                "Weight",
-                value=float(weight_data.get("value", 0)),
-                min_value=0.0,
-                key="weight_value",
-            )
-        with weight_col2:
-            weight_unit = st.selectbox(
-                "Unit",
-                options=["lbs", "kg", "oz", "g"],
-                index=["lbs", "kg", "oz", "g"].index(weight_data.get("unit", "lbs"))
-                if weight_data.get("unit") in ["lbs", "kg", "oz", "g"]
-                else 0,
-                key="weight_unit",
-            )
-
-    # Save button
-    if st.button("💾 Save Product Assets", type="primary", key="save_assets"):
-        data.update(
-            {
-                "dimensions": {
-                    "width": width,
-                    "height": height,
-                    "depth": depth,
-                    "unit": dim_unit,
-                },
-                "weight": {
-                    "value": weight_val,
-                    "unit": weight_unit,
-                },
-            }
-        )
-        service.update_section(UUID(session["id"]), "product_assets", data)
-        st.success("Saved!")
-        st.rerun()
-
-
-# ============================================
-# TAB 5: COMPETITORS
+# TAB 4: COMPETITORS
 # ============================================
 
 
@@ -741,7 +763,7 @@ def render_competitors_tab(session: dict):
 
 
 # ============================================
-# TAB 6: TARGET AUDIENCE
+# TAB 5: TARGET AUDIENCE
 # ============================================
 
 
@@ -865,10 +887,9 @@ if st.session_state.onboarding_session_id:
             [
                 "1️⃣ Brand Basics",
                 "2️⃣ Facebook/Meta",
-                "3️⃣ Amazon",
-                "4️⃣ Product Assets",
-                "5️⃣ Competitors",
-                "6️⃣ Target Audience",
+                "3️⃣ Products",
+                "4️⃣ Competitors",
+                "5️⃣ Target Audience",
             ]
         )
 
@@ -879,15 +900,12 @@ if st.session_state.onboarding_session_id:
             render_facebook_tab(session)
 
         with tabs[2]:
-            render_amazon_tab(session)
+            render_products_tab(session)
 
         with tabs[3]:
-            render_product_assets_tab(session)
-
-        with tabs[4]:
             render_competitors_tab(session)
 
-        with tabs[5]:
+        with tabs[4]:
             render_target_audience_tab(session)
     else:
         st.error("Session not found. Please select or create a new session.")
