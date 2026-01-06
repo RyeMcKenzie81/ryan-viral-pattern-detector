@@ -1538,12 +1538,26 @@ with tab_amazon:
     # Check if we have reviews to analyze
     try:
         db = get_supabase_client()
-        reviews_count_result = db.table("competitor_amazon_reviews").select(
+        # Count reviews matching the same filter as analysis
+        reviews_query = db.table("competitor_amazon_reviews").select(
+            "id", count="exact"
+        ).eq("competitor_id", selected_competitor_id)
+
+        # If product selected, count only reviews for that product
+        if selected_product_id:
+            reviews_query = reviews_query.eq("competitor_product_id", selected_product_id)
+
+        reviews_count_result = reviews_query.execute()
+        total_reviews = reviews_count_result.count or 0
+
+        # Also get total for all products (for info)
+        all_reviews_result = db.table("competitor_amazon_reviews").select(
             "id", count="exact"
         ).eq("competitor_id", selected_competitor_id).execute()
-        total_reviews = reviews_count_result.count or 0
+        all_reviews_count = all_reviews_result.count or 0
     except Exception:
         total_reviews = 0
+        all_reviews_count = 0
 
     # Analyze button
     if total_reviews > 0:
@@ -1567,7 +1581,14 @@ with tab_amazon:
                     except Exception as e:
                         st.error(f"Analysis failed: {e}")
         with col_info:
-            st.caption(f"{total_reviews} reviews available for analysis")
+            if selected_product_id and total_reviews < all_reviews_count:
+                st.caption(f"{total_reviews} reviews for selected product ({all_reviews_count} total)")
+            else:
+                st.caption(f"{total_reviews} reviews available for analysis")
+
+    # Show message if no reviews for selected product but reviews exist for competitor
+    elif all_reviews_count > 0 and selected_product_id:
+        st.info(f"No reviews assigned to selected product. {all_reviews_count} reviews exist for this competitor - try selecting 'All Products' to analyze them.")
 
     # Amazon Review Analysis Results - Rich Themed Display
     if stats.get('has_amazon_analysis'):
