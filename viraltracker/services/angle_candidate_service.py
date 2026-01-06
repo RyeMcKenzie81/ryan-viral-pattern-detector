@@ -629,6 +629,69 @@ class AngleCandidateService:
         # Refresh to get updated frequency score
         return self.get_candidate(candidate.id)
 
+    def _extract_belief_text_from_layer(
+        self,
+        item: Any,
+        layer_key: str
+    ) -> Optional[str]:
+        """
+        Extract belief statement text from belief-first analysis layer data.
+
+        The belief-first analysis returns structured objects like:
+        - pain_signal: {"pain": "...", "status": "...", "context": "..."}
+        - benefits: {"status": "...", "context": "...", "examples": [...]}
+        - jtbd: {"status": "...", "context": "...", "examples": [...]}
+        - angle: {"status": "...", "context": "...", "examples": [...]}
+
+        This extracts the most meaningful text for the belief statement.
+        """
+        # If it's already a string, return it
+        if isinstance(item, str):
+            return item
+
+        # If it's not a dict, convert to string
+        if not isinstance(item, dict):
+            return str(item) if item else None
+
+        # For pain signals, extract the 'pain' field
+        if layer_key == "problem_pain_symptoms":
+            pain_text = item.get("pain")
+            if pain_text:
+                return pain_text
+
+        # For other layers, try to extract meaningful text
+        # Priority: examples > context > summary
+
+        # Try to get examples first (more concrete)
+        examples = item.get("examples", [])
+        if examples and isinstance(examples, list):
+            # Get the first example's quote
+            for ex in examples:
+                if isinstance(ex, dict) and ex.get("quote"):
+                    return ex["quote"]
+                elif isinstance(ex, str):
+                    return ex
+
+        # Fall back to context (the explanation)
+        context = item.get("context")
+        if context and len(context) > 20:
+            # Truncate context if too long and return first sentence
+            if len(context) > 200:
+                # Find first sentence
+                for end in [". ", "! ", "? "]:
+                    idx = context.find(end)
+                    if idx > 0:
+                        return context[:idx + 1]
+                return context[:200]
+            return context
+
+        # Last resort: any string value in the dict
+        for key in ["summary", "description", "text", "statement"]:
+            if item.get(key):
+                return item[key]
+
+        return None
+
     def get_or_create_candidate(
         self,
         product_id: UUID,
@@ -1048,20 +1111,29 @@ class AngleCandidateService:
                     if not layer_data:
                         continue
 
-                    # Handle both list and string values
+                    # Handle both list and dict values
                     items = layer_data if isinstance(layer_data, list) else [layer_data]
 
                     for item in items:
-                        if not item or len(str(item)) < 10:
+                        if not item:
                             continue
 
-                        item_str = str(item)
-                        name = item_str[:50] + "..." if len(item_str) > 50 else item_str
+                        # Extract belief statement from structured data
+                        belief_text = self._extract_belief_text_from_layer(item, layer_key)
+                        if not belief_text or len(belief_text) < 10:
+                            continue
+
+                        name = belief_text[:50] + "..." if len(belief_text) > 50 else belief_text
+
+                        # Get context for evidence
+                        context = ""
+                        if isinstance(item, dict):
+                            context = item.get("context", "")
 
                         try:
                             candidate, created = self.get_or_create_candidate(
                                 product_id=product_id,
-                                belief_statement=item_str,
+                                belief_statement=belief_text,
                                 name=name,
                                 source_type="competitor_research",
                                 candidate_type=candidate_type,
@@ -1075,10 +1147,15 @@ class AngleCandidateService:
                             else:
                                 stats["updated"] += 1
 
+                            # Build evidence text with context
+                            evidence_text = f"From {layer_key}: {belief_text}"
+                            if context:
+                                evidence_text += f"\n\nContext: {context}"
+
                             self.add_evidence(
                                 candidate_id=candidate.id,
                                 evidence_type="pattern",
-                                evidence_text=f"From {layer_key}: {item_str}",
+                                evidence_text=evidence_text,
                                 source_type="competitor_research",
                                 source_url=page_url,
                             )
