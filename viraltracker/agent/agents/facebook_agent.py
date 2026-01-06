@@ -6,9 +6,11 @@ from ..dependencies import AgentDependencies
 
 logger = logging.getLogger(__name__)
 
+from ...core.config import Config
+
 # Create Facebook specialist agent
 facebook_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model=Config.get_model("facebook"),
     deps_type=AgentDependencies,
     system_prompt="""You are the Facebook platform specialist agent.
 

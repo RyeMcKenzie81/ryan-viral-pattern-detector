@@ -31,7 +31,14 @@ if "ad_perf_selected_campaign" not in st.session_state:
 if "ad_perf_selected_adset" not in st.session_state:
     st.session_state.ad_perf_selected_adset = None  # (id, name) tuple
 if "ad_perf_active_tab" not in st.session_state:
-    st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked
+    st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked, 4=Manual Analysis
+
+# Analysis State
+if "ad_analysis_result" not in st.session_state:
+    st.session_state.ad_analysis_result = None
+if "analyzing_ad" not in st.session_state:
+    st.session_state.analyzing_ad = False
+
 
 # Session state for linking
 if "ad_perf_match_suggestions" not in st.session_state:
@@ -55,6 +62,107 @@ def get_meta_ads_service():
     """Get MetaAdsService instance (lazy import to avoid init issues)."""
     from viraltracker.services.meta_ads_service import MetaAdsService
     return MetaAdsService()
+
+
+def get_brand_research_service():
+    """Get BrandResearchService instance."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+    return BrandResearchService()
+
+
+def get_angle_candidate_service():
+    """Get AngleCandidateService instance."""
+    from viraltracker.services.angle_candidate_service import AngleCandidateService
+    return AngleCandidateService()
+
+
+def get_products_for_brand(brand_id: str) -> List[Dict]:
+    """Get products for a brand."""
+    try:
+        db = get_supabase_client()
+        result = db.table("products").select("id, name").eq(
+            "brand_id", brand_id
+        ).order("name").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def save_ad_analysis_as_candidate(
+    product_id: str,
+    brand_id: str,
+    angle: str,
+    belief: str,
+    hooks: List[Dict],
+    meta_ad_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Save ad analysis result as an angle candidate.
+
+    Args:
+        product_id: Product UUID
+        brand_id: Brand UUID
+        angle: Detected advertising angle
+        belief: Core belief statement
+        hooks: List of hook dicts
+        meta_ad_id: Optional Meta ad ID for tracking
+
+    Returns:
+        Dict with {created, updated, candidate_id}
+    """
+    service = get_angle_candidate_service()
+    return service.extract_from_ad_analysis(
+        product_id=UUID(product_id),
+        angle=angle,
+        belief=belief,
+        hooks=hooks,
+        source_ad_id=meta_ad_id,
+        brand_id=UUID(brand_id),
+    )
+
+
+def fetch_real_ad_copy(meta_ad_id: str) -> Optional[str]:
+    """
+    Try to fetch the real ad body text from the facebook_ads table.
+    
+    Args:
+        meta_ad_id: The Meta Ad ID string
+        
+    Returns:
+        The body text if found, else None
+    """
+    try:
+        db = get_supabase_client()
+        # Look up by id (which corresponds to meta_ad_id in our schema usually, 
+        # or we check if facebook_ads.id is the meta_id. 
+        # In this project, facebook_ads.id seems to be the UUID, and it has a 'ad_id' column for Meta ID?
+        # Let's check schema assumption. Usually 'id' is UUID.
+        # But 'meta_ads_performance' joins on 'meta_ad_id'. 
+        # Let's query based on 'ad_id' column in facebook_ads which usually holds the platform ID.
+        
+        result = db.table("facebook_ads").select("snapshot").eq("ad_id", meta_ad_id).limit(1).execute()
+        
+        if result.data:
+            snapshot = result.data[0].get("snapshot")
+            if isinstance(snapshot, str):
+                import json
+                snapshot = json.loads(snapshot)
+            
+            # Extract body text
+            if isinstance(snapshot, dict):
+                body = snapshot.get("body", {})
+                if isinstance(body, dict):
+                    return body.get("text")
+                elif isinstance(body, str):
+                    return body
+                    
+        return None
+    except Exception as e:
+        # Fail silently and fall back to ad name
+        return None
+
+
+
+
 
 
 def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
@@ -501,6 +609,103 @@ async def sync_ads_from_meta(
     return count
 
 
+def analyze_ad_creative(
+    creative_file: Optional[Any] = None,
+    creative_url: Optional[str] = None,
+    creative_type: str = "image",  # image or video
+    ad_copy: str = "",
+    headline: str = "",
+    ad_id: Optional[UUID] = None
+) -> Dict[str, Any]:
+    """
+    Analyze ad creative and copy to extract strategy (Synchronous).
+    
+    Args:
+        creative_file: UploadedFile object or bytes
+        creative_url: URL to creative (if file not provided)
+        creative_type: 'image' or 'video'
+        ad_copy: Primary text
+        headline: Ad headline
+        ad_id: Optional UUID of the ad for tracking
+        
+    Returns:
+        Dict with analysis results (angle, belief, hooks, etc.)
+    """
+    service = get_brand_research_service()
+    
+    # 1. Analyze Creative (Vision)
+    vision_analysis = {}
+    if creative_file or creative_url:
+        if creative_type == "video":
+            # Video analysis still needs async if we want to use the async-only endpoint
+            # But we can wrap it in asyncio.run safely if it's isolated?
+            # Or better, just raise NotImplemented for now or assume video path is rare here.
+            # The current analyze_video_from_url is async.
+            st.warning("Video analysis currently requires async support. Skipping video analysis in sync mode.")
+            vision_analysis = {}
+        else:
+            # Image
+            if creative_file:
+                img_bytes = creative_file.getvalue() if hasattr(creative_file, "getvalue") else creative_file
+                vision_analysis = service.analyze_image_sync(image_bytes=img_bytes)
+            elif creative_url:
+                # Download image from URL to bytes
+                import httpx
+                try:
+                    with httpx.Client(timeout=30.0) as client:
+                        resp = client.get(creative_url)
+                        if resp.status_code == 200:
+                            img_bytes = resp.content
+                            vision_analysis = service.analyze_image_sync(image_bytes=img_bytes, skip_save=True)
+                        else:
+                            st.warning(f"Failed to download image: {resp.status_code}")
+                except Exception as e:
+                    st.error(f"Image download failed: {e}")
+
+    # 2. Analyze Copy
+    copy_analysis = {}
+    if ad_copy or headline:
+        full_text = f"{headline}\n\n{ad_copy}"
+        copy_analysis = service.analyze_copy_sync(ad_copy=full_text, ad_id=ad_id)
+
+    # 3. Merge/Synthesize (Smarter merge)
+    
+    # Extract nested vision values
+    v_struct = vision_analysis.get("advertising_structure") or {}
+    v_angle = v_struct.get("advertising_angle")
+    v_level = v_struct.get("awareness_level")
+    v_belief = v_struct.get("belief_statement")
+    
+    # Extract copy values - handle both flat and nested structure
+    c_struct = copy_analysis.get("advertising_structure") or {}
+    c_angle = copy_analysis.get("advertising_angle") or c_struct.get("advertising_angle")
+    c_level = copy_analysis.get("awareness_level") or c_struct.get("awareness_level")
+    c_belief = copy_analysis.get("belief_statement") or c_struct.get("belief_statement")
+
+    def resolve_best(val_1, val_2, invalid_values=None):
+        invalid = invalid_values or ["None", "Unknown", "null", "Error", None, ""]
+        
+        def is_valid(v):
+            if v in invalid: return False
+            if isinstance(v, str) and (v.startswith("Error:") or v.startswith("[image]")): return False
+            return True
+            
+        if is_valid(val_1): return val_1
+        if is_valid(val_2): return val_2
+        return val_1 or val_2 
+
+    result = {
+        "angle": resolve_best(v_angle, c_angle),
+        "belief": resolve_best(v_belief, c_belief),
+        "hooks": copy_analysis.get("hooks", []) + vision_analysis.get("hooks", []),
+        "awareness_level": resolve_best(v_level, c_level),
+        "raw_copy": copy_analysis,
+        "raw_vision": vision_analysis
+    }
+    return result
+
+
+
 # =============================================================================
 # UI Components
 # =============================================================================
@@ -630,6 +835,123 @@ def render_time_series_charts(data: List[Dict]):
         st.line_chart(chart_df, height=250)
 
 
+def render_analysis_result(result: Dict):
+    """Render the ad analysis result with 'Create Plan' and 'Save as Candidate' actions."""
+    if not result:
+        return
+
+    st.success("✅ Analysis Complete! Strategy Extracted.")
+
+    angle = result.get("angle", "Unknown Angle")
+    belief = result.get("belief", "No belief detected")
+    hooks = result.get("hooks", [])
+
+    with st.container():
+        # styled card
+        st.markdown(f"""
+        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; border: 1px solid #d0d7de;">
+            <h3 style="margin-top:0;">🏹 Detected Angle: {angle}</h3>
+            <p style="font-size: 1.1em;"><strong>Core Belief:</strong> <em>"{belief}"</em></p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.write("") # Spacer
+
+        col_act1, col_act2, col_act3 = st.columns([1, 1, 1])
+        with col_act1:
+            if st.button("✨ Create Plan from this Angle", type="primary", use_container_width=True):
+                # BRIDGE LOGIC
+                st.session_state.injected_angle_data = {
+                    "name": angle,
+                    "belief": belief,
+                    "explanation": f"Extracted from winning ad analysis. Hooks found: {', '.join([h.get('text','') for h in hooks[:3]])}"
+                }
+                # Redirect
+                st.switch_page("pages/25_📋_Ad_Planning.py")
+
+        with col_act2:
+            st.caption("Create a 30-ad test campaign based on this winning angle")
+
+        with col_act3:
+            # Save as Angle Candidate - only if belief is valid
+            if belief and belief not in ["No belief detected", "None"]:
+                _render_save_candidate_ui(angle, belief, hooks, result)
+            else:
+                st.caption("Valid belief required to save as candidate")
+
+    # Check for low quality analysis due to missing text
+    if angle in ["Unknown Angle", "None"] or belief in ["No belief detected", "None"]:
+        st.warning("⚠️ Analysis yielded limited results. This often happens when analyzing based only on the Ad Name.")
+        st.markdown("""
+        **Try this instead:**
+        1. Copy the actual **Primary Text** from this ad in Ads Manager.
+        2. Go to the **🧪 Manual Analysis** tab above.
+        3. Paste the text there for a deep analysis.
+        """)
+
+    # Use checkbox instead of expander to avoid "nested expander" errors
+    # (Since this component is often rendered inside the 'Charts & Analysis' expander)
+    if st.checkbox("View Detailed Insights"):
+        st.markdown(f"**Awareness Level:** {result.get('awareness_level', 'Unknown')}")
+
+        st.markdown("**Identified Hooks:**")
+        for hook in hooks:
+            st.write(f"- {hook.get('type', 'Hook')}: *{hook.get('text', '')}*")
+
+        st.json(result)
+
+
+def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result: Dict):
+    """Render UI for saving analysis as an angle candidate."""
+    # Get brand from shared selector
+    brand_id = st.session_state.get("selected_brand_id")
+    if not brand_id:
+        st.caption("Select a brand to save as candidate")
+        return
+
+    # Get products for brand
+    products = get_products_for_brand(brand_id)
+    if not products:
+        st.caption("No products found for this brand")
+        return
+
+    # Product selector
+    product_options = {p["name"]: p["id"] for p in products}
+    selected_product = st.selectbox(
+        "Link to Product",
+        options=list(product_options.keys()),
+        key="ad_candidate_product_selector",
+        label_visibility="collapsed"
+    )
+    product_id = product_options[selected_product]
+
+    if st.button("💾 Save as Angle Candidate", use_container_width=True):
+        try:
+            # Get meta ad ID if available
+            meta_ad_id = result.get("meta_ad_id")
+
+            stats = save_ad_analysis_as_candidate(
+                product_id=product_id,
+                brand_id=brand_id,
+                angle=angle,
+                belief=belief,
+                hooks=hooks,
+                meta_ad_id=meta_ad_id
+            )
+
+            if stats.get("created", 0) > 0:
+                st.success("Candidate created!")
+            elif stats.get("updated", 0) > 0:
+                st.info("Updated existing candidate")
+            else:
+                st.info("Candidate already exists")
+
+        except Exception as e:
+            st.error(f"Failed to save: {e}")
+
+
+
+
 def render_top_performers(data: List[Dict]):
     """Render top and worst performers section."""
     import pandas as pd
@@ -704,7 +1026,91 @@ def render_top_performers(data: List[Dict]):
         else:
             st.info("No data for top performers")
 
+        # Integrated Analysis Action
+        if top_ads:
+            st.markdown("---")
+            st.caption("Select an ad to analyze its strategy:")
+            
+            # Create a selection map
+            options = {f"{ad.get('ad_name', 'Unknown')} (ROAS: {ad.get('roas', 0):.2f})": ad for ad in top_ads}
+            selected_label = st.selectbox("Select Winner", options=list(options.keys()), key="top_perf_select")
+            
+            if selected_label:
+                target_ad = options[selected_label]
+                st.write(f"DEBUG: Target Ad Keys: {list(target_ad.keys())}")
+                st.write(f"DEBUG: Target Ad Data (Sample): {str(target_ad)[:500]}")
+                if st.button(f"🔍 Analyze Strategy: {target_ad.get('ad_name')}"):
+                    # In a real scenario, we would stream the creative URL from the ad data.
+                    # Since existing data might not have the full creative bytes/url ready for immediate download without token,
+                    # We might need to ask user to confirm/provide if missing.
+                    # For this implementation, we will assume we scrape/fetch on the fly or just analyze COPY for now if creative missing.
+                    
+                    with st.spinner("Analyzing ad strategy..."):
+                        # Dummy call for MVP integration if URL missing, or use Ad Copy if available
+                        # In production this would fetch the actual creative.
+                         try:
+                             # Try to fetch real body text from DB first
+                             meta_ad_id = target_ad.get("meta_ad_id") or target_ad.get("ad_id")
+                             body_text = fetch_real_ad_copy(str(meta_ad_id)) if meta_ad_id else None
+                             
+                             # Fallback to ad name if body text not found
+                             final_copy = body_text if body_text else target_ad.get("ad_name", "")
+                             
+                             # Get Creative URL from ad data (image_url or thumbnail_url)
+                             creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
+                             
+                             # If missing, try to fetch on-the-fly
+                             if not creative_url:
+                                 st.info("Fetching ad creative from Meta...")
+                                 try:
+                                     from viraltracker.services.meta_ads_service import MetaAdsService
+                                     meta_service = MetaAdsService()
+                                     # Assuming we have meta_ad_id
+                                     aid = target_ad.get("meta_ad_id")
+                                     if aid:
+                                         thumbs = asyncio.run(meta_service.fetch_ad_thumbnails([aid]))
+                                         creative_url = thumbs.get(aid)
+                                         if creative_url:
+                                             st.success("Fetched creative URL from Meta")
+                                 except Exception as e:
+                                     st.warning(f"Could not fetch creative from Meta: {e}")
+
+                             # If not http, assume storage path (unless empty)
+                             if creative_url and not creative_url.startswith("http"):
+                                 signed = get_signed_url(creative_url)
+                                 if signed: 
+                                     st.write(f"DEBUG: Signed storage path '{creative_url}' -> '{signed[:20]}...'")
+                                     creative_url = signed
+                                 else:
+                                     st.warning(f"Could not sign URL for path: {creative_url}")
+                             
+                             st.write(f"DEBUG: Final Analysis URL: {creative_url}") # Debug for user
+
+                             # Try to convert ID to UUID for tracking, otherwise None
+                             from uuid import UUID as PyUUID
+                             ad_uuid = None
+                             try:
+                                 if meta_ad_id:
+                                     ad_uuid = PyUUID(str(meta_ad_id))
+                             except:
+                                 pass # Not a UUID (likely a Meta numeric ID)
+
+                             res = analyze_ad_creative(
+                                 ad_copy=final_copy,
+                                 headline=target_ad.get("headline", ""),
+                                 creative_url=creative_url,
+                                 creative_type="image", # Default to image for now unless we detect video
+                                 ad_id=ad_uuid
+                             )
+                             st.session_state.ad_analysis_result = res
+                         except Exception as e:
+                             st.error(f"Analysis failed: {e}")
+
+                if st.session_state.ad_analysis_result:
+                    render_analysis_result(st.session_state.ad_analysis_result)
+
     with col2:
+
         st.subheader("⚠️ Needs Attention (low ROAS)")
         worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
 
@@ -780,6 +1186,12 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
         a["add_to_carts"] += int(d.get("add_to_carts") or 0)
         a["purchases"] += int(d.get("purchases") or 0)
         a["purchase_value"] += float(d.get("purchase_value") or 0)
+        
+        # Capture creative details (first non-empty value wins or overwrite)
+        if d.get("image_url"): a["image_url"] = d.get("image_url")
+        if d.get("thumbnail_url"): a["thumbnail_url"] = d.get("thumbnail_url")
+        if d.get("headline"): a["headline"] = d.get("headline")
+        if d.get("body"): a["body"] = d.get("body")
 
     result = []
     for aid, a in ads.items():
@@ -804,6 +1216,10 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
             "add_to_carts": a["add_to_carts"],
             "purchases": a["purchases"],
             "roas": roas,
+            "image_url": a.get("image_url"),
+            "thumbnail_url": a.get("thumbnail_url"),
+            "headline": a.get("headline"),
+            "body": a.get("body"),
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
@@ -2184,6 +2600,7 @@ elif selected_tab == "🔗 Linked":
     st.subheader("Linked Ads (ViralTracker ↔ Meta)")
 
     # Find Matches button
+
     col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
@@ -2699,6 +3116,10 @@ elif selected_tab == "🔗 Linked":
                 st.markdown("---")
         else:
             st.success("✅ All legacy ads are linked!")
+
+
+elif selected_tab == "🧪 Manual Analysis":
+    render_manual_analysis_tab()
 
 
 # Footer with data info

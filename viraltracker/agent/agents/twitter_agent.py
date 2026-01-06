@@ -6,9 +6,11 @@ from ..dependencies import AgentDependencies
 
 logger = logging.getLogger(__name__)
 
+from ...core.config import Config
+
 # Create Twitter specialist agent
 twitter_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model=Config.get_model("twitter"),
     deps_type=AgentDependencies,
     system_prompt="""You are the Twitter/X platform specialist agent.
 

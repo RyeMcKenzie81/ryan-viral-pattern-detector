@@ -33,9 +33,13 @@ from ..services.template_queue_service import TemplateQueueService
 from ..services.persona_service import PersonaService
 from ..services.product_url_service import ProductURLService
 from ..services.content_pipeline.services.content_pipeline_service import ContentPipelineService
+from ..services.content_pipeline.services.sora_service import SoraService
 from ..services.reddit_sentiment_service import RedditSentimentService
+from ..services.product_context_service import ProductContextService
+from ..services.belief_analysis_service import BeliefAnalysisService
 
 logger = logging.getLogger(__name__)
+
 
 
 class ResultCache(BaseModel):
@@ -83,30 +87,17 @@ class AgentDependencies(BaseModel):
     """
     Typed dependencies for Pydantic AI agent.
 
-    Provides access to all services and configuration needed by agent tools.
-    Uses dependency injection pattern for clean separation of concerns.
-
     Attributes:
-        twitter: TwitterService for database operations
-        gemini: GeminiService for AI hook analysis and content generation
-        stats: StatsService for statistical calculations
-        scraping: ScrapingService for Twitter scraping operations
-        comment: CommentService for comment opportunity operations
-        tiktok: TikTokService for TikTok scraping and analysis operations
+        twitter: TwitterService for Twitter operations
+        gemini: GeminiService for AI analysis
+        stats: StatsService for metrics
+        scraping: ScrapingService for generic scraping
+        comment: CommentService for replying
+        tiktok: TikTokService for TikTok operations
         youtube: YouTubeService for YouTube video scraping operations
         facebook: FacebookService for Facebook Ads scraping operations
-        ad_creation: AdCreationService for Facebook ad creative generation
-        email: EmailService for sending emails via Resend
-        slack: SlackService for sending Slack messages via webhooks
         project_name: Name of the project being analyzed (e.g., 'yakety-pack-instagram')
         result_cache: Shared result cache for inter-agent communication
-
-    Example:
-        >>> deps = AgentDependencies.create(project_name="yakety-pack-instagram")
-        >>> tweets = await deps.twitter.get_tweets(project=deps.project_name, hours_back=24)
-        >>> analysis = await deps.gemini.analyze_hook(tweet_text=tweets[0].text)
-        >>> # Cache results for other agents
-        >>> deps.result_cache.last_twitter_query = tweets
     """
     model_config = {"arbitrary_types_allowed": True}
 
@@ -131,6 +122,9 @@ class AgentDependencies(BaseModel):
     product_url: ProductURLService
     content_pipeline: ContentPipelineService
     reddit_sentiment: RedditSentimentService
+    product_context: ProductContextService
+    belief_analysis: BeliefAnalysisService
+    sora: SoraService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -145,33 +139,6 @@ class AgentDependencies(BaseModel):
     ) -> "AgentDependencies":
         """
         Factory method to create AgentDependencies with initialized services.
-
-        Args:
-            project_name: Name of the project to analyze (default: "yakety-pack-instagram")
-            gemini_api_key: Optional Gemini API key (default: uses environment variable)
-            gemini_model: Gemini model to use (default: "models/gemini-3-pro-image-preview")
-            rate_limit_rpm: Rate limit for Gemini API in requests per minute (default: 9)
-
-        Returns:
-            AgentDependencies instance with all services initialized
-
-        Raises:
-            ValueError: If required credentials (Supabase, Gemini) are missing
-
-        Example:
-            >>> # Use defaults
-            >>> deps = AgentDependencies.create()
-
-            >>> # Customize project and rate limiting
-            >>> deps = AgentDependencies.create(
-            ...     project_name="my-project",
-            ...     rate_limit_rpm=6
-            ... )
-
-            >>> # Use custom API key
-            >>> deps = AgentDependencies.create(
-            ...     gemini_api_key="your-api-key-here"
-            ... )
         """
         logger.info(f"Initializing agent dependencies for project: {project_name}")
 
@@ -276,6 +243,18 @@ class AgentDependencies(BaseModel):
         reddit_sentiment = RedditSentimentService()
         logger.info("RedditSentimentService initialized")
 
+        # Initialize ProductContextService for product context retrieval
+        product_context = ProductContextService()
+        logger.info("ProductContextService initialized")
+
+        # Initialize BeliefAnalysisService for belief-first canvas analysis
+        belief_analysis = BeliefAnalysisService()
+        logger.info("BeliefAnalysisService initialized")
+
+        # Initialize SoraService
+        sora = SoraService()
+        logger.info("SoraService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -298,6 +277,9 @@ class AgentDependencies(BaseModel):
             product_url=product_url,
             content_pipeline=content_pipeline,
             reddit_sentiment=reddit_sentiment,
+            product_context=product_context,
+            belief_analysis=belief_analysis,
+            sora=sora,
             docs=docs,
             project_name=project_name
         )
@@ -309,7 +291,7 @@ class AgentDependencies(BaseModel):
             f"AgentDependencies(project_name='{self.project_name}', "
             f"services=[TwitterService, GeminiService, StatsService, ScrapingService, CommentService, "
             f"TikTokService, YouTubeService, FacebookService, AdCreationService, EmailService, SlackService, "
-            f"DocService({docs_status})], result_cache={self.result_cache})"
+            f"SoraService, DocService({docs_status})], result_cache={self.result_cache})"
         )
 
     def __repr__(self) -> str:

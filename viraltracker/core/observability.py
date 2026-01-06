@@ -92,6 +92,9 @@ def setup_logfire(
         # Instrument Pydantic for validation tracing
         logfire.instrument_pydantic()
 
+        # Instrument Pydantic AI for LLM call tracing (prompts, responses, tool calls)
+        logfire.instrument_pydantic_ai()
+
         _logfire_configured = True
         print(f"[LOGFIRE] Configured successfully: project={project}, environment={env}", file=sys.stderr, flush=True)
         logger.info(f"Logfire configured: project={project}, environment={env}")

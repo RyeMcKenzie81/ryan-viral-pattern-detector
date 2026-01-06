@@ -22,7 +22,9 @@ from typing import List, Dict, Optional, Any
 from uuid import UUID
 from datetime import datetime
 
-import anthropic
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -84,26 +86,12 @@ class CopyScaffoldService:
     # Claude Opus 4.5 for high-quality copy
     DEFAULT_MODEL = "claude-opus-4-5-20251101"
 
-    def __init__(self, anthropic_api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self):
         """
         Initialize CopyScaffoldService.
-
-        Args:
-            anthropic_api_key: API key for Claude (defaults to env var)
-            model: Claude model to use (defaults to Opus 4.5)
         """
         self.supabase: Client = get_supabase_client()
-
-        # Initialize Anthropic client for LLM-based copy generation
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            self.client = anthropic.Anthropic(api_key=api_key)
-            self.model = model or self.DEFAULT_MODEL
-            logger.info(f"CopyScaffoldService initialized with Claude model: {self.model}")
-        else:
-            self.client = None
-            self.model = None
-            logger.warning("ANTHROPIC_API_KEY not set - will use token-filling fallback")
+        logger.info("CopyScaffoldService initialized")
 
     # ============================================
     # SCAFFOLD RETRIEVAL
@@ -579,12 +567,7 @@ class CopyScaffoldService:
         Returns:
             Dict with "headlines" and "primary_texts" lists
         """
-        if not self.client:
-            logger.warning("No Anthropic client - falling back to token filling")
-            return {
-                "headlines": self.generate_copy_variants(headline_scaffolds, context),
-                "primary_texts": self.generate_copy_variants(primary_text_scaffolds, context)
-            }
+
 
         # Count scaffolds to determine how many variants to generate
         num_headlines = len(headline_scaffolds) if headline_scaffolds else 4
@@ -645,24 +628,24 @@ OUTPUT FORMAT (JSON):
 
 IMPORTANT: Every headline MUST be 40 characters or less. Count carefully."""
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+        # Pydantic AI Agent (CopyScaffold/Creative)
+        agent = Agent(
+            model=Config.get_model("copy_scaffold"),
+            system_prompt="You are an expert copywriter. Return ONLY valid JSON."
+        )
 
-            content = response.content[0].text
+        try:
+            result = agent.run_sync(prompt)
+            content = result.output
+
             # Parse JSON from response
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
-                result = json.loads(json_match.group())
+                result_json = json.loads(json_match.group())
 
                 # Convert to our variant format and validate
                 headlines = []
-                for i, h in enumerate(result.get("headlines", [])):
+                for i, h in enumerate(result_json.get("headlines", [])):
                     text = h.get("text", "")
                     validation = self.validate_copy(text, "headline")
                     headlines.append({
@@ -676,7 +659,7 @@ IMPORTANT: Every headline MUST be 40 characters or less. Count carefully."""
                     })
 
                 primary_texts = []
-                for i, p in enumerate(result.get("primary_texts", [])):
+                for i, p in enumerate(result_json.get("primary_texts", [])):
                     text = p.get("text", "")
                     validation = self.validate_copy(text, "primary_text")
                     primary_texts.append({
@@ -694,7 +677,6 @@ IMPORTANT: Every headline MUST be 40 characters or less. Count carefully."""
 
             else:
                 logger.error("Could not parse JSON from LLM response")
-                # Fallback to token filling
                 return {
                     "headlines": self.generate_copy_variants(headline_scaffolds, context),
                     "primary_texts": self.generate_copy_variants(primary_text_scaffolds, context)

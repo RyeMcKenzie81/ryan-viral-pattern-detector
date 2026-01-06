@@ -24,7 +24,9 @@ from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, field
 
-import anthropic
+from viraltracker.core.config import Config
+from pydantic_ai import Agent
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +416,7 @@ THRESHOLDS:
 
     def __init__(
         self,
+        # Kept for backward compatibility but unused
         anthropic_api_key: Optional[str] = None,
         model: Optional[str] = None,
         supabase_client: Optional[Any] = None,
@@ -421,31 +424,14 @@ THRESHOLDS:
     ):
         """
         Initialize the ComicService.
-
-        Args:
-            anthropic_api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-            model: Model to use (defaults to claude-opus-4-5-20251101)
-            supabase_client: Supabase client for database operations
-            docs_service: DocService for knowledge base queries
         """
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set - comic generation will fail")
-            self.client = None
-        else:
-            self.client = anthropic.Anthropic(api_key=api_key)
-
-        self.model = model or self.DEFAULT_MODEL
         self.supabase = supabase_client
         self.docs = docs_service
+        logger.info("ComicService initialized")
 
     def _ensure_client(self) -> None:
-        """Raise error if Anthropic client not configured."""
-        if not self.client:
-            raise ValueError(
-                "Anthropic client not configured. Set ANTHROPIC_API_KEY environment variable."
-            )
+        """Deprecated: Pydantic AI Agent is always available via Config."""
+        pass
 
     # =========================================================================
     # Knowledge Base Helpers
@@ -733,18 +719,18 @@ THRESHOLDS:
             available_props=", ".join(assets["props"]) or "none specified"
         )
 
+        # Pydantic AI Agent (Comic/Creative)
+        agent = Agent(
+            model=Config.get_model("comic"),
+            system_prompt="You are a comic artist. Return ONLY valid JSON."
+        )
+
         try:
-            # Call Claude Opus 4.5
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            # Call Agent
+            result = await agent.run(prompt)
+            content = result.output
 
             # Parse response
-            content = response.content[0].text
             comic_data = self._parse_json_response(content)
 
             # Build ComicScript with character name normalization
@@ -834,18 +820,18 @@ THRESHOLDS:
             comic_script=json.dumps(comic_script.to_dict(), indent=2)
         )
 
+        # Pydantic AI Agent (Comic/Creative)
+        agent = Agent(
+            model=Config.get_model("comic"),
+            system_prompt="You are an expert comic critic. Return ONLY valid JSON."
+        )
+
         try:
-            # Call Claude Opus 4.5
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            # Call Agent
+            result = await agent.run(prompt)
+            content = result.output
 
             # Parse response
-            content = response.content[0].text
             eval_data = self._parse_json_response(content)
 
             clarity_score = eval_data.get("clarity_score", 0)
@@ -998,14 +984,16 @@ Return the REVISED comic in this exact JSON format:
 
 Return ONLY the JSON, no other text."""
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        # Pydantic AI Agent (Comic/Creative)
+        agent = Agent(
+            model=Config.get_model("comic"),
+            system_prompt="You are a comic script editor. Return ONLY valid JSON."
+        )
 
-            response_text = response.content[0].text.strip()
+        try:
+            # Call Agent
+            result = await agent.run(prompt)
+            response_text = result.output.strip()
 
             # Parse JSON response
             if response_text.startswith("```"):

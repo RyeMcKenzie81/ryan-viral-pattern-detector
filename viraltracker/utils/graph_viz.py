@@ -1,0 +1,478 @@
+"""
+Graph Visualization Utility for Pydantic-Graph Pipelines.
+
+Provides tools to export Mermaid diagrams for all pipeline graphs,
+both as code (for documentation) and as images (for UI display).
+
+Usage:
+    # Programmatic
+    from viraltracker.utils.graph_viz import get_graph_mermaid_code, export_all_graphs
+
+    code = get_graph_mermaid_code("brand_onboarding")
+    export_all_graphs("./diagrams")
+
+    # CLI
+    python -m viraltracker.utils.graph_viz --help
+    python -m viraltracker.utils.graph_viz --all --output ./diagrams
+    python -m viraltracker.utils.graph_viz --graph brand_onboarding --code
+"""
+
+import argparse
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+def _get_pipeline_registry() -> Dict[str, Dict[str, Any]]:
+    """
+    Load pipeline registry from viraltracker.pipelines.
+
+    The registry is maintained in pipelines/__init__.py - add new pipelines
+    there and they'll automatically appear in the visualizer.
+
+    Returns:
+        Dictionary mapping pipeline names to their graph objects and metadata.
+    """
+    from viraltracker.pipelines import GRAPH_REGISTRY
+    return GRAPH_REGISTRY
+
+
+# Lazy-loaded registry
+PIPELINE_REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_registry() -> Dict[str, Dict[str, Any]]:
+    """Ensure the pipeline registry is loaded."""
+    global PIPELINE_REGISTRY
+    if not PIPELINE_REGISTRY:
+        PIPELINE_REGISTRY = _get_pipeline_registry()
+    return PIPELINE_REGISTRY
+
+
+def get_all_graphs_info() -> List[Dict[str, Any]]:
+    """
+    Get information about all registered pipeline graphs.
+
+    Returns:
+        List of dicts with name, description, node_count, nodes, start_node
+    """
+    registry = _ensure_registry()
+
+    return [
+        {
+            "name": name,
+            "description": info["description"],
+            "node_count": len(info["nodes"]),
+            "nodes": info["nodes"],
+            "start_node": info["nodes"][0] if info["nodes"] else None,
+        }
+        for name, info in registry.items()
+    ]
+
+
+def get_graph_mermaid_code(
+    graph_name: str,
+    direction: str = "LR",
+    include_notes: bool = True,
+) -> str:
+    """
+    Get Mermaid diagram code for a specific graph.
+
+    Args:
+        graph_name: Name of the pipeline graph
+        direction: Diagram direction ('LR', 'TB', 'RL', 'BT')
+        include_notes: Whether to include node docstrings as notes
+
+    Returns:
+        Mermaid diagram code as string
+
+    Raises:
+        ValueError: If graph_name is not found in registry
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        available = ", ".join(registry.keys())
+        raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
+
+    info = registry[graph_name]
+    graph = info["graph"]
+    start_node = info["start_node"]
+
+    return graph.mermaid_code(
+        start_node=start_node(),
+        direction=direction,
+        notes=include_notes,
+    )
+
+
+def export_graph_image(
+    graph_name: str,
+    output_path: str,
+    format: str = "png",
+    direction: str = "LR",
+) -> Path:
+    """
+    Export a graph as an image file.
+
+    Args:
+        graph_name: Name of the pipeline graph
+        output_path: Path to save the image (without extension)
+        format: Image format ('png', 'svg', 'jpeg', 'webp', 'pdf')
+        direction: Diagram direction ('LR', 'TB', 'RL', 'BT')
+
+    Returns:
+        Path to the saved image file
+
+    Raises:
+        ValueError: If graph_name is not found or format is invalid
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        available = ", ".join(registry.keys())
+        raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
+
+    valid_formats = {"png", "svg", "jpeg", "webp", "pdf"}
+    if format not in valid_formats:
+        raise ValueError(f"Invalid format '{format}'. Valid: {valid_formats}")
+
+    info = registry[graph_name]
+    graph = info["graph"]
+    start_node = info["start_node"]
+
+    # Ensure output path has correct extension
+    output = Path(output_path)
+    if output.suffix.lower() != f".{format}":
+        output = output.with_suffix(f".{format}")
+
+    # Create parent directory if needed
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Generate and save image
+    graph.mermaid_save(
+        path=str(output),
+        start_node=start_node(),
+        direction=direction,
+        image_type=format,
+    )
+
+    logger.info(f"Exported {graph_name} to {output}")
+    return output
+
+
+def get_graph_image_bytes(
+    graph_name: str,
+    format: str = "png",
+    direction: str = "LR",
+) -> bytes:
+    """
+    Get graph image as bytes (for Streamlit display).
+
+    Args:
+        graph_name: Name of the pipeline graph
+        format: Image format ('png', 'svg', 'jpeg', 'webp')
+        direction: Diagram direction ('LR', 'TB', 'RL', 'BT')
+
+    Returns:
+        Image bytes
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        available = ", ".join(registry.keys())
+        raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
+
+    info = registry[graph_name]
+    graph = info["graph"]
+    start_node = info["start_node"]
+
+    return graph.mermaid_image(
+        start_node=start_node(),
+        direction=direction,
+        image_type=format,
+    )
+
+
+def export_all_graphs(
+    output_dir: str,
+    format: str = "png",
+    direction: str = "LR",
+) -> List[Path]:
+    """
+    Export all pipeline graphs as images.
+
+    Args:
+        output_dir: Directory to save images
+        format: Image format ('png', 'svg', 'jpeg', 'webp', 'pdf')
+        direction: Diagram direction ('LR', 'TB', 'RL', 'BT')
+
+    Returns:
+        List of paths to saved image files
+    """
+    registry = _ensure_registry()
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    saved_files = []
+    for name in registry:
+        try:
+            file_path = export_graph_image(
+                graph_name=name,
+                output_path=str(output_path / name),
+                format=format,
+                direction=direction,
+            )
+            saved_files.append(file_path)
+        except Exception as e:
+            logger.error(f"Failed to export {name}: {e}")
+
+    return saved_files
+
+
+def get_node_details(graph_name: str) -> List[Dict[str, Any]]:
+    """
+    Get detailed information about nodes in a graph.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        List of dicts with node name, docstring, and position
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        available = ", ".join(registry.keys())
+        raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
+
+    info = registry[graph_name]
+    nodes = info["nodes"]
+
+    # Import the actual node classes to get docstrings
+    node_details = []
+    for i, node_name in enumerate(nodes):
+        node_details.append({
+            "name": node_name,
+            "position": i + 1,
+            "is_start": i == 0,
+            "is_end": i == len(nodes) - 1,
+        })
+
+    return node_details
+
+
+def get_node_metadata(graph_name: str) -> List[Dict[str, Any]]:
+    """
+    Get rich metadata about nodes in a graph.
+
+    Returns inputs, outputs, LLM usage, and services for each node.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        List of dicts with node name, metadata, position, etc.
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        available = ", ".join(registry.keys())
+        raise ValueError(f"Unknown graph '{graph_name}'. Available: {available}")
+
+    info = registry[graph_name]
+
+    # Get node classes from the registry
+    node_classes = info.get("node_classes", [])
+
+    # Fallback to node names if node_classes not available
+    if not node_classes:
+        node_names = info.get("nodes", [])
+        return [
+            {
+                "name": name,
+                "position": i + 1,
+                "is_start": i == 0,
+                "is_end": i == len(node_names) - 1,
+                "docstring": "",
+                "inputs": [],
+                "outputs": [],
+                "services": [],
+                "llm": None,
+                "llm_purpose": None,
+                "uses_llm": False,
+            }
+            for i, name in enumerate(node_names)
+        ]
+
+    node_metadata = []
+    for i, node_class in enumerate(node_classes):
+        node_name = node_class.__name__
+
+        # Get metadata from class if available
+        metadata = getattr(node_class, "metadata", None)
+
+        node_info = {
+            "name": node_name,
+            "position": i + 1,
+            "is_start": i == 0,
+            "is_end": i == len(node_classes) - 1,
+            "docstring": (node_class.__doc__ or "").strip(),
+        }
+
+        if metadata:
+            node_info["inputs"] = metadata.inputs
+            node_info["outputs"] = metadata.outputs
+            node_info["services"] = metadata.services
+            node_info["llm"] = metadata.llm
+            node_info["llm_purpose"] = metadata.llm_purpose
+            node_info["uses_llm"] = metadata.uses_llm
+        else:
+            node_info["inputs"] = []
+            node_info["outputs"] = []
+            node_info["services"] = []
+            node_info["llm"] = None
+            node_info["llm_purpose"] = None
+            node_info["uses_llm"] = False
+
+        node_metadata.append(node_info)
+
+    return node_metadata
+
+
+def get_pipeline_llm_summary(graph_name: str) -> Dict[str, Any]:
+    """
+    Get a summary of LLM usage for a pipeline.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        Dict with llm_count, llm_models, and nodes_with_llm
+    """
+    node_metadata = get_node_metadata(graph_name)
+
+    llm_nodes = []
+    llm_models = set()
+
+    for node in node_metadata:
+        if node.get("uses_llm"):
+            llm_nodes.append(node["name"])
+            if node.get("llm"):
+                llm_models.add(node["llm"])
+
+    return {
+        "llm_count": len(llm_nodes),
+        "llm_models": list(llm_models),
+        "nodes_with_llm": llm_nodes,
+    }
+
+
+def get_graph_callers(graph_name: str) -> List[Dict[str, str]]:
+    """
+    Get the UI pages/tools that call this pipeline.
+
+    Args:
+        graph_name: Name of the pipeline graph
+
+    Returns:
+        List of caller dicts with type and page/function info
+    """
+    registry = _ensure_registry()
+
+    if graph_name not in registry:
+        return []
+
+    return registry[graph_name].get("callers", [])
+
+
+def main():
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Export Mermaid diagrams for ViralTracker pipeline graphs"
+    )
+    parser.add_argument(
+        "--graph", "-g",
+        help="Specific graph to export (default: all)",
+    )
+    parser.add_argument(
+        "--all", "-a",
+        action="store_true",
+        help="Export all graphs",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default="./diagrams",
+        help="Output directory for images (default: ./diagrams)",
+    )
+    parser.add_argument(
+        "--format", "-f",
+        choices=["png", "svg", "jpeg", "webp", "pdf"],
+        default="png",
+        help="Image format (default: png)",
+    )
+    parser.add_argument(
+        "--direction", "-d",
+        choices=["LR", "TB", "RL", "BT"],
+        default="LR",
+        help="Diagram direction (default: LR)",
+    )
+    parser.add_argument(
+        "--code", "-c",
+        action="store_true",
+        help="Print Mermaid code instead of saving image",
+    )
+    parser.add_argument(
+        "--list", "-l",
+        action="store_true",
+        help="List all available graphs",
+    )
+
+    args = parser.parse_args()
+
+    # List mode
+    if args.list:
+        print("\nAvailable Pipeline Graphs:")
+        print("-" * 60)
+        for info in get_all_graphs_info():
+            print(f"\n  {info['name']} ({info['node_count']} nodes)")
+            print(f"    {info['description']}")
+            print(f"    Nodes: {' → '.join(info['nodes'])}")
+        print()
+        return
+
+    # Code mode
+    if args.code:
+        if not args.graph:
+            print("Error: --code requires --graph to be specified")
+            return
+        code = get_graph_mermaid_code(args.graph, direction=args.direction)
+        print(code)
+        return
+
+    # Export mode
+    if args.all:
+        paths = export_all_graphs(
+            output_dir=args.output,
+            format=args.format,
+            direction=args.direction,
+        )
+        print(f"\nExported {len(paths)} graphs to {args.output}/")
+        for p in paths:
+            print(f"  - {p.name}")
+    elif args.graph:
+        path = export_graph_image(
+            graph_name=args.graph,
+            output_path=f"{args.output}/{args.graph}",
+            format=args.format,
+            direction=args.direction,
+        )
+        print(f"Exported to {path}")
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

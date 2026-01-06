@@ -10,16 +10,18 @@ This agent orchestrates the complete workflow:
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 from pydantic_ai import Agent, RunContext
 from ..dependencies import AgentDependencies
 
 logger = logging.getLogger(__name__)
 
+from ...core.config import Config
+
 # Create Ad Creation Agent
 ad_creation_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model=Config.get_model("ad_creation"),
     deps_type=AgentDependencies,
     system_prompt="""You are the Ad Creation specialist agent.
 
@@ -513,55 +515,76 @@ async def analyze_reference_ad(
         }
         """
 
-        # Call Claude Opus 4.5 Vision API for best analysis quality
-        from anthropic import Anthropic
+        # Call Vision AI using Pydantic AI Agent
+        from pydantic_ai import Agent
         import base64
-
-        anthropic_client = Anthropic()
-
-        # Convert image data to base64 if needed
-        if isinstance(image_data, bytes):
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-        else:
-            image_base64 = image_data
 
         # Detect image format from base64 header or assume PNG
         media_type = "image/png"
         try:
-            raw_bytes = base64.b64decode(image_base64[:32] + '==')
-            if raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
-                media_type = "image/webp"
-            elif raw_bytes[:3] == b'\xff\xd8\xff':
+            # Simple header check
+            if image_base64.startswith('/9j/'):
                 media_type = "image/jpeg"
-            elif raw_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                media_type = "image/png"
+            elif image_base64.startswith('iVBORw0KGgo'):
+                 media_type = "image/png"
+            elif image_base64.startswith('R0lGOD'):
+                media_type = "image/gif"
+            elif image_base64.startswith('UklGR'):
+                media_type = "image/webp"
         except Exception:
-            pass  # Default to PNG
+            pass 
 
-        message = anthropic_client.messages.create(
-            model="claude-opus-4-5-20251101",
-            max_tokens=4000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": f"{analysis_prompt}\n\nReturn ONLY valid JSON, no other text."
-                    }
-                ]
-            }]
+        # Create temporary agent for this specific vision task
+        vision_agent = Agent(
+            model=Config.get_model("vision"),
+            system_prompt="You are a simplified vision analysis expert. Return ONLY valid JSON."
         )
-        analysis_result = message.content[0].text
 
-        # Strip markdown code fences if present (Claude sometimes wraps JSON in ```json...```)
+        logger.info(f"Running vision analysis with model: {vision_agent.model}")
+
+        # Construct Prompt content with Image
+        # Note: Pydantic AI 0.0.18+ supports list of content parts including images
+        # We need to construct the message properly based on how Pydantic AI expects it
+        # For now, we'll try the standard run() with user_content list if supported, 
+        # or separate system prompt instruction if image input is complex.
+        # But `agent.run()` typically takes a string or list of messages.
+        # Let's try passing the image as a BinaryContent or similar if the library supports it,
+        # OR just rely on the model adapter if it handles image URLs/base64 in text.
+        # 
+        # Wait, Pydantic AI's `run` method usually takes `user_prompt` (str) or `message_history`.
+        # To send an image, we usually need to use a model-specific structure OR 
+        # the `BinaryContent` if using standard Pydantic models.
+        # 
+        # Let's look at how we were passing it to Anthropic: 
+        # {"type": "image", "source": {"type": "base64", ...}}
+        # 
+        # Update: Pydantic AI recently added proper support for multi-modal via `BinaryContent`.
+        # from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+        
+        from pydantic_ai.messages import BinaryContent
+        
+        # Decode base64 to bytes if it's a string, because BinaryContent takes bytes
+        if isinstance(image_data, str):
+             image_bytes = base64.b64decode(image_data)
+        else:
+             image_bytes = image_data
+             
+        # Run agent
+        # We pass a list containing the image and the prompt
+        # Note: If Pydantic AI version in env doesn't support list for `user_prompt`, 
+        # we might need to use `deps` or a specific model approach. 
+        # Assuming modern Pydantic AI:
+        
+        result = await vision_agent.run(
+            [
+                analysis_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                BinaryContent(data=image_bytes, media_type=media_type)
+            ]
+        )
+        
+        analysis_result = result.output
+
+        # Strip markdown code fences if present (Gemini/Claude sometimes wraps JSON in ```json...```)
         analysis_result_clean = analysis_result.strip()
         if analysis_result_clean.startswith('```'):
             # Find the first newline after the opening fence
@@ -790,27 +813,26 @@ async def select_hooks(
         max_retries = 3
         last_error = None
 
-        # Use Claude Opus for better hook selection and adaptation quality
-        from anthropic import Anthropic
+        # Use configured creative model for hook selection and adaptation
+        # Use Pydantic AI Agent
+        from pydantic_ai import Agent
+        from ...core.config import Config
         import asyncio
 
-        anthropic_client = Anthropic()
+        # Create temporary agent
+        hook_agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are a persuasive copywriting expert. Return ONLY valid JSON."
+        )
 
         for attempt in range(max_retries):
             try:
-                # Call Claude Opus 4.5 for hook selection
-                message = anthropic_client.messages.create(
-                    model="claude-opus-4-5-20251101",
-                    max_tokens=4096,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": f"{selection_prompt}\n\nReturn ONLY valid JSON array, no markdown fences, no other text."
-                        }
-                    ]
+                # Run agent
+                result = await hook_agent.run(
+                    selection_prompt + "\n\nReturn ONLY valid JSON array, no markdown fences, no other text."
                 )
-
-                selection_result = message.content[0].text
+                
+                selection_result = result.output
 
                 # Strip markdown code fences if present (Bug #10 fix)
                 result_text = selection_result.strip()
@@ -828,7 +850,7 @@ async def select_hooks(
                 selected_hooks = json.loads(result_text)
 
                 logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
-                           f"{[h.get('category') for h in selected_hooks]} (model: claude-opus-4-5)")
+                           f"{[h.get('category') for h in selected_hooks]} (model: {Config.get_model('creative')})")
 
                 return selected_hooks
 
@@ -1183,7 +1205,7 @@ async def analyze_product_image(
             "best_use_cases": ["hero", "testimonial"],
             "dominant_colors": ["#8B4513", "#F5F5F5"],
             "detected_issues": [],
-            "analysis_model": "claude-opus-4-5-20251101",
+            "analysis_model": Config.get_model("vision"),
             "analysis_version": "v1"
         }
 
@@ -1957,12 +1979,16 @@ async def review_ad_claude(
         }}
         """
 
-        # Call Claude Vision API via Anthropic client
-        # Note: We use the Anthropic API directly for vision review
-        from anthropic import Anthropic
+        # Call Vision AI using Pydantic AI Agent
+        from pydantic_ai import Agent
+        from pydantic_ai.messages import BinaryContent
         import base64
 
-        anthropic_client = Anthropic()
+        # Create temporary agent
+        vision_agent = Agent(
+            model=Config.get_model("vision"),
+            system_prompt="You are an expert creative director. Return ONLY valid JSON."
+        )
 
         # Detect actual image format from magic bytes (Bug #12 fix)
         media_type = "image/png"  # Default fallback
@@ -1975,34 +2001,15 @@ async def review_ad_claude(
         elif image_data[:6] in (b'GIF87a', b'GIF89a'):
             media_type = "image/gif"
 
-        # Encode image as base64
-        image_base64 = base64.b64encode(image_data).decode('utf-8')
-
-        # Call Claude with vision
-        message = anthropic_client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": review_prompt
-                    }
-                ]
-            }]
+        # Run agent
+        result = await vision_agent.run(
+            [
+                review_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                BinaryContent(data=image_data, media_type=media_type)
+            ]
         )
-
-        # Parse response
-        review_text = message.content[0].text
+        
+        review_text = result.output
 
         # Strip markdown code fences if present (Bug #13 fix)
         # Claude sometimes wraps JSON in ```json ... ```
@@ -2406,63 +2413,56 @@ async def extract_template_angle(
         }}
         """
 
-        # Call Claude Opus 4.5 Vision API for best analysis quality
-        from anthropic import Anthropic
+        # Call Vision AI using Pydantic AI Agent
+        from pydantic_ai import Agent
+        from pydantic_ai.messages import BinaryContent
         import base64
 
-        anthropic_client = Anthropic()
-
-        # Convert image data to base64 if needed
-        if isinstance(image_data, bytes):
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-        else:
-            image_base64 = image_data
-
-        # Detect image format from base64 header or assume PNG
+        # Detect image format
         media_type = "image/png"
         try:
-            raw_bytes = base64.b64decode(image_base64[:32] + '==')
-            if raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
-                media_type = "image/webp"
-            elif raw_bytes[:3] == b'\xff\xd8\xff':
+            if image_base64.startswith('/9j/'):
                 media_type = "image/jpeg"
-            elif raw_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                media_type = "image/png"
+            elif image_base64.startswith('iVBORw0KGgo'):
+                 media_type = "image/png"
+            elif image_base64.startswith('R0lGOD'):
+                media_type = "image/gif"
+            elif image_base64.startswith('UklGR'):
+                media_type = "image/webp"
         except Exception:
-            pass  # Default to PNG
+            pass 
 
-        message = anthropic_client.messages.create(
-            model="claude-opus-4-5-20251101",
-            max_tokens=4000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": f"{extraction_prompt}\n\nReturn ONLY valid JSON, no other text."
-                    }
-                ]
-            }]
+        # Create temporary agent
+        vision_agent = Agent(
+            model=Config.get_model("vision"),
+            system_prompt="You are a marketing analysis expert. Return ONLY valid JSON."
         )
-        analysis_result = message.content[0].text
 
+        # Decode base64
+        if isinstance(image_data, str):
+             image_bytes = base64.b64decode(image_data)
+        else:
+             image_bytes = image_data
+
+        result = await vision_agent.run(
+            [
+                extraction_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                BinaryContent(data=image_bytes, media_type=media_type)
+            ]
+        )
+        
+
+
+        result_text = result.output
+        
         # Strip markdown code fences if present
-        result_clean = analysis_result.strip()
+        result_clean = result_text.strip()
         if result_clean.startswith('```'):
             first_newline = result_clean.find('\n')
             last_fence = result_clean.rfind('```')
             if first_newline != -1 and last_fence > first_newline:
                 result_clean = result_clean[first_newline + 1:last_fence].strip()
 
-        # Parse JSON response
         angle_dict = json.loads(result_clean)
 
         logger.info(f"Extracted template angle: type={angle_dict.get('angle_type')}, "
@@ -2776,29 +2776,29 @@ async def generate_benefit_variations(
         ]
         """
 
-        # Call Claude Opus 4.5 for high-quality copy generation
-        from anthropic import Anthropic
+        # Call Pydantic AI Agent for high-quality copy generation
+        from pydantic_ai import Agent
+        from ...core.config import Config
         import asyncio
 
-        anthropic_client = Anthropic()
+        variation_agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are a persuasive copywriting expert. Return ONLY valid JSON."
+        )
+
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
             try:
-                # Use Claude Opus 4.5 for best copy quality
-                message = anthropic_client.messages.create(
-                    model="claude-opus-4-5-20251101",
-                    max_tokens=4000,
-                    messages=[{
-                        "role": "user",
-                        "content": f"{generation_prompt}\n\nReturn ONLY valid JSON array, no other text."
-                    }]
+                # Use configured creative model
+                result = await variation_agent.run(
+                    generation_prompt + "\n\nReturn ONLY valid JSON array, no other text."
                 )
-                result = message.content[0].text
+                result_text = result.output
 
                 # Strip markdown code fences if present
-                result_text = result.strip()
+                result_text = result_text.strip()
                 if result_text.startswith("```"):
                     result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
                     if result_text.endswith("```"):
@@ -2941,6 +2941,67 @@ async def generate_benefit_variations(
         raise Exception(f"Failed to generate benefit variations: {str(e)}")
 
 
+async def adapt_belief_to_template(
+    belief_statement: str,
+    template_angle: Dict[str, Any],
+    product: Dict[str, Any],
+    variation_number: int = 1
+) -> str:
+    """
+    Adapt a belief statement to match a template's structure/tone.
+
+    This helper function takes a belief statement (from the belief-first planning
+    framework) and rewrites it to match the structure of an extracted template
+    angle from a reference ad.
+
+    Args:
+        belief_statement: The core belief to communicate
+        template_angle: Extracted template structure from reference ad
+            (from extract_template_angle)
+        product: Product data for context
+        variation_number: Which variation (for diversity in output)
+
+    Returns:
+        Headline text that communicates the belief in the template's style
+    """
+    from pydantic_ai import Agent
+    from viraltracker.core.config import Config
+
+    prompt = f"""You are a direct response copywriter. Your task is to rewrite a belief statement
+to match a specific headline template structure.
+
+BELIEF TO COMMUNICATE:
+{belief_statement}
+
+TEMPLATE STRUCTURE:
+- Type: {template_angle.get('angle_type', 'unknown')}
+- Pattern: {template_angle.get('messaging_template', '')}
+- Tone: {template_angle.get('tone', 'casual')}
+- Key Elements: {', '.join(template_angle.get('key_elements', []))}
+- Guidance: {template_angle.get('adaptation_guidance', '')}
+
+PRODUCT: {product.get('name', '')}
+
+RULES:
+1. Keep the CORE BELIEF intact - the meaning must be preserved
+2. Apply the template's STRUCTURE and TONE
+3. Match approximate word count of template pattern
+4. Use first-person if template uses it ("I", "My")
+5. This is variation #{variation_number} - make it unique but on-message
+6. Do NOT invent claims, offers, or timeframes not in the belief
+7. Output ONLY the headline text, nothing else
+
+Write the adapted headline:"""
+
+    agent = Agent(
+        model=Config.get_model("CREATIVE"),
+        system_prompt="You are a direct response copywriter. Output only the headline text."
+    )
+
+    result = await agent.run(prompt)
+    return result.output.strip().strip('"').strip("'")
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
@@ -2971,7 +3032,9 @@ async def complete_ad_workflow(
     selected_image_paths: Optional[List[str]] = None,
     persona_id: Optional[str] = None,
     variant_id: Optional[str] = None,
-    additional_instructions: Optional[str] = None
+    additional_instructions: Optional[str] = None,
+    angle_data: Optional[Dict] = None,
+    match_template_structure: bool = False
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -2986,7 +3049,8 @@ async def complete_ad_workflow(
        - If content_source="hooks": Selects N diverse hooks from database
        - If content_source="recreate_template": Extracts template angle and
          generates variations from product benefits/USPs
-       - Both modes use persona data to inform copy when available
+       - If content_source="belief_first": Uses provided angle's belief statement
+       - All modes use persona data to inform copy when available
     7. Generates N ad variations (ONE AT A TIME)
     8. Dual AI review (Claude + Gemini) for each ad
     9. Applies OR logic: either reviewer approving = approved
@@ -3007,6 +3071,7 @@ async def complete_ad_workflow(
         content_source: Source for ad content variations:
             - "hooks": Use hooks from database (default)
             - "recreate_template": Extract template angle and use product benefits
+            - "belief_first": Use provided angle's belief statement
         color_mode: Color scheme to use ("original", "complementary", "brand")
         brand_colors: Brand color data when color_mode is "brand"
         image_selection_mode: How to select product images:
@@ -3019,6 +3084,11 @@ async def complete_ad_workflow(
             variant name and description are used to customize ad copy for that specific variant.
         additional_instructions: Optional run-specific instructions for ad generation. Combined
             with brand's ad_creation_notes to guide the AI in creating ads.
+        angle_data: Dict with angle info for belief_first mode. Required when
+            content_source="belief_first". Structure: {id, name, belief_statement, explanation}
+        match_template_structure: If True with belief_first mode, extract the reference ad's
+            template structure and adapt the belief statement to match it. Creates headlines
+            that follow the template's style while communicating the belief.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3063,7 +3133,8 @@ async def complete_ad_workflow(
             raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
 
         # Validate content_source
-        valid_content_sources = ["hooks", "recreate_template"]
+        # 'plan' and 'angles' are belief-first variants from the scheduler
+        valid_content_sources = ["hooks", "recreate_template", "belief_first", "plan", "angles"]
         if content_source not in valid_content_sources:
             raise ValueError(f"content_source must be one of {valid_content_sources}, got {content_source}")
 
@@ -3209,7 +3280,7 @@ async def complete_ad_workflow(
                 active_only=True
             )
         else:
-            logger.info("Stage 3: Skipping hooks (using recreate_template mode)")
+            logger.info(f"Stage 3: Skipping hooks (using {content_source} mode)")
 
         # STAGE 4: Get ad brief template
         logger.info("Stage 4: Fetching ad brief template...")
@@ -3265,7 +3336,7 @@ async def complete_ad_workflow(
                 count=num_variations,
                 persona_data=persona_data
             )
-        else:
+        elif content_source == "recreate_template":
             # Recreate template flow
             if not used_cache:
                 # Stage 6a only needed if we didn't get from cache
@@ -3296,6 +3367,60 @@ async def complete_ad_workflow(
                 count=num_variations,
                 persona_data=persona_data
             )
+
+        elif content_source in ["belief_first", "plan", "angles"]:
+            # Belief-first mode: use provided angle's belief statement
+            # 'plan' and 'angles' are scheduler variants that work the same way
+            if not angle_data:
+                raise ValueError(f"angle_data is required for {content_source} content source")
+
+            logger.info(f"Stage 6: Using belief-first mode with angle: {angle_data.get('name', 'Unknown')}")
+            logger.info(f"  Belief: {angle_data.get('belief_statement', '')[:100]}...")
+
+            # If match_template_structure is True, extract template and adapt beliefs
+            template_angle = None
+            if match_template_structure:
+                logger.info("  → Match template structure enabled - extracting template...")
+                template_angle = await extract_template_angle(
+                    ctx=ctx,
+                    reference_ad_storage_path=reference_ad_path,
+                    ad_analysis=ad_analysis
+                )
+                logger.info(f"  Template type: {template_angle.get('angle_type', 'unknown')}")
+                logger.info(f"  Template pattern: {template_angle.get('messaging_template', '')[:80]}...")
+
+            # Generate variations using the angle's belief statement
+            # Create hook-like structures from the angle data for each variation
+            selected_hooks = []
+            belief_text = angle_data.get("belief_statement", "")
+
+            for i in range(num_variations):
+                # If we have a template, adapt the belief to fit it
+                if template_angle and match_template_structure:
+                    logger.info(f"  Adapting belief to template (variation {i + 1})...")
+                    adapted_text = await adapt_belief_to_template(
+                        belief_statement=belief_text,
+                        template_angle=template_angle,
+                        product=product_dict,
+                        variation_number=i + 1
+                    )
+                    logger.info(f"    → {adapted_text[:60]}...")
+                    content_type = "belief_angle_templated"
+                else:
+                    adapted_text = belief_text
+                    content_type = "belief_angle"
+
+                selected_hooks.append({
+                    "hook_id": angle_data.get("id", ""),
+                    "hook_text": belief_text,
+                    "adapted_text": adapted_text,
+                    "angle_name": angle_data.get("name", ""),
+                    "explanation": angle_data.get("explanation", ""),
+                    "variation_number": i + 1,
+                    "content_type": content_type
+                })
+
+            logger.info(f"Created {len(selected_hooks)} belief-based variations")
 
         # Save selected hooks/variations to database
         await ctx.deps.ad_creation.update_ad_run(
@@ -3538,11 +3663,11 @@ async def complete_ad_workflow(
                        f"Gemini={gemini_review.get('status')}, Final={final_status}")
 
             # Determine hook_id - None for benefit variations (recreate_template mode)
-            # because they don't reference actual hooks in the database
+            # and for belief_first mode because they don't reference actual hooks in the database
             if content_source == "hooks":
                 hook_id = UUID(selected_hook['hook_id'])
             else:
-                hook_id = None  # Benefit-based variations don't have real hook_ids
+                hook_id = None  # Benefit-based and belief-first variations don't have real hook_ids
 
             # Update database with reviews and model metadata
             await ctx.deps.ad_creation.save_generated_ad(
@@ -3586,7 +3711,12 @@ async def complete_ad_workflow(
         review_failed_count = sum(1 for ad in generated_ads_with_reviews if ad['final_status'] == 'review_failed')
 
         # Build summary
-        content_source_label = "hooks" if content_source == "hooks" else "template recreation (benefits/USPs)"
+        content_source_labels = {
+            "hooks": "hooks",
+            "recreate_template": "template recreation (benefits/USPs)",
+            "belief_first": f"belief-first angle: {angle_data.get('name', 'Unknown') if angle_data else 'Unknown'}"
+        }
+        content_source_label = content_source_labels.get(content_source, content_source)
         summary = f"""
 Ad creation workflow completed for {product_dict.get('name')}.
 

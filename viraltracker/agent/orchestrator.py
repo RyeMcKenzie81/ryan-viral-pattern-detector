@@ -27,9 +27,11 @@ from .agents import (
 
 logger = logging.getLogger(__name__)
 
+from ..core.config import Config
+
 # Create orchestrator agent
 orchestrator = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model=Config.get_model("orchestrator"),
     deps_type=AgentDependencies,
     system_prompt="""You are the Orchestrator Agent for the ViralTracker system.
 

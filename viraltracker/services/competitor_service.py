@@ -17,10 +17,45 @@ from typing import List, Dict, Optional, Any, Tuple
 from uuid import UUID
 from datetime import datetime
 
+from pydantic import BaseModel, Field
 from supabase import Client
 from ..core.database import get_supabase_client
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
+
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Pydantic Models for Structured Amazon Review Analysis
+# ============================================================================
+
+class ReviewQuote(BaseModel):
+    """A quote from a review with context."""
+    quote: str = Field(description="Exact verbatim quote from the review")
+    author: str = Field(default="Anonymous", description="Author name if available")
+    rating: int = Field(default=0, description="Star rating 1-5")
+    context: str = Field(description="What this quote reveals about the customer")
+
+
+class AnalysisTheme(BaseModel):
+    """A theme identified in the reviews."""
+    theme: str = Field(description="Descriptive name for this theme")
+    score: float = Field(description="Importance score 1-10 based on frequency and intensity")
+    quotes: List[ReviewQuote] = Field(default_factory=list, description="3-5 supporting quotes")
+
+
+class AmazonReviewAnalysis(BaseModel):
+    """Structured analysis of Amazon reviews."""
+    pain_points: List[AnalysisTheme] = Field(default_factory=list, description="Life frustrations BEFORE using product")
+    jobs_to_be_done: List[AnalysisTheme] = Field(default_factory=list, description="What customers are trying to accomplish")
+    product_issues: List[AnalysisTheme] = Field(default_factory=list, description="Problems WITH this specific product")
+    desired_outcomes: List[AnalysisTheme] = Field(default_factory=list, description="What customers want to achieve")
+    buying_objections: List[AnalysisTheme] = Field(default_factory=list, description="Reasons for hesitation before purchase")
+    desired_features: List[AnalysisTheme] = Field(default_factory=list, description="Features customers wish existed")
+    failed_solutions: List[AnalysisTheme] = Field(default_factory=list, description="Other products/solutions that failed them")
 
 
 def _generate_slug(name: str) -> str:
@@ -1416,7 +1451,7 @@ class CompetitorService:
             Analysis data dict or None if failed
         """
         from datetime import datetime
-        from anthropic import Anthropic
+
 
         try:
             # Get landing page content
@@ -1431,8 +1466,7 @@ class CompetitorService:
             page = result.data[0]
             content = page["scraped_content"]
 
-            # Analyze with Claude
-            anthropic = Anthropic()
+            # Analyze with Pydantic AI Agent
             prompt = f"""Analyze this competitor landing page content and extract key marketing elements.
 
 URL: {page['url']}
@@ -1459,13 +1493,13 @@ Extract and return JSON with:
 
 Return ONLY valid JSON."""
 
-            message = anthropic.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
+            agent = Agent(
+                model=Config.get_model("basic"),
+                system_prompt="You are a marketing analysis expert. Return ONLY valid JSON."
             )
-
-            response_text = message.content[0].text
+            
+            result = await agent.run(prompt)
+            response_text = result.output
 
             # Parse response
             import json
@@ -1801,7 +1835,7 @@ Return ONLY valid JSON."""
             13-layer analysis dict or None if failed
         """
         import re
-        from anthropic import Anthropic
+
 
         # Import the prompt from brand_research_service
         from .brand_research_service import BELIEF_FIRST_ANALYSIS_PROMPT
@@ -1841,15 +1875,14 @@ Return ONLY valid JSON."""
                 content=content
             )
 
-            # Call Claude Opus 4.5
-            client = Anthropic()
-            response = client.messages.create(
-                model="claude-opus-4-5-20251101",
-                max_tokens=8000,
-                messages=[{"role": "user", "content": prompt}]
+            # Call Pydantic AI Agent (Complex assumption)
+            agent = Agent(
+                model=Config.get_model("complex"),
+                system_prompt="You are an expert market analyst. Return ONLY valid JSON."
             )
-
-            response_text = response.content[0].text
+            
+            result = await agent.run(prompt)
+            response_text = result.output
 
             # Parse JSON response
             json_match = re.search(r'\{[\s\S]*\}', response_text)
@@ -2391,8 +2424,10 @@ Return ONLY valid JSON."""
                     "verified_purchase": review.get("verified", False),
                     "helpful_votes": review.get("numberOfHelpful", 0) or 0,
                 }
-                # Note: competitor_product_id column doesn't exist in table yet
-                # TODO: Add migration for competitor_product_id column
+
+                # Link to competitor product if available
+                if competitor_product_id:
+                    record["competitor_product_id"] = str(competitor_product_id)
 
                 records.append(record)
 
@@ -2430,7 +2465,7 @@ Return ONLY valid JSON."""
         Returns:
             Dict with analysis results including themed testimonials
         """
-        import anthropic
+
         import json
 
         # Get reviews
@@ -2441,7 +2476,8 @@ Return ONLY valid JSON."""
         if competitor_product_id:
             query = query.eq("competitor_product_id", str(competitor_product_id))
 
-        result = query.order("helpful_votes", desc=True).limit(500).execute()
+        # Limit to 200 most helpful reviews for reliable analysis
+        result = query.order("helpful_votes", desc=True).limit(200).execute()
         reviews = result.data or []
 
         if not reviews:
@@ -2473,34 +2509,29 @@ Return ONLY valid JSON."""
             review_count=len(reviews)
         )
 
-        # Call Claude
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}]
+        # Call Pydantic AI Agent with structured output (guarantees valid JSON)
+        agent = Agent(
+            model=Config.get_model("default"),
+            system_prompt="You are an expert at extracting customer insights from Amazon reviews. Analyze the reviews and extract themes with supporting quotes.",
+            output_type=AmazonReviewAnalysis
         )
 
-        response_text = response.content[0].text
-
-        # Parse JSON response
         try:
-            # Extract JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                analysis = json.loads(json_match.group())
-            else:
-                raise ValueError("No JSON found in response")
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse analysis response: {e}")
-            return {"error": f"Failed to parse analysis: {e}"}
+            result = await agent.run(prompt)
+            # result.output is now a validated AmazonReviewAnalysis object
+            analysis = result.output.model_dump()
+            logger.info(f"Successfully analyzed reviews with {len(analysis.get('pain_points', []))} pain point themes")
+        except Exception as e:
+            logger.error(f"Analysis failed: {e}")
+            return {"error": f"Failed to analyze reviews: {e}"}
 
         # Save analysis to database
         self._save_competitor_amazon_analysis(
             competitor_id=competitor_id,
             competitor_product_id=competitor_product_id,
             analysis=analysis,
-            reviews_count=len(reviews)
+            reviews_count=len(reviews),
+            model_used=Config.get_model("default")
         )
 
         return analysis
@@ -2684,7 +2715,8 @@ Return ONLY the JSON object, no other text."""
         competitor_id: UUID,
         competitor_product_id: Optional[UUID],
         analysis: Dict[str, Any],
-        reviews_count: int
+        reviews_count: int,
+        model_used: str = "claude-sonnet-4-20250514"
     ) -> None:
         """Save the rich analysis to competitor_amazon_review_analysis table."""
         try:
@@ -2715,7 +2747,7 @@ Return ONLY the JSON object, no other text."""
                 "objections": {"themes": analysis.get("buying_objections", [])},
                 "language_patterns": {"themes": analysis.get("desired_features", [])},
                 "transformation": {"themes": analysis.get("failed_solutions", [])},
-                "model_used": "claude-sonnet-4-20250514",
+                "model_used": model_used,
                 "analyzed_at": datetime.utcnow().isoformat()
             }
 

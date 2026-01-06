@@ -55,6 +55,51 @@ def get_persona_service():
     return PersonaService()
 
 
+def get_angle_candidate_service():
+    """Get AngleCandidateService instance."""
+    from viraltracker.services.angle_candidate_service import AngleCandidateService
+    return AngleCandidateService()
+
+
+def extract_brand_research_candidates(
+    brand_id: str,
+    product_id: str,
+    sources: List[str]
+) -> Dict[str, Any]:
+    """Extract angle candidates from brand research data.
+
+    Args:
+        brand_id: Brand UUID
+        product_id: Product UUID to link candidates to
+        sources: List of sources to extract from ['amazon', 'landing_pages']
+
+    Returns:
+        Dict with {total_created: int, total_updated: int, by_source: dict}
+    """
+    service = get_angle_candidate_service()
+    stats = {"total_created": 0, "total_updated": 0, "by_source": {}}
+
+    if 'amazon' in sources:
+        result = service.extract_from_brand_amazon_reviews(
+            product_id=UUID(product_id),
+            brand_id=UUID(brand_id)
+        )
+        stats["total_created"] += result.get("created", 0)
+        stats["total_updated"] += result.get("updated", 0)
+        stats["by_source"]["amazon"] = result
+
+    if 'landing_pages' in sources:
+        result = service.extract_from_brand_landing_pages(
+            brand_id=UUID(brand_id),
+            product_id=UUID(product_id)
+        )
+        stats["total_created"] += result.get("created", 0)
+        stats["total_updated"] += result.get("updated", 0)
+        stats["by_source"]["landing_pages"] = result
+
+    return stats
+
+
 def get_brands():
     """Fetch all brands."""
     try:
@@ -1226,9 +1271,93 @@ def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None
             st.error(f"Failed to load analysis: {e}")
 
 
+def render_angle_extraction_section(brand_id: str, product_id: Optional[str] = None):
+    """Render angle pipeline extraction section."""
+    st.subheader("5. Extract to Angle Pipeline")
+    st.markdown("Create angle candidates from your research for ad testing.")
+
+    # Get stats to determine what sources are available
+    analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
+    bf_stats = get_belief_first_stats(brand_id, product_id)
+
+    has_amazon = analysis_stats.get("amazon_reviews", 0) > 0
+    has_landing_pages = bf_stats.get("analyzed", 0) > 0
+
+    if not has_amazon and not has_landing_pages:
+        st.info("Analyze Amazon reviews or landing pages first to extract angle candidates.")
+        return
+
+    # Need a product to link candidates to
+    if not product_id:
+        products = get_products_for_brand(brand_id)
+        if not products:
+            st.warning("Create a product first to extract angle candidates.")
+            return
+
+        product_options = {p["name"]: p["id"] for p in products}
+        selected_product = st.selectbox(
+            "Link Candidates to Product",
+            options=list(product_options.keys()),
+            key="brand_extract_product",
+            help="Candidates will be linked to this product for angle testing"
+        )
+        product_id = product_options[selected_product]
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("**Select Sources:**")
+        sources_to_extract = []
+        if has_amazon:
+            if st.checkbox("Amazon Review Themes", value=True, key="brand_extract_amazon"):
+                sources_to_extract.append("amazon")
+        if has_landing_pages:
+            if st.checkbox("Landing Page Insights", value=True, key="brand_extract_landing"):
+                sources_to_extract.append("landing_pages")
+
+    with col2:
+        st.markdown("**Available:**")
+        available = []
+        if has_amazon:
+            available.append(f"{analysis_stats.get('amazon_reviews', 0)} Amazon reviews")
+        if has_landing_pages:
+            available.append(f"{bf_stats.get('analyzed', 0)} landing pages")
+        st.caption("\n".join(available))
+
+    if sources_to_extract:
+        if st.button("Extract to Angle Pipeline", type="primary", key="brand_extract_btn"):
+            with st.spinner("Extracting candidates..."):
+                try:
+                    stats = extract_brand_research_candidates(
+                        brand_id=brand_id,
+                        product_id=product_id,
+                        sources=sources_to_extract
+                    )
+
+                    if stats["total_created"] > 0 or stats["total_updated"] > 0:
+                        st.success(
+                            f"Extraction complete! Created {stats['total_created']} new candidates, "
+                            f"updated {stats['total_updated']} existing."
+                        )
+
+                        # Show breakdown by source
+                        for source, result in stats["by_source"].items():
+                            st.caption(
+                                f"  {source}: {result.get('created', 0)} created, "
+                                f"{result.get('updated', 0)} updated"
+                            )
+                    else:
+                        st.info("No new candidates created. Data may already exist as candidates.")
+
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+    else:
+        st.info("Select at least one source to extract.")
+
+
 def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
     """Render persona synthesis section."""
-    st.subheader("5. Synthesize Personas")
+    st.subheader("6. Synthesize Personas")
     st.markdown("Aggregate all analyses to detect customer segments and generate 4D personas.")
 
     analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
@@ -1708,6 +1837,11 @@ else:
 
         # Amazon review analysis section
         render_amazon_review_section(selected_brand_id, selected_product_id)
+
+        st.divider()
+
+        # Angle pipeline extraction section
+        render_angle_extraction_section(selected_brand_id, selected_product_id)
 
         st.divider()
 

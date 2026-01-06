@@ -21,7 +21,9 @@ from typing import List, Dict, Optional, Any, Tuple
 from uuid import UUID
 from datetime import datetime
 
-import anthropic
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -81,14 +83,7 @@ class RedditSentimentService:
         """
         self.apify = apify_service or ApifyService()
         self.supabase: Client = get_supabase_client()
-
-        # Initialize Anthropic client
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set - LLM operations will fail")
-            self.anthropic = None
-        else:
-            self.anthropic = anthropic.Anthropic(api_key=api_key)
+        logger.info("RedditSentimentService initialized")
 
         logger.info("RedditSentimentService initialized")
 
@@ -262,6 +257,98 @@ class RedditSentimentService:
         logger.info(f"Recovered {len(posts)} posts and {len(comments)} comments from Apify run {apify_run_id}")
         return posts, comments
 
+    def scrape_by_urls(
+        self,
+        urls: List[str],
+        scrape_comments: bool = True,
+        max_comments_per_post: int = 50,
+        timeout: int = 600
+    ) -> Tuple[List[RedditPost], List[RedditComment]]:
+        """
+        Scrape specific Reddit posts by URL.
+
+        Uses the Apify actor's URL mode to fetch posts and optionally their comments.
+        This is more efficient for two-pass scraping where we've already filtered posts.
+
+        Args:
+            urls: List of Reddit post URLs to scrape
+            scrape_comments: Whether to scrape comments (default True)
+            max_comments_per_post: Max comments per post (default 50)
+            timeout: Apify timeout in seconds
+
+        Returns:
+            Tuple of (posts, comments)
+
+        Example:
+            >>> urls = ["https://reddit.com/r/nutrition/comments/xyz123/..."]
+            >>> posts, comments = service.scrape_by_urls(urls, scrape_comments=True)
+        """
+        if not urls:
+            logger.warning("No URLs provided for scraping")
+            return [], []
+
+        logger.info(f"Scraping {len(urls)} Reddit URLs with comments={scrape_comments}")
+
+        run_input = {
+            "urls": urls,
+            "scrapeComments": scrape_comments,
+            "maxComments": max_comments_per_post,
+        }
+
+        result = self.apify.run_actor(
+            actor_id=REDDIT_SCRAPER_ACTOR,
+            run_input=run_input,
+            timeout=timeout
+        )
+
+        posts = []
+        comments = []
+
+        for item in result.items:
+            if item.get("kind") == "post":
+                created_utc = None
+                if item.get("created_utc"):
+                    if isinstance(item["created_utc"], str):
+                        created_utc = datetime.fromisoformat(
+                            item["created_utc"].replace("Z", "+00:00")
+                        )
+                    else:
+                        created_utc = datetime.fromtimestamp(item["created_utc"])
+
+                posts.append(RedditPost(
+                    reddit_id=item.get("id", ""),
+                    subreddit=item.get("subreddit", ""),
+                    title=item.get("title", ""),
+                    body=item.get("body") or item.get("selftext"),
+                    author=item.get("author"),
+                    url=item.get("url"),
+                    score=item.get("score", 0),
+                    upvote_ratio=item.get("upvote_ratio", 0.0),
+                    num_comments=item.get("num_comments", 0),
+                    created_utc=created_utc,
+                ))
+            elif item.get("kind") == "comment":
+                created_utc = None
+                if item.get("created_utc"):
+                    if isinstance(item["created_utc"], str):
+                        created_utc = datetime.fromisoformat(
+                            item["created_utc"].replace("Z", "+00:00")
+                        )
+                    else:
+                        created_utc = datetime.fromtimestamp(item["created_utc"])
+
+                comments.append(RedditComment(
+                    reddit_id=item.get("id", ""),
+                    parent_id=item.get("postId"),
+                    body=item.get("body", ""),
+                    author=item.get("author"),
+                    score=item.get("score", 0),
+                    created_utc=created_utc,
+                ))
+
+        logger.info(f"Scraped {len(posts)} posts and {len(comments)} comments from {len(urls)} URLs")
+        return posts, comments
+
     # =========================================================================
     # FILTERING (Deterministic)
     # =========================================================================
@@ -316,26 +403,25 @@ class RedditSentimentService:
         Returns:
             Posts with relevance scores above threshold
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return []
 
         logger.info(f"Scoring relevance for {len(posts)} posts")
         results = []
 
+        # Pydantic AI Agent (Reddit/Basic)
+        agent = Agent(
+            model=Config.get_model("reddit"),
+            system_prompt="You are an expert content filter."
+        )
+
         # Process in batches of 10 for efficiency
         for batch in self._batch(posts, 10):
             prompt = self._build_relevance_prompt(batch, persona_context, topic_context)
 
-            response = self.anthropic.messages.create(
-                model=FAST_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            result = agent.run_sync(prompt)
 
-            scores = self._parse_batch_scores(response.content[0].text, len(batch))
+            scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
                 score = score_data.get("score", 0.0)
@@ -371,25 +457,25 @@ class RedditSentimentService:
         Returns:
             High-signal posts only
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return []
 
         logger.info(f"Filtering signal for {len(posts)} posts")
         results = []
 
+        # Pydantic AI Agent (Reddit/Basic)
+        agent = Agent(
+            model=Config.get_model("reddit"),
+            system_prompt="You are an expert content filter."
+        )
+
         for batch in self._batch(posts, 10):
             prompt = self._build_signal_prompt(batch)
 
-            response = self.anthropic.messages.create(
-                model=FAST_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            scores = self._parse_batch_scores(response.content[0].text, len(batch))
+            result = await agent.run(prompt)
+            
+            # Using result.output instead of response.content
+            scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
                 score = score_data.get("score", 0.0)
@@ -424,24 +510,22 @@ class RedditSentimentService:
         Returns:
             All posts with intent scores added
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return []
 
         logger.info(f"Scoring buyer intent for {len(posts)} posts")
 
+        # Pydantic AI Agent (Reddit/Basic)
+        agent = Agent(
+            model=Config.get_model("reddit"),
+            system_prompt="You are an expert intent analyst."
+        )
+
         for batch in self._batch(posts, 10):
             prompt = self._build_intent_prompt(batch)
 
-            response = self.anthropic.messages.create(
-                model=FAST_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            scores = self._parse_batch_scores(response.content[0].text, len(batch))
+            result = await agent.run(prompt)
+            scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
                 post.intent_score = score_data.get("score", 0.0)
@@ -515,9 +599,6 @@ class RedditSentimentService:
         Returns:
             Dict mapping category to list of extracted quotes
         """
-        if not self.anthropic:
-            raise ValueError("Anthropic client not initialized - check API key")
-
         if not posts:
             return {cat: [] for cat in SentimentCategory}
 
@@ -527,17 +608,19 @@ class RedditSentimentService:
             cat: [] for cat in SentimentCategory
         }
 
+        # Pydantic AI Agent (Complex/Opus)
+        agent = Agent(
+            model=Config.get_model("complex"),
+            system_prompt="You are an expert sentiment analyst. Return ONLY valid JSON."
+        )
+
         # Process in smaller batches for deeper analysis
         for batch in self._batch(posts, 5):
             prompt = self._build_extraction_prompt(batch, brand_context, product_context)
 
-            response = self.anthropic.messages.create(
-                model=DEEP_MODEL,
-                max_tokens=4000,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            result = await agent.run(prompt)
 
-            extracted = self._parse_extraction_response(response.content[0].text, batch)
+            extracted = self._parse_extraction_response(result.output, batch)
 
             for category, quotes in extracted.items():
                 all_quotes[category].extend(quotes)
@@ -1091,3 +1174,369 @@ Extract only genuine, insightful quotes - quality over quantity."""
         llm_cost = sonnet_cost + opus_cost
 
         return apify_cost, llm_cost
+
+    # =========================================================================
+    # BELIEF EXTRACTION METHODS
+    # =========================================================================
+
+    async def extract_belief_signals(
+        self,
+        posts: List[RedditPost],
+        signal_types: Optional[List[str]] = None,
+        topic_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract belief-relevant signals from Reddit posts for the belief pipeline.
+
+        This is specifically designed for the belief_first_reverse_engineer pipeline
+        to populate Research Canvas sections 1-9.
+
+        Args:
+            posts: List of RedditPost objects to analyze
+            signal_types: Types of signals to extract:
+                - "pain": Pain points and symptoms
+                - "solutions": Solutions attempted and outcomes
+                - "patterns": Pattern detection (triggers, improves, etc.)
+                - "language": Customer terminology
+                - "jtbd": JTBD candidates
+            topic_context: Context about the topic/product
+
+        Returns:
+            Dict with extracted signals structured for RedditResearchBundle:
+            {
+                "posts_analyzed_count": int,
+                "comments_analyzed_count": int,
+                "extracted_pain": [...],
+                "extracted_solutions_attempted": [...],
+                "pattern_detection": {...},
+                "extracted_language_bank": {...},
+                "jtbd_candidates": {...},
+                "hypothesis_support_scores": [...]
+            }
+        """
+        if signal_types is None:
+            signal_types = ["pain", "solutions", "patterns", "language", "jtbd"]
+
+        result = {
+            "posts_analyzed_count": len(posts),
+            "comments_analyzed_count": 0,
+            "extracted_pain": [],
+            "extracted_solutions_attempted": [],
+            "pattern_detection": {
+                "triggers": [],
+                "worsens": [],
+                "improves": [],
+                "helps": [],
+                "fails": [],
+            },
+            "extracted_language_bank": {},
+            "jtbd_candidates": {
+                "functional": [],
+                "emotional": [],
+                "identity": [],
+            },
+            "hypothesis_support_scores": [],
+        }
+
+        if not posts:
+            return result
+
+        # Process in batches
+        batch_size = 5
+        for batch in self._batch(posts, batch_size):
+            try:
+                batch_result = await self._extract_belief_signals_batch(
+                    batch, signal_types, topic_context
+                )
+                self._merge_belief_signals(result, batch_result)
+            except Exception as e:
+                logger.warning(f"Failed to extract belief signals from batch: {e}")
+
+        return result
+
+    async def _extract_belief_signals_batch(
+        self,
+        posts: List[RedditPost],
+        signal_types: List[str],
+        topic_context: Optional[str],
+    ) -> Dict[str, Any]:
+        """Extract belief signals from a batch of posts using LLM."""
+        prompt = self._build_belief_extraction_prompt(posts, signal_types, topic_context)
+
+        # Use Opus for deep extraction
+        agent = Agent(
+            DEEP_MODEL,
+            system_prompt="You are an expert at extracting belief-relevant signals from Reddit discussions for marketing research."
+        )
+
+        response = await agent.run(prompt)
+
+        # Parse the response - use response.output for pydantic-ai
+        logger.info(f"Belief extraction LLM response received, parsing...")
+        return self._parse_belief_extraction_response(response.output)
+
+    def _build_belief_extraction_prompt(
+        self,
+        posts: List[RedditPost],
+        signal_types: List[str],
+        topic_context: Optional[str],
+    ) -> str:
+        """Build prompt for belief signal extraction."""
+        # Handle both dict and RedditPost objects
+        posts_json = []
+        for i, p in enumerate(posts):
+            if isinstance(p, dict):
+                title = p.get("title", "")
+                body = p.get("body") or p.get("selftext") or ""
+                subreddit = p.get("subreddit", "")
+                comments = p.get("comments", [])
+            else:
+                title = p.title
+                body = p.body or ""
+                subreddit = p.subreddit
+                comments = []
+
+            # Include comments in the body for richer extraction
+            comment_text = ""
+            if comments:
+                comment_bodies = []
+                for c in comments[:10]:  # Top 10 comments
+                    c_body = c.get("body", "") if isinstance(c, dict) else (c.body if hasattr(c, 'body') else "")
+                    if c_body:
+                        comment_bodies.append(c_body)
+                if comment_bodies:
+                    comment_text = "\n\nTOP COMMENTS:\n" + "\n---\n".join(comment_bodies[:10])
+
+            posts_json.append({
+                "index": i,
+                "title": title,
+                "body": (body[:1200] if body else "") + (comment_text[:800] if comment_text else ""),
+                "subreddit": subreddit,
+            })
+
+        signal_instructions = []
+
+        if "pain" in signal_types:
+            signal_instructions.append("""
+1. **Pain Signals**: Extract specific symptoms, frustrations, complaints
+   - Physical symptoms with specificity ("every morning I wake up with...")
+   - Emotional frustrations ("I'm so tired of...")
+   - Behavioral workarounds ("I have to...")""")
+
+        if "solutions" in signal_types:
+            signal_instructions.append("""
+2. **Solutions Attempted**: What they've tried and outcomes
+   - What worked briefly ("X helped at first but...")
+   - What stopped working ("used to work, now...")
+   - What never worked ("tried X, complete waste")
+   - Why they think it failed ("I think it didn't work because...")""")
+
+        if "patterns" in signal_types:
+            signal_instructions.append("""
+3. **Pattern Signals**: Recurring sequences and correlations
+   - Triggers: What makes it worse ("every time I...", "whenever...")
+   - Improvers: What helps temporarily ("the only thing that helps...")
+   - Timing patterns ("worse in the morning", "after eating...")""")
+
+        if "language" in signal_types:
+            signal_instructions.append("""
+4. **Language Bank**: Customer terminology
+   - How they describe the problem (their exact words)
+   - Metaphors they use ("feels like...", "it's like...")
+   - Emotional intensity words""")
+
+        if "jtbd" in signal_types:
+            signal_instructions.append("""
+5. **JTBD Candidates**: Desired progress
+   - Functional: What they want to accomplish ("I just want to...")
+   - Emotional: How they want to feel ("I want to feel...")
+   - Identity: Who they want to become ("I want to be someone who...")""")
+
+        return f"""CONTEXT:
+{f"Topic: {topic_context}" if topic_context else "General market research"}
+
+TASK:
+Analyze these Reddit posts and extract belief-relevant signals for marketing research.
+
+WHAT TO EXTRACT:
+{''.join(signal_instructions)}
+
+POSTS TO ANALYZE:
+{json.dumps(posts_json, indent=2)}
+
+RETURN JSON:
+{{
+    "extracted_pain": [
+        {{"signal": "exact quote or paraphrase", "signal_type": "physical|emotional|behavioral", "post_index": 0, "confidence": 0.9}}
+    ],
+    "extracted_solutions_attempted": [
+        {{"signal": "what they tried", "outcome": "worked_briefly|stopped_working|never_worked", "why_failed": "their explanation", "post_index": 0}}
+    ],
+    "pattern_detection": {{
+        "triggers": ["trigger 1", "trigger 2"],
+        "worsens": ["factor 1"],
+        "improves": ["factor 1"],
+        "helps": ["thing 1"],
+        "fails": ["thing 1"]
+    }},
+    "extracted_language_bank": {{
+        "symptom_name": ["phrase 1", "phrase 2"]
+    }},
+    "jtbd_candidates": {{
+        "functional": ["want 1"],
+        "emotional": ["feeling 1"],
+        "identity": ["become 1"]
+    }}
+}}
+
+Focus on SPECIFIC, ACTIONABLE insights - not generic observations."""
+
+    def _parse_belief_extraction_response(
+        self,
+        response_text: str
+    ) -> Dict[str, Any]:
+        """Parse belief extraction LLM response."""
+        try:
+            if not response_text:
+                logger.warning("Belief extraction response is empty")
+                return self._empty_belief_response()
+
+            text = response_text.strip()
+
+            # Handle markdown code blocks
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+
+            result = json.loads(text)
+
+            # Log what was extracted
+            pain_count = len(result.get("extracted_pain", []))
+            solution_count = len(result.get("extracted_solutions_attempted", []))
+            pattern_count = sum(len(v) for v in result.get("pattern_detection", {}).values() if isinstance(v, list))
+            jtbd_count = sum(len(v) for v in result.get("jtbd_candidates", {}).values() if isinstance(v, list))
+
+            logger.info(
+                f"Belief extraction parsed: {pain_count} pain signals, "
+                f"{solution_count} solutions, {pattern_count} patterns, {jtbd_count} JTBD"
+            )
+
+            return result
+
+        except (json.JSONDecodeError, IndexError) as e:
+            logger.warning(f"Failed to parse belief extraction response: {e}")
+            logger.debug(f"Response text (first 500 chars): {response_text[:500] if response_text else 'None'}")
+            return self._empty_belief_response()
+
+    def _empty_belief_response(self) -> Dict[str, Any]:
+        """Return empty belief extraction response."""
+        return {
+            "extracted_pain": [],
+            "extracted_solutions_attempted": [],
+            "pattern_detection": {},
+            "extracted_language_bank": {},
+            "jtbd_candidates": {},
+        }
+
+    def _merge_belief_signals(
+        self,
+        result: Dict[str, Any],
+        batch_result: Dict[str, Any]
+    ) -> None:
+        """Merge batch results into main result dict."""
+        # Merge pain signals
+        result["extracted_pain"].extend(
+            batch_result.get("extracted_pain", [])
+        )
+
+        # Merge solutions
+        result["extracted_solutions_attempted"].extend(
+            batch_result.get("extracted_solutions_attempted", [])
+        )
+
+        # Merge patterns
+        batch_patterns = batch_result.get("pattern_detection", {})
+        for key in ["triggers", "worsens", "improves", "helps", "fails"]:
+            result["pattern_detection"][key].extend(
+                batch_patterns.get(key, [])
+            )
+
+        # Merge language bank
+        batch_language = batch_result.get("extracted_language_bank", {})
+        for symptom, phrases in batch_language.items():
+            if symptom not in result["extracted_language_bank"]:
+                result["extracted_language_bank"][symptom] = []
+            result["extracted_language_bank"][symptom].extend(phrases)
+
+        # Merge JTBD
+        batch_jtbd = batch_result.get("jtbd_candidates", {})
+        for category in ["functional", "emotional", "identity"]:
+            result["jtbd_candidates"][category].extend(
+                batch_jtbd.get(category, [])
+            )
+
+    async def search_for_belief_signals(
+        self,
+        subreddits: List[str],
+        search_queries: List[str],
+        signal_types: Optional[List[str]] = None,
+        limit: int = 50,
+        topic_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Combined scrape + extract method for belief pipeline.
+
+        Convenience method that:
+        1. Scrapes Reddit using provided queries/subreddits
+        2. Filters by engagement
+        3. Extracts belief signals
+
+        Args:
+            subreddits: List of subreddits to search
+            search_queries: Search terms
+            signal_types: Types of signals to extract
+            limit: Max posts to analyze
+            topic_context: Context about the topic
+
+        Returns:
+            RedditResearchBundle-compatible dict with all signals
+        """
+        # Build scrape config
+        config = RedditScrapeConfig(
+            search_queries=search_queries,
+            subreddits=subreddits,
+            max_posts=limit * 2,  # Get extra, filter down
+            timeframe="year",
+            min_upvotes=5,
+            min_comments=2,
+            scrape_comments=False,  # Just posts for speed
+        )
+
+        # Scrape
+        posts, _ = self.scrape_reddit(config)
+        logger.info(f"Scraped {len(posts)} posts from Reddit")
+
+        # Filter by engagement
+        filtered = self.filter_by_engagement(posts, min_upvotes=5, min_comments=2)
+        logger.info(f"Filtered to {len(filtered)} posts by engagement")
+
+        # Limit
+        if len(filtered) > limit:
+            filtered = filtered[:limit]
+
+        # Extract belief signals
+        result = await self.extract_belief_signals(
+            filtered,
+            signal_types=signal_types,
+            topic_context=topic_context,
+        )
+
+        # Add query metadata
+        result["queries_run"] = [
+            {"subreddit": sub, "search_term": query}
+            for sub in subreddits
+            for query in search_queries
+        ]
+
+        return result

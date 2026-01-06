@@ -20,12 +20,13 @@ Part of the Market Research Pipeline.
 
 import logging
 from dataclasses import dataclass
-from typing import List, Union
+from typing import ClassVar, List, Union
 from uuid import UUID
 from datetime import datetime
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from .metadata import NodeMetadata
 from .states import RedditSentimentState
 from ..agent.dependencies import AgentDependencies
 
@@ -40,6 +41,13 @@ class ScrapeRedditNode(BaseNode[RedditSentimentState]):
     Uses RedditSentimentService to scrape posts from Reddit
     using the fatihtahta/reddit-scraper-search-fast actor.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["search_queries", "subreddits", "timeframe", "max_posts", "brand_id", "product_id", "persona_id"],
+        outputs=["scraped_posts", "scraped_comments", "posts_scraped", "run_id", "apify_cost", "llm_cost_estimate"],
+        services=["reddit_sentiment.create_run", "reddit_sentiment.update_run_status",
+                  "reddit_sentiment.scrape_reddit", "reddit_sentiment.estimate_cost"],
+    )
 
     async def run(
         self,
@@ -128,6 +136,12 @@ class EngagementFilterNode(BaseNode[RedditSentimentState]):
     Deterministic filter based on upvotes and comment count.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["scraped_posts", "min_upvotes", "min_comments"],
+        outputs=["engagement_filtered", "posts_after_engagement"],
+        services=["reddit_sentiment.filter_by_engagement", "reddit_sentiment.update_run_status"],
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[RedditSentimentState, AgentDependencies]
@@ -193,6 +207,14 @@ class RelevanceFilterNode(BaseNode[RedditSentimentState]):
     LLM-based scoring for persona and topic relevance.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["engagement_filtered", "persona_context", "topic_context", "relevance_threshold"],
+        outputs=["relevance_filtered", "posts_after_relevance"],
+        services=["reddit_sentiment.score_relevance", "reddit_sentiment.update_run_status"],
+        llm="Claude Sonnet",
+        llm_purpose="Score posts for persona and topic relevance",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[RedditSentimentState, AgentDependencies]
@@ -256,6 +278,14 @@ class SignalFilterNode(BaseNode[RedditSentimentState]):
     Removes jokes, spam, off-topic tangents, and low-effort posts.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["relevance_filtered", "signal_threshold"],
+        outputs=["signal_filtered", "posts_after_signal"],
+        services=["reddit_sentiment.filter_signal_from_noise", "reddit_sentiment.update_run_status"],
+        llm="Claude Sonnet",
+        llm_purpose="Filter signal from noise - remove jokes, spam, off-topic content",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[RedditSentimentState, AgentDependencies]
@@ -317,6 +347,14 @@ class IntentScoreNode(BaseNode[RedditSentimentState]):
     Scores based on purchase history, brand comparisons, etc.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["signal_filtered"],
+        outputs=["intent_scored"],
+        services=["reddit_sentiment.score_buyer_intent", "reddit_sentiment.update_run_status"],
+        llm="Claude Sonnet",
+        llm_purpose="Score buyer intent based on purchase history, brand comparisons",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[RedditSentimentState, AgentDependencies]
@@ -359,6 +397,12 @@ class TopSelectionNode(BaseNode[RedditSentimentState]):
 
     Deterministic selection based on weighted score.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["intent_scored", "top_percentile"],
+        outputs=["top_selected", "posts_top_selected"],
+        services=["reddit_sentiment.select_top_percentile", "reddit_sentiment.update_run_status"],
+    )
 
     async def run(
         self,
@@ -421,6 +465,15 @@ class CategorizeNode(BaseNode[RedditSentimentState]):
     Uses Claude Opus 4.5 for deep extraction and categorization.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["top_selected", "brand_context", "product_context", "brand_id"],
+        outputs=["categorized_quotes", "quotes_extracted"],
+        services=["reddit_sentiment.save_posts", "reddit_sentiment.categorize_and_extract_quotes",
+                  "reddit_sentiment.update_run_status"],
+        llm="Claude Opus 4.5",
+        llm_purpose="Categorize posts into 6 sentiment buckets and extract relevant quotes",
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[RedditSentimentState, AgentDependencies]
@@ -482,6 +535,13 @@ class SaveNode(BaseNode[RedditSentimentState]):
 
     Final step - persists results and optionally updates persona fields.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["categorized_quotes", "auto_sync_to_persona", "persona_id", "brand_id"],
+        outputs=["quotes_synced"],
+        services=["reddit_sentiment.save_quotes", "reddit_sentiment.sync_quotes_to_persona",
+                  "reddit_sentiment.update_run_status"],
+    )
 
     async def run(
         self,

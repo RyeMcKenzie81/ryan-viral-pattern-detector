@@ -18,7 +18,9 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
 
-import anthropic
+from viraltracker.core.config import Config
+from pydantic_ai import Agent
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +194,7 @@ Keep what's working well and only change what needs to be fixed."""
 
     def __init__(
         self,
+        # Kept for backward compatibility but unused
         anthropic_api_key: Optional[str] = None,
         model: Optional[str] = None,
         supabase_client: Optional[Any] = None,
@@ -199,31 +202,14 @@ Keep what's working well and only change what needs to be fixed."""
     ):
         """
         Initialize the ScriptGenerationService.
-
-        Args:
-            anthropic_api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-            model: Model to use (defaults to claude-opus-4-5-20251101)
-            supabase_client: Supabase client for database operations
-            docs_service: DocService for knowledge base queries
         """
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set - script generation will fail")
-            self.client = None
-        else:
-            self.client = anthropic.Anthropic(api_key=api_key)
-
-        self.model = model or self.DEFAULT_MODEL
         self.supabase = supabase_client
         self.docs = docs_service
+        logger.info("ScriptGenerationService initialized")
 
     def _ensure_client(self) -> None:
-        """Raise error if Anthropic client not configured."""
-        if not self.client:
-            raise ValueError(
-                "Anthropic client not configured. Set ANTHROPIC_API_KEY environment variable."
-            )
+        """Deprecated: Pydantic AI Agent is always available via Config."""
+        pass
 
     async def get_full_bible_content(self, brand_id: UUID) -> str:
         """
@@ -317,18 +303,16 @@ Keep what's working well and only change what needs to be fixed."""
             target_emotion=topic.get("target_emotion", "curiosity")
         )
 
-        try:
-            # Call Claude Opus 4.5
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=8000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+        # Pydantic AI Agent (Script Model)
+        agent = Agent(
+            model=Config.get_model("script"),
+            system_prompt="You are a professional script writer. Return ONLY valid JSON."
+        )
 
-            # Parse response
-            content = response.content[0].text
+        try:
+            # Call Agent
+            result = await agent.run(prompt)
+            content = result.output
             script_data = self._parse_json_response(content)
 
             # Add metadata
@@ -373,18 +357,16 @@ Keep what's working well and only change what needs to be fixed."""
             script_content=json.dumps(script_data, indent=2)
         )
 
-        try:
-            # Call Claude Opus 4.5
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+        # Pydantic AI Agent (Script Model)
+        agent = Agent(
+            model=Config.get_model("script"),
+            system_prompt="You are a strict script reviewer. Return ONLY valid JSON."
+        )
 
-            # Parse response
-            content = response.content[0].text
+        try:
+            # Call Agent
+            result = await agent.run(prompt)
+            content = result.output
             review_data = self._parse_json_response(content)
 
             logger.info(f"Review complete: score={review_data.get('overall_score')}, ready={review_data.get('ready_for_approval')}")
@@ -428,18 +410,16 @@ Keep what's working well and only change what needs to be fixed."""
             human_notes=human_notes or "No additional notes from human reviewer."
         )
 
-        try:
-            # Call Claude Opus 4.5
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=8000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+        # Pydantic AI Agent (Script Model)
+        agent = Agent(
+            model=Config.get_model("script"),
+            system_prompt="You are a script revision expert. Return ONLY valid JSON."
+        )
 
-            # Parse response
-            content = response.content[0].text
+        try:
+            # Call Agent
+            result = await agent.run(prompt)
+            content = result.output
             revised_script = self._parse_json_response(content)
 
             # Update metadata

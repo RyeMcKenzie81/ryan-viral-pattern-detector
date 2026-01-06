@@ -26,8 +26,14 @@ class Config:
     # Gemini
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
     GEMINI_VIDEO_MODEL: str = 'models/gemini-2.5-pro'  # Gemini 2.5 Pro for video analysis
+    GEMINI_IMAGE_MODEL: str = 'models/gemini-3-pro-image-preview'  # Updated to Gemini 3 Pro
 
-    # Email (Resend)
+    # OpenAI / Sora
+    OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
+    SORA_MODELS: Dict[str, float] = {
+        'sora-2-2025-10-06': 0.10,
+        'sora-2-pro-2025-10-06': 0.50
+    }
     RESEND_API_KEY: str = os.getenv('RESEND_API_KEY', '')
     EMAIL_FROM: str = os.getenv('EMAIL_FROM', 'noreply@viraltracker.io')
 
@@ -72,6 +78,88 @@ class Config:
     def get(cls, key: str, default: Optional[str] = None) -> Optional[str]:
         """Get configuration value"""
         return getattr(cls, key, default)
+
+    # ========================================================================
+    # Model Configuration
+    # ========================================================================
+    
+    # Model Defaults
+    DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+    COMPLEX_MODEL = "claude-opus-4-5-20251101"
+    FAST_MODEL = "claude-sonnet-4-20250514"
+    ORCHESTRATOR_MODEL = "openai:gpt-4o"  # Target change for orchestrator
+
+    # Future capability-based models (User defined)
+    # Pydantic AI requires 'google-gla:' prefix for models/ string format
+    # BUT standard google-genai client fails with it.
+    CREATIVE_MODEL = "google-gla:models/gemini-3-pro-image-preview"
+    # Using widely available model for vision to fix 404 error
+    VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview" 
+    VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11" 
+    BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
+
+    @classmethod
+    def get_model(cls, key: str) -> str:
+        """
+        Get the configured LLM model for a specific component.
+        
+        Resolution Order:
+        1. Environment Variable: {KEY}_MODEL (e.g. ORCHESTRATOR_MODEL)
+        2. Default mapping in this method
+        3. Config.DEFAULT_MODEL
+        
+        Args:
+            key: component name (e.g., 'orchestrator', 'twitter', 'content_pipeline')
+                 keys are case-insensitive.
+        
+        Returns:
+            Model string identifier (e.g., 'openai:gpt-4o', 'claude-sonnet-...')
+        """
+        key_upper = key.upper()
+        
+        # 1. Check Environment Variable
+        env_var_name = f"{key_upper}_MODEL"
+        env_model = os.getenv(env_var_name)
+        if env_model:
+            return env_model
+            
+        # 2. Check Default Mappings
+        # This allows us to have different defaults for different components
+        # without requiring env vars for everything
+        mappings = {
+            "ORCHESTRATOR": cls.ORCHESTRATOR_MODEL,
+            "COMPLEX": cls.COMPLEX_MODEL,
+            "FAST": cls.FAST_MODEL,
+            
+            # Capability Mappings
+            "CREATIVE": cls.CREATIVE_MODEL,
+            "VISION": cls.VISION_MODEL,
+            "VISION_BACKUP": cls.VISION_BACKUP_MODEL,
+            "BASIC": cls.BASIC_MODEL,
+            
+            # Specific Agent Mappings (inheriting from capabilities where appropriate)
+            # We treat these as independent defaults unless we add recursive logic
+            # But to ensure AD_CREATION follows CREATIVE dynamically if not set:
+            "AD_CREATION": cls.CREATIVE_MODEL, 
+
+            # Service & Pipeline Mappings
+            "REDDIT": cls.BASIC_MODEL,        # Basic sentiment analysis
+            "COMIC": cls.CREATIVE_MODEL,      # Creative writing
+            "SCRIPT": cls.CREATIVE_MODEL,     # Creative writing
+            "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Creative writing
+            "PLANNING": cls.COMPLEX_MODEL,    # Complex reasoning
+        }
+        
+        # Special case for inheritance if needed, otherwise it just uses the string value
+        if key_upper == "AD_CREATION" and not env_model:
+             # Recursively get CREATIVE to pick up its overrides
+             return cls.get_model("CREATIVE")
+
+        if key_upper in mappings:
+            return mappings[key_upper]
+            
+        # 3. Fallback to Global Default
+        return cls.DEFAULT_MODEL
 
 
 # Comment Finder Configuration

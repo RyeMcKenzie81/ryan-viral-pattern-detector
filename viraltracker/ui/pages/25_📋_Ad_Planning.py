@@ -59,6 +59,7 @@ def init_session_state():
         "new_offer_description": "",
         "new_offer_drivers": "",
         "offer_suggestions": [],
+        "generating": False,  # Flag for async generation operations
 
         # Step 4: Persona
         "selected_persona_id": None,
@@ -97,13 +98,128 @@ def init_session_state():
         "validation_warnings": [],
         "validation_done": False,
 
-        # AI generation state
-        "generating": False,
+        # Bridge: Check for injected angle data from Analysis pages
+        "injected_angle_data": None,  # {name, belief, explanation}
     }
 
     for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
+
+
+    # If injected data exists, auto-navigate to Step 6 (Angles) so user can use it immediately
+    # Also auto-select the first available Brand/Product/Offer/Persona/JTBD if not set
+    if "injected_angle_data" in st.session_state and st.session_state.injected_angle_data:
+        # Always jump to step 6
+        if st.session_state.planning_step != 6:
+            st.session_state.planning_step = 6
+            st.session_state.show_injected_angle_banner = True
+        
+        # Auto-select prerequisites if JTBD is not set (run every time until we have a JTBD)
+        if not st.session_state.selected_jtbd_id:
+            try:
+                from viraltracker.core.database import get_supabase_client
+                from viraltracker.services.planning_service import PlanningService
+                from uuid import UUID
+                
+                db = get_supabase_client()
+                service = PlanningService()
+                debug_log = []
+                
+                # Brand
+                if not st.session_state.selected_brand_id:
+                    brands = db.table("brands").select("id").limit(1).execute()
+                    if brands.data:
+                        st.session_state.selected_brand_id = brands.data[0]["id"]
+                        debug_log.append(f"Auto-selected Brand: {brands.data[0]['id']}")
+                    else:
+                        debug_log.append("No brands found in DB")
+                
+                brand_id = st.session_state.selected_brand_id
+                if brand_id:
+                    # Product
+                    if not st.session_state.selected_product_id:
+                        products = service.get_products_for_brand(UUID(brand_id))
+                        if products:
+                            st.session_state.selected_product_id = str(products[0]["id"])
+                            debug_log.append(f"Auto-selected Product: {products[0]['id']}")
+                        else:
+                            debug_log.append(f"No products found for brand {brand_id}")
+                    
+                    product_id = st.session_state.selected_product_id
+                    if product_id:
+                        # Offer (Optional - may not exist)
+                        if not st.session_state.selected_offer_id:
+                            offers = service.get_offers_for_product(UUID(product_id))
+                            if offers:
+                                st.session_state.selected_offer_id = str(offers[0].id)
+                                debug_log.append(f"Auto-selected Offer: {offers[0].id}")
+                            else:
+                                debug_log.append(f"No offers found for product {product_id} (optional)")
+                        
+                        # Persona (from product personas) - CREATE IF MISSING
+                        if not st.session_state.selected_persona_id:
+                            personas = service.get_personas_for_product(UUID(product_id))
+                            if personas:
+                                st.session_state.selected_persona_id = str(personas[0]["id"])
+                                debug_log.append(f"Auto-selected Persona: {personas[0]['id']}")
+                            else:
+                                # CREATE placeholder persona
+                                debug_log.append(f"No personas found - creating placeholder...")
+                                try:
+                                    # Create persona in personas_4d
+                                    persona_result = db.table("personas_4d").insert({
+                                        "brand_id": brand_id,
+                                        "name": "Quick Capture Persona",
+                                        "snapshot": "Auto-generated placeholder from Ad Analysis bridge. Edit in Personas page.",
+                                        "source": "bridge_auto"
+                                    }).execute()
+                                    new_persona_id = persona_result.data[0]["id"]
+                                    
+                                    # Link to product via product_personas junction
+                                    db.table("product_personas").insert({
+                                        "product_id": product_id,
+                                        "persona_id": new_persona_id,
+                                        "is_primary": True
+                                    }).execute()
+                                    
+                                    st.session_state.selected_persona_id = new_persona_id
+                                    debug_log.append(f"Created placeholder Persona: {new_persona_id}")
+                                except Exception as pe:
+                                    debug_log.append(f"Failed to create persona: {pe}")
+                        
+                        persona_id = st.session_state.selected_persona_id
+                        if persona_id:
+                            # JTBD (from persona + product) - CREATE IF MISSING
+                            if not st.session_state.selected_jtbd_id:
+                                jtbds = service.get_jtbd_for_persona_product(UUID(persona_id), UUID(product_id))
+                                if jtbds:
+                                    st.session_state.selected_jtbd_id = str(jtbds[0].id)
+                                    debug_log.append(f"Auto-selected JTBD: {jtbds[0].id}")
+                                else:
+                                    # CREATE placeholder JTBD
+                                    debug_log.append(f"No JTBDs found - creating placeholder...")
+                                    try:
+                                        new_jtbd = service.create_jtbd_framed(
+                                            persona_id=UUID(persona_id),
+                                            product_id=UUID(product_id),
+                                            name="Quick Capture JTBD",
+                                            description="Auto-generated placeholder from Ad Analysis bridge.",
+                                            progress_statement="When I see a winning ad, I want to capture the insight, so I can replicate success.",
+                                            source="bridge_auto"
+                                        )
+                                        st.session_state.selected_jtbd_id = str(new_jtbd.id)
+                                        debug_log.append(f"Created placeholder JTBD: {new_jtbd.id}")
+                                    except Exception as je:
+                                        debug_log.append(f"Failed to create JTBD: {je}")
+                
+                # Store debug log for display
+                st.session_state._bridge_debug_log = debug_log
+                
+            except Exception as e:
+                import traceback
+                st.session_state._bridge_debug_log = [f"Error: {e}", traceback.format_exc()]
+
 
 
 init_session_state()
@@ -560,9 +676,33 @@ def render_step_6_angles():
     """Step 6: Define Angles (5-7)."""
     st.header("Step 6: Define Angles (5-7)")
     st.write("Create 5-7 angles to test. Each angle is a belief/explanation for why the job exists and why your solution works.")
+    
+    # Show banner if user came from Ad Analysis with pre-filled data
+    if st.session_state.get("show_injected_angle_banner"):
+        st.success("""
+        ✨ **Insight Loaded from Ad Analysis!**  
+        We've pre-filled the angle form below with the extracted strategy.  
+        Click "Add Angle" to save it, then continue building your plan.
+        
+        *Note: You can use the sidebar or "Back" button to configure Brand, Product, Offer, etc. if needed.*
+        """)
+        st.session_state.show_injected_angle_banner = False  # Show once
 
     if not st.session_state.selected_jtbd_id:
         st.warning("Please select a JTBD first.")
+        
+        # Show debug log if available
+        if st.session_state.get("_bridge_debug_log"):
+            with st.expander("🔧 Debug: Auto-selection Log"):
+                for log_entry in st.session_state._bridge_debug_log:
+                    st.write(log_entry)
+                st.write(f"**Current selections:**")
+                st.write(f"- Brand ID: {st.session_state.selected_brand_id}")
+                st.write(f"- Product ID: {st.session_state.selected_product_id}")
+                st.write(f"- Offer ID: {st.session_state.selected_offer_id}")
+                st.write(f"- Persona ID: {st.session_state.selected_persona_id}")
+                st.write(f"- JTBD ID: {st.session_state.selected_jtbd_id}")
+        
         return
 
     service = get_planning_service()
@@ -624,6 +764,19 @@ def render_step_6_angles():
 
     with tab1:
         st.subheader("Add New Angle")
+        if st.session_state.injected_angle_data:
+            # Pre-fill from injected data
+            data = st.session_state.injected_angle_data
+            if not st.session_state.new_angle_name:
+                st.session_state.new_angle_name = data.get("name", "")
+            if not st.session_state.new_angle_belief:
+                st.session_state.new_angle_belief = data.get("belief", "")
+            if not st.session_state.new_angle_explanation and data.get("explanation"):
+                st.session_state.new_angle_explanation = data.get("explanation", "")
+            
+            st.info(f"✨ Insight Loaded: **{data.get('name')}**")
+            st.caption("Review the extracted strategy below and click 'Add Angle'.")
+
         st.session_state.new_angle_name = st.text_input(
             "Angle Name",
             value=st.session_state.new_angle_name,
@@ -640,6 +793,7 @@ def render_step_6_angles():
             placeholder="Why this angle might resonate..."
         )
 
+
         if st.button("Add Angle", key="add_angle_btn"):
             if st.session_state.new_angle_name and st.session_state.new_angle_belief:
                 # Save to database immediately
@@ -650,11 +804,16 @@ def render_step_6_angles():
                     explanation=st.session_state.new_angle_explanation
                 )
                 st.session_state.selected_angle_ids.append(str(new_angle.id))
-                # Clear form
+                
+                # Clear form and injected data
                 st.session_state.new_angle_name = ""
                 st.session_state.new_angle_belief = ""
                 st.session_state.new_angle_explanation = ""
+                if "injected_angle_data" in st.session_state:
+                    st.session_state.injected_angle_data = None
+                
                 st.rerun()
+
 
     with tab2:
         st.subheader("AI Angle Suggestions")

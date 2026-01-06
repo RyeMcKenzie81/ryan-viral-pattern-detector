@@ -78,6 +78,67 @@ def get_competitor_products(competitor_id: str) -> List[Dict]:
         return []
 
 
+def get_products_for_brand(brand_id: str) -> List[Dict]:
+    """Fetch products for a brand (for linking candidates)."""
+    try:
+        db = get_supabase_client()
+        result = db.table("products").select("id, name").eq(
+            "brand_id", brand_id
+        ).order("name").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def get_angle_candidate_service():
+    """Get AngleCandidateService instance."""
+    from viraltracker.services.angle_candidate_service import AngleCandidateService
+    return AngleCandidateService()
+
+
+def extract_competitor_candidates(
+    competitor_id: str,
+    product_id: str,
+    brand_id: str,
+    sources: List[str]
+) -> Dict[str, Any]:
+    """Extract angle candidates from competitor research data.
+
+    Args:
+        competitor_id: Competitor UUID
+        product_id: Brand product UUID to link candidates to
+        brand_id: Brand UUID
+        sources: List of sources to extract from ['amazon', 'landing_pages']
+
+    Returns:
+        Dict with {total_created: int, total_updated: int, by_source: dict}
+    """
+    service = get_angle_candidate_service()
+    stats = {"total_created": 0, "total_updated": 0, "by_source": {}}
+
+    if 'amazon' in sources:
+        result = service.extract_from_competitor_amazon_reviews(
+            competitor_id=UUID(competitor_id),
+            product_id=UUID(product_id),
+            brand_id=UUID(brand_id)
+        )
+        stats["total_created"] += result.get("created", 0)
+        stats["total_updated"] += result.get("updated", 0)
+        stats["by_source"]["amazon"] = result
+
+    if 'landing_pages' in sources:
+        result = service.extract_from_competitor_landing_pages(
+            competitor_id=UUID(competitor_id),
+            product_id=UUID(product_id),
+            brand_id=UUID(brand_id)
+        )
+        stats["total_created"] += result.get("created", 0)
+        stats["total_updated"] += result.get("updated", 0)
+        stats["by_source"]["landing_pages"] = result
+
+    return stats
+
+
 def scrape_competitor_facebook_ads(
     ad_library_url: str,
     competitor_id: str,
@@ -154,7 +215,7 @@ def get_research_stats(
             stats['filtered_landing_pages'] = product_stats.get('landing_pages', 0)
             stats['filtered_amazon_urls'] = product_stats.get('amazon_urls', 0)
 
-        # Get landing pages analyzed count
+        # Get landing pages analyzed count (basic analysis)
         lp_query = db.table("competitor_landing_pages").select(
             "id", count="exact"
         ).eq("competitor_id", competitor_id).not_.is_("analyzed_at", "null")
@@ -165,16 +226,39 @@ def get_research_stats(
         lp_result = lp_query.execute()
         stats['landing_pages_analyzed'] = lp_result.count or 0
 
+        # Get landing pages with belief-first analysis (for extraction)
+        lp_bf_query = db.table("competitor_landing_pages").select(
+            "id", count="exact"
+        ).eq("competitor_id", competitor_id).not_.is_("belief_first_analysis", "null")
+
+        if product_id:
+            lp_bf_query = lp_bf_query.eq("competitor_product_id", product_id)
+
+        lp_bf_result = lp_bf_query.execute()
+        stats['landing_pages_belief_first'] = lp_bf_result.count or 0
+
         # Get Amazon reviews count
         reviews_result = db.table("competitor_amazon_reviews").select(
             "id", count="exact"
         ).eq("competitor_id", competitor_id).execute()
         stats['amazon_reviews'] = reviews_result.count or 0
 
-        # Check if Amazon analysis exists
-        analysis_result = db.table("competitor_amazon_review_analysis").select(
+        # Check if Amazon analysis exists (check both with and without product filter)
+        analysis_query = db.table("competitor_amazon_review_analysis").select(
             "id"
-        ).eq("competitor_id", competitor_id).execute()
+        ).eq("competitor_id", competitor_id)
+
+        # If product selected, also check for product-specific analysis
+        if product_id:
+            analysis_result = analysis_query.eq("competitor_product_id", product_id).execute()
+            if not analysis_result.data:
+                # Fall back to competitor-level analysis (no product filter)
+                analysis_result = db.table("competitor_amazon_review_analysis").select(
+                    "id"
+                ).eq("competitor_id", competitor_id).execute()
+        else:
+            analysis_result = analysis_query.execute()
+
         stats['has_amazon_analysis'] = bool(analysis_result.data)
 
         return stats
@@ -318,6 +402,93 @@ def _get_competitor_pages_with_belief_first(competitor_id: str, product_id: Opti
 
     result = query.order("belief_first_analyzed_at", desc=True).execute()
     return result.data or []
+
+
+def _render_competitor_extraction_section(
+    competitor_id: str,
+    competitor_name: str,
+    brand_id: str,
+    has_amazon: bool,
+    has_landing_pages: bool
+):
+    """Render the angle pipeline extraction section for competitors."""
+    if not has_amazon and not has_landing_pages:
+        return
+
+    st.markdown("---")
+    st.markdown("### Extract to Angle Pipeline")
+    st.caption("Create angle candidates from competitor research for your products.")
+
+    # Get brand's products
+    products = get_products_for_brand(brand_id)
+    if not products:
+        st.info("No products found for your brand. Create a product first to extract candidates.")
+        return
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        product_options = {p["name"]: p["id"] for p in products}
+        selected_product = st.selectbox(
+            "Link Candidates to Product",
+            options=list(product_options.keys()),
+            key="comp_extract_product",
+            help="Candidates will be linked to this product for angle testing"
+        )
+        product_id = product_options[selected_product]
+
+    with col2:
+        st.markdown("**Available Sources:**")
+        sources_available = []
+        if has_amazon:
+            sources_available.append("Amazon Reviews")
+        if has_landing_pages:
+            sources_available.append("Landing Pages")
+        st.caption(", ".join(sources_available))
+
+    # Source selection
+    sources_to_extract = []
+    if has_amazon:
+        if st.checkbox("Amazon Review Themes", value=True, key="extract_amazon"):
+            sources_to_extract.append("amazon")
+    if has_landing_pages:
+        if st.checkbox("Landing Page Insights", value=True, key="extract_landing"):
+            sources_to_extract.append("landing_pages")
+
+    if sources_to_extract:
+        if st.button(
+            f"Extract from {competitor_name}",
+            type="primary",
+            key="comp_extract_btn"
+        ):
+            with st.spinner("Extracting candidates..."):
+                try:
+                    stats = extract_competitor_candidates(
+                        competitor_id=competitor_id,
+                        product_id=product_id,
+                        brand_id=brand_id,
+                        sources=sources_to_extract
+                    )
+
+                    if stats["total_created"] > 0 or stats["total_updated"] > 0:
+                        st.success(
+                            f"Extraction complete! Created {stats['total_created']} new candidates, "
+                            f"updated {stats['total_updated']} existing."
+                        )
+
+                        # Show breakdown by source
+                        for source, result in stats["by_source"].items():
+                            st.caption(
+                                f"  {source}: {result.get('created', 0)} created, "
+                                f"{result.get('updated', 0)} updated"
+                            )
+                    else:
+                        st.info("No new candidates created. Data may already exist as candidates.")
+
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+    else:
+        st.info("Select at least one source to extract.")
 
 
 # ============================================================================
@@ -1367,12 +1538,26 @@ with tab_amazon:
     # Check if we have reviews to analyze
     try:
         db = get_supabase_client()
-        reviews_count_result = db.table("competitor_amazon_reviews").select(
+        # Count reviews matching the same filter as analysis
+        reviews_query = db.table("competitor_amazon_reviews").select(
+            "id", count="exact"
+        ).eq("competitor_id", selected_competitor_id)
+
+        # If product selected, count only reviews for that product
+        if selected_product_id:
+            reviews_query = reviews_query.eq("competitor_product_id", selected_product_id)
+
+        reviews_count_result = reviews_query.execute()
+        total_reviews = reviews_count_result.count or 0
+
+        # Also get total for all products (for info)
+        all_reviews_result = db.table("competitor_amazon_reviews").select(
             "id", count="exact"
         ).eq("competitor_id", selected_competitor_id).execute()
-        total_reviews = reviews_count_result.count or 0
+        all_reviews_count = all_reviews_result.count or 0
     except Exception:
         total_reviews = 0
+        all_reviews_count = 0
 
     # Analyze button
     if total_reviews > 0:
@@ -1396,7 +1581,14 @@ with tab_amazon:
                     except Exception as e:
                         st.error(f"Analysis failed: {e}")
         with col_info:
-            st.caption(f"{total_reviews} reviews available for analysis")
+            if selected_product_id and total_reviews < all_reviews_count:
+                st.caption(f"{total_reviews} reviews for selected product ({all_reviews_count} total)")
+            else:
+                st.caption(f"{total_reviews} reviews available for analysis")
+
+    # Show message if no reviews for selected product but reviews exist for competitor
+    elif all_reviews_count > 0 and selected_product_id:
+        st.info(f"No reviews assigned to selected product. {all_reviews_count} reviews exist for this competitor - try selecting 'All Products' to analyze them.")
 
     # Amazon Review Analysis Results - Rich Themed Display
     if stats.get('has_amazon_analysis'):
@@ -1498,6 +1690,21 @@ with tab_amazon:
 
         except Exception as e:
             st.error(f"Failed to load analysis: {e}")
+
+    # Angle Pipeline Extraction Section
+    # Show extraction if we have basic analyzed OR belief-first analyzed landing pages
+    has_landing_pages_for_extraction = (
+        stats.get('landing_pages_analyzed', 0) > 0 or
+        stats.get('landing_pages_belief_first', 0) > 0
+    )
+    _render_competitor_extraction_section(
+        competitor_id=selected_competitor_id,
+        competitor_name=competitor.get("name", ""),
+        brand_id=selected_brand_id,
+        has_amazon=stats.get('has_amazon_analysis', False),
+        has_landing_pages=has_landing_pages_for_extraction
+    )
+
 
 # ----------------------------------------------------------------------------
 # PERSONA TAB

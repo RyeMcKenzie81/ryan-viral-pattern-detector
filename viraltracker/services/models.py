@@ -1203,6 +1203,133 @@ class BeliefAngle(BaseModel):
     created_at: Optional[datetime] = None
 
 
+# ============================================================================
+# Angle Pipeline Models
+# ============================================================================
+
+class CandidateType(str, Enum):
+    """Types of angle candidates."""
+    PAIN_SIGNAL = "pain_signal"
+    PATTERN = "pattern"
+    JTBD = "jtbd"
+    AD_HYPOTHESIS = "ad_hypothesis"
+    QUOTE = "quote"
+    UMP = "ump"  # Unique Mechanism Problem
+    UMS = "ums"  # Unique Mechanism Solution
+
+
+class CandidateSourceType(str, Enum):
+    """Sources for angle candidates."""
+    BELIEF_REVERSE_ENGINEER = "belief_reverse_engineer"
+    REDDIT_RESEARCH = "reddit_research"
+    AD_PERFORMANCE = "ad_performance"
+    COMPETITOR_RESEARCH = "competitor_research"
+    BRAND_RESEARCH = "brand_research"
+
+
+class CandidateStatus(str, Enum):
+    """Workflow status for candidates."""
+    CANDIDATE = "candidate"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    MERGED = "merged"
+
+
+class CandidateConfidence(str, Enum):
+    """Confidence levels based on evidence count."""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class EvidenceType(str, Enum):
+    """Types of evidence supporting candidates."""
+    PAIN_SIGNAL = "pain_signal"
+    QUOTE = "quote"
+    PATTERN = "pattern"
+    SOLUTION = "solution"
+    HYPOTHESIS = "hypothesis"
+
+
+class AngleCandidateEvidence(BaseModel):
+    """Evidence supporting an angle candidate."""
+    id: Optional[UUID] = None
+    candidate_id: UUID
+
+    # Evidence content
+    evidence_type: str = Field(..., description="Type: pain_signal, quote, pattern, solution, hypothesis")
+    evidence_text: str = Field(..., description="The actual evidence text")
+
+    # Source details
+    source_type: str = Field(..., description="Source system that provided this evidence")
+    source_run_id: Optional[UUID] = Field(None, description="Run ID from source system")
+    source_post_id: Optional[str] = Field(None, description="Original post ID (e.g., Reddit post ID)")
+    source_url: Optional[str] = Field(None, description="URL to original source")
+
+    # Quality indicators
+    engagement_score: Optional[int] = Field(None, description="Engagement from source (upvotes, etc.)")
+    confidence_score: Optional[float] = Field(None, ge=0, le=1, description="LLM confidence 0-1")
+
+    created_at: Optional[datetime] = None
+
+
+class AngleCandidate(BaseModel):
+    """
+    Unified staging model for research insights before promotion to belief_angles.
+
+    Candidates come from 5 sources:
+    - Belief Reverse Engineer pipeline
+    - Reddit Research
+    - Ad Performance Analysis
+    - Competitor Research
+    - Brand/Consumer Research
+
+    Candidates are ranked by frequency_score (how many evidence items support them)
+    and can be promoted to belief_angles via the Research Insights UI.
+    """
+    id: Optional[UUID] = None
+    product_id: UUID
+    brand_id: Optional[UUID] = None
+
+    # Core content
+    name: str = Field(..., description="Short descriptive name for the candidate")
+    belief_statement: str = Field(..., description="The core belief/insight this candidate represents")
+    explanation: Optional[str] = Field(None, description="Additional context or explanation")
+    candidate_type: str = Field(..., description="Type: pain_signal, pattern, jtbd, ad_hypothesis, quote, ump, ums")
+
+    # Source tracking
+    source_type: str = Field(..., description="Source: belief_reverse_engineer, reddit_research, ad_performance, competitor_research, brand_research")
+    source_run_id: Optional[UUID] = Field(None, description="Run ID from source system")
+    competitor_id: Optional[UUID] = Field(None, description="Competitor ID if from competitor research")
+
+    # Frequency/confidence scoring
+    frequency_score: int = Field(default=1, ge=1, description="Number of evidence items")
+    confidence: str = Field(default="LOW", description="Confidence: LOW (1), MEDIUM (2-4), HIGH (5+)")
+
+    # Workflow status
+    status: str = Field(default="candidate", description="Status: candidate, approved, rejected, merged")
+    promoted_angle_id: Optional[UUID] = Field(None, description="Reference to belief_angles if promoted")
+
+    # Metadata
+    tags: Optional[List[str]] = Field(default=None, description="Optional tags for categorization")
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[UUID] = None
+
+    # Related data (populated when fetching full candidate)
+    evidence: List[AngleCandidateEvidence] = Field(default_factory=list, description="Supporting evidence")
+
+    @classmethod
+    def calculate_confidence(cls, evidence_count: int) -> str:
+        """Calculate confidence level based on evidence count."""
+        if evidence_count >= 5:
+            return CandidateConfidence.HIGH.value
+        elif evidence_count >= 2:
+            return CandidateConfidence.MEDIUM.value
+        return CandidateConfidence.LOW.value
+
+
 class PlanStatus(str):
     """Status for plans."""
     DRAFT = "draft"
@@ -1676,3 +1803,550 @@ class BrandAdAccount(BaseModel):
     account_name: Optional[str] = Field(None, description="Display name for the account")
     is_primary: bool = Field(default=True, description="Primary account for this brand")
     created_at: Optional[datetime] = Field(None, description="When this link was created")
+
+
+# ============================================================================
+# Belief-First Reverse Engineer Models
+# ============================================================================
+
+class EvidenceStatus(str, Enum):
+    """
+    Tracks the provenance of each field in the belief canvas.
+
+    - OBSERVED: From database or research (factual)
+    - INFERRED: Derived from message analysis (educated guess)
+    - HYPOTHESIS: Needs validation before use
+    """
+    OBSERVED = "observed"
+    INFERRED = "inferred"
+    HYPOTHESIS = "hypothesis"
+
+
+class ProofType(str, Enum):
+    """
+    Comprehensive proof type taxonomy for belief-first messaging.
+
+    Organized by proof category:
+    - Problem Reality Proof (for UMP)
+    - Mechanism Validity Proof (for UMS)
+    - Solution Efficacy Proof
+    - Identity & Social Proof
+    - Risk & Commitment Proof
+    """
+    # Problem Reality Proof (for UMP)
+    OBSERVATIONAL = "observational"
+    PATTERN = "pattern"
+    HISTORICAL = "historical"
+    RELATABILITY = "relatability"
+    ANALOGY_METAPHOR = "analogy_metaphor"
+    LOGICAL_INEVITABILITY = "logical_inevitability"
+
+    # Mechanism Validity Proof (for UMS)
+    SCIENTIFIC = "scientific"
+    DATA_DRIVEN = "data_driven"
+    AUTHORITY = "authority"
+    VISUAL = "visual"
+
+    # Solution Efficacy Proof
+    TANGIBLE_OUTCOMES = "tangible_outcomes"
+    COMPARATIVE = "comparative"
+    CONSISTENCY = "consistency"
+    OUTCOME_DATA = "outcome_data"
+
+    # Identity & Social Proof
+    PERSONA_TESTIMONIALS = "persona_testimonials"
+    ANECDOTES = "anecdotes"
+    CULTURAL = "cultural"
+    EMOTIONAL = "emotional"
+
+    # Risk & Commitment Proof
+    GUARANTEE = "guarantee"
+    TRIAL = "trial"
+    ETHICAL = "ethical"
+    SCARCITY = "scarcity"
+
+
+class ConstraintType(str, Enum):
+    """
+    The 6 canonical constraint types that limit action BEFORE belief.
+
+    These are persona-level inputs, not commitment-stage risks.
+    """
+    TIME = "time"
+    MONEY = "money"
+    ENERGY = "energy"
+    IDENTITY = "identity"
+    REPUTATION_SOCIAL = "reputation_social"
+    COGNITIVE_LOAD = "cognitive_load"
+
+
+class AwarenessLevel(str, Enum):
+    """
+    Eugene Schwartz awareness levels for market sophistication.
+    """
+    UNAWARE = "unaware"
+    PROBLEM_AWARE = "problem_aware"
+    SOLUTION_AWARE = "solution_aware"
+    PRODUCT_AWARE = "product_aware"
+    MOST_AWARE = "most_aware"
+
+
+class BeliefLayer(str, Enum):
+    """
+    Classification of which belief-first layer a message maps to.
+    """
+    EXPRESSION = "expression"
+    UMP_SEED = "ump_seed"
+    UMS_SEED = "ums_seed"
+    PERSONA_FILTER = "persona_filter"
+    BENEFIT = "benefit"
+    PROOF = "proof"
+    OTHER = "other"
+
+
+class RiskFlagType(str, Enum):
+    """
+    Types of compliance and messaging risks to flag.
+    """
+    MEDICAL_CLAIM = "medical_claim"
+    DRUG_REFERENCE = "drug_reference"
+    OVERPROMISE = "overpromise"
+    AMBIGUITY = "ambiguity"
+    CONTRADICTION = "contradiction"
+    PROMISE_BOUNDARY = "promise_boundary"
+
+
+class RiskSeverity(str, Enum):
+    """
+    Severity levels for risk flags.
+    """
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ProductContext(BaseModel):
+    """
+    Product truth pulled from the database for belief canvas assembly.
+
+    Used to fill canvas with OBSERVED (factual) data rather than inferred.
+    """
+    product_id: UUID
+    name: str
+    category: str
+    format: Optional[str] = None
+
+    # Nutrition (if applicable)
+    macros: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Nutrition data: protein_g, fiber_g, sugar_g, calories"
+    )
+
+    # Product details
+    ingredients: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of {name, purpose, notes}"
+    )
+    allowed_claims: List[str] = Field(
+        default_factory=list,
+        description="Claims that are allowed for this product"
+    )
+    disallowed_claims: List[str] = Field(
+        default_factory=list,
+        description="Claims that must NOT be made"
+    )
+    promise_boundary_default: Optional[str] = Field(
+        None,
+        description="Default promise boundary text"
+    )
+
+    # Pre-built assets
+    mechanisms: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Mechanism library entries if available"
+    )
+    proof_assets: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Existing proof assets with tags"
+    )
+    contraindications: List[str] = Field(
+        default_factory=list,
+        description="Warnings or contraindications"
+    )
+
+
+class MessageClassification(BaseModel):
+    """
+    Classification of a single message into belief-first layers.
+
+    Output from the LayerClassifierNode.
+    """
+    message: str = Field(..., description="The original message text")
+    primary_layer: BeliefLayer = Field(..., description="Primary belief layer")
+    secondary_layers: List[BeliefLayer] = Field(
+        default_factory=list,
+        description="Additional layers touched by this message"
+    )
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Classification confidence"
+    )
+    detected_topics: List[str] = Field(
+        default_factory=list,
+        description="Detected topics: sugar, boba, GLP-1, bloating, etc."
+    )
+    triggers_compliance_mode: bool = Field(
+        default=False,
+        description="Whether this message triggers compliance checks"
+    )
+
+
+class ResearchEvidenceItem(BaseModel):
+    """
+    A single piece of evidence extracted from research (Reddit, literature, etc.).
+    """
+    source_type: str = Field(..., description="reddit, literature, competitor")
+    source_url: Optional[str] = None
+    source_subreddit: Optional[str] = None
+    raw_content: str = Field(..., description="Original text")
+    extracted_signal: str = Field(..., description="What was extracted")
+    signal_type: str = Field(
+        ...,
+        description="pain, solution_attempted, pattern, language, alternative"
+    )
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    extracted_at: Optional[datetime] = None
+
+
+class RedditResearchBundle(BaseModel):
+    """
+    Complete bundle of research extracted from Reddit scraping.
+
+    Populates sections 1-9 of the Research Canvas.
+    """
+    queries_run: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of {subreddit, search_term}"
+    )
+    posts_analyzed_count: int = 0
+    comments_analyzed_count: int = 0
+
+    # Extracted signals
+    extracted_pain: List[ResearchEvidenceItem] = Field(
+        default_factory=list,
+        description="Pain points and symptoms"
+    )
+    extracted_solutions_attempted: List[ResearchEvidenceItem] = Field(
+        default_factory=list,
+        description="Solutions tried and their outcomes"
+    )
+    extracted_language_bank: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Symptom -> phrases mapping"
+    )
+
+    # Pattern detection
+    pattern_detection: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="triggers, worsens, improves, helps, fails"
+    )
+
+    # JTBD candidates
+    jtbd_candidates: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="functional, emotional, identity"
+    )
+
+    # Hypothesis support
+    hypothesis_support_scores: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of {hypothesis, score, evidence_samples}"
+    )
+
+
+class ResearchCanvas(BaseModel):
+    """
+    Research/Discovery Canvas (Sections 1-9).
+
+    Populated primarily by Reddit research in research_mode.
+    """
+    # Section 1-2: Market & Persona Context
+    market_context: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "category": None,
+            "market_sophistication": None,
+            "awareness_levels_present": [],
+            "dominant_problem_explanations": [],
+            "common_solution_types": [],
+            "cultural_historical_narratives": [],
+        }
+    )
+    persona_context: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "primary_persona": None,
+            "life_stage_role": None,
+            "trigger_events": [],
+            "environment_exposure_factors": [],
+        }
+    )
+
+    # Section 3: Observed Pain & Friction
+    observed_pain: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "symptoms_physical": [],
+            "symptoms_emotional": [],
+            "behavioral_workarounds": [],
+            "avoidance_behaviors": [],
+            "stated_problems": [],
+            "language_used": [],
+            "blame_targets": [],
+        }
+    )
+
+    # Section 4: Pattern Detection
+    pattern_detection: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "when_appears": [],
+            "where_localizes": [],
+            "when_improves": [],
+            "when_worsens": [],
+            "what_temporarily_helps": [],
+            "what_reliably_fails": [],
+        }
+    )
+
+    # Section 5: Historical Comparison
+    historical_comparison: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "existed_historically": None,
+            "when_increased": None,
+            "what_changed_environmentally": [],
+            "what_stayed_biologically_same": [],
+        }
+    )
+
+    # Section 6: Solutions Attempted
+    solutions_attempted: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "worked_briefly": [],
+            "stopped_working": [],
+            "never_worked": [],
+            "why_they_think_it_failed": [],
+        }
+    )
+
+    # Section 7: Desired Progress (JTBD)
+    desired_progress: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "functional": [],
+            "emotional": [],
+            "identity": [],
+        }
+    )
+
+    # Section 8: Knowledge Gaps
+    knowledge_gaps: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "tension_progress_vs_failures": [],
+            "missing_variables": [],
+        }
+    )
+
+    # Section 9: Candidate Root Causes
+    candidate_root_causes: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of {hypothesis, evidence_status, supporting_evidence}"
+    )
+
+
+class BeliefCanvas(BaseModel):
+    """
+    Belief/Messaging Canvas (Sections 10-15).
+
+    Populated from message inference + product DB.
+    """
+    # Section 10: Belief Context
+    belief_context: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "current_awareness_state": None,
+            "brand_credibility": None,
+            "why_now": None,
+            "promise_boundary": None,
+        }
+    )
+
+    # Section 11: Persona Filter
+    persona_filter: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "jtbd": {
+                "functional": None,
+                "emotional": None,
+                "identity": None,
+            },
+            "persona_sublayers": {
+                "awareness_sophistication": None,
+                "prior_failures": [],
+                "skepticism_level": None,
+            },
+            "constraints": {
+                "time": False,
+                "money": False,
+                "energy": False,
+                "identity": False,
+                "reputation_social": False,
+                "cognitive_load": False,
+            },
+            "dominant_constraint": None,
+            "constraint_to_avoid_triggering": None,
+        }
+    )
+
+    # Section 12: Unique Mechanism
+    unique_mechanism: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "ump": {
+                "old_accepted_explanation": None,
+                "reframed_root_cause": None,
+                "why_past_solutions_failed": None,
+                "externalized_blame": None,
+                "missing_1_percent": None,
+                "differentiation_check": {
+                    "new_but_familiar": False,
+                    "plausible_without_trust": False,
+                    "uses_customer_language": False,
+                },
+                "problem_reality_proof_present": [],
+                "problem_reality_proof_missing": [],
+            },
+            "ums": {
+                "macro_solution_logic": None,
+                "micro_mechanism": None,
+                "mechanism_validity_proof_present": [],
+                "mechanism_validity_proof_missing": [],
+            },
+            "reinterpreted_pain": {
+                "problem_pain_symptoms": None,
+                "how_mechanism_explains_past_pain": None,
+            },
+        }
+    )
+
+    # Section 13: Progress & Justification
+    progress_justification: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "benefits": {
+                "immediate": None,
+                "short_term": None,
+                "long_term": None,
+            },
+            "features": [],
+        }
+    )
+
+    # Section 14: Proof Stack
+    proof_stack: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "solution_efficacy": {
+                "present": [],
+                "missing": [],
+            },
+            "identity_social": {
+                "present": [],
+                "missing": [],
+            },
+            "risk_commitment": {
+                "present": [],
+                "missing": [],
+            },
+        }
+    )
+
+    # Section 15: Expression
+    expression: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "primary_angle": None,
+            "core_hook": None,
+            "visual_mechanism_metaphor": None,
+            "formats": [],
+        }
+    )
+
+
+class IntegrityCheckResult(BaseModel):
+    """
+    Result of a single integrity check.
+    """
+    check_name: str
+    passed: bool
+    notes: Optional[str] = None
+    severity: Optional[str] = None  # warning, error
+
+
+class BeliefFirstMasterCanvas(BaseModel):
+    """
+    Complete Belief-First Master Canvas (Sections 1-15).
+
+    Combines Research Canvas (1-9) and Belief Canvas (10-15).
+    """
+    # Research sections (1-9) - populated by Reddit research
+    research_canvas: ResearchCanvas = Field(default_factory=ResearchCanvas)
+
+    # Belief sections (10-15) - populated by message + DB
+    belief_canvas: BeliefCanvas = Field(default_factory=BeliefCanvas)
+
+    # Integrity checks
+    integrity_checks: List[IntegrityCheckResult] = Field(
+        default_factory=list,
+        description="Results of integrity validation"
+    )
+
+
+class RiskFlag(BaseModel):
+    """
+    A compliance or messaging risk identified in the canvas.
+    """
+    type: RiskFlagType
+    severity: RiskSeverity
+    reason: str
+    suggested_fix: str
+    affected_fields: List[str] = Field(
+        default_factory=list,
+        description="Field paths that are affected"
+    )
+
+
+class TraceItem(BaseModel):
+    """
+    Tracks where each canvas field value came from.
+
+    Essential for audit trail and debugging.
+    """
+    field_path: str = Field(
+        ...,
+        description="Dot-path to field, e.g., 'belief_canvas.unique_mechanism.ump.reframed_root_cause'"
+    )
+    source: str = Field(
+        ...,
+        description="message, product_db, reddit_research, inferred"
+    )
+    source_detail: str = Field(
+        ...,
+        description="Which message, which DB field, which Reddit query"
+    )
+    evidence_status: EvidenceStatus
+
+
+class GapReport(BaseModel):
+    """
+    Report of gaps and missing elements in the canvas.
+    """
+    research_needed: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Research questions that need answers"
+    )
+    proof_needed: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Proof types that are missing"
+    )

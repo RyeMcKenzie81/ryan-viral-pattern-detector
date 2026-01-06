@@ -51,6 +51,33 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 2. Pattern Discovery - Suggested Actions for Low Confidence
+
+**Priority**: Medium
+**Complexity**: Low-Medium
+**Added**: 2026-01-06
+
+**Context**: When Pattern Discovery finds clusters with low confidence scores (10-20%), users don't know what action to take. The system should suggest specific data sources to scrape to improve confidence.
+
+**What's needed**:
+1. Analyze which source types are missing from the pattern's `source_breakdown`
+2. Show contextual suggestions in the Research Insights UI:
+   - **Low confidence** → "Add more sources" with specific suggestions (Reddit, competitor ads, more reviews)
+   - **Low novelty** → "Similar to existing angle X" with link
+   - **High confidence + High novelty** → "🎯 Strong candidate for promotion!"
+
+3. Potentially link to the relevant scraping pages (Competitor Research, URL Mapping, etc.)
+
+**Example UI**:
+```
+💡 Low confidence (20%) - This pattern needs more evidence. Try:
+  • Scrape Reddit discussions about joint supplements
+  • Analyze competitor Facebook ads
+  • Add more Amazon reviews
+```
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._

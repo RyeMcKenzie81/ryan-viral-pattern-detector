@@ -24,7 +24,9 @@ from typing import List, Dict, Optional, Any
 from uuid import UUID
 from datetime import datetime
 
-import anthropic
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -49,27 +51,14 @@ class PlanningService:
 
     def __init__(
         self,
+        # Kept for backward compatibility but unused
         anthropic_api_key: Optional[str] = None,
         model: Optional[str] = None
     ):
         """
         Initialize PlanningService.
-
-        Args:
-            anthropic_api_key: Optional API key (defaults to env var)
-            model: Claude model to use (defaults to claude-opus-4-5-20251101)
         """
         self.supabase: Client = get_supabase_client()
-
-        # Initialize Anthropic client for AI suggestions
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set - AI suggestions will fail")
-            self.client = None
-        else:
-            self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = model or DEFAULT_MODEL
-
         logger.info("PlanningService initialized")
 
     # ============================================
@@ -908,10 +897,6 @@ class PlanningService:
         Returns:
             List of suggested offers
         """
-        if not self.client:
-            logger.error("Anthropic client not initialized")
-            return []
-
         product = self.get_product(product_id)
         if not product:
             return []
@@ -938,13 +923,16 @@ Return JSON array:
 
 Return ONLY the JSON array, no other text."""
 
+        # Pydantic AI Agent (Planning/Complex)
+        agent = Agent(
+            model=Config.get_model("planning"),
+            system_prompt="You are an expert marketer. Return ONLY valid JSON."
+        )
+
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = response.content[0].text.strip()
+            result = await agent.run(prompt)
+            content = result.output.strip()
+
             # Clean markdown if present
             if content.startswith("```"):
                 content = content.split("```")[1]
@@ -971,10 +959,6 @@ Return ONLY the JSON array, no other text."""
         Returns:
             List of suggested JTBDs
         """
-        if not self.client:
-            logger.error("Anthropic client not initialized")
-            return []
-
         persona = self.get_persona(persona_id)
         product = self.get_product(product_id)
         if not persona or not product:
@@ -1005,13 +989,16 @@ Return JSON array:
 
 Return ONLY the JSON array, no other text."""
 
+        # Pydantic AI Agent (Planning/Complex)
+        agent = Agent(
+            model=Config.get_model("planning"),
+            system_prompt="You are an expert strategist. Return ONLY valid JSON."
+        )
+
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = response.content[0].text.strip()
+            result = await agent.run(prompt)
+            content = result.output.strip()
+
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -1037,10 +1024,6 @@ Return ONLY the JSON array, no other text."""
         Returns:
             List of suggested angles
         """
-        if not self.client:
-            logger.error("Anthropic client not initialized")
-            return []
-
         # Get JTBD with persona and product context
         jtbd_result = self.supabase.table("belief_jtbd_framed").select(
             "*, personas_4d(name, snapshot), products(name, benefits, target_audience)"
@@ -1085,13 +1068,16 @@ Return JSON array:
 
 Return ONLY the JSON array, no other text."""
 
+        # Pydantic AI Agent (Planning/Complex)
+        agent = Agent(
+            model=Config.get_model("planning"),
+            system_prompt="You are an expert copywriter. Return ONLY valid JSON."
+        )
+
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = response.content[0].text.strip()
+            result = await agent.run(prompt)
+            content = result.output.strip()
+
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):

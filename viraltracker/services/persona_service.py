@@ -20,7 +20,10 @@ from uuid import UUID
 from datetime import datetime
 
 from supabase import Client
-from anthropic import Anthropic
+from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
+
 
 from ..core.database import get_supabase_client
 from .models import (
@@ -532,21 +535,21 @@ class PersonaService:
         # Gather ad insights from existing analyses
         ad_insights = await self._gather_ad_insights(resolved_brand_id, product_id)
 
-        # Call Claude for generation
-        anthropic = Anthropic()
+        # Pydantic AI Agent (Creative)
+        agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are an expert persona creator. Return ONLY valid JSON."
+        )
+
         prompt = PERSONA_GENERATION_PROMPT.format(
             product_info=json.dumps(product_info, indent=2),
             target_audience=target_audience,
             ad_insights=json.dumps(ad_insights, indent=2) if ad_insights else "No ad analyses available yet."
         )
 
-        message = anthropic.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        result = await agent.run(prompt)
 
-        response_text = message.content[0].text
+        response_text = result.output
 
         # Parse response
         clean_response = response_text.strip()
@@ -827,14 +830,15 @@ IMPORTANT: confidence_score must be a float between 0.0 and 1.0 indicating your 
 Return ONLY valid JSON, no other text."""
 
         # Call Claude for synthesis
-        anthropic = Anthropic()
-        message = anthropic.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
+        # Pydantic AI Agent (Creative)
+        agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt="You are an expert persona synthesizer. Return ONLY valid JSON."
         )
 
-        response_text = message.content[0].text
+        result = await agent.run(prompt)
+
+        response_text = result.output
 
         # Parse response
         clean_response = response_text.strip()

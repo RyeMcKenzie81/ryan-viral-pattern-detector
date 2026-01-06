@@ -49,6 +49,18 @@ if 'sched_templates_visible' not in st.session_state:
 if 'sched_uploaded_files' not in st.session_state:
     st.session_state.sched_uploaded_files = []
 
+# Belief-first scheduling state
+if 'sched_content_source' not in st.session_state:
+    st.session_state.sched_content_source = 'hooks'
+if 'sched_selected_plan_id' not in st.session_state:
+    st.session_state.sched_selected_plan_id = None
+if 'sched_selected_persona_id' not in st.session_state:
+    st.session_state.sched_selected_persona_id = None
+if 'sched_selected_jtbd_id' not in st.session_state:
+    st.session_state.sched_selected_jtbd_id = None
+if 'sched_selected_angle_ids' not in st.session_state:
+    st.session_state.sched_selected_angle_ids = []
+
 
 # ============================================================================
 # Database Functions
@@ -108,6 +120,53 @@ def get_variants_for_product(product_id: str):
         return result.data or []
     except Exception as e:
         return []
+
+
+def get_belief_plans_for_product(product_id: str):
+    """Get belief plans for a product (for belief-first scheduling)."""
+    try:
+        db = get_supabase_client()
+        result = db.table("belief_plans").select(
+            "id, name, status, phase_id, ads_per_angle, persona_id, jtbd_framed_id"
+        ).eq("product_id", product_id).in_("status", ["ready", "draft"]).order("created_at", desc=True).execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
+def get_jtbd_for_persona_product(persona_id: str, product_id: str):
+    """Get JTBDs for a persona-product combination."""
+    try:
+        db = get_supabase_client()
+        result = db.table("belief_jtbd_framed").select(
+            "id, name, description, progress_statement"
+        ).eq("persona_id", persona_id).eq("product_id", product_id).order("created_at", desc=True).execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
+def get_angles_for_jtbd(jtbd_id: str):
+    """Get belief angles for a JTBD."""
+    try:
+        db = get_supabase_client()
+        result = db.table("belief_angles").select(
+            "id, name, belief_statement, status"
+        ).eq("jtbd_framed_id", jtbd_id).order("created_at", desc=True).execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
+def get_plan_details(plan_id: str):
+    """Get full plan details including angles and templates."""
+    try:
+        from viraltracker.services.planning_service import PlanningService
+        from uuid import UUID
+        service = PlanningService()
+        return service.get_plan(UUID(plan_id))
+    except Exception as e:
+        return None
 
 
 def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str = None):
@@ -884,6 +943,208 @@ def render_create_schedule():
 
     existing_params = existing_job.get('parameters', {}) if existing_job else {}
 
+    # Content Source selection - determines how ad content is generated
+    st.markdown("**Content Source**")
+    st.caption("Choose how the ad variations will be generated")
+
+    # Get existing content source
+    existing_content_source = existing_params.get('content_source', 'hooks')
+    content_source_options = ['hooks', 'recreate_template', 'plan', 'angles']
+    try:
+        content_source_index = content_source_options.index(existing_content_source)
+    except ValueError:
+        content_source_index = 0
+
+    content_source = st.radio(
+        "Content Generation Mode",
+        options=content_source_options,
+        index=content_source_index,
+        format_func=lambda x: {
+            'hooks': '🎣 Hooks - Use persuasive hooks from database',
+            'recreate_template': '🔄 Recreate - Vary by product benefits',
+            'plan': '📋 Belief Plan - Use a pre-configured belief-first plan',
+            'angles': '🎯 Direct Angles - Select specific angles to test'
+        }.get(x, x),
+        horizontal=False,
+        key="content_source_radio"
+    )
+
+    # Initialize belief-first selection variables
+    selected_plan_id = None
+    selected_angle_ids = []
+    belief_persona_id = None
+    belief_jtbd_id = None
+
+    # Show belief-first UI based on content_source selection
+    if content_source == 'plan':
+        st.divider()
+        st.markdown("##### 📋 Select Belief Plan")
+
+        # Get available plans for this product
+        plans = get_belief_plans_for_product(selected_product_id) if selected_product_id else []
+
+        if not plans:
+            st.warning("No belief plans found for this product. Create a plan in Ad Planning first.")
+        else:
+            # Build plan options
+            plan_options = {"Select a plan...": None}
+            for p in plans:
+                status_emoji = "✅" if p['status'] == 'ready' else "📝"
+                label = f"{status_emoji} {p['name']} (Phase {p['phase_id']})"
+                plan_options[label] = p['id']
+
+            # Get existing plan_id
+            existing_plan_id = existing_params.get('plan_id')
+            current_plan_label = "Select a plan..."
+            if existing_plan_id:
+                for label, pid in plan_options.items():
+                    if pid == existing_plan_id:
+                        current_plan_label = label
+                        break
+
+            selected_plan_label = st.selectbox(
+                "Belief Plan",
+                options=list(plan_options.keys()),
+                index=list(plan_options.keys()).index(current_plan_label) if current_plan_label in plan_options else 0,
+                help="Select a belief plan to use for scheduled ad generation"
+            )
+            selected_plan_id = plan_options[selected_plan_label]
+
+            # Show plan preview if selected
+            if selected_plan_id:
+                plan = get_plan_details(selected_plan_id)
+                if plan:
+                    with st.expander("Plan Preview", expanded=True):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown(f"**Angles:** {len(plan.angles)}")
+                            for a in plan.angles[:5]:
+                                st.caption(f"• {a.name}")
+                            if len(plan.angles) > 5:
+                                st.caption(f"... and {len(plan.angles) - 5} more")
+                        with col_b:
+                            st.markdown(f"**Templates:** {len(plan.templates)}")
+                            st.markdown(f"**Ads per angle:** {plan.ads_per_angle}")
+
+                    # Calculate estimated ads
+                    estimated_ads = len(plan.angles) * len(plan.templates) * plan.ads_per_angle
+                    if estimated_ads > 50:
+                        st.warning(f"⚠️ This plan would generate ~{estimated_ads} ads. Max per run is 50.")
+                    else:
+                        st.info(f"📊 Estimated ads per run: ~{estimated_ads}")
+
+    elif content_source == 'angles':
+        st.divider()
+        st.markdown("##### 🎯 Select Angles Directly")
+
+        # Step 1: Select Persona
+        personas = get_personas_for_product(selected_product_id) if selected_product_id else []
+
+        if not personas:
+            st.warning("No personas found for this product. Create personas in Brand Research first.")
+        else:
+            # Build persona options
+            persona_options_angles = {"Select a persona...": None}
+            for p in personas:
+                label = p['name']
+                if p.get('is_primary'):
+                    label += " ⭐"
+                persona_options_angles[label] = p['id']
+
+            # Get existing selection
+            existing_belief_persona = existing_params.get('belief_persona_id')
+            current_persona_label_angles = "Select a persona..."
+            if existing_belief_persona:
+                for label, pid in persona_options_angles.items():
+                    if pid == existing_belief_persona:
+                        current_persona_label_angles = label
+                        break
+
+            selected_persona_label_angles = st.selectbox(
+                "1️⃣ Select Persona",
+                options=list(persona_options_angles.keys()),
+                index=list(persona_options_angles.keys()).index(current_persona_label_angles) if current_persona_label_angles in persona_options_angles else 0,
+                key="belief_persona_select"
+            )
+            belief_persona_id = persona_options_angles[selected_persona_label_angles]
+
+            # Step 2: Select JTBD (if persona selected)
+            if belief_persona_id:
+                jtbds = get_jtbd_for_persona_product(belief_persona_id, selected_product_id)
+
+                if not jtbds:
+                    st.info("No JTBDs found for this persona+product. Create JTBDs in Ad Planning.")
+                else:
+                    # Build JTBD options
+                    jtbd_options = {"Select a JTBD...": None}
+                    for j in jtbds:
+                        label = j['name']
+                        if j.get('progress_statement'):
+                            label += f" - {j['progress_statement'][:40]}..."
+                        jtbd_options[label] = j['id']
+
+                    # Get existing selection
+                    existing_belief_jtbd = existing_params.get('belief_jtbd_id')
+                    current_jtbd_label = "Select a JTBD..."
+                    if existing_belief_jtbd:
+                        for label, jid in jtbd_options.items():
+                            if jid == existing_belief_jtbd:
+                                current_jtbd_label = label
+                                break
+
+                    selected_jtbd_label = st.selectbox(
+                        "2️⃣ Select Job-to-be-Done",
+                        options=list(jtbd_options.keys()),
+                        index=list(jtbd_options.keys()).index(current_jtbd_label) if current_jtbd_label in jtbd_options else 0,
+                        key="belief_jtbd_select"
+                    )
+                    belief_jtbd_id = jtbd_options[selected_jtbd_label]
+
+                    # Step 3: Select Angles (if JTBD selected)
+                    if belief_jtbd_id:
+                        angles = get_angles_for_jtbd(belief_jtbd_id)
+
+                        if not angles:
+                            st.info("No angles found for this JTBD. Create angles in Ad Planning.")
+                        else:
+                            st.markdown("3️⃣ **Select Angles to Test**")
+
+                            # Get existing angle selections
+                            existing_angle_ids = existing_params.get('angle_ids', [])
+
+                            # Multi-select angles with checkboxes
+                            for angle in angles:
+                                is_selected = angle['id'] in existing_angle_ids or angle['id'] in st.session_state.sched_selected_angle_ids
+                                status_emoji = {'winner': '🏆', 'loser': '❌', 'testing': '🧪'}.get(angle.get('status'), '⚪')
+
+                                col_check, col_info = st.columns([1, 5])
+                                with col_check:
+                                    if st.checkbox(
+                                        f"{status_emoji}",
+                                        value=is_selected,
+                                        key=f"angle_check_{angle['id']}"
+                                    ):
+                                        if angle['id'] not in selected_angle_ids:
+                                            selected_angle_ids.append(angle['id'])
+                                    else:
+                                        if angle['id'] in selected_angle_ids:
+                                            selected_angle_ids.remove(angle['id'])
+
+                                with col_info:
+                                    st.markdown(f"**{angle['name']}**")
+                                    st.caption(angle.get('belief_statement', '')[:80] + '...' if len(angle.get('belief_statement', '')) > 80 else angle.get('belief_statement', ''))
+
+                            # Update session state
+                            st.session_state.sched_selected_angle_ids = selected_angle_ids
+
+                            if selected_angle_ids:
+                                st.success(f"✅ {len(selected_angle_ids)} angle(s) selected")
+                            else:
+                                st.warning("Please select at least one angle")
+
+    st.divider()
+
+    # Other ad parameters
     col1, col2 = st.columns(2)
 
     with col1:
@@ -893,16 +1154,6 @@ def render_create_schedule():
             max_value=15,
             value=existing_params.get('num_variations', 5),
             help="Number of ad variations to generate for each template"
-        )
-
-        content_source = st.radio(
-            "Content Source",
-            options=['hooks', 'recreate_template'],
-            index=0 if existing_params.get('content_source', 'hooks') == 'hooks' else 1,
-            format_func=lambda x: {
-                'hooks': '🎣 Hooks - Use persuasive hooks from database',
-                'recreate_template': '🔄 Recreate - Vary by product benefits'
-            }.get(x, x)
         )
 
     with col2:
@@ -1108,6 +1359,12 @@ def render_create_schedule():
             if export_destination in ['email', 'both'] and not export_email:
                 errors.append("Email address is required")
 
+            # Belief-first validations
+            if content_source == 'plan' and not selected_plan_id:
+                errors.append("Select a belief plan for plan-based scheduling")
+            if content_source == 'angles' and not selected_angle_ids:
+                errors.append("Select at least one angle for angle-based scheduling")
+
             if errors:
                 for error in errors:
                     st.error(error)
@@ -1137,6 +1394,14 @@ def render_create_schedule():
                     'additional_instructions': additional_instructions if additional_instructions else None
                 }
 
+                # Add belief-first parameters based on content_source
+                if content_source == 'plan':
+                    parameters['plan_id'] = selected_plan_id
+                elif content_source == 'angles':
+                    parameters['angle_ids'] = selected_angle_ids
+                    parameters['belief_persona_id'] = belief_persona_id
+                    parameters['belief_jtbd_id'] = belief_jtbd_id
+
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
 
                 job_data = {
@@ -1161,6 +1426,7 @@ def render_create_schedule():
                         st.session_state.scheduler_view = 'list'
                         st.session_state.sched_selected_templates = []
                         st.session_state.sched_uploaded_files = []
+                        st.session_state.sched_selected_angle_ids = []
                         st.rerun()
                 else:
                     job_id = create_scheduled_job(job_data)
@@ -1169,6 +1435,7 @@ def render_create_schedule():
                         st.session_state.scheduler_view = 'list'
                         st.session_state.sched_selected_templates = []
                         st.session_state.sched_uploaded_files = []
+                        st.session_state.sched_selected_angle_ids = []
                         st.rerun()
 
     with col2:
@@ -1176,6 +1443,7 @@ def render_create_schedule():
             st.session_state.scheduler_view = 'list'
             st.session_state.sched_selected_templates = []
             st.session_state.sched_uploaded_files = []
+            st.session_state.sched_selected_angle_ids = []
             st.rerun()
 
 

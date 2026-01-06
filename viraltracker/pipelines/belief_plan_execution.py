@@ -14,12 +14,13 @@ The goal is to test beliefs (angles), not writing talent.
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from dataclasses import dataclass, field
+from typing import ClassVar, Dict, List, Optional, Union
 from uuid import UUID
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from .metadata import NodeMetadata
 from .states import BeliefPlanExecutionState
 from ..agent.dependencies import AgentDependencies
 
@@ -191,7 +192,252 @@ def build_phase12_prompt(
         "variation_index": variation_index
     }
 
+def build_production_prompt(
+    angle: Dict,
+    template: Dict,
+    persona_data: Optional[Dict],
+    jtbd_data: Optional[Dict],
+    variation_index: int,
+    canvas_size: str,
+    product_images: List[Dict] = [],
+    product_variants: List[Dict] = []
+) -> Dict:
+    """
+    Build a PRODUCTION creative prompt in Nano Banana format (Phase 3).
+    
+    This format instructs the model to:
+    1. Render text (headline, primary text) DIRECTLY on the image
+    2. Show the "after" state or solution (product context allowed)
+    3. Use sales-focused copy
+    4. PRESERVE product packaging exactly using reference images
+    """
+    layout_analysis = template.get("layout_analysis", {}) or {}
+    template_type = layout_analysis.get("template_type", "production_creative")
+    template_colors = layout_analysis.get("color_palette", layout_analysis.get("colors", {}))
+    
+    # Get copy from angle's copy_set
+    copy_set = angle.get("copy_set", {}) or {}
+    headlines = copy_set.get("headline_variants", []) or []
+    primary_texts = copy_set.get("primary_text_variants", []) or []
+    
+    # Cycle through copy variants
+    headline = ""
+    primary_text = ""
+    if headlines:
+        headline = headlines[variation_index % len(headlines)].get("text", "")
+    if primary_texts:
+        primary_text = primary_texts[variation_index % len(primary_texts)].get("text", "")
+        
+    # Select Product Image
+    product_image_path = None
+    if product_images:
+        # Try finding main image
+        main_img = next((img for img in product_images if img.get('is_main')), None)
+        if not main_img:
+            main_img = product_images[0]
+        product_image_path = main_img.get('storage_path')
+        
+    # Select Product Size (for scale context)
+    product_size = None
+    if product_variants:
+        # Try finding default variant
+        def_var = next((v for v in product_variants if v.get('is_default')), None)
+        if not def_var and product_variants:
+             def_var = product_variants[0]
+        
+        if def_var:
+             size_val = def_var.get('size_value')
+             size_unit = def_var.get('size_unit')
+             if size_val and size_unit:
+                 product_size = f"{size_val} {size_unit}"
 
+    # Build situation context
+    persona_snapshot = "person"
+    if persona_data:
+        persona_snapshot = persona_data.get("snapshot") or persona_data.get("name") or "person"
+    
+    situation = f"A {persona_snapshot} experiencing the solution/benefit"
+    if jtbd_data:
+        progress = jtbd_data.get("progress_statement") or jtbd_data.get("name", "")
+        if progress:
+            situation += f" related to: {progress}"
+            
+    if product_size:
+        situation += f" (Product Scale: {product_size} package)"
+        
+    # Inject Variation Context to prevent visual repetition
+    settings = [
+        "in a well-lit home environment",
+        "outdoors in natural light",
+        "in a cozy, comfortable setting",
+        "during a daily lifestyle activity",
+        "in a bright, clean domestic space"
+    ]
+    setting = settings[variation_index % len(settings)]
+    situation += f", located {setting}"
+
+    # Build structured JSON prompt for Production
+    json_prompt = {
+        "task": {
+            "action": "create_production_creative",
+            "variation_index": variation_index,
+            "template_type": template_type,
+            "visual_variation": setting
+        },
+
+        "content": {
+            "headline": {
+                "text": headline,
+                "placement": "prominent_overlay",
+                "purpose": "hook_attention",
+                "render_requirement": "MUST render this text exactly, pixel-perfect legible"
+            } if headline else None,
+            "primary_text": {
+                "text": primary_text,
+                "placement": "supporting_text",
+                "purpose": "convey_benefit",
+                "render_requirement": "Render if space allows, otherwise prioritize image"
+            } if primary_text else None,
+            "situation": situation,
+            "belief_being_tested": angle.get("belief_statement")
+        },
+
+        "style": {
+            "canvas_size": canvas_size,
+            "format_type": template_type,
+            "colors": {
+                "mode": "brand_aligned",
+                "palette": template_colors if isinstance(template_colors, list) else [],
+                "instruction": "Use template colors for text and graphical elements"
+            } if template_colors else None,
+            "reference": "Use attached template as LAYOUT guide - place text where template has text"
+        },
+
+        "rules": {
+            "text": {
+                "render_exactly": [headline, primary_text],
+                "requirement": "Text MUST be pixel-perfect legible and readable",
+                "contrast": "ensure_high_contrast_with_background"
+            },
+            "product_image": {
+                  "preserve_exactly": True,
+                  "no_modifications": True,
+                  "instruction": "Render packaging EXACTLY as shown in reference. Do not change text, logo, or colors."
+             } if product_image_path else {},
+            "product": {
+                "show_product": True,
+                "requirement": "Product placement allowed if it fits the scene naturally"
+            },
+            "lighting": {
+                "match_scene": True,
+                "requirement": "Professional, high-quality ad lighting"
+            }
+        },
+
+        "instructions": {
+            "CRITICAL": [
+                f"RENDER TEXT EXACTLY: '{headline}'",
+                "Text must be legible overlay on image",
+                "High quality production creative style",
+                "PRESERVE PRODUCT PACKAGING EXACTLY" if product_image_path else "Show product clearly"
+            ],
+            "DO": [
+                "Show the benefit/solution state",
+                f"Match persona: {persona_snapshot}",
+                "Place text in clear areas (like header/footer or negative space)",
+                f"Product size is {product_size}" if product_size else "Show product at realistic scale",
+                "Vary the human model pose and background details"
+            ],
+            "DO_NOT": [
+                 "Make text small or unreadable",
+                 "Clutter the image",
+                 "Distort product or faces",
+                 "Alter the product packaging logos or text"
+            ]
+        }
+    }
+    
+    # Remove None values
+    def remove_none(d):
+        if isinstance(d, dict):
+            return {k: remove_none(v) for k, v in d.items() if v is not None}
+        elif isinstance(d, list):
+            return [remove_none(i) for i in d if i is not None]
+        return d
+
+    json_prompt = remove_none(json_prompt)
+    
+    # Prepare result dict
+    result = {
+        "json_prompt": json_prompt,
+        "full_prompt": json.dumps(json_prompt, indent=2),
+        "template_storage_path": template.get("storage_path"),
+        "template_name": template.get("name"),
+        "template_id": template.get("id"),
+        "angle_id": angle.get("id"),
+        "angle_name": angle.get("name"),
+        "belief_statement": angle.get("belief_statement"),
+        "hook_text": headline,
+        "meta_headline": "Shop Now" if headline else "", 
+        "meta_primary_text": primary_text,
+        "variation_index": variation_index,
+        "product_image_paths": [product_image_path] if product_image_path else []
+    }
+
+    return result
+
+
+def build_phase12_prompt(
+    angle: Dict,
+    template: Dict,
+    persona_data: Optional[Dict],
+    jtbd_data: Optional[Dict],
+    variation_index: int,
+    canvas_size: str
+) -> Dict:
+    """
+    Build a single Phase 1-2 belief testing prompt (Observation/Recognition).
+    """
+    return build_nano_banana_prompt(
+        angle, template, persona_data, jtbd_data, variation_index, canvas_size
+    )
+
+
+def build_nano_banana_prompts_batch(
+    angles: List[Dict],
+    templates: List[Dict],
+    persona_data: Optional[Dict],
+    jtbd_data: Optional[Dict],
+    variations: int,
+    canvas_size: str,
+    execution_phase: str = "phase_1_2",
+    product_images: List[Dict] = [],
+    product_variants: List[Dict] = []
+) -> List[Dict]:
+    """
+    Build a batch of prompts for all angle x template combinations.
+    """
+    prompts = []
+    
+    # Determine which builder to use
+    is_production = execution_phase == "phase_3_production"
+    
+    for angle in angles:
+        for template in templates:
+            for i in range(variations):
+                if is_production:
+                    prompt = build_production_prompt(
+                        angle, template, persona_data, jtbd_data, i, canvas_size,
+                        product_images=product_images,
+                        product_variants=product_variants
+                    )
+                else:
+                    prompt = build_nano_banana_prompt(
+                        angle, template, persona_data, jtbd_data, i, canvas_size
+                    )
+                prompts.append(prompt)
+                
+    return prompts
 async def review_phase12_ad(
     ctx: GraphRunContext,
     storage_path: str,
@@ -280,6 +526,12 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
     Validates that the plan is Phase 1-2 and loads all required data.
     """
 
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["belief_plan_id", "execution_phase"],
+        outputs=["plan_data", "angles", "templates", "persona_data", "jtbd_data", "product_images"],
+        services=["ad_creation.get_belief_plan_with_copy", "ad_creation.get_persona_for_ad_generation"],
+    )
+
     async def run(
         self,
         ctx: GraphRunContext[BeliefPlanExecutionState, AgentDependencies]
@@ -298,9 +550,10 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
                 ctx.state.current_step = "failed"
                 return End({"status": "error", "error": "Plan not found"})
 
-            # Validate Phase 1-2
+            # Validate Phase 1-2 (unless we are in Execution Phase 3)
             phase_id = plan_data.get("plan", {}).get("phase_id", 1)
-            if phase_id not in [1, 2]:
+            # Relax validation: If we are in "phase_3_production" execution mode, we allow using a Phase 1/2 plan base.
+            if ctx.state.execution_phase != "phase_3_production" and phase_id not in [1, 2]:
                 ctx.state.error = f"This pipeline is for Phase 1-2 only. Plan is Phase {phase_id}."
                 ctx.state.current_step = "failed"
                 return End({"status": "error", "error": ctx.state.error})
@@ -336,6 +589,24 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
                     )
                 except Exception as e:
                     logger.warning(f"Could not load persona: {e}")
+            
+            # Load Product Images & Variants (For Phase 3 Production)
+            product_id = plan_data.get("plan", {}).get("product_id")
+            if product_id:
+                try:
+                    # Fetch Product Images
+                    pi_res = ctx.deps.ad_creation.supabase.table("product_images").select("*").eq("product_id", product_id).execute()
+                    ctx.state.product_images = pi_res.data if pi_res.data else []
+                    
+                    # Fetch Product Variants (for size/volume info)
+                    pv_res = ctx.deps.ad_creation.supabase.table("product_variants").select("*").eq("product_id", product_id).execute()
+                    ctx.state.product_variants = pv_res.data if pv_res.data else []
+                    
+                    logger.info(f"Loaded {len(ctx.state.product_images)} product images and {len(ctx.state.product_variants)} variants for product {product_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to load product assets: {e}")
+                    ctx.state.product_images = []
+                    ctx.state.product_variants = []
 
             ctx.state.current_step = "plan_loaded"
             logger.info(f"Loaded plan with {len(angles)} angles, {len(templates)} templates")
@@ -351,13 +622,14 @@ class LoadPlanNode(BaseNode[BeliefPlanExecutionState]):
 @dataclass
 class BuildPromptsNode(BaseNode[BeliefPlanExecutionState]):
     """
-    Step 2: Build prompts for all angle × template × variation combos.
-
-    Creates prompts that:
-    - Use template as style reference (not final image)
-    - Include only anchor text on image
-    - Store copy scaffold text for Meta ad fields
+    Step 2: Build prompts for all angle x template combinations.
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["angles", "templates", "persona_data", "jtbd_data", "variations_per_angle", "canvas_size", "execution_phase"],
+        outputs=["prompts"],
+        services=[],  # Uses local helper functions, no service calls
+    )
 
     async def run(
         self,
@@ -367,19 +639,17 @@ class BuildPromptsNode(BaseNode[BeliefPlanExecutionState]):
         ctx.state.current_step = "building_prompts"
 
         try:
-            prompts = []
-            for angle in ctx.state.angles:
-                for template in ctx.state.templates:
-                    for v in range(ctx.state.variations_per_angle):
-                        prompt = build_phase12_prompt(
-                            angle=angle,
-                            template=template,
-                            persona_data=ctx.state.persona_data,
-                            jtbd_data=ctx.state.jtbd_data,
-                            variation_index=v,
-                            canvas_size=ctx.state.canvas_size
-                        )
-                        prompts.append(prompt)
+            prompts = build_nano_banana_prompts_batch(
+                angles=ctx.state.angles,
+                templates=ctx.state.templates,
+                persona_data=ctx.state.persona_data,
+                jtbd_data=ctx.state.jtbd_data,
+                variations=ctx.state.variations_per_angle,
+                canvas_size=ctx.state.canvas_size,
+                execution_phase=ctx.state.execution_phase,
+                product_images=ctx.state.product_images,
+                product_variants=ctx.state.product_variants
+            )
 
             ctx.state.prompts = prompts
             ctx.state.total_ads_planned = len(prompts)
@@ -409,6 +679,16 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
     - Only template as reference image (no product images)
     - Images show situations, not products
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["prompts", "plan_data", "belief_plan_id"],
+        outputs=["generated_ads", "ad_run_id", "ads_generated"],
+        services=["ad_creation.create_ad_run", "ad_creation.get_image_as_base64",
+                  "gemini.generate_image", "ad_creation.upload_generated_ad",
+                  "ad_creation.save_generated_ad"],
+        llm="Gemini 3 Pro",
+        llm_purpose="Generate ad images from structured prompts with reference templates",
+    )
 
     async def run(
         self,
@@ -456,12 +736,30 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
                         raise ValueError("Template has no storage_path")
 
                     template_image = await ctx.deps.ad_creation.get_image_as_base64(template_path)
+                    
+                    reference_images = [template_image]
+                    
+                    # Handle Product Images (if any)
+                    product_image_paths = prompt.get("product_image_paths", [])
+                    if product_image_paths:
+                        for path in product_image_paths:
+                            try:
+                                prod_img = await ctx.deps.ad_creation.get_image_as_base64(path)
+                                reference_images.append(prod_img)
+                                logger.info(f"    Added product reference: {path}")
+                            except Exception as e:
+                                logger.warning(f"    Failed to load product image {path}: {e}")
 
-                    # Generate image with ONLY template as reference (no product)
+                    # Determine temperature
+                    # Lower temperature (0.3) if using product images for better preservation
+                    temperature = 0.3 if product_image_paths else 0.4
+
+                    # Generate image with references
                     result = await ctx.deps.gemini.generate_image(
                         prompt=prompt["full_prompt"],
-                        reference_images=[template_image],
-                        return_metadata=True
+                        reference_images=reference_images,
+                        return_metadata=True,
+                        temperature=temperature
                     )
 
                     # Upload to storage
@@ -472,11 +770,34 @@ class GenerateImagesNode(BaseNode[BeliefPlanExecutionState]):
                         product_id=product_uuid,
                         canvas_size=ctx.state.canvas_size
                     )
+                    
+                    # Create database record for the generated ad
+                    saved_ad_id = await ctx.deps.ad_creation.save_generated_ad(
+                        ad_run_id=ad_run_id,
+                        prompt_index=i + 1,
+                        prompt_text=prompt.get("full_prompt", ""),
+                        prompt_spec={"canvas": ctx.state.canvas_size, "prompt": prompt},
+                        hook_id=None,
+                        hook_text=prompt.get("hook_text", ""),
+                        storage_path=storage_path,
+                        final_status="pending",
+                        model_requested=result.get("model_requested", ""),
+                        model_used=result.get("model_used", ""),
+                        generation_time_ms=result.get("generation_time_ms"),
+                        generation_retries=result.get("generation_retries", 0),
+                        ad_id=ad_id,
+                        angle_id=UUID(prompt.get("angle_id")) if prompt.get("angle_id") else None,
+                        template_id=UUID(prompt.get("template_id")) if prompt.get("template_id") else None,
+                        belief_plan_id=ctx.state.belief_plan_id,
+                        meta_headline=prompt.get("hook_text", ""),
+                        meta_primary_text=prompt.get("full_prompt", "")[:500] if prompt.get("full_prompt") else None,
+                        template_name=prompt.get("template_name", "")
+                    )
 
                     ctx.state.generated_ads.append({
                         "prompt_index": i + 1,
                         "storage_path": storage_path,
-                        "ad_id": str(ad_id),
+                        "ad_id": str(saved_ad_id or ad_id),
                         "prompt": prompt,
                         "generation_time_ms": result.get("generation_time_ms"),
                         "model_used": result.get("model_used")
@@ -532,6 +853,15 @@ class ReviewAdsNode(BaseNode[BeliefPlanExecutionState]):
     - Matches template style
     - Only anchor text on image
     """
+
+    metadata: ClassVar[NodeMetadata] = NodeMetadata(
+        inputs=["generated_ads", "ad_run_id", "belief_plan_id"],
+        outputs=["approved_count", "rejected_count", "ads_reviewed"],
+        services=["ad_creation.get_image_as_base64", "gemini.analyze_image",
+                  "ad_creation.save_generated_ad", "ad_creation.update_ad_run"],
+        llm="Gemini",
+        llm_purpose="Review generated ads against phase-specific quality criteria",
+    )
 
     async def run(
         self,
@@ -684,6 +1014,8 @@ belief_plan_execution_graph = Graph(
 )
 
 
+
+
 # ============================================================================
 # CONVENIENCE FUNCTION
 # ============================================================================
@@ -691,8 +1023,9 @@ belief_plan_execution_graph = Graph(
 async def run_belief_plan_execution(
     belief_plan_id: UUID,
     variations_per_angle: int = 3,
-    canvas_size: str = "1080x1080px"
-) -> dict:
+    canvas_size: str = "1080x1080px",
+    execution_phase: str = "phase_1_2"
+) -> Dict:
     """
     Run the belief plan execution pipeline.
 
@@ -703,6 +1036,7 @@ async def run_belief_plan_execution(
         belief_plan_id: UUID of the belief plan to execute
         variations_per_angle: How many variations per angle×template combo
         canvas_size: Output image dimensions
+        execution_phase: "phase_1_2" (belief testing) or "phase_3_production" (creative)
 
     Returns:
         Pipeline result with status, counts, and ad_run_id
@@ -710,7 +1044,8 @@ async def run_belief_plan_execution(
     Example:
         >>> result = await run_belief_plan_execution(
         ...     belief_plan_id=UUID("..."),
-        ...     variations_per_angle=3
+        ...     variations_per_angle=3,
+        ...     execution_phase="phase_3_production"
         ... )
         >>> print(result["status"])  # "complete"
         >>> print(result["approved"])  # 45
@@ -718,9 +1053,12 @@ async def run_belief_plan_execution(
     from ..agent.dependencies import AgentDependencies
     from ..core.database import get_supabase_client
     from datetime import datetime
+    from typing import List, Dict, Optional
+    from dataclasses import dataclass, field
+    from uuid import UUID
 
-    print(f"[PIPELINE] Starting belief plan execution for plan {belief_plan_id}", flush=True)
-    logger.info(f"Starting belief plan execution for plan {belief_plan_id}")
+    print(f"[PIPELINE] Starting belief plan execution for plan {belief_plan_id} (Phase: {execution_phase})", flush=True)
+    logger.info(f"Starting belief plan execution for plan {belief_plan_id} (Phase: {execution_phase})")
 
     # Get database client for tracking
     db = get_supabase_client()
@@ -733,12 +1071,10 @@ async def run_belief_plan_execution(
             "pipeline_name": "belief_plan_execution",
             "belief_plan_id": str(belief_plan_id),
             "status": "running",
-            "current_node": "LoadPlanNode",
             "started_at": datetime.utcnow().isoformat(),
             "state_snapshot": {
-                "current_step": "starting",
-                "variations_per_angle": variations_per_angle,
-                "canvas_size": canvas_size
+                "current_step": "initializing",
+                "phase": execution_phase
             }
         }
         insert_result = db.table("pipeline_runs").insert(run_record).execute()
@@ -762,9 +1098,12 @@ async def run_belief_plan_execution(
         # Create initial state with pipeline_run_id for real-time progress updates
         state = BeliefPlanExecutionState(
             belief_plan_id=belief_plan_id,
+            phase_id=1,  # Default to 1 (int) to match state definition
             variations_per_angle=variations_per_angle,
+            total_ads_planned=0,
             canvas_size=canvas_size,
-            pipeline_run_id=run_id
+            execution_phase=execution_phase,  # Pass the phase ("phase_1_2" or "phase_3_production")
+            pipeline_run_id=str(run_id) if run_id else None
         )
 
         # Run the graph

@@ -9,6 +9,7 @@ This page allows users to:
 """
 
 import asyncio
+import time
 import streamlit as st
 from datetime import datetime
 from uuid import UUID
@@ -168,27 +169,24 @@ def get_pipeline_runs(plan_id: str):
 # EXECUTION
 # ============================================
 
-async def execute_plan(plan_id: str, variations: int, canvas_size: str):
-    """Execute the belief plan pipeline."""
+def run_execution(plan_id: str, variations: int, canvas_size: str, execution_phase: str = "phase_1_2"):
+    """
+    Execute the plan using the Belief Plan pipeline.
+    
+    Args:
+        plan_id: ID of belief plan
+        variations: Number of variations per angle-template
+        canvas_size: Format for output images (e.g. "1080x1080px")
+        execution_phase: "phase_1_2" (belief testing) or "phase_3_production" (creative)
+    """
     from viraltracker.pipelines.belief_plan_execution import run_belief_plan_execution
-
-    result = await run_belief_plan_execution(
-        belief_plan_id=UUID(plan_id),
+    
+    return asyncio.run(run_belief_plan_execution(
+        belief_plan_id=UUID(plan_id), 
         variations_per_angle=variations,
-        canvas_size=canvas_size
-    )
-    return result
-
-
-def run_execution(plan_id: str, variations: int, canvas_size: str):
-    """Wrapper to run async execution."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        result = loop.run_until_complete(execute_plan(plan_id, variations, canvas_size))
-        return result
-    finally:
-        loop.close()
+        canvas_size=canvas_size,
+        execution_phase=execution_phase
+    ))
 
 
 def get_latest_run(plan_id: str):
@@ -201,6 +199,67 @@ def get_latest_run(plan_id: str):
         return result.data[0] if result.data else None
     except Exception:
         return None
+
+
+def render_live_progress(plan_id: str) -> bool:
+    """
+    Render live progress for an active pipeline run.
+    Returns True if there's an active run (to trigger auto-refresh).
+    """
+    latest = get_latest_run(plan_id)
+    if not latest:
+        return False
+    
+    status = latest.get("status", "")
+    if status != "running":
+        return False
+    
+    run_id = latest.get("id")
+    
+    # Active run found - display progress
+    snapshot = latest.get("state_snapshot", {}) or {}
+    generated = snapshot.get("ads_generated", 0)
+    total = snapshot.get("total_ads_planned", 0) or 1  # Avoid div by 0
+    current_step = snapshot.get("current_step", "processing")
+    
+    st.divider()
+    st.subheader("🔄 Execution In Progress")
+    
+    # Progress bar
+    progress = min(generated / total, 1.0) if total > 0 else 0
+    st.progress(progress, text=f"Generated {generated}/{total} ads")
+    
+    # Details
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Status", status.upper())
+    with col2:
+        st.metric("Current Step", current_step)
+    with col3:
+        st.metric("Progress", f"{int(progress * 100)}%")
+    
+    st.info("⏳ Execution is running in the background. Click 'Refresh Status' to update, or 'Cancel' if it's stuck.")
+    
+    # Action buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Refresh Status", key="refresh_progress", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("❌ Cancel Run", key="cancel_run", type="secondary", use_container_width=True):
+            if run_id:
+                try:
+                    db = get_supabase_client()
+                    db.table("pipeline_runs").update({
+                        "status": "failed",
+                        "error_message": "Cancelled by user"
+                    }).eq("id", run_id).execute()
+                    st.success("Run cancelled. You can now restart.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to cancel: {e}")
+    
+    return True  # Active run exists
 
 
 def get_public_url(storage_path: str) -> str:
@@ -306,6 +365,12 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
         )
 
     with col3:
+        execution_phase = st.radio(
+            "Execution Phase",
+            options=["phase_1_2", "phase_3_production"],
+            format_func=lambda x: "Phase 1-2: Belief Testing" if x == "phase_1_2" else "Phase 3: Production Creatives",
+            help="Phase 1-2: No text on image (observation). Phase 3: Text rendered on image (production)."
+        )
         total_ads = num_angles * num_templates * variations
         st.metric("Total Ads to Generate", total_ads)
 
@@ -318,9 +383,10 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
             st.session_state.executor_last_result = None
             with st.spinner(f"Generating {total_ads} ads... This may take a while."):
                 try:
-                    result = run_execution(plan_id, variations, canvas_size)
+                    result = run_execution(plan_id, variations, canvas_size, execution_phase)
                     st.session_state.executor_running = False
                     st.session_state.executor_last_result = result
+
 
                     if result.get("status") == "complete":
                         st.success(f"Execution complete! Generated {result.get('total_generated', 0)} ads.")
@@ -689,12 +755,16 @@ if selected_brand_id:
                     elif not details["templates"]:
                         st.error("This plan has no templates. Add templates in the Ad Planning page.")
                     else:
-                        # Execution form
-                        render_execution_form(
-                            selected_plan_id,
-                            len(details["angles"]),
-                            len(details["templates"])
-                        )
+                        # Check for active running execution first
+                        is_running = render_live_progress(selected_plan_id)
+                        
+                        # Only show execution form if no active run
+                        if not is_running:
+                            render_execution_form(
+                                selected_plan_id,
+                                len(details["angles"]),
+                                len(details["templates"])
+                            )
 
                     st.divider()
 

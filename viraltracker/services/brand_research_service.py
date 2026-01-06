@@ -25,6 +25,10 @@ from datetime import datetime
 from supabase import Client
 from ..core.database import get_supabase_client
 from ..core.config import Config
+from pydantic_ai import Agent
+import asyncio
+
+from ..core.config import Config
 from ..core.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,7 @@ Extract the following information and return as JSON:
 
     "advertising_structure": {
         "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "belief_statement": "The core belief/assumption the audience must accept to want this product",
         "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
         "messaging_angles": [
             {
@@ -237,6 +242,7 @@ Return ONLY valid JSON:
 
     "advertising_structure": {{
         "advertising_angle": "testimonial|demonstration|problem_agitation|transformation|social_proof|authority|scarcity_urgency|comparison|educational|lifestyle|ugc_style|founder_story",
+        "belief_statement": "The core belief/assumption the audience must accept to want this product",
         "awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
         "messaging_angles": [
             {{
@@ -383,35 +389,47 @@ class BrandResearchService:
 
     async def analyze_image(
         self,
-        asset_id: UUID,
-        image_base64: str,
+        asset_id: Optional[UUID] = None,
+        image_base64: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        brand_id: Optional[UUID] = None,
+        facebook_ad_id: Optional[UUID] = None,
+        mime_type: str = "image/jpeg",
+        skip_save: bool = False
+    ) -> Dict:
+        """Async wrapper for analyze_image_sync."""
+        return self.analyze_image_sync(
+            asset_id=asset_id,
+            image_base64=image_base64,
+            image_bytes=image_bytes,
+            brand_id=brand_id,
+            facebook_ad_id=facebook_ad_id,
+            mime_type=mime_type,
+            skip_save=skip_save
+        )
+
+    def analyze_image_sync(
+        self,
+        asset_id: Optional[UUID] = None,
+        image_base64: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
         brand_id: Optional[UUID] = None,
         facebook_ad_id: Optional[UUID] = None,
         mime_type: str = "image/jpeg",
         skip_save: bool = False
     ) -> Dict:
         """
-        Analyze image with Gemini Vision.
-
-        Uses Gemini instead of Claude Vision to support larger files (up to 20MB)
-        and more lenient mime type handling.
-
-        Extracts:
-        - Layout/format type
-        - Text overlays and hooks
-        - Benefits and USPs
-        - Persona signals
-        - Brand voice characteristics
-        - Visual style elements
-
+        Analyze ad image with Gemini Vision (Synchronous).
+        
         Args:
-            asset_id: UUID of the scraped_ad_assets record
-            image_base64: Base64 encoded image data
+            asset_id: Optional UUID of the scraped_ad_assets record
+            image_base64: Optional Base64 encoded image data
+            image_bytes: Optional raw image bytes (takes precedence if provided)
             brand_id: Optional brand to link analysis to
             facebook_ad_id: Optional facebook_ads record to link
-            mime_type: MIME type of the image (used for logging only)
-            skip_save: If True, don't save to brand_ad_analysis (for competitor use)
-
+            mime_type: MIME type of the image
+            skip_save: If True, don't save to brand_ad_analysis
+            
         Returns:
             Analysis result dict
         """
@@ -419,7 +437,7 @@ class BrandResearchService:
         from PIL import Image
         from io import BytesIO
 
-        logger.info(f"Analyzing image asset: {asset_id} (using Gemini)")
+        logger.info(f"Analyzing image asset: {asset_id or 'on-fly'} (using Gemini)")
 
         # Get API key
         api_key = os.getenv("GEMINI_API_KEY")
@@ -429,18 +447,24 @@ class BrandResearchService:
         try:
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
-            model_name = "gemini-2.0-flash-exp"
+            # Use dynamically configured model if possible, else default
+            model_name = Config.get_model("vision") 
 
-            # Decode base64 to PIL Image
-            # Clean and decode base64 image
-            clean_data = image_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
-            # Add padding if necessary
-            missing_padding = len(clean_data) % 4
-            if missing_padding:
-                clean_data += '=' * (4 - missing_padding)
+            # Prepare image
+            if image_bytes:
+                image = Image.open(BytesIO(image_bytes))
+            elif image_base64:
+                # Decode base64 to PIL Image
+                clean_data = image_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+                # Add padding if necessary
+                missing_padding = len(clean_data) % 4
+                if missing_padding:
+                    clean_data += '=' * (4 - missing_padding)
 
-            image_bytes = base64.b64decode(clean_data)
-            image = Image.open(BytesIO(image_bytes))
+                img_data = base64.b64decode(clean_data)
+                image = Image.open(BytesIO(img_data))
+            else:
+                raise ValueError("Either image_bytes or image_base64 must be provided")
 
             logger.info(f"Image decoded: {image.size[0]}x{image.size[1]}, mode={image.mode}")
 
@@ -460,19 +484,20 @@ class BrandResearchService:
                     analysis_text = analysis_text[first_newline + 1:last_fence].strip()
 
             analysis_dict = json.loads(analysis_text)
-
+            
             # Save to database (skip for competitor analysis - they save separately)
-            if not skip_save:
+            # Also skip if no asset_id provided (on-the-fly analysis)
+            if not skip_save and asset_id:
                 self._save_analysis(
                     asset_id=asset_id,
                     brand_id=brand_id,
                     facebook_ad_id=facebook_ad_id,
                     analysis_type="image_vision",
                     raw_response=analysis_dict,
-                    tokens_used=0,  # Gemini doesn't report tokens the same way
+                    tokens_used=response.usage_metadata.total_token_count if response.usage_metadata else 0,
                     model_used=model_name
                 )
-
+            
             logger.info(f"Image analysis complete: format={analysis_dict.get('format_type')}")
             return analysis_dict
 
@@ -599,9 +624,16 @@ class BrandResearchService:
         try:
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
-            model_name = Config.GEMINI_VIDEO_MODEL
-
-            logger.info(f"Uploading video to Gemini: {temp_path}")
+            
+            # Dynamic model selection from Config (Platform Settings)
+            # Remove 'google-gla:' prefix if present for raw client usage, although genai.Client usually handles 'models/'
+            config_model = Config.get_model("vision")
+            if config_model.startswith("google-gla:"):
+                model_name = config_model.replace("google-gla:", "")
+            else:
+                 model_name = Config.GEMINI_VIDEO_MODEL # Default to GEMINI_VIDEO_MODEL if prefix not found
+                 
+            logger.info(f"Analyzing video with model: {model_name}")
 
             # Upload video file to Gemini
             video_file = client.files.upload(file=str(temp_path))
@@ -653,7 +685,8 @@ class BrandResearchService:
                     brand_id=brand_id,
                     facebook_ad_id=facebook_ad_id,
                     raw_response=analysis_dict,
-                    model_used=model_name
+                    model_used=model_name,
+                    tokens_used=response.usage_metadata.total_token_count if response.usage_metadata else 0
                 )
 
             logger.info(f"Video analysis complete: format={analysis_dict.get('video_style', {}).get('format')}")
@@ -741,9 +774,9 @@ class BrandResearchService:
 
     async def analyze_copy(
         self,
-        ad_id: UUID,
         ad_copy: str,
         headline: Optional[str] = None,
+        ad_id: Optional[UUID] = None,
         brand_id: Optional[UUID] = None
     ) -> Dict:
         """
@@ -752,15 +785,15 @@ class BrandResearchService:
         Extracts persona signals, pain points, benefits, hooks from ad text.
 
         Args:
-            ad_id: UUID of the facebook_ads record
             ad_copy: The ad body text
             headline: Optional headline text
+            ad_id: Optional UUID of the facebook_ads record (if linked)
             brand_id: Optional brand to link analysis to
 
         Returns:
             Analysis result dict
         """
-        from anthropic import Anthropic
+
 
         logger.info(f"Analyzing copy for ad: {ad_id}")
 
@@ -775,18 +808,20 @@ class BrandResearchService:
             return {"error": "Empty ad copy"}
 
         try:
-            client = Anthropic()
+            # Pydantic AI Agent
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are an expert copywriter. Return ONLY valid JSON."
+            )
 
             prompt = COPY_ANALYSIS_PROMPT.format(ad_copy=full_copy)
 
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
+            result = await agent.run(prompt)
+            usage = result.usage()
+            tokens_used = usage.total_tokens if usage else 0
+            
             # Parse response
-            response_text = message.content[0].text.strip()
+            response_text = result.output.strip()
             if response_text.startswith('```'):
                 first_newline = response_text.find('\n')
                 last_fence = response_text.rfind('```')
@@ -799,7 +834,9 @@ class BrandResearchService:
             self._save_copy_analysis(
                 ad_id=ad_id,
                 brand_id=brand_id,
-                raw_response=analysis_dict
+                raw_response=analysis_dict,
+                tokens_used=tokens_used,
+                model_used=Config.get_model("creative")
             )
 
             logger.info(f"Copy analysis complete for ad: {ad_id}")
@@ -809,6 +846,77 @@ class BrandResearchService:
             logger.error(f"Failed to parse copy analysis response: {e}")
             logger.error(f"Raw response was: {response_text[:500]}...")
             raise ValueError(f"Invalid JSON response: {e}")
+        except Exception as e:
+            logger.error(f"Copy analysis failed: {e}")
+            raise
+
+    def analyze_copy_sync(
+        self,
+        ad_copy: str,
+        headline: Optional[str] = None,
+        ad_id: Optional[UUID] = None,
+        brand_id: Optional[UUID] = None
+    ) -> Dict:
+        """
+        Analyze ad copy text with Claude (Synchronous).
+        
+        Args:
+            ad_copy: The ad body text
+            headline: Optional headline text
+            ad_id: Optional UUID of the facebook_ads record (if linked)
+            brand_id: Optional brand to link analysis to
+            
+        Returns:
+            Analysis result dict
+        """
+        logger.info(f"Analyzing copy for ad (sync): {ad_id}")
+
+        # Combine headline and body
+        full_copy = ""
+        if headline:
+            full_copy = f"Headline: {headline}\n\n"
+        full_copy += ad_copy
+
+        if not full_copy.strip():
+            logger.warning(f"Empty copy for ad: {ad_id}")
+            return {"error": "Empty ad copy"}
+
+        try:
+            # Pydantic AI Agent
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are an expert copywriter. Return ONLY valid JSON."
+            )
+
+            prompt = COPY_ANALYSIS_PROMPT.format(ad_copy=full_copy)
+
+            # Synchronous run
+            result = agent.run_sync(prompt)
+            usage = result.usage()
+            tokens_used = usage.total_tokens if usage else 0
+            
+            # Parse response
+            response_text = result.output.strip()
+            if response_text.startswith('```'):
+                first_newline = response_text.find('\n')
+                last_fence = response_text.rfind('```')
+                if first_newline != -1 and last_fence > first_newline:
+                    response_text = response_text[first_newline + 1:last_fence].strip()
+
+            analysis_dict = json.loads(response_text)
+
+            # Save to database
+            self._save_copy_analysis(
+                ad_id=ad_id,
+                brand_id=brand_id,
+                raw_response=analysis_dict,
+                tokens_used=tokens_used,
+                model_used=Config.get_model("creative")
+            )
+
+            logger.info(f"Copy analysis complete for ad: {ad_id}")
+            return analysis_dict
+
         except Exception as e:
             logger.error(f"Copy analysis failed: {e}")
             raise
@@ -910,9 +1018,9 @@ class BrandResearchService:
 
             try:
                 analysis = await self.analyze_copy(
-                    ad_id=UUID(ad['id']),
                     ad_copy=ad_copy or '',
                     headline=headline,
+                    ad_id=UUID(ad['id']),
                     brand_id=brand_id
                 )
                 results.append({"ad_id": ad['id'], "analysis": analysis})
@@ -927,9 +1035,11 @@ class BrandResearchService:
 
     def _save_copy_analysis(
         self,
-        ad_id: UUID,
+        ad_id: Optional[UUID],
         brand_id: Optional[UUID],
-        raw_response: Dict
+        raw_response: Dict,
+        tokens_used: int = 0,
+        model_used: str = "claude-sonnet-4-20250514"
     ) -> Optional[UUID]:
         """Save copy analysis to brand_ad_analysis table."""
         try:
@@ -954,7 +1064,7 @@ class BrandResearchService:
 
             record = {
                 "brand_id": str(brand_id) if brand_id else None,
-                "facebook_ad_id": str(ad_id),
+                "facebook_ad_id": str(ad_id) if ad_id else None,
                 "analysis_type": "copy_analysis",
                 "raw_response": raw_response,
                 "extracted_hooks": hooks_list,
@@ -963,9 +1073,9 @@ class BrandResearchService:
                 "pain_points": all_pain_points,
                 "persona_signals": raw_response.get("target_persona"),
                 "brand_voice_notes": json.dumps(raw_response.get("brand_voice", {})),
-                "model_used": "claude-sonnet-4-20250514",
-                "tokens_used": 0,
-                "cost_usd": 0.0
+                "model_used": model_used,
+                "tokens_used": tokens_used,
+                "cost_usd": tokens_used * 0.000003  # Approximate cost for Sonnet/Flash
             }
 
             result = self.supabase.table("brand_ad_analysis").insert(record).execute()
@@ -1049,7 +1159,7 @@ class BrandResearchService:
         Returns:
             Synthesized brand research summary
         """
-        from anthropic import Anthropic
+
 
         logger.info(f"Synthesizing insights for brand: {brand_id}")
 
@@ -1080,18 +1190,14 @@ class BrandResearchService:
         prompt = SYNTHESIS_PROMPT.format(analyses_json=analyses_json)
 
         try:
-            anthropic_client = Anthropic()
-
-            message = anthropic_client.messages.create(
-                model="claude-opus-4-5-20251101",
-                max_tokens=4000,
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }]
+            # Pydantic AI Agent (Creative)
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are a strategic brand consultant. Return ONLY valid JSON."
             )
 
-            synthesis_text = message.content[0].text
+            result = await agent.run(prompt)
+            synthesis_text = result.output
 
             # Strip markdown code fences if present
             synthesis_clean = synthesis_text.strip()
@@ -1321,7 +1427,8 @@ class BrandResearchService:
         brand_id: Optional[UUID],
         facebook_ad_id: Optional[UUID],
         raw_response: Dict,
-        model_used: str
+        model_used: str,
+        tokens_used: int = 0
     ) -> Optional[UUID]:
         """
         Save video analysis to brand_ad_analysis table.
@@ -1377,8 +1484,8 @@ class BrandResearchService:
                 "brand_voice_notes": json.dumps(raw_response.get("brand_voice", {})),
                 "visual_analysis": raw_response.get("video_style"),
                 "model_used": model_used,
-                "tokens_used": 0,  # Gemini doesn't report tokens the same way
-                "cost_usd": 0.0
+                "tokens_used": tokens_used,
+                "cost_usd": 0.0 # Gemini 2.0 Flash Exp is currently free/low cost
             }
 
             result = self.supabase.table("brand_ad_analysis").insert(record).execute()
@@ -1966,7 +2073,7 @@ class BrandResearchService:
         Returns:
             List of persona dictionaries ready for PersonaService._build_persona_from_ai_response
         """
-        from anthropic import Anthropic
+
 
         logger.info(f"Synthesizing personas for brand: {brand_id}")
 
@@ -1995,20 +2102,16 @@ class BrandResearchService:
         logger.info(f"Synthesis prompt length: {prompt_len} chars")
 
         try:
-            client = Anthropic()
-
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8000,  # Increased for expanded testimonials
-                messages=[{"role": "user", "content": prompt}]
+            # Pydantic AI Agent (Creative)
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are an expert persona researcher. Return ONLY valid JSON."
             )
 
-            # Check for empty response
-            if not message.content:
-                logger.error("Synthesis returned empty content")
-                raise ValueError("Model returned empty response")
+            result = await agent.run(prompt)
 
-            response_text = message.content[0].text.strip()
+            # Check for empty response
+            response_text = result.output.strip()
             logger.info(f"Synthesis response length: {len(response_text)} chars")
 
             # Log first 500 chars if parsing fails
@@ -2744,7 +2847,7 @@ class BrandResearchService:
             List of analysis results
         """
         import asyncio
-        from anthropic import Anthropic
+
 
         logger.info(f"Starting landing page analysis for brand: {brand_id}, limit={limit}, product_id={product_id}")
 
@@ -2766,7 +2869,11 @@ class BrandResearchService:
         logger.info(f"Analyzing {len(pages)} landing pages")
 
         # 2. Analyze each page
-        client = Anthropic()
+        # Pydantic AI Agent (Default)
+        agent = Agent(
+            model=Config.get_model("default"),
+            system_prompt="You are an expert analyst. Return ONLY valid JSON."
+        )
         results = []
 
         for i, page in enumerate(pages):
@@ -2794,13 +2901,8 @@ class BrandResearchService:
                     extracted_data=json.dumps(page.get('extracted_data', {}), indent=2)
                 )
 
-                message = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=3000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-
-                response_text = message.content[0].text.strip()
+                result = await agent.run(prompt)
+                response_text = result.output.strip()
 
                 # Strip markdown code fences
                 if response_text.startswith('```'):
@@ -2985,7 +3087,7 @@ class BrandResearchService:
             13-layer analysis dict or None if failed
         """
         import re
-        from anthropic import Anthropic
+
 
         try:
             # Get the landing page
@@ -3023,14 +3125,14 @@ class BrandResearchService:
             )
 
             # Call Claude Opus 4.5
-            client = Anthropic()
-            response = client.messages.create(
-                model="claude-opus-4-5-20251101",
-                max_tokens=8000,
-                messages=[{"role": "user", "content": prompt}]
+            # Pydantic AI Agent (Complex assumption)
+            agent = Agent(
+                model=Config.get_model("complex"),
+                system_prompt="You are an expert market analyst. Return ONLY valid JSON."
             )
-
-            response_text = response.content[0].text
+            
+            result = await agent.run(prompt)
+            response_text = result.output
 
             # Parse JSON response
             json_match = re.search(r'\{[\s\S]*\}', response_text)
@@ -3790,19 +3892,18 @@ class BrandResearchService:
                 ad_copy = "\n".join(copy_parts)
 
                 # Call Claude directly (don't use analyze_copy which saves to brand table)
-                from anthropic import Anthropic
-                client = Anthropic()
+                # Pydantic AI Agent (Default)
+                agent = Agent(
+                    model=Config.get_model("default"),
+                    system_prompt="You are a simplified expert analyst. Return ONLY valid JSON."
+                )
 
                 prompt = COPY_ANALYSIS_PROMPT.format(ad_copy=ad_copy)
 
-                message = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
+                result = await agent.run(prompt)
 
                 # Parse response
-                response_text = message.content[0].text.strip()
+                response_text = result.output.strip()
                 if response_text.startswith('```'):
                     first_newline = response_text.find('\n')
                     last_fence = response_text.rfind('```')
