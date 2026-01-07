@@ -668,55 +668,90 @@ def _analyze_ad_group_and_create_variant(session: dict, fb_data: dict, group_idx
         preview_image_url=group_data.get("preview_image_url"),
     )
 
-    with st.spinner(f"Analyzing {ad_group.ad_count} ads... This may take 1-2 minutes."):
-        try:
-            ad_service = get_ad_analysis_service()
+    # Calculate how many ads will actually be analyzed
+    max_ads_to_analyze = min(50, ad_group.ad_count)
 
-            # Run async analysis
-            synthesis = asyncio.run(
-                ad_service.analyze_and_synthesize(
-                    ad_group,
-                    max_ads=10,  # Limit for speed
-                )
+    # Progress tracking UI
+    st.info(f"🔄 Analyzing up to {max_ads_to_analyze} of {ad_group.ad_count} ads...")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        ad_service = get_ad_analysis_service()
+
+        # Progress callback to update UI
+        def progress_callback(current: int, total: int, status: str):
+            progress = current / total if total > 0 else 0
+            progress_bar.progress(progress)
+            status_text.text(f"📊 {status} ({current}/{total} ads processed)")
+
+        # Run async analysis
+        synthesis = asyncio.run(
+            ad_service.analyze_and_synthesize(
+                ad_group,
+                max_ads=max_ads_to_analyze,
+                progress_callback=progress_callback,
             )
+        )
 
-            # Store analysis results
-            fb_data["url_groups"][group_idx]["status"] = "analyzed"
-            fb_data["url_groups"][group_idx]["analysis_data"] = synthesis
+        # Update progress to complete
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
 
-            # Auto-create offer variant in the first product (if exists)
-            products = session.get("products") or []
-            if products:
-                # Add variant to first product
-                offer_variants = products[0].get("offer_variants") or []
-                new_variant = {
-                    "name": synthesis.get("suggested_name", "Ad Analysis Variant"),
-                    "landing_page_url": synthesis.get("landing_page_url", ""),
-                    "pain_points": synthesis.get("pain_points", []),
-                    "desires_goals": synthesis.get("desires_goals", []),
-                    "benefits": synthesis.get("benefits", []),
-                    "mechanism_name": synthesis.get("mechanism_name", ""),
-                    "mechanism_problem": synthesis.get("mechanism_problem", ""),
-                    "mechanism_solution": synthesis.get("mechanism_solution", ""),
-                    "sample_hooks": synthesis.get("sample_hooks", []),
-                    "disallowed_claims": [],
-                    "required_disclaimers": None,
-                    "is_default": len(offer_variants) == 0,
-                    "source": "ad_analysis",
-                    "source_ad_count": synthesis.get("analyzed_count", 0),
-                }
-                offer_variants.append(new_variant)
-                products[0]["offer_variants"] = offer_variants
-                service.update_section(UUID(session["id"]), "products", products)
+        # Store analysis results
+        fb_data["url_groups"][group_idx]["status"] = "analyzed"
+        fb_data["url_groups"][group_idx]["analysis_data"] = synthesis
 
-            service.update_section(UUID(session["id"]), "facebook_meta", fb_data)
-            st.success(f"Analysis complete! Created variant: {synthesis.get('suggested_name')}")
-            st.rerun()
+        # Auto-create offer variant
+        products = session.get("products") or []
 
-        except Exception as e:
-            st.error(f"Analysis failed: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+        # If no products exist, create a placeholder product first
+        if not products:
+            brand_name = session.get("client_name") or session.get("session_name") or "Product"
+            new_product = {
+                "name": f"{brand_name} - Main Product",
+                "description": "Auto-created product from ad analysis",
+                "amazon_url": "",
+                "product_url": group_data["display_url"],
+                "offer_variants": [],
+            }
+            products = [new_product]
+            st.info(f"📦 Auto-created product: {new_product['name']}")
+
+        # Add variant to first product
+        offer_variants = products[0].get("offer_variants") or []
+        new_variant = {
+            "name": synthesis.get("suggested_name", "Ad Analysis Variant"),
+            "landing_page_url": synthesis.get("landing_page_url", ""),
+            "pain_points": synthesis.get("pain_points", []),
+            "desires_goals": synthesis.get("desires_goals", []),
+            "benefits": synthesis.get("benefits", []),
+            "mechanism_name": synthesis.get("mechanism_name", ""),
+            "mechanism_problem": synthesis.get("mechanism_problem", ""),
+            "mechanism_solution": synthesis.get("mechanism_solution", ""),
+            "sample_hooks": synthesis.get("sample_hooks", []),
+            "disallowed_claims": [],
+            "required_disclaimers": None,
+            "is_default": len(offer_variants) == 0,
+            "source": "ad_analysis",
+            "source_ad_count": synthesis.get("analyzed_count", 0),
+        }
+        offer_variants.append(new_variant)
+        products[0]["offer_variants"] = offer_variants
+        service.update_section(UUID(session["id"]), "products", products)
+
+        service.update_section(UUID(session["id"]), "facebook_meta", fb_data)
+        st.success(f"✅ Analysis complete! Created variant: **{synthesis.get('suggested_name')}**")
+        st.info("👉 Go to the **Products tab** to view and edit the variant details.")
+        time.sleep(2)
+        st.rerun()
+
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"Analysis failed: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 
 def _analyze_merged_groups(session: dict, fb_data: dict, group_indices: list, service):
@@ -748,64 +783,101 @@ def _analyze_merged_groups(session: dict, fb_data: dict, group_indices: list, se
         preview_image_url=primary_group.get("preview_image_url"),
     )
 
-    with st.spinner(f"Analyzing {total_ad_count} ads from {len(group_indices)} groups... This may take 2-3 minutes."):
-        try:
-            ad_service = get_ad_analysis_service()
+    # Calculate how many ads will actually be analyzed
+    max_ads_to_analyze = min(100, total_ad_count)
 
-            # Run async analysis with higher ad limit for merged groups
-            synthesis = asyncio.run(
-                ad_service.analyze_and_synthesize(
-                    merged_group,
-                    max_ads=min(20, total_ad_count),  # Analyze more ads for merged groups
-                )
+    # Progress tracking UI
+    st.info(f"🔄 Analyzing up to {max_ads_to_analyze} ads from {len(group_indices)} URL groups...")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        ad_service = get_ad_analysis_service()
+
+        # Progress callback to update UI
+        def progress_callback(current: int, total: int, status: str):
+            progress = current / total if total > 0 else 0
+            progress_bar.progress(progress)
+            status_text.text(f"📊 {status} ({current}/{total} ads processed)")
+
+        # Run async analysis with higher ad limit for merged groups
+        synthesis = asyncio.run(
+            ad_service.analyze_and_synthesize(
+                merged_group,
+                max_ads=max_ads_to_analyze,
+                progress_callback=progress_callback,
             )
+        )
 
-            # Generate variant name from common theme
-            variant_name = _infer_merged_variant_name(all_urls, synthesis)
+        # Update progress to complete
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
 
-            # Mark all selected groups as merged
-            for idx in group_indices:
-                fb_data["url_groups"][idx]["status"] = "merged"
-                fb_data["url_groups"][idx]["merged_into_variant"] = variant_name
-                fb_data["url_groups"][idx]["analysis_data"] = synthesis
+        # Generate variant name from common theme
+        variant_name = _infer_merged_variant_name(all_urls, synthesis)
 
-            # Auto-create offer variant in the first product (if exists)
-            products = session.get("products") or []
-            if products:
-                offer_variants = products[0].get("offer_variants") or []
-                new_variant = {
-                    "name": variant_name,
-                    "landing_page_url": primary_group["display_url"],
-                    "pain_points": synthesis.get("pain_points", []),
-                    "desires_goals": synthesis.get("desires_goals", []),
-                    "benefits": synthesis.get("benefits", []),
-                    "mechanism_name": synthesis.get("mechanism_name", ""),
-                    "mechanism_problem": synthesis.get("mechanism_problem", ""),
-                    "mechanism_solution": synthesis.get("mechanism_solution", ""),
-                    "sample_hooks": synthesis.get("sample_hooks", []),
-                    "disallowed_claims": [],
-                    "required_disclaimers": None,
-                    "is_default": len(offer_variants) == 0,
-                    "source": "ad_analysis_merged",
-                    "source_ad_count": synthesis.get("analyzed_count", 0),
-                    "source_urls": all_urls,  # Track all merged URLs
-                }
-                offer_variants.append(new_variant)
-                products[0]["offer_variants"] = offer_variants
-                service.update_section(UUID(session["id"]), "products", products)
+        # Mark all selected groups as merged
+        for idx in group_indices:
+            fb_data["url_groups"][idx]["status"] = "merged"
+            fb_data["url_groups"][idx]["merged_into_variant"] = variant_name
+            fb_data["url_groups"][idx]["analysis_data"] = synthesis
 
-            service.update_section(UUID(session["id"]), "facebook_meta", fb_data)
+        # Auto-create offer variant
+        products = session.get("products") or []
 
-            # Clear selection
-            st.session_state.selected_url_groups = set()
+        # If no products exist, create a placeholder product first
+        if not products:
+            # Infer product name from the variant/brand
+            brand_name = session.get("client_name") or session.get("session_name") or "Product"
+            new_product = {
+                "name": f"{brand_name} - Main Product",
+                "description": "Auto-created product from ad analysis",
+                "amazon_url": "",
+                "product_url": primary_group["display_url"],
+                "offer_variants": [],
+            }
+            products = [new_product]
+            st.info(f"📦 Auto-created product: {new_product['name']}")
 
-            st.success(f"Merged analysis complete! Created variant: {variant_name}")
-            st.rerun()
+        # Add variant to first product
+        offer_variants = products[0].get("offer_variants") or []
+        new_variant = {
+            "name": variant_name,
+            "landing_page_url": primary_group["display_url"],
+            "pain_points": synthesis.get("pain_points", []),
+            "desires_goals": synthesis.get("desires_goals", []),
+            "benefits": synthesis.get("benefits", []),
+            "mechanism_name": synthesis.get("mechanism_name", ""),
+            "mechanism_problem": synthesis.get("mechanism_problem", ""),
+            "mechanism_solution": synthesis.get("mechanism_solution", ""),
+            "sample_hooks": synthesis.get("sample_hooks", []),
+            "disallowed_claims": [],
+            "required_disclaimers": None,
+            "is_default": len(offer_variants) == 0,
+            "source": "ad_analysis_merged",
+            "source_ad_count": synthesis.get("analyzed_count", 0),
+            "source_urls": all_urls,  # Track all merged URLs
+        }
+        offer_variants.append(new_variant)
+        products[0]["offer_variants"] = offer_variants
+        service.update_section(UUID(session["id"]), "products", products)
 
-        except Exception as e:
-            st.error(f"Merged analysis failed: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+        service.update_section(UUID(session["id"]), "facebook_meta", fb_data)
+
+        # Clear selection
+        st.session_state.selected_url_groups = set()
+
+        st.success(f"✅ Merged analysis complete! Created variant: **{variant_name}** with {synthesis.get('analyzed_count', 0)} ads analyzed.")
+        st.info("👉 Go to the **Products tab** to view and edit the variant details.")
+        time.sleep(2)  # Give user time to see the message
+        st.rerun()
+
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"Merged analysis failed: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 
 def _infer_merged_variant_name(urls: list, synthesis: dict) -> str:
