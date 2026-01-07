@@ -534,19 +534,56 @@ def render_facebook_tab(session: dict):
         st.markdown(f"### 📍 Discovered Landing Pages ({len(url_groups)})")
         st.caption(
             "For each landing page, you can analyze the ads to auto-fill an offer variant, "
-            "or skip if not relevant."
+            "or skip if not relevant. **Select multiple to merge into one variant.**"
         )
+
+        # Initialize selection state
+        if "selected_url_groups" not in st.session_state:
+            st.session_state.selected_url_groups = set()
+
+        # Count pending groups for merge UI
+        pending_indices = [i for i, g in enumerate(url_groups) if g.get("status", "pending") == "pending"]
+
+        # Show merge button if 2+ groups are selected
+        selected = st.session_state.selected_url_groups
+        selected_pending = [i for i in selected if i in pending_indices]
+
+        if len(selected_pending) >= 2:
+            total_ads = sum(url_groups[i]["ad_count"] for i in selected_pending)
+            merge_col1, merge_col2 = st.columns([2, 3])
+            with merge_col1:
+                if st.button(
+                    f"🔀 Merge & Analyze Selected ({len(selected_pending)} groups, {total_ads} ads)",
+                    type="primary",
+                    key="merge_analyze_btn",
+                ):
+                    _analyze_merged_groups(session, data, list(selected_pending), service)
+            with merge_col2:
+                if st.button("Clear Selection", key="clear_selection_btn"):
+                    st.session_state.selected_url_groups = set()
+                    st.rerun()
+            st.markdown("---")
 
         for idx, group in enumerate(url_groups):
             status = group.get("status", "pending")
-            status_icon = {"pending": "⏳", "analyzed": "✅", "skipped": "⏭️"}.get(status, "⏳")
+            status_icon = {"pending": "⏳", "analyzed": "✅", "skipped": "⏭️", "merged": "🔀"}.get(status, "⏳")
 
             with st.expander(
                 f"{status_icon} {group['display_url'][:60]}... ({group['ad_count']} ads)",
                 expanded=(status == "pending" and idx < 3),
             ):
-                # Preview
-                prev_col1, prev_col2 = st.columns([3, 1])
+                # Preview row with checkbox for pending items
+                if status == "pending":
+                    check_col, prev_col1, prev_col2 = st.columns([0.5, 2.5, 1])
+                    with check_col:
+                        is_selected = idx in st.session_state.selected_url_groups
+                        if st.checkbox("", value=is_selected, key=f"select_group_{idx}", label_visibility="collapsed"):
+                            st.session_state.selected_url_groups.add(idx)
+                        else:
+                            st.session_state.selected_url_groups.discard(idx)
+                else:
+                    prev_col1, prev_col2 = st.columns([3, 1])
+
                 with prev_col1:
                     if group.get("preview_text"):
                         st.caption(f"Preview: \"{group['preview_text']}...\"")
@@ -598,6 +635,10 @@ def render_facebook_tab(session: dict):
                         # Mechanism fields if extracted
                         if analysis.get("mechanism_name"):
                             st.markdown(f"**Mechanism:** {analysis['mechanism_name']}")
+
+                elif status == "merged":
+                    merged_into = group.get("merged_into_variant", "Unknown")
+                    st.info(f"🔀 Merged into variant: **{merged_into}**")
 
                 elif status == "skipped":
                     st.caption("Skipped - no variant created")
@@ -672,6 +713,125 @@ def _analyze_ad_group_and_create_variant(session: dict, fb_data: dict, group_idx
             st.error(f"Analysis failed: {e}")
             import traceback
             st.code(traceback.format_exc())
+
+
+def _analyze_merged_groups(session: dict, fb_data: dict, group_indices: list, service):
+    """Analyze multiple URL groups together and create a single merged variant."""
+    from viraltracker.services.ad_analysis_service import AdGroup
+
+    # Combine all ads from selected groups
+    all_ads = []
+    all_urls = []
+    total_ad_count = 0
+
+    for idx in group_indices:
+        group_data = fb_data["url_groups"][idx]
+        all_ads.extend(group_data.get("ads", []))
+        all_urls.append(group_data["display_url"])
+        total_ad_count += group_data["ad_count"]
+
+    # Create a merged AdGroup
+    # Use the URL with most ads as the primary URL
+    primary_idx = max(group_indices, key=lambda i: fb_data["url_groups"][i]["ad_count"])
+    primary_group = fb_data["url_groups"][primary_idx]
+
+    merged_group = AdGroup(
+        normalized_url=primary_group["normalized_url"],
+        display_url=primary_group["display_url"],
+        ad_count=total_ad_count,
+        ads=all_ads,
+        preview_text=primary_group.get("preview_text"),
+        preview_image_url=primary_group.get("preview_image_url"),
+    )
+
+    with st.spinner(f"Analyzing {total_ad_count} ads from {len(group_indices)} groups... This may take 2-3 minutes."):
+        try:
+            ad_service = get_ad_analysis_service()
+
+            # Run async analysis with higher ad limit for merged groups
+            synthesis = asyncio.run(
+                ad_service.analyze_and_synthesize(
+                    merged_group,
+                    max_ads=min(20, total_ad_count),  # Analyze more ads for merged groups
+                )
+            )
+
+            # Generate variant name from common theme
+            variant_name = _infer_merged_variant_name(all_urls, synthesis)
+
+            # Mark all selected groups as merged
+            for idx in group_indices:
+                fb_data["url_groups"][idx]["status"] = "merged"
+                fb_data["url_groups"][idx]["merged_into_variant"] = variant_name
+                fb_data["url_groups"][idx]["analysis_data"] = synthesis
+
+            # Auto-create offer variant in the first product (if exists)
+            products = session.get("products") or []
+            if products:
+                offer_variants = products[0].get("offer_variants") or []
+                new_variant = {
+                    "name": variant_name,
+                    "landing_page_url": primary_group["display_url"],
+                    "pain_points": synthesis.get("pain_points", []),
+                    "desires_goals": synthesis.get("desires_goals", []),
+                    "benefits": synthesis.get("benefits", []),
+                    "mechanism_name": synthesis.get("mechanism_name", ""),
+                    "mechanism_problem": synthesis.get("mechanism_problem", ""),
+                    "mechanism_solution": synthesis.get("mechanism_solution", ""),
+                    "sample_hooks": synthesis.get("sample_hooks", []),
+                    "disallowed_claims": [],
+                    "required_disclaimers": None,
+                    "is_default": len(offer_variants) == 0,
+                    "source": "ad_analysis_merged",
+                    "source_ad_count": synthesis.get("analyzed_count", 0),
+                    "source_urls": all_urls,  # Track all merged URLs
+                }
+                offer_variants.append(new_variant)
+                products[0]["offer_variants"] = offer_variants
+                service.update_section(UUID(session["id"]), "products", products)
+
+            service.update_section(UUID(session["id"]), "facebook_meta", fb_data)
+
+            # Clear selection
+            st.session_state.selected_url_groups = set()
+
+            st.success(f"Merged analysis complete! Created variant: {variant_name}")
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Merged analysis failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+def _infer_merged_variant_name(urls: list, synthesis: dict) -> str:
+    """Infer a good variant name from merged URLs and synthesis data."""
+    # Look for common patterns in URLs
+    common_terms = []
+    url_parts = [url.lower().split("/")[-1].replace("-", " ") for url in urls]
+
+    # Find common words across URLs
+    if url_parts:
+        first_words = set(url_parts[0].split())
+        for url_part in url_parts[1:]:
+            first_words &= set(url_part.split())
+
+        # Filter out generic words
+        generic = {"pages", "page", "com", "www", "https", "http", "support", "for", "the", "a", "an"}
+        common_terms = [w for w in first_words if w not in generic and len(w) > 2]
+
+    if common_terms:
+        # Use common terms as base
+        name_base = " ".join(sorted(common_terms, key=len, reverse=True)[:3])
+        return f"{name_base.title()} Angle"
+
+    # Fall back to synthesis suggested name or first benefit
+    if synthesis.get("suggested_name"):
+        return synthesis["suggested_name"]
+    if synthesis.get("benefits"):
+        return f"{synthesis['benefits'][0][:30]} Angle"
+
+    return "Merged Ad Analysis Variant"
 
 
 def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, service):
