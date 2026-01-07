@@ -642,7 +642,16 @@ def render_facebook_tab(session: dict):
 
                 elif status == "merged":
                     merged_into = group.get("merged_into_variant", "Unknown")
-                    st.info(f"🔀 Merged into variant: **{merged_into}**")
+                    merge_col1, merge_col2 = st.columns([4, 1])
+                    with merge_col1:
+                        st.info(f"🔀 Merged into variant: **{merged_into}**")
+                    with merge_col2:
+                        if st.button("🔄 Reset", key=f"reset_merged_{idx}", help="Clear merged status to re-analyze"):
+                            data["url_groups"][idx]["status"] = "pending"
+                            data["url_groups"][idx].pop("merged_into_variant", None)
+                            data["url_groups"][idx].pop("analysis_data", None)
+                            service.update_section(UUID(session["id"]), "facebook_meta", data)
+                            st.rerun()
 
                 elif status == "skipped":
                     st.caption("Skipped - no variant created")
