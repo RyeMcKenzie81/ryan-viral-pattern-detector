@@ -277,8 +277,13 @@ def get_offer_variant(offer_variant_id: str) -> Optional[Dict]:
         return None
 
 
-def build_offer_variant_context(offer_variant: Dict) -> str:
-    """Build context string from offer variant data for ad generation."""
+def build_offer_variant_context(offer_variant: Dict, brand_disallowed_claims: Optional[List[str]] = None) -> str:
+    """Build context string from offer variant data for ad generation.
+
+    Args:
+        offer_variant: Offer variant dict with messaging and compliance data
+        brand_disallowed_claims: Optional brand-level disallowed claims to include
+    """
     lines = []
     lines.append("=== OFFER VARIANT CONTEXT ===")
     lines.append(f"Landing Page: {offer_variant.get('landing_page_url', 'N/A')}")
@@ -298,6 +303,25 @@ def build_offer_variant_context(offer_variant: Dict) -> str:
     target_audience = offer_variant.get('target_audience')
     if target_audience:
         lines.append(f"Target Audience: {target_audience}")
+
+    # Compliance section
+    all_disallowed = []
+    if brand_disallowed_claims:
+        all_disallowed.extend(brand_disallowed_claims)
+    variant_disallowed = offer_variant.get('disallowed_claims') or []
+    if variant_disallowed:
+        all_disallowed.extend(variant_disallowed)
+
+    if all_disallowed:
+        lines.append("")
+        lines.append("⚠️ DISALLOWED CLAIMS (DO NOT USE):")
+        for claim in all_disallowed:
+            lines.append(f"  - {claim}")
+
+    required_disclaimers = offer_variant.get('required_disclaimers')
+    if required_disclaimers:
+        lines.append("")
+        lines.append(f"📋 REQUIRED DISCLAIMER: {required_disclaimers}")
 
     lines.append("=== END OFFER CONTEXT ===")
     return "\n".join(lines)
@@ -406,10 +430,15 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     offer_variant_id = params.get('offer_variant_id')
     destination_url = params.get('destination_url')
 
+    # Get brand-level disallowed claims for compliance
+    brand_disallowed_claims = brand_info.get('disallowed_claims') or []
+
     if offer_variant_id:
         offer_variant = get_offer_variant(offer_variant_id)
         if offer_variant:
-            offer_variant_context = build_offer_variant_context(offer_variant)
+            offer_variant_context = build_offer_variant_context(
+                offer_variant, brand_disallowed_claims=brand_disallowed_claims
+            )
             destination_url = offer_variant.get('landing_page_url') or destination_url
             logs.append(f"Offer variant: {offer_variant.get('name', 'Unknown')}")
             logs.append(f"Destination URL: {destination_url}")

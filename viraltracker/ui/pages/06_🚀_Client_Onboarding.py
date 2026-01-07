@@ -62,6 +62,13 @@ def get_amazon_service():
     return AmazonReviewService()
 
 
+def get_ad_analysis_service():
+    """Get AdAnalysisService instance."""
+    from viraltracker.services.ad_analysis_service import AdAnalysisService
+
+    return AdAnalysisService()
+
+
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
@@ -376,6 +383,23 @@ def render_brand_basics_tab(session: dict):
                 for b in scraped["benefits"][:5]:
                     st.caption(f"• {b}")
 
+    # Compliance Restrictions
+    st.markdown("---")
+    st.markdown("### ⚠️ Compliance Restrictions")
+    st.caption(
+        "Claims that must NOT appear in any ads for this brand. "
+        "These apply to ALL products and offer variants."
+    )
+
+    disallowed_claims = data.get("disallowed_claims") or []
+    disallowed_claims_str = st.text_area(
+        "Disallowed Claims (one per line)",
+        value="\n".join(disallowed_claims),
+        height=100,
+        placeholder="No FDA approval claims\nNo competitor name mentions\nNo medical treatment claims\nNo cure/treat language",
+        key="brand_disallowed_claims",
+    )
+
     # Save button
     if st.button("💾 Save Brand Basics", type="primary", key="save_brand_basics"):
         data.update(
@@ -383,6 +407,7 @@ def render_brand_basics_tab(session: dict):
                 "name": name,
                 "website_url": website_url,
                 "brand_voice": brand_voice,
+                "disallowed_claims": [c.strip() for c in disallowed_claims_str.split("\n") if c.strip()],
             }
         )
         service.update_section(UUID(session["id"]), "brand_basics", data)
@@ -396,7 +421,7 @@ def render_brand_basics_tab(session: dict):
 
 
 def render_facebook_tab(session: dict):
-    """Render Facebook/Meta section."""
+    """Render Facebook/Meta section with ad analysis for offer variants."""
     service = get_onboarding_service()
 
     data = session.get("facebook_meta") or {}
@@ -426,37 +451,7 @@ def render_facebook_tab(session: dict):
             key="fb_ad_account_id",
         )
 
-        # Scrape ads trigger
-        if ad_library_url:
-            st.markdown("**Ad Library Scraping**")
-            scrape_col1, scrape_col2 = st.columns([1, 2])
-            with scrape_col1:
-                if st.button("🔍 Scrape Ads", key="scrape_fb_ads"):
-                    with st.spinner("Scraping Facebook ads... This may take a few minutes."):
-                        try:
-                            from viraltracker.scrapers.facebook_ads import FacebookAdsScraper
-
-                            scraper = FacebookAdsScraper()
-                            df = scraper.search_ad_library(search_url=ad_library_url, count=50)
-                            data["scraped_ads_count"] = len(df)
-                            data["scraped_at"] = datetime.utcnow().isoformat()
-                            service.update_section(UUID(session["id"]), "facebook_meta", data)
-                            service.update_scrape_status(
-                                UUID(session["id"]),
-                                "facebook_ads",
-                                "complete",
-                                result_data={"count": len(df)},
-                            )
-                            st.success(f"Scraped {len(df)} ads!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Scrape failed: {e}")
-
-            with scrape_col2:
-                if data.get("scraped_ads_count"):
-                    st.caption(f"✅ {data['scraped_ads_count']} ads scraped")
-
-    # Save button
+    # Save basic info
     if st.button("💾 Save Facebook/Meta", type="primary", key="save_facebook"):
         data.update(
             {
@@ -468,6 +463,310 @@ def render_facebook_tab(session: dict):
         service.update_section(UUID(session["id"]), "facebook_meta", data)
         st.success("Saved!")
         st.rerun()
+
+    # ============================================
+    # AD SCRAPING & ANALYSIS
+    # ============================================
+    st.markdown("---")
+    st.markdown("### 📊 Ad Analysis for Offer Variants")
+    st.caption(
+        "Scrape your existing Facebook ads to auto-discover landing pages and extract messaging "
+        "for offer variants. Ads are grouped by destination URL."
+    )
+
+    if not ad_library_url:
+        st.info("Enter an Ad Library URL above to enable ad scraping.")
+        return
+
+    # Scrape & Group button
+    scrape_col1, scrape_col2 = st.columns([1, 3])
+    with scrape_col1:
+        if st.button("🔍 Scrape & Group Ads", key="scrape_group_ads", type="primary"):
+            with st.spinner("Scraping Facebook ads... This may take a few minutes."):
+                try:
+                    from viraltracker.scrapers.facebook_ads import FacebookAdsScraper
+
+                    scraper = FacebookAdsScraper()
+                    df = scraper.search_ad_library(search_url=ad_library_url, count=100)
+
+                    if df.empty:
+                        st.warning("No ads found. Check the Ad Library URL.")
+                        return
+
+                    # Convert DataFrame to list of dicts for grouping
+                    ads_list = df.to_dict('records')
+
+                    # Group by URL using AdAnalysisService
+                    ad_service = get_ad_analysis_service()
+                    url_groups = ad_service.group_ads_by_url(ads_list)
+
+                    # Store in session data
+                    data["scraped_ads_count"] = len(df)
+                    data["scraped_at"] = datetime.utcnow().isoformat()
+                    data["url_groups"] = [
+                        {
+                            "normalized_url": g.normalized_url,
+                            "display_url": g.display_url,
+                            "ad_count": g.ad_count,
+                            "preview_text": g.preview_text,
+                            "preview_image_url": g.preview_image_url,
+                            "status": "pending",  # pending, analyzed, skipped
+                            "analysis_data": None,
+                            "ads": g.ads,  # Store ads for later analysis
+                        }
+                        for g in url_groups
+                    ]
+                    service.update_section(UUID(session["id"]), "facebook_meta", data)
+                    st.success(f"Found {len(df)} ads across {len(url_groups)} landing pages!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Scrape failed: {e}")
+
+    with scrape_col2:
+        if data.get("scraped_ads_count"):
+            scraped_at = data.get("scraped_at", "")[:10] if data.get("scraped_at") else ""
+            st.caption(f"✅ {data['scraped_ads_count']} ads scraped ({scraped_at})")
+
+    # Display URL groups
+    url_groups = data.get("url_groups") or []
+    if url_groups:
+        st.markdown("---")
+        st.markdown(f"### 📍 Discovered Landing Pages ({len(url_groups)})")
+        st.caption(
+            "For each landing page, you can analyze the ads to auto-fill an offer variant, "
+            "or skip if not relevant."
+        )
+
+        for idx, group in enumerate(url_groups):
+            status = group.get("status", "pending")
+            status_icon = {"pending": "⏳", "analyzed": "✅", "skipped": "⏭️"}.get(status, "⏳")
+
+            with st.expander(
+                f"{status_icon} {group['display_url'][:60]}... ({group['ad_count']} ads)",
+                expanded=(status == "pending" and idx < 3),
+            ):
+                # Preview
+                prev_col1, prev_col2 = st.columns([3, 1])
+                with prev_col1:
+                    if group.get("preview_text"):
+                        st.caption(f"Preview: \"{group['preview_text']}...\"")
+                    st.markdown(f"🔗 **URL:** `{group['display_url']}`")
+                    st.caption(f"📊 **Ads:** {group['ad_count']}")
+
+                with prev_col2:
+                    if group.get("preview_image_url"):
+                        try:
+                            st.image(group["preview_image_url"], width=100)
+                        except Exception:
+                            pass
+
+                # Action buttons
+                if status == "pending":
+                    action_col1, action_col2 = st.columns(2)
+                    with action_col1:
+                        if st.button(
+                            "🔬 Analyze & Create Variant",
+                            key=f"analyze_group_{idx}",
+                            type="primary",
+                        ):
+                            _analyze_ad_group_and_create_variant(session, data, idx, service)
+
+                    with action_col2:
+                        if st.button("⏭️ Skip", key=f"skip_group_{idx}"):
+                            data["url_groups"][idx]["status"] = "skipped"
+                            service.update_section(UUID(session["id"]), "facebook_meta", data)
+                            st.rerun()
+
+                elif status == "analyzed":
+                    analysis = group.get("analysis_data") or {}
+                    st.success(f"✅ Analyzed! Created variant: **{analysis.get('suggested_name', 'Unnamed')}**")
+
+                    # Show extracted data summary
+                    with st.container():
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if analysis.get("pain_points"):
+                                st.markdown("**Pain Points:**")
+                                for pp in analysis["pain_points"][:3]:
+                                    st.caption(f"• {pp}")
+                        with col2:
+                            if analysis.get("benefits"):
+                                st.markdown("**Benefits:**")
+                                for b in analysis["benefits"][:3]:
+                                    st.caption(f"• {b}")
+
+                        # Mechanism fields if extracted
+                        if analysis.get("mechanism_name"):
+                            st.markdown(f"**Mechanism:** {analysis['mechanism_name']}")
+
+                elif status == "skipped":
+                    st.caption("Skipped - no variant created")
+                    if st.button("↩️ Undo Skip", key=f"unskip_{idx}"):
+                        data["url_groups"][idx]["status"] = "pending"
+                        service.update_section(UUID(session["id"]), "facebook_meta", data)
+                        st.rerun()
+
+
+def _analyze_ad_group_and_create_variant(session: dict, fb_data: dict, group_idx: int, service):
+    """Analyze an ad group and create an offer variant from the results."""
+    from viraltracker.services.ad_analysis_service import AdGroup
+
+    group_data = fb_data["url_groups"][group_idx]
+
+    # Reconstruct AdGroup from stored data
+    ad_group = AdGroup(
+        normalized_url=group_data["normalized_url"],
+        display_url=group_data["display_url"],
+        ad_count=group_data["ad_count"],
+        ads=group_data.get("ads", []),
+        preview_text=group_data.get("preview_text"),
+        preview_image_url=group_data.get("preview_image_url"),
+    )
+
+    with st.spinner(f"Analyzing {ad_group.ad_count} ads... This may take 1-2 minutes."):
+        try:
+            ad_service = get_ad_analysis_service()
+
+            # Run async analysis
+            synthesis = asyncio.run(
+                ad_service.analyze_and_synthesize(
+                    ad_group,
+                    max_ads=10,  # Limit for speed
+                )
+            )
+
+            # Store analysis results
+            fb_data["url_groups"][group_idx]["status"] = "analyzed"
+            fb_data["url_groups"][group_idx]["analysis_data"] = synthesis
+
+            # Auto-create offer variant in the first product (if exists)
+            products = session.get("products") or []
+            if products:
+                # Add variant to first product
+                offer_variants = products[0].get("offer_variants") or []
+                new_variant = {
+                    "name": synthesis.get("suggested_name", "Ad Analysis Variant"),
+                    "landing_page_url": synthesis.get("landing_page_url", ""),
+                    "pain_points": synthesis.get("pain_points", []),
+                    "desires_goals": synthesis.get("desires_goals", []),
+                    "benefits": synthesis.get("benefits", []),
+                    "mechanism_name": synthesis.get("mechanism_name", ""),
+                    "mechanism_problem": synthesis.get("mechanism_problem", ""),
+                    "mechanism_solution": synthesis.get("mechanism_solution", ""),
+                    "sample_hooks": synthesis.get("sample_hooks", []),
+                    "disallowed_claims": [],
+                    "required_disclaimers": None,
+                    "is_default": len(offer_variants) == 0,
+                    "source": "ad_analysis",
+                    "source_ad_count": synthesis.get("analyzed_count", 0),
+                }
+                offer_variants.append(new_variant)
+                products[0]["offer_variants"] = offer_variants
+                service.update_section(UUID(session["id"]), "products", products)
+
+            service.update_section(UUID(session["id"]), "facebook_meta", fb_data)
+            st.success(f"Analysis complete! Created variant: {synthesis.get('suggested_name')}")
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Analysis failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, service):
+    """Analyze Amazon listing and pre-fill product/variant data."""
+    prod = products[prod_idx]
+    amazon_url = prod.get("amazon_url")
+
+    if not amazon_url:
+        st.warning("No Amazon URL provided")
+        return
+
+    with st.spinner("Analyzing Amazon listing... This may take 2-3 minutes."):
+        try:
+            amazon_service = get_amazon_service()
+            result = amazon_service.analyze_listing_for_onboarding(
+                amazon_url=amazon_url,
+                include_reviews=True,
+                max_reviews=50,
+            )
+
+            if not result.get("success"):
+                st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
+                return
+
+            # Store raw analysis
+            prod["amazon_analysis"] = result
+
+            # Pre-fill product info
+            product_info = result.get("product_info", {})
+            if product_info.get("title") and not prod.get("description"):
+                prod["description"] = product_info["title"]
+
+            if product_info.get("dimensions"):
+                dims = product_info["dimensions"]
+                if isinstance(dims, dict) and dims.get("raw"):
+                    # Parse raw dimension string if possible
+                    prod["dimensions"] = {"raw": dims["raw"]}
+                else:
+                    prod["dimensions"] = dims
+
+            if product_info.get("weight"):
+                weight = product_info["weight"]
+                if isinstance(weight, dict) and weight.get("raw"):
+                    prod["weight"] = {"raw": weight["raw"]}
+                else:
+                    prod["weight"] = weight
+
+            # Create offer variant from Amazon messaging
+            messaging = result.get("messaging", {})
+            if messaging.get("benefits") or messaging.get("pain_points"):
+                offer_variants = prod.get("offer_variants") or []
+
+                # Check if Amazon variant already exists
+                amazon_variant_exists = any(
+                    ov.get("source") == "amazon_analysis" for ov in offer_variants
+                )
+
+                if not amazon_variant_exists:
+                    new_variant = {
+                        "name": f"Amazon Angle ({product_info.get('asin', 'Unknown')})",
+                        "landing_page_url": amazon_url,
+                        "pain_points": messaging.get("pain_points", [])[:7],
+                        "desires_goals": messaging.get("desires_goals", [])[:7],
+                        "benefits": messaging.get("benefits", [])[:7],
+                        "disallowed_claims": [],
+                        "required_disclaimers": None,
+                        "is_default": len(offer_variants) == 0,
+                        "source": "amazon_analysis",
+                        "source_review_count": len(messaging.get("customer_language", [])),
+                    }
+                    offer_variants.append(new_variant)
+                    prod["offer_variants"] = offer_variants
+
+            # Update session
+            products[prod_idx] = prod
+            service.update_section(UUID(session["id"]), "products", products)
+
+            # Show summary
+            st.success("Amazon listing analyzed!")
+            st.markdown("**Extracted:**")
+            if product_info.get("title"):
+                st.caption(f"• Title: {product_info['title'][:80]}...")
+            if product_info.get("bullets"):
+                st.caption(f"• {len(product_info['bullets'])} product bullets")
+            if messaging.get("pain_points"):
+                st.caption(f"• {len(messaging['pain_points'])} pain points from reviews")
+            if messaging.get("benefits"):
+                st.caption(f"• {len(messaging['benefits'])} benefits")
+
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Amazon analysis failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
 
 # ============================================
@@ -560,6 +859,15 @@ def render_products_tab(session: dict):
                     if prod.get("amazon_url"):
                         asin_display = f" (ASIN: {prod['asin']})" if prod.get("asin") else ""
                         st.markdown(f"📦 Amazon: {prod['amazon_url']}{asin_display}")
+
+                        # Amazon analysis button
+                        amz_col1, amz_col2 = st.columns([1, 3])
+                        with amz_col1:
+                            if st.button("🔬 Analyze Listing", key=f"analyze_amazon_{i}"):
+                                _analyze_amazon_listing(session, products, i, service)
+                        with amz_col2:
+                            if prod.get("amazon_analysis"):
+                                st.caption("✅ Amazon data extracted")
 
                     # Dimensions & Weight
                     dims = prod.get("dimensions") or {}
@@ -689,29 +997,87 @@ def render_products_tab(session: dict):
                         placeholder="e.g., Blood Pressure Angle",
                         key=f"ov_name_{i}",
                     )
-                    ov_url = st.text_input(
-                        "Landing Page URL *",
-                        placeholder="https://brand.com/blood-pressure",
-                        key=f"ov_url_{i}",
-                    )
+
+                    # Landing Page URL with Analyze button
+                    url_col1, url_col2 = st.columns([4, 1])
+                    with url_col1:
+                        ov_url = st.text_input(
+                            "Landing Page URL *",
+                            placeholder="https://brand.com/blood-pressure",
+                            key=f"ov_url_{i}",
+                        )
+                    with url_col2:
+                        st.markdown("")  # Spacing
+                        analyze_clicked = st.button(
+                            "🔍 Analyze",
+                            key=f"analyze_lp_{i}",
+                            help="Scrape the landing page to auto-fill fields",
+                            disabled=not ov_url,
+                        )
+
+                    # Handle analyze button click
+                    if analyze_clicked and ov_url:
+                        with st.spinner("Analyzing landing page..."):
+                            try:
+                                from viraltracker.services.product_offer_variant_service import (
+                                    ProductOfferVariantService,
+                                )
+
+                                pov_service = ProductOfferVariantService()
+                                analysis = pov_service.analyze_landing_page(ov_url)
+
+                                if analysis.get("success"):
+                                    # Store analysis in session state for pre-filling
+                                    st.session_state[f"lp_analysis_{i}"] = analysis
+                                    st.success("Page analyzed! Review the pre-filled fields below.")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Analysis failed: {analysis.get('error')}")
+                            except Exception as e:
+                                st.error(f"Error analyzing page: {e}")
+
+                    # Get any stored analysis for pre-filling
+                    lp_analysis = st.session_state.get(f"lp_analysis_{i}") or {}
+
                     ov_pain = st.text_area(
                         "Pain Points (one per line)",
+                        value="\n".join(lp_analysis.get("pain_points", [])) if lp_analysis else "",
                         placeholder="High blood pressure\nCholesterol concerns\nHeart health worries",
                         height=80,
                         key=f"ov_pain_{i}",
                     )
                     ov_desires = st.text_area(
                         "Desires/Goals (one per line)",
+                        value="\n".join(lp_analysis.get("desires_goals", [])) if lp_analysis else "",
                         placeholder="Better cardiovascular health\nMore energy\nPeace of mind",
                         height=80,
                         key=f"ov_desires_{i}",
                     )
                     ov_benefits = st.text_area(
                         "Key Benefits (one per line)",
+                        value="\n".join(lp_analysis.get("benefits", [])) if lp_analysis else "",
                         placeholder="Supports healthy blood pressure\nPromotes circulation",
                         height=60,
                         key=f"ov_benefits_{i}",
                     )
+
+                    # Compliance section
+                    st.markdown("---")
+                    st.markdown("**⚠️ Compliance (optional)**")
+                    ov_disallowed = st.text_area(
+                        "Disallowed Claims (one per line)",
+                        placeholder="Cannot claim lowers blood pressure\nNo FDA approval claims",
+                        height=60,
+                        key=f"ov_disallowed_{i}",
+                    )
+                    ov_disclaimers = st.text_area(
+                        "Required Disclaimers",
+                        placeholder="These statements have not been evaluated by the FDA...",
+                        height=60,
+                        key=f"ov_disclaimers_{i}",
+                    )
+
+                    st.markdown("---")
                     ov_default = st.checkbox(
                         "Set as default variant",
                         value=len(offer_variants) == 0,  # First variant is default
@@ -731,12 +1097,19 @@ def render_products_tab(session: dict):
                                 "pain_points": [p.strip() for p in ov_pain.split("\n") if p.strip()],
                                 "desires_goals": [d.strip() for d in ov_desires.split("\n") if d.strip()],
                                 "benefits": [b.strip() for b in ov_benefits.split("\n") if b.strip()],
+                                "disallowed_claims": [c.strip() for c in ov_disallowed.split("\n") if c.strip()],
+                                "required_disclaimers": ov_disclaimers.strip() if ov_disclaimers else None,
                                 "is_default": ov_default or len(offer_variants) == 0,
                             }
                             offer_variants.append(new_variant)
                             prod["offer_variants"] = offer_variants
                             products[i] = prod
                             service.update_section(UUID(session["id"]), "products", products)
+
+                            # Clear the analysis from session state
+                            if f"lp_analysis_{i}" in st.session_state:
+                                del st.session_state[f"lp_analysis_{i}"]
+
                             st.success(f"Added variant: {ov_name}")
                             st.rerun()
                         else:

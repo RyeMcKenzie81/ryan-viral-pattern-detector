@@ -1,0 +1,809 @@
+"""
+AdAnalysisService - Analyze Facebook ads to extract offer variant messaging.
+
+This service handles:
+- Grouping scraped ads by destination URL
+- Analyzing ad creatives (images, videos, copy)
+- Synthesizing analyses into offer variant messaging data
+
+Used by Client Onboarding to pre-populate offer variants from existing ads.
+"""
+
+import logging
+import json
+import asyncio
+import httpx
+from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass, field
+from collections import Counter
+from urllib.parse import urlparse, parse_qs
+
+from supabase import Client
+from ..core.database import get_supabase_client
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AdGroup:
+    """Group of ads sharing the same landing page URL."""
+    normalized_url: str
+    display_url: str  # Original URL for display
+    ad_count: int
+    ads: List[Dict] = field(default_factory=list)
+    preview_text: Optional[str] = None
+    preview_image_url: Optional[str] = None
+
+
+@dataclass
+class AdAnalysisResult:
+    """Result of analyzing a single ad."""
+    ad_id: str
+    ad_type: str  # 'image', 'video', 'copy_only'
+    copy_analysis: Optional[Dict] = None
+    image_analysis: Optional[Dict] = None
+    video_analysis: Optional[Dict] = None
+    raw_copy: Optional[str] = None
+
+
+class AdAnalysisService:
+    """
+    Service for analyzing Facebook ads to extract messaging for offer variants.
+
+    Workflow:
+    1. group_ads_by_url() - Group scraped ads by landing page
+    2. analyze_ad_group() - Analyze all ads in a group
+    3. synthesize_messaging() - Merge analyses into offer variant data
+    """
+
+    def __init__(self, supabase: Optional[Client] = None):
+        """
+        Initialize AdAnalysisService.
+
+        Args:
+            supabase: Optional Supabase client. If not provided, creates one.
+        """
+        self.supabase = supabase or get_supabase_client()
+
+        # Lazy load dependencies to avoid circular imports
+        self._brand_research_service = None
+        self._ad_scraping_service = None
+
+        logger.info("AdAnalysisService initialized")
+
+    @property
+    def brand_research_service(self):
+        """Lazy load BrandResearchService."""
+        if self._brand_research_service is None:
+            from .brand_research_service import BrandResearchService
+            self._brand_research_service = BrandResearchService(self.supabase)
+        return self._brand_research_service
+
+    @property
+    def ad_scraping_service(self):
+        """Lazy load AdScrapingService."""
+        if self._ad_scraping_service is None:
+            from .ad_scraping_service import AdScrapingService
+            self._ad_scraping_service = AdScrapingService(self.supabase)
+        return self._ad_scraping_service
+
+    # ============================================================
+    # URL Grouping
+    # ============================================================
+
+    def _normalize_url(self, url: str) -> str:
+        """
+        Normalize URL for grouping (remove tracking params, www, trailing slash).
+
+        Args:
+            url: URL to normalize
+
+        Returns:
+            Normalized URL string
+        """
+        if not url:
+            return ""
+
+        parsed = urlparse(url.lower())
+
+        # Remove www. prefix
+        netloc = parsed.netloc
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]
+
+        # Remove tracking parameters
+        tracking_params = {
+            'utm_source', 'utm_medium', 'utm_campaign', 'utm_content',
+            'utm_term', 'fbclid', 'gclid', 'ref', 'source', 'mc_cid',
+            'mc_eid', 'affid', 'click_id', 'clickid'
+        }
+
+        if parsed.query:
+            params = parse_qs(parsed.query)
+            filtered_params = {
+                k: v for k, v in params.items()
+                if k.lower() not in tracking_params
+            }
+            query = '&'.join(f"{k}={v[0]}" for k, v in sorted(filtered_params.items()))
+        else:
+            query = ''
+
+        path = parsed.path.rstrip('/')
+
+        if query:
+            return f"{netloc}{path}?{query}"
+        else:
+            return f"{netloc}{path}"
+
+    def _extract_url_from_snapshot(self, snapshot: Dict) -> Optional[str]:
+        """
+        Extract landing page URL from ad snapshot.
+
+        Args:
+            snapshot: Ad snapshot dict
+
+        Returns:
+            Landing page URL or None
+        """
+        if not snapshot or not isinstance(snapshot, dict):
+            return None
+
+        # Try direct link_url field
+        if 'link_url' in snapshot:
+            return snapshot['link_url']
+
+        # Check cards for carousel ads
+        if 'cards' in snapshot and snapshot['cards']:
+            for card in snapshot['cards']:
+                if 'link_url' in card:
+                    return card['link_url']
+
+        # Check cta_link
+        if 'cta_link' in snapshot:
+            return snapshot['cta_link']
+
+        return None
+
+    def _extract_copy_from_snapshot(self, snapshot: Dict) -> str:
+        """
+        Extract ad copy text from snapshot.
+
+        Args:
+            snapshot: Ad snapshot dict
+
+        Returns:
+            Ad copy text
+        """
+        if not snapshot or not isinstance(snapshot, dict):
+            return ""
+
+        parts = []
+
+        # Body text (nested in body.text)
+        body_obj = snapshot.get("body", {})
+        if isinstance(body_obj, dict) and body_obj.get("text"):
+            parts.append(body_obj["text"])
+
+        # Title
+        if snapshot.get("title"):
+            parts.append(snapshot["title"])
+
+        # Caption
+        if snapshot.get("caption"):
+            parts.append(snapshot["caption"])
+
+        # Link description
+        if snapshot.get("link_description"):
+            parts.append(snapshot["link_description"])
+
+        # Cards (carousel) - get copy from each
+        for card in snapshot.get("cards", []):
+            if card.get("title"):
+                parts.append(card["title"])
+            if card.get("body"):
+                body = card["body"]
+                if isinstance(body, dict):
+                    parts.append(body.get("text", ""))
+                elif isinstance(body, str):
+                    parts.append(body)
+
+        return "\n\n".join(filter(None, parts))
+
+    def _get_preview_image(self, snapshot: Dict) -> Optional[str]:
+        """Get first available image URL from snapshot for preview."""
+        assets = self.ad_scraping_service.extract_asset_urls(snapshot)
+        if assets.get("images"):
+            return assets["images"][0]
+        return None
+
+    def group_ads_by_url(self, ads: List[Dict]) -> List[AdGroup]:
+        """
+        Group ads by normalized destination URL.
+
+        Args:
+            ads: List of ad records with 'id' and 'snapshot' fields
+
+        Returns:
+            List of AdGroup objects sorted by ad count (descending)
+        """
+        url_groups: Dict[str, AdGroup] = {}
+
+        for ad in ads:
+            ad_id = ad.get('id')
+            snapshot = ad.get('snapshot', {})
+
+            # Parse snapshot if string
+            if isinstance(snapshot, str):
+                try:
+                    snapshot = json.loads(snapshot)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse snapshot for ad {ad_id}")
+                    continue
+
+            url = self._extract_url_from_snapshot(snapshot)
+            if not url:
+                continue
+
+            normalized = self._normalize_url(url)
+            if not normalized:
+                continue
+
+            if normalized not in url_groups:
+                url_groups[normalized] = AdGroup(
+                    normalized_url=normalized,
+                    display_url=url,
+                    ad_count=0,
+                    ads=[],
+                    preview_text=self._extract_copy_from_snapshot(snapshot)[:150],
+                    preview_image_url=self._get_preview_image(snapshot)
+                )
+
+            group = url_groups[normalized]
+            group.ad_count += 1
+            group.ads.append({
+                'id': ad_id,
+                'snapshot': snapshot,
+                'copy': self._extract_copy_from_snapshot(snapshot)
+            })
+
+        # Sort by ad count descending
+        groups = list(url_groups.values())
+        groups.sort(key=lambda g: g.ad_count, reverse=True)
+
+        logger.info(f"Grouped {len(ads)} ads into {len(groups)} URL groups")
+        return groups
+
+    # ============================================================
+    # Ad Analysis
+    # ============================================================
+
+    async def _download_image(self, url: str, timeout: float = 30.0) -> Optional[bytes]:
+        """Download image from URL."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.content
+        except Exception as e:
+            logger.warning(f"Failed to download image: {e}")
+            return None
+
+    async def _analyze_single_ad(
+        self,
+        ad: Dict,
+        analyze_images: bool = True,
+        analyze_videos: bool = True,
+        max_images: int = 2,
+        max_videos: int = 1
+    ) -> AdAnalysisResult:
+        """
+        Analyze a single ad (copy, images, videos).
+
+        Args:
+            ad: Ad dict with 'id', 'snapshot', 'copy' fields
+            analyze_images: Whether to analyze images
+            analyze_videos: Whether to analyze videos
+            max_images: Max images to analyze per ad
+            max_videos: Max videos to analyze per ad
+
+        Returns:
+            AdAnalysisResult with all analyses
+        """
+        ad_id = ad.get('id', 'unknown')
+        snapshot = ad.get('snapshot', {})
+        copy_text = ad.get('copy', '')
+
+        result = AdAnalysisResult(
+            ad_id=ad_id,
+            ad_type='copy_only',
+            raw_copy=copy_text
+        )
+
+        # Analyze copy
+        if copy_text and len(copy_text.strip()) > 20:
+            try:
+                result.copy_analysis = self.brand_research_service.analyze_copy_sync(
+                    ad_copy=copy_text,
+                    headline=snapshot.get('title'),
+                    ad_id=None,
+                    brand_id=None
+                )
+            except Exception as e:
+                logger.warning(f"Copy analysis failed for ad {ad_id}: {e}")
+
+        # Extract asset URLs
+        assets = self.ad_scraping_service.extract_asset_urls(snapshot)
+        image_urls = assets.get('images', [])[:max_images]
+        video_urls = assets.get('videos', [])[:max_videos]
+
+        # Analyze images
+        if analyze_images and image_urls:
+            result.ad_type = 'image'
+            for url in image_urls:
+                try:
+                    image_bytes = await self._download_image(url)
+                    if image_bytes:
+                        analysis = self.brand_research_service.analyze_image_sync(
+                            image_bytes=image_bytes,
+                            skip_save=True
+                        )
+                        if analysis and not analysis.get('error'):
+                            result.image_analysis = analysis
+                            break  # Use first successful analysis
+                except Exception as e:
+                    logger.warning(f"Image analysis failed for ad {ad_id}: {e}")
+
+        # Analyze videos
+        if analyze_videos and video_urls:
+            result.ad_type = 'video'
+            for url in video_urls:
+                try:
+                    analysis = await self.brand_research_service.analyze_video_from_url(
+                        video_url=url,
+                        facebook_ad_id=None,
+                        brand_id=None
+                    )
+                    if analysis and not analysis.get('error'):
+                        result.video_analysis = analysis
+                        break  # Use first successful analysis
+                except Exception as e:
+                    logger.warning(f"Video analysis failed for ad {ad_id}: {e}")
+
+        return result
+
+    async def analyze_ad_group(
+        self,
+        ad_group: AdGroup,
+        max_ads: int = 10,
+        analyze_images: bool = True,
+        analyze_videos: bool = True,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze all ads in a group to extract messaging.
+
+        For each ad:
+        1. Extract copy from snapshot
+        2. Download and analyze image/video assets
+        3. Collect: hooks, pain points, desires, benefits
+
+        Args:
+            ad_group: AdGroup with ads to analyze
+            max_ads: Maximum ads to analyze per group
+            analyze_images: Whether to analyze images
+            analyze_videos: Whether to analyze videos
+            progress_callback: Optional callback(current, total, status_msg)
+
+        Returns:
+            Dict with all individual analyses and metadata
+        """
+        ads_to_analyze = ad_group.ads[:max_ads]
+        total = len(ads_to_analyze)
+        analyses: List[AdAnalysisResult] = []
+
+        logger.info(f"Analyzing {total} ads for URL: {ad_group.normalized_url}")
+
+        for i, ad in enumerate(ads_to_analyze):
+            if progress_callback:
+                progress_callback(i + 1, total, f"Analyzing ad {i + 1}/{total}")
+
+            try:
+                result = await self._analyze_single_ad(
+                    ad,
+                    analyze_images=analyze_images,
+                    analyze_videos=analyze_videos
+                )
+                analyses.append(result)
+            except Exception as e:
+                logger.error(f"Failed to analyze ad {ad.get('id')}: {e}")
+
+            # Small delay to avoid rate limits
+            if i < total - 1:
+                await asyncio.sleep(1)
+
+        return {
+            'url': ad_group.normalized_url,
+            'display_url': ad_group.display_url,
+            'total_ads': ad_group.ad_count,
+            'analyzed_ads': len(analyses),
+            'analyses': [self._analysis_to_dict(a) for a in analyses],
+            'source_ad_ids': [a.ad_id for a in analyses]
+        }
+
+    def _analysis_to_dict(self, analysis: AdAnalysisResult) -> Dict:
+        """Convert AdAnalysisResult to dict."""
+        return {
+            'ad_id': analysis.ad_id,
+            'ad_type': analysis.ad_type,
+            'copy_analysis': analysis.copy_analysis,
+            'image_analysis': analysis.image_analysis,
+            'video_analysis': analysis.video_analysis,
+            'raw_copy': analysis.raw_copy
+        }
+
+    # ============================================================
+    # Messaging Synthesis
+    # ============================================================
+
+    def synthesize_messaging(self, analysis_result: Dict) -> Dict[str, Any]:
+        """
+        Merge multiple ad analyses into unified offer variant messaging.
+
+        Extracts:
+        - Most common pain points
+        - Most common desires/goals
+        - Key benefits mentioned
+        - Suggested variant name
+        - Sample hooks
+        - Target audience
+
+        Args:
+            analysis_result: Output from analyze_ad_group()
+
+        Returns:
+            Dict with synthesized messaging for offer variant
+        """
+        analyses = analysis_result.get('analyses', [])
+
+        if not analyses:
+            return self._empty_synthesis(analysis_result)
+
+        # Collect all extracted data
+        all_pain_points = []
+        all_desires = []
+        all_benefits = []
+        all_hooks = []
+        all_claims = []
+        all_target_audiences = []
+        all_ctas = []
+        all_mechanisms = []  # Unique mechanisms mentioned
+        all_root_causes = []  # UMP - why other solutions failed
+        all_mechanism_solutions = []  # UMS - how mechanism solves problem
+
+        for a in analyses:
+            # From copy analysis
+            if a.get('copy_analysis'):
+                copy = a['copy_analysis']
+                all_pain_points.extend(copy.get('pain_points', []))
+                all_desires.extend(copy.get('desires', []))
+                all_benefits.extend(copy.get('benefits', []))
+                all_hooks.extend(copy.get('hooks', []))
+                all_claims.extend(copy.get('claims', []))
+                if copy.get('target_audience'):
+                    all_target_audiences.append(copy['target_audience'])
+                if copy.get('cta'):
+                    all_ctas.append(copy['cta'])
+                # Mechanism-related fields
+                if copy.get('mechanism') or copy.get('unique_mechanism'):
+                    all_mechanisms.append(copy.get('mechanism') or copy.get('unique_mechanism'))
+                if copy.get('root_cause') or copy.get('why_others_fail'):
+                    all_root_causes.append(copy.get('root_cause') or copy.get('why_others_fail'))
+                if copy.get('mechanism_solution') or copy.get('how_it_works'):
+                    all_mechanism_solutions.append(copy.get('mechanism_solution') or copy.get('how_it_works'))
+
+            # From image analysis
+            if a.get('image_analysis'):
+                img = a['image_analysis']
+                # Image analysis structure may differ - extract what's available
+                if img.get('messaging'):
+                    msg = img['messaging']
+                    all_pain_points.extend(msg.get('pain_points', []))
+                    all_benefits.extend(msg.get('benefits', []))
+                    all_claims.extend(msg.get('claims', []))
+                    # Mechanism-related fields from image
+                    if msg.get('mechanism'):
+                        all_mechanisms.append(msg['mechanism'])
+                    if msg.get('root_cause'):
+                        all_root_causes.append(msg['root_cause'])
+                if img.get('text_overlays'):
+                    for overlay in img['text_overlays']:
+                        if overlay.get('text'):
+                            # Check if it looks like a hook
+                            text = overlay['text']
+                            if '?' in text or text.lower().startswith(('are you', 'do you', 'did you', 'have you')):
+                                all_hooks.append(text)
+
+            # From video analysis
+            if a.get('video_analysis'):
+                vid = a['video_analysis']
+                if vid.get('messaging'):
+                    msg = vid['messaging']
+                    all_pain_points.extend(msg.get('pain_points', []))
+                    all_desires.extend(msg.get('desires', []))
+                    all_benefits.extend(msg.get('benefits', []))
+                    all_claims.extend(msg.get('claims', []))
+                    # Mechanism-related fields from video
+                    if msg.get('mechanism'):
+                        all_mechanisms.append(msg['mechanism'])
+                    if msg.get('root_cause'):
+                        all_root_causes.append(msg['root_cause'])
+                    if msg.get('mechanism_solution') or msg.get('how_it_works'):
+                        all_mechanism_solutions.append(msg.get('mechanism_solution') or msg.get('how_it_works'))
+                if vid.get('hook'):
+                    hook = vid['hook']
+                    if isinstance(hook, dict) and hook.get('text'):
+                        all_hooks.append(hook['text'])
+                    elif isinstance(hook, str):
+                        all_hooks.append(hook)
+                if vid.get('cta'):
+                    all_ctas.append(vid['cta'])
+                if vid.get('target_audience'):
+                    all_target_audiences.append(vid['target_audience'])
+                # Additional mechanism extraction from video structure
+                if vid.get('unique_mechanism'):
+                    all_mechanisms.append(vid['unique_mechanism'])
+                if vid.get('why_others_fail') or vid.get('root_cause_explanation'):
+                    all_root_causes.append(vid.get('why_others_fail') or vid.get('root_cause_explanation'))
+
+        # Deduplicate and rank by frequency
+        pain_points = self._rank_by_frequency(all_pain_points, max_items=10)
+        desires = self._rank_by_frequency(all_desires, max_items=10)
+        benefits = self._rank_by_frequency(all_benefits, max_items=10)
+        hooks = self._dedupe_similar(all_hooks, max_items=5)
+        claims = self._rank_by_frequency(all_claims, max_items=8)
+        mechanisms = self._dedupe_similar(all_mechanisms, max_items=3)
+        root_causes = self._dedupe_similar(all_root_causes, max_items=3)
+        mechanism_solutions = self._dedupe_similar(all_mechanism_solutions, max_items=3)
+
+        # Infer variant name from URL or common themes
+        suggested_name = self._infer_variant_name(
+            analysis_result.get('display_url', ''),
+            benefits,
+            pain_points
+        )
+
+        # Synthesize target audience
+        target_audience = self._synthesize_target_audience(all_target_audiences)
+
+        return {
+            'suggested_name': suggested_name,
+            'landing_page_url': analysis_result.get('display_url', ''),
+            'pain_points': pain_points,
+            'desires_goals': desires,
+            'benefits': benefits,
+            'claims': claims,
+            'sample_hooks': hooks,
+            'target_audience': target_audience,
+            'sample_ctas': list(set(all_ctas))[:3],
+            # Unique Mechanism fields (UM/UMP/UMS)
+            'mechanism_name': mechanisms[0] if mechanisms else '',
+            'mechanism_problem': root_causes[0] if root_causes else '',  # UMP
+            'mechanism_solution': mechanism_solutions[0] if mechanism_solutions else '',  # UMS
+            # All extracted (for review)
+            'all_mechanisms': mechanisms,
+            'all_root_causes': root_causes,
+            'all_mechanism_solutions': mechanism_solutions,
+            # Metadata
+            'ad_count': analysis_result.get('total_ads', 0),
+            'analyzed_count': analysis_result.get('analyzed_ads', 0),
+            'source_ad_ids': analysis_result.get('source_ad_ids', [])
+        }
+
+    def _empty_synthesis(self, analysis_result: Dict) -> Dict:
+        """Return empty synthesis structure."""
+        return {
+            'suggested_name': '',
+            'landing_page_url': analysis_result.get('display_url', ''),
+            'pain_points': [],
+            'desires_goals': [],
+            'benefits': [],
+            'claims': [],
+            'sample_hooks': [],
+            'target_audience': '',
+            'sample_ctas': [],
+            # Unique Mechanism fields (UM/UMP/UMS)
+            'mechanism_name': '',
+            'mechanism_problem': '',
+            'mechanism_solution': '',
+            'all_mechanisms': [],
+            'all_root_causes': [],
+            'all_mechanism_solutions': [],
+            # Metadata
+            'ad_count': analysis_result.get('total_ads', 0),
+            'analyzed_count': 0,
+            'source_ad_ids': []
+        }
+
+    def _rank_by_frequency(
+        self,
+        items: List[str],
+        max_items: int = 10,
+        min_count: int = 1
+    ) -> List[str]:
+        """
+        Rank items by frequency, deduplicate similar items.
+
+        Args:
+            items: List of strings to rank
+            max_items: Maximum items to return
+            min_count: Minimum occurrences to include
+
+        Returns:
+            List of unique items sorted by frequency
+        """
+        if not items:
+            return []
+
+        # Normalize items (lowercase, strip)
+        normalized = [s.strip().lower() for s in items if s and s.strip()]
+
+        # Count frequencies
+        counter = Counter(normalized)
+
+        # Filter by min_count and get top items
+        ranked = [
+            item for item, count in counter.most_common(max_items * 2)
+            if count >= min_count
+        ]
+
+        # Return with original casing (find first occurrence)
+        original_case = {}
+        for item in items:
+            if item and item.strip():
+                key = item.strip().lower()
+                if key not in original_case:
+                    original_case[key] = item.strip()
+
+        result = [original_case.get(r, r) for r in ranked[:max_items]]
+        return result
+
+    def _dedupe_similar(self, items: List[str], max_items: int = 5) -> List[str]:
+        """
+        Deduplicate similar strings (keep longest/most complete).
+
+        Args:
+            items: List of strings to deduplicate
+            max_items: Maximum items to return
+
+        Returns:
+            List of unique, diverse items
+        """
+        if not items:
+            return []
+
+        # Remove exact duplicates
+        unique = list(dict.fromkeys([s.strip() for s in items if s and s.strip()]))
+
+        # Sort by length (prefer longer, more complete hooks)
+        unique.sort(key=len, reverse=True)
+
+        # Filter out items that are substrings of others
+        result = []
+        for item in unique:
+            is_substring = False
+            item_lower = item.lower()
+            for existing in result:
+                if item_lower in existing.lower() or existing.lower() in item_lower:
+                    is_substring = True
+                    break
+            if not is_substring:
+                result.append(item)
+                if len(result) >= max_items:
+                    break
+
+        return result
+
+    def _infer_variant_name(
+        self,
+        url: str,
+        benefits: List[str],
+        pain_points: List[str]
+    ) -> str:
+        """
+        Infer a suggested variant name from URL and themes.
+
+        Args:
+            url: Landing page URL
+            benefits: List of benefits
+            pain_points: List of pain points
+
+        Returns:
+            Suggested variant name
+        """
+        # Try to extract from URL path
+        if url:
+            parsed = urlparse(url if url.startswith('http') else f'https://{url}')
+            path = parsed.path.strip('/')
+
+            if path:
+                # Take last path segment
+                segments = [s for s in path.split('/') if s]
+                if segments:
+                    last = segments[-1]
+                    # Clean up common patterns
+                    name = last.replace('-', ' ').replace('_', ' ')
+                    # Remove common suffixes
+                    for suffix in ['lp', 'landing', 'page', 'offer', 'sales']:
+                        name = name.replace(suffix, '').strip()
+                    if name and len(name) > 2:
+                        return name.title()
+
+        # Fall back to first benefit or pain point
+        if benefits:
+            return benefits[0][:50].title()
+        if pain_points:
+            return f"{pain_points[0][:30]} Solution".title()
+
+        return "Offer Variant"
+
+    def _synthesize_target_audience(self, audiences: List[str]) -> str:
+        """
+        Synthesize target audience from multiple descriptions.
+
+        Args:
+            audiences: List of target audience descriptions
+
+        Returns:
+            Synthesized target audience string
+        """
+        if not audiences:
+            return ""
+
+        # If only one, return it
+        if len(audiences) == 1:
+            return audiences[0]
+
+        # Find common themes
+        # For now, return the longest description as it's likely most complete
+        return max(audiences, key=len)
+
+    # ============================================================
+    # Convenience Methods
+    # ============================================================
+
+    async def analyze_and_synthesize(
+        self,
+        ad_group: AdGroup,
+        max_ads: int = 10,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze an ad group and synthesize messaging in one call.
+
+        Convenience method combining analyze_ad_group() and synthesize_messaging().
+
+        Args:
+            ad_group: AdGroup to analyze
+            max_ads: Maximum ads to analyze
+            progress_callback: Optional progress callback
+
+        Returns:
+            Synthesized messaging dict ready for offer variant creation
+        """
+        analysis_result = await self.analyze_ad_group(
+            ad_group,
+            max_ads=max_ads,
+            progress_callback=progress_callback
+        )
+
+        synthesis = self.synthesize_messaging(analysis_result)
+
+        # Include raw analyses for transparency
+        synthesis['_raw_analyses'] = analysis_result.get('analyses', [])
+
+        return synthesis

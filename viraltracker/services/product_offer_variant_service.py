@@ -77,6 +77,8 @@ class ProductOfferVariantService:
         desires_goals: Optional[List[str]] = None,
         benefits: Optional[List[str]] = None,
         target_audience: Optional[str] = None,
+        disallowed_claims: Optional[List[str]] = None,
+        required_disclaimers: Optional[str] = None,
         is_default: bool = False,
         notes: Optional[str] = None,
     ) -> UUID:
@@ -93,6 +95,8 @@ class ProductOfferVariantService:
             desires_goals: List of desires/goals this offer targets
             benefits: List of benefits to highlight
             target_audience: Optional target audience override
+            disallowed_claims: Claims that must NOT appear in ads for this variant
+            required_disclaimers: Legal disclaimers required for this variant
             is_default: Whether this is the default variant
             notes: Optional internal notes
 
@@ -116,6 +120,7 @@ class ProductOfferVariantService:
             "pain_points": pain_points or [],
             "desires_goals": desires_goals or [],
             "benefits": benefits or [],
+            "disallowed_claims": disallowed_claims or [],
             "is_default": is_default,
             "is_active": True,
             "display_order": len(existing),
@@ -123,6 +128,8 @@ class ProductOfferVariantService:
 
         if target_audience:
             data["target_audience"] = target_audience
+        if required_disclaimers:
+            data["required_disclaimers"] = required_disclaimers
         if notes:
             data["notes"] = notes
 
@@ -430,6 +437,8 @@ class ProductOfferVariantService:
                 desires_goals=v.get("desires_goals", []),
                 benefits=v.get("benefits", []),
                 target_audience=v.get("target_audience"),
+                disallowed_claims=v.get("disallowed_claims", []),
+                required_disclaimers=v.get("required_disclaimers"),
                 is_default=v.get("is_default", i == 0),  # First is default
                 notes=v.get("notes"),
             )
@@ -437,3 +446,98 @@ class ProductOfferVariantService:
 
         logger.info(f"Created {len(created_ids)} offer variants for product {product_id}")
         return created_ids
+
+    # ============================================
+    # LANDING PAGE ANALYSIS
+    # ============================================
+
+    def analyze_landing_page(self, url: str) -> Dict[str, Any]:
+        """
+        Scrape a landing page and extract offer variant fields.
+
+        Uses WebScrapingService to extract structured data, then maps
+        it to offer variant fields for review before saving.
+
+        Args:
+            url: Landing page URL to analyze
+
+        Returns:
+            Dict with extracted fields:
+            - name: Suggested variant name (from headline)
+            - pain_points: List of pain points addressed
+            - desires_goals: List of desires/goals targeted
+            - benefits: List of benefits highlighted
+            - target_audience: Inferred target audience
+            - raw_analysis: Full extraction for reference
+            - success: Whether extraction succeeded
+            - error: Error message if failed
+        """
+        from viraltracker.services.web_scraping_service import WebScrapingService
+
+        extraction_prompt = """
+        Analyze this landing page and extract marketing messaging data.
+
+        Return a JSON object with these fields:
+
+        1. "suggested_name": A short name for this offer angle (e.g., "Blood Pressure Support", "Hair Growth Formula")
+
+        2. "pain_points": Array of 3-5 specific pain points or problems this page addresses.
+           Focus on the customer's struggles, frustrations, or fears.
+           Examples: "high blood pressure", "thinning hair", "low energy", "joint pain"
+
+        3. "desires_goals": Array of 3-5 desires or goals the target customer wants to achieve.
+           Focus on positive outcomes and aspirations.
+           Examples: "heart health", "thick full hair", "all-day energy", "active lifestyle"
+
+        4. "benefits": Array of 3-5 key benefits or claims made about the product.
+           Focus on what the product does or provides.
+           Examples: "supports healthy blood pressure", "promotes hair growth", "boosts energy naturally"
+
+        5. "target_audience": A brief description of who this page targets (1-2 sentences).
+           Example: "Adults 40+ concerned about cardiovascular health and looking for natural solutions"
+
+        6. "headline": The main headline or value proposition from the page.
+
+        Be specific and extract actual language/themes from the page, not generic descriptions.
+        """
+
+        try:
+            scraper = WebScrapingService()
+            result = scraper.extract_structured(url=url, prompt=extraction_prompt)
+
+            if not result.success:
+                logger.warning(f"Failed to analyze landing page {url}: {result.error}")
+                return {
+                    "success": False,
+                    "error": result.error or "Extraction failed",
+                    "name": "",
+                    "pain_points": [],
+                    "desires_goals": [],
+                    "benefits": [],
+                    "target_audience": "",
+                }
+
+            # Map extraction to offer variant fields
+            data = result.data or {}
+            return {
+                "success": True,
+                "error": None,
+                "name": data.get("suggested_name", ""),
+                "pain_points": data.get("pain_points", []),
+                "desires_goals": data.get("desires_goals", []),
+                "benefits": data.get("benefits", []),
+                "target_audience": data.get("target_audience", ""),
+                "raw_analysis": data,
+            }
+
+        except Exception as e:
+            logger.error(f"Error analyzing landing page {url}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "name": "",
+                "pain_points": [],
+                "desires_goals": [],
+                "benefits": [],
+                "target_audience": "",
+            }

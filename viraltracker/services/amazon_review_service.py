@@ -804,6 +804,329 @@ class AmazonReviewService:
         return result.data[0] if result.data else None
 
 
+    # =========================================================================
+    # Onboarding Analysis
+    # =========================================================================
+
+    def analyze_listing_for_onboarding(
+        self,
+        amazon_url: str,
+        include_reviews: bool = True,
+        max_reviews: int = 100,
+        timeout: int = 300
+    ) -> Dict[str, Any]:
+        """
+        Full Amazon listing analysis for client onboarding.
+
+        Scrapes product info (title, bullets, images, dimensions) and optionally
+        reviews to extract messaging data for pre-populating product and offer
+        variant fields.
+
+        Uses axesso_data/amazon-product-details-scraper for product info.
+
+        Args:
+            amazon_url: Amazon product URL
+            include_reviews: Whether to also scrape and analyze reviews
+            max_reviews: Maximum reviews to analyze if include_reviews=True
+            timeout: Apify actor timeout in seconds
+
+        Returns:
+            Dict with product_info, messaging, review_summary
+        """
+        result = {
+            "success": False,
+            "error": None,
+            "product_info": {
+                "title": "",
+                "bullets": [],
+                "description": "",
+                "dimensions": {},
+                "weight": {},
+                "images": [],
+                "asin": "",
+                "price": "",
+                "rating": None,
+                "review_count": 0
+            },
+            "messaging": {
+                "pain_points": [],
+                "desires_goals": [],
+                "benefits": [],
+                "customer_language": []
+            },
+            "review_summary": {
+                "positive_themes": [],
+                "negative_themes": [],
+                "common_use_cases": []
+            }
+        }
+
+        # Parse URL
+        asin, domain = self.parse_amazon_url(amazon_url)
+        if not asin:
+            result["error"] = "Could not extract ASIN from URL"
+            return result
+
+        result["product_info"]["asin"] = asin
+        logger.info(f"Analyzing Amazon listing for ASIN {asin}")
+
+        # Step 1: Get product details using Axesso actor
+        try:
+            product_data = self._scrape_product_details(asin, domain, timeout)
+            if product_data:
+                self._populate_product_info(result["product_info"], product_data)
+                self._extract_benefits_from_bullets(result, product_data)
+        except Exception as e:
+            logger.warning(f"Product details scrape failed: {e}")
+            # Continue - we might still get reviews
+
+        # Step 2: Optionally scrape and analyze reviews
+        if include_reviews:
+            try:
+                review_data = self._scrape_reviews_quick(asin, domain, max_reviews)
+                if review_data:
+                    self._extract_messaging_from_reviews(result, review_data)
+            except Exception as e:
+                logger.warning(f"Review analysis failed: {e}")
+
+        result["success"] = bool(result["product_info"]["title"])
+        return result
+
+    def _scrape_product_details(
+        self,
+        asin: str,
+        domain: str,
+        timeout: int
+    ) -> Optional[Dict]:
+        """Scrape product details using Axesso actor."""
+        PRODUCT_DETAILS_ACTOR = "axesso_data/amazon-product-details-scraper"
+
+        try:
+            apify_result = self.apify.run_actor(
+                actor_id=PRODUCT_DETAILS_ACTOR,
+                run_input={
+                    "productUrls": [f"https://www.amazon.{domain}/dp/{asin}"]
+                },
+                timeout=timeout,
+                memory_mbytes=1024
+            )
+
+            if apify_result.items:
+                return apify_result.items[0]
+            return None
+
+        except Exception as e:
+            logger.error(f"Product details scrape error: {e}")
+            return None
+
+    def _populate_product_info(
+        self,
+        product_info: Dict,
+        data: Dict
+    ) -> None:
+        """Populate product_info from Axesso product details response."""
+        # Title
+        product_info["title"] = data.get("productTitle", "") or data.get("title", "")
+
+        # Bullets/features
+        bullets = data.get("productFeatures", []) or data.get("featureBullets", [])
+        if isinstance(bullets, list):
+            product_info["bullets"] = bullets
+
+        # Description
+        product_info["description"] = data.get("productDescription", "") or data.get("description", "")
+
+        # Images
+        images = data.get("images", []) or data.get("imageUrls", [])
+        if isinstance(images, list):
+            product_info["images"] = images[:5]  # Limit to 5 images
+
+        # Price
+        price = data.get("price") or data.get("currentPrice")
+        if price:
+            product_info["price"] = str(price)
+
+        # Rating
+        rating = data.get("averageRating") or data.get("rating")
+        if rating:
+            try:
+                product_info["rating"] = float(rating)
+            except (ValueError, TypeError):
+                pass
+
+        # Review count
+        review_count = data.get("reviewCount") or data.get("totalReviews")
+        if review_count:
+            try:
+                product_info["review_count"] = int(str(review_count).replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+
+        # Dimensions (varies by actor response format)
+        dimensions = data.get("dimensions") or data.get("productDimensions")
+        if dimensions:
+            if isinstance(dimensions, dict):
+                product_info["dimensions"] = dimensions
+            elif isinstance(dimensions, str):
+                product_info["dimensions"] = {"raw": dimensions}
+
+        # Weight
+        weight = data.get("weight") or data.get("itemWeight")
+        if weight:
+            if isinstance(weight, dict):
+                product_info["weight"] = weight
+            elif isinstance(weight, str):
+                product_info["weight"] = {"raw": weight}
+
+    def _extract_benefits_from_bullets(
+        self,
+        result: Dict,
+        data: Dict
+    ) -> None:
+        """Extract benefits from product bullets for messaging."""
+        bullets = data.get("productFeatures", []) or data.get("featureBullets", [])
+        if not bullets:
+            return
+
+        # Clean bullets and add to benefits
+        benefits = []
+        for bullet in bullets[:7]:  # Limit to 7 bullets
+            if isinstance(bullet, str) and bullet.strip():
+                # Clean up bullet text
+                clean = bullet.strip()
+                if len(clean) > 10:  # Skip very short bullets
+                    benefits.append(clean)
+
+        result["messaging"]["benefits"] = benefits
+
+    def _scrape_reviews_quick(
+        self,
+        asin: str,
+        domain: str,
+        max_reviews: int
+    ) -> List[Dict]:
+        """Quick review scrape for onboarding (limited configs)."""
+        # Use a simplified config set for speed
+        configs = [
+            # All stars, recent
+            {
+                "asin": asin,
+                "domainCode": domain,
+                "maxPages": min(5, max_reviews // 10),
+                "sortBy": "recent"
+            },
+            # Most helpful
+            {
+                "asin": asin,
+                "domainCode": domain,
+                "maxPages": 3,
+                "sortBy": "helpful"
+            }
+        ]
+
+        try:
+            result = self.apify.run_actor_batch(
+                actor_id=AXESSO_ACTOR_ID,
+                batch_inputs=configs,
+                timeout=300,
+                memory_mbytes=1024
+            )
+
+            # Deduplicate
+            unique = self._deduplicate_reviews(result.items)
+            return unique[:max_reviews]
+
+        except Exception as e:
+            logger.error(f"Quick review scrape error: {e}")
+            return []
+
+    def _extract_messaging_from_reviews(
+        self,
+        result: Dict,
+        reviews: List[Dict]
+    ) -> None:
+        """Extract messaging data from reviews for onboarding."""
+        if not reviews:
+            return
+
+        pain_points = []
+        desires = []
+        positive_themes = []
+        negative_themes = []
+        use_cases = []
+        customer_quotes = []
+
+        for review in reviews[:50]:  # Process top 50 for efficiency
+            rating = self._parse_rating(review.get("rating"))
+            text = review.get("text", "") or review.get("body", "")
+            title = review.get("title", "")
+
+            if not text:
+                continue
+
+            # Store as customer language quote
+            if len(text) > 50 and len(customer_quotes) < 10:
+                customer_quotes.append({
+                    "quote": text[:300],
+                    "rating": rating,
+                    "title": title
+                })
+
+            # Classify by rating
+            if rating and rating >= 4:
+                # Look for positive patterns
+                positive_keywords = ["love", "great", "amazing", "excellent", "works", "helps"]
+                for kw in positive_keywords:
+                    if kw in text.lower():
+                        positive_themes.append(kw)
+                        break
+
+                # Extract use cases from positive reviews
+                if "for" in text.lower() or "to" in text.lower():
+                    use_cases.append(text[:100])
+
+            elif rating and rating <= 2:
+                # Look for pain points and negative patterns
+                negative_keywords = ["didn't work", "waste", "disappointed", "broke", "problem"]
+                for kw in negative_keywords:
+                    if kw in text.lower():
+                        negative_themes.append(kw)
+                        break
+
+            # Extract pain patterns (mentions of struggles/problems)
+            pain_patterns = ["struggle", "tired of", "frustrated", "couldn't", "didn't help",
+                           "problem with", "issues with", "before"]
+            for pattern in pain_patterns:
+                if pattern in text.lower():
+                    # Extract sentence containing pattern
+                    sentences = text.split(".")
+                    for s in sentences:
+                        if pattern in s.lower():
+                            pain_points.append(s.strip()[:150])
+                            break
+                    break
+
+            # Extract desire patterns
+            desire_patterns = ["wanted to", "looking for", "needed", "hoping", "tried to",
+                             "goal was", "wanted a"]
+            for pattern in desire_patterns:
+                if pattern in text.lower():
+                    sentences = text.split(".")
+                    for s in sentences:
+                        if pattern in s.lower():
+                            desires.append(s.strip()[:150])
+                            break
+                    break
+
+        # Deduplicate and limit
+        result["messaging"]["pain_points"] = list(set(pain_points))[:10]
+        result["messaging"]["desires_goals"] = list(set(desires))[:10]
+        result["messaging"]["customer_language"] = customer_quotes[:5]
+        result["review_summary"]["positive_themes"] = list(set(positive_themes))[:5]
+        result["review_summary"]["negative_themes"] = list(set(negative_themes))[:5]
+        result["review_summary"]["common_use_cases"] = use_cases[:5]
+
+
 # Rich themed analysis prompt for extracting persona signals from reviews
 # Matches the format used for competitor analysis with 7 categories
 REVIEW_ANALYSIS_PROMPT = """You are an expert at extracting deep customer insights from Amazon reviews.
