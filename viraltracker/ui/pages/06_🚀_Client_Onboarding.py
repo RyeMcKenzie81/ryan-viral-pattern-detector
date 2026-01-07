@@ -14,8 +14,12 @@ Part of the Client Onboarding Pipeline.
 
 import streamlit as st
 import asyncio
+import nest_asyncio
 from datetime import datetime
 from uuid import UUID
+
+# Allow nested event loops (needed for Pydantic AI agent.run_sync() in async context)
+nest_asyncio.apply()
 
 # Page config (must be first)
 st.set_page_config(
