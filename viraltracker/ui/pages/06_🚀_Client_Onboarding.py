@@ -1338,7 +1338,7 @@ def render_products_tab(session: dict):
                         "Key Benefits (one per line)",
                         value="\n".join(lp_analysis.get("benefits", [])) if lp_analysis else "",
                         placeholder="Supports healthy blood pressure\nPromotes circulation",
-                        height=60,
+                        height=68,
                         key=f"ov_benefits_{i}",
                     )
 
@@ -1348,13 +1348,13 @@ def render_products_tab(session: dict):
                     ov_disallowed = st.text_area(
                         "Disallowed Claims (one per line)",
                         placeholder="Cannot claim lowers blood pressure\nNo FDA approval claims",
-                        height=60,
+                        height=68,
                         key=f"ov_disallowed_{i}",
                     )
                     ov_disclaimers = st.text_area(
                         "Required Disclaimers",
                         placeholder="These statements have not been evaluated by the FDA...",
-                        height=60,
+                        height=68,
                         key=f"ov_disclaimers_{i}",
                     )
 
