@@ -1248,7 +1248,7 @@ def render_products_tab(session: dict):
                 )
                 if amazon_url and "amazon.com" in amazon_url:
                     try:
-                        amazon_service = get_amazon_review_service()
+                        amazon_service = get_amazon_service()
                         asin, _ = amazon_service.parse_amazon_url(amazon_url)
                         if asin:
                             st.caption(f"ASIN will be extracted: {asin}")
@@ -1490,7 +1490,7 @@ def render_products_tab(session: dict):
                     prod["amazon_url"] = amazon_url
                     if amazon_url and "amazon.com" in amazon_url:
                         try:
-                            amazon_service = get_amazon_review_service()
+                            amazon_service = get_amazon_service()
                             asin, _ = amazon_service.parse_amazon_url(amazon_url)
                             if asin:
                                 prod["asin"] = asin

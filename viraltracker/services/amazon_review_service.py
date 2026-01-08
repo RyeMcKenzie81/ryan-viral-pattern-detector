@@ -890,6 +890,8 @@ class AmazonReviewService:
                 logger.warning(f"Review analysis failed: {e}")
 
         result["success"] = bool(result["product_info"]["title"])
+        if not result["success"] and not result["error"]:
+            result["error"] = "Could not retrieve product details from Amazon. The product may be unavailable or the URL may be incorrect."
         return result
 
     def _scrape_product_details(
@@ -905,7 +907,7 @@ class AmazonReviewService:
             apify_result = self.apify.run_actor(
                 actor_id=PRODUCT_DETAILS_ACTOR,
                 run_input={
-                    "productUrls": [f"https://www.amazon.{domain}/dp/{asin}"]
+                    "urls": [f"https://www.amazon.{domain}/dp/{asin}"]
                 },
                 timeout=timeout,
                 memory_mbytes=1024
