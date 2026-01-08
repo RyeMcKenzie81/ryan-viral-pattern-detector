@@ -1009,11 +1009,15 @@ def _infer_merged_variant_name(urls: list, synthesis: dict) -> str:
 def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, service):
     """Analyze Amazon listing and pre-fill product/variant data."""
     prod = products[prod_idx]
-    amazon_url = prod.get("amazon_url")
+    # Read from product or session state (for edit mode where URL isn't saved yet)
+    amazon_url = prod.get("amazon_url") or st.session_state.get(f"amazon_url_{prod_idx}")
 
     if not amazon_url:
         st.warning("No Amazon URL provided")
         return
+
+    # Save the URL to product so it persists
+    prod["amazon_url"] = amazon_url
 
     with st.spinner("Analyzing Amazon listing... This may take 2-3 minutes."):
         try:
