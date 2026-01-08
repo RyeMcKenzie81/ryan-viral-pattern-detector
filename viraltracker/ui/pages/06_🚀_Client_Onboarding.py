@@ -706,7 +706,13 @@ def _analyze_ad_group_and_create_variant(session: dict, fb_data: dict, group_idx
 
         # Update progress to complete
         progress_bar.progress(1.0)
-        status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
+        resume_info = synthesis.get('_resume_info', {})
+        skipped = resume_info.get('skipped_ads', 0)
+        if skipped > 0:
+            status_text.text(f"✅ Analysis complete! Resumed {skipped} from previous run, "
+                           f"analyzed {resume_info.get('new_analyses', 0)} new ads.")
+        else:
+            status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
 
         # Store analysis results
         fb_data["url_groups"][group_idx]["status"] = "analyzed"
@@ -821,7 +827,13 @@ def _analyze_merged_groups(session: dict, fb_data: dict, group_indices: list, se
 
         # Update progress to complete
         progress_bar.progress(1.0)
-        status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
+        resume_info = synthesis.get('_resume_info', {})
+        skipped = resume_info.get('skipped_ads', 0)
+        if skipped > 0:
+            status_text.text(f"✅ Analysis complete! Resumed {skipped} from previous run, "
+                           f"analyzed {resume_info.get('new_analyses', 0)} new ads.")
+        else:
+            status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
 
         # Generate variant name from common theme
         variant_name = _infer_merged_variant_name(all_urls, synthesis)

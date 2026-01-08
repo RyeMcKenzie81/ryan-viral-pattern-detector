@@ -13,7 +13,7 @@ import logging
 import json
 import asyncio
 import httpx
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Set
 from dataclasses import dataclass, field
 from collections import Counter
 from urllib.parse import urlparse, parse_qs
@@ -262,6 +262,7 @@ class AdAnalysisService:
             group.ad_count += 1
             group.ads.append({
                 'id': ad_id,
+                'ad_archive_id': ad.get('ad_archive_id'),  # Preserve for resume tracking
                 'snapshot': snapshot,
                 'copy': self._extract_copy_from_snapshot(snapshot)
             })
@@ -315,6 +316,7 @@ class AdAnalysisService:
             AdAnalysisResult with all analyses
         """
         ad_id = ad.get('id', 'unknown')
+        ad_archive_id = ad.get('ad_archive_id') or ad_id  # Use ad_archive_id for tracking
         snapshot = ad.get('snapshot', {})
         copy_text = ad.get('copy', '')
 
@@ -330,7 +332,7 @@ class AdAnalysisService:
                 result.copy_analysis = self.brand_research_service.analyze_copy_sync(
                     ad_copy=copy_text,
                     headline=snapshot.get('title'),
-                    ad_id=None,
+                    ad_id=ad_archive_id,  # Pass ad_archive_id for resume tracking
                     brand_id=None
                 )
             except Exception as e:
@@ -366,7 +368,8 @@ class AdAnalysisService:
                     analysis = await self.brand_research_service.analyze_video_from_url(
                         video_url=url,
                         facebook_ad_id=None,
-                        brand_id=None
+                        brand_id=None,
+                        ad_archive_id=ad_archive_id  # Pass for resume tracking
                     )
                     if analysis and not analysis.get('error'):
                         result.video_analysis = analysis
@@ -375,6 +378,90 @@ class AdAnalysisService:
                     logger.warning(f"Video analysis failed for ad {ad_id}: {e}")
 
         return result
+
+    def _get_analyzed_ad_ids(self, ad_archive_ids: List[str]) -> Set[str]:
+        """
+        Query which ads have already been analyzed.
+
+        Used for resume functionality - skip ads that were analyzed in a previous run.
+
+        Args:
+            ad_archive_ids: List of ad_archive_id strings to check
+
+        Returns:
+            Set of ad_archive_ids that have already been analyzed
+        """
+        if not ad_archive_ids:
+            return set()
+
+        try:
+            result = self.brand_research_service.supabase.table("brand_ad_analysis").select(
+                "ad_archive_id"
+            ).in_("ad_archive_id", ad_archive_ids).execute()
+
+            return {r['ad_archive_id'] for r in (result.data or []) if r.get('ad_archive_id')}
+        except Exception as e:
+            logger.warning(f"Failed to query analyzed ads: {e}")
+            return set()
+
+    def _fetch_existing_analyses(self, ad_archive_ids: List[str]) -> List[Dict]:
+        """
+        Fetch previously saved analyses from database.
+
+        Used for resume functionality - include analyses from previous runs in synthesis.
+
+        Args:
+            ad_archive_ids: List of ad_archive_id strings to fetch
+
+        Returns:
+            List of analysis dicts matching the format from _analysis_to_dict()
+        """
+        if not ad_archive_ids:
+            return []
+
+        try:
+            result = self.brand_research_service.supabase.table("brand_ad_analysis").select(
+                "ad_archive_id, analysis_type, raw_response"
+            ).in_("ad_archive_id", ad_archive_ids).execute()
+
+            # Group by ad_archive_id to combine copy/video/image analyses
+            analyses_by_id: Dict[str, Dict] = {}
+            for record in (result.data or []):
+                ad_id = record.get('ad_archive_id')
+                if not ad_id:
+                    continue
+
+                if ad_id not in analyses_by_id:
+                    analyses_by_id[ad_id] = {
+                        'ad_id': ad_id,
+                        'ad_type': 'unknown',
+                        'copy_analysis': None,
+                        'image_analysis': None,
+                        'video_analysis': None,
+                        'raw_copy': None,
+                        '_from_resume': True  # Mark as fetched from previous run
+                    }
+
+                analysis_type = record.get('analysis_type', '')
+                raw_response = record.get('raw_response', {})
+
+                if analysis_type == 'copy_analysis':
+                    analyses_by_id[ad_id]['copy_analysis'] = raw_response
+                    analyses_by_id[ad_id]['ad_type'] = 'copy'
+                elif analysis_type == 'video_analysis':
+                    analyses_by_id[ad_id]['video_analysis'] = raw_response
+                    analyses_by_id[ad_id]['ad_type'] = 'video'
+                elif analysis_type == 'image_analysis':
+                    analyses_by_id[ad_id]['image_analysis'] = raw_response
+                    if analyses_by_id[ad_id]['ad_type'] != 'video':
+                        analyses_by_id[ad_id]['ad_type'] = 'image'
+
+            logger.info(f"Fetched {len(analyses_by_id)} existing analyses from database")
+            return list(analyses_by_id.values())
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch existing analyses: {e}")
+            return []
 
     async def analyze_ad_group(
         self,
@@ -402,15 +489,39 @@ class AdAnalysisService:
         Returns:
             Dict with all individual analyses and metadata
         """
-        ads_to_analyze = ad_group.ads[:max_ads]
+        candidate_ads = ad_group.ads[:max_ads]
+
+        # Check which ads have already been analyzed (for resume functionality)
+        ad_archive_ids = [
+            ad.get('ad_archive_id') or ad.get('id')
+            for ad in candidate_ads
+        ]
+        already_analyzed = self._get_analyzed_ad_ids(ad_archive_ids)
+
+        # Filter to only ads that still need analysis
+        ads_to_analyze = [
+            ad for ad in candidate_ads
+            if (ad.get('ad_archive_id') or ad.get('id')) not in already_analyzed
+        ]
+
+        skipped_count = len(already_analyzed)
         total = len(ads_to_analyze)
         analyses: List[AdAnalysisResult] = []
 
-        logger.info(f"Analyzing {total} ads for URL: {ad_group.normalized_url}")
+        if skipped_count > 0:
+            logger.info(f"Resuming analysis for URL: {ad_group.normalized_url} - "
+                       f"{skipped_count} already done, {total} remaining")
+        else:
+            logger.info(f"Analyzing {total} ads for URL: {ad_group.normalized_url}")
 
         for i, ad in enumerate(ads_to_analyze):
             if progress_callback:
-                progress_callback(i + 1, total, f"Analyzing ad {i + 1}/{total}")
+                # Show progress including skipped count for accurate tracking
+                progress_callback(
+                    skipped_count + i + 1,
+                    skipped_count + total,
+                    f"Analyzing ad {i + 1}/{total}" + (f" ({skipped_count} resumed)" if skipped_count else "")
+                )
 
             try:
                 result = await self._analyze_single_ad(
@@ -431,6 +542,8 @@ class AdAnalysisService:
             'display_url': ad_group.display_url,
             'total_ads': ad_group.ad_count,
             'analyzed_ads': len(analyses),
+            'skipped_ads': skipped_count,  # Resume tracking
+            'already_analyzed_ids': list(already_analyzed),  # For fetching existing analyses
             'analyses': [self._analysis_to_dict(a) for a in analyses],
             'source_ad_ids': [a.ad_id for a in analyses]
         }
@@ -862,9 +975,23 @@ class AdAnalysisService:
             progress_callback=progress_callback
         )
 
+        # If resuming, fetch existing analyses and merge with new ones
+        already_analyzed_ids = analysis_result.get('already_analyzed_ids', [])
+        if already_analyzed_ids:
+            existing_analyses = self._fetch_existing_analyses(already_analyzed_ids)
+            all_analyses = existing_analyses + analysis_result.get('analyses', [])
+            analysis_result['analyses'] = all_analyses
+            analysis_result['analyzed_ads'] = len(all_analyses)
+            logger.info(f"Merged {len(existing_analyses)} existing + "
+                       f"{len(analysis_result.get('analyses', []) or []) - len(existing_analyses)} new analyses")
+
         synthesis = self.synthesize_messaging(analysis_result)
 
         # Include raw analyses for transparency
         synthesis['_raw_analyses'] = analysis_result.get('analyses', [])
+        synthesis['_resume_info'] = {
+            'skipped_ads': analysis_result.get('skipped_ads', 0),
+            'new_analyses': analysis_result.get('analyzed_ads', 0) - analysis_result.get('skipped_ads', 0)
+        }
 
         return synthesis

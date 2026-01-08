@@ -18,7 +18,7 @@ import time
 import tempfile
 import os
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from uuid import UUID
 from datetime import datetime
 
@@ -854,18 +854,18 @@ class BrandResearchService:
         self,
         ad_copy: str,
         headline: Optional[str] = None,
-        ad_id: Optional[UUID] = None,
+        ad_id: Optional[Union[UUID, str]] = None,
         brand_id: Optional[UUID] = None
     ) -> Dict:
         """
         Analyze ad copy text with Claude (Synchronous).
-        
+
         Args:
             ad_copy: The ad body text
             headline: Optional headline text
-            ad_id: Optional UUID of the facebook_ads record (if linked)
+            ad_id: Optional UUID of facebook_ads record OR string ad_archive_id for onboarding
             brand_id: Optional brand to link analysis to
-            
+
         Returns:
             Analysis result dict
         """
@@ -1035,13 +1035,24 @@ class BrandResearchService:
 
     def _save_copy_analysis(
         self,
-        ad_id: Optional[UUID],
+        ad_id: Optional[Union[UUID, str]],
         brand_id: Optional[UUID],
         raw_response: Dict,
         tokens_used: int = 0,
         model_used: str = "claude-sonnet-4-20250514"
     ) -> Optional[UUID]:
-        """Save copy analysis to brand_ad_analysis table."""
+        """Save copy analysis to brand_ad_analysis table.
+
+        Args:
+            ad_id: Either a UUID (facebook_ads.id) or string (ad_archive_id from Ad Library)
+            brand_id: Optional brand to link analysis to
+            raw_response: The analysis response dict
+            tokens_used: Number of tokens used
+            model_used: Model name used for analysis
+
+        Returns:
+            UUID of saved record or None on failure
+        """
         try:
             # Extract structured fields
             hook = raw_response.get("hook", {})
@@ -1062,9 +1073,20 @@ class BrandResearchService:
             )
             all_pain_points.extend(transformation.get("before", []))
 
+            # Handle both UUID (from facebook_ads) and string (ad_archive_id from onboarding)
+            facebook_ad_id = None
+            ad_archive_id = None
+            if ad_id:
+                if isinstance(ad_id, UUID):
+                    facebook_ad_id = str(ad_id)
+                else:
+                    # String - treat as ad_archive_id
+                    ad_archive_id = str(ad_id)
+
             record = {
                 "brand_id": str(brand_id) if brand_id else None,
-                "facebook_ad_id": str(ad_id) if ad_id else None,
+                "facebook_ad_id": facebook_ad_id,
+                "ad_archive_id": ad_archive_id,  # For resume tracking in onboarding
                 "analysis_type": "copy_analysis",
                 "raw_response": raw_response,
                 "extracted_hooks": hooks_list,
@@ -1539,7 +1561,8 @@ class BrandResearchService:
         self,
         video_url: str,
         facebook_ad_id: Optional[UUID] = None,
-        brand_id: Optional[UUID] = None
+        brand_id: Optional[UUID] = None,
+        ad_archive_id: Optional[str] = None
     ) -> Dict:
         """
         Download and analyze a video directly from URL.
@@ -1550,9 +1573,10 @@ class BrandResearchService:
             video_url: Direct URL to video file
             facebook_ad_id: Optional facebook_ads record to link
             brand_id: Optional brand to link analysis to
+            ad_archive_id: Optional ad archive ID for onboarding resume tracking
 
         Returns:
-            Analysis result dict
+            Analysis result dict (includes ad_archive_id if provided)
         """
         import httpx
         from google import genai
@@ -1622,6 +1646,10 @@ class BrandResearchService:
                     analysis_text = analysis_text[first_newline + 1:last_fence].strip()
 
             analysis_dict = json.loads(analysis_text)
+
+            # Add ad_archive_id to result if provided (for resume tracking)
+            if ad_archive_id:
+                analysis_dict['_ad_archive_id'] = ad_archive_id
 
             # Clean up Gemini file
             try:
