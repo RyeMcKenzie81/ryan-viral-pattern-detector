@@ -549,6 +549,16 @@ def render_facebook_tab(session: dict):
         # Count pending groups for merge UI
         pending_indices = [i for i, g in enumerate(url_groups) if g.get("status", "pending") == "pending"]
 
+        # Sync checkbox states to selected_url_groups BEFORE reading for button
+        # (Checkboxes update session_state on click, but we need to read that state here)
+        for idx in pending_indices:
+            checkbox_key = f"select_group_{idx}"
+            if checkbox_key in st.session_state:
+                if st.session_state[checkbox_key]:
+                    st.session_state.selected_url_groups.add(idx)
+                else:
+                    st.session_state.selected_url_groups.discard(idx)
+
         # Show merge button if 2+ groups are selected
         selected = st.session_state.selected_url_groups
         selected_pending = [i for i in selected if i in pending_indices]
@@ -582,17 +592,11 @@ def render_facebook_tab(session: dict):
                     check_col, prev_col1, prev_col2 = st.columns([0.5, 2.5, 1])
                     with check_col:
                         checkbox_key = f"select_group_{idx}"
-                        # Initialize checkbox state from session if not yet set
+                        # Initialize checkbox state from selected_url_groups if not yet set
                         if checkbox_key not in st.session_state:
                             st.session_state[checkbox_key] = idx in st.session_state.selected_url_groups
-
+                        # Render checkbox - sync to selected_url_groups happens above before button
                         st.checkbox("", key=checkbox_key, label_visibility="collapsed")
-
-                        # Sync session state set with checkbox value
-                        if st.session_state[checkbox_key]:
-                            st.session_state.selected_url_groups.add(idx)
-                        else:
-                            st.session_state.selected_url_groups.discard(idx)
                 else:
                     prev_col1, prev_col2 = st.columns([3, 1])
 
