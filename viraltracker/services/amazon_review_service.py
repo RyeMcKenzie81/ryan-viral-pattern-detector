@@ -914,7 +914,14 @@ class AmazonReviewService:
             )
 
             if apify_result.items:
-                return apify_result.items[0]
+                data = apify_result.items[0]
+                # Log the fields we received for debugging
+                logger.info(f"Product details fields received: {list(data.keys())}")
+                # Log dimension/weight related fields specifically
+                for key in data.keys():
+                    if any(x in key.lower() for x in ['dim', 'weight', 'size', 'spec']):
+                        logger.info(f"  {key}: {data[key]}")
+                return data
             return None
 
         except Exception as e:
