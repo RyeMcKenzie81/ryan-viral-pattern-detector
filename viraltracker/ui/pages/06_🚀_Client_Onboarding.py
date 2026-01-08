@@ -575,14 +575,21 @@ def render_facebook_tab(session: dict):
 
             with st.expander(
                 f"{status_icon} {group['display_url'][:60]}... ({group['ad_count']} ads)",
-                expanded=(status == "pending" and idx < 3),
+                expanded=(status == "pending"),  # Expand all pending groups
             ):
                 # Preview row with checkbox for pending items
                 if status == "pending":
                     check_col, prev_col1, prev_col2 = st.columns([0.5, 2.5, 1])
                     with check_col:
-                        is_selected = idx in st.session_state.selected_url_groups
-                        if st.checkbox("", value=is_selected, key=f"select_group_{idx}", label_visibility="collapsed"):
+                        checkbox_key = f"select_group_{idx}"
+                        # Initialize checkbox state from session if not yet set
+                        if checkbox_key not in st.session_state:
+                            st.session_state[checkbox_key] = idx in st.session_state.selected_url_groups
+
+                        st.checkbox("", key=checkbox_key, label_visibility="collapsed")
+
+                        # Sync session state set with checkbox value
+                        if st.session_state[checkbox_key]:
                             st.session_state.selected_url_groups.add(idx)
                         else:
                             st.session_state.selected_url_groups.discard(idx)
