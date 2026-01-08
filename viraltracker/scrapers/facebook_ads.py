@@ -357,15 +357,17 @@ class FacebookAdsScraper:
                     logger.info(f"First ad keys: {list(ad.keys())}")
                     logger.info(f"First ad sample: {json.dumps({k: str(v)[:100] for k, v in list(ad.items())[:5]}, indent=2)}")
 
-                # Extract page info
-                page_id = ad.get("page_id")
-                page_name = ad.get("page_name", "")
+                # Extract page info (handle both camelCase and snake_case from Apify)
+                page_id = ad.get("pageID") or ad.get("page_id")
+                page_name = ad.get("pageName") or ad.get("page_name") or ""
 
                 # Build ad data
+                # Note: Apify may use camelCase (adArchiveID) or snake_case (ad_archive_id)
+                ad_archive_id = ad.get("adArchiveID") or ad.get("ad_archive_id") or ""
                 ad_data = {
                     # Core identifiers
-                    "ad_id": str(ad.get("ad_id", "")),
-                    "ad_archive_id": str(ad.get("ad_archive_id", "")),
+                    "ad_id": str(ad.get("adID") or ad.get("ad_id") or ""),
+                    "ad_archive_id": str(ad_archive_id),
                     "page_id": str(page_id) if page_id else None,
                     "page_name": page_name,
 
