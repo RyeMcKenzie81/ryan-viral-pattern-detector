@@ -74,6 +74,48 @@ def get_ad_analysis_service():
     return AdAnalysisService()
 
 
+def get_group_resume_status(group: dict, max_ads: int = 50) -> dict:
+    """
+    Check how many ads in a group have already been analyzed.
+
+    Returns dict with:
+        - already_analyzed: count of ads already in DB
+        - remaining: count of ads still to analyze
+        - total: total ads (capped at max_ads)
+        - has_resume: bool indicating if there's progress to resume
+    """
+    ads = group.get("ads", [])[:max_ads]
+    if not ads:
+        return {"already_analyzed": 0, "remaining": 0, "total": 0, "has_resume": False}
+
+    # Get ad_archive_ids from the group
+    ad_archive_ids = [
+        ad.get('ad_archive_id') or ad.get('id')
+        for ad in ads
+        if ad.get('ad_archive_id') or ad.get('id')
+    ]
+
+    # Filter out None/empty values
+    ad_archive_ids = [aid for aid in ad_archive_ids if aid and aid != 'None']
+
+    if not ad_archive_ids:
+        return {"already_analyzed": 0, "remaining": len(ads), "total": len(ads), "has_resume": False}
+
+    try:
+        ad_service = get_ad_analysis_service()
+        already_done = ad_service._get_analyzed_ad_ids(ad_archive_ids)
+        already_count = len(already_done)
+        remaining = len(ads) - already_count
+        return {
+            "already_analyzed": already_count,
+            "remaining": remaining,
+            "total": len(ads),
+            "has_resume": already_count > 0
+        }
+    except Exception:
+        return {"already_analyzed": 0, "remaining": len(ads), "total": len(ads), "has_resume": False}
+
+
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
@@ -600,11 +642,26 @@ def render_facebook_tab(session: dict):
                 else:
                     prev_col1, prev_col2 = st.columns([3, 1])
 
+                # Get resume status once for pending groups (used in multiple places)
+                resume_status = get_group_resume_status(group) if status == "pending" else None
+
                 with prev_col1:
                     if group.get("preview_text"):
                         st.caption(f"Preview: \"{group['preview_text']}...\"")
                     st.markdown(f"🔗 **URL:** `{group['display_url']}`")
-                    st.caption(f"📊 **Ads:** {group['ad_count']}")
+
+                    # Show resume status for pending groups
+                    if status == "pending" and resume_status:
+                        if resume_status["has_resume"]:
+                            st.caption(
+                                f"📊 **Ads:** {group['ad_count']} "
+                                f"(✅ {resume_status['already_analyzed']} done, "
+                                f"⏳ {resume_status['remaining']} remaining)"
+                            )
+                        else:
+                            st.caption(f"📊 **Ads:** {group['ad_count']}")
+                    else:
+                        st.caption(f"📊 **Ads:** {group['ad_count']}")
 
                 with prev_col2:
                     if group.get("preview_image_url"):
@@ -617,8 +674,14 @@ def render_facebook_tab(session: dict):
                 if status == "pending":
                     action_col1, action_col2 = st.columns(2)
                     with action_col1:
+                        # Update button text based on resume status
+                        if resume_status["has_resume"]:
+                            button_text = f"🔄 Resume ({resume_status['remaining']} remaining)"
+                        else:
+                            button_text = "🔬 Analyze & Create Variant"
+
                         if st.button(
-                            "🔬 Analyze & Create Variant",
+                            button_text,
                             key=f"analyze_group_{idx}",
                             type="primary",
                         ):
