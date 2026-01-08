@@ -1234,6 +1234,27 @@ def render_products_tab(session: dict):
 
                 # Edit product details
                 st.markdown("---")
+
+                # Amazon URL field (editable)
+                amazon_url = st.text_input(
+                    "Amazon URL",
+                    value=prod.get("amazon_url", ""),
+                    placeholder="https://www.amazon.com/dp/...",
+                    key=f"amazon_url_{i}",
+                )
+                if amazon_url and "amazon.com" in amazon_url:
+                    try:
+                        amazon_service = get_amazon_review_service()
+                        asin, _ = amazon_service.parse_amazon_url(amazon_url)
+                        if asin:
+                            st.caption(f"ASIN will be extracted: {asin}")
+                    except Exception:
+                        pass
+
+                    # Show Analyze Listing button if URL provided
+                    if st.button("🔬 Analyze Listing", key=f"analyze_amazon_edit_{i}"):
+                        _analyze_amazon_listing(session, products, i, service)
+
                 edit_col1, edit_col2 = st.columns(2)
 
                 with edit_col1:
@@ -1461,6 +1482,17 @@ def render_products_tab(session: dict):
 
                 # Save product updates
                 if st.button("💾 Save Product Details", key=f"save_prod_{i}"):
+                    # Save Amazon URL and extract ASIN
+                    prod["amazon_url"] = amazon_url
+                    if amazon_url and "amazon.com" in amazon_url:
+                        try:
+                            amazon_service = get_amazon_review_service()
+                            asin, _ = amazon_service.parse_amazon_url(amazon_url)
+                            if asin:
+                                prod["asin"] = asin
+                        except Exception:
+                            pass
+
                     prod["dimensions"] = {
                         "width": width,
                         "height": height,
