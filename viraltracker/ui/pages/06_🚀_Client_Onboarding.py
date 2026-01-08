@@ -15,6 +15,7 @@ Part of the Client Onboarding Pipeline.
 import streamlit as st
 import asyncio
 import nest_asyncio
+import time
 from datetime import datetime
 from uuid import UUID
 
@@ -1235,8 +1236,20 @@ def render_products_tab(session: dict):
                                 service.update_section(UUID(session["id"]), "products", products)
                                 st.rerun()
 
-                # Add new offer variant form
-                with st.expander("➕ Add Offer Variant", expanded=len(offer_variants) == 0):
+                # Add new offer variant form (use toggle instead of nested expander)
+                show_add_form_key = f"show_add_variant_{i}"
+                if show_add_form_key not in st.session_state:
+                    st.session_state[show_add_form_key] = len(offer_variants) == 0
+
+                if st.button(
+                    "➕ Add Offer Variant" if not st.session_state[show_add_form_key] else "➖ Hide Form",
+                    key=f"toggle_add_ov_{i}",
+                ):
+                    st.session_state[show_add_form_key] = not st.session_state[show_add_form_key]
+                    st.rerun()
+
+                if st.session_state[show_add_form_key]:
+                    st.markdown("---")
                     ov_name = st.text_input(
                         "Variant Name *",
                         placeholder="e.g., Blood Pressure Angle",

@@ -489,15 +489,76 @@ class AdAnalysisService:
             # From copy analysis
             if a.get('copy_analysis'):
                 copy = a['copy_analysis']
-                all_pain_points.extend(copy.get('pain_points', []))
-                all_desires.extend(copy.get('desires', []))
-                all_benefits.extend(copy.get('benefits', []))
-                all_hooks.extend(copy.get('hooks', []))
-                all_claims.extend(copy.get('claims', []))
-                if copy.get('target_audience'):
-                    all_target_audiences.append(copy['target_audience'])
-                if copy.get('cta'):
-                    all_ctas.append(copy['cta'])
+
+                # Handle pain_points - can be nested dict or flat list
+                pain_points_data = copy.get('pain_points', [])
+                if isinstance(pain_points_data, dict):
+                    # Nested: {"emotional": [...], "functional": [...]}
+                    all_pain_points.extend(pain_points_data.get('emotional', []))
+                    all_pain_points.extend(pain_points_data.get('functional', []))
+                elif isinstance(pain_points_data, list):
+                    all_pain_points.extend(pain_points_data)
+
+                # Also extract from transformation.before (pain states)
+                transformation = copy.get('transformation', {})
+                if isinstance(transformation, dict):
+                    all_pain_points.extend(transformation.get('before', []))
+                    all_benefits.extend(transformation.get('after', []))
+
+                # Handle desires - can be nested dict or flat list
+                desires_data = copy.get('desires_appealed_to') or copy.get('desires', [])
+                if isinstance(desires_data, dict):
+                    # Nested: {"care_protection": [...], "freedom_from_fear": [...], ...}
+                    for category_values in desires_data.values():
+                        if isinstance(category_values, list):
+                            all_desires.extend(category_values)
+                elif isinstance(desires_data, list):
+                    all_desires.extend(desires_data)
+
+                # Handle benefits - can be nested dict or flat list
+                benefits_data = copy.get('benefits_outcomes') or copy.get('benefits', [])
+                if isinstance(benefits_data, dict):
+                    all_benefits.extend(benefits_data.get('emotional', []))
+                    all_benefits.extend(benefits_data.get('functional', []))
+                elif isinstance(benefits_data, list):
+                    all_benefits.extend(benefits_data)
+
+                # Handle hooks - can be dict with text or list
+                hook_data = copy.get('hook')
+                if isinstance(hook_data, dict) and hook_data.get('text'):
+                    all_hooks.append(hook_data['text'])
+                elif isinstance(hook_data, str):
+                    all_hooks.append(hook_data)
+                hooks_list = copy.get('hooks', [])
+                if isinstance(hooks_list, list):
+                    all_hooks.extend(hooks_list)
+
+                # Handle claims
+                claims_data = copy.get('claims_made') or copy.get('claims', [])
+                if isinstance(claims_data, list):
+                    all_claims.extend(claims_data)
+
+                # Target audience/persona
+                target_persona = copy.get('target_persona') or copy.get('target_audience')
+                if target_persona:
+                    if isinstance(target_persona, dict):
+                        # Build audience string from persona dict
+                        parts = []
+                        if target_persona.get('age_range'):
+                            parts.append(target_persona['age_range'])
+                        if target_persona.get('gender_focus'):
+                            parts.append(target_persona['gender_focus'])
+                        if target_persona.get('lifestyle'):
+                            parts.extend(target_persona['lifestyle'][:2])
+                        if parts:
+                            all_target_audiences.append(', '.join(parts))
+                    else:
+                        all_target_audiences.append(str(target_persona))
+
+                # CTA
+                cta = copy.get('call_to_action') or copy.get('cta')
+                if cta:
+                    all_ctas.append(cta)
                 # Mechanism-related fields
                 if copy.get('mechanism') or copy.get('unique_mechanism'):
                     all_mechanisms.append(copy.get('mechanism') or copy.get('unique_mechanism'))
