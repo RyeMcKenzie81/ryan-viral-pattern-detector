@@ -971,16 +971,51 @@ class AmazonReviewService:
             except (ValueError, TypeError):
                 pass
 
-        # Dimensions (varies by actor response format)
-        dimensions = data.get("dimensions") or data.get("productDimensions")
+        # Dimensions and Weight - check multiple possible locations
+        # Axesso returns these in productDetails or productSpecification dicts
+        product_details = data.get("productDetails") or {}
+        product_spec = data.get("productSpecification") or {}
+
+        # Log what we have for debugging
+        if product_details:
+            logger.info(f"productDetails keys: {list(product_details.keys()) if isinstance(product_details, dict) else 'not a dict'}")
+        if product_spec:
+            logger.info(f"productSpecification keys: {list(product_spec.keys()) if isinstance(product_spec, dict) else 'not a dict'}")
+
+        # Try to find dimensions from various possible field names
+        dimensions = None
+        for source in [data, product_details, product_spec]:
+            if not isinstance(source, dict):
+                continue
+            for key in source.keys():
+                key_lower = key.lower()
+                if 'dimension' in key_lower or 'size' in key_lower:
+                    dimensions = source[key]
+                    logger.info(f"Found dimensions in '{key}': {dimensions}")
+                    break
+            if dimensions:
+                break
+
         if dimensions:
             if isinstance(dimensions, dict):
                 product_info["dimensions"] = dimensions
             elif isinstance(dimensions, str):
                 product_info["dimensions"] = {"raw": dimensions}
 
-        # Weight
-        weight = data.get("weight") or data.get("itemWeight")
+        # Try to find weight from various possible field names
+        weight = None
+        for source in [data, product_details, product_spec]:
+            if not isinstance(source, dict):
+                continue
+            for key in source.keys():
+                key_lower = key.lower()
+                if 'weight' in key_lower:
+                    weight = source[key]
+                    logger.info(f"Found weight in '{key}': {weight}")
+                    break
+            if weight:
+                break
+
         if weight:
             if isinstance(weight, dict):
                 product_info["weight"] = weight
