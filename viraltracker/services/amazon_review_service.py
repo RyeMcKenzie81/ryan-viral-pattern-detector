@@ -1182,8 +1182,9 @@ class AmazonReviewService:
             from ..core.config import Config
             from .competitor_service import AmazonReviewAnalysis
 
+            # Use Opus 4.5 for rich review analysis - better at extracting implied pain points
             agent = Agent(
-                model=Config.get_model("default"),
+                model=Config.get_model("complex"),
                 system_prompt="You are an expert at extracting customer insights from Amazon reviews. Analyze the reviews and extract themes with supporting quotes.",
                 output_type=AmazonReviewAnalysis
             )
@@ -1268,9 +1269,15 @@ Analyze these {review_count} reviews.
 Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 7 categories, each with numbered themes ranked by importance (score 1-10).
 
 IMPORTANT DISTINCTIONS:
-- "pain_points" = Life frustrations BEFORE using this product (the symptoms driving them to seek a solution)
+- "pain_points" = Life frustrations BEFORE using this product. Extract these from:
+  * Explicit statements: "I was struggling with X", "I had problem Y"
+  * Implied from transformation: "Now I can do X" implies they COULDN'T before - that's a pain point
+  * Reasons for purchase: "I bought this because of X" - X is often a pain point
+  * Example: "I'm no longer passing out or crying" → Pain point: "Risk of passing out and emotional breakdowns"
 - "product_issues" = Problems WITH this specific product (complaints, defects, disappointments)
 - "jobs_to_be_done" = What customers are trying to accomplish (functional, emotional, social goals)
+
+CRITICAL: pain_points should have 4-6 themes. Look for the IMPLIED "before" state in positive reviews, not just explicit complaints.
 
 For each theme:
 1. Give it a descriptive name and score (based on frequency and intensity)
@@ -1487,9 +1494,15 @@ Analyze these {review_count} reviews for the product.
 Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 7 categories, each with numbered themes ranked by importance (score 1-10).
 
 IMPORTANT DISTINCTIONS:
-- "pain_points" = Life frustrations BEFORE using this product (the symptoms driving them to seek a solution)
+- "pain_points" = Life frustrations BEFORE using this product. Extract these from:
+  * Explicit statements: "I was struggling with X", "I had problem Y"
+  * Implied from transformation: "Now I can do X" implies they COULDN'T before - that's a pain point
+  * Reasons for purchase: "I bought this because of X" - X is often a pain point
+  * Example: "I'm no longer passing out or crying" → Pain point: "Risk of passing out and emotional breakdowns"
 - "product_issues" = Problems WITH this specific product (complaints, defects, disappointments)
 - "jobs_to_be_done" = What customers are trying to accomplish (functional, emotional, social goals)
+
+CRITICAL: pain_points should have 4-6 themes. Look for the IMPLIED "before" state in positive reviews, not just explicit complaints.
 
 For each theme:
 1. Give it a descriptive name and score (based on frequency and intensity)
