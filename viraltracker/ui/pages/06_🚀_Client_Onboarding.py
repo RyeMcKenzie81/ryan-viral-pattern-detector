@@ -1709,6 +1709,140 @@ def _analyze_competitor_amazon(session: dict, competitors: list, comp_idx: int, 
             st.code(traceback.format_exc())
 
 
+def _scrape_competitor_ads(session: dict, competitors: list, comp_idx: int, service):
+    """Scrape competitor's Facebook ads from their Ad Library URL."""
+    from datetime import datetime
+
+    comp = competitors[comp_idx]
+    ad_library_url = comp.get("ad_library_url")
+
+    if not ad_library_url:
+        st.warning("No Ad Library URL provided")
+        return
+
+    with st.spinner(f"Scraping {comp['name']}'s Facebook ads... This may take a few minutes."):
+        try:
+            from viraltracker.scrapers.facebook_ads import FacebookAdsScraper
+            from viraltracker.services.ad_analysis_service import AdAnalysisService
+
+            scraper = FacebookAdsScraper()
+            df = scraper.search_ad_library(search_url=ad_library_url, count=100)
+
+            if df.empty:
+                st.warning("No ads found. Check the Ad Library URL.")
+                return
+
+            # Convert DataFrame to list of dicts for grouping
+            ads_list = df.to_dict("records")
+
+            # Group by URL
+            ad_service = AdAnalysisService()
+            url_groups = ad_service.group_ads_by_url(ads_list)
+
+            # Store in competitor data
+            comp["scraped_ads_count"] = len(df)
+            comp["scraped_at"] = datetime.utcnow().isoformat()
+            comp["url_groups"] = [
+                {
+                    "normalized_url": g.normalized_url,
+                    "display_url": g.display_url,
+                    "ad_count": len(g.ads),
+                    "ads": g.ads[:20],  # Store up to 20 ads per group
+                }
+                for g in url_groups
+            ]
+
+            # Update and save
+            competitors[comp_idx] = comp
+            service.update_section(UUID(session["id"]), "competitors", competitors)
+
+            st.success(f"Scraped {len(df)} ads from {comp['name']}!")
+            st.caption(f"Found {len(url_groups)} unique landing pages")
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Ad scrape failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+def _analyze_competitor_ad_group(
+    session: dict, competitors: list, comp_idx: int, grp_idx: int, service
+):
+    """Analyze a competitor's ad group to extract messaging."""
+    comp = competitors[comp_idx]
+    url_groups = comp.get("url_groups") or []
+
+    if grp_idx >= len(url_groups):
+        st.error("Invalid ad group index")
+        return
+
+    group = url_groups[grp_idx]
+    ads = group.get("ads", [])
+
+    if not ads:
+        st.warning("No ads in this group to analyze")
+        return
+
+    with st.spinner(f"Analyzing {len(ads)} ads from {group.get('display_url', 'Unknown')}..."):
+        try:
+            from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+
+            ad_service = AdAnalysisService()
+
+            # Reconstruct AdGroup object
+            ad_group = AdGroup(
+                normalized_url=group["normalized_url"],
+                display_url=group["display_url"],
+                ads=ads,
+            )
+
+            # Run analysis (synchronously for UI)
+            import asyncio
+
+            async def run_analysis():
+                return await ad_service.analyze_and_synthesize(
+                    ad_group=ad_group,
+                    max_ads=10,
+                )
+
+            result = asyncio.get_event_loop().run_until_complete(run_analysis())
+
+            # Extract messaging from result
+            ad_messaging = {
+                "pain_points": result.get("pain_points", []),
+                "desires": result.get("desires", []),
+                "benefits": result.get("benefits", []),
+                "hooks": result.get("sample_hooks", []),
+                "claims": result.get("claims", []),
+                "target_audience": result.get("target_audience"),
+                "analyzed_url": group["display_url"],
+            }
+
+            # Store in competitor (merge with existing)
+            existing = comp.get("ad_messaging") or {}
+            for key in ["pain_points", "desires", "benefits", "hooks", "claims"]:
+                existing_list = existing.get(key, [])
+                new_list = ad_messaging.get(key, [])
+                # Merge and dedupe
+                merged = list(dict.fromkeys(existing_list + new_list))
+                ad_messaging[key] = merged[:10]  # Keep top 10
+
+            comp["ad_messaging"] = ad_messaging
+
+            # Update and save
+            competitors[comp_idx] = comp
+            service.update_section(UUID(session["id"]), "competitors", competitors)
+
+            st.success(f"Analyzed ads from {group['display_url'][:40]}...")
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Ad analysis failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
 def render_competitors_tab(session: dict):
     """Render Competitors section."""
     service = get_onboarding_service()
@@ -1863,6 +1997,77 @@ def render_competitors_tab(session: dict):
                                 st.caption("Desires/Goals:")
                                 for dg in messaging["desires_goals"][:5]:
                                     st.caption(f"• {dg}")
+
+                # ============================================
+                # Facebook Ads Section
+                # ============================================
+                st.markdown("---")
+                st.markdown("**Facebook Ads**")
+
+                ad_library_url = comp.get("ad_library_url", "")
+                has_ad_library = ad_library_url and "facebook.com" in ad_library_url
+
+                # Scrape Ads button
+                fb_col1, fb_col2 = st.columns([1, 3])
+                with fb_col1:
+                    if st.button(
+                        "🔍 Scrape Ads",
+                        key=f"scrape_comp_ads_{i}",
+                        disabled=not has_ad_library,
+                    ):
+                        _scrape_competitor_ads(session, competitors, i, service)
+                with fb_col2:
+                    if comp.get("scraped_ads_count"):
+                        scraped_at = comp.get("scraped_at", "")[:10] if comp.get("scraped_at") else ""
+                        st.caption(f"✅ {comp['scraped_ads_count']} ads scraped ({scraped_at})")
+                    elif not has_ad_library:
+                        st.caption("Enter Ad Library URL to scrape ads")
+
+                # Show scraped ad groups
+                url_groups = comp.get("url_groups") or []
+                if url_groups:
+                    st.markdown(f"**Landing Pages Found ({len(url_groups)}):**")
+                    for grp_idx, group in enumerate(url_groups[:5]):  # Show top 5
+                        grp_col1, grp_col2 = st.columns([3, 1])
+                        with grp_col1:
+                            st.caption(f"🔗 {group.get('display_url', 'Unknown')[:50]}...")
+                            st.caption(f"   {group.get('ad_count', 0)} ads")
+                        with grp_col2:
+                            # Analyze button for each group
+                            if st.button(
+                                "📊 Analyze",
+                                key=f"analyze_comp_adgroup_{i}_{grp_idx}",
+                            ):
+                                _analyze_competitor_ad_group(
+                                    session, competitors, i, grp_idx, service
+                                )
+
+                    if len(url_groups) > 5:
+                        st.caption(f"... and {len(url_groups) - 5} more landing pages")
+
+                # Show ad analysis results if available
+                ad_messaging = comp.get("ad_messaging") or {}
+                if ad_messaging:
+                    st.markdown("**Competitor Messaging (from ads):**")
+                    ad_msg_col1, ad_msg_col2 = st.columns(2)
+                    with ad_msg_col1:
+                        if ad_messaging.get("pain_points"):
+                            st.caption("Pain Points:")
+                            for pp in ad_messaging["pain_points"][:5]:
+                                st.caption(f"• {pp}")
+                        if ad_messaging.get("hooks"):
+                            st.caption("Hooks:")
+                            for hook in ad_messaging["hooks"][:3]:
+                                st.caption(f"• {hook}")
+                    with ad_msg_col2:
+                        if ad_messaging.get("desires"):
+                            st.caption("Desires:")
+                            for d in ad_messaging["desires"][:5]:
+                                st.caption(f"• {d}")
+                        if ad_messaging.get("benefits"):
+                            st.caption("Benefits:")
+                            for b in ad_messaging["benefits"][:5]:
+                                st.caption(f"• {b}")
 
                 # Save competitor updates
                 if st.button("💾 Save Competitor", key=f"save_comp_{i}"):
