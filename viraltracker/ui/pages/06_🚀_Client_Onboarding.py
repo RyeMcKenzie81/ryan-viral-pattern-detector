@@ -1652,6 +1652,63 @@ def render_products_tab(session: dict):
 # ============================================
 
 
+def _analyze_competitor_amazon(session: dict, competitors: list, comp_idx: int, service):
+    """Analyze competitor's Amazon listing to extract product info and messaging."""
+    comp = competitors[comp_idx]
+    amazon_url = comp.get("amazon_url") or st.session_state.get(f"comp_amazon_url_{comp_idx}")
+
+    if not amazon_url:
+        st.warning("No Amazon URL provided")
+        return
+
+    # Save the URL
+    comp["amazon_url"] = amazon_url
+
+    with st.spinner(f"Analyzing {comp['name']}'s Amazon listing... This may take 2-3 minutes."):
+        try:
+            amazon_service = get_amazon_service()
+            result = amazon_service.analyze_listing_for_onboarding(
+                amazon_url=amazon_url,
+                include_reviews=True,
+                max_reviews=200,
+            )
+
+            if not result.get("success"):
+                st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
+                return
+
+            # Store the analysis
+            comp["amazon_analysis"] = result
+
+            # Store images
+            product_info = result.get("product_info", {})
+            if product_info.get("images"):
+                comp["images"] = product_info["images"][:10]
+
+            # Update and save
+            competitors[comp_idx] = comp
+            service.update_section(UUID(session["id"]), "competitors", competitors)
+
+            # Show summary
+            st.success(f"Analyzed {comp['name']}'s Amazon listing!")
+            messaging = result.get("messaging", {})
+            if product_info.get("title"):
+                st.caption(f"• Product: {product_info['title'][:60]}...")
+            if messaging.get("pain_points"):
+                st.caption(f"• {len(messaging['pain_points'])} pain points from reviews")
+            if messaging.get("desires_goals"):
+                st.caption(f"• {len(messaging['desires_goals'])} desires/goals")
+            if product_info.get("images"):
+                st.caption(f"• {len(product_info['images'])} product images")
+
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Amazon analysis failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
 def render_competitors_tab(session: dict):
     """Render Competitors section."""
     service = get_onboarding_service()
@@ -1718,8 +1775,6 @@ def render_competitors_tab(session: dict):
                 with col1:
                     if comp.get("website_url"):
                         st.markdown(f"🌐 Website: {comp['website_url']}")
-                    if comp.get("amazon_url"):
-                        st.markdown(f"📦 Amazon: {comp['amazon_url']}")
                     if comp.get("facebook_page_url"):
                         st.markdown(f"📘 Facebook: {comp['facebook_page_url']}")
                     if comp.get("ad_library_url"):
@@ -1730,6 +1785,84 @@ def render_competitors_tab(session: dict):
                         competitors.pop(i)
                         service.update_section(UUID(session["id"]), "competitors", competitors)
                         st.rerun()
+
+                # Amazon section with analysis
+                st.markdown("---")
+                amazon_url = comp.get("amazon_url", "")
+                amazon_url = st.text_input(
+                    "Amazon URL",
+                    value=amazon_url,
+                    placeholder="https://www.amazon.com/dp/...",
+                    key=f"comp_amazon_url_{i}",
+                )
+
+                if amazon_url and "amazon.com" in amazon_url:
+                    try:
+                        amazon_service = get_amazon_service()
+                        asin, _ = amazon_service.parse_amazon_url(amazon_url)
+                        if asin:
+                            st.caption(f"ASIN: {asin}")
+                    except Exception:
+                        pass
+
+                    # Analyze Amazon button
+                    amz_col1, amz_col2 = st.columns([1, 3])
+                    with amz_col1:
+                        if st.button("🔬 Analyze Amazon", key=f"analyze_comp_amazon_{i}"):
+                            _analyze_competitor_amazon(session, competitors, i, service)
+                    with amz_col2:
+                        if comp.get("amazon_analysis"):
+                            st.caption("✅ Amazon data extracted")
+
+                # Show Amazon analysis results if available
+                amazon_analysis = comp.get("amazon_analysis") or {}
+                if amazon_analysis:
+                    product_info = amazon_analysis.get("product_info", {})
+                    messaging = amazon_analysis.get("messaging", {})
+
+                    # Product info
+                    if product_info.get("title"):
+                        st.markdown("**Product Info:**")
+                        st.caption(f"📦 {product_info['title'][:100]}...")
+                        if product_info.get("price"):
+                            st.caption(f"💰 Price: {product_info['price']}")
+                        if product_info.get("rating"):
+                            st.caption(f"⭐ Rating: {product_info['rating']}")
+
+                    # Show images if available
+                    images = comp.get("images") or product_info.get("images") or []
+                    if images:
+                        st.markdown("**Product Images:**")
+                        img_cols = st.columns(min(len(images), 4))
+                        for img_idx, img_url in enumerate(images[:4]):
+                            with img_cols[img_idx]:
+                                try:
+                                    st.image(img_url, width=80)
+                                except Exception:
+                                    pass
+
+                    # Messaging insights
+                    if messaging.get("pain_points") or messaging.get("desires_goals"):
+                        st.markdown("**Competitor Messaging (from reviews):**")
+                        msg_col1, msg_col2 = st.columns(2)
+                        with msg_col1:
+                            if messaging.get("pain_points"):
+                                st.caption("Pain Points:")
+                                for pp in messaging["pain_points"][:5]:
+                                    st.caption(f"• {pp}")
+                        with msg_col2:
+                            if messaging.get("desires_goals"):
+                                st.caption("Desires/Goals:")
+                                for dg in messaging["desires_goals"][:5]:
+                                    st.caption(f"• {dg}")
+
+                # Save competitor updates
+                if st.button("💾 Save Competitor", key=f"save_comp_{i}"):
+                    comp["amazon_url"] = amazon_url
+                    competitors[i] = comp
+                    service.update_section(UUID(session["id"]), "competitors", competitors)
+                    st.success(f"Saved {comp['name']}!")
+                    st.rerun()
     else:
         st.info("No competitors added yet.")
 
