@@ -1280,6 +1280,13 @@ def render_products_tab(session: dict):
                 # Edit product details
                 st.markdown("---")
 
+                # Product name (editable)
+                prod_name_edit = st.text_input(
+                    "Product Name",
+                    value=prod.get("name", ""),
+                    key=f"prod_name_{i}",
+                )
+
                 # Amazon URL field (editable)
                 amazon_url = st.text_input(
                     "Amazon URL",
@@ -1603,6 +1610,10 @@ def render_products_tab(session: dict):
 
                 # Save product updates
                 if st.button("💾 Save Product Details", key=f"save_prod_{i}"):
+                    # Save product name
+                    if prod_name_edit:
+                        prod["name"] = prod_name_edit
+
                     # Save Amazon URL and extract ASIN
                     prod["amazon_url"] = amazon_url
                     if amazon_url and "amazon.com" in amazon_url:
