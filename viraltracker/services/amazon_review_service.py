@@ -1226,7 +1226,9 @@ class AmazonReviewService:
 
     def _build_rich_review_analysis_prompt(self, reviews_text: str, review_count: int) -> str:
         """Build the same rich analysis prompt used in competitor research."""
-        return f"""Analyze these {review_count} Amazon reviews and extract deep customer insights.
+        return f"""You are an expert at extracting deep customer insights from Amazon reviews.
+
+Analyze these {review_count} reviews.
 
 Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 7 categories, each with numbered themes ranked by importance (score 1-10).
 
@@ -1234,20 +1236,128 @@ IMPORTANT DISTINCTIONS:
 - "pain_points" = Life frustrations BEFORE using this product (the symptoms driving them to seek a solution)
 - "product_issues" = Problems WITH this specific product (complaints, defects, disappointments)
 - "jobs_to_be_done" = What customers are trying to accomplish (functional, emotional, social goals)
-- "desired_outcomes" = What they hope to achieve (benefits they want)
-- "buying_objections" = Reasons for hesitation before purchase
-- "desired_features" = Features customers wish existed
-- "failed_solutions" = Other products/solutions that didn't work for them
 
 For each theme:
 1. Give it a descriptive name and score (based on frequency and intensity)
-2. Include 2-4 direct quotes that exemplify this theme
+2. Include 3-5 direct quotes that exemplify this theme
 3. For each quote, add context explaining what it reveals about the customer
 
 REVIEWS:
 {reviews_text}
 
-Focus on extracting actionable insights that could be used for marketing copy. Prioritize emotional language and specific situations over generic statements."""
+Return a JSON object with this exact structure:
+{{
+  "pain_points": [
+    {{
+      "theme": "Life Frustration Before Product",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote describing life pain/frustration BEFORE trying product",
+          "author": "Author name if available",
+          "rating": 3,
+          "context": "What this reveals about their life situation, frustrations, or unmet needs before this product"
+        }}
+      ]
+    }}
+  ],
+  "jobs_to_be_done": [
+    {{
+      "theme": "What They're Trying to Accomplish",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote showing what job/goal they hired this product for",
+          "author": "Author name",
+          "rating": 5,
+          "context": "The functional, emotional, or social job they're trying to get done"
+        }}
+      ]
+    }}
+  ],
+  "product_issues": [
+    {{
+      "theme": "Specific Problem With This Product",
+      "score": 8.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote about a problem with THIS product",
+          "author": "Author name",
+          "rating": 2,
+          "context": "What product defect, disappointment, or issue this represents"
+        }}
+      ]
+    }}
+  ],
+  "desired_outcomes": [
+    {{
+      "theme": "What Customers Want to Achieve",
+      "score": 9.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 5,
+          "context": "What this reveals about their ideal end state"
+        }}
+      ]
+    }}
+  ],
+  "buying_objections": [
+    {{
+      "theme": "Reasons for Hesitation Before Purchase",
+      "score": 8.0,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote about pre-purchase concerns or hesitations",
+          "author": "Author name",
+          "rating": 4,
+          "context": "What barrier or concern almost stopped them from buying"
+        }}
+      ]
+    }}
+  ],
+  "desired_features": [
+    {{
+      "theme": "Features/Attributes Customers Value",
+      "score": 8.5,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote",
+          "author": "Author name",
+          "rating": 5,
+          "context": "Why this feature matters to them"
+        }}
+      ]
+    }}
+  ],
+  "failed_solutions": [
+    {{
+      "theme": "Past Products/Approaches That Didn't Work",
+      "score": 7.5,
+      "quotes": [
+        {{
+          "quote": "Exact verbatim quote mentioning other products they tried",
+          "author": "Author name",
+          "rating": 4,
+          "context": "Why the previous solution failed them"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Guidelines:
+- Use EXACT verbatim quotes - do not paraphrase or clean up language
+- Include profanity, typos, emphasis (caps, multiple punctuation) as written
+- Score themes 1-10 based on how frequently and intensely they appear
+- Context should explain the psychological insight, not just summarize the quote
+- Aim for 4-6 themes per category, 3-5 quotes per theme
+- CRITICAL: Separate "pain_points" (life before product) from "product_issues" (problems with this product)
+- CRITICAL: Theme names should be SHORT DESCRIPTIVE LABELS like "Low Energy and Fatigue" or "Hair Loss Anxiety" - NOT quotes from reviews
+- Focus on actionable insights that could inform marketing and product positioning
+
+Return ONLY the JSON object, no other text."""
 
     def _extract_messaging_from_reviews_simple(
         self,
