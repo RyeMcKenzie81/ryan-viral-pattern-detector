@@ -1042,16 +1042,51 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
 
             if product_info.get("dimensions"):
                 dims = product_info["dimensions"]
-                if isinstance(dims, dict) and dims.get("raw"):
-                    # Parse raw dimension string if possible
-                    prod["dimensions"] = {"raw": dims["raw"]}
-                else:
-                    prod["dimensions"] = dims
+                raw_str = dims.get("raw", "") if isinstance(dims, dict) else str(dims)
 
-            if product_info.get("weight"):
+                # Parse raw dimension string like "3.82 x 1.89 x 1.85 inches; 2.08 ounces"
+                parsed_dims = {"raw": raw_str}
+                if raw_str:
+                    import re
+                    # Try to extract dimensions (W x H x D format)
+                    dim_match = re.search(r'([\d.]+)\s*x\s*([\d.]+)\s*x\s*([\d.]+)\s*(inches?|in|cm|mm)?', raw_str, re.I)
+                    if dim_match:
+                        parsed_dims["width"] = dim_match.group(1)
+                        parsed_dims["height"] = dim_match.group(2)
+                        parsed_dims["depth"] = dim_match.group(3)
+                        parsed_dims["unit"] = dim_match.group(4) or "inches"
+
+                    # Try to extract weight if it's in the same string (after semicolon)
+                    weight_match = re.search(r';\s*([\d.]+)\s*(ounces?|oz|pounds?|lbs?|kg|g)\b', raw_str, re.I)
+                    if weight_match:
+                        weight_val = weight_match.group(1)
+                        weight_unit = weight_match.group(2).lower()
+                        # Normalize unit names
+                        if weight_unit in ['ounce', 'ounces']:
+                            weight_unit = 'oz'
+                        elif weight_unit in ['pound', 'pounds']:
+                            weight_unit = 'lbs'
+                        prod["weight"] = {"value": float(weight_val), "unit": weight_unit}
+
+                prod["dimensions"] = parsed_dims
+
+            if product_info.get("weight") and not prod.get("weight"):
                 weight = product_info["weight"]
                 if isinstance(weight, dict) and weight.get("raw"):
-                    prod["weight"] = {"raw": weight["raw"]}
+                    # Try to parse weight string
+                    import re
+                    raw_w = weight["raw"]
+                    w_match = re.search(r'([\d.]+)\s*(ounces?|oz|pounds?|lbs?|kg|g)\b', raw_w, re.I)
+                    if w_match:
+                        weight_val = w_match.group(1)
+                        weight_unit = w_match.group(2).lower()
+                        if weight_unit in ['ounce', 'ounces']:
+                            weight_unit = 'oz'
+                        elif weight_unit in ['pound', 'pounds']:
+                            weight_unit = 'lbs'
+                        prod["weight"] = {"value": float(weight_val), "unit": weight_unit}
+                    else:
+                        prod["weight"] = {"raw": raw_w}
                 else:
                     prod["weight"] = weight
 
