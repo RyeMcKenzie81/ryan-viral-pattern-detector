@@ -1090,6 +1090,10 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
                 else:
                     prod["weight"] = weight
 
+            # Save product images from Amazon
+            if product_info.get("images"):
+                prod["images"] = product_info["images"][:10]
+
             # Create offer variant from Amazon messaging
             messaging = result.get("messaging", {})
             if messaging.get("benefits") or messaging.get("pain_points"):
@@ -1131,6 +1135,8 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
                 st.caption(f"• {len(messaging['pain_points'])} pain points from reviews")
             if messaging.get("benefits"):
                 st.caption(f"• {len(messaging['benefits'])} benefits")
+            if product_info.get("images"):
+                st.caption(f"• {len(product_info['images'])} product images")
 
             st.rerun()
 
@@ -1353,6 +1359,27 @@ def render_products_tab(session: dict):
                     )
 
                 # ============================================
+                # PRODUCT IMAGES SECTION
+                # ============================================
+                images = prod.get("images") or []
+                if images:
+                    st.markdown("---")
+                    st.markdown("### 🖼️ Product Images")
+                    st.caption(f"Scraped from Amazon listing ({len(images)} images)")
+
+                    # Display images in a row (up to 5)
+                    img_cols = st.columns(min(len(images), 5))
+                    for img_idx, img_url in enumerate(images[:5]):
+                        with img_cols[img_idx]:
+                            try:
+                                st.image(img_url, width=100)
+                            except Exception:
+                                st.caption("⚠️ Failed")
+
+                    if len(images) > 5:
+                        st.caption(f"... and {len(images) - 5} more images")
+
+                # ============================================
                 # OFFER VARIANTS SECTION
                 # ============================================
                 st.markdown("---")
@@ -1367,13 +1394,14 @@ def render_products_tab(session: dict):
                 # Display existing offer variants
                 if offer_variants:
                     for ov_idx, ov in enumerate(offer_variants):
+                        default_badge = " ⭐" if ov.get("is_default") else ""
+                        variant_name = ov.get('name', 'Unnamed')
+
+                        # Header row with name and delete button
                         ov_col1, ov_col2 = st.columns([4, 1])
                         with ov_col1:
-                            default_badge = " ⭐" if ov.get("is_default") else ""
-                            st.markdown(f"**{ov.get('name', 'Unnamed')}{default_badge}**")
+                            st.markdown(f"**{variant_name}{default_badge}**")
                             st.caption(f"🔗 {ov.get('landing_page_url', 'No URL')}")
-                            if ov.get("pain_points"):
-                                st.caption(f"Pain: {', '.join(ov['pain_points'][:3])}")
                         with ov_col2:
                             if st.button("🗑️", key=f"remove_ov_{i}_{ov_idx}", help="Remove variant"):
                                 offer_variants.pop(ov_idx)
@@ -1381,6 +1409,49 @@ def render_products_tab(session: dict):
                                 products[i] = prod
                                 service.update_section(UUID(session["id"]), "products", products)
                                 st.rerun()
+
+                        # Expandable detail view
+                        with st.expander(f"📋 View Details: {variant_name}", expanded=False):
+                            detail_col1, detail_col2 = st.columns(2)
+
+                            with detail_col1:
+                                st.markdown("**Pain Points:**")
+                                if ov.get("pain_points"):
+                                    for pp in ov["pain_points"]:
+                                        st.caption(f"• {pp}")
+                                else:
+                                    st.caption("_None_")
+
+                                st.markdown("**Desires/Goals:**")
+                                if ov.get("desires_goals"):
+                                    for dg in ov["desires_goals"]:
+                                        st.caption(f"• {dg}")
+                                else:
+                                    st.caption("_None_")
+
+                            with detail_col2:
+                                st.markdown("**Benefits:**")
+                                if ov.get("benefits"):
+                                    for b in ov["benefits"]:
+                                        st.caption(f"• {b}")
+                                else:
+                                    st.caption("_None_")
+
+                                st.markdown("**Mechanism:**")
+                                if ov.get("mechanism_name"):
+                                    st.caption(f"Name: {ov['mechanism_name']}")
+                                if ov.get("mechanism_problem"):
+                                    st.caption(f"UMP: {ov['mechanism_problem']}")
+                                if ov.get("mechanism_solution"):
+                                    st.caption(f"UMS: {ov['mechanism_solution']}")
+                                if not any(ov.get(k) for k in ["mechanism_name", "mechanism_problem", "mechanism_solution"]):
+                                    st.caption("_None_")
+
+                            # Source info
+                            if ov.get("source"):
+                                st.caption(f"📊 Source: {ov['source']} | Reviews: {ov.get('source_review_count', 'N/A')}")
+
+                        st.markdown("")  # Spacing between variants
 
                 # Add new offer variant form (use toggle instead of nested expander)
                 show_add_form_key = f"show_add_variant_{i}"
