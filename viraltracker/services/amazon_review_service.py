@@ -1115,91 +1115,139 @@ class AmazonReviewService:
         result: Dict,
         reviews: List[Dict]
     ) -> None:
-        """Extract messaging data from reviews using AI analysis for onboarding."""
+        """Extract messaging data from reviews using the rich AI analysis system (same as competitor research)."""
         if not reviews:
             return
 
-        # Format reviews for the AI prompt (reuse existing formatter logic)
+        # Format reviews for the AI prompt (same format as competitor research)
         formatted_reviews = []
-        for i, review in enumerate(reviews[:50], 1):  # Limit to 50 for token efficiency
+        for i, review in enumerate(reviews[:100], 1):  # Use up to 100 reviews for richer analysis
             rating = review.get("rating", "?")
             title = review.get("title", "").strip()
             body = review.get("text", "") or review.get("body", "")
             author = review.get("author", "Anonymous")
             verified = "✓" if review.get("verifiedPurchase") or review.get("verified_purchase") else ""
+            helpful = review.get("helpfulVotes") or review.get("helpful_votes") or 0
 
             lines = [f"[Review {i}] ⭐{rating} {verified}"]
             if title:
                 lines.append(f"Title: {title}")
             if body:
-                body_truncated = body[:1000] + "..." if len(body) > 1000 else body
+                body_truncated = body[:1500] + "..." if len(body) > 1500 else body
                 lines.append(f"Body: {body_truncated}")
-            lines.append(f"Author: {author}")
+            lines.append(f"Author: {author} | Helpful votes: {helpful}")
             lines.append("")
             formatted_reviews.append("\n".join(lines))
 
         reviews_text = "\n".join(formatted_reviews)
 
-        # Use AI to extract insights (simplified prompt for onboarding)
+        # Use the same rich analysis system as competitor research
         try:
-            import json
             from pydantic_ai import Agent
             from ..core.config import Config
+            from .competitor_service import AmazonReviewAnalysis
 
             agent = Agent(
-                model=Config.get_model("creative"),
-                system_prompt="You are an expert at customer insights. Return ONLY valid JSON."
+                model=Config.get_model("default"),
+                system_prompt="You are an expert at extracting customer insights from Amazon reviews. Analyze the reviews and extract themes with supporting quotes.",
+                output_type=AmazonReviewAnalysis
             )
 
-            prompt = f"""Analyze these {len(reviews)} Amazon reviews and extract customer insights.
-
-REVIEWS:
-{reviews_text}
-
-Return a JSON object with:
-{{
-  "pain_points": ["list of 5-7 specific pain points/frustrations customers had BEFORE using the product"],
-  "desires_goals": ["list of 5-7 desires/goals customers wanted to achieve"],
-  "benefits": ["list of 5-7 benefits customers experienced"],
-  "customer_quotes": ["list of 3-5 powerful verbatim quotes from reviews"]
-}}
-
-Focus on emotional language and specific situations. Be concise but specific."""
+            # Build the same rich prompt as competitor research
+            prompt = self._build_rich_review_analysis_prompt(reviews_text, len(reviews))
 
             # Run synchronously for onboarding context
             import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import nest_asyncio
-                nest_asyncio.apply()
+            import nest_asyncio
+            nest_asyncio.apply()
 
             async def run_analysis():
                 return await agent.run(prompt)
 
             ai_result = asyncio.get_event_loop().run_until_complete(run_analysis())
-            analysis_text = ai_result.output
+            analysis = ai_result.output.model_dump()
 
-            # Parse JSON from response
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', analysis_text)
-            if json_match:
-                analysis = json.loads(json_match.group())
-                result["messaging"]["pain_points"] = analysis.get("pain_points", [])[:10]
-                result["messaging"]["desires_goals"] = analysis.get("desires_goals", [])[:10]
-                result["messaging"]["benefits"] = analysis.get("benefits", [])[:10]
-                result["messaging"]["customer_language"] = [
-                    {"quote": q} for q in analysis.get("customer_quotes", [])[:5]
-                ]
-                logger.info(f"AI extracted {len(result['messaging']['pain_points'])} pain points from reviews")
-                return
-            else:
-                logger.warning("Could not parse AI analysis JSON, falling back to keyword extraction")
+            # Store the full rich analysis
+            result["rich_analysis"] = analysis
+
+            # Extract flat lists for offer variant fields (theme names)
+            result["messaging"]["pain_points"] = [
+                theme["theme"] for theme in analysis.get("pain_points", [])
+            ][:10]
+            result["messaging"]["desires_goals"] = [
+                theme["theme"] for theme in analysis.get("desired_outcomes", [])
+            ][:10]
+            result["messaging"]["jobs_to_be_done"] = [
+                theme["theme"] for theme in analysis.get("jobs_to_be_done", [])
+            ][:10]
+
+            # Extract benefits from desired_outcomes and desired_features
+            benefits = []
+            for theme in analysis.get("desired_outcomes", []):
+                benefits.append(theme["theme"])
+            for theme in analysis.get("desired_features", []):
+                benefits.append(theme["theme"])
+            result["messaging"]["benefits"] = benefits[:10]
+
+            # Extract customer quotes from all themes
+            all_quotes = []
+            for category in ["pain_points", "jobs_to_be_done", "desired_outcomes", "buying_objections"]:
+                for theme in analysis.get(category, []):
+                    for quote in theme.get("quotes", [])[:2]:  # Top 2 quotes per theme
+                        all_quotes.append({
+                            "quote": quote.get("quote", ""),
+                            "author": quote.get("author", ""),
+                            "rating": quote.get("rating"),
+                            "context": quote.get("context", ""),
+                            "category": category,
+                            "theme": theme["theme"]
+                        })
+            result["messaging"]["customer_language"] = all_quotes[:15]
+
+            # Store buying objections and failed solutions for reference
+            result["messaging"]["buying_objections"] = [
+                theme["theme"] for theme in analysis.get("buying_objections", [])
+            ][:7]
+            result["messaging"]["failed_solutions"] = [
+                theme["theme"] for theme in analysis.get("failed_solutions", [])
+            ][:7]
+
+            logger.info(f"Rich AI analysis extracted {len(result['messaging']['pain_points'])} pain point themes, "
+                       f"{len(result['messaging']['desires_goals'])} desire themes from {len(reviews)} reviews")
+            return
 
         except Exception as e:
-            logger.warning(f"AI review analysis failed: {e}, falling back to keyword extraction")
+            logger.warning(f"Rich AI review analysis failed: {e}, falling back to simple extraction")
+            import traceback
+            logger.warning(traceback.format_exc())
 
         # Fallback to simple keyword extraction if AI fails
         self._extract_messaging_from_reviews_simple(result, reviews)
+
+    def _build_rich_review_analysis_prompt(self, reviews_text: str, review_count: int) -> str:
+        """Build the same rich analysis prompt used in competitor research."""
+        return f"""Analyze these {review_count} Amazon reviews and extract deep customer insights.
+
+Your task is to identify patterns and extract VERBATIM quotes with context. Organize findings into 7 categories, each with numbered themes ranked by importance (score 1-10).
+
+IMPORTANT DISTINCTIONS:
+- "pain_points" = Life frustrations BEFORE using this product (the symptoms driving them to seek a solution)
+- "product_issues" = Problems WITH this specific product (complaints, defects, disappointments)
+- "jobs_to_be_done" = What customers are trying to accomplish (functional, emotional, social goals)
+- "desired_outcomes" = What they hope to achieve (benefits they want)
+- "buying_objections" = Reasons for hesitation before purchase
+- "desired_features" = Features customers wish existed
+- "failed_solutions" = Other products/solutions that didn't work for them
+
+For each theme:
+1. Give it a descriptive name and score (based on frequency and intensity)
+2. Include 2-4 direct quotes that exemplify this theme
+3. For each quote, add context explaining what it reveals about the customer
+
+REVIEWS:
+{reviews_text}
+
+Focus on extracting actionable insights that could be used for marketing copy. Prioritize emotional language and specific situations over generic statements."""
 
     def _extract_messaging_from_reviews_simple(
         self,
