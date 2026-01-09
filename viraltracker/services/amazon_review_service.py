@@ -972,15 +972,41 @@ class AmazonReviewService:
                 pass
 
         # Dimensions and Weight - check multiple possible locations
-        # Axesso returns these in productDetails or productSpecification dicts
-        product_details = data.get("productDetails") or {}
-        product_spec = data.get("productSpecification") or {}
+        # Axesso returns these in productDetails or productSpecification (format varies)
+        product_details_raw = data.get("productDetails")
+        product_spec_raw = data.get("productSpecification")
 
-        # Log what we have for debugging
-        if product_details:
-            logger.info(f"productDetails keys: {list(product_details.keys()) if isinstance(product_details, dict) else 'not a dict'}")
-        if product_spec:
-            logger.info(f"productSpecification keys: {list(product_spec.keys()) if isinstance(product_spec, dict) else 'not a dict'}")
+        # Log raw values for debugging
+        logger.info(f"productDetails type: {type(product_details_raw).__name__}, value: {str(product_details_raw)[:500]}")
+        logger.info(f"productSpecification type: {type(product_spec_raw).__name__}, value: {str(product_spec_raw)[:500]}")
+
+        # Convert list of dicts to a single dict if needed (some APIs return [{key: x, value: y}, ...])
+        product_details = {}
+        if isinstance(product_details_raw, dict):
+            product_details = product_details_raw
+        elif isinstance(product_details_raw, list):
+            for item in product_details_raw:
+                if isinstance(item, dict):
+                    # Try common list-of-dict formats
+                    if 'name' in item and 'value' in item:
+                        product_details[item['name']] = item['value']
+                    elif 'key' in item and 'value' in item:
+                        product_details[item['key']] = item['value']
+            if product_details:
+                logger.info(f"Converted productDetails to dict with keys: {list(product_details.keys())}")
+
+        product_spec = {}
+        if isinstance(product_spec_raw, dict):
+            product_spec = product_spec_raw
+        elif isinstance(product_spec_raw, list):
+            for item in product_spec_raw:
+                if isinstance(item, dict):
+                    if 'name' in item and 'value' in item:
+                        product_spec[item['name']] = item['value']
+                    elif 'key' in item and 'value' in item:
+                        product_spec[item['key']] = item['value']
+            if product_spec:
+                logger.info(f"Converted productSpecification to dict with keys: {list(product_spec.keys())}")
 
         # Try to find dimensions from various possible field names
         dimensions = None
