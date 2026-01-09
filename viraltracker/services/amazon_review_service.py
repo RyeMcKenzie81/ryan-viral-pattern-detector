@@ -1115,10 +1115,98 @@ class AmazonReviewService:
         result: Dict,
         reviews: List[Dict]
     ) -> None:
-        """Extract messaging data from reviews for onboarding."""
+        """Extract messaging data from reviews using AI analysis for onboarding."""
         if not reviews:
             return
 
+        # Format reviews for the AI prompt (reuse existing formatter logic)
+        formatted_reviews = []
+        for i, review in enumerate(reviews[:50], 1):  # Limit to 50 for token efficiency
+            rating = review.get("rating", "?")
+            title = review.get("title", "").strip()
+            body = review.get("text", "") or review.get("body", "")
+            author = review.get("author", "Anonymous")
+            verified = "✓" if review.get("verifiedPurchase") or review.get("verified_purchase") else ""
+
+            lines = [f"[Review {i}] ⭐{rating} {verified}"]
+            if title:
+                lines.append(f"Title: {title}")
+            if body:
+                body_truncated = body[:1000] + "..." if len(body) > 1000 else body
+                lines.append(f"Body: {body_truncated}")
+            lines.append(f"Author: {author}")
+            lines.append("")
+            formatted_reviews.append("\n".join(lines))
+
+        reviews_text = "\n".join(formatted_reviews)
+
+        # Use AI to extract insights (simplified prompt for onboarding)
+        try:
+            import json
+            from pydantic_ai import Agent
+            from ..core.config import Config
+
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are an expert at customer insights. Return ONLY valid JSON."
+            )
+
+            prompt = f"""Analyze these {len(reviews)} Amazon reviews and extract customer insights.
+
+REVIEWS:
+{reviews_text}
+
+Return a JSON object with:
+{{
+  "pain_points": ["list of 5-7 specific pain points/frustrations customers had BEFORE using the product"],
+  "desires_goals": ["list of 5-7 desires/goals customers wanted to achieve"],
+  "benefits": ["list of 5-7 benefits customers experienced"],
+  "customer_quotes": ["list of 3-5 powerful verbatim quotes from reviews"]
+}}
+
+Focus on emotional language and specific situations. Be concise but specific."""
+
+            # Run synchronously for onboarding context
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import nest_asyncio
+                nest_asyncio.apply()
+
+            async def run_analysis():
+                return await agent.run(prompt)
+
+            ai_result = asyncio.get_event_loop().run_until_complete(run_analysis())
+            analysis_text = ai_result.output
+
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', analysis_text)
+            if json_match:
+                analysis = json.loads(json_match.group())
+                result["messaging"]["pain_points"] = analysis.get("pain_points", [])[:10]
+                result["messaging"]["desires_goals"] = analysis.get("desires_goals", [])[:10]
+                result["messaging"]["benefits"] = analysis.get("benefits", [])[:10]
+                result["messaging"]["customer_language"] = [
+                    {"quote": q} for q in analysis.get("customer_quotes", [])[:5]
+                ]
+                logger.info(f"AI extracted {len(result['messaging']['pain_points'])} pain points from reviews")
+                return
+            else:
+                logger.warning("Could not parse AI analysis JSON, falling back to keyword extraction")
+
+        except Exception as e:
+            logger.warning(f"AI review analysis failed: {e}, falling back to keyword extraction")
+
+        # Fallback to simple keyword extraction if AI fails
+        self._extract_messaging_from_reviews_simple(result, reviews)
+
+    def _extract_messaging_from_reviews_simple(
+        self,
+        result: Dict,
+        reviews: List[Dict]
+    ) -> None:
+        """Simple keyword-based extraction as fallback."""
         pain_points = []
         desires = []
         positive_themes = []
@@ -1126,7 +1214,7 @@ class AmazonReviewService:
         use_cases = []
         customer_quotes = []
 
-        for review in reviews[:50]:  # Process top 50 for efficiency
+        for review in reviews[:50]:
             rating = self._parse_rating(review.get("rating"))
             text = review.get("text", "") or review.get("body", "")
             title = review.get("title", "")
