@@ -1794,6 +1794,7 @@ def _analyze_competitor_ad_group(
             ad_group = AdGroup(
                 normalized_url=group["normalized_url"],
                 display_url=group["display_url"],
+                ad_count=len(ads),
                 ads=ads,
             )
 
