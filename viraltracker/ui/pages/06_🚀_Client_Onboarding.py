@@ -1796,7 +1796,9 @@ def render_competitors_tab(session: dict):
                     key=f"comp_amazon_url_{i}",
                 )
 
-                if amazon_url and "amazon.com" in amazon_url:
+                # Show ASIN if valid Amazon URL
+                has_amazon_url = amazon_url and "amazon.com" in amazon_url
+                if has_amazon_url:
                     try:
                         amazon_service = get_amazon_service()
                         asin, _ = amazon_service.parse_amazon_url(amazon_url)
@@ -1805,14 +1807,20 @@ def render_competitors_tab(session: dict):
                     except Exception:
                         pass
 
-                    # Analyze Amazon button
-                    amz_col1, amz_col2 = st.columns([1, 3])
-                    with amz_col1:
-                        if st.button("🔬 Analyze Amazon", key=f"analyze_comp_amazon_{i}"):
-                            _analyze_competitor_amazon(session, competitors, i, service)
-                    with amz_col2:
-                        if comp.get("amazon_analysis"):
-                            st.caption("✅ Amazon data extracted")
+                # Analyze Amazon button (always visible, disabled if no URL)
+                amz_col1, amz_col2 = st.columns([1, 3])
+                with amz_col1:
+                    if st.button(
+                        "🔬 Analyze Amazon",
+                        key=f"analyze_comp_amazon_{i}",
+                        disabled=not has_amazon_url,
+                    ):
+                        _analyze_competitor_amazon(session, competitors, i, service)
+                with amz_col2:
+                    if comp.get("amazon_analysis"):
+                        st.caption("✅ Amazon data extracted")
+                    elif not has_amazon_url:
+                        st.caption("Enter Amazon URL to analyze")
 
                 # Show Amazon analysis results if available
                 amazon_analysis = comp.get("amazon_analysis") or {}
