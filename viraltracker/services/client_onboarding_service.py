@@ -35,17 +35,15 @@ logger = logging.getLogger(__name__)
 REQUIRED_FIELDS = {
     "brand_basics": ["name", "website_url"],
     "facebook_meta": ["page_url", "ad_library_url"],
-    "products": [],  # Special handling: at least 1 product with name
+    "products": [],  # Special handling: at least 1 product with name + offer variant
     "competitors": [],
-    "target_audience": ["pain_points", "desires_goals"],
 }
 
 NICE_TO_HAVE_FIELDS = {
-    "brand_basics": ["logo_storage_path", "brand_voice"],
+    "brand_basics": ["logo_storage_path", "brand_voice", "disallowed_claims"],
     "facebook_meta": ["ad_account_id"],
     "products": [],  # Special handling: product details (amazon, dimensions, etc.)
     "competitors": ["competitors"],
-    "target_audience": ["demographics"],
 }
 
 VALID_STATUSES = [
@@ -945,8 +943,29 @@ Return ONLY a JSON array of question strings."""
                             comp_data["facebook_page_id"] = page_id
 
                     comp_result = self.supabase.table("competitors").insert(comp_data).execute()
-                    competitor_ids.append(str(comp_result.data[0]["id"]))
-                    logger.info(f"Created competitor: {comp['name']}")
+                    created_competitor_id = UUID(comp_result.data[0]["id"])
+                    competitor_ids.append(str(created_competitor_id))
+                    logger.info(f"Created competitor: {comp['name']} ({created_competitor_id})")
+
+                    # Save competitor Amazon data if present
+                    if comp.get("amazon_url") and comp.get("amazon_analysis"):
+                        self._save_competitor_amazon_data(
+                            competitor_id=created_competitor_id,
+                            brand_id=brand_id,
+                            amazon_url=comp["amazon_url"],
+                            amazon_analysis=comp["amazon_analysis"]
+                        )
+
+                    # Save competitor landing pages and ad messaging if present
+                    url_groups = comp.get("url_groups") or []
+                    ad_messaging = comp.get("ad_messaging") or {}
+                    if url_groups:
+                        self._save_competitor_landing_pages(
+                            competitor_id=created_competitor_id,
+                            brand_id=brand_id,
+                            url_groups=url_groups,
+                            ad_messaging=ad_messaging
+                        )
 
             if competitor_ids:
                 created["competitor_ids"] = competitor_ids
@@ -1108,5 +1127,217 @@ Return ONLY a JSON array of question strings."""
 
         except Exception as e:
             logger.error(f"Failed to save Amazon data: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def _save_competitor_amazon_data(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        amazon_url: str,
+        amazon_analysis: Dict[str, Any]
+    ) -> None:
+        """
+        Save competitor Amazon URL, reviews, and analysis to production tables.
+
+        Creates:
+        - competitor_amazon_urls entry
+        - competitor_amazon_reviews entries
+        - competitor_amazon_review_analysis entry
+
+        Args:
+            competitor_id: Competitor UUID
+            brand_id: Brand UUID
+            amazon_url: Amazon product URL
+            amazon_analysis: Analysis result from analyze_listing_for_onboarding
+        """
+        import re
+
+        # Parse ASIN and domain from URL
+        asin = None
+        domain = "com"
+        asin_match = re.search(r'/(?:dp|product|gp/product)/([A-Z0-9]{10})', amazon_url, re.IGNORECASE)
+        if asin_match:
+            asin = asin_match.group(1).upper()
+
+        domain_match = re.search(r'amazon\.([a-z.]+)/', amazon_url, re.IGNORECASE)
+        if domain_match:
+            domain = domain_match.group(1)
+
+        if not asin:
+            logger.warning(f"Could not extract ASIN from competitor URL: {amazon_url}")
+            return
+
+        try:
+            # Create competitor_amazon_urls entry
+            url_data = {
+                "competitor_id": str(competitor_id),
+                "brand_id": str(brand_id),
+                "amazon_url": amazon_url,
+                "asin": asin,
+                "domain_code": domain,
+                "total_reviews_scraped": len(amazon_analysis.get("raw_reviews", [])),
+            }
+            url_result = self.supabase.table("competitor_amazon_urls").insert(url_data).execute()
+            amazon_url_id = url_result.data[0]["id"]
+            logger.info(f"Created competitor_amazon_urls entry for ASIN {asin}")
+
+            # Save raw reviews
+            raw_reviews = amazon_analysis.get("raw_reviews", [])
+            if raw_reviews:
+                reviews_saved = 0
+                for review in raw_reviews:
+                    review_id = review.get("id") or review.get("reviewId") or review.get("review_id")
+                    if not review_id:
+                        continue
+
+                    review_data = {
+                        "competitor_amazon_url_id": str(amazon_url_id),
+                        "competitor_id": str(competitor_id),
+                        "brand_id": str(brand_id),
+                        "review_id": str(review_id),
+                        "asin": asin,
+                        "rating": review.get("rating"),
+                        "title": review.get("title", "")[:500] if review.get("title") else None,
+                        "body": review.get("text") or review.get("body"),
+                        "author": review.get("author", "Anonymous"),
+                        "verified_purchase": review.get("verifiedPurchase") or review.get("verified_purchase", False),
+                        "helpful_votes": review.get("helpfulVotes") or review.get("helpful_votes") or 0,
+                    }
+
+                    # Parse review date if present
+                    date_str = review.get("date") or review.get("reviewDate")
+                    if date_str:
+                        try:
+                            from dateutil import parser
+                            review_data["review_date"] = parser.parse(date_str).date()
+                        except Exception:
+                            pass
+
+                    try:
+                        self.supabase.table("competitor_amazon_reviews").upsert(
+                            review_data,
+                            on_conflict="review_id,asin"
+                        ).execute()
+                        reviews_saved += 1
+                    except Exception as e:
+                        logger.debug(f"Could not save competitor review {review_id}: {e}")
+
+                logger.info(f"Saved {reviews_saved}/{len(raw_reviews)} competitor reviews")
+
+            # Save analysis
+            messaging = amazon_analysis.get("messaging", {})
+            rich_analysis = amazon_analysis.get("rich_analysis")
+            if messaging or rich_analysis:
+                analysis_data = {
+                    "competitor_id": str(competitor_id),
+                    "brand_id": str(brand_id),
+                    "total_reviews_analyzed": len(raw_reviews),
+                    "model_used": "claude-sonnet-4-20250514",
+                }
+
+                if rich_analysis and rich_analysis.get("pain_points"):
+                    analysis_data["pain_points"] = rich_analysis["pain_points"]
+                elif messaging.get("pain_points"):
+                    analysis_data["pain_points"] = [
+                        {"theme": p, "score": 5.0, "quotes": []}
+                        for p in messaging["pain_points"]
+                    ]
+
+                if rich_analysis and rich_analysis.get("desired_outcomes"):
+                    analysis_data["desires"] = rich_analysis["desired_outcomes"]
+                elif messaging.get("desires_goals"):
+                    analysis_data["desires"] = [
+                        {"theme": d, "score": 5.0, "quotes": []}
+                        for d in messaging["desires_goals"]
+                    ]
+
+                if messaging.get("customer_language"):
+                    analysis_data["top_positive_quotes"] = [
+                        q["quote"] for q in messaging["customer_language"]
+                        if q.get("rating", 0) >= 4
+                    ][:10]
+                    analysis_data["top_negative_quotes"] = [
+                        q["quote"] for q in messaging["customer_language"]
+                        if q.get("rating", 0) <= 2
+                    ][:10]
+
+                try:
+                    self.supabase.table("competitor_amazon_review_analysis").upsert(
+                        analysis_data,
+                        on_conflict="competitor_id"
+                    ).execute()
+                    logger.info(f"Saved competitor_amazon_review_analysis for {competitor_id}")
+                except Exception as e:
+                    logger.warning(f"Could not save competitor analysis: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to save competitor Amazon data: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def _save_competitor_landing_pages(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        url_groups: List[Dict[str, Any]],
+        ad_messaging: Dict[str, Any]
+    ) -> None:
+        """
+        Save competitor landing pages and ad messaging to production tables.
+
+        Creates:
+        - competitor_landing_pages entries for each URL group
+        - Stores ad_messaging analysis on the landing pages
+
+        Args:
+            competitor_id: Competitor UUID
+            brand_id: Brand UUID
+            url_groups: List of URL groups from ad scraping
+            ad_messaging: Synthesized messaging from ad analysis
+        """
+        try:
+            for group in url_groups:
+                landing_page_url = group.get("display_url") or group.get("normalized_url")
+                if not landing_page_url:
+                    continue
+
+                page_data = {
+                    "competitor_id": str(competitor_id),
+                    "brand_id": str(brand_id),
+                    "url": landing_page_url,
+                    "ad_count": group.get("ad_count", 0),
+                }
+
+                # If this is the primary landing page, attach the ad_messaging
+                if ad_messaging and group.get("ad_count", 0) == max(
+                    g.get("ad_count", 0) for g in url_groups
+                ):
+                    page_data["analysis_data"] = {
+                        "source": "ad_analysis",
+                        "pain_points": ad_messaging.get("pain_points", []),
+                        "desires": ad_messaging.get("desires", []),
+                        "benefits": ad_messaging.get("benefits", []),
+                        "hooks": ad_messaging.get("hooks", []),
+                        "claims": ad_messaging.get("claims", []),
+                    }
+                    page_data["analyzed_at"] = datetime.utcnow().isoformat()
+
+                try:
+                    self.supabase.table("competitor_landing_pages").upsert(
+                        page_data,
+                        on_conflict="competitor_id,url"
+                    ).execute()
+                except Exception as e:
+                    # Try insert if upsert fails (constraint might not exist)
+                    try:
+                        self.supabase.table("competitor_landing_pages").insert(page_data).execute()
+                    except Exception as e2:
+                        logger.debug(f"Could not save landing page {landing_page_url}: {e2}")
+
+            logger.info(f"Saved {len(url_groups)} competitor landing pages")
+
+        except Exception as e:
+            logger.error(f"Failed to save competitor landing pages: {e}")
             import traceback
             logger.error(traceback.format_exc())

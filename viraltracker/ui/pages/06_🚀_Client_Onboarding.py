@@ -2,12 +2,12 @@
 Client Onboarding - Streamlit page for collecting client information.
 
 Features:
-- Multi-section data entry form (5 tabs: Brand, Facebook, Products, Competitors, Audience)
-- Per-product data collection (Amazon URL, dimensions, target audience)
-- Auto-scraping with manual triggers
+- Multi-section data entry form (4 tabs: Brand, Facebook, Products, Competitors)
+- Per-product data collection (Amazon URL, dimensions, offer variants)
+- Auto-scraping and analysis for products and competitors
 - Completeness tracker in sidebar
 - Interview question generator
-- Import to production (creates brand, products, competitors)
+- Import to production (creates brand, products, competitors with full analysis data)
 
 Part of the Client Onboarding Pipeline.
 """
@@ -2208,7 +2208,6 @@ if st.session_state.onboarding_session_id:
                 "2️⃣ Facebook/Meta",
                 "3️⃣ Products",
                 "4️⃣ Competitors",
-                "5️⃣ Target Audience",
             ]
         )
 
@@ -2223,9 +2222,6 @@ if st.session_state.onboarding_session_id:
 
         with tabs[3]:
             render_competitors_tab(session)
-
-        with tabs[4]:
-            render_target_audience_tab(session)
     else:
         st.error("Session not found. Please select or create a new session.")
 else:
