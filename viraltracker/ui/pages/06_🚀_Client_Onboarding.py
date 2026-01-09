@@ -241,7 +241,6 @@ def render_sidebar(session: dict):
         "facebook_meta": "Facebook/Meta",
         "products": "Products",
         "competitors": "Competitors",
-        "target_audience": "Target Audience",
     }
 
     for section_key, section_label in section_names.items():
