@@ -1025,7 +1025,7 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
             result = amazon_service.analyze_listing_for_onboarding(
                 amazon_url=amazon_url,
                 include_reviews=True,
-                max_reviews=50,
+                max_reviews=200,
             )
 
             if not result.get("success"):

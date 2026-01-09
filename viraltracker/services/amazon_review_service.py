@@ -1075,39 +1075,39 @@ class AmazonReviewService:
         domain: str,
         max_reviews: int
     ) -> List[Dict]:
-        """Quick review scrape for onboarding (limited configs)."""
-        # Use a simplified config set for speed
-        configs = [
-            # All stars, recent
-            {
-                "asin": asin,
-                "domainCode": domain,
-                "maxPages": min(5, max_reviews // 10),
-                "sortBy": "recent"
-            },
-            # Most helpful
-            {
-                "asin": asin,
-                "domainCode": domain,
-                "maxPages": 3,
-                "sortBy": "helpful"
-            }
-        ]
+        """
+        Full review scrape for onboarding using the same system as competitor research.
+
+        Uses build_scrape_configs() for comprehensive coverage:
+        - Star-level sweeps (6 configs)
+        - Keyword sweeps (15 configs)
+        - Helpful-sort sweeps (3 configs)
+        """
+        # Use the full config builder (same as competitor research)
+        configs = self.build_scrape_configs(
+            asin=asin,
+            domain=domain,
+            include_keywords=True,
+            include_helpful=True
+        )
+
+        logger.info(f"Scraping reviews with {len(configs)} configs for ASIN {asin}")
 
         try:
             result = self.apify.run_actor_batch(
                 actor_id=AXESSO_ACTOR_ID,
                 batch_inputs=configs,
-                timeout=300,
-                memory_mbytes=1024
+                timeout=600,  # Longer timeout for full scrape
+                memory_mbytes=2048  # More memory for larger batch
             )
 
             # Deduplicate
             unique = self._deduplicate_reviews(result.items)
+            logger.info(f"Got {len(result.items)} raw reviews, {len(unique)} unique after dedup")
             return unique[:max_reviews]
 
         except Exception as e:
-            logger.error(f"Quick review scrape error: {e}")
+            logger.error(f"Full review scrape error: {e}")
             return []
 
     def _extract_messaging_from_reviews(
