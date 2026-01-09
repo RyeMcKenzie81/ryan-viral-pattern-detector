@@ -1397,12 +1397,23 @@ def render_products_tab(session: dict):
                         default_badge = " ⭐" if ov.get("is_default") else ""
                         variant_name = ov.get('name', 'Unnamed')
 
-                        # Header row with name and delete button
-                        ov_col1, ov_col2 = st.columns([4, 1])
+                        # Header row with name, details toggle, and delete button
+                        ov_col1, ov_col2, ov_col3 = st.columns([3, 1, 1])
                         with ov_col1:
                             st.markdown(f"**{variant_name}{default_badge}**")
                             st.caption(f"🔗 {ov.get('landing_page_url', 'No URL')}")
                         with ov_col2:
+                            # Toggle for showing details
+                            detail_key = f"show_ov_details_{i}_{ov_idx}"
+                            if detail_key not in st.session_state:
+                                st.session_state[detail_key] = False
+                            if st.button(
+                                "📋 Details" if not st.session_state[detail_key] else "➖ Hide",
+                                key=f"toggle_details_{i}_{ov_idx}",
+                            ):
+                                st.session_state[detail_key] = not st.session_state[detail_key]
+                                st.rerun()
+                        with ov_col3:
                             if st.button("🗑️", key=f"remove_ov_{i}_{ov_idx}", help="Remove variant"):
                                 offer_variants.pop(ov_idx)
                                 prod["offer_variants"] = offer_variants
@@ -1410,8 +1421,8 @@ def render_products_tab(session: dict):
                                 service.update_section(UUID(session["id"]), "products", products)
                                 st.rerun()
 
-                        # Expandable detail view
-                        with st.expander(f"📋 View Details: {variant_name}", expanded=False):
+                        # Show detail view if toggled
+                        if st.session_state.get(f"show_ov_details_{i}_{ov_idx}", False):
                             detail_col1, detail_col2 = st.columns(2)
 
                             with detail_col1:
