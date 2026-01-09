@@ -863,6 +863,17 @@ Return ONLY a JSON array of question strings."""
                     product_ids.append(str(created_product_id))
                     logger.info(f"Created product: {prod['name']} ({created_product_id})")
 
+                    # Save Amazon data if present (URL, reviews, analysis)
+                    amazon_url = prod.get("amazon_url")
+                    amazon_analysis = prod.get("amazon_analysis") or {}
+                    if amazon_url:
+                        self._save_amazon_data(
+                            brand_id=brand_id,
+                            product_id=UUID(created_product_id),
+                            amazon_url=amazon_url,
+                            amazon_analysis=amazon_analysis
+                        )
+
                     # Create offer variants for this product
                     offer_variants = prod.get("offer_variants") or []
                     if offer_variants:
@@ -942,3 +953,160 @@ Return ONLY a JSON array of question strings."""
 
         logger.info(f"Imported session {session_id} to production: {created}")
         return created
+
+    def _save_amazon_data(
+        self,
+        brand_id: UUID,
+        product_id: UUID,
+        amazon_url: str,
+        amazon_analysis: Dict[str, Any]
+    ) -> None:
+        """
+        Save Amazon URL, reviews, and analysis to production tables.
+
+        Creates:
+        - amazon_product_urls entry linking product to Amazon
+        - amazon_reviews entries for raw review data
+        - amazon_review_analysis entry for AI analysis
+
+        Args:
+            brand_id: Brand UUID
+            product_id: Product UUID
+            amazon_url: Amazon product URL
+            amazon_analysis: Analysis result from analyze_listing_for_onboarding
+        """
+        # Parse ASIN and domain from URL
+        asin = None
+        domain = "com"
+        # Extract ASIN (10 char alphanumeric)
+        import re
+        asin_match = re.search(r'/(?:dp|product|gp/product)/([A-Z0-9]{10})', amazon_url, re.IGNORECASE)
+        if asin_match:
+            asin = asin_match.group(1).upper()
+
+        # Extract domain
+        domain_match = re.search(r'amazon\.([a-z.]+)/', amazon_url, re.IGNORECASE)
+        if domain_match:
+            domain = domain_match.group(1)
+
+        if not asin:
+            logger.warning(f"Could not extract ASIN from URL: {amazon_url}")
+            return
+
+        try:
+            # Create amazon_product_urls entry
+            url_data = {
+                "product_id": str(product_id),
+                "brand_id": str(brand_id),
+                "amazon_url": amazon_url,
+                "asin": asin,
+                "domain_code": domain,
+                "total_reviews_scraped": len(amazon_analysis.get("raw_reviews", [])),
+            }
+            url_result = self.supabase.table("amazon_product_urls").insert(url_data).execute()
+            amazon_url_id = url_result.data[0]["id"]
+            logger.info(f"Created amazon_product_urls entry for ASIN {asin}")
+
+            # Save raw reviews
+            raw_reviews = amazon_analysis.get("raw_reviews", [])
+            if raw_reviews:
+                reviews_saved = 0
+                for review in raw_reviews:
+                    # Get review_id - Axesso returns as 'id' or 'reviewId'
+                    review_id = review.get("id") or review.get("reviewId") or review.get("review_id")
+                    if not review_id:
+                        continue
+
+                    review_data = {
+                        "amazon_product_url_id": str(amazon_url_id),
+                        "product_id": str(product_id),
+                        "brand_id": str(brand_id),
+                        "review_id": str(review_id),
+                        "asin": asin,
+                        "rating": review.get("rating"),
+                        "title": review.get("title", "")[:500] if review.get("title") else None,
+                        "body": review.get("text") or review.get("body"),
+                        "author": review.get("author", "Anonymous"),
+                        "verified_purchase": review.get("verifiedPurchase") or review.get("verified_purchase", False),
+                        "helpful_votes": review.get("helpfulVotes") or review.get("helpful_votes") or 0,
+                        "scrape_source": "onboarding",
+                    }
+
+                    # Parse review date if present
+                    date_str = review.get("date") or review.get("reviewDate")
+                    if date_str:
+                        try:
+                            from dateutil import parser
+                            review_data["review_date"] = parser.parse(date_str).date()
+                        except Exception:
+                            pass
+
+                    try:
+                        self.supabase.table("amazon_reviews").upsert(
+                            review_data,
+                            on_conflict="review_id,asin"
+                        ).execute()
+                        reviews_saved += 1
+                    except Exception as e:
+                        # Skip duplicates or errors
+                        logger.debug(f"Could not save review {review_id}: {e}")
+
+                logger.info(f"Saved {reviews_saved}/{len(raw_reviews)} reviews to amazon_reviews")
+
+            # Save rich analysis if present
+            rich_analysis = amazon_analysis.get("rich_analysis")
+            messaging = amazon_analysis.get("messaging", {})
+            if rich_analysis or messaging:
+                analysis_data = {
+                    "product_id": str(product_id),
+                    "brand_id": str(brand_id),
+                    "total_reviews_analyzed": len(raw_reviews),
+                    "model_used": "claude-sonnet-4-20250514",  # Default model used
+                }
+
+                # Store pain points from rich analysis
+                if rich_analysis and rich_analysis.get("pain_points"):
+                    analysis_data["pain_points"] = rich_analysis["pain_points"]
+                elif messaging.get("pain_points"):
+                    analysis_data["pain_points"] = [
+                        {"theme": p, "score": 5.0, "quotes": []}
+                        for p in messaging["pain_points"]
+                    ]
+
+                # Store desires
+                if rich_analysis and rich_analysis.get("desired_outcomes"):
+                    analysis_data["desires"] = rich_analysis["desired_outcomes"]
+                elif messaging.get("desires_goals"):
+                    analysis_data["desires"] = [
+                        {"theme": d, "score": 5.0, "quotes": []}
+                        for d in messaging["desires_goals"]
+                    ]
+
+                # Store objections
+                if rich_analysis and rich_analysis.get("buying_objections"):
+                    analysis_data["objections"] = rich_analysis["buying_objections"]
+
+                # Store customer language/quotes
+                if messaging.get("customer_language"):
+                    analysis_data["top_positive_quotes"] = [
+                        q["quote"] for q in messaging["customer_language"]
+                        if q.get("rating", 0) >= 4
+                    ][:10]
+                    analysis_data["top_negative_quotes"] = [
+                        q["quote"] for q in messaging["customer_language"]
+                        if q.get("rating", 0) <= 2
+                    ][:10]
+
+                try:
+                    self.supabase.table("amazon_review_analysis").upsert(
+                        analysis_data,
+                        on_conflict="product_id"
+                    ).execute()
+                    logger.info(f"Saved amazon_review_analysis for product {product_id}")
+                except Exception as e:
+                    logger.warning(f"Could not save amazon_review_analysis: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to save Amazon data: {e}")
+            import traceback
+            logger.error(traceback.format_exc())

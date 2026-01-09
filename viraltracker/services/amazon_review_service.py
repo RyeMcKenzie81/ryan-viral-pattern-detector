@@ -858,7 +858,8 @@ class AmazonReviewService:
                 "positive_themes": [],
                 "negative_themes": [],
                 "common_use_cases": []
-            }
+            },
+            "raw_reviews": []  # Store raw reviews for persistence to DB
         }
 
         # Parse URL
@@ -885,6 +886,10 @@ class AmazonReviewService:
             try:
                 review_data = self._scrape_reviews_quick(asin, domain, max_reviews)
                 if review_data:
+                    # Store raw reviews for later persistence to DB
+                    result["raw_reviews"] = review_data
+                    result["product_info"]["review_count"] = len(review_data)
+                    # Extract messaging themes from reviews
                     self._extract_messaging_from_reviews(result, review_data)
             except Exception as e:
                 logger.warning(f"Review analysis failed: {e}")
@@ -945,10 +950,40 @@ class AmazonReviewService:
         # Description
         product_info["description"] = data.get("productDescription", "") or data.get("description", "")
 
-        # Images
-        images = data.get("images", []) or data.get("imageUrls", [])
-        if isinstance(images, list):
-            product_info["images"] = images[:5]  # Limit to 5 images
+        # Images - check multiple possible field names from Axesso/Apify
+        images = []
+        # Primary image sources
+        for field in ["images", "imageUrls", "productImages", "imageUrlList", "allImages"]:
+            candidate = data.get(field)
+            if candidate and isinstance(candidate, list) and len(candidate) > 0:
+                images = candidate
+                logger.info(f"Found images in field '{field}': {len(images)} images")
+                break
+
+        # Also check for single main image
+        main_image = data.get("mainImage") or data.get("imageUrl") or data.get("primaryImage")
+        if main_image and isinstance(main_image, str):
+            if main_image not in images:
+                images.insert(0, main_image)  # Main image first
+                logger.info(f"Added main image from mainImage/imageUrl field")
+
+        # Handle nested image objects (some actors return {url: ..., highRes: ...})
+        processed_images = []
+        for img in images:
+            if isinstance(img, str) and img.startswith('http'):
+                processed_images.append(img)
+            elif isinstance(img, dict):
+                # Try various field names for URL within image object
+                for url_field in ['url', 'link', 'src', 'imageUrl', 'hiRes', 'large', 'original']:
+                    if img.get(url_field) and isinstance(img[url_field], str):
+                        processed_images.append(img[url_field])
+                        break
+
+        if processed_images:
+            product_info["images"] = processed_images[:10]  # Allow up to 10 images
+            logger.info(f"Final image count: {len(product_info['images'])}")
+        else:
+            logger.warning("No images found in product data")
 
         # Price
         price = data.get("price") or data.get("currentPrice")
