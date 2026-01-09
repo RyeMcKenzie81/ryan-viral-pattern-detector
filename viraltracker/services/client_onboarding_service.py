@@ -346,10 +346,10 @@ class ClientOnboardingService:
                 else:
                     missing_required.append(f"{section}.{field}")
 
-        # Check nice-to-have fields (skip products - handled specially below)
+        # Check nice-to-have fields (skip products and competitors - handled specially below)
         for section, fields in NICE_TO_HAVE_FIELDS.items():
-            if section == "products":
-                continue  # Handle products specially
+            if section in ("products", "competitors"):
+                continue  # Handle these specially below
             section_data = session.get(section) or {}
             for field in fields:
                 nice_to_have_total += 1
