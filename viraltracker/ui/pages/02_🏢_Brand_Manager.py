@@ -198,6 +198,108 @@ def get_offer_variants_for_product(product_id: str) -> list:
         return []
 
 
+def get_offer_variant_images(offer_variant_id: str) -> list:
+    """Get images associated with an offer variant via junction table."""
+    try:
+        db = get_supabase_client()
+        # Join offer_variant_images with product_images
+        result = db.table("offer_variant_images").select(
+            "*, product_images(*)"
+        ).eq("offer_variant_id", offer_variant_id).order("display_order").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str, url: str) -> dict:
+    """Scrape images from landing page and associate with offer variant.
+
+    Returns dict with 'success', 'new_count', 'total_count', 'error'.
+    """
+    import requests
+    import hashlib
+    from viraltracker.services.web_scraping_service import WebScrapingService
+
+    try:
+        db = get_supabase_client()
+
+        # 1. Scrape image URLs from landing page
+        scraper = WebScrapingService()
+        image_urls = scraper.extract_product_images(url, max_images=15)
+
+        if not image_urls:
+            return {"success": False, "error": "No images found on landing page", "new_count": 0, "total_count": 0}
+
+        new_count = 0
+        for idx, img_url in enumerate(image_urls):
+            try:
+                # 2. Download image
+                resp = requests.get(img_url, timeout=15)
+                if resp.status_code != 200:
+                    continue
+
+                content_type = resp.headers.get('content-type', 'image/jpeg')
+                if 'png' in content_type:
+                    ext = 'png'
+                elif 'webp' in content_type:
+                    ext = 'webp'
+                else:
+                    ext = 'jpg'
+
+                # Generate unique filename based on URL hash
+                url_hash = hashlib.md5(img_url.encode()).hexdigest()[:12]
+                filename = f"ov_{offer_variant_id[:8]}_{url_hash}.{ext}"
+                storage_path = f"product_images/{product_id}/{filename}"
+
+                # 3. Check if image already exists (by storage_path)
+                existing = db.table("product_images").select("id").eq(
+                    "storage_path", storage_path
+                ).execute()
+
+                if existing.data:
+                    # Image exists, just create junction if not exists
+                    image_id = existing.data[0]['id']
+                else:
+                    # Upload to storage
+                    db.storage.from_("product-assets").upload(
+                        storage_path,
+                        resp.content,
+                        {"content-type": content_type}
+                    )
+
+                    # Create product_images record
+                    img_record = db.table("product_images").insert({
+                        "product_id": product_id,
+                        "storage_path": storage_path,
+                        "filename": filename,
+                        "is_main": False,
+                        "sort_order": idx
+                    }).execute()
+                    image_id = img_record.data[0]['id']
+                    new_count += 1
+
+                # 4. Create junction record (upsert to handle duplicates)
+                db.table("offer_variant_images").upsert({
+                    "offer_variant_id": offer_variant_id,
+                    "product_image_id": image_id,
+                    "display_order": idx
+                }, on_conflict="offer_variant_id,product_image_id").execute()
+
+            except Exception as e:
+                # Skip individual image errors, continue with others
+                continue
+
+        return {
+            "success": True,
+            "new_count": new_count,
+            "total_count": len(image_urls),
+            "error": None
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "new_count": 0, "total_count": 0}
+
+
 def get_amazon_analysis_for_product(product_id: str) -> dict:
     """Get Amazon review analysis for a product."""
     try:
@@ -771,10 +873,32 @@ else:
                                 if landing_url:
                                     st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
 
-                                # Editable Target Audience
-                                st.markdown("**Target Audience**")
+                                # Editable Target Audience with Synthesize button
+                                ta_col1, ta_col2 = st.columns([3, 1])
+                                with ta_col1:
+                                    st.markdown("**Target Audience**")
+                                with ta_col2:
+                                    synth_key = f"synth_ta_{ov_id}"
+                                    if landing_url and st.button("🔮 Synthesize", key=synth_key, help="Extract target audience from landing page using AI"):
+                                        with st.spinner("Analyzing landing page..."):
+                                            from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                            ov_service = ProductOfferVariantService()
+                                            result = ov_service.analyze_landing_page(landing_url)
+                                            if result.get('success') and result.get('target_audience'):
+                                                # Store in session state to pre-fill text area
+                                                st.session_state[f"synthesized_ta_{ov_id}"] = result['target_audience']
+                                                st.rerun()
+                                            else:
+                                                st.error("Could not extract target audience from landing page")
+
                                 ta_key = f"ov_target_audience_{ov_id}"
                                 current_ta = ov.get('target_audience', '') or ''
+                                # Check if we have a synthesized value to pre-fill
+                                synth_ta_key = f"synthesized_ta_{ov_id}"
+                                if synth_ta_key in st.session_state:
+                                    current_ta = st.session_state[synth_ta_key]
+                                    del st.session_state[synth_ta_key]  # Clear after use
+
                                 new_ta = st.text_area(
                                     "Target audience for this offer variant",
                                     value=current_ta,
@@ -785,7 +909,8 @@ else:
                                 )
 
                                 # Save button if changed
-                                if new_ta != current_ta:
+                                original_ta = ov.get('target_audience', '') or ''
+                                if new_ta != original_ta:
                                     if st.button("💾 Save Target Audience", key=f"save_ta_{ov_id}"):
                                         from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
                                         ov_service = ProductOfferVariantService()
@@ -798,6 +923,47 @@ else:
                                             st.rerun()
                                         else:
                                             st.error("Failed to save target audience")
+
+                                # Images from Landing Page section
+                                st.markdown("")
+                                img_col1, img_col2 = st.columns([3, 1])
+                                with img_col1:
+                                    st.markdown("**Images from Landing Page**")
+                                with img_col2:
+                                    scrape_key = f"scrape_imgs_{ov_id}"
+                                    if landing_url and st.button("📷 Scrape Images", key=scrape_key, help="Extract product images from landing page"):
+                                        with st.spinner("Scraping images from landing page..."):
+                                            result = scrape_and_save_offer_variant_images(
+                                                product_id, ov_id, landing_url
+                                            )
+                                            if result['success']:
+                                                st.success(f"Found {result['total_count']} images, added {result['new_count']} new")
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Failed: {result.get('error', 'Unknown error')}")
+
+                                # Display existing images for this offer variant
+                                ov_images = get_offer_variant_images(ov_id)
+                                if ov_images:
+                                    # Create image grid (4 columns)
+                                    img_cols = st.columns(4)
+                                    for idx, ovi in enumerate(ov_images[:8]):
+                                        pi = ovi.get('product_images', {})
+                                        if pi and pi.get('storage_path'):
+                                            with img_cols[idx % 4]:
+                                                try:
+                                                    db = get_supabase_client()
+                                                    url = db.storage.from_("product-assets").get_public_url(pi['storage_path'])
+                                                    st.image(url, width=100)
+                                                except:
+                                                    st.caption("📷")
+                                    if len(ov_images) > 8:
+                                        st.caption(f"*...and {len(ov_images) - 8} more images*")
+                                else:
+                                    if not landing_url:
+                                        st.caption("No landing page URL set")
+                                    else:
+                                        st.caption("No images scraped yet. Click 'Scrape Images' to extract from landing page.")
 
                                 st.markdown("---")
 
