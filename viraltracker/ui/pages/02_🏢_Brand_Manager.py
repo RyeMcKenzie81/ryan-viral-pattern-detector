@@ -956,7 +956,11 @@ else:
                                             with img_cols[idx % 4]:
                                                 try:
                                                     db = get_supabase_client()
-                                                    url = db.storage.from_("product-assets").get_public_url(pi['storage_path'])
+                                                    # storage_path includes bucket prefix, strip it for get_public_url
+                                                    sp = pi['storage_path']
+                                                    if sp.startswith("product-images/"):
+                                                        sp = sp[len("product-images/"):]
+                                                    url = db.storage.from_("product-images").get_public_url(sp)
                                                     st.image(url, width=100)
                                                 except:
                                                     st.caption("📷")
