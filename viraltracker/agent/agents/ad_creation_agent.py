@@ -1402,11 +1402,25 @@ async def generate_nano_banana_prompt(
         num_product_images = len(product_image_paths)
         logger.info(f"Using {num_product_images} product image(s) for generation")
 
+        # Check if we're in offer variant mode
+        using_offer_variant = bool(product.get('offer_variant'))
+
+        # Get benefits - prefer offer variant in exclusive mode
+        if using_offer_variant:
+            benefits_for_prompt = product.get('offer_benefits', []) or []
+            usps_for_prompt = []  # Don't use main product USPs in offer variant mode
+            target_audience_for_prompt = product.get('offer_target_audience') or product.get('target_audience', 'general audience')
+            logger.info(f"Nano Banana using EXCLUSIVE offer variant: {len(benefits_for_prompt)} benefits")
+        else:
+            benefits_for_prompt = product.get('benefits', []) or []
+            usps_for_prompt = product.get('unique_selling_points', []) or []
+            target_audience_for_prompt = product.get('target_audience', 'general audience')
+
         # Match benefit/USP to hook for relevant subheadline
         matched_benefit = match_benefit_to_hook(
             selected_hook,
-            product.get('benefits', []),
-            product.get('unique_selling_points')
+            benefits_for_prompt,
+            usps_for_prompt if not using_offer_variant else None
         )
 
         # Build color configuration
@@ -1493,16 +1507,18 @@ async def generate_nano_banana_prompt(
                 "id": product.get('id'),
                 "name": product.get('name'),
                 "display_name": product.get('display_name', product.get('name')),
-                "target_audience": product.get('target_audience', 'general audience'),
-                "benefits": product.get('benefits', []),
-                "unique_selling_points": product.get('unique_selling_points', []),
+                "target_audience": target_audience_for_prompt,
+                "benefits": benefits_for_prompt,
+                "unique_selling_points": usps_for_prompt,
                 "current_offer": product.get('current_offer'),
                 "brand_voice_notes": product.get('brand_voice_notes'),
                 "prohibited_claims": product.get('prohibited_claims', []),
                 "required_disclaimers": product.get('required_disclaimers'),
                 "founders": product.get('founders'),
                 "product_dimensions": product.get('product_dimensions'),
-                "variant": product.get('variant')
+                "variant": product.get('variant'),
+                "offer_variant": product.get('offer_variant') if using_offer_variant else None,
+                "offer_pain_points": product.get('offer_pain_points', []) if using_offer_variant else None
             },
 
             "content": {
