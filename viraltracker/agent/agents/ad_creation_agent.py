@@ -2554,20 +2554,44 @@ async def generate_benefit_variations(
         if count < 1 or count > 15:
             raise ValueError("count must be between 1 and 15")
 
-        # Combine benefits and USPs - prefer offer variant data if available
-        # Offer variant data ensures ad copy aligns with landing page messaging
-        if product.get('offer_benefits'):
-            benefits = product.get('offer_benefits', [])
-            logger.info(f"Using offer variant benefits ({len(benefits)} items) for headline generation")
+        # When offer variant is selected, use ONLY its data for landing page congruence
+        # Do NOT mix with main product benefits/USPs - we want focused messaging
+        using_offer_variant = bool(product.get('offer_variant'))
+
+        if using_offer_variant:
+            # Exclusively use offer variant data
+            benefits = product.get('offer_benefits', []) or []
+            pain_points = product.get('offer_pain_points', []) or []
+            # Offer variants may have mechanism fields we can use
+            offer_variant = product.get('offer_variant', {})
+            mechanism = offer_variant.get('mechanism_of_action', '') or ''
+            mechanism_name = offer_variant.get('mechanism_name', '') or ''
+
+            # Build content from offer variant only
+            all_content = benefits.copy()
+            if mechanism:
+                all_content.append(f"Works through: {mechanism}")
+            if mechanism_name:
+                all_content.append(f"The {mechanism_name}")
+
+            logger.info(f"EXCLUSIVE offer variant mode: {len(benefits)} benefits, {len(pain_points)} pain points")
+            if not all_content and not pain_points:
+                raise ValueError("Offer variant has no benefits or pain points to use")
+            # If no benefits but has pain points, we can still generate based on pain relief
+            if not all_content and pain_points:
+                all_content = [f"Relief from: {pp}" for pp in pain_points[:5]]
+
+            usps = []  # Don't use main product USPs
+            key_ingredients = []  # Don't use main product ingredients
         else:
+            # Use main product data
             benefits = product.get('benefits', []) or []
+            usps = product.get('unique_selling_points', []) or []
+            key_ingredients = product.get('key_ingredients', []) or []
+            all_content = benefits + usps + key_ingredients
 
-        usps = product.get('unique_selling_points', []) or []
-        key_ingredients = product.get('key_ingredients', []) or []
-
-        all_content = benefits + usps + key_ingredients
-        if not all_content:
-            raise ValueError("Product has no benefits, USPs, or key ingredients to use")
+            if not all_content:
+                raise ValueError("Product has no benefits, USPs, or key ingredients to use")
 
         # Shuffle for variety
         shuffled_content = all_content.copy()
@@ -2607,11 +2631,15 @@ async def generate_benefit_variations(
 
         # Separate emotional benefits (good for headlines) from technical specs (not for headlines)
         # Benefits are typically emotional/outcome-focused, USPs may include specs
-        # Use offer variant benefits if available (already set in benefits variable above)
+        # In offer variant mode, benefits already contains only offer variant data
         emotional_benefits = benefits.copy() if benefits else []
 
         # Get offer variant pain points if available (for persona-like targeting)
-        offer_pain_points = product.get('offer_pain_points', [])
+        # In offer variant mode, pain_points is already set above
+        if not using_offer_variant:
+            offer_pain_points = product.get('offer_pain_points', [])
+        else:
+            offer_pain_points = pain_points  # Already set in offer variant block
 
         # Filter USPs to only include emotional/outcome-focused ones, not technical specs
         emotional_usps = []
@@ -2642,7 +2670,7 @@ async def generate_benefit_variations(
         You're writing headline variations for a Facebook ad campaign.
 
         **Product:** {product.get('name', 'Product')}
-        **Target Audience:** {product.get('target_audience', 'General audience')}
+        **Target Audience:** {product.get('offer_target_audience') or product.get('target_audience', 'General audience')}{' (from offer variant)' if product.get('offer_target_audience') else ''}
 
         **PRODUCT'S ACTUAL OFFER (USE THIS EXACTLY):**
         {current_offer if current_offer else "No specific offer - do not mention discounts or percentages"}
