@@ -294,9 +294,39 @@ def render_sidebar(session: dict):
             for i, q in enumerate(questions, 1):
                 st.caption(f"{i}. {q}")
 
-    # Import button
+    # Import / Backfill section
     st.sidebar.markdown("---")
-    if score >= 50:
+    current_status = session.get("status", "in_progress")
+
+    if current_status == "imported":
+        # Already imported - show backfill option
+        st.sidebar.warning("⚠️ **Already Imported**")
+        brand_id = session.get("brand_id")
+        if brand_id:
+            st.sidebar.caption(f"Brand ID: `{brand_id[:8]}...`")
+
+        st.sidebar.markdown("**Backfill Options:**")
+        if st.sidebar.button(
+            "🖼️ Backfill Product Images", use_container_width=True,
+            help="Import product images from Amazon that weren't imported initially"
+        ):
+            with st.spinner("Downloading and uploading images..."):
+                try:
+                    result = service.backfill_product_images(UUID(session["id"]))
+                    if result["images_saved"] > 0:
+                        st.sidebar.success(
+                            f"✅ Saved {result['images_saved']} images for "
+                            f"{result['products_processed']} product(s)"
+                        )
+                    else:
+                        st.sidebar.info("No new images to import")
+                    if result.get("errors"):
+                        for err in result["errors"]:
+                            st.sidebar.warning(err)
+                except Exception as e:
+                    st.sidebar.error(f"Backfill failed: {e}")
+    elif score >= 50:
+        # Ready to import
         if st.sidebar.button(
             "🚀 Import to Production", type="primary", use_container_width=True
         ):
@@ -309,22 +339,21 @@ def render_sidebar(session: dict):
     else:
         st.sidebar.info("Complete at least 50% to import")
 
-    # Status update
+    # Status update (only for non-imported sessions)
     st.sidebar.markdown("---")
-    current_status = session.get("status", "in_progress")
-    new_status = st.sidebar.selectbox(
-        "Session Status",
-        options=["in_progress", "awaiting_info", "ready_for_import", "archived"],
-        index=["in_progress", "awaiting_info", "ready_for_import", "archived"].index(
-            current_status
+    if current_status == "imported":
+        st.sidebar.caption("Status: **Imported** (locked)")
+    else:
+        status_options = ["in_progress", "awaiting_info", "ready_for_import", "archived"]
+        new_status = st.sidebar.selectbox(
+            "Session Status",
+            options=status_options,
+            index=status_options.index(current_status) if current_status in status_options else 0,
         )
-        if current_status in ["in_progress", "awaiting_info", "ready_for_import", "archived"]
-        else 0,
-    )
-    if new_status != current_status:
-        if st.sidebar.button("Update Status"):
-            service.update_status(UUID(session["id"]), new_status)
-            st.rerun()
+        if new_status != current_status:
+            if st.sidebar.button("Update Status"):
+                service.update_status(UUID(session["id"]), new_status)
+                st.rerun()
 
 
 # ============================================
