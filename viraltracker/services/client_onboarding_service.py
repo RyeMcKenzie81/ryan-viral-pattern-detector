@@ -816,6 +816,76 @@ Return ONLY a JSON array of question strings."""
         logger.info(f"Backfill complete: {results}")
         return results
 
+    def backfill_product_data(self, session_id: UUID) -> Dict[str, Any]:
+        """
+        Backfill synthesized product data (benefits, USPs) from an already-imported session.
+
+        Use this to populate benefits/USPs for products that were imported before
+        the synthesis feature was added.
+
+        Args:
+            session_id: Session UUID that was already imported
+
+        Returns:
+            Dict with results: {"products_processed": int, "benefits_added": int, "errors": [...]}
+        """
+        session = self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        brand_id = session.get("brand_id")
+        if not brand_id:
+            raise ValueError("Session has not been imported (no brand_id linked)")
+
+        session_products = session.get("products") or []
+        if not session_products:
+            return {"products_processed": 0, "benefits_added": 0, "errors": ["No products in session"]}
+
+        # Get production products for this brand
+        prod_result = self.supabase.table("products").select("id, name").eq(
+            "brand_id", brand_id
+        ).execute()
+        production_products = {p["name"]: p["id"] for p in prod_result.data}
+
+        results = {
+            "products_processed": 0,
+            "benefits_added": 0,
+            "errors": []
+        }
+
+        for session_prod in session_products:
+            prod_name = session_prod.get("name")
+            if not prod_name or prod_name not in production_products:
+                if prod_name:
+                    results["errors"].append(f"Product '{prod_name}' not found in production")
+                continue
+
+            product_id = UUID(production_products[prod_name])
+            offer_variants = session_prod.get("offer_variants") or []
+            amazon_analysis = session_prod.get("amazon_analysis") or {}
+
+            logger.info(f"Backfilling product data for '{prod_name}'")
+
+            self._synthesize_product_data(
+                product_id=product_id,
+                offer_variants=offer_variants,
+                amazon_analysis=amazon_analysis
+            )
+
+            # Count benefits added
+            all_benefits = []
+            for ov in offer_variants:
+                all_benefits.extend(ov.get("benefits") or [])
+            if amazon_analysis:
+                messaging = amazon_analysis.get("messaging") or {}
+                all_benefits.extend(messaging.get("benefits") or [])
+
+            results["products_processed"] += 1
+            results["benefits_added"] += len(set(all_benefits))
+
+        logger.info(f"Product data backfill complete: {results}")
+        return results
+
     def import_to_production(self, session_id: UUID) -> Dict[str, Any]:
         """
         Import session data to production tables (brands, products, competitors).
@@ -994,6 +1064,13 @@ Return ONLY a JSON array of question strings."""
 
                                 self.supabase.table("product_offer_variants").insert(ov_data).execute()
                                 logger.info(f"Created offer variant: {ov['name']} for product {prod['name']}")
+
+                    # Synthesize benefits and pain points from all sources into product
+                    self._synthesize_product_data(
+                        product_id=UUID(created_product_id),
+                        offer_variants=offer_variants,
+                        amazon_analysis=amazon_analysis
+                    )
 
             if product_ids:
                 created["product_ids"] = product_ids
@@ -1302,6 +1379,107 @@ Return ONLY a JSON array of question strings."""
 
         logger.info(f"Saved {saved_count}/{len(image_urls)} product images for product {product_id}")
         return saved_count
+
+    def _synthesize_product_data(
+        self,
+        product_id: UUID,
+        offer_variants: List[Dict[str, Any]],
+        amazon_analysis: Dict[str, Any]
+    ) -> None:
+        """
+        Synthesize benefits, USPs, and pain points from all sources into the product record.
+
+        Aggregates data from:
+        - Offer variants (landing page analysis)
+        - Amazon review analysis (customer voice)
+
+        Updates the products table with synthesized data for ad creation.
+
+        Args:
+            product_id: Product UUID to update
+            offer_variants: List of offer variant dicts with benefits, pain_points
+            amazon_analysis: Amazon analysis dict with messaging, rich_analysis
+        """
+        all_benefits = []
+        all_pain_points = []
+
+        # Collect from offer variants
+        for ov in offer_variants:
+            benefits = ov.get("benefits") or []
+            all_benefits.extend(benefits)
+            pain_points = ov.get("pain_points") or []
+            all_pain_points.extend(pain_points)
+
+        # Collect from Amazon analysis
+        if amazon_analysis:
+            # From messaging (direct extraction)
+            messaging = amazon_analysis.get("messaging") or {}
+            all_benefits.extend(messaging.get("benefits") or [])
+            all_pain_points.extend(messaging.get("pain_points") or [])
+
+            # From rich_analysis (deeper analysis)
+            rich = amazon_analysis.get("rich_analysis") or {}
+            # desired_outcomes can be treated as benefits
+            all_benefits.extend(rich.get("desired_outcomes") or [])
+            all_pain_points.extend(rich.get("pain_points") or [])
+
+        # Deduplicate while preserving order (first occurrence wins)
+        # Handle both string and dict formats (some sources store as dicts)
+        seen_benefits = set()
+        unique_benefits = []
+        for b in all_benefits:
+            # Extract string from dict if needed
+            if isinstance(b, dict):
+                b = b.get("text") or b.get("benefit") or b.get("description") or str(b)
+            if not isinstance(b, str):
+                continue
+            b_lower = b.lower().strip()
+            if b_lower not in seen_benefits and len(b.strip()) > 5:
+                seen_benefits.add(b_lower)
+                unique_benefits.append(b.strip())
+
+        seen_pain = set()
+        unique_pain_points = []
+        for p in all_pain_points:
+            # Extract string from dict if needed
+            if isinstance(p, dict):
+                p = p.get("text") or p.get("pain_point") or p.get("description") or str(p)
+            if not isinstance(p, str):
+                continue
+            p_lower = p.lower().strip()
+            if p_lower not in seen_pain and len(p.strip()) > 5:
+                seen_pain.add(p_lower)
+                unique_pain_points.append(p.strip())
+
+        # Update product if we have data
+        update_data = {}
+        if unique_benefits:
+            # Take top 10 benefits for the product record
+            update_data["benefits"] = unique_benefits[:10]
+            # Use first few benefits as USPs if none exist
+            update_data["unique_selling_points"] = unique_benefits[:5]
+
+        # Store pain points in target_audience field (append to existing)
+        if unique_pain_points:
+            # Get existing target_audience
+            existing = self.supabase.table("products").select("target_audience").eq(
+                "id", str(product_id)
+            ).execute()
+            existing_ta = existing.data[0].get("target_audience") or "" if existing.data else ""
+
+            # Append pain points if not already present
+            pain_section = f"\n\nPain Points (from research):\n• " + "\n• ".join(unique_pain_points[:10])
+            if "Pain Points (from research)" not in existing_ta:
+                update_data["target_audience"] = existing_ta + pain_section
+
+        if update_data:
+            self.supabase.table("products").update(update_data).eq(
+                "id", str(product_id)
+            ).execute()
+            logger.info(
+                f"Synthesized product data: {len(unique_benefits)} benefits, "
+                f"{len(unique_pain_points)} pain points for product {product_id}"
+            )
 
     def _save_competitor_amazon_data(
         self,
