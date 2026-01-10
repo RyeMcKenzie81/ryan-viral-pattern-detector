@@ -19,8 +19,10 @@ import re
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
+from urllib.parse import urlparse
 from uuid import UUID
 
+import requests
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -747,6 +749,73 @@ Return ONLY a JSON array of question strings."""
             return match.group(1)
         return None
 
+    def backfill_product_images(self, session_id: UUID) -> Dict[str, Any]:
+        """
+        Backfill product images from an already-imported session.
+
+        Use this to add images to products that were imported before
+        the image import feature was added.
+
+        Args:
+            session_id: Session UUID that was already imported
+
+        Returns:
+            Dict with results: {"products_processed": int, "images_saved": int, "errors": [...]}
+        """
+        session = self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        brand_id = session.get("brand_id")
+        if not brand_id:
+            raise ValueError("Session has not been imported (no brand_id linked)")
+
+        # Get products from session
+        session_products = session.get("products") or []
+        if not session_products:
+            return {"products_processed": 0, "images_saved": 0, "errors": ["No products in session"]}
+
+        # Get production products for this brand
+        prod_result = self.supabase.table("products").select("id, name").eq(
+            "brand_id", brand_id
+        ).execute()
+        production_products = {p["name"]: p["id"] for p in prod_result.data}
+
+        results = {
+            "products_processed": 0,
+            "images_saved": 0,
+            "errors": []
+        }
+
+        for session_prod in session_products:
+            prod_name = session_prod.get("name")
+            image_urls = session_prod.get("images") or []
+
+            if not prod_name:
+                continue
+
+            if prod_name not in production_products:
+                results["errors"].append(f"Product '{prod_name}' not found in production")
+                continue
+
+            if not image_urls:
+                logger.info(f"No images for product '{prod_name}'")
+                continue
+
+            product_id = UUID(production_products[prod_name])
+            logger.info(f"Backfilling {len(image_urls)} images for '{prod_name}'")
+
+            saved = self._save_product_images(
+                product_id=product_id,
+                image_urls=image_urls
+            )
+
+            results["products_processed"] += 1
+            results["images_saved"] += saved
+
+        logger.info(f"Backfill complete: {results}")
+        return results
+
     def import_to_production(self, session_id: UUID) -> Dict[str, Any]:
         """
         Import session data to production tables (brands, products, competitors).
@@ -870,6 +939,14 @@ Return ONLY a JSON array of question strings."""
                             product_id=UUID(created_product_id),
                             amazon_url=amazon_url,
                             amazon_analysis=amazon_analysis
+                        )
+
+                    # Save product images if present (from Amazon scraping)
+                    product_images = prod.get("images") or []
+                    if product_images:
+                        self._save_product_images(
+                            product_id=UUID(created_product_id),
+                            image_urls=product_images
                         )
 
                     # Create offer variants for this product
@@ -1129,6 +1206,102 @@ Return ONLY a JSON array of question strings."""
             logger.error(f"Failed to save Amazon data: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    def _save_product_images(
+        self,
+        product_id: UUID,
+        image_urls: List[str]
+    ) -> int:
+        """
+        Download product images from URLs and save to Supabase Storage.
+
+        Downloads images from Amazon CDN (or other URLs), uploads to the
+        product-images bucket in Supabase Storage, and creates product_images
+        records in the database.
+
+        Args:
+            product_id: Product UUID to associate images with
+            image_urls: List of image URLs to download
+
+        Returns:
+            Number of images successfully saved
+        """
+        if not image_urls:
+            return 0
+
+        BUCKET = "product-images"
+        saved_count = 0
+
+        for idx, url in enumerate(image_urls):
+            try:
+                # Download image from URL
+                response = requests.get(url, timeout=30, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                })
+                response.raise_for_status()
+
+                # Determine content type and extension
+                content_type = response.headers.get("Content-Type", "image/jpeg")
+                if "jpeg" in content_type or "jpg" in content_type:
+                    ext = "jpg"
+                elif "png" in content_type:
+                    ext = "png"
+                elif "webp" in content_type:
+                    ext = "webp"
+                elif "gif" in content_type:
+                    ext = "gif"
+                else:
+                    # Try to extract from URL
+                    parsed = urlparse(url)
+                    path_ext = parsed.path.split(".")[-1].lower()
+                    ext = path_ext if path_ext in ["jpg", "jpeg", "png", "webp", "gif"] else "jpg"
+                    if ext == "jpeg":
+                        ext = "jpg"
+
+                # Generate storage path
+                filename = f"image_{idx + 1:02d}.{ext}"
+                storage_path = f"{product_id}/{filename}"
+                full_storage_path = f"{BUCKET}/{storage_path}"
+
+                # Upload to Supabase Storage
+                self.supabase.storage.from_(BUCKET).upload(
+                    storage_path,
+                    response.content,
+                    {"content-type": content_type, "upsert": "true"}
+                )
+
+                # Create product_images record
+                image_record = {
+                    "product_id": str(product_id),
+                    "storage_path": full_storage_path,
+                    "filename": filename,
+                    "is_main": idx == 0,  # First image is main
+                    "sort_order": idx + 1,
+                    "notes": f"Imported from Amazon (original URL: {url[:100]}...)" if len(url) > 100 else f"Imported from Amazon (original URL: {url})"
+                }
+
+                # Check if record already exists
+                existing = self.supabase.table("product_images").select("id").eq(
+                    "product_id", str(product_id)
+                ).eq("storage_path", full_storage_path).execute()
+
+                if existing.data:
+                    self.supabase.table("product_images").update(image_record).eq(
+                        "id", existing.data[0]["id"]
+                    ).execute()
+                else:
+                    self.supabase.table("product_images").insert(image_record).execute()
+
+                saved_count += 1
+                logger.info(f"Saved product image {idx + 1}/{len(image_urls)}: {full_storage_path}")
+
+            except requests.RequestException as e:
+                logger.warning(f"Failed to download image {idx + 1} from {url[:50]}...: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to save product image {idx + 1}: {e}")
+
+        logger.info(f"Saved {saved_count}/{len(image_urls)} product images for product {product_id}")
+        return saved_count
 
     def _save_competitor_amazon_data(
         self,
