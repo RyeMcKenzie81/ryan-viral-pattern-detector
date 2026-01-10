@@ -113,12 +113,8 @@ class WebScrapingService:
         try:
             client = self._get_client()
 
-            # Build scrape params for new Firecrawl SDK
-            params = {"formats": formats}
-            if wait_for > 0:
-                params["wait_for"] = wait_for
-
-            result = client.scrape(url, params=params)
+            # Call scrape with formats directly
+            result = client.scrape(url, formats=formats)
 
             # FireCrawl returns a Document object, not a dict
             # Use getattr to safely access attributes
@@ -168,12 +164,8 @@ class WebScrapingService:
         try:
             client = self._get_async_client()
 
-            # Build scrape params for new Firecrawl SDK
-            params = {"formats": formats}
-            if wait_for > 0:
-                params["wait_for"] = wait_for
-
-            result = await client.scrape(url, params=params)
+            # Call scrape with formats directly
+            result = await client.scrape(url, formats=formats)
 
             # FireCrawl returns a Document object, not a dict
             # Use getattr to safely access attributes
@@ -264,7 +256,7 @@ class WebScrapingService:
 
             job = await client.batch_scrape(
                 urls,
-                params={"formats": formats},
+                formats=formats,
                 poll_interval=poll_interval
             )
 
