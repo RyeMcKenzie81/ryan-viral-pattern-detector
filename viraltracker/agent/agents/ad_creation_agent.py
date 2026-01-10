@@ -2554,8 +2554,14 @@ async def generate_benefit_variations(
         if count < 1 or count > 15:
             raise ValueError("count must be between 1 and 15")
 
-        # Combine benefits and USPs
-        benefits = product.get('benefits', []) or []
+        # Combine benefits and USPs - prefer offer variant data if available
+        # Offer variant data ensures ad copy aligns with landing page messaging
+        if product.get('offer_benefits'):
+            benefits = product.get('offer_benefits', [])
+            logger.info(f"Using offer variant benefits ({len(benefits)} items) for headline generation")
+        else:
+            benefits = product.get('benefits', []) or []
+
         usps = product.get('unique_selling_points', []) or []
         key_ingredients = product.get('key_ingredients', []) or []
 
@@ -2601,7 +2607,11 @@ async def generate_benefit_variations(
 
         # Separate emotional benefits (good for headlines) from technical specs (not for headlines)
         # Benefits are typically emotional/outcome-focused, USPs may include specs
+        # Use offer variant benefits if available (already set in benefits variable above)
         emotional_benefits = benefits.copy() if benefits else []
+
+        # Get offer variant pain points if available (for persona-like targeting)
+        offer_pain_points = product.get('offer_pain_points', [])
 
         # Filter USPs to only include emotional/outcome-focused ones, not technical specs
         emotional_usps = []
@@ -2716,7 +2726,22 @@ async def generate_benefit_variations(
         3. Match the persona's speaking style from "Their Language"
         4. If Amazon testimonials are available, borrow phrases for authenticity
         5. Address their objections implicitly in the headline when possible
-        ''' if persona_data else ''}
+        ''' if persona_data else (f'''**OFFER VARIANT TARGETING: {product.get('offer_variant', {}).get('name', 'Landing Page Angle')}**
+
+        **Target Pain Points (address these in headlines for landing page congruence):**
+        {json.dumps(offer_pain_points[:5], indent=2) if offer_pain_points else 'None specified'}
+
+        **Target Benefits (emphasize these for messaging alignment):**
+        {json.dumps(benefits[:5], indent=2) if benefits else 'None specified'}
+
+        {f"**Target Audience:** {product.get('offer_target_audience', '')}" if product.get('offer_target_audience') else ''}
+
+        OFFER VARIANT RULES:
+        1. Frame headlines around the pain points above - these match the landing page
+        2. Emphasize the benefits listed - they're what the landing page promises
+        3. Ensure ad messaging aligns with what visitors will see when they click
+        4. This creates congruence between ad and landing page for better conversion
+        ''' if offer_pain_points or product.get('offer_variant') else '')}
 
         **EMOTIONAL BENEFITS (Use these for headlines - they connect with the audience):**
         {json.dumps(headline_content, indent=2)}
