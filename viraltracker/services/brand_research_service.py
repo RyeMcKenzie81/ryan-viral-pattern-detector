@@ -2572,6 +2572,156 @@ class BrandResearchService:
             logger.error(f"Failed to save synthesis record: {e}")
             return None
 
+    async def synthesize_from_offer_variant(
+        self,
+        offer_variant_id: UUID,
+        max_personas: int = 1
+    ) -> List[Dict]:
+        """
+        Synthesize a persona from an offer variant's data.
+
+        Uses the offer variant's pain points, benefits, desires/goals, and
+        target audience to generate a focused persona.
+
+        Args:
+            offer_variant_id: UUID of the offer variant
+            max_personas: Maximum number of personas (default 1 for variants)
+
+        Returns:
+            List of persona dictionaries
+        """
+        from .product_offer_variant_service import ProductOfferVariantService
+
+        logger.info(f"Synthesizing persona from offer variant: {offer_variant_id}")
+
+        # Get offer variant data
+        variant_service = ProductOfferVariantService()
+        variant = variant_service.get_offer_variant(offer_variant_id)
+
+        if not variant:
+            logger.error(f"Offer variant not found: {offer_variant_id}")
+            return []
+
+        # Get product info for context
+        product_result = self.supabase.table("products").select(
+            "id, name, brand_id"
+        ).eq("id", variant["product_id"]).execute()
+
+        product = product_result.data[0] if product_result.data else {}
+        brand_id = product.get("brand_id")
+
+        # Build aggregated data from offer variant
+        aggregated = {
+            "pain_points": {
+                "emotional": [],
+                "functional": variant.get("pain_points", []),
+                "social": []
+            },
+            "desires": {
+                "care_protection": [],
+                "freedom_from_fear": [],
+                "social_approval": [],
+                "comfort_convenience": [],
+                "superiority_status": [],
+                "self_actualization": []
+            },
+            "benefits": {
+                "emotional": [],
+                "functional": variant.get("benefits", [])
+            },
+            "transformation": {
+                "before": variant.get("pain_points", []),
+                "after": variant.get("desires_goals", [])
+            },
+            "hooks": [],
+            "brand_voice": [],
+            "objections": [],
+            "failed_solutions": [],
+            "activation_events": [],
+            "testimonials": [],
+            "worldview": {"values": [], "villains": [], "heroes": []},
+            "customer_language": {
+                "positive_phrases": [],
+                "negative_phrases": [],
+                "descriptive_words": []
+            },
+            "customer_quotes": {
+                "positive": [],
+                "negative": [],
+                "transformation": []
+            },
+            "purchase_triggers": [],
+            "analysis_counts": {
+                "video": 0,
+                "image": 0,
+                "copy": 0,
+                "amazon_reviews": 0,
+                "offer_variant": 1
+            },
+            "has_data": True,
+            "source": "offer_variant",
+            "offer_variant_name": variant.get("name", "Unknown"),
+            "target_audience_hint": variant.get("target_audience", ""),
+            "landing_page_url": variant.get("landing_page_url", "")
+        }
+
+        # Map desires_goals to desire categories (best effort)
+        desires_goals = variant.get("desires_goals", [])
+        if desires_goals:
+            # Distribute to self_actualization as default category
+            aggregated["desires"]["self_actualization"] = desires_goals
+
+        # Try to integrate Amazon data if available
+        if brand_id:
+            aggregated = self._integrate_amazon_review_data(aggregated, UUID(brand_id))
+
+        # Build synthesis prompt
+        prompt = PERSONA_SYNTHESIS_PROMPT.format(
+            max_personas=max_personas,
+            aggregated_data=json.dumps(aggregated, indent=2, default=str)
+        )
+
+        try:
+            # Use creative model for synthesis
+            agent = Agent(
+                model=Config.get_model("creative"),
+                system_prompt="You are an expert persona researcher. Return ONLY valid JSON."
+            )
+
+            result = await agent.run(prompt)
+
+            response_text = result.output.strip()
+            if not response_text:
+                logger.error("Synthesis response text is empty")
+                raise ValueError("Model returned empty text")
+
+            # Strip markdown code fences if present
+            if response_text.startswith('```'):
+                first_newline = response_text.find('\n')
+                last_fence = response_text.rfind('```')
+                if first_newline != -1 and last_fence > first_newline:
+                    response_text = response_text[first_newline + 1:last_fence].strip()
+
+            result = json.loads(response_text)
+            personas = result.get("personas", [])
+
+            logger.info(f"Synthesized {len(personas)} personas from offer variant: {offer_variant_id}")
+
+            # Save synthesis record if brand_id available
+            if brand_id:
+                self._save_synthesis_record(UUID(brand_id), aggregated, personas)
+
+            return personas
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse synthesis response: {e}")
+            raise ValueError(f"Invalid JSON response: {e}")
+        except Exception as e:
+            logger.error(f"Offer variant synthesis failed: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
     async def scrape_landing_pages_for_brand(
         self,
         brand_id: UUID,

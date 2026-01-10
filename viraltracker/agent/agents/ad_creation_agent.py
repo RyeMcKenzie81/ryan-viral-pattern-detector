@@ -3034,7 +3034,8 @@ async def complete_ad_workflow(
     variant_id: Optional[str] = None,
     additional_instructions: Optional[str] = None,
     angle_data: Optional[Dict] = None,
-    match_template_structure: bool = False
+    match_template_structure: bool = False,
+    offer_variant_id: Optional[str] = None
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -3089,6 +3090,9 @@ async def complete_ad_workflow(
         match_template_structure: If True with belief_first mode, extract the reference ad's
             template structure and adapt the belief statement to match it. Creates headlines
             that follow the template's style while communicating the belief.
+        offer_variant_id: Optional UUID of offer variant (landing page angle). When provided,
+            the offer variant's pain points, benefits, and target audience are used to ensure
+            ad copy is congruent with the destination landing page messaging.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3157,7 +3161,8 @@ async def complete_ad_workflow(
             "brand_colors": brand_colors,
             "persona_id": persona_id,
             "variant_id": variant_id,
-            "additional_instructions": additional_instructions
+            "additional_instructions": additional_instructions,
+            "offer_variant_id": offer_variant_id
         }
 
         # STAGE 1: Initialize ad run and upload reference ad
@@ -3242,7 +3247,42 @@ async def complete_ad_workflow(
             product_dict['variant'] = None
             product_dict['display_name'] = product_dict.get('name', 'Product')
 
-        # STAGE 2d: Fetch brand fonts (ad_creation_notes column may not exist yet)
+        # STAGE 2d: Fetch offer variant data (if offer_variant_id provided)
+        offer_variant_data = None
+        if offer_variant_id:
+            logger.info(f"Stage 2d: Fetching offer variant data for {offer_variant_id}...")
+            try:
+                from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                offer_variant_service = ProductOfferVariantService()
+                offer_variant_data = offer_variant_service.get_offer_variant(UUID(offer_variant_id))
+                if offer_variant_data:
+                    logger.info(f"Loaded offer variant: {offer_variant_data.get('name', 'Unknown')}")
+                    logger.info(f"  - Pain points: {len(offer_variant_data.get('pain_points', []))}")
+                    logger.info(f"  - Benefits: {len(offer_variant_data.get('benefits', []))}")
+                    logger.info(f"  - Landing page: {offer_variant_data.get('landing_page_url', 'N/A')}")
+                else:
+                    logger.warning(f"Offer variant not found: {offer_variant_id} - continuing without offer variant targeting")
+            except Exception as e:
+                logger.warning(f"Failed to load offer variant {offer_variant_id}: {e} - continuing without offer variant targeting")
+
+        # Enhance product_dict with offer variant data if available
+        if offer_variant_data:
+            product_dict['offer_variant'] = offer_variant_data
+            # Override product pain points and benefits with offer variant's data for landing page congruence
+            if offer_variant_data.get('pain_points'):
+                product_dict['offer_pain_points'] = offer_variant_data['pain_points']
+                logger.info(f"Using offer variant pain points for ad copy: {offer_variant_data['pain_points'][:3]}...")
+            if offer_variant_data.get('benefits'):
+                product_dict['offer_benefits'] = offer_variant_data['benefits']
+                logger.info(f"Using offer variant benefits for ad copy: {offer_variant_data['benefits'][:3]}...")
+            if offer_variant_data.get('target_audience'):
+                product_dict['offer_target_audience'] = offer_variant_data['target_audience']
+            if offer_variant_data.get('landing_page_url'):
+                product_dict['offer_landing_page_url'] = offer_variant_data['landing_page_url']
+        else:
+            product_dict['offer_variant'] = None
+
+        # STAGE 2e: Fetch brand fonts (ad_creation_notes column may not exist yet)
         combined_instructions = ""
         brand_id = product_dict.get('brand_id')
         brand_fonts = None  # Will be fetched below

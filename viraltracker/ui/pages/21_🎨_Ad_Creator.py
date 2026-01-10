@@ -74,6 +74,9 @@ if 'selected_persona_id' not in st.session_state:
     st.session_state.selected_persona_id = None
 if 'selected_variant_id' not in st.session_state:
     st.session_state.selected_variant_id = None
+# Offer Variant (landing page angle) state
+if 'selected_offer_variant_id' not in st.session_state:
+    st.session_state.selected_offer_variant_id = None
 # Belief First mode state
 if 'selected_offer_id' not in st.session_state:
     st.session_state.selected_offer_id = None
@@ -117,6 +120,17 @@ def get_variants_for_product(product_id: str):
             "id, name, slug, variant_type, description, is_default, is_active"
         ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
         return result.data or []
+    except Exception as e:
+        return []
+
+
+def get_offer_variants_for_product(product_id: str):
+    """Get offer variants (landing page angles) for a product."""
+    try:
+        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+        from uuid import UUID
+        service = ProductOfferVariantService()
+        return service.get_offer_variants(UUID(product_id), active_only=True)
     except Exception as e:
         return []
 
@@ -331,7 +345,8 @@ async def run_workflow(
     variant_id: str = None,
     additional_instructions: str = None,
     angle_data: dict = None,
-    match_template_structure: bool = False
+    match_template_structure: bool = False,
+    offer_variant_id: str = None
 ):
     """Run the ad creation workflow with optional export.
 
@@ -355,6 +370,7 @@ async def run_workflow(
         additional_instructions: Optional run-specific instructions for ad generation
         angle_data: Dict with angle info for belief_first mode {id, name, belief_statement, explanation}
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
+        offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -388,7 +404,8 @@ async def run_workflow(
         variant_id=variant_id,
         additional_instructions=additional_instructions,
         angle_data=angle_data,
-        match_template_structure=match_template_structure
+        match_template_structure=match_template_structure,
+        offer_variant_id=offer_variant_id
     )
 
     # Handle exports if configured
@@ -992,6 +1009,75 @@ else:
     st.divider()
 
     # ============================================================================
+    # Offer Variant (Landing Page Angle) - Optional
+    # ============================================================================
+    st.subheader("Offer Variant / Landing Page Angle (Optional)")
+    st.caption("Ensures ad copy aligns with specific landing page messaging")
+
+    # Fetch offer variants for selected product
+    offer_variants = get_offer_variants_for_product(selected_product_id) if selected_product_id else []
+
+    if offer_variants:
+        # Build offer variant options - "Default" + all offer variants
+        offer_variant_options = {"Use default messaging": None}
+        for ov in offer_variants:
+            label = f"{ov['name']}"
+            if ov.get('is_default'):
+                label += " (default)"
+            # Show landing page URL hint
+            lp_url = ov.get('landing_page_url', '')
+            if lp_url:
+                # Extract domain/path for display
+                import urllib.parse
+                parsed = urllib.parse.urlparse(lp_url)
+                path = parsed.path[:30] + '...' if len(parsed.path) > 30 else parsed.path
+                label += f" → {parsed.netloc}{path}"
+            offer_variant_options[label] = ov['id']
+
+        # Get current selection label
+        current_offer_variant_label = "Use default messaging"
+        if st.session_state.selected_offer_variant_id:
+            for label, ovid in offer_variant_options.items():
+                if ovid == st.session_state.selected_offer_variant_id:
+                    current_offer_variant_label = label
+                    break
+
+        selected_offer_variant_label = st.selectbox(
+            "Select an offer variant",
+            options=list(offer_variant_options.keys()),
+            index=list(offer_variant_options.keys()).index(current_offer_variant_label) if current_offer_variant_label in offer_variant_options else 0,
+            help="Select a landing page angle to ensure ad copy matches the destination page messaging",
+            disabled=st.session_state.workflow_running,
+            key="offer_variant_selector"
+        )
+        st.session_state.selected_offer_variant_id = offer_variant_options[selected_offer_variant_label]
+
+        # Show offer variant preview if selected
+        if st.session_state.selected_offer_variant_id:
+            selected_offer_variant = next((ov for ov in offer_variants if ov['id'] == st.session_state.selected_offer_variant_id), None)
+            if selected_offer_variant:
+                with st.expander("Offer Variant Details", expanded=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Pain Points:**")
+                        for pp in selected_offer_variant.get('pain_points', [])[:5]:
+                            st.write(f"• {pp}")
+                    with col2:
+                        st.markdown("**Benefits:**")
+                        for b in selected_offer_variant.get('benefits', [])[:5]:
+                            st.write(f"• {b}")
+
+                    if selected_offer_variant.get('target_audience'):
+                        st.markdown(f"**Target Audience:** {selected_offer_variant['target_audience']}")
+
+                    st.caption(f"📎 Landing Page: {selected_offer_variant.get('landing_page_url', 'N/A')}")
+    else:
+        st.info("No offer variants configured for this product. Ad copy will use default product messaging.")
+        st.session_state.selected_offer_variant_id = None
+
+    st.divider()
+
+    # ============================================================================
     # Additional Instructions (Optional)
     # ============================================================================
     st.subheader("Additional Instructions (Optional)")
@@ -1484,6 +1570,8 @@ else:
             angle_data = st.session_state.selected_angle_data if content_source == "belief_first" else None
             # Get match_template_structure flag for belief_first mode
             match_template = st.session_state.match_template_structure if content_source == "belief_first" else False
+            # Get offer_variant_id from session state
+            offer_variant_id = st.session_state.selected_offer_variant_id
 
             # Run the workflow
             result = asyncio.run(run_workflow(
@@ -1505,7 +1593,8 @@ else:
                 variant_id=variant_id,
                 additional_instructions=add_instructions,
                 angle_data=angle_data,
-                match_template_structure=match_template
+                match_template_structure=match_template,
+                offer_variant_id=offer_variant_id
             ))
 
             # Record template usage if a scraped template was used

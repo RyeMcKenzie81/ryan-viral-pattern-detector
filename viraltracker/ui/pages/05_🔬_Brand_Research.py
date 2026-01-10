@@ -1355,44 +1355,128 @@ def render_angle_extraction_section(brand_id: str, product_id: Optional[str] = N
         st.info("Select at least one source to extract.")
 
 
+def get_offer_variants_for_product(product_id: str) -> List[Dict]:
+    """Get offer variants for a product."""
+    try:
+        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+        service = ProductOfferVariantService()
+        return service.get_offer_variants(UUID(product_id), active_only=True)
+    except Exception as e:
+        st.error(f"Failed to get offer variants: {e}")
+        return []
+
+
+def synthesize_from_offer_variant_sync(offer_variant_id: str) -> List[Dict]:
+    """Synthesize personas from offer variant (sync wrapper)."""
+    from viraltracker.services.brand_research_service import BrandResearchService
+
+    async def _synthesize():
+        service = BrandResearchService()
+        return await service.synthesize_from_offer_variant(UUID(offer_variant_id))
+
+    return run_async(_synthesize())
+
+
 def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
     """Render persona synthesis section."""
     st.subheader("6. Synthesize Personas")
-    st.markdown("Aggregate all analyses to detect customer segments and generate 4D personas.")
+    st.markdown("Generate 4D personas from analyses or offer variants.")
 
-    analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
+    # Get offer variants if product is selected
+    offer_variants = []
+    if product_id:
+        offer_variants = get_offer_variants_for_product(product_id)
 
-    if analysis_stats["total"] < 3:
-        st.warning("Run at least 3 analyses before synthesizing personas.")
-        return
+    # Show tabs if offer variants exist
+    if offer_variants:
+        tab_analyses, tab_variant = st.tabs(["📊 From Analyses", "🎯 From Offer Variant"])
+    else:
+        tab_analyses = st.container()
+        tab_variant = None
 
-    # Build analysis summary
-    parts = []
-    if analysis_stats['video_vision'] > 0:
-        parts.append(f"{analysis_stats['video_vision']} videos")
-    if analysis_stats['image_vision'] > 0:
-        parts.append(f"{analysis_stats['image_vision']} images")
-    if analysis_stats['copy_analysis'] > 0:
-        parts.append(f"{analysis_stats['copy_analysis']} copy")
-    if analysis_stats['amazon_reviews'] > 0:
-        parts.append(f"{analysis_stats['amazon_reviews']} Amazon reviews")
+    # Tab 1: Synthesize from analyses (existing flow)
+    with tab_analyses:
+        analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
 
-    st.info(f"Ready to synthesize from {analysis_stats['total']} analyses ({', '.join(parts)})")
+        if analysis_stats["total"] < 3:
+            st.warning("Run at least 3 analyses before synthesizing from analyses.")
+        else:
+            # Build analysis summary
+            parts = []
+            if analysis_stats['video_vision'] > 0:
+                parts.append(f"{analysis_stats['video_vision']} videos")
+            if analysis_stats['image_vision'] > 0:
+                parts.append(f"{analysis_stats['image_vision']} images")
+            if analysis_stats['copy_analysis'] > 0:
+                parts.append(f"{analysis_stats['copy_analysis']} copy")
+            if analysis_stats['amazon_reviews'] > 0:
+                parts.append(f"{analysis_stats['amazon_reviews']} Amazon reviews")
 
-    if st.button("Synthesize Personas", type="primary", disabled=st.session_state.analysis_running):
-        st.session_state.analysis_running = True
+            st.info(f"Ready to synthesize from {analysis_stats['total']} analyses ({', '.join(parts)})")
 
-        with st.spinner("Analyzing patterns and generating personas... (30-60 seconds)"):
-            try:
-                personas = synthesize_personas_sync(brand_id)
-                st.session_state.suggested_personas = personas
-                st.session_state.review_mode = True
-                st.success(f"Generated {len(personas)} suggested persona(s)")
-            except Exception as e:
-                st.error(f"Synthesis failed: {e}")
+            if st.button("Synthesize from Analyses", type="primary", disabled=st.session_state.analysis_running, key="btn_synth_analyses"):
+                st.session_state.analysis_running = True
 
-        st.session_state.analysis_running = False
-        st.rerun()
+                with st.spinner("Analyzing patterns and generating personas... (30-60 seconds)"):
+                    try:
+                        personas = synthesize_personas_sync(brand_id)
+                        st.session_state.suggested_personas = personas
+                        st.session_state.review_mode = True
+                        st.success(f"Generated {len(personas)} suggested persona(s)")
+                    except Exception as e:
+                        st.error(f"Synthesis failed: {e}")
+
+                st.session_state.analysis_running = False
+                st.rerun()
+
+    # Tab 2: Synthesize from offer variant
+    if tab_variant is not None:
+        with tab_variant:
+            st.markdown("Generate a persona based on a specific offer variant's messaging angle.")
+
+            # Build variant options
+            variant_options = {v["name"]: v["id"] for v in offer_variants}
+            selected_variant_name = st.selectbox(
+                "Select Offer Variant",
+                options=list(variant_options.keys()),
+                key="synth_variant_select"
+            )
+            selected_variant_id = variant_options.get(selected_variant_name)
+
+            # Show variant details
+            if selected_variant_id:
+                selected_variant = next((v for v in offer_variants if v["id"] == selected_variant_id), None)
+                if selected_variant:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption("**Pain Points:**")
+                        for pp in selected_variant.get("pain_points", [])[:5]:
+                            st.write(f"• {pp}")
+                    with col2:
+                        st.caption("**Benefits:**")
+                        for b in selected_variant.get("benefits", [])[:5]:
+                            st.write(f"• {b}")
+
+                    if selected_variant.get("target_audience"):
+                        st.caption(f"**Target Audience:** {selected_variant['target_audience']}")
+
+            if st.button("Synthesize from Variant", type="primary", disabled=st.session_state.analysis_running, key="btn_synth_variant"):
+                if not selected_variant_id:
+                    st.error("Please select an offer variant")
+                else:
+                    st.session_state.analysis_running = True
+
+                    with st.spinner("Generating persona from offer variant... (30-60 seconds)"):
+                        try:
+                            personas = synthesize_from_offer_variant_sync(selected_variant_id)
+                            st.session_state.suggested_personas = personas
+                            st.session_state.review_mode = True
+                            st.success(f"Generated {len(personas)} persona(s) from offer variant")
+                        except Exception as e:
+                            st.error(f"Synthesis failed: {e}")
+
+                    st.session_state.analysis_running = False
+                    st.rerun()
 
 
 def render_persona_review():
