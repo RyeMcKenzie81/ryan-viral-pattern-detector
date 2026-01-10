@@ -13,6 +13,7 @@ import streamlit as st
 import asyncio
 import json
 from datetime import datetime
+from uuid import UUID
 
 # Page config
 st.set_page_config(
@@ -763,10 +764,42 @@ else:
 
                         for ov in offer_variants:
                             with st.expander(f"**{ov.get('name', 'Unnamed')}**", expanded=False):
+                                ov_id = ov.get('id')
+
                                 # Landing page URL
                                 landing_url = ov.get('landing_page_url', '')
                                 if landing_url:
                                     st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
+
+                                # Editable Target Audience
+                                st.markdown("**Target Audience**")
+                                ta_key = f"ov_target_audience_{ov_id}"
+                                current_ta = ov.get('target_audience', '') or ''
+                                new_ta = st.text_area(
+                                    "Target audience for this offer variant",
+                                    value=current_ta,
+                                    key=ta_key,
+                                    height=100,
+                                    help="Define who this offer variant targets. This will be used in ad generation prompts.",
+                                    label_visibility="collapsed"
+                                )
+
+                                # Save button if changed
+                                if new_ta != current_ta:
+                                    if st.button("💾 Save Target Audience", key=f"save_ta_{ov_id}"):
+                                        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                        ov_service = ProductOfferVariantService()
+                                        success = ov_service.update_offer_variant(
+                                            UUID(ov_id),
+                                            {'target_audience': new_ta}
+                                        )
+                                        if success:
+                                            st.success("Target audience saved!")
+                                            st.rerun()
+                                        else:
+                                            st.error("Failed to save target audience")
+
+                                st.markdown("---")
 
                                 col_ov1, col_ov2 = st.columns(2)
 
