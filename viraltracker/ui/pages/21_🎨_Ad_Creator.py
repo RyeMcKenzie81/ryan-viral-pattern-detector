@@ -226,11 +226,20 @@ def get_existing_templates():
         return []
 
 
-def get_scraped_templates(category: str = None, limit: int = 50):
+def get_scraped_templates(
+    category: str = None,
+    awareness_level: int = None,
+    industry_niche: str = None,
+    target_sex: str = None,
+    limit: int = 50
+):
     """Get approved scraped templates from database.
 
     Args:
         category: Optional category filter (testimonial, quote_card, etc.)
+        awareness_level: Optional awareness level (1-5)
+        industry_niche: Optional industry/niche filter
+        target_sex: Optional target sex filter (male/female/unisex)
         limit: Maximum templates to return
 
     Returns:
@@ -241,6 +250,9 @@ def get_scraped_templates(category: str = None, limit: int = 50):
         service = TemplateQueueService()
         return service.get_templates(
             category=category if category != "all" else None,
+            awareness_level=awareness_level,
+            industry_niche=industry_niche if industry_niche != "all" else None,
+            target_sex=target_sex if target_sex != "all" else None,
             active_only=True,
             limit=limit
         )
@@ -258,6 +270,24 @@ def get_template_categories():
     except Exception:
         return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
                 "ugc_style", "meme", "carousel_frame", "story_format", "other"]
+
+
+def get_awareness_levels():
+    """Get awareness level filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_awareness_levels()
+    except Exception:
+        return []
+
+
+def get_industry_niches():
+    """Get industry niche filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_industry_niches()
+    except Exception:
+        return []
 
 
 def get_scraped_template_url(storage_path: str) -> str:
@@ -1230,22 +1260,57 @@ else:
             st.warning("No uploaded templates found. Upload a reference ad first, or use Scraped Template Library.")
 
     elif reference_source == "Scraped Template Library":
+        # Filter row - 4 columns
+        filter_cols = st.columns(4)
+
         # Category filter
-        categories = get_template_categories()
-        col1, col2 = st.columns([1, 3])
-        with col1:
+        with filter_cols[0]:
+            categories = get_template_categories()
             selected_category = st.selectbox(
                 "Category",
                 options=categories,
                 index=categories.index(st.session_state.scraped_template_category) if st.session_state.scraped_template_category in categories else 0,
-                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All Categories",
-                key="scraped_category_filter"
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+                key="filter_category"
             )
             st.session_state.scraped_template_category = selected_category
 
-        # Get scraped templates
+        # Awareness Level filter
+        with filter_cols[1]:
+            awareness_opts = [{"value": None, "label": "All"}] + get_awareness_levels()
+            selected_awareness = st.selectbox(
+                "Awareness Level",
+                options=[a["value"] for a in awareness_opts],
+                format_func=lambda x: next((a["label"] for a in awareness_opts if a["value"] == x), "All"),
+                key="filter_awareness"
+            )
+
+        # Industry/Niche filter
+        with filter_cols[2]:
+            niches = ["all"] + get_industry_niches()
+            selected_niche = st.selectbox(
+                "Industry/Niche",
+                options=niches,
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+                key="filter_niche"
+            )
+
+        # Target Sex filter
+        with filter_cols[3]:
+            sex_options = ["all", "male", "female", "unisex"]
+            selected_sex = st.selectbox(
+                "Target Audience",
+                options=sex_options,
+                format_func=lambda x: x.title() if x != "all" else "All",
+                key="filter_sex"
+            )
+
+        # Get scraped templates with all filters
         scraped_templates = get_scraped_templates(
             category=selected_category if selected_category != "all" else None,
+            awareness_level=selected_awareness,
+            industry_niche=selected_niche if selected_niche != "all" else None,
+            target_sex=selected_sex if selected_sex != "all" else None,
             limit=50
         )
 

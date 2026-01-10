@@ -345,6 +345,9 @@ class TemplateQueueService:
     def get_templates(
         self,
         category: Optional[str] = None,
+        awareness_level: Optional[int] = None,
+        industry_niche: Optional[str] = None,
+        target_sex: Optional[str] = None,
         active_only: bool = True,
         limit: int = 50
     ) -> List[Dict]:
@@ -353,6 +356,9 @@ class TemplateQueueService:
 
         Args:
             category: Optional category filter
+            awareness_level: Optional awareness level (1-5)
+            industry_niche: Optional industry/niche filter
+            target_sex: Optional target sex filter (male/female/unisex)
             active_only: Only return active templates
             limit: Maximum templates to return
 
@@ -365,6 +371,12 @@ class TemplateQueueService:
             query = query.eq("is_active", True)
         if category:
             query = query.eq("category", category)
+        if awareness_level:
+            query = query.eq("awareness_level", awareness_level)
+        if industry_niche:
+            query = query.eq("industry_niche", industry_niche)
+        if target_sex:
+            query = query.eq("target_sex", target_sex)
 
         query = query.order("times_used", desc=True).limit(limit)
         result = query.execute()
@@ -384,6 +396,30 @@ class TemplateQueueService:
             "story_format",
             "other"
         ]
+
+    def get_awareness_levels(self) -> List[Dict[str, Any]]:
+        """Get awareness level options for filtering."""
+        return [
+            {"value": 1, "label": "1 - Unaware"},
+            {"value": 2, "label": "2 - Problem Aware"},
+            {"value": 3, "label": "3 - Solution Aware"},
+            {"value": 4, "label": "4 - Product Aware"},
+            {"value": 5, "label": "5 - Most Aware"},
+        ]
+
+    def get_industry_niches(self) -> List[str]:
+        """Get distinct industry niches from active templates."""
+        result = self.supabase.table("scraped_templates")\
+            .select("industry_niche")\
+            .eq("is_active", True)\
+            .not_.is_("industry_niche", "null")\
+            .execute()
+        niches = sorted(set(r['industry_niche'] for r in result.data if r.get('industry_niche')))
+        return niches
+
+    def get_target_sex_options(self) -> List[str]:
+        """Get target sex options for filtering."""
+        return ["male", "female", "unisex"]
 
     def record_template_usage(
         self,
