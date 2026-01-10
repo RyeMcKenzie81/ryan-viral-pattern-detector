@@ -2686,7 +2686,7 @@ async def generate_benefit_variations(
         You're writing headline variations for a Facebook ad campaign.
 
         **Product:** {product.get('name', 'Product')}
-        **Target Audience:** {product.get('offer_target_audience') or product.get('target_audience', 'General audience')}{' (from offer variant)' if product.get('offer_target_audience') else ''}
+        **Target Audience:** {product.get('offer_target_audience') if product.get('offer_target_audience') else ('General audience - see offer variant pain points below' if using_offer_variant else product.get('target_audience', 'General audience'))}
 
         **PRODUCT'S ACTUAL OFFER (USE THIS EXACTLY):**
         {current_offer if current_offer else "No specific offer - do not mention discounts or percentages"}
@@ -2733,6 +2733,17 @@ async def generate_benefit_variations(
         - Key elements: {', '.join(template_angle.get('key_elements', []))}
         - Adaptation guidance: {template_angle.get('adaptation_guidance', '')}
 
+        {f'''**🚨 CRITICAL: OFFER VARIANT OVERRIDE 🚨**
+        An offer variant "{product.get('offer_variant', {}).get('name', '')}" has been selected.
+
+        YOU MUST COMPLETELY IGNORE the template's TOPIC and SUBJECT MATTER above.
+        - Do NOT write about: {template_angle.get('original_text', '')[:50]}...
+        - The template's topic is IRRELEVANT - only use its LENGTH, TONE, and FORMAT
+        - Your headlines must be 100% about the OFFER VARIANT topic below, NOT the template topic
+        - If the template talks about blood pressure but the offer variant is about HAIR, write about HAIR
+        - This is NON-NEGOTIABLE - the ad MUST match the landing page topic
+        ''' if product.get('offer_variant') else ''}
+
         **Reference Ad Style:**
         - Format: {ad_analysis.get('format_type')}
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
@@ -2770,21 +2781,29 @@ async def generate_benefit_variations(
         3. Match the persona's speaking style from "Their Language"
         4. If Amazon testimonials are available, borrow phrases for authenticity
         5. Address their objections implicitly in the headline when possible
-        ''' if persona_data else (f'''**OFFER VARIANT TARGETING: {product.get('offer_variant', {}).get('name', 'Landing Page Angle')}**
+        ''' if persona_data else (f'''**🎯 OFFER VARIANT: {product.get('offer_variant', {}).get('name', 'Landing Page Angle')} 🎯**
 
-        **Target Pain Points (address these in headlines for landing page congruence):**
-        {json.dumps(offer_pain_points[:5], indent=2) if offer_pain_points else 'None specified'}
+        THIS IS THE ONLY TOPIC YOU CAN WRITE ABOUT. Everything else is off-limits.
 
-        **Target Benefits (emphasize these for messaging alignment):**
-        {json.dumps(benefits[:5], indent=2) if benefits else 'None specified'}
+        **ONLY USE THESE PAIN POINTS (from offer variant - matches landing page):**
+        {json.dumps(offer_pain_points[:8], indent=2) if offer_pain_points else 'None specified'}
+
+        **ONLY USE THESE BENEFITS (from offer variant - matches landing page):**
+        {json.dumps(benefits[:8], indent=2) if benefits else 'None specified'}
 
         {f"**Target Audience:** {product.get('offer_target_audience', '')}" if product.get('offer_target_audience') else ''}
 
-        OFFER VARIANT RULES:
-        1. Frame headlines around the pain points above - these match the landing page
-        2. Emphasize the benefits listed - they're what the landing page promises
-        3. Ensure ad messaging aligns with what visitors will see when they click
-        4. This creates congruence between ad and landing page for better conversion
+        **🚫 FORBIDDEN - DO NOT MENTION:**
+        - Any pain points or benefits NOT listed above
+        - Topics from the main product that don't match this offer variant
+        - If this is a HAIR angle, do NOT mention: blood pressure, circulation, energy, blood vessels
+        - If this is a BLOOD PRESSURE angle, do NOT mention: hair, thinning, shedding, scalp
+
+        **✅ REQUIRED:**
+        1. EVERY headline must address pain points or benefits from the lists above
+        2. If pain points mention "hair", "thinning", "shedding" → write about HAIR
+        3. The landing page is about {product.get('offer_variant', {}).get('name', 'this specific angle')} - your ad must match
+        4. Ignore what the template was originally about - adapt the STRUCTURE only
         ''' if offer_pain_points or product.get('offer_variant') else '')}
 
         **EMOTIONAL BENEFITS (Use these for headlines - they connect with the audience):**
