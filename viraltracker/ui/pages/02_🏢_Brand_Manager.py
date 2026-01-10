@@ -874,6 +874,13 @@ else:
                                     st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
 
                                 # Editable Target Audience with Synthesize button
+                                ta_key = f"ov_target_audience_{ov_id}"
+                                db_ta = ov.get('target_audience', '') or ''
+
+                                # Initialize session state from DB if not already set
+                                if ta_key not in st.session_state:
+                                    st.session_state[ta_key] = db_ta
+
                                 ta_col1, ta_col2 = st.columns([3, 1])
                                 with ta_col1:
                                     st.markdown("**Target Audience**")
@@ -885,24 +892,11 @@ else:
                                             ov_service = ProductOfferVariantService()
                                             result = ov_service.analyze_landing_page(landing_url)
                                             if result.get('success') and result.get('target_audience'):
-                                                # Store in session state to pre-fill text area
-                                                st.session_state[f"synthesized_ta_{ov_id}"] = result['target_audience']
+                                                # Update the text_area's session state key directly
+                                                st.session_state[ta_key] = result['target_audience']
                                                 st.rerun()
                                             else:
                                                 st.error("Could not extract target audience from landing page")
-
-                                ta_key = f"ov_target_audience_{ov_id}"
-                                db_ta = ov.get('target_audience', '') or ''
-
-                                # Initialize session state from DB if not already set
-                                if ta_key not in st.session_state:
-                                    st.session_state[ta_key] = db_ta
-
-                                # Check if we have a synthesized value to apply
-                                synth_ta_key = f"synthesized_ta_{ov_id}"
-                                if synth_ta_key in st.session_state:
-                                    st.session_state[ta_key] = st.session_state[synth_ta_key]
-                                    del st.session_state[synth_ta_key]
 
                                 new_ta = st.text_area(
                                     "Target audience for this offer variant",
