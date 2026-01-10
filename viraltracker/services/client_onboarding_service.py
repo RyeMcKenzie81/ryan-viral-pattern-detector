@@ -1011,7 +1011,7 @@ Return ONLY a JSON array of question strings."""
                             amazon_analysis=amazon_analysis
                         )
 
-                    # Save product images if present (from Amazon scraping)
+                    # Save product images if present (from Amazon or landing page scraping)
                     product_images = prod.get("images") or []
                     if product_images:
                         self._save_product_images(

@@ -484,6 +484,126 @@ class WebScrapingService:
                 for url in urls
             ]
 
+    def extract_product_images(
+        self,
+        url: str,
+        min_width: int = 200,
+        max_images: int = 10,
+        timeout: int = 30000
+    ) -> List[str]:
+        """
+        Extract product image URLs from a landing page.
+
+        Scrapes the page and extracts image URLs that are likely product images
+        (filtering out icons, logos, and small images).
+
+        Args:
+            url: Landing page URL to scrape
+            min_width: Minimum image width to consider (filters icons)
+            max_images: Maximum number of images to return
+            timeout: Request timeout in milliseconds
+
+        Returns:
+            List of image URLs (absolute URLs)
+        """
+        import re
+        from urllib.parse import urljoin, urlparse
+
+        logger.info(f"Extracting product images from: {url}")
+
+        try:
+            # Scrape with HTML format to parse images
+            result = self.scrape_url(url, formats=["html"], only_main_content=False, timeout=timeout)
+
+            if not result.success or not result.html:
+                logger.warning(f"Failed to scrape {url} for images: {result.error}")
+                return []
+
+            html = result.html
+            base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+
+            # Extract image URLs using regex (faster than parsing full HTML)
+            # Match src attributes in img tags
+            img_pattern = r'<img[^>]+src=["\']([^"\']+)["\']'
+            srcset_pattern = r'<img[^>]+srcset=["\']([^"\']+)["\']'
+
+            image_urls = set()
+
+            # Extract from src attributes
+            for match in re.finditer(img_pattern, html, re.IGNORECASE):
+                src = match.group(1)
+                if src:
+                    image_urls.add(src)
+
+            # Extract from srcset (take largest image)
+            for match in re.finditer(srcset_pattern, html, re.IGNORECASE):
+                srcset = match.group(1)
+                # srcset format: "url1 1x, url2 2x" or "url1 300w, url2 600w"
+                parts = srcset.split(',')
+                if parts:
+                    # Take the last (usually largest) image
+                    last_part = parts[-1].strip().split()[0]
+                    image_urls.add(last_part)
+
+            # Also check for background images in style attributes
+            bg_pattern = r'background(?:-image)?:\s*url\(["\']?([^"\')\s]+)["\']?\)'
+            for match in re.finditer(bg_pattern, html, re.IGNORECASE):
+                bg_url = match.group(1)
+                if bg_url:
+                    image_urls.add(bg_url)
+
+            # Filter and normalize URLs
+            filtered_images = []
+            excluded_patterns = [
+                r'icon', r'logo', r'sprite', r'favicon', r'avatar',
+                r'button', r'arrow', r'close', r'menu', r'nav',
+                r'social', r'facebook', r'twitter', r'instagram',
+                r'\.svg$', r'\.gif$', r'data:image',
+                r'1x1', r'pixel', r'tracking', r'analytics',
+                r'shopify.*badge', r'payment.*icon'
+            ]
+
+            for img_url in image_urls:
+                # Skip data URLs and very short URLs
+                if img_url.startswith('data:') or len(img_url) < 10:
+                    continue
+
+                # Convert to absolute URL
+                if img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+                elif img_url.startswith('/'):
+                    img_url = urljoin(base_url, img_url)
+                elif not img_url.startswith('http'):
+                    img_url = urljoin(url, img_url)
+
+                # Check against excluded patterns
+                img_lower = img_url.lower()
+                if any(re.search(pattern, img_lower) for pattern in excluded_patterns):
+                    continue
+
+                # Check file extension (prefer jpg, png, webp)
+                if not any(ext in img_lower for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                    continue
+
+                filtered_images.append(img_url)
+
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_images = []
+            for img in filtered_images:
+                # Normalize for deduplication
+                normalized = img.split('?')[0].lower()
+                if normalized not in seen:
+                    seen.add(normalized)
+                    unique_images.append(img)
+
+            logger.info(f"Extracted {len(unique_images)} product images from {url}")
+            return unique_images[:max_images]
+
+        except Exception as e:
+            logger.error(f"Failed to extract images from {url}: {e}")
+            return []
+
 
 # Commonly used extraction schemas for reuse
 

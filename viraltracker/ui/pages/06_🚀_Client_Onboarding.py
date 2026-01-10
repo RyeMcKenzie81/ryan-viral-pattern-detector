@@ -1519,8 +1519,8 @@ def render_products_tab(session: dict):
                         key=f"ov_name_{i}",
                     )
 
-                    # Landing Page URL with Analyze button
-                    url_col1, url_col2 = st.columns([4, 1])
+                    # Landing Page URL with Analyze and Extract Images buttons
+                    url_col1, url_col2, url_col3 = st.columns([3, 1, 1])
                     with url_col1:
                         ov_url = st.text_input(
                             "Landing Page URL *",
@@ -1535,6 +1535,40 @@ def render_products_tab(session: dict):
                             help="Scrape the landing page to auto-fill fields",
                             disabled=not ov_url,
                         )
+                    with url_col3:
+                        st.markdown("")  # Spacing
+                        extract_images_clicked = st.button(
+                            "🖼️ Images",
+                            key=f"extract_images_{i}",
+                            help="Extract product images from landing page",
+                            disabled=not ov_url,
+                        )
+
+                    # Handle extract images button click
+                    if extract_images_clicked and ov_url:
+                        with st.spinner("Extracting images from landing page..."):
+                            try:
+                                web_service = get_web_scraping_service()
+                                images = web_service.extract_product_images(ov_url, max_images=10)
+
+                                if images:
+                                    # Add to product's images list (merge with existing)
+                                    existing_images = prod.get("images") or []
+                                    existing_urls = set(existing_images)
+                                    new_images = [img for img in images if img not in existing_urls]
+
+                                    if new_images:
+                                        prod["images"] = existing_images + new_images
+                                        products[i] = prod
+                                        service.update_section(UUID(session["id"]), "products", products)
+                                        st.success(f"Found {len(new_images)} new images!")
+                                        st.rerun()
+                                    else:
+                                        st.info("No new images found (may already be added)")
+                                else:
+                                    st.warning("No product images found on this page")
+                            except Exception as e:
+                                st.error(f"Error extracting images: {e}")
 
                     # Handle analyze button click
                     if analyze_clicked and ov_url:
