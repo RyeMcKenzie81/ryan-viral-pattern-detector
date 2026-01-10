@@ -897,6 +897,8 @@ else:
                                 synth_ta_key = f"synthesized_ta_{ov_id}"
                                 if synth_ta_key in st.session_state:
                                     current_ta = st.session_state[synth_ta_key]
+                                    # Also update the text_area's session state key so it displays correctly
+                                    st.session_state[ta_key] = current_ta
                                     del st.session_state[synth_ta_key]  # Clear after use
 
                                 new_ta = st.text_area(
