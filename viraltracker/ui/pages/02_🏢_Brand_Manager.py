@@ -874,37 +874,41 @@ else:
                                     st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
 
                                 # Editable Target Audience with Synthesize button
-                                ta_key = f"ov_target_audience_{ov_id}"
+                                ta_state_key = f"ta_state_{ov_id}"
                                 db_ta = ov.get('target_audience', '') or ''
 
-                                # Initialize session state from DB if not already set
-                                if ta_key not in st.session_state:
-                                    st.session_state[ta_key] = db_ta
+                                # Initialize state from DB if needed
+                                if ta_state_key not in st.session_state:
+                                    st.session_state[ta_state_key] = db_ta
 
                                 ta_col1, ta_col2 = st.columns([3, 1])
                                 with ta_col1:
                                     st.markdown("**Target Audience**")
                                 with ta_col2:
-                                    synth_key = f"synth_ta_{ov_id}"
-                                    if landing_url and st.button("🔮 Synthesize", key=synth_key, help="Extract target audience from landing page using AI"):
+                                    synth_btn_key = f"synth_ta_{ov_id}"
+                                    if landing_url and st.button("🔮 Synthesize", key=synth_btn_key, help="Extract target audience from landing page using AI"):
                                         with st.spinner("Analyzing landing page..."):
                                             from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
                                             ov_service = ProductOfferVariantService()
                                             result = ov_service.analyze_landing_page(landing_url)
                                             if result.get('success') and result.get('target_audience'):
-                                                # Update the text_area's session state key directly
-                                                st.session_state[ta_key] = result['target_audience']
+                                                st.session_state[ta_state_key] = result['target_audience']
                                                 st.rerun()
                                             else:
                                                 st.error("Could not extract target audience from landing page")
 
+                                # Use unique key per render to avoid state conflicts
+                                widget_key = f"ta_widget_{ov_id}_{hash(st.session_state.get(ta_state_key, ''))}"
                                 new_ta = st.text_area(
                                     "Target audience for this offer variant",
-                                    key=ta_key,
+                                    value=st.session_state[ta_state_key],
+                                    key=widget_key,
                                     height=100,
                                     help="Define who this offer variant targets. This will be used in ad generation prompts.",
                                     label_visibility="collapsed"
                                 )
+                                # Update our state if user edited
+                                st.session_state[ta_state_key] = new_ta
 
                                 # Save button if changed
                                 original_ta = ov.get('target_audience', '') or ''
