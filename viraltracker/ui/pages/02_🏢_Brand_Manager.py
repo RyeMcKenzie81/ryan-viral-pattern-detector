@@ -249,11 +249,12 @@ def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str,
                 # Generate unique filename based on URL hash
                 url_hash = hashlib.md5(img_url.encode()).hexdigest()[:12]
                 filename = f"ov_{offer_variant_id[:8]}_{url_hash}.{ext}"
-                storage_path = f"product_images/{product_id}/{filename}"
+                storage_path = f"{product_id}/{filename}"
+                full_storage_path = f"product-images/{storage_path}"
 
                 # 3. Check if image already exists (by storage_path)
                 existing = db.table("product_images").select("id").eq(
-                    "storage_path", storage_path
+                    "storage_path", full_storage_path
                 ).execute()
 
                 if existing.data:
@@ -261,16 +262,16 @@ def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str,
                     image_id = existing.data[0]['id']
                 else:
                     # Upload to storage
-                    db.storage.from_("product-assets").upload(
+                    db.storage.from_("product-images").upload(
                         storage_path,
                         resp.content,
-                        {"content-type": content_type}
+                        {"content-type": content_type, "upsert": "true"}
                     )
 
                     # Create product_images record
                     img_record = db.table("product_images").insert({
                         "product_id": product_id,
-                        "storage_path": storage_path,
+                        "storage_path": full_storage_path,
                         "filename": filename,
                         "is_main": False,
                         "sort_order": idx
