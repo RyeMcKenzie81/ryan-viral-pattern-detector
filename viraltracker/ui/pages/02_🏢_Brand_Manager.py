@@ -892,18 +892,20 @@ else:
                                                 st.error("Could not extract target audience from landing page")
 
                                 ta_key = f"ov_target_audience_{ov_id}"
-                                current_ta = ov.get('target_audience', '') or ''
-                                # Check if we have a synthesized value to pre-fill
+                                db_ta = ov.get('target_audience', '') or ''
+
+                                # Initialize session state from DB if not already set
+                                if ta_key not in st.session_state:
+                                    st.session_state[ta_key] = db_ta
+
+                                # Check if we have a synthesized value to apply
                                 synth_ta_key = f"synthesized_ta_{ov_id}"
                                 if synth_ta_key in st.session_state:
-                                    current_ta = st.session_state[synth_ta_key]
-                                    # Also update the text_area's session state key so it displays correctly
-                                    st.session_state[ta_key] = current_ta
-                                    del st.session_state[synth_ta_key]  # Clear after use
+                                    st.session_state[ta_key] = st.session_state[synth_ta_key]
+                                    del st.session_state[synth_ta_key]
 
                                 new_ta = st.text_area(
                                     "Target audience for this offer variant",
-                                    value=current_ta,
                                     key=ta_key,
                                     height=100,
                                     help="Define who this offer variant targets. This will be used in ad generation prompts.",
