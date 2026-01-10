@@ -184,6 +184,32 @@ def get_ad_runs_stats(product_id: str) -> dict:
         return {"runs": 0, "ads": 0, "approved": 0}
 
 
+def get_offer_variants_for_product(product_id: str) -> list:
+    """Get offer variants (landing page angles) for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_offer_variants").select("*").eq(
+            "product_id", product_id
+        ).order("name").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch offer variants: {e}")
+        return []
+
+
+def get_amazon_analysis_for_product(product_id: str) -> dict:
+    """Get Amazon review analysis for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("amazon_review_analysis").select("*").eq(
+            "product_id", product_id
+        ).execute()
+        return result.data[0] if result.data else {}
+    except Exception as e:
+        st.error(f"Failed to fetch Amazon analysis: {e}")
+        return {}
+
+
 def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     """Get signed URL for storage path."""
     if not storage_path:
@@ -565,7 +591,9 @@ else:
                 st.markdown("---")
 
                 # Details tab
-                tab_details, tab_variants, tab_images, tab_stats = st.tabs(["Details", "Variants", "Images", "Stats"])
+                tab_details, tab_offers, tab_amazon, tab_variants, tab_images, tab_stats = st.tabs([
+                    "Details", "Offer Variants", "Amazon Insights", "Variants", "Images", "Stats"
+                ])
 
                 with tab_details:
                     # Product Code (for ad filenames)
@@ -723,6 +751,140 @@ else:
                             if cancelled:
                                 st.session_state[edit_key] = False
                                 st.rerun()
+
+                with tab_offers:
+                    # Offer Variants = Landing page angles with pain points/benefits
+                    offer_variants = get_offer_variants_for_product(product_id)
+
+                    if not offer_variants:
+                        st.info("No offer variants imported. These are created during brand onboarding from Amazon analysis or ad library scraping.")
+                    else:
+                        st.markdown(f"**{len(offer_variants)} offer variant(s)** (landing page angles)")
+
+                        for ov in offer_variants:
+                            with st.expander(f"**{ov.get('name', 'Unnamed')}**", expanded=False):
+                                # Landing page URL
+                                landing_url = ov.get('landing_page_url', '')
+                                if landing_url:
+                                    st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
+
+                                col_ov1, col_ov2 = st.columns(2)
+
+                                with col_ov1:
+                                    # Pain Points
+                                    st.markdown("**Pain Points**")
+                                    pain_points = ov.get('pain_points') or []
+                                    if pain_points:
+                                        for pp in pain_points[:8]:
+                                            st.caption(f"• {pp}")
+                                        if len(pain_points) > 8:
+                                            st.caption(f"*...and {len(pain_points) - 8} more*")
+                                    else:
+                                        st.caption("None")
+
+                                with col_ov2:
+                                    # Benefits
+                                    st.markdown("**Benefits**")
+                                    benefits = ov.get('benefits') or []
+                                    if benefits:
+                                        for b in benefits[:8]:
+                                            st.caption(f"• {b}")
+                                        if len(benefits) > 8:
+                                            st.caption(f"*...and {len(benefits) - 8} more*")
+                                    else:
+                                        st.caption("None")
+
+                                # Mechanism fields if present
+                                mechanism_name = ov.get('mechanism_name')
+                                if mechanism_name:
+                                    st.markdown("---")
+                                    st.markdown("**Mechanism (UM/UMP/UMS)**")
+                                    st.caption(f"**Name:** {mechanism_name}")
+                                    if ov.get('mechanism_problem'):
+                                        st.caption(f"**Problem:** {ov['mechanism_problem']}")
+                                    if ov.get('mechanism_solution'):
+                                        st.caption(f"**Solution:** {ov['mechanism_solution']}")
+
+                                # Sample hooks if present
+                                sample_hooks = ov.get('sample_hooks') or []
+                                if sample_hooks:
+                                    st.markdown("---")
+                                    st.markdown("**Sample Hooks**")
+                                    for hook in sample_hooks[:3]:
+                                        st.caption(f"• {hook}")
+
+                                # Source info
+                                source = ov.get('source')
+                                if source:
+                                    st.markdown("---")
+                                    st.caption(f"*Source: {source}*")
+
+                with tab_amazon:
+                    # Amazon Review Analysis
+                    amazon_data = get_amazon_analysis_for_product(product_id)
+
+                    if not amazon_data:
+                        st.info("No Amazon analysis imported. Run Amazon analysis during brand onboarding to populate this data.")
+                    else:
+                        col_am1, col_am2 = st.columns(2)
+
+                        with col_am1:
+                            # Pain Points
+                            st.markdown("**Pain Points from Reviews**")
+                            pain_points = amazon_data.get('pain_points') or []
+                            if pain_points:
+                                for pp in pain_points:
+                                    st.caption(f"• {pp}")
+                            else:
+                                st.caption("None extracted")
+
+                            # Desires/Goals
+                            st.markdown("")
+                            st.markdown("**Desires & Goals**")
+                            desires = amazon_data.get('desires_goals') or []
+                            if desires:
+                                for d in desires:
+                                    st.caption(f"• {d}")
+                            else:
+                                st.caption("None extracted")
+
+                        with col_am2:
+                            # Benefits
+                            st.markdown("**Benefits Mentioned**")
+                            benefits = amazon_data.get('benefits') or []
+                            if benefits:
+                                for b in benefits:
+                                    st.caption(f"• {b}")
+                            else:
+                                st.caption("None extracted")
+
+                            # Jobs to be Done
+                            st.markdown("")
+                            st.markdown("**Jobs to be Done**")
+                            jtbd = amazon_data.get('jobs_to_be_done') or []
+                            if jtbd:
+                                for j in jtbd:
+                                    st.caption(f"• {j}")
+                            else:
+                                st.caption("None extracted")
+
+                        # Quotes section (full width)
+                        st.markdown("---")
+                        st.markdown("**Customer Quotes**")
+                        quotes = amazon_data.get('quotes') or []
+                        if quotes:
+                            for q in quotes[:5]:
+                                st.markdown(f"> *\"{q}\"*")
+                            if len(quotes) > 5:
+                                st.caption(f"*...and {len(quotes) - 5} more quotes*")
+                        else:
+                            st.caption("No quotes extracted")
+
+                        # Metadata
+                        st.markdown("---")
+                        created_at = amazon_data.get('created_at', '')
+                        if created_at:
+                            st.caption(f"*Analysis created: {created_at[:10]}*")
 
                 with tab_variants:
                     variants = product.get('product_variants', [])
