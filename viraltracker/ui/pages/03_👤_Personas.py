@@ -101,7 +101,7 @@ def get_product_persona_links(product_id: str):
         return []
 
 
-def generate_persona_for_product_sync(product_id: str, brand_id: str):
+def generate_persona_for_product_sync(product_id: str, brand_id: str, offer_variant_id: str = None):
     """Generate a persona using AI (sync wrapper for Streamlit)."""
     service = get_persona_service()
 
@@ -115,11 +115,25 @@ def generate_persona_for_product_sync(product_id: str, brand_id: str):
         return loop.run_until_complete(
             service.generate_persona_from_product(
                 product_id=UUID(product_id),
-                brand_id=UUID(brand_id)
+                brand_id=UUID(brand_id),
+                offer_variant_id=UUID(offer_variant_id) if offer_variant_id else None
             )
         )
     finally:
         loop.close()
+
+
+def get_offer_variants_for_product(product_id: str):
+    """Fetch all offer variants for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_offer_variants").select(
+            "id, name, pain_points, desires_goals, target_audience"
+        ).eq("product_id", product_id).order("name").execute()
+        return result.data
+    except Exception as e:
+        st.error(f"Failed to fetch offer variants: {e}")
+        return []
 
 
 def save_persona(persona_data: Dict[str, Any]) -> Optional[str]:
@@ -860,14 +874,65 @@ def render_ai_generation():
     if product.data:
         p = product.data[0]
         st.info(f"Generating persona for **{p.get('name')}**")
-        if p.get("target_audience"):
-            st.markdown(f"Current target audience: *{p.get('target_audience')}*")
+
+    # Get offer variants for this product
+    offer_variants = get_offer_variants_for_product(product_id)
+
+    selected_variant_id = None
+    if offer_variants:
+        st.markdown("### Select Offer Variant")
+        st.caption("Each offer variant targets different pain points and audiences. Select which angle to base the persona on.")
+
+        # Build options - include "None" option for product-level generation
+        variant_options = {"(Product-level - no specific variant)": None}
+        for v in offer_variants:
+            # Show variant name with preview of pain points
+            pain_preview = ", ".join(v.get("pain_points", [])[:3]) if v.get("pain_points") else "No pain points"
+            if len(pain_preview) > 60:
+                pain_preview = pain_preview[:60] + "..."
+            label = f"{v['name']}"
+            variant_options[label] = v["id"]
+
+        selected_variant_name = st.selectbox(
+            "Offer Variant",
+            options=list(variant_options.keys()),
+            help="Select which offer variant's pain points and desires to use for persona generation"
+        )
+        selected_variant_id = variant_options[selected_variant_name]
+
+        # Show selected variant details
+        if selected_variant_id:
+            selected_variant = next((v for v in offer_variants if v["id"] == selected_variant_id), None)
+            if selected_variant:
+                with st.expander("Variant Details", expanded=True):
+                    if selected_variant.get("target_audience"):
+                        st.markdown(f"**Target Audience:** {selected_variant['target_audience']}")
+                    if selected_variant.get("pain_points"):
+                        st.markdown("**Pain Points:**")
+                        for pp in selected_variant["pain_points"][:8]:
+                            st.markdown(f"- {pp}")
+                        if len(selected_variant["pain_points"]) > 8:
+                            st.caption(f"... and {len(selected_variant['pain_points']) - 8} more")
+                    if selected_variant.get("desires_goals"):
+                        st.markdown("**Desires/Goals:**")
+                        for dg in selected_variant["desires_goals"][:5]:
+                            st.markdown(f"- {dg}")
+    else:
+        # Fallback to product-level info
+        if product.data:
+            p = product.data[0]
+            if p.get("target_audience"):
+                st.markdown(f"**Current target audience:** {p.get('target_audience')}")
+            st.info("No offer variants found. Persona will be generated from product-level data.")
+
+    st.divider()
 
     if st.button("Generate Persona", type="primary", disabled=st.session_state.get('_generating', False)):
         st.session_state._generating = True
-        with st.spinner("Generating 4D persona with Claude... (this takes 15-30 seconds)"):
+        variant_note = f" (variant: {selected_variant_name})" if selected_variant_id else ""
+        with st.spinner(f"Generating 4D persona with Claude{variant_note}... (this takes 15-30 seconds)"):
             try:
-                persona = generate_persona_for_product_sync(product_id, brand_id)
+                persona = generate_persona_for_product_sync(product_id, brand_id, selected_variant_id)
                 st.session_state._generated_persona = persona
                 st.session_state._generating = False
                 st.success(f"Generated: **{persona.name}**")

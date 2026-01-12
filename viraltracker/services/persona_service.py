@@ -495,15 +495,23 @@ class PersonaService:
     async def generate_persona_from_product(
         self,
         product_id: UUID,
-        brand_id: Optional[UUID] = None
+        brand_id: Optional[UUID] = None,
+        offer_variant_id: Optional[UUID] = None
     ) -> Persona4D:
         """
         Generate a 4D persona using AI from product data and existing ad analyses.
 
         Uses:
         - Product table data (benefits, target audience, etc.)
+        - Offer variant data if specified (pain_points, desires_goals, benefits, target_audience)
         - Existing ad image analyses (hooks, benefits, pain points)
         - Brand research synthesis (if available)
+
+        Args:
+            product_id: UUID of the product
+            brand_id: Optional brand UUID (resolved from product if not provided)
+            offer_variant_id: Optional offer variant UUID - if provided, uses variant's
+                              pain_points, desires, and target_audience for persona generation
 
         Returns the generated persona (not saved - user reviews first).
         """
@@ -518,11 +526,21 @@ class PersonaService:
         product = product_result.data[0]
         resolved_brand_id = brand_id or (UUID(product.get("brand_id")) if product.get("brand_id") else None)
 
-        # Build product info for prompt
+        # Get offer variant data if specified
+        offer_variant = None
+        if offer_variant_id:
+            variant_result = self.supabase.table("product_offer_variants").select("*").eq(
+                "id", str(offer_variant_id)
+            ).execute()
+            if variant_result.data:
+                offer_variant = variant_result.data[0]
+                logger.info(f"Using offer variant for persona generation: {offer_variant.get('name')}")
+
+        # Build product info for prompt - prefer offer variant data if available
         product_info = {
             "name": product.get("name"),
             "description": product.get("description"),
-            "benefits": product.get("benefits", []),
+            "benefits": offer_variant.get("benefits") if offer_variant and offer_variant.get("benefits") else product.get("benefits", []),
             "key_ingredients": product.get("key_ingredients", []),
             "category": product.get("category"),
             "price_range": product.get("price_range"),
@@ -530,7 +548,18 @@ class PersonaService:
             "brand_voice_notes": product.get("brand_voice_notes")
         }
 
-        target_audience = product.get("target_audience", "Not specified")
+        # Add offer variant specific data if available
+        if offer_variant:
+            product_info["offer_variant_name"] = offer_variant.get("name")
+            product_info["pain_points"] = offer_variant.get("pain_points", [])
+            product_info["desires_goals"] = offer_variant.get("desires_goals", [])
+            product_info["landing_page_url"] = offer_variant.get("landing_page_url")
+
+        # Prefer offer variant target audience, then product target audience
+        target_audience = (
+            offer_variant.get("target_audience") if offer_variant and offer_variant.get("target_audience")
+            else product.get("target_audience", "Not specified")
+        )
 
         # Gather ad insights from existing analyses
         ad_insights = await self._gather_ad_insights(resolved_brand_id, product_id)
