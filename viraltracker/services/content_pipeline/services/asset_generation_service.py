@@ -869,6 +869,48 @@ Requirements:
         except Exception as e:
             logger.error(f"Failed to reject asset: {e}")
 
+    async def link_to_existing(
+        self,
+        requirement_id: UUID,
+        existing_asset_id: UUID
+    ) -> None:
+        """
+        Link a requirement to an existing asset from the library.
+
+        This is useful when the matching didn't find an asset automatically,
+        but the user knows one exists and wants to use it instead of generating.
+
+        Args:
+            requirement_id: Requirement UUID to update
+            existing_asset_id: Existing comic_assets UUID to link to
+        """
+        if not self.supabase:
+            return
+
+        try:
+            # Get the existing asset details for the image URL
+            asset_result = self.supabase.table("comic_assets").select(
+                "id, name, image_url"
+            ).eq("id", str(existing_asset_id)).execute()
+
+            if not asset_result.data:
+                raise ValueError(f"Asset {existing_asset_id} not found in library")
+
+            existing_asset = asset_result.data[0]
+
+            # Update requirement to link to the existing asset
+            self.supabase.table("project_asset_requirements").update({
+                "status": "matched",
+                "comic_asset_id": str(existing_asset_id),
+                "generated_image_url": existing_asset.get("image_url")
+            }).eq("id", str(requirement_id)).execute()
+
+            logger.info(f"Linked requirement {requirement_id} to existing asset '{existing_asset.get('name')}'")
+
+        except Exception as e:
+            logger.error(f"Failed to link to existing asset: {e}")
+            raise
+
     async def _add_to_library(
         self,
         brand_id: UUID,

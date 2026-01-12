@@ -2555,6 +2555,36 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
                     st.info(f"'{name}' sent back to Generate tab")
                     st.rerun()
 
+                # Link to Existing Asset
+                with st.expander("🔗 Link to Existing"):
+                    # Get library assets of same type
+                    library_service = get_asset_service()
+                    library_assets = asyncio.run(library_service.get_asset_library(
+                        brand_id=UUID(brand_id),
+                        asset_type=asset_type
+                    ))
+
+                    if library_assets:
+                        # Create options dict
+                        asset_options = {f"{a['name']}": a['id'] for a in library_assets}
+                        selected_name = st.selectbox(
+                            "Select from library:",
+                            options=[""] + list(asset_options.keys()),
+                            key=f"link_select_{req_id}"
+                        )
+
+                        if selected_name and st.button("Link", key=f"link_btn_{req_id}"):
+                            selected_id = asset_options[selected_name]
+                            gen_service = get_asset_generation_service()
+                            asyncio.run(gen_service.link_to_existing(
+                                requirement_id=UUID(req_id),
+                                existing_asset_id=UUID(selected_id)
+                            ))
+                            st.success(f"Linked to '{selected_name}'")
+                            st.rerun()
+                    else:
+                        st.caption(f"No {asset_type}s in library")
+
             st.divider()
 
 
