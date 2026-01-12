@@ -310,8 +310,11 @@ Keep what's working well and only change what needs to be fixed."""
         )
 
         try:
-            # Call Agent
-            result = await agent.run(prompt)
+            # Call Agent with higher max_tokens for full script output
+            result = await agent.run(
+                prompt,
+                model_settings={'max_tokens': 16000}
+            )
             content = result.output
             script_data = self._parse_json_response(content)
 
@@ -364,8 +367,11 @@ Keep what's working well and only change what needs to be fixed."""
         )
 
         try:
-            # Call Agent
-            result = await agent.run(prompt)
+            # Call Agent with sufficient max_tokens for detailed review
+            result = await agent.run(
+                prompt,
+                model_settings={'max_tokens': 8000}
+            )
             content = result.output
             review_data = self._parse_json_response(content)
 
@@ -417,8 +423,11 @@ Keep what's working well and only change what needs to be fixed."""
         )
 
         try:
-            # Call Agent
-            result = await agent.run(prompt)
+            # Call Agent with higher max_tokens for full script output
+            result = await agent.run(
+                prompt,
+                model_settings={'max_tokens': 16000}
+            )
             content = result.output
             revised_script = self._parse_json_response(content)
 
