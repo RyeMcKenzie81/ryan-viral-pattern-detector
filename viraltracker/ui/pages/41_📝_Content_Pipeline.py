@@ -21,6 +21,9 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
 
+import nest_asyncio
+nest_asyncio.apply()
+
 logger = logging.getLogger(__name__)
 
 # Page config
