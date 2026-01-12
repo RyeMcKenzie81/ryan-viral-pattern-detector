@@ -87,17 +87,15 @@ Return valid JSON:
     # Character aliases - maps variations to canonical names for matching
     # All keys should be lowercase with hyphens
     CHARACTER_ALIASES = {
-        # Every-Coon variations (main raccoon character)
+        # Every-Coon / Wojak / Raccoon are ALL the same character
         "every-coon": "every-coon",
         "everycoon": "every-coon",
-        "every-coon": "every-coon",
         "raccoon": "every-coon",
         "racoon": "every-coon",
         "the-raccoon": "every-coon",
         "main-raccoon": "every-coon",
-        # Wojak is a separate character, NOT the same as raccoon
-        "wojak": "wojak",
-        "the-wojak": "wojak",
+        "wojak": "every-coon",
+        "the-wojak": "every-coon",
         # Fed
         "fed": "fed",
         "the-fed": "fed",
