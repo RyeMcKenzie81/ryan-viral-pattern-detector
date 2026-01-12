@@ -84,6 +84,48 @@ Return valid JSON:
         "chad", "the chad"
     }
 
+    # Character aliases - maps variations to canonical names for matching
+    # All keys should be lowercase with hyphens
+    CHARACTER_ALIASES = {
+        # Every-Coon variations (main raccoon character)
+        "every-coon": "every-coon",
+        "everycoon": "every-coon",
+        "every-coon": "every-coon",
+        "raccoon": "every-coon",
+        "racoon": "every-coon",
+        "the-raccoon": "every-coon",
+        "main-raccoon": "every-coon",
+        # Wojak is a separate character, NOT the same as raccoon
+        "wojak": "wojak",
+        "the-wojak": "wojak",
+        # Fed
+        "fed": "fed",
+        "the-fed": "fed",
+        "federal-reserve": "fed",
+        # Boomer
+        "boomer": "boomer",
+        "the-boomer": "boomer",
+        # Whale
+        "whale": "whale",
+        "the-whale": "whale",
+        # Chad
+        "chad": "chad",
+        "the-chad": "chad",
+    }
+
+    # Common prop aliases for fuzzy matching
+    PROP_ALIASES = {
+        "dumpster": ["dumpster", "dumpster-bin", "trash-dumpster", "garbage-dumpster"],
+        "pizza": ["pizza", "pizza-slice", "slice-of-pizza", "pizza-piece"],
+        "pizza-slice": ["pizza", "pizza-slice", "slice-of-pizza", "pizza-piece"],
+        "trash-can": ["trash-can", "garbage-can", "bin", "waste-bin"],
+        "money": ["money", "cash", "dollar", "dollars", "bills", "money-stack"],
+        "phone": ["phone", "smartphone", "cell-phone", "mobile", "iphone"],
+        "computer": ["computer", "laptop", "pc", "desktop", "monitor"],
+        "chart": ["chart", "graph", "stock-chart", "line-chart", "stonks"],
+        "stonks": ["stonks", "chart", "stock-chart", "stocks"],
+    }
+
     # Asset type priorities for matching
     ASSET_TYPE_PRIORITY = {
         "character": 1,
@@ -312,6 +354,12 @@ Return valid JSON:
             norm_name = asset["name"].lower().replace(" ", "-").replace("_", "-")
             asset_lookup[norm_name] = asset
 
+            # Also index by canonical character name if applicable
+            if asset["asset_type"] == "character":
+                canonical = self.CHARACTER_ALIASES.get(norm_name)
+                if canonical and canonical not in asset_lookup:
+                    asset_lookup[canonical] = asset
+
             # Also index by tags
             for tag in (asset.get("tags") or []):
                 tag_norm = tag.lower().replace(" ", "-")
@@ -323,15 +371,42 @@ Return valid JSON:
         unmatched = []
 
         for req in requirements:
-            req_name = req["name"].lower()
+            req_name = req["name"].lower().replace(" ", "-").replace("_", "-")
             match = asset_lookup.get(req_name)
 
-            # Try partial match for characters
+            # Try canonical character alias matching
+            if not match and req["type"] == "character":
+                canonical = self.CHARACTER_ALIASES.get(req_name)
+                if canonical:
+                    match = asset_lookup.get(canonical)
+                    if match:
+                        logger.debug(f"Matched via character alias: '{req_name}' → '{canonical}'")
+
+            # Try prop alias matching
+            if not match and req["type"] == "prop":
+                # Check if this prop name has aliases
+                aliases = self.PROP_ALIASES.get(req_name, [])
+                for alias in aliases:
+                    match = asset_lookup.get(alias)
+                    if match and match["asset_type"] == "prop":
+                        logger.debug(f"Matched via prop alias: '{req_name}' → '{alias}'")
+                        break
+                # Also check reverse - if library asset has aliases that include our req
+                if not match:
+                    for prop_key, prop_aliases in self.PROP_ALIASES.items():
+                        if req_name in prop_aliases:
+                            match = asset_lookup.get(prop_key)
+                            if match and match["asset_type"] == "prop":
+                                logger.debug(f"Matched via reverse prop alias: '{req_name}' → '{prop_key}'")
+                                break
+
+            # Fallback: Try partial match for characters
             if not match and req["type"] == "character":
                 for key, asset in asset_lookup.items():
                     if req_name in key or key in req_name:
                         if asset["asset_type"] == "character":
                             match = asset
+                            logger.debug(f"Matched via partial: '{req_name}' ∈ '{key}'")
                             break
 
             if match:
@@ -342,7 +417,7 @@ Return valid JSON:
                     "status": "matched"
                 }
                 matched.append(matched_req)
-                logger.debug(f"Matched '{req['name']}' → '{match['name']}'")
+                logger.info(f"Matched '{req['name']}' → '{match['name']}'")
             else:
                 unmatched_req = {
                     **req,
@@ -350,7 +425,7 @@ Return valid JSON:
                     "status": "needed"
                 }
                 unmatched.append(unmatched_req)
-                logger.debug(f"No match for '{req['name']}'")
+                logger.info(f"No match for '{req['name']}' (type: {req['type']})")
 
         logger.info(f"Asset matching: {len(matched)} matched, {len(unmatched)} needed")
         return matched, unmatched
