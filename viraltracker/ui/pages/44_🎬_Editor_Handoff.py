@@ -328,6 +328,65 @@ def render_beat_card(beat):
         st.divider()
 
 
+def get_all_handoffs() -> List[Dict[str, Any]]:
+    """Fetch all handoffs from the database, ordered by creation date."""
+    try:
+        db = get_supabase_client()
+        result = db.table("editor_handoffs").select(
+            "id, title, brand_name, created_at, total_duration_ms"
+        ).order("created_at", desc=True).execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to load handoffs: {e}")
+        return []
+
+
+def render_handoff_list():
+    """Render a list of all available handoffs."""
+    handoffs = get_all_handoffs()
+
+    if not handoffs:
+        st.info("No handoffs available yet.")
+        return None
+
+    st.markdown("---")
+    st.subheader("📋 Available Handoffs")
+
+    selected_id = None
+
+    for handoff in handoffs:
+        handoff_id = handoff.get("id", "")
+        title = handoff.get("title", "Untitled")
+        brand = handoff.get("brand_name", "Unknown")
+        created_at = handoff.get("created_at", "")
+        duration_ms = handoff.get("total_duration_ms", 0)
+
+        # Format date
+        if created_at:
+            try:
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                date_str = dt.strftime("%Y-%m-%d %H:%M")
+            except:
+                date_str = created_at[:10] if len(created_at) >= 10 else created_at
+        else:
+            date_str = "Unknown"
+
+        # Format duration
+        duration_sec = duration_ms / 1000 if duration_ms else 0
+
+        col_info, col_btn = st.columns([4, 1])
+        with col_info:
+            st.markdown(f"**{title}**")
+            st.caption(f"Brand: {brand} | Created: {date_str} | Duration: {duration_sec:.1f}s")
+        with col_btn:
+            if st.button("View", key=f"view_{handoff_id}", use_container_width=True):
+                selected_id = handoff_id
+
+        st.markdown("---")
+
+    return selected_id
+
+
 def render_no_handoff_page():
     """Render page when no handoff ID is provided."""
     st.title("🎬 Editor Handoff")
@@ -350,8 +409,16 @@ def render_no_handoff_page():
             UUID(handoff_id_input)
             st.info(f"Loading handoff: {handoff_id_input}")
             render_handoff_page(handoff_id_input)
+            return  # Don't show list if viewing a specific handoff
         except ValueError:
             st.error("Invalid handoff ID format. Please enter a valid UUID.")
+
+    # Show list of available handoffs
+    selected_id = render_handoff_list()
+    if selected_id:
+        # Use query params to navigate
+        st.query_params["id"] = selected_id
+        st.rerun()
 
 
 def main():
