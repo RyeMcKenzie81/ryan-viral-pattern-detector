@@ -901,7 +901,7 @@ Requirements:
             # Update requirement to link to the existing asset
             self.supabase.table("project_asset_requirements").update({
                 "status": "matched",
-                "comic_asset_id": str(existing_asset_id),
+                "asset_id": str(existing_asset_id),
                 "generated_image_url": existing_asset.get("image_url")
             }).eq("id", str(requirement_id)).execute()
 
