@@ -2565,23 +2565,29 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
                     ))
 
                     if library_assets:
-                        # Create options dict
-                        asset_options = {f"{a['name']}": a['id'] for a in library_assets}
+                        # Create lookup by name
+                        asset_by_name = {a['name']: a for a in library_assets}
                         selected_name = st.selectbox(
                             "Select from library:",
-                            options=[""] + list(asset_options.keys()),
+                            options=[""] + list(asset_by_name.keys()),
                             key=f"link_select_{req_id}"
                         )
 
-                        if selected_name and st.button("Link", key=f"link_btn_{req_id}"):
-                            selected_id = asset_options[selected_name]
-                            gen_service = get_asset_generation_service()
-                            asyncio.run(gen_service.link_to_existing(
-                                requirement_id=UUID(req_id),
-                                existing_asset_id=UUID(selected_id)
-                            ))
-                            st.success(f"Linked to '{selected_name}'")
-                            st.rerun()
+                        # Show preview of selected asset
+                        if selected_name:
+                            selected_asset = asset_by_name[selected_name]
+                            preview_url = selected_asset.get('image_url')
+                            if preview_url:
+                                st.image(preview_url, width=150, caption=selected_name)
+
+                            if st.button("Link This Asset", key=f"link_btn_{req_id}", type="primary"):
+                                gen_service = get_asset_generation_service()
+                                asyncio.run(gen_service.link_to_existing(
+                                    requirement_id=UUID(req_id),
+                                    existing_asset_id=UUID(selected_asset['id'])
+                                ))
+                                st.success(f"Linked to '{selected_name}'")
+                                st.rerun()
                     else:
                         st.caption(f"No {asset_type}s in library")
 
