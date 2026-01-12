@@ -144,8 +144,8 @@ class Config:
 
             # Service & Pipeline Mappings
             "REDDIT": cls.BASIC_MODEL,        # Basic sentiment analysis
-            "COMIC": cls.CREATIVE_MODEL,      # Creative writing
-            "SCRIPT": cls.CREATIVE_MODEL,     # Creative writing
+            "COMIC": cls.COMPLEX_MODEL,       # Claude Opus 4.5 for comic scripts
+            "SCRIPT": cls.COMPLEX_MODEL,      # Claude Opus 4.5 for scripts
             "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Creative writing
             "PLANNING": cls.COMPLEX_MODEL,    # Complex reasoning
         }
