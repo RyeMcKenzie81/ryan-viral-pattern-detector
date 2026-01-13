@@ -2053,41 +2053,67 @@ def render_sync_scheduling(brand_id: str):
                 st.error(f"Failed to create schedule: {e}")
 
 
-def render_setup_instructions():
-    """Render setup instructions when no ad account is linked."""
+def render_setup_instructions(brand_id: str):
+    """Render setup instructions and form when no ad account is linked."""
     st.warning("No Meta Ad Account linked to this brand.")
 
-    with st.expander("How to set up Meta Ads integration"):
+    # Instructions expander
+    with st.expander("How to get your Ad Account ID", expanded=False):
         st.markdown("""
-        ### Step 1: Get your Ad Account ID
-
         1. Go to [Meta Ads Manager](https://adsmanager.facebook.com/)
         2. Click on your account name in the top left
         3. Your Ad Account ID is shown (format: `act_123456789`)
-
-        ### Step 2: Link your account
-
-        Run this SQL in Supabase to link your ad account:
-
-        ```sql
-        INSERT INTO brand_ad_accounts (brand_id, meta_ad_account_id, account_name, is_primary)
-        VALUES (
-            'YOUR_BRAND_UUID',
-            'act_123456789',
-            'My Ad Account',
-            true
-        );
-        ```
-
-        ### Step 3: Set up API token
-
-        Add to your environment variables:
-        ```
-        META_GRAPH_API_TOKEN=your_token_here
-        ```
-
-        Get a token from [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
         """)
+
+    # Link form
+    st.subheader("Link Ad Account")
+    with st.form("link_ad_account_form"):
+        account_number = st.text_input(
+            "Ad Account Number *",
+            placeholder="123456789",
+            help="Just the numbers - we'll add 'act_' automatically"
+        )
+        account_name = st.text_input(
+            "Account Name (optional)",
+            placeholder="e.g., Infinite Age Main Account",
+            help="A friendly name to identify this account"
+        )
+
+        submitted = st.form_submit_button("Link Account", type="primary")
+
+        if submitted:
+            if not account_number:
+                st.error("Ad Account Number is required")
+            else:
+                # Clean up input - remove act_ prefix if user included it, strip whitespace
+                clean_number = account_number.strip()
+                if clean_number.startswith("act_"):
+                    clean_number = clean_number[4:]
+
+                # Build full account ID
+                meta_ad_account_id = f"act_{clean_number}"
+
+                try:
+                    db = get_supabase_client()
+                    db.table("brand_ad_accounts").insert({
+                        "brand_id": brand_id,
+                        "meta_ad_account_id": meta_ad_account_id,
+                        "account_name": account_name.strip() if account_name else None,
+                        "is_primary": True
+                    }).execute()
+                    st.success(f"Linked ad account: {meta_ad_account_id}")
+                    st.rerun()
+                except Exception as e:
+                    if "duplicate key" in str(e).lower():
+                        st.error("This ad account is already linked to this brand")
+                    else:
+                        st.error(f"Failed to link account: {e}")
+
+    # API token reminder
+    st.info("""
+    **Note:** You also need `META_GRAPH_API_TOKEN` set in your environment.
+    Get a token from [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
+    """)
 
 
 # =============================================================================
@@ -2452,7 +2478,7 @@ if not brand_id:
 ad_account = get_brand_ad_account(brand_id)
 
 if not ad_account:
-    render_setup_instructions()
+    render_setup_instructions(brand_id)
     st.stop()
 
 st.caption(f"Connected: **{ad_account.get('account_name', ad_account['meta_ad_account_id'])}**")
