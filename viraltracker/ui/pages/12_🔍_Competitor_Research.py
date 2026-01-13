@@ -1397,6 +1397,39 @@ with tab_landing:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Failed: {e}")
+
+                # Show ad messaging from onboarding if available
+                analysis_data = lp.get('analysis_data') or {}
+                if analysis_data:
+                    with st.expander(f"📊 Ad Messaging ({lp.get('ad_count', 0)} ads)", expanded=False):
+                        col_pain, col_desires = st.columns(2)
+                        with col_pain:
+                            pain_points = analysis_data.get('pain_points', [])
+                            if pain_points:
+                                st.markdown("**Pain Points:**")
+                                for pp in pain_points[:5]:
+                                    st.markdown(f"- {pp}")
+                        with col_desires:
+                            desires = analysis_data.get('desires', [])
+                            if desires:
+                                st.markdown("**Desires:**")
+                                for d in desires[:5]:
+                                    st.markdown(f"- {d}")
+
+                        hooks = analysis_data.get('hooks', [])
+                        if hooks:
+                            st.markdown("**Sample Hooks:**")
+                            for h in hooks[:3]:
+                                st.markdown(f"> {h}")
+
+                        benefits = analysis_data.get('benefits', [])
+                        if benefits:
+                            st.markdown("**Benefits:**")
+                            for b in benefits[:5]:
+                                st.markdown(f"- {b}")
+
+                        if not pain_points and not desires and not hooks and not benefits:
+                            st.caption("Ad messaging data available but no specific insights extracted")
         else:
             st.info("No landing pages found. Click 'Scrape Landing Pages' to extract URLs from competitor ads.")
 

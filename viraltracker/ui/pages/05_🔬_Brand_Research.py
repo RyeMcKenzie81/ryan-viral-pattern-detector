@@ -1224,12 +1224,18 @@ def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None
 """)
                         st.markdown("---")
 
-                # Extract data - pain_points now contains themes, jobs_to_be_done, and product_issues
+                # Extract data - pain_points contains themes, jobs_to_be_done, and product_issues
+                # Handle both new format (dict with 'themes' key) and old format (direct list)
                 pain_data = analysis.get('pain_points', {})
                 if isinstance(pain_data, dict):
                     pain_themes = pain_data.get('themes', [])
                     jtbd_themes = pain_data.get('jobs_to_be_done', [])
                     issues_themes = pain_data.get('product_issues', [])
+                elif isinstance(pain_data, list):
+                    # Old format: pain_points is directly a list of themes
+                    pain_themes = pain_data
+                    jtbd_themes = []
+                    issues_themes = []
                 else:
                     pain_themes = []
                     jtbd_themes = []
@@ -1249,12 +1255,22 @@ def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None
 
                 with tab_outcomes:
                     desires_data = analysis.get('desires', {})
-                    desires_themes = desires_data.get('themes', []) if isinstance(desires_data, dict) else []
+                    if isinstance(desires_data, dict):
+                        desires_themes = desires_data.get('themes', [])
+                    elif isinstance(desires_data, list):
+                        desires_themes = desires_data  # Old format: direct list
+                    else:
+                        desires_themes = []
                     render_themed_section(desires_themes, "Desired Outcomes")
 
                 with tab_objections:
                     objections_data = analysis.get('objections', {})
-                    objections_themes = objections_data.get('themes', []) if isinstance(objections_data, dict) else []
+                    if isinstance(objections_data, dict):
+                        objections_themes = objections_data.get('themes', [])
+                    elif isinstance(objections_data, list):
+                        objections_themes = objections_data  # Old format: direct list
+                    else:
+                        objections_themes = []
                     render_themed_section(objections_themes, "Buying Objections")
 
                 with tab_features:
@@ -1893,9 +1909,41 @@ else:
     selected_brand_id, selected_product_id = render_brand_product_selector()
 
     if selected_brand_id:
-        # Show product filter status
+        # Offer variant selector (when product is selected)
+        selected_variant_id = None
         if selected_product_id:
-            st.info(f"Filtering by product - analyses will be linked to this product")
+            variants = get_offer_variants_for_product(selected_product_id)
+            if variants:
+                variant_options = {"All Variants": None}
+                for v in variants:
+                    variant_options[v.get("name", "Unnamed")] = v.get("id")
+
+                col_filter, col_info = st.columns([2, 3])
+                with col_filter:
+                    selected_variant_name = st.selectbox(
+                        "Filter by Offer Variant",
+                        options=list(variant_options.keys()),
+                        key="research_variant_selector"
+                    )
+                    selected_variant_id = variant_options[selected_variant_name]
+
+                with col_info:
+                    if selected_variant_id:
+                        # Get selected variant data and show pain points/desires
+                        selected_variant = next(
+                            (v for v in variants if v.get("id") == selected_variant_id),
+                            None
+                        )
+                        if selected_variant:
+                            st.caption("**Variant-Specific Data:**")
+                            pain_points = selected_variant.get("pain_points") or []
+                            desires = selected_variant.get("desires_goals") or []
+                            if pain_points:
+                                st.markdown(f"**Pain Points:** {', '.join(pain_points[:3])}...")
+                            if desires:
+                                st.markdown(f"**Desires:** {', '.join(desires[:3])}...")
+                    else:
+                        st.info("Select a variant to see variant-specific research data")
 
         st.divider()
 

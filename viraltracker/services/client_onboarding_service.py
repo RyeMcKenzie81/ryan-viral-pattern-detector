@@ -918,6 +918,7 @@ Return ONLY a JSON array of question strings."""
 
         # Create brand
         brand_basics = session.get("brand_basics") or {}
+        facebook_meta = session.get("facebook_meta") or {}
         if brand_basics.get("name"):
             brand_data = {
                 "name": brand_basics["name"],
@@ -930,6 +931,17 @@ Return ONLY a JSON array of question strings."""
                 brand_data["brand_guidelines"] = brand_basics["brand_voice"]
             if brand_basics.get("disallowed_claims"):
                 brand_data["disallowed_claims"] = brand_basics["disallowed_claims"]
+
+            # Add Facebook fields from facebook_meta section
+            if facebook_meta.get("ad_library_url"):
+                brand_data["ad_library_url"] = facebook_meta["ad_library_url"]
+            if facebook_meta.get("page_id"):
+                brand_data["facebook_page_id"] = facebook_meta["page_id"]
+            elif facebook_meta.get("ad_library_url"):
+                # Try to extract page_id from ad_library_url if not explicitly set
+                page_id = self._extract_facebook_page_id(facebook_meta["ad_library_url"])
+                if page_id:
+                    brand_data["facebook_page_id"] = page_id
 
             brand_result = self.supabase.table("brands").insert(brand_data).execute()
             brand_id = UUID(brand_result.data[0]["id"])
@@ -944,6 +956,12 @@ Return ONLY a JSON array of question strings."""
                     "status": "imported",
                 }
             ).eq("id", str(session_id)).execute()
+
+            # Import scraped Facebook ads
+            if facebook_meta.get("url_groups"):
+                ads_imported = self._import_brand_facebook_ads(brand_id, facebook_meta)
+                if ads_imported > 0:
+                    created["facebook_ads_imported"] = ads_imported
 
             # Create products
             products = session.get("products") or []
@@ -1121,6 +1139,17 @@ Return ONLY a JSON array of question strings."""
                             ad_messaging=ad_messaging
                         )
 
+                        # Import competitor Facebook ads
+                        ads_imported = self._import_competitor_ads(
+                            competitor_id=created_competitor_id,
+                            brand_id=brand_id,
+                            competitor_data=comp
+                        )
+                        if ads_imported > 0:
+                            if "competitor_ads_imported" not in created:
+                                created["competitor_ads_imported"] = 0
+                            created["competitor_ads_imported"] += ads_imported
+
             if competitor_ids:
                 created["competitor_ids"] = competitor_ids
 
@@ -1237,27 +1266,43 @@ Return ONLY a JSON array of question strings."""
                     "model_used": "claude-sonnet-4-20250514",  # Default model used
                 }
 
-                # Store pain points from rich analysis
+                # Store pain points in the structured format expected by Brand Research UI
+                # Format: {"themes": [...], "jobs_to_be_done": [...], "product_issues": [...]}
+                pain_themes = []
                 if rich_analysis and rich_analysis.get("pain_points"):
-                    analysis_data["pain_points"] = rich_analysis["pain_points"]
+                    pain_themes = rich_analysis["pain_points"]
                 elif messaging.get("pain_points"):
-                    analysis_data["pain_points"] = [
+                    pain_themes = [
                         {"theme": p, "score": 5.0, "quotes": []}
                         for p in messaging["pain_points"]
                     ]
 
-                # Store desires
+                jobs_to_be_done = rich_analysis.get("jobs_to_be_done", []) if rich_analysis else []
+                product_issues = rich_analysis.get("product_issues", []) if rich_analysis else []
+
+                if pain_themes or jobs_to_be_done or product_issues:
+                    analysis_data["pain_points"] = {
+                        "themes": pain_themes,
+                        "jobs_to_be_done": jobs_to_be_done,
+                        "product_issues": product_issues
+                    }
+
+                # Store desires in structured format
+                desire_themes = []
                 if rich_analysis and rich_analysis.get("desired_outcomes"):
-                    analysis_data["desires"] = rich_analysis["desired_outcomes"]
+                    desire_themes = rich_analysis["desired_outcomes"]
                 elif messaging.get("desires_goals"):
-                    analysis_data["desires"] = [
+                    desire_themes = [
                         {"theme": d, "score": 5.0, "quotes": []}
                         for d in messaging["desires_goals"]
                     ]
 
-                # Store objections
+                if desire_themes:
+                    analysis_data["desires"] = {"themes": desire_themes}
+
+                # Store objections in structured format
                 if rich_analysis and rich_analysis.get("buying_objections"):
-                    analysis_data["objections"] = rich_analysis["buying_objections"]
+                    analysis_data["objections"] = {"themes": rich_analysis["buying_objections"]}
 
                 # Store customer language/quotes
                 if messaging.get("customer_language"):
@@ -1587,21 +1632,38 @@ Return ONLY a JSON array of question strings."""
                     "model_used": "claude-sonnet-4-20250514",
                 }
 
+                # Store pain points in structured format
+                pain_themes = []
                 if rich_analysis and rich_analysis.get("pain_points"):
-                    analysis_data["pain_points"] = rich_analysis["pain_points"]
+                    pain_themes = rich_analysis["pain_points"]
                 elif messaging.get("pain_points"):
-                    analysis_data["pain_points"] = [
+                    pain_themes = [
                         {"theme": p, "score": 5.0, "quotes": []}
                         for p in messaging["pain_points"]
                     ]
 
+                jobs_to_be_done = rich_analysis.get("jobs_to_be_done", []) if rich_analysis else []
+                product_issues = rich_analysis.get("product_issues", []) if rich_analysis else []
+
+                if pain_themes or jobs_to_be_done or product_issues:
+                    analysis_data["pain_points"] = {
+                        "themes": pain_themes,
+                        "jobs_to_be_done": jobs_to_be_done,
+                        "product_issues": product_issues
+                    }
+
+                # Store desires in structured format
+                desire_themes = []
                 if rich_analysis and rich_analysis.get("desired_outcomes"):
-                    analysis_data["desires"] = rich_analysis["desired_outcomes"]
+                    desire_themes = rich_analysis["desired_outcomes"]
                 elif messaging.get("desires_goals"):
-                    analysis_data["desires"] = [
+                    desire_themes = [
                         {"theme": d, "score": 5.0, "quotes": []}
                         for d in messaging["desires_goals"]
                     ]
+
+                if desire_themes:
+                    analysis_data["desires"] = {"themes": desire_themes}
 
                 if messaging.get("customer_language"):
                     analysis_data["top_positive_quotes"] = [
@@ -1692,3 +1754,235 @@ Return ONLY a JSON array of question strings."""
             logger.error(f"Failed to save competitor landing pages: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    def _import_brand_facebook_ads(
+        self,
+        brand_id: UUID,
+        facebook_meta: Dict[str, Any]
+    ) -> int:
+        """
+        Import scraped Facebook ads from onboarding session to production tables.
+
+        Creates:
+        - facebook_ads entries for each ad
+        - brand_facebook_ads linking records
+
+        Args:
+            brand_id: Brand UUID
+            facebook_meta: facebook_meta section from session containing url_groups with ads
+
+        Returns:
+            Number of ads imported
+        """
+        url_groups = facebook_meta.get("url_groups") or []
+        if not url_groups:
+            logger.info("No URL groups found in facebook_meta, skipping ad import")
+            return 0
+
+        # Get Facebook platform ID
+        platform_result = self.supabase.table("platforms").select("id").eq(
+            "slug", "facebook"
+        ).single().execute()
+        if not platform_result.data:
+            logger.warning("Facebook platform not found, skipping ad import")
+            return 0
+        platform_id = platform_result.data["id"]
+
+        # Extract page_id from facebook_meta
+        page_id = facebook_meta.get("page_id")
+        if not page_id and facebook_meta.get("ad_library_url"):
+            page_id = self._extract_facebook_page_id(facebook_meta["ad_library_url"])
+
+        imported_count = 0
+
+        for group in url_groups:
+            ads = group.get("ads") or []
+            for ad in ads:
+                try:
+                    ad_archive_id = ad.get("ad_archive_id") or ad.get("adArchiveID")
+                    if not ad_archive_id:
+                        continue
+
+                    # Check if ad already exists
+                    existing = self.supabase.table("facebook_ads").select("id").eq(
+                        "ad_archive_id", str(ad_archive_id)
+                    ).execute()
+
+                    if existing.data:
+                        # Ad exists, just create linking record
+                        ad_uuid = existing.data[0]["id"]
+                    else:
+                        # Create new facebook_ads record
+                        import json
+
+                        ad_data = {
+                            "ad_archive_id": str(ad_archive_id),
+                            "platform_id": platform_id,
+                            "brand_id": str(brand_id),
+                            "page_id": str(ad.get("page_id") or page_id or ""),
+                            "page_name": ad.get("page_name") or "",
+                            "ad_id": str(ad.get("ad_id") or ""),
+                            "is_active": ad.get("is_active", False),
+                            "scraped_at": datetime.utcnow().isoformat(),
+                            "import_source": "client_onboarding",
+                        }
+
+                        # Handle snapshot - could be string or dict
+                        snapshot = ad.get("snapshot")
+                        if snapshot:
+                            if isinstance(snapshot, str):
+                                try:
+                                    ad_data["snapshot"] = json.loads(snapshot)
+                                except json.JSONDecodeError:
+                                    ad_data["snapshot"] = {"raw": snapshot}
+                            else:
+                                ad_data["snapshot"] = snapshot
+
+                        # Add date fields
+                        if ad.get("start_date"):
+                            ad_data["start_date"] = ad["start_date"]
+                        if ad.get("end_date"):
+                            ad_data["end_date"] = ad["end_date"]
+
+                        # Insert the ad
+                        ad_result = self.supabase.table("facebook_ads").insert(ad_data).execute()
+                        ad_uuid = ad_result.data[0]["id"]
+
+                    # Create brand_facebook_ads linking record
+                    try:
+                        self.supabase.table("brand_facebook_ads").upsert(
+                            {
+                                "brand_id": str(brand_id),
+                                "ad_id": str(ad_uuid),
+                                "import_method": "client_onboarding",
+                                "notes": f"Imported from onboarding session",
+                            },
+                            on_conflict="brand_id,ad_id"
+                        ).execute()
+                    except Exception as e:
+                        logger.debug(f"Could not create brand_facebook_ads link: {e}")
+
+                    imported_count += 1
+
+                except Exception as e:
+                    logger.warning(f"Failed to import ad {ad.get('ad_archive_id')}: {e}")
+
+        logger.info(f"Imported {imported_count} Facebook ads for brand {brand_id}")
+        return imported_count
+
+    def _import_competitor_ads(
+        self,
+        competitor_id: UUID,
+        brand_id: UUID,
+        competitor_data: Dict[str, Any]
+    ) -> int:
+        """
+        Import scraped Facebook ads from competitor data to production tables.
+
+        Creates:
+        - competitor_ads entries for each ad
+        - competitor_ad_assets entries for media
+
+        Args:
+            competitor_id: Competitor UUID
+            brand_id: Brand UUID
+            competitor_data: Competitor dict from session containing url_groups with ads
+
+        Returns:
+            Number of ads imported
+        """
+        url_groups = competitor_data.get("url_groups") or []
+        if not url_groups:
+            return 0
+
+        imported_count = 0
+
+        for group in url_groups:
+            ads = group.get("ads") or []
+            landing_page_url = group.get("display_url") or group.get("normalized_url")
+
+            for ad in ads:
+                try:
+                    ad_archive_id = ad.get("ad_archive_id") or ad.get("adArchiveID")
+                    if not ad_archive_id:
+                        continue
+
+                    # Check if ad already exists
+                    existing = self.supabase.table("competitor_ads").select("id").eq(
+                        "competitor_id", str(competitor_id)
+                    ).eq("ad_archive_id", str(ad_archive_id)).execute()
+
+                    if existing.data:
+                        # Ad already exists
+                        imported_count += 1
+                        continue
+
+                    # Parse snapshot for copy/creative data
+                    import json
+                    snapshot = ad.get("snapshot") or {}
+                    if isinstance(snapshot, str):
+                        try:
+                            snapshot = json.loads(snapshot)
+                        except json.JSONDecodeError:
+                            snapshot = {}
+
+                    # Extract copy from snapshot
+                    ad_body = None
+                    ad_title = None
+                    cta_text = None
+                    if snapshot:
+                        cards = snapshot.get("cards") or []
+                        if cards:
+                            first_card = cards[0]
+                            ad_body = first_card.get("body")
+                            ad_title = first_card.get("title")
+                            cta_text = first_card.get("cta_text")
+                        if not ad_body:
+                            ad_body = snapshot.get("body_markup") or snapshot.get("body")
+                        if not ad_title:
+                            ad_title = snapshot.get("title")
+
+                    # Create competitor_ads record
+                    ad_data = {
+                        "competitor_id": str(competitor_id),
+                        "ad_archive_id": str(ad_archive_id),
+                        "page_name": ad.get("page_name") or competitor_data.get("name", ""),
+                        "ad_body": ad_body,
+                        "ad_title": ad_title,
+                        "link_url": landing_page_url,
+                        "cta_text": cta_text,
+                        "is_active": ad.get("is_active", False),
+                        "snapshot_data": snapshot,
+                    }
+
+                    # Add dates
+                    if ad.get("start_date"):
+                        ad_data["started_running"] = ad["start_date"]
+
+                    # Add platforms
+                    platforms = ad.get("publisher_platform")
+                    if platforms:
+                        if isinstance(platforms, str):
+                            try:
+                                platforms = json.loads(platforms)
+                            except json.JSONDecodeError:
+                                platforms = [platforms]
+                        ad_data["platforms"] = platforms
+
+                    self.supabase.table("competitor_ads").insert(ad_data).execute()
+                    imported_count += 1
+
+                except Exception as e:
+                    logger.warning(f"Failed to import competitor ad {ad.get('ad_archive_id')}: {e}")
+
+        # Update competitor ads_count
+        if imported_count > 0:
+            try:
+                self.supabase.table("competitors").update(
+                    {"ads_count": imported_count}
+                ).eq("id", str(competitor_id)).execute()
+            except Exception as e:
+                logger.debug(f"Could not update competitor ads_count: {e}")
+
+        logger.info(f"Imported {imported_count} competitor ads for {competitor_id}")
+        return imported_count
