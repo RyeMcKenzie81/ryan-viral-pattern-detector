@@ -922,39 +922,48 @@ def render_ai_generation():
 
     st.divider()
 
-    if st.button("Generate Persona", type="primary", disabled=st.session_state.get('_generating', False)):
-        st.session_state._generating = True
-        variant_note = f" (variant: {selected_variant_name})" if selected_variant_id else ""
-        with st.spinner(f"Generating 4D persona with Claude{variant_note}... (this takes 15-30 seconds)"):
-            try:
-                persona = generate_persona_for_product_sync(product_id, brand_id, selected_variant_id)
-                st.session_state._generated_persona = persona
-                st.session_state._generating = False
-                st.success(f"Generated: **{persona.name}**")
-                st.markdown(f"*{persona.snapshot}*")
+    # Check if we have a generated persona waiting to be saved
+    if st.session_state.get('_generated_persona'):
+        persona = st.session_state._generated_persona
+        st.success(f"Generated: **{persona.name}**")
+        st.markdown(f"*{persona.snapshot}*")
 
-                # Show preview
-                with st.expander("Preview Generated Persona"):
-                    st.json(persona.model_dump(mode="json", exclude_none=True))
+        # Show preview
+        with st.expander("Preview Generated Persona"):
+            st.json(persona.model_dump(mode="json", exclude_none=True))
 
-                # Save options
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Save & Edit"):
-                        service = get_persona_service()
-                        persona_id = service.create_persona(persona)
-                        service.link_persona_to_product(persona_id, UUID(product_id), is_primary=True)
-                        st.session_state.generating_persona = False
-                        st.session_state.selected_persona_id = str(persona_id)
-                        st.rerun()
+        # Save options
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save & Edit", type="primary"):
+                service = get_persona_service()
+                persona_id = service.create_persona(persona)
+                service.link_persona_to_product(persona_id, UUID(product_id), is_primary=True)
+                st.session_state._generated_persona = None  # Clear the generated persona
+                st.session_state.generating_persona = False
+                st.session_state.selected_persona_id = str(persona_id)
+                st.rerun()
 
-                with col2:
-                    if st.button("Discard"):
-                        st.session_state.generating_persona = False
-                        st.rerun()
+        with col2:
+            if st.button("Discard"):
+                st.session_state._generated_persona = None  # Clear the generated persona
+                st.session_state.generating_persona = False
+                st.rerun()
 
-            except Exception as e:
-                st.error(f"Generation failed: {e}")
+    else:
+        # Show generate button only if no persona waiting
+        if st.button("Generate Persona", type="primary", disabled=st.session_state.get('_generating', False)):
+            st.session_state._generating = True
+            variant_note = f" (variant: {selected_variant_name})" if selected_variant_id else ""
+            with st.spinner(f"Generating 4D persona with Claude{variant_note}... (this takes 15-30 seconds)"):
+                try:
+                    persona = generate_persona_for_product_sync(product_id, brand_id, selected_variant_id)
+                    st.session_state._generated_persona = persona
+                    st.session_state._generating = False
+                    st.rerun()  # Rerun to show save options
+                except Exception as e:
+                    st.session_state._generating = False
+                    st.error(f"Generation failed: {e}")
 
 
 # Main routing
