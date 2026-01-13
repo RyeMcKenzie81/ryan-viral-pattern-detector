@@ -17,6 +17,10 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
 
+# Apply nest_asyncio at module load for Streamlit compatibility
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config
 st.set_page_config(
     page_title="Persona Builder",
@@ -105,22 +109,13 @@ def generate_persona_for_product_sync(product_id: str, brand_id: str, offer_vari
     """Generate a persona using AI (sync wrapper for Streamlit)."""
     service = get_persona_service()
 
-    # Use nest_asyncio to handle Streamlit's event loop
-    import nest_asyncio
-    nest_asyncio.apply()
-
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            service.generate_persona_from_product(
-                product_id=UUID(product_id),
-                brand_id=UUID(brand_id),
-                offer_variant_id=UUID(offer_variant_id) if offer_variant_id else None
-            )
+    return asyncio.run(
+        service.generate_persona_from_product(
+            product_id=UUID(product_id),
+            brand_id=UUID(brand_id),
+            offer_variant_id=UUID(offer_variant_id) if offer_variant_id else None
         )
-    finally:
-        loop.close()
+    )
 
 
 def get_offer_variants_for_product(product_id: str):
