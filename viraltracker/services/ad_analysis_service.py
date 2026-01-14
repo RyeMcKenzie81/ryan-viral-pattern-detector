@@ -91,9 +91,49 @@ class AdAnalysisService:
     # URL Grouping
     # ============================================================
 
+    def _resolve_redirect_url(self, url: str) -> str:
+        """
+        Resolve redirect URLs to their final destination.
+
+        Handles patterns like:
+        - /discount/CODE?redirect=/pages/landing
+        - /discount/CODE?redirect=%2Fpages%2Flanding (URL-encoded)
+
+        Args:
+            url: Original URL that may contain redirect param
+
+        Returns:
+            Resolved URL or original if no redirect found
+        """
+        from urllib.parse import unquote
+
+        parsed = urlparse(url)
+
+        # Check for redirect parameter
+        if parsed.query:
+            params = parse_qs(parsed.query)
+            redirect_value = params.get('redirect', params.get('return_to', params.get('return', [None])))[0]
+
+            if redirect_value:
+                # URL-decode the redirect value
+                decoded_redirect = unquote(redirect_value)
+
+                # If it's a relative path, combine with base URL
+                if decoded_redirect.startswith('/'):
+                    resolved = f"{parsed.scheme}://{parsed.netloc}{decoded_redirect}"
+                    logger.debug(f"Resolved redirect URL: {url} -> {resolved}")
+                    return resolved
+                elif decoded_redirect.startswith('http'):
+                    # Absolute URL redirect
+                    logger.debug(f"Resolved redirect URL: {url} -> {decoded_redirect}")
+                    return decoded_redirect
+
+        return url
+
     def _normalize_url(self, url: str) -> str:
         """
         Normalize URL for grouping (remove tracking params, www, trailing slash).
+        Also resolves redirect URLs to their final destination.
 
         Args:
             url: URL to normalize
@@ -103,6 +143,9 @@ class AdAnalysisService:
         """
         if not url:
             return ""
+
+        # First, resolve any redirect URLs (e.g., /discount/CODE?redirect=/pages/landing)
+        url = self._resolve_redirect_url(url)
 
         parsed = urlparse(url.lower())
 
