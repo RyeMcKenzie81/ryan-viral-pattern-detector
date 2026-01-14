@@ -605,7 +605,7 @@ with st.container():
         key="brand_ad_library_url"
     )
 
-    col_save, col_count, col_scrape = st.columns([1, 1, 1])
+    col_save, col_media, col_count, col_scrape = st.columns([1, 1, 1, 1])
 
     with col_save:
         if new_ad_library_url != current_ad_library_url:
@@ -620,6 +620,15 @@ with st.container():
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
+    with col_media:
+        media_type = st.selectbox(
+            "Media type",
+            options=["all", "video", "image"],
+            format_func=lambda x: {"all": "All", "video": "Video only", "image": "Image only"}[x],
+            key="scrape_media_type",
+            help="Filter ads by media type"
+        )
+
     with col_count:
         scrape_count = st.number_input("Max ads", min_value=50, max_value=3000, value=100, step=50, key="scrape_count")
 
@@ -627,9 +636,20 @@ with st.container():
         scrape_url = new_ad_library_url or current_ad_library_url
         if scrape_url:
             if st.button("Scrape Ads", key="scrape_brand_ads", type="primary"):
-                with st.spinner(f"Scraping up to {scrape_count} ads from Facebook Ad Library... This may take several minutes."):
+                # Apply media type filter to URL
+                final_url = scrape_url
+                if media_type != "all":
+                    # Add or replace media_type parameter
+                    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+                    parsed = urlparse(scrape_url)
+                    params = parse_qs(parsed.query)
+                    params['media_type'] = [media_type]
+                    new_query = urlencode(params, doseq=True)
+                    final_url = urlunparse(parsed._replace(query=new_query))
+
+                with st.spinner(f"Scraping up to {scrape_count} {media_type} ads from Facebook Ad Library... This may take several minutes."):
                     result = scrape_facebook_ads(
-                        ad_library_url=scrape_url,
+                        ad_library_url=final_url,
                         brand_id=selected_brand_id,
                         max_ads=scrape_count
                     )
