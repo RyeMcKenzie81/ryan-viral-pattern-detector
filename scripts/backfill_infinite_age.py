@@ -87,11 +87,16 @@ def main():
         # 2. Import brand Facebook ads
         url_groups = facebook_meta.get("url_groups") or []
         total_ads = sum(len(g.get("ads", [])) for g in url_groups)
-        logger.info(f"Found {total_ads} ads in {len(url_groups)} URL groups")
+        analyzed_groups = sum(1 for g in url_groups if g.get("analysis_data"))
+        logger.info(f"Found {total_ads} ads in {len(url_groups)} URL groups ({analyzed_groups} analyzed)")
 
         if url_groups:
             ads_imported = service._import_brand_facebook_ads(brand_id, facebook_meta)
             logger.info(f"Imported {ads_imported} brand Facebook ads")
+
+            # 2b. Import landing pages with analysis data
+            lp_imported = service._import_brand_landing_pages(brand_id, facebook_meta)
+            logger.info(f"Imported {lp_imported} brand landing pages")
     else:
         logger.info("No facebook_meta in session")
 

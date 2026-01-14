@@ -963,6 +963,11 @@ Return ONLY a JSON array of question strings."""
                 if ads_imported > 0:
                     created["facebook_ads_imported"] = ads_imported
 
+                # Import landing pages with analysis data
+                lp_imported = self._import_brand_landing_pages(brand_id, facebook_meta)
+                if lp_imported > 0:
+                    created["landing_pages_imported"] = lp_imported
+
             # Create products
             products = session.get("products") or []
             product_ids = []
@@ -1985,4 +1990,106 @@ Return ONLY a JSON array of question strings."""
                 logger.debug(f"Could not update competitor ads_count: {e}")
 
         logger.info(f"Imported {imported_count} competitor ads for {competitor_id}")
+        return imported_count
+
+    def _import_brand_landing_pages(
+        self,
+        brand_id: UUID,
+        facebook_meta: Dict[str, Any]
+    ) -> int:
+        """
+        Import landing pages from onboarding url_groups to brand_landing_pages table.
+
+        Includes analysis_data (pain_points, desires, hooks, benefits) from onboarding analysis.
+
+        Args:
+            brand_id: Brand UUID
+            facebook_meta: facebook_meta section from session containing url_groups
+
+        Returns:
+            Number of landing pages imported
+        """
+        url_groups = facebook_meta.get("url_groups") or []
+        if not url_groups:
+            logger.info("No URL groups found in facebook_meta, skipping landing page import")
+            return 0
+
+        imported_count = 0
+
+        for group in url_groups:
+            url = group.get("display_url") or group.get("normalized_url")
+            if not url:
+                continue
+
+            try:
+                # Check if landing page already exists
+                existing = self.supabase.table("brand_landing_pages").select("id").eq(
+                    "brand_id", str(brand_id)
+                ).eq("url", url).execute()
+
+                if existing.data:
+                    # Update existing with analysis data if available
+                    lp_id = existing.data[0]["id"]
+                    analysis_data = group.get("analysis_data") or {}
+                    if analysis_data:
+                        update_data = {
+                            "scrape_status": "analyzed",
+                            "analyzed_at": datetime.utcnow().isoformat(),
+                        }
+                        # Store analysis in extracted_data and individual fields
+                        update_data["extracted_data"] = analysis_data
+                        if analysis_data.get("benefits"):
+                            update_data["benefits"] = analysis_data["benefits"][:10]
+                        if analysis_data.get("pain_points"):
+                            update_data["features"] = analysis_data["pain_points"][:10]  # Using features field for pain points
+
+                        self.supabase.table("brand_landing_pages").update(
+                            update_data
+                        ).eq("id", lp_id).execute()
+                    imported_count += 1
+                    continue
+
+                # Create new landing page record
+                lp_data = {
+                    "brand_id": str(brand_id),
+                    "url": url,
+                    "scrape_status": "pending",
+                }
+
+                # Add analysis data if available
+                analysis_data = group.get("analysis_data") or {}
+                if analysis_data:
+                    lp_data["scrape_status"] = "analyzed"
+                    lp_data["analyzed_at"] = datetime.utcnow().isoformat()
+                    lp_data["extracted_data"] = analysis_data
+
+                    # Populate individual fields
+                    if analysis_data.get("benefits"):
+                        lp_data["benefits"] = analysis_data["benefits"][:10]
+                    if analysis_data.get("pain_points"):
+                        lp_data["features"] = analysis_data["pain_points"][:10]
+                    if analysis_data.get("hooks"):
+                        # Store first hook as CTA
+                        hooks = analysis_data["hooks"]
+                        if hooks and len(hooks) > 0:
+                            lp_data["call_to_action"] = hooks[0] if isinstance(hooks[0], str) else str(hooks[0])
+
+                    # Store full analysis in analysis_raw
+                    lp_data["analysis_raw"] = {
+                        "source": "client_onboarding",
+                        "pain_points": analysis_data.get("pain_points", []),
+                        "desires": analysis_data.get("desires", []),
+                        "benefits": analysis_data.get("benefits", []),
+                        "hooks": analysis_data.get("hooks", []),
+                        "claims": analysis_data.get("claims", []),
+                        "target_audience": analysis_data.get("target_audience"),
+                    }
+
+                self.supabase.table("brand_landing_pages").insert(lp_data).execute()
+                imported_count += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to import landing page {url}: {e}")
+
+        logger.info(f"Imported {imported_count} brand landing pages for {brand_id}")
         return imported_count
