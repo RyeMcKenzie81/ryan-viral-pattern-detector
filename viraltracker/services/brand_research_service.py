@@ -560,7 +560,10 @@ class BrandResearchService:
             # Strip provider prefix if present (e.g., "google-gla:" for PydanticAI)
             # The native google-genai client doesn't understand provider prefixes
             if ":" in model_name:
-                model_name = model_name.split(":", 1)[1] 
+                model_name = model_name.split(":", 1)[1]
+            # Also strip "models/" prefix - the API adds it automatically
+            if model_name.startswith("models/"):
+                model_name = model_name[7:] 
 
             # Prepare image
             if image_bytes:
@@ -738,13 +741,16 @@ class BrandResearchService:
             client = genai.Client(api_key=api_key)
             
             # Dynamic model selection from Config (Platform Settings)
-            # Remove 'google-gla:' prefix if present for raw client usage, although genai.Client usually handles 'models/'
+            # Remove 'google-gla:' prefix if present for raw client usage
             config_model = Config.get_model("vision")
             if config_model.startswith("google-gla:"):
                 model_name = config_model.replace("google-gla:", "")
             else:
-                 model_name = Config.GEMINI_VIDEO_MODEL # Default to GEMINI_VIDEO_MODEL if prefix not found
-                 
+                model_name = Config.GEMINI_VIDEO_MODEL
+            # Also strip "models/" prefix - the API adds it automatically
+            if model_name.startswith("models/"):
+                model_name = model_name[7:]
+
             logger.info(f"Analyzing video with model: {model_name}")
 
             # Upload video file to Gemini
