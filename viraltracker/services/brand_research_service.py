@@ -740,16 +740,8 @@ class BrandResearchService:
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
             
-            # Dynamic model selection from Config (Platform Settings)
-            # Remove 'google-gla:' prefix if present for raw client usage
-            config_model = Config.get_model("vision")
-            if config_model.startswith("google-gla:"):
-                model_name = config_model.replace("google-gla:", "")
-            else:
-                model_name = Config.GEMINI_VIDEO_MODEL
-            # Also strip "models/" prefix - the API adds it automatically
-            if model_name.startswith("models/"):
-                model_name = model_name[7:]
+            # Video analysis uses gemini-3-pro-preview (not image-preview)
+            model_name = "gemini-3-pro-preview"
 
             logger.info(f"Analyzing video with model: {model_name}")
 
