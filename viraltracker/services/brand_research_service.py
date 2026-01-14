@@ -556,7 +556,11 @@ class BrandResearchService:
             # Initialize Gemini client
             client = genai.Client(api_key=api_key)
             # Use dynamically configured model if possible, else default
-            model_name = Config.get_model("vision") 
+            model_name = Config.get_model("vision")
+            # Strip provider prefix if present (e.g., "google-gla:" for PydanticAI)
+            # The native google-genai client doesn't understand provider prefixes
+            if ":" in model_name:
+                model_name = model_name.split(":", 1)[1] 
 
             # Prepare image
             if image_bytes:
