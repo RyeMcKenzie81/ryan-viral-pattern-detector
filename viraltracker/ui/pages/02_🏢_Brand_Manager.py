@@ -486,86 +486,293 @@ def render_offer_variant_discovery(brand_id: str, product_id: str, product_name:
 
 
 def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str, session_key: str):
-    """Display URL groups with analyze buttons."""
+    """Display URL groups with checkboxes and merge capability."""
     import json
     import asyncio
+    import time
 
-    pending_groups = [g for g in url_groups if g.get('status') != 'done']
-    done_groups = [g for g in url_groups if g.get('status') == 'done']
+    # Selection state key for this brand+product combo
+    selection_key = f"selected_brand_groups_{brand_id}_{product_id}"
+    if selection_key not in st.session_state:
+        st.session_state[selection_key] = set()
 
-    st.markdown(f"### Discovered Landing Pages ({len(url_groups)} total, {len(pending_groups)} pending)")
+    # Get pending vs done/merged groups
+    pending_indices = [i for i, g in enumerate(url_groups) if g.get('status') == 'pending']
+    done_count = len([g for g in url_groups if g.get('status') == 'done'])
+    merged_count = len([g for g in url_groups if g.get('status') == 'merged'])
 
-    if done_groups:
-        st.success(f"✅ {len(done_groups)} variant(s) already created")
+    st.markdown(f"### Discovered Landing Pages ({len(url_groups)} total)")
+    st.caption("Analyze each landing page individually, or **select multiple to merge into one variant.**")
 
+    if done_count > 0:
+        st.success(f"✅ {done_count} variant(s) created")
+    if merged_count > 0:
+        st.info(f"🔀 {merged_count} group(s) merged")
+
+    # Sync checkbox states to selection set BEFORE checking for merge button
+    for idx in pending_indices:
+        checkbox_key = f"select_brand_group_{brand_id}_{product_id}_{idx}"
+        if checkbox_key in st.session_state:
+            if st.session_state[checkbox_key]:
+                st.session_state[selection_key].add(idx)
+            else:
+                st.session_state[selection_key].discard(idx)
+
+    # Show merge button if 2+ pending groups are selected
+    selected = st.session_state[selection_key]
+    selected_pending = [i for i in selected if i in pending_indices]
+
+    if len(selected_pending) >= 2:
+        total_ads = sum(url_groups[i]["ad_count"] for i in selected_pending)
+        merge_col1, merge_col2 = st.columns([2, 1])
+        with merge_col1:
+            if st.button(
+                f"🔀 Merge & Analyze Selected ({len(selected_pending)} groups, {total_ads} ads)",
+                type="primary",
+                key=f"merge_brand_{brand_id}_{product_id}"
+            ):
+                _analyze_merged_groups_for_brand(
+                    url_groups, list(selected_pending), product_id, session_key, selection_key
+                )
+        with merge_col2:
+            if st.button("Clear Selection", key=f"clear_brand_sel_{brand_id}_{product_id}"):
+                st.session_state[selection_key] = set()
+                for idx in pending_indices:
+                    checkbox_key = f"select_brand_group_{brand_id}_{product_id}_{idx}"
+                    if checkbox_key in st.session_state:
+                        st.session_state[checkbox_key] = False
+                st.rerun()
+        st.markdown("---")
+
+    # Render each group
     for i, group in enumerate(url_groups):
-        if group.get('status') == 'done':
-            continue
-
+        status = group.get('status', 'pending')
+        status_icon = {"pending": "⏳", "done": "✅", "merged": "🔀"}.get(status, "⏳")
         display_url = group['display_url'] or group['normalized_url']
-        with st.expander(f"🔗 {display_url[:60]}{'...' if len(display_url) > 60 else ''} ({group['ad_count']} ads)", expanded=False):
-            if group.get('preview_text'):
-                st.caption(f"*{group['preview_text'][:200]}...*" if len(group.get('preview_text', '')) > 200 else f"*{group['preview_text']}*")
 
-            if group.get('preview_image_url'):
-                try:
-                    st.image(group['preview_image_url'], width=200)
-                except:
-                    pass
+        with st.expander(
+            f"{status_icon} {display_url[:60]}{'...' if len(display_url) > 60 else ''} ({group['ad_count']} ads)",
+            expanded=(status == "pending")
+        ):
+            if status == "pending":
+                # Checkbox row for pending items
+                check_col, content_col = st.columns([0.5, 5.5])
+                with check_col:
+                    checkbox_key = f"select_brand_group_{brand_id}_{product_id}_{i}"
+                    if checkbox_key not in st.session_state:
+                        st.session_state[checkbox_key] = i in st.session_state[selection_key]
+                    st.checkbox("", key=checkbox_key, label_visibility="collapsed")
 
-            if st.button("🔬 Analyze & Create Variant", key=f"analyze_{product_id}_{i}", type="primary"):
-                with st.spinner("Analyzing ads... This may take a minute."):
-                    try:
-                        from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
-                        ad_service = AdAnalysisService()
+                with content_col:
+                    if group.get('preview_text'):
+                        st.caption(f"*{group['preview_text'][:200]}{'...' if len(group.get('preview_text', '')) > 200 else ''}*")
+                    if group.get('preview_image_url'):
+                        try:
+                            st.image(group['preview_image_url'], width=200)
+                        except:
+                            pass
 
-                        ad_group = AdGroup(
-                            normalized_url=group['normalized_url'],
-                            display_url=group['display_url'],
-                            ad_count=group['ad_count'],
-                            ads=group['ads'],
-                            preview_text=group.get('preview_text'),
-                            preview_image_url=group.get('preview_image_url')
-                        )
+                # Action buttons
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("🔬 Analyze & Create Variant", key=f"analyze_{product_id}_{i}", type="primary"):
+                        with st.spinner("Analyzing ads... This may take a minute."):
+                            try:
+                                from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+                                ad_service = AdAnalysisService()
 
-                        # Analyze
-                        analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
-                        synthesis = ad_service.synthesize_messaging(analyses, [group])
+                                ad_group = AdGroup(
+                                    normalized_url=group['normalized_url'],
+                                    display_url=group['display_url'],
+                                    ad_count=group['ad_count'],
+                                    ads=group['ads'],
+                                    preview_text=group.get('preview_text'),
+                                    preview_image_url=group.get('preview_image_url')
+                                )
 
-                        # Create offer variant
-                        db = get_supabase_client()
-                        suggested_name = synthesis.get("suggested_name", f"Variant from {display_url[:30]}")
-                        variant_data = {
-                            "product_id": product_id,
-                            "name": suggested_name,
-                            "slug": suggested_name.lower().replace(" ", "-").replace("/", "-")[:50],
-                            "landing_page_url": display_url,
-                            "pain_points": synthesis.get("pain_points", []),
-                            "desires_goals": synthesis.get("desires_goals", []),
-                            "benefits": synthesis.get("benefits", []),
-                            "mechanism_name": synthesis.get("mechanism_name"),
-                            "mechanism_problem": synthesis.get("mechanism_problem"),
-                            "mechanism_solution": synthesis.get("mechanism_solution"),
-                            "sample_hooks": synthesis.get("sample_hooks", []),
-                            "source_metadata": {
-                                "source": "ad_analysis",
-                                "ad_count": synthesis.get("analyzed_count", 0),
-                                "source_ad_ids": synthesis.get("source_ad_ids", [])
-                            }
-                        }
-                        db.table("product_offer_variants").insert(variant_data).execute()
+                                analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
+                                synthesis = ad_service.synthesize_messaging(analyses, [group])
 
-                        # Mark as done
+                                db = get_supabase_client()
+                                suggested_name = synthesis.get("suggested_name", f"Variant from {display_url[:30]}")
+                                variant_data = {
+                                    "product_id": product_id,
+                                    "name": suggested_name,
+                                    "slug": suggested_name.lower().replace(" ", "-").replace("/", "-")[:50],
+                                    "landing_page_url": display_url,
+                                    "pain_points": synthesis.get("pain_points", []),
+                                    "desires_goals": synthesis.get("desires_goals", []),
+                                    "benefits": synthesis.get("benefits", []),
+                                    "mechanism_name": synthesis.get("mechanism_name"),
+                                    "mechanism_problem": synthesis.get("mechanism_problem"),
+                                    "mechanism_solution": synthesis.get("mechanism_solution"),
+                                    "sample_hooks": synthesis.get("sample_hooks", []),
+                                    "source_metadata": {
+                                        "source": "ad_analysis",
+                                        "ad_count": synthesis.get("analyzed_count", 0),
+                                        "source_ad_ids": synthesis.get("source_ad_ids", [])
+                                    }
+                                }
+                                db.table("product_offer_variants").insert(variant_data).execute()
+
+                                st.session_state[session_key][i]['status'] = 'done'
+                                st.session_state[session_key][i]['variant_name'] = suggested_name
+                                st.success(f"✅ Created offer variant: **{suggested_name}**")
+                                st.rerun()
+
+                            except Exception as e:
+                                st.error(f"Analysis failed: {e}")
+
+                with btn_col2:
+                    if st.button("⏭️ Skip", key=f"skip_{product_id}_{i}"):
                         st.session_state[session_key][i]['status'] = 'done'
-                        st.success(f"✅ Created offer variant: **{suggested_name}**")
                         st.rerun()
 
-                    except Exception as e:
-                        st.error(f"Analysis failed: {e}")
+            elif status == "done":
+                st.success("✅ Variant created")
+                if group.get('variant_name'):
+                    st.caption(f"Variant: {group['variant_name']}")
 
-            if st.button("⏭️ Skip", key=f"skip_{product_id}_{i}"):
-                st.session_state[session_key][i]['status'] = 'done'
-                st.rerun()
+            elif status == "merged":
+                merged_into = group.get("merged_into_variant", "Unknown")
+                merge_col1, merge_col2 = st.columns([4, 1])
+                with merge_col1:
+                    st.info(f"🔀 Merged into variant: **{merged_into}**")
+                with merge_col2:
+                    if st.button("🔄 Reset", key=f"reset_brand_merged_{product_id}_{i}"):
+                        st.session_state[session_key][i]['status'] = 'pending'
+                        st.session_state[session_key][i].pop('merged_into_variant', None)
+                        st.rerun()
+
+
+def _analyze_merged_groups_for_brand(
+    url_groups: list,
+    group_indices: list,
+    product_id: str,
+    session_key: str,
+    selection_key: str
+):
+    """Analyze multiple URL groups together and create a single merged variant."""
+    import asyncio
+    import time
+    from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+
+    # Combine all ads from selected groups
+    all_ads = []
+    all_urls = []
+    total_ad_count = 0
+
+    for idx in group_indices:
+        group_data = url_groups[idx]
+        all_ads.extend(group_data.get("ads", []))
+        all_urls.append(group_data["display_url"] or group_data["normalized_url"])
+        total_ad_count += group_data["ad_count"]
+
+    # Use URL with most ads as primary
+    primary_idx = max(group_indices, key=lambda i: url_groups[i]["ad_count"])
+    primary_group = url_groups[primary_idx]
+    primary_url = primary_group["display_url"] or primary_group["normalized_url"]
+
+    merged_group = AdGroup(
+        normalized_url=primary_group["normalized_url"],
+        display_url=primary_url,
+        ad_count=total_ad_count,
+        ads=all_ads,
+        preview_text=primary_group.get("preview_text"),
+        preview_image_url=primary_group.get("preview_image_url"),
+    )
+
+    max_ads_to_analyze = min(100, total_ad_count)
+
+    st.info(f"🔄 Analyzing up to {max_ads_to_analyze} ads from {len(group_indices)} URL groups...")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        ad_service = AdAnalysisService()
+
+        def progress_callback(current: int, total: int, status: str):
+            progress = current / total if total > 0 else 0
+            progress_bar.progress(progress)
+            status_text.text(f"📊 {status} ({current}/{total})")
+
+        synthesis = asyncio.run(
+            ad_service.analyze_and_synthesize(
+                merged_group,
+                max_ads=max_ads_to_analyze,
+                progress_callback=progress_callback,
+            )
+        )
+
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
+
+        # Infer variant name
+        variant_name = _infer_merged_variant_name_brand(all_urls, synthesis)
+
+        # Mark all selected groups as merged
+        for idx in group_indices:
+            st.session_state[session_key][idx]["status"] = "merged"
+            st.session_state[session_key][idx]["merged_into_variant"] = variant_name
+
+        # Create offer variant in database
+        db = get_supabase_client()
+        variant_data = {
+            "product_id": product_id,
+            "name": variant_name,
+            "slug": variant_name.lower().replace(" ", "-").replace("/", "-")[:50],
+            "landing_page_url": primary_url,
+            "pain_points": synthesis.get("pain_points", []),
+            "desires_goals": synthesis.get("desires_goals", []),
+            "benefits": synthesis.get("benefits", []),
+            "mechanism_name": synthesis.get("mechanism_name"),
+            "mechanism_problem": synthesis.get("mechanism_problem"),
+            "mechanism_solution": synthesis.get("mechanism_solution"),
+            "sample_hooks": synthesis.get("sample_hooks", []),
+            "source_metadata": {
+                "source": "ad_analysis_merged",
+                "ad_count": synthesis.get("analyzed_count", 0),
+                "source_urls": all_urls,
+                "source_ad_ids": synthesis.get("source_ad_ids", [])
+            }
+        }
+        db.table("product_offer_variants").insert(variant_data).execute()
+
+        # Clear selection
+        st.session_state[selection_key] = set()
+
+        st.success(f"✅ Created merged variant: **{variant_name}** from {len(group_indices)} landing pages")
+        time.sleep(1)
+        st.rerun()
+
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"Merged analysis failed: {e}")
+
+
+def _infer_merged_variant_name_brand(urls: list, synthesis: dict) -> str:
+    """Infer variant name from merged URLs."""
+    url_parts = [url.lower().split("/")[-1].replace("-", " ") for url in urls]
+
+    if url_parts:
+        first_words = set(url_parts[0].split())
+        for url_part in url_parts[1:]:
+            first_words &= set(url_part.split())
+
+        generic = {"pages", "page", "com", "www", "https", "http", "support", "for", "the", "a", "an"}
+        common_terms = [w for w in first_words if w not in generic and len(w) > 2]
+
+        if common_terms:
+            name_base = " ".join(sorted(common_terms, key=len, reverse=True)[:3])
+            return f"{name_base.title()} Angle"
+
+    if synthesis.get("suggested_name"):
+        return synthesis["suggested_name"]
+    if synthesis.get("benefits"):
+        return f"{synthesis['benefits'][0][:30]} Angle"
+
+    return "Merged Ad Analysis Variant"
 
 
 def format_color_swatch(hex_color: str, name: str = None) -> str:

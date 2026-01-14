@@ -557,74 +557,252 @@ def render_competitor_offer_discovery(competitor_id: str):
 
 
 def render_url_groups_for_competitor(url_groups: List[Dict], competitor_id: str, session_key: str):
-    """Display competitor URL groups with analyze buttons."""
+    """Display competitor URL groups with checkboxes and merge capability."""
     import json
     import asyncio
+    import time
     from datetime import datetime
 
-    pending_groups = [g for g in url_groups if g.get('status') != 'done']
-    done_groups = [g for g in url_groups if g.get('status') == 'done']
+    # Selection state key for this competitor
+    selection_key = f"selected_comp_groups_{competitor_id}"
+    if selection_key not in st.session_state:
+        st.session_state[selection_key] = set()
 
-    st.markdown(f"**Discovered Landing Pages ({len(url_groups)} total, {len(pending_groups)} pending)**")
+    # Get pending vs done/merged groups
+    pending_indices = [i for i, g in enumerate(url_groups) if g.get('status') == 'pending']
+    done_count = len([g for g in url_groups if g.get('status') == 'done'])
+    merged_count = len([g for g in url_groups if g.get('status') == 'merged'])
 
-    if done_groups:
-        st.success(f"✅ {len(done_groups)} landing page(s) already analyzed")
+    st.markdown(f"**Discovered Landing Pages ({len(url_groups)} total)**")
+    st.caption("Analyze each landing page individually, or **select multiple to merge into one analysis.**")
 
+    if done_count > 0:
+        st.success(f"✅ {done_count} landing page(s) analyzed")
+    if merged_count > 0:
+        st.info(f"🔀 {merged_count} group(s) merged")
+
+    # Sync checkbox states to selection set BEFORE checking for merge button
+    for idx in pending_indices:
+        checkbox_key = f"select_comp_group_{competitor_id}_{idx}"
+        if checkbox_key in st.session_state:
+            if st.session_state[checkbox_key]:
+                st.session_state[selection_key].add(idx)
+            else:
+                st.session_state[selection_key].discard(idx)
+
+    # Show merge button if 2+ pending groups are selected
+    selected = st.session_state[selection_key]
+    selected_pending = [i for i in selected if i in pending_indices]
+
+    if len(selected_pending) >= 2:
+        total_ads = sum(url_groups[i]["ad_count"] for i in selected_pending)
+        merge_col1, merge_col2 = st.columns([2, 1])
+        with merge_col1:
+            if st.button(
+                f"🔀 Merge & Analyze Selected ({len(selected_pending)} groups, {total_ads} ads)",
+                type="primary",
+                key=f"merge_comp_{competitor_id}"
+            ):
+                _analyze_merged_groups_for_competitor(
+                    url_groups, list(selected_pending), competitor_id, session_key, selection_key
+                )
+        with merge_col2:
+            if st.button("Clear Selection", key=f"clear_comp_sel_{competitor_id}"):
+                st.session_state[selection_key] = set()
+                for idx in pending_indices:
+                    checkbox_key = f"select_comp_group_{competitor_id}_{idx}"
+                    if checkbox_key in st.session_state:
+                        st.session_state[checkbox_key] = False
+                st.rerun()
+        st.markdown("---")
+
+    # Render each group
     for i, group in enumerate(url_groups):
-        if group.get('status') == 'done':
-            continue
-
+        status = group.get('status', 'pending')
+        status_icon = {"pending": "⏳", "done": "✅", "merged": "🔀"}.get(status, "⏳")
         display_url = group['display_url'] or group['normalized_url']
-        with st.expander(f"🔗 {display_url[:50]}{'...' if len(display_url) > 50 else ''} ({group['ad_count']} ads)"):
-            if group.get('preview_text'):
-                st.caption(f"*{group['preview_text'][:200]}...*" if len(group.get('preview_text', '')) > 200 else f"*{group['preview_text']}*")
 
-            if st.button("🔬 Analyze Messaging", key=f"analyze_comp_{competitor_id}_{i}", type="primary"):
-                with st.spinner("Analyzing competitor ads..."):
-                    try:
-                        from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
-                        ad_service = AdAnalysisService()
+        with st.expander(
+            f"{status_icon} {display_url[:50]}{'...' if len(display_url) > 50 else ''} ({group['ad_count']} ads)",
+            expanded=(status == "pending")
+        ):
+            if status == "pending":
+                # Checkbox row for pending items
+                check_col, content_col = st.columns([0.5, 5.5])
+                with check_col:
+                    checkbox_key = f"select_comp_group_{competitor_id}_{i}"
+                    if checkbox_key not in st.session_state:
+                        st.session_state[checkbox_key] = i in st.session_state[selection_key]
+                    st.checkbox("", key=checkbox_key, label_visibility="collapsed")
 
-                        ad_group = AdGroup(
-                            normalized_url=group['normalized_url'],
-                            display_url=group['display_url'],
-                            ad_count=group['ad_count'],
-                            ads=group['ads'],
-                            preview_text=group.get('preview_text')
-                        )
+                with content_col:
+                    if group.get('preview_text'):
+                        st.caption(f"*{group['preview_text'][:200]}{'...' if len(group.get('preview_text', '')) > 200 else ''}*")
 
-                        analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
-                        synthesis = ad_service.synthesize_messaging(analyses, [group])
+                # Action buttons
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("🔬 Analyze Messaging", key=f"analyze_comp_{competitor_id}_{i}", type="primary"):
+                        with st.spinner("Analyzing competitor ads..."):
+                            try:
+                                from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+                                ad_service = AdAnalysisService()
 
-                        # Save to competitor_landing_pages
-                        db = get_supabase_client()
-                        db.table("competitor_landing_pages").upsert({
-                            "competitor_id": competitor_id,
-                            "url": display_url,
-                            "analysis_data": {
-                                "pain_points": synthesis.get("pain_points", []),
-                                "desires": synthesis.get("desires_goals", []),
-                                "benefits": synthesis.get("benefits", []),
-                                "hooks": synthesis.get("sample_hooks", []),
-                                "claims": synthesis.get("claims", []),
-                                "mechanism_name": synthesis.get("mechanism_name"),
-                                "mechanism_problem": synthesis.get("mechanism_problem"),
-                                "mechanism_solution": synthesis.get("mechanism_solution"),
-                                "ad_count": synthesis.get("analyzed_count", 0)
-                            },
-                            "analyzed_at": datetime.utcnow().isoformat()
-                        }, on_conflict="competitor_id,url").execute()
+                                ad_group = AdGroup(
+                                    normalized_url=group['normalized_url'],
+                                    display_url=group['display_url'],
+                                    ad_count=group['ad_count'],
+                                    ads=group['ads'],
+                                    preview_text=group.get('preview_text')
+                                )
 
+                                analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
+                                synthesis = ad_service.synthesize_messaging(analyses, [group])
+
+                                db = get_supabase_client()
+                                db.table("competitor_landing_pages").upsert({
+                                    "competitor_id": competitor_id,
+                                    "url": display_url,
+                                    "analysis_data": {
+                                        "pain_points": synthesis.get("pain_points", []),
+                                        "desires": synthesis.get("desires_goals", []),
+                                        "benefits": synthesis.get("benefits", []),
+                                        "hooks": synthesis.get("sample_hooks", []),
+                                        "claims": synthesis.get("claims", []),
+                                        "mechanism_name": synthesis.get("mechanism_name"),
+                                        "mechanism_problem": synthesis.get("mechanism_problem"),
+                                        "mechanism_solution": synthesis.get("mechanism_solution"),
+                                        "ad_count": synthesis.get("analyzed_count", 0)
+                                    },
+                                    "analyzed_at": datetime.utcnow().isoformat()
+                                }, on_conflict="competitor_id,url").execute()
+
+                                st.session_state[session_key][i]['status'] = 'done'
+                                st.success("✅ Saved messaging to Landing Pages!")
+                                st.rerun()
+
+                            except Exception as e:
+                                st.error(f"Analysis failed: {e}")
+
+                with btn_col2:
+                    if st.button("⏭️ Skip", key=f"skip_comp_{competitor_id}_{i}"):
                         st.session_state[session_key][i]['status'] = 'done'
-                        st.success("✅ Saved messaging to Landing Pages!")
                         st.rerun()
 
-                    except Exception as e:
-                        st.error(f"Analysis failed: {e}")
+            elif status == "done":
+                st.success("✅ Analysis saved to Landing Pages")
 
-            if st.button("⏭️ Skip", key=f"skip_comp_{competitor_id}_{i}"):
-                st.session_state[session_key][i]['status'] = 'done'
-                st.rerun()
+            elif status == "merged":
+                merged_into = group.get("merged_into_url", "Combined analysis")
+                merge_col1, merge_col2 = st.columns([4, 1])
+                with merge_col1:
+                    st.info(f"🔀 Merged into: **{merged_into[:40]}...**")
+                with merge_col2:
+                    if st.button("🔄 Reset", key=f"reset_comp_merged_{competitor_id}_{i}"):
+                        st.session_state[session_key][i]['status'] = 'pending'
+                        st.session_state[session_key][i].pop('merged_into_url', None)
+                        st.rerun()
+
+
+def _analyze_merged_groups_for_competitor(
+    url_groups: list,
+    group_indices: list,
+    competitor_id: str,
+    session_key: str,
+    selection_key: str
+):
+    """Analyze multiple competitor URL groups together."""
+    import asyncio
+    import time
+    from datetime import datetime
+    from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+
+    # Combine all ads from selected groups
+    all_ads = []
+    all_urls = []
+    total_ad_count = 0
+
+    for idx in group_indices:
+        group_data = url_groups[idx]
+        all_ads.extend(group_data.get("ads", []))
+        all_urls.append(group_data["display_url"] or group_data["normalized_url"])
+        total_ad_count += group_data["ad_count"]
+
+    # Use URL with most ads as primary
+    primary_idx = max(group_indices, key=lambda i: url_groups[i]["ad_count"])
+    primary_group = url_groups[primary_idx]
+    primary_url = primary_group["display_url"] or primary_group["normalized_url"]
+
+    merged_group = AdGroup(
+        normalized_url=primary_group["normalized_url"],
+        display_url=primary_url,
+        ad_count=total_ad_count,
+        ads=all_ads,
+        preview_text=primary_group.get("preview_text"),
+    )
+
+    max_ads_to_analyze = min(100, total_ad_count)
+
+    st.info(f"🔄 Analyzing up to {max_ads_to_analyze} ads from {len(group_indices)} URL groups...")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        ad_service = AdAnalysisService()
+
+        def progress_callback(current: int, total: int, status: str):
+            progress = current / total if total > 0 else 0
+            progress_bar.progress(progress)
+            status_text.text(f"📊 {status} ({current}/{total})")
+
+        synthesis = asyncio.run(
+            ad_service.analyze_and_synthesize(
+                merged_group,
+                max_ads=max_ads_to_analyze,
+                progress_callback=progress_callback,
+            )
+        )
+
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Analysis complete! Processed {synthesis.get('analyzed_count', 0)} ads.")
+
+        # Mark all selected groups as merged
+        for idx in group_indices:
+            st.session_state[session_key][idx]["status"] = "merged"
+            st.session_state[session_key][idx]["merged_into_url"] = primary_url
+
+        # Save merged analysis to competitor_landing_pages (primary URL)
+        db = get_supabase_client()
+        db.table("competitor_landing_pages").upsert({
+            "competitor_id": competitor_id,
+            "url": primary_url,
+            "analysis_data": {
+                "pain_points": synthesis.get("pain_points", []),
+                "desires": synthesis.get("desires_goals", []),
+                "benefits": synthesis.get("benefits", []),
+                "hooks": synthesis.get("sample_hooks", []),
+                "claims": synthesis.get("claims", []),
+                "mechanism_name": synthesis.get("mechanism_name"),
+                "mechanism_problem": synthesis.get("mechanism_problem"),
+                "mechanism_solution": synthesis.get("mechanism_solution"),
+                "ad_count": synthesis.get("analyzed_count", 0),
+                "source_urls": all_urls,
+                "merged_from": len(group_indices)
+            },
+            "analyzed_at": datetime.utcnow().isoformat()
+        }, on_conflict="competitor_id,url").execute()
+
+        # Clear selection
+        st.session_state[selection_key] = set()
+
+        st.success(f"✅ Merged analysis saved! Combined {len(group_indices)} landing pages.")
+        time.sleep(1)
+        st.rerun()
+
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"Merged analysis failed: {e}")
 
 
 # ============================================================================
