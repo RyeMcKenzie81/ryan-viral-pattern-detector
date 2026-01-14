@@ -1728,14 +1728,13 @@ class BrandResearchService:
             logger.info(f"All ads already have assets for brand: {brand_id}")
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "reason": "all_have_assets", "total_ads": len(ad_ids)}
 
-        # Apply limit AFTER filtering to ads that need assets
-        ads_to_process = ads_needing_assets[:limit]
-        logger.info(f"Processing {len(ads_to_process)} ads (limit={limit})")
-
-        # Get ad snapshots
+        # Get ad snapshots ordered by created_at DESC (newest first - fresh URLs)
+        # Apply limit at query level for efficiency
         ads_result = self.supabase.table("facebook_ads").select(
             "id, snapshot"
-        ).in_("id", ads_to_process).execute()
+        ).in_("id", ads_needing_assets).order("created_at", desc=True).limit(limit).execute()
+
+        logger.info(f"Processing {len(ads_result.data)} ads (limit={limit}, {len(ads_needing_assets)} need assets)")
 
         total_videos = 0
         total_images = 0
