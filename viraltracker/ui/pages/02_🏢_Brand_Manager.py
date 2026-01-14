@@ -414,6 +414,160 @@ def save_product_code(product_id: str, product_code: str) -> bool:
         return False
 
 
+def get_brand_ads_for_grouping(brand_id: str) -> list:
+    """Fetch brand's scraped ads for URL grouping."""
+    db = get_supabase_client()
+    result = db.table("brand_facebook_ads").select(
+        "facebook_ads(id, ad_archive_id, snapshot)"
+    ).eq("brand_id", brand_id).execute()
+
+    ads = []
+    for r in (result.data or []):
+        if r.get('facebook_ads'):
+            ads.append(r['facebook_ads'])
+    return ads
+
+
+def render_offer_variant_discovery(brand_id: str, product_id: str, product_name: str):
+    """Render offer variant discovery UI for a product."""
+    import json
+    import asyncio
+
+    st.markdown("#### Discover Offer Variants from Ads")
+    st.caption("Analyze your scraped Facebook ads to auto-discover landing pages and extract messaging.")
+
+    # Check for ads
+    ads = get_brand_ads_for_grouping(brand_id)
+    if not ads:
+        st.info("No ads scraped yet. Use 'Scrape Ads' in the Facebook Ad Library section above.")
+        return
+
+    st.success(f"Found {len(ads)} scraped ads")
+
+    # Session state for URL groups
+    session_key = f"brand_url_groups_{brand_id}"
+
+    # Group ads button
+    if st.button("Group Ads by Landing Page", key=f"group_ads_{product_id}"):
+        from viraltracker.services.ad_analysis_service import AdAnalysisService
+        ad_service = AdAnalysisService()
+
+        # Convert to format expected by group_ads_by_url
+        ads_list = []
+        for ad in ads:
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+            ads_list.append({
+                'id': ad['id'],
+                'ad_archive_id': ad.get('ad_archive_id'),
+                'snapshot': snapshot
+            })
+
+        url_groups = ad_service.group_ads_by_url(ads_list)
+        st.session_state[session_key] = [
+            {
+                "normalized_url": g.normalized_url,
+                "display_url": g.display_url,
+                "ad_count": g.ad_count,
+                "preview_text": g.preview_text,
+                "preview_image_url": g.preview_image_url,
+                "ads": g.ads,
+                "status": "pending"
+            }
+            for g in url_groups
+        ]
+        st.rerun()
+
+    # Display URL groups
+    url_groups = st.session_state.get(session_key, [])
+    if url_groups:
+        render_url_groups_for_brand(url_groups, product_id, brand_id, session_key)
+
+
+def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str, session_key: str):
+    """Display URL groups with analyze buttons."""
+    import json
+    import asyncio
+
+    pending_groups = [g for g in url_groups if g.get('status') != 'done']
+    done_groups = [g for g in url_groups if g.get('status') == 'done']
+
+    st.markdown(f"### Discovered Landing Pages ({len(url_groups)} total, {len(pending_groups)} pending)")
+
+    if done_groups:
+        st.success(f"✅ {len(done_groups)} variant(s) already created")
+
+    for i, group in enumerate(url_groups):
+        if group.get('status') == 'done':
+            continue
+
+        display_url = group['display_url'] or group['normalized_url']
+        with st.expander(f"🔗 {display_url[:60]}{'...' if len(display_url) > 60 else ''} ({group['ad_count']} ads)", expanded=False):
+            if group.get('preview_text'):
+                st.caption(f"*{group['preview_text'][:200]}...*" if len(group.get('preview_text', '')) > 200 else f"*{group['preview_text']}*")
+
+            if group.get('preview_image_url'):
+                try:
+                    st.image(group['preview_image_url'], width=200)
+                except:
+                    pass
+
+            if st.button("🔬 Analyze & Create Variant", key=f"analyze_{product_id}_{i}", type="primary"):
+                with st.spinner("Analyzing ads... This may take a minute."):
+                    try:
+                        from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+                        ad_service = AdAnalysisService()
+
+                        ad_group = AdGroup(
+                            normalized_url=group['normalized_url'],
+                            display_url=group['display_url'],
+                            ad_count=group['ad_count'],
+                            ads=group['ads'],
+                            preview_text=group.get('preview_text'),
+                            preview_image_url=group.get('preview_image_url')
+                        )
+
+                        # Analyze
+                        analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
+                        synthesis = ad_service.synthesize_messaging(analyses, [group])
+
+                        # Create offer variant
+                        db = get_supabase_client()
+                        suggested_name = synthesis.get("suggested_name", f"Variant from {display_url[:30]}")
+                        variant_data = {
+                            "product_id": product_id,
+                            "name": suggested_name,
+                            "slug": suggested_name.lower().replace(" ", "-").replace("/", "-")[:50],
+                            "landing_page_url": display_url,
+                            "pain_points": synthesis.get("pain_points", []),
+                            "desires_goals": synthesis.get("desires_goals", []),
+                            "benefits": synthesis.get("benefits", []),
+                            "mechanism_name": synthesis.get("mechanism_name"),
+                            "mechanism_problem": synthesis.get("mechanism_problem"),
+                            "mechanism_solution": synthesis.get("mechanism_solution"),
+                            "sample_hooks": synthesis.get("sample_hooks", []),
+                            "source_metadata": {
+                                "source": "ad_analysis",
+                                "ad_count": synthesis.get("analyzed_count", 0),
+                                "source_ad_ids": synthesis.get("source_ad_ids", [])
+                            }
+                        }
+                        db.table("product_offer_variants").insert(variant_data).execute()
+
+                        # Mark as done
+                        st.session_state[session_key][i]['status'] = 'done'
+                        st.success(f"✅ Created offer variant: **{suggested_name}**")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+
+            if st.button("⏭️ Skip", key=f"skip_{product_id}_{i}"):
+                st.session_state[session_key][i]['status'] = 'done'
+                st.rerun()
+
+
 def format_color_swatch(hex_color: str, name: str = None) -> str:
     """Create HTML for a color swatch."""
     label = f" {name}" if name else ""
@@ -715,8 +869,8 @@ else:
                 st.markdown("---")
 
                 # Details tab
-                tab_details, tab_offers, tab_amazon, tab_variants, tab_images, tab_stats = st.tabs([
-                    "Details", "Offer Variants", "Amazon Insights", "Variants", "Images", "Stats"
+                tab_details, tab_offers, tab_discover, tab_amazon, tab_variants, tab_images, tab_stats = st.tabs([
+                    "Details", "Offer Variants", "Discover Variants", "Amazon Insights", "Variants", "Images", "Stats"
                 ])
 
                 with tab_details:
@@ -1044,6 +1198,9 @@ else:
                                 if source:
                                     st.markdown("---")
                                     st.caption(f"*Source: {source}*")
+
+                with tab_discover:
+                    render_offer_variant_discovery(selected_brand_id, product_id, product['name'])
 
                 with tab_amazon:
                     # Amazon Review Analysis

@@ -491,6 +491,142 @@ def _render_competitor_extraction_section(
         st.info("Select at least one source to extract.")
 
 
+def get_competitor_ads_for_grouping(competitor_id: str) -> List[Dict]:
+    """Fetch competitor's scraped ads for URL grouping."""
+    db = get_supabase_client()
+    result = db.table("competitor_ads").select(
+        "id, ad_archive_id, snapshot, link_url"
+    ).eq("competitor_id", competitor_id).execute()
+    return result.data or []
+
+
+def render_competitor_offer_discovery(competitor_id: str):
+    """Render offer variant discovery for competitor ads."""
+    import json
+    import asyncio
+    from datetime import datetime
+
+    st.markdown("---")
+    st.markdown("### 🔬 Offer Variant Discovery from Ads")
+    st.caption("Analyze competitor ads by landing page to extract messaging patterns (hooks, pain points, benefits)")
+
+    ads = get_competitor_ads_for_grouping(competitor_id)
+
+    if not ads:
+        st.info("Scrape competitor ads first to analyze messaging.")
+        return
+
+    st.success(f"Found {len(ads)} competitor ads")
+
+    session_key = f"comp_url_groups_{competitor_id}"
+
+    if st.button("Group Ads by Landing Page", key=f"group_comp_ads_{competitor_id}"):
+        from viraltracker.services.ad_analysis_service import AdAnalysisService
+        ad_service = AdAnalysisService()
+
+        # Convert to expected format
+        ads_list = []
+        for ad in ads:
+            snapshot = ad.get('snapshot', {})
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+            ads_list.append({
+                'id': ad['id'],
+                'ad_archive_id': ad.get('ad_archive_id'),
+                'snapshot': snapshot
+            })
+
+        url_groups = ad_service.group_ads_by_url(ads_list)
+        st.session_state[session_key] = [
+            {
+                "normalized_url": g.normalized_url,
+                "display_url": g.display_url,
+                "ad_count": g.ad_count,
+                "preview_text": g.preview_text,
+                "ads": g.ads,
+                "status": "pending"
+            }
+            for g in url_groups
+        ]
+        st.rerun()
+
+    # Display groups
+    url_groups = st.session_state.get(session_key, [])
+    if url_groups:
+        render_url_groups_for_competitor(url_groups, competitor_id, session_key)
+
+
+def render_url_groups_for_competitor(url_groups: List[Dict], competitor_id: str, session_key: str):
+    """Display competitor URL groups with analyze buttons."""
+    import json
+    import asyncio
+    from datetime import datetime
+
+    pending_groups = [g for g in url_groups if g.get('status') != 'done']
+    done_groups = [g for g in url_groups if g.get('status') == 'done']
+
+    st.markdown(f"**Discovered Landing Pages ({len(url_groups)} total, {len(pending_groups)} pending)**")
+
+    if done_groups:
+        st.success(f"✅ {len(done_groups)} landing page(s) already analyzed")
+
+    for i, group in enumerate(url_groups):
+        if group.get('status') == 'done':
+            continue
+
+        display_url = group['display_url'] or group['normalized_url']
+        with st.expander(f"🔗 {display_url[:50]}{'...' if len(display_url) > 50 else ''} ({group['ad_count']} ads)"):
+            if group.get('preview_text'):
+                st.caption(f"*{group['preview_text'][:200]}...*" if len(group.get('preview_text', '')) > 200 else f"*{group['preview_text']}*")
+
+            if st.button("🔬 Analyze Messaging", key=f"analyze_comp_{competitor_id}_{i}", type="primary"):
+                with st.spinner("Analyzing competitor ads..."):
+                    try:
+                        from viraltracker.services.ad_analysis_service import AdAnalysisService, AdGroup
+                        ad_service = AdAnalysisService()
+
+                        ad_group = AdGroup(
+                            normalized_url=group['normalized_url'],
+                            display_url=group['display_url'],
+                            ad_count=group['ad_count'],
+                            ads=group['ads'],
+                            preview_text=group.get('preview_text')
+                        )
+
+                        analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
+                        synthesis = ad_service.synthesize_messaging(analyses, [group])
+
+                        # Save to competitor_landing_pages
+                        db = get_supabase_client()
+                        db.table("competitor_landing_pages").upsert({
+                            "competitor_id": competitor_id,
+                            "url": display_url,
+                            "analysis_data": {
+                                "pain_points": synthesis.get("pain_points", []),
+                                "desires": synthesis.get("desires_goals", []),
+                                "benefits": synthesis.get("benefits", []),
+                                "hooks": synthesis.get("sample_hooks", []),
+                                "claims": synthesis.get("claims", []),
+                                "mechanism_name": synthesis.get("mechanism_name"),
+                                "mechanism_problem": synthesis.get("mechanism_problem"),
+                                "mechanism_solution": synthesis.get("mechanism_solution"),
+                                "ad_count": synthesis.get("analyzed_count", 0)
+                            },
+                            "analyzed_at": datetime.utcnow().isoformat()
+                        }, on_conflict="competitor_id,url").execute()
+
+                        st.session_state[session_key][i]['status'] = 'done'
+                        st.success("✅ Saved messaging to Landing Pages!")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+
+            if st.button("⏭️ Skip", key=f"skip_comp_{competitor_id}_{i}"):
+                st.session_state[session_key][i]['status'] = 'done'
+                st.rerun()
+
+
 # ============================================================================
 # HEADER
 # ============================================================================
@@ -1174,6 +1310,9 @@ with tab_ads:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Matching failed: {e}")
+
+    # Offer Variant Discovery from Ads
+    render_competitor_offer_discovery(selected_competitor_id)
 
     # Show matched landing pages by product
     st.markdown("---")
