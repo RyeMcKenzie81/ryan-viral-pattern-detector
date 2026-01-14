@@ -202,6 +202,33 @@ def get_offer_variants_for_product(product_id: str) -> list:
         return []
 
 
+def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -> bool:
+    """Sync a URL to brand_landing_pages for scraping/analysis.
+
+    Auto-syncs offer variant URLs so they appear in Brand Research landing pages.
+    Uses upsert to avoid duplicates.
+    """
+    try:
+        db = get_supabase_client()
+        record = {
+            "brand_id": brand_id,
+            "url": url,
+            "product_id": product_id,
+            "scrape_status": "pending"
+        }
+        # Upsert to avoid duplicates (url + brand_id should be unique)
+        db.table("brand_landing_pages").upsert(
+            record,
+            on_conflict="brand_id,url"
+        ).execute()
+        return True
+    except Exception as e:
+        # Log but don't fail - this is a background sync
+        import logging
+        logging.warning(f"Failed to sync URL to landing pages: {e}")
+        return False
+
+
 def get_offer_variant_images(offer_variant_id: str) -> list:
     """Get images associated with an offer variant via junction table."""
     try:
@@ -536,7 +563,7 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                 key=f"merge_brand_{brand_id}_{product_id}"
             ):
                 _analyze_merged_groups_for_brand(
-                    url_groups, list(selected_pending), product_id, session_key, selection_key
+                    url_groups, list(selected_pending), product_id, brand_id, session_key, selection_key
                 )
         with merge_col2:
             if st.button("Clear Selection", key=f"clear_brand_sel_{brand_id}_{product_id}"):
@@ -619,6 +646,9 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                                 }
                                 db.table("product_offer_variants").insert(variant_data).execute()
 
+                                # Auto-sync URL to landing pages for Brand Research
+                                sync_url_to_landing_pages(brand_id, display_url, product_id)
+
                                 st.session_state[session_key][i]['status'] = 'done'
                                 st.session_state[session_key][i]['variant_name'] = suggested_name
                                 st.success(f"✅ Created offer variant: **{suggested_name}**")
@@ -653,6 +683,7 @@ def _analyze_merged_groups_for_brand(
     url_groups: list,
     group_indices: list,
     product_id: str,
+    brand_id: str,
     session_key: str,
     selection_key: str
 ):
@@ -741,6 +772,10 @@ def _analyze_merged_groups_for_brand(
             }
         }
         db.table("product_offer_variants").insert(variant_data).execute()
+
+        # Auto-sync all URLs to landing pages for Brand Research
+        for url in all_urls:
+            sync_url_to_landing_pages(brand_id, url, product_id)
 
         # Clear selection
         st.session_state[selection_key] = set()
