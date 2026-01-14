@@ -133,7 +133,8 @@ class AdAnalysisService:
     def _normalize_url(self, url: str) -> str:
         """
         Normalize URL for grouping (remove tracking params, www, trailing slash).
-        Also resolves redirect URLs to their final destination.
+
+        Note: Call _resolve_redirect_url() first if you need to resolve redirects.
 
         Args:
             url: URL to normalize
@@ -143,9 +144,6 @@ class AdAnalysisService:
         """
         if not url:
             return ""
-
-        # First, resolve any redirect URLs (e.g., /discount/CODE?redirect=/pages/landing)
-        url = self._resolve_redirect_url(url)
 
         parsed = urlparse(url.lower())
 
@@ -287,14 +285,18 @@ class AdAnalysisService:
             if not url:
                 continue
 
-            normalized = self._normalize_url(url)
+            # Resolve any redirect URLs first (e.g., /discount/CODE?redirect=/pages/landing)
+            resolved_url = self._resolve_redirect_url(url)
+
+            # Normalize for grouping (removes tracking params, www, etc.)
+            normalized = self._normalize_url(resolved_url)
             if not normalized:
                 continue
 
             if normalized not in url_groups:
                 url_groups[normalized] = AdGroup(
                     normalized_url=normalized,
-                    display_url=url,
+                    display_url=resolved_url,  # Use resolved URL for display
                     ad_count=0,
                     ads=[],
                     preview_text=self._extract_copy_from_snapshot(snapshot)[:150],
