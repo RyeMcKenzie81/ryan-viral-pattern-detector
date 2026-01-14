@@ -1828,6 +1828,71 @@ def render_persona_review():
                     st.rerun()
 
 
+def render_existing_personas(brand_id: str, product_id: Optional[str] = None):
+    """Render existing 4D personas for the brand/product."""
+    db = get_supabase_client()
+
+    # Query personas
+    query = db.table("personas_4d").select(
+        "id, name, archetype, created_at, pain_points, desires, emotional_triggers"
+    )
+
+    if product_id:
+        query = query.eq("product_id", product_id)
+    else:
+        query = query.eq("brand_id", brand_id)
+
+    result = query.order("created_at", desc=True).limit(10).execute()
+
+    if not result.data:
+        st.info("No personas created yet. Use the Personas page or synthesize from analyses above.")
+        return
+
+    st.success(f"Found {len(result.data)} existing persona(s)")
+
+    for persona in result.data:
+        with st.expander(f"**{persona['name']}** ({persona.get('archetype', 'Unknown archetype')})", expanded=False):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("**Pain Points:**")
+                pain_points = persona.get("pain_points") or {}
+                if isinstance(pain_points, dict):
+                    for category, items in pain_points.items():
+                        if items:
+                            st.caption(f"*{category}:*")
+                            for item in (items[:3] if isinstance(items, list) else []):
+                                st.write(f"• {item}")
+                elif isinstance(pain_points, list):
+                    for pp in pain_points[:5]:
+                        st.write(f"• {pp}")
+
+            with col2:
+                st.markdown("**Desires:**")
+                desires = persona.get("desires") or {}
+                if isinstance(desires, dict):
+                    for category, items in desires.items():
+                        if items:
+                            st.caption(f"*{category}:*")
+                            for item in (items[:3] if isinstance(items, list) else []):
+                                st.write(f"• {item}")
+                elif isinstance(desires, list):
+                    for d in desires[:5]:
+                        st.write(f"• {d}")
+
+            # Emotional triggers
+            triggers = persona.get("emotional_triggers") or {}
+            if triggers:
+                st.markdown("**Emotional Triggers:**")
+                if isinstance(triggers, dict):
+                    trigger_list = triggers.get("primary", []) or triggers.get("triggers", [])
+                    for t in (trigger_list[:3] if isinstance(trigger_list, list) else []):
+                        st.write(f"• {t}")
+
+            st.caption(f"Created: {persona['created_at'][:10]}")
+            st.markdown(f"[View/Edit in Personas Page →](/Personas)")
+
+
 def render_existing_analyses(brand_id: str):
     """Render summary of existing analyses."""
     st.subheader("Analysis Results")
@@ -1979,6 +2044,10 @@ else:
 
         # Synthesis section
         render_synthesis_section(selected_brand_id, selected_product_id)
+
+        # Show existing personas
+        with st.expander("View Existing Personas", expanded=True):
+            render_existing_personas(selected_brand_id, selected_product_id)
 
         st.divider()
 
