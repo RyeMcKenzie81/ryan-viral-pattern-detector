@@ -61,6 +61,44 @@ def get_angle_candidate_service():
     return AngleCandidateService()
 
 
+def get_ad_scraping_service():
+    """Get AdScrapingService instance."""
+    from viraltracker.services.ad_scraping_service import AdScrapingService
+    return AdScrapingService()
+
+
+def check_asset_health(brand_id: str, asset_type: str = "image") -> Dict:
+    """Check health of assets for a brand.
+
+    Args:
+        brand_id: Brand UUID
+        asset_type: 'image' or 'video'
+
+    Returns:
+        Health check results with counts and IDs
+    """
+    service = get_brand_research_service()
+    return service.check_asset_health(brand_id, asset_type)
+
+
+def refresh_expired_assets_sync(brand_id: str) -> Dict:
+    """Re-scrape expired/failed assets (sync wrapper).
+
+    Args:
+        brand_id: Brand UUID
+
+    Returns:
+        Refresh results
+    """
+    from uuid import UUID
+
+    async def _refresh():
+        service = get_ad_scraping_service()
+        return await service.refresh_expired_assets(UUID(brand_id))
+
+    return run_async(_refresh())
+
+
 def extract_brand_research_candidates(
     brand_id: str,
     product_id: str,
@@ -602,6 +640,65 @@ def render_analysis_section(brand_id: str, product_id: Optional[str] = None):
     """Render analysis controls."""
     st.subheader("2. Analyze Assets")
     st.markdown("Run AI analysis on videos, images, and ad copy to extract persona signals.")
+
+    # Media Health Check Section
+    health_key = f"asset_health_{brand_id}"
+    with st.expander("Media Health Check", expanded=False):
+        st.caption("Check for expired/failed media assets before analysis")
+
+        hc_col1, hc_col2 = st.columns([1, 2])
+        with hc_col1:
+            if st.button("Check Health", key=f"check_health_{brand_id}"):
+                with st.spinner("Checking asset health..."):
+                    image_health = check_asset_health(brand_id, "image")
+                    video_health = check_asset_health(brand_id, "video")
+
+                    # Combine results
+                    combined_health = {
+                        "total": image_health["total"] + video_health["total"],
+                        "healthy": image_health["healthy"] + video_health["healthy"],
+                        "expired": image_health["expired"] + video_health["expired"],
+                        "failed": image_health["failed"] + video_health["failed"],
+                        "expired_asset_ids": image_health["expired_asset_ids"] + video_health["expired_asset_ids"],
+                        "failed_asset_ids": image_health["failed_asset_ids"] + video_health["failed_asset_ids"],
+                    }
+                    st.session_state[health_key] = combined_health
+
+        # Display health status if available
+        health = st.session_state.get(health_key)
+        if health:
+            with hc_col2:
+                m1, m2, m3, m4 = st.columns(4)
+                with m1:
+                    st.metric("Total", health['total'])
+                with m2:
+                    st.metric("Healthy", health['healthy'])
+                with m3:
+                    st.metric("Expired", health['expired'], delta=-health['expired'] if health['expired'] > 0 else None, delta_color="inverse")
+                with m4:
+                    st.metric("Failed", health['failed'], delta=-health['failed'] if health['failed'] > 0 else None, delta_color="inverse")
+
+            # Show refresh button if there are problems
+            if health['expired'] > 0 or health['failed'] > 0:
+                st.warning(f"{health['expired'] + health['failed']} assets need attention (will be skipped during analysis)")
+                if st.button("Refresh Expired Media", type="primary", key=f"refresh_{brand_id}"):
+                    with st.spinner("Re-downloading expired assets from fresh CDN URLs..."):
+                        result = refresh_expired_assets_sync(brand_id)
+                        if result['refreshed'] > 0:
+                            st.success(
+                                f"Refreshed {result['refreshed']} assets from "
+                                f"{result['ads_rescraped']} ads"
+                            )
+                        if result['still_failed'] > 0:
+                            st.warning(
+                                f"{result['still_failed']} assets still failed "
+                                "(CDN URLs may be permanently expired)"
+                            )
+                        # Clear cached health
+                        st.session_state.pop(health_key, None)
+                        st.rerun()
+            else:
+                st.success("All assets are healthy!")
 
     col1, col2, col3 = st.columns(3)
 

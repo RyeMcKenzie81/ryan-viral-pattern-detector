@@ -358,6 +358,53 @@ class AdScrapingService:
             logger.error(f"Failed to save Facebook ad: {e}")
             return None
 
+    def save_failed_asset_record(
+        self,
+        facebook_ad_id: UUID,
+        asset_type: str,
+        original_url: str,
+        brand_id: Optional[UUID] = None,
+        scrape_source: str = "ad_library_search"
+    ) -> Optional[UUID]:
+        """
+        Save a record for a failed asset download.
+
+        Args:
+            facebook_ad_id: UUID of the facebook_ads record
+            asset_type: 'image' or 'video'
+            original_url: Original CDN URL that failed
+            brand_id: Optional brand to link
+            scrape_source: Source identifier
+
+        Returns:
+            UUID of saved record or None if failed
+        """
+        try:
+            record = {
+                "facebook_ad_id": str(facebook_ad_id),
+                "brand_id": str(brand_id) if brand_id else None,
+                "asset_type": asset_type,
+                "storage_path": None,
+                "original_url": original_url,
+                "file_size_bytes": None,
+                "mime_type": None,
+                "scrape_source": scrape_source,
+                "status": "failed",
+            }
+
+            result = self.supabase.table("scraped_ad_assets").insert(record).execute()
+
+            if result.data:
+                asset_id = result.data[0]["id"]
+                logger.info(f"Saved failed asset record: {asset_id}")
+                return UUID(asset_id)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to save failed asset record: {e}")
+            return None
+
     def save_asset_record(
         self,
         facebook_ad_id: UUID,
@@ -369,7 +416,8 @@ class AdScrapingService:
         brand_id: Optional[UUID] = None,
         dimensions: Optional[Dict] = None,
         duration_sec: Optional[float] = None,
-        scrape_source: str = "ad_library_search"
+        scrape_source: str = "ad_library_search",
+        status: str = "downloaded"
     ) -> Optional[UUID]:
         """
         Save a scraped asset record to the database.
@@ -385,6 +433,7 @@ class AdScrapingService:
             dimensions: Optional {width, height}
             duration_sec: Optional video duration
             scrape_source: Source identifier
+            status: Asset status ('downloaded', 'failed', 'expired', 'pending')
 
         Returns:
             UUID of saved record or None if failed
@@ -401,6 +450,7 @@ class AdScrapingService:
                 "dimensions": dimensions,
                 "duration_sec": duration_sec,
                 "scrape_source": scrape_source,
+                "status": status,
             }
 
             result = self.supabase.table("scraped_ad_assets").insert(record).execute()
@@ -444,6 +494,14 @@ class AdScrapingService:
         for i, url in enumerate(urls["images"]):
             content = await self.download_asset(url)
             if not content:
+                # Record failed download attempt
+                self.save_failed_asset_record(
+                    facebook_ad_id=facebook_ad_id,
+                    asset_type="image",
+                    original_url=url,
+                    brand_id=brand_id,
+                    scrape_source=scrape_source
+                )
                 continue
 
             mime_type = self._get_mime_type(url, content)
@@ -472,6 +530,14 @@ class AdScrapingService:
             content = await self.download_asset(url, timeout=120.0)  # Longer timeout for videos
             if not content:
                 logger.warning(f"Failed to download video from: {url[:80]}...")
+                # Record failed download attempt
+                self.save_failed_asset_record(
+                    facebook_ad_id=facebook_ad_id,
+                    asset_type="video",
+                    original_url=url,
+                    brand_id=brand_id,
+                    scrape_source=scrape_source
+                )
                 continue
             logger.info(f"Downloaded video: {len(content)} bytes")
 
@@ -668,3 +734,112 @@ class AdScrapingService:
         except Exception as e:
             logger.error(f"Failed to get ads without assets: {e}")
             return []
+
+    async def refresh_expired_assets(self, brand_id: UUID) -> Dict:
+        """
+        Re-scrape ads that have expired/failed assets.
+
+        This method finds all ads with expired or failed assets, deletes those
+        records, and attempts to re-download from fresh CDN URLs in the snapshot.
+
+        Args:
+            brand_id: UUID of the brand to refresh assets for
+
+        Returns:
+            {
+                "refreshed": 5,
+                "still_failed": 2,
+                "ads_rescraped": 3
+            }
+        """
+        # Find assets with expired/failed status for this brand
+        problem_assets = self.supabase.table("scraped_ad_assets").select(
+            "id, facebook_ad_id, original_url, asset_type"
+        ).eq("brand_id", str(brand_id)).in_(
+            "status", ["expired", "failed"]
+        ).execute()
+
+        if not problem_assets.data:
+            logger.info(f"No expired/failed assets found for brand: {brand_id}")
+            return {"refreshed": 0, "still_failed": 0, "ads_rescraped": 0}
+
+        # Group by ad ID
+        ads_to_rescrape = {}
+        for asset in problem_assets.data:
+            ad_id = asset['facebook_ad_id']
+            if ad_id not in ads_to_rescrape:
+                ads_to_rescrape[ad_id] = []
+            ads_to_rescrape[ad_id].append(asset)
+
+        logger.info(f"Found {len(problem_assets.data)} expired/failed assets in {len(ads_to_rescrape)} ads")
+
+        refreshed = 0
+        still_failed = 0
+
+        for ad_id, assets in ads_to_rescrape.items():
+            try:
+                # Get fresh snapshot from facebook_ads
+                ad_result = self.supabase.table("facebook_ads").select(
+                    "snapshot"
+                ).eq("id", ad_id).single().execute()
+
+                if not ad_result.data:
+                    logger.warning(f"Ad not found: {ad_id}")
+                    still_failed += len(assets)
+                    continue
+
+                snapshot = ad_result.data.get('snapshot')
+                if not snapshot:
+                    logger.warning(f"No snapshot for ad: {ad_id}")
+                    still_failed += len(assets)
+                    continue
+
+                # Extract fresh URLs from snapshot
+                urls = self.extract_asset_urls(snapshot)
+                all_urls = urls.get('images', []) + urls.get('videos', [])
+
+                if not all_urls:
+                    logger.warning(f"No URLs found in snapshot for ad: {ad_id}")
+                    still_failed += len(assets)
+                    continue
+
+                # Delete the failed/expired asset records for this ad
+                asset_ids = [a['id'] for a in assets]
+                self.supabase.table("scraped_ad_assets").delete().in_("id", asset_ids).execute()
+                logger.info(f"Deleted {len(asset_ids)} expired/failed records for ad: {ad_id}")
+
+                # Re-scrape the ad
+                result = await self.scrape_and_store_assets(
+                    facebook_ad_id=UUID(ad_id),
+                    snapshot=snapshot,
+                    brand_id=brand_id,
+                    scrape_source="refresh_expired"
+                )
+
+                # Count successes and failures
+                # Compare to original asset count
+                new_success = len(result.get('images', [])) + len(result.get('videos', []))
+                original_count = len(assets)
+
+                if new_success >= original_count:
+                    refreshed += original_count
+                else:
+                    refreshed += new_success
+                    still_failed += (original_count - new_success)
+
+                logger.info(f"Re-scraped ad {ad_id}: {new_success} new assets")
+
+            except Exception as e:
+                logger.error(f"Failed to refresh assets for ad {ad_id}: {e}")
+                still_failed += len(assets)
+
+        logger.info(
+            f"Refresh complete: {refreshed} refreshed, {still_failed} still failed, "
+            f"{len(ads_to_rescrape)} ads processed"
+        )
+
+        return {
+            "refreshed": refreshed,
+            "still_failed": still_failed,
+            "ads_rescraped": len(ads_to_rescrape)
+        }

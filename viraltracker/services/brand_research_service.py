@@ -387,6 +387,114 @@ class BrandResearchService:
         self.supabase = supabase or get_supabase_client()
         logger.info("BrandResearchService initialized")
 
+    def check_asset_health(self, brand_id: str, asset_type: str = "image") -> Dict:
+        """
+        Check health of assets before analysis.
+
+        Validates that assets are accessible in storage and tracks their status.
+
+        Args:
+            brand_id: UUID string of the brand to check
+            asset_type: 'image' or 'video'
+
+        Returns:
+            {
+                "total": 50,
+                "healthy": 45,
+                "expired": 3,
+                "failed": 2,
+                "expired_asset_ids": [...],
+                "failed_asset_ids": [...]
+            }
+        """
+        # Get all assets for brand
+        result = self.supabase.table("scraped_ad_assets").select(
+            "id, storage_path, status, original_url"
+        ).eq("brand_id", brand_id).eq("asset_type", asset_type).execute()
+
+        assets = result.data or []
+
+        healthy = []
+        expired = []
+        failed = []
+
+        for asset in assets:
+            status = asset.get('status')
+
+            # Already marked as failed
+            if status == 'failed':
+                failed.append(asset['id'])
+                continue
+
+            # Already marked as expired
+            if status == 'expired':
+                expired.append(asset['id'])
+                continue
+
+            # Check if storage path exists and is valid
+            storage_path = asset.get('storage_path')
+            if not storage_path:
+                failed.append(asset['id'])
+                # Mark as failed in DB
+                try:
+                    self.supabase.table("scraped_ad_assets").update(
+                        {"status": "failed"}
+                    ).eq("id", asset['id']).execute()
+                except Exception as e:
+                    logger.warning(f"Failed to update asset status: {e}")
+                continue
+
+            # Check if file exists in Supabase storage
+            try:
+                # Try to get signed URL - if it fails, the file doesn't exist
+                # Parse bucket and path from full storage_path
+                # Format: "bucket_name/path/to/file" or "scraped-assets/uuid/file.jpg"
+                parts = storage_path.split('/', 1)
+                if len(parts) == 2:
+                    bucket = parts[0]
+                    path = parts[1]
+                else:
+                    # Assume scraped-assets bucket if not specified
+                    bucket = "scraped-assets"
+                    path = storage_path
+
+                # Create a signed URL to check if file exists (fast check)
+                signed_url_result = self.supabase.storage.from_(bucket).create_signed_url(
+                    path, expires_in=60
+                )
+
+                if signed_url_result and signed_url_result.get('signedURL'):
+                    healthy.append(asset['id'])
+                else:
+                    expired.append(asset['id'])
+                    self.supabase.table("scraped_ad_assets").update(
+                        {"status": "expired"}
+                    ).eq("id", asset['id']).execute()
+
+            except Exception as e:
+                error_str = str(e).lower()
+                if 'not found' in error_str or '404' in error_str or 'does not exist' in error_str:
+                    expired.append(asset['id'])
+                    try:
+                        self.supabase.table("scraped_ad_assets").update(
+                            {"status": "expired"}
+                        ).eq("id", asset['id']).execute()
+                    except Exception as update_err:
+                        logger.warning(f"Failed to update asset status: {update_err}")
+                else:
+                    # Unknown error - assume healthy to be safe
+                    logger.warning(f"Error checking asset {asset['id']}: {e}")
+                    healthy.append(asset['id'])
+
+        return {
+            "total": len(assets),
+            "healthy": len(healthy),
+            "expired": len(expired),
+            "failed": len(failed),
+            "expired_asset_ids": expired,
+            "failed_asset_ids": failed
+        }
+
     async def analyze_image(
         self,
         asset_id: Optional[UUID] = None,
@@ -2009,9 +2117,9 @@ class BrandResearchService:
                 logger.info(f"No ads provided for brand: {brand_id}")
                 return []
 
-        # 2. Get ALL image assets for these ads (no limit yet)
+        # 2. Get ALL image assets for these ads (no limit yet), including status
         assets_result = self.supabase.table("scraped_ad_assets").select(
-            "id, facebook_ad_id, storage_path, mime_type"
+            "id, facebook_ad_id, storage_path, mime_type, status"
         ).in_("facebook_ad_id", ad_ids).like("mime_type", "image/%").execute()
 
         if not assets_result.data:
@@ -2019,6 +2127,16 @@ class BrandResearchService:
             return []
 
         image_assets = assets_result.data
+
+        # Filter out failed/expired assets
+        skipped_failed = [a for a in image_assets if a.get('status') == 'failed']
+        skipped_expired = [a for a in image_assets if a.get('status') == 'expired']
+        valid_assets = [a for a in image_assets if a.get('status') not in ('failed', 'expired')]
+
+        if skipped_failed or skipped_expired:
+            logger.info(f"Skipping {len(skipped_failed)} failed, {len(skipped_expired)} expired assets")
+
+        image_assets = valid_assets
 
         # 3. Filter out already analyzed
         asset_ids = [a['id'] for a in image_assets]
@@ -2040,12 +2158,21 @@ class BrandResearchService:
 
         # 5. Analyze each image
         results = []
+        newly_expired = 0
         for i, asset in enumerate(images_to_analyze):
             try:
                 # Download image from storage
                 image_base64 = await self._get_asset_base64(asset["storage_path"])
                 if not image_base64:
-                    logger.warning(f"Failed to download asset: {asset['id']}")
+                    logger.warning(f"Failed to download asset: {asset['id']} - marking as expired")
+                    # Mark as expired in database
+                    try:
+                        self.supabase.table("scraped_ad_assets").update(
+                            {"status": "expired"}
+                        ).eq("id", asset['id']).execute()
+                        newly_expired += 1
+                    except Exception as update_err:
+                        logger.warning(f"Failed to mark asset as expired: {update_err}")
                     continue
 
                 # Analyze
@@ -2076,7 +2203,11 @@ class BrandResearchService:
                 })
                 continue
 
-        logger.info(f"Image analysis complete: {len([r for r in results if 'analysis' in r])}/{len(images_to_analyze)} images analyzed")
+        analyzed_count = len([r for r in results if 'analysis' in r])
+        logger.info(
+            f"Image analysis complete: {analyzed_count}/{len(images_to_analyze)} images analyzed, "
+            f"skipped: {len(skipped_failed)} failed, {len(skipped_expired) + newly_expired} expired"
+        )
         return results
 
     async def synthesize_to_personas(
