@@ -46,6 +46,54 @@ def get_competitor_service():
     return CompetitorService()
 
 
+def extract_facebook_page_id(input_value: str) -> str:
+    """Extract Facebook page ID from URL or return as-is if already an ID.
+
+    Handles formats:
+    - https://www.facebook.com/BobaTeaProtein/
+    - https://facebook.com/BobaTeaProtein
+    - facebook.com/BobaTeaProtein
+    - BobaTeaProtein (returned as-is)
+    - 123456789 (numeric ID, returned as-is)
+    """
+    if not input_value:
+        return input_value
+
+    input_value = input_value.strip()
+
+    # If it looks like a URL, extract the page ID
+    if 'facebook.com' in input_value.lower():
+        from urllib.parse import urlparse
+        # Add scheme if missing
+        if not input_value.startswith('http'):
+            input_value = 'https://' + input_value
+
+        parsed = urlparse(input_value)
+        path = parsed.path.strip('/')
+
+        # Handle different URL patterns
+        # /PageName or /PageName/
+        # /pages/PageName/123456
+        # /profile.php?id=123456
+        if path:
+            parts = path.split('/')
+            # Skip common prefixes
+            if parts[0] in ('pages', 'pg'):
+                return parts[1] if len(parts) > 1 else input_value
+            else:
+                return parts[0]
+
+        # Check for ?id= parameter
+        if 'id=' in parsed.query:
+            from urllib.parse import parse_qs
+            params = parse_qs(parsed.query)
+            if 'id' in params:
+                return params['id'][0]
+
+    # Return as-is (already a page ID or name)
+    return input_value
+
+
 def get_brands():
     """Fetch all brands."""
     try:
@@ -108,9 +156,9 @@ with st.expander("➕ Add New Competitor", expanded=False):
 
         with col2:
             new_fb_page_id = st.text_input(
-                "Facebook Page ID",
-                placeholder="e.g., 123456789",
-                help="Found in the URL of their Facebook Ad Library page"
+                "Facebook Page ID or URL",
+                placeholder="e.g., BobaTeaProtein or https://facebook.com/BobaTeaProtein",
+                help="Paste their Facebook page URL or just the page ID/name"
             )
             new_ad_library_url = st.text_input(
                 "Ad Library URL",
@@ -128,11 +176,13 @@ with st.expander("➕ Add New Competitor", expanded=False):
             else:
                 try:
                     service = get_competitor_service()
+                    # Extract page ID if URL was provided
+                    fb_page_id = extract_facebook_page_id(new_fb_page_id) if new_fb_page_id else None
                     service.create_competitor(
                         brand_id=UUID(selected_brand_id),
                         name=new_name,
                         website_url=new_website or None,
-                        facebook_page_id=new_fb_page_id or None,
+                        facebook_page_id=fb_page_id,
                         ad_library_url=new_ad_library_url or None,
                         industry=new_industry or None,
                         notes=new_notes or None
@@ -211,7 +261,7 @@ else:
                         edit_industry = st.text_input("Industry", value=competitor.get('industry', ''))
 
                     with col2:
-                        edit_fb_page_id = st.text_input("Facebook Page ID", value=competitor.get('facebook_page_id', ''))
+                        edit_fb_page_id = st.text_input("Facebook Page ID or URL", value=competitor.get('facebook_page_id', ''))
                         edit_ad_library_url = st.text_input("Ad Library URL", value=competitor.get('ad_library_url', ''))
 
                     edit_notes = st.text_area("Notes", value=competitor.get('notes', ''))
@@ -225,7 +275,7 @@ else:
                                 service.update_competitor(UUID(competitor_id), {
                                     'name': edit_name,
                                     'website_url': edit_website or None,
-                                    'facebook_page_id': edit_fb_page_id or None,
+                                    'facebook_page_id': extract_facebook_page_id(edit_fb_page_id) if edit_fb_page_id else None,
                                     'ad_library_url': edit_ad_library_url or None,
                                     'industry': edit_industry or None,
                                     'notes': edit_notes or None
