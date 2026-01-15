@@ -519,11 +519,12 @@ class WebScrapingService:
             for match in re.finditer(srcset_pattern, html, re.IGNORECASE):
                 srcset = match.group(1)
                 # srcset format: "url1 1x, url2 2x" or "url1 300w, url2 600w"
-                parts = srcset.split(',')
+                parts = [p.strip() for p in srcset.split(',') if p.strip()]
                 if parts:
                     # Take the last (usually largest) image
-                    last_part = parts[-1].strip().split()[0]
-                    image_urls.add(last_part)
+                    last_parts = parts[-1].split()
+                    if last_parts:
+                        image_urls.add(last_parts[0])
 
             # Also check for background images in style attributes
             bg_pattern = r'background(?:-image)?:\s*url\(["\']?([^"\')\s]+)["\']?\)'
