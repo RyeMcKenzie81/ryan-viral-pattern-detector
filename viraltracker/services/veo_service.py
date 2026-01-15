@@ -276,11 +276,38 @@ class VeoService:
             if reference_image_bytes:
                 reference_image_objects = []
                 for i, img_bytes in enumerate(reference_image_bytes[:3]):
-                    # Create Image with raw bytes
-                    # types.Image accepts image_bytes (raw) and mime_type
+                    # Detect mime type from image bytes
+                    mime_type = "image/png"  # default
+                    if img_bytes[:2] == b'\xff\xd8':
+                        mime_type = "image/jpeg"
+                    elif img_bytes[:4] == b'\x89PNG':
+                        mime_type = "image/png"
+                    elif img_bytes[:4] == b'RIFF' and img_bytes[8:12] == b'WEBP':
+                        mime_type = "image/webp"
+
+                    # Get image dimensions for logging
+                    try:
+                        from PIL import Image
+                        img = Image.open(BytesIO(img_bytes))
+                        width, height = img.size
+                        size_kb = len(img_bytes) / 1024
+                        logger.info(
+                            f"Reference image {i+1}: {width}x{height}px, "
+                            f"{size_kb:.1f}KB, {mime_type}"
+                        )
+                        # Warn if image is small (less than 720p)
+                        if width < 1280 or height < 720:
+                            logger.warning(
+                                f"Reference image {i+1} is low resolution ({width}x{height}). "
+                                f"Recommend 1280x720 or higher for text clarity."
+                            )
+                    except Exception as e:
+                        logger.warning(f"Could not read image dimensions: {e}")
+
+                    # Create Image with raw bytes and correct mime type
                     image_obj = types.Image(
                         image_bytes=img_bytes,
-                        mime_type="image/png"
+                        mime_type=mime_type
                     )
 
                     # Create VideoGenerationReferenceImage
