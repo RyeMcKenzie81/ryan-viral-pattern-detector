@@ -17,6 +17,10 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
 
+# Fix for nested event loops in Streamlit
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config
 st.set_page_config(
     page_title="Brand Research",
