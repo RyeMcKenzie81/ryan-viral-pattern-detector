@@ -419,13 +419,63 @@ def save_image_notes(image_id: str, notes: str):
         return False
 
 
-def upload_product_images(product_id: str, files: list) -> int:
+def resize_image_if_needed(file_bytes: bytes, max_size: int = 2000) -> tuple[bytes, str]:
     """
-    Upload multiple images for a product.
+    Resize image if larger than max_size pixels on longest side.
+    Also converts to JPEG for better compression.
+
+    Args:
+        file_bytes: Original image bytes
+        max_size: Maximum dimension in pixels
+
+    Returns:
+        Tuple of (processed_bytes, content_type)
+    """
+    from PIL import Image
+    import io
+
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+
+        # Convert RGBA to RGB for JPEG compatibility
+        if img.mode in ('RGBA', 'P'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            background.paste(img, mask=img.split()[3] if len(img.split()) == 4 else None)
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # Resize if needed
+        width, height = img.size
+        if max(width, height) > max_size:
+            if width > height:
+                new_width = max_size
+                new_height = int(height * (max_size / width))
+            else:
+                new_height = max_size
+                new_width = int(width * (max_size / height))
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+
+        # Save as JPEG with good quality
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=85, optimize=True)
+        return output.getvalue(), 'image/jpeg'
+
+    except Exception:
+        # If PIL fails, return original bytes
+        return file_bytes, 'image/jpeg'
+
+
+def upload_product_images(product_id: str, files: list, progress_placeholder=None) -> int:
+    """
+    Upload multiple images for a product with progress feedback.
 
     Args:
         product_id: UUID of the product
         files: List of UploadedFile objects from st.file_uploader
+        progress_placeholder: Streamlit placeholder for progress updates
 
     Returns:
         Number of successfully uploaded images
@@ -433,29 +483,31 @@ def upload_product_images(product_id: str, files: list) -> int:
     import uuid
     db = get_supabase_client()
     uploaded_count = 0
+    total_files = len(files)
 
-    for file in files:
+    for idx, file in enumerate(files):
         try:
-            # Generate unique filename
-            file_ext = file.name.split('.')[-1].lower()
-            unique_filename = f"{uuid.uuid4()}.{file_ext}"
+            # Update progress
+            if progress_placeholder:
+                progress_placeholder.progress(
+                    (idx) / total_files,
+                    text=f"Uploading {file.name} ({idx + 1}/{total_files})..."
+                )
+
+            # Generate unique filename (always use .jpg since we convert)
+            unique_filename = f"{uuid.uuid4()}.jpg"
             storage_path = f"product-images/{product_id}/{unique_filename}"
 
-            # Determine content type
-            content_types = {
-                'jpg': 'image/jpeg',
-                'jpeg': 'image/jpeg',
-                'png': 'image/png',
-                'webp': 'image/webp',
-                'gif': 'image/gif'
-            }
-            content_type = content_types.get(file_ext, 'image/jpeg')
+            # Read and resize image
+            file_bytes = file.read()
+            original_size = len(file_bytes)
+            processed_bytes, content_type = resize_image_if_needed(file_bytes)
+            new_size = len(processed_bytes)
 
             # Upload to Supabase storage
-            file_bytes = file.read()
             db.storage.from_("product-images").upload(
                 f"{product_id}/{unique_filename}",
-                file_bytes,
+                processed_bytes,
                 {"content-type": content_type, "upsert": "true"}
             )
 
@@ -473,6 +525,10 @@ def upload_product_images(product_id: str, files: list) -> int:
 
         except Exception as e:
             st.error(f"Failed to upload {file.name}: {e}")
+
+    # Complete progress
+    if progress_placeholder:
+        progress_placeholder.progress(1.0, text="Upload complete!")
 
     return uploaded_count
 
@@ -1777,8 +1833,8 @@ else:
 
                     if uploaded_files:
                         if st.button(f"📤 Upload {len(uploaded_files)} Image(s)", type="primary", key=f"do_upload_{product_id}"):
-                            with st.spinner(f"Uploading {len(uploaded_files)} images..."):
-                                count = upload_product_images(product_id, uploaded_files)
+                            progress_bar = st.progress(0, text="Starting upload...")
+                            count = upload_product_images(product_id, uploaded_files, progress_bar)
                             if count > 0:
                                 st.success(f"Uploaded {count} image(s)!")
                                 st.cache_data.clear()
