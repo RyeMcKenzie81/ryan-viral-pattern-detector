@@ -239,32 +239,90 @@ EXISTING TARGET AUDIENCE (if any):
 AD INSIGHTS (extracted from analyzed ads - use these to inform the persona):
 {ad_insights}
 
-Generate a detailed 4D persona with ALL sections filled out. Be specific and use language the customer would actually use.
+Generate a detailed 4D persona with ALL of the following sections. Be specific and use language the customer would actually use.
 Use the hooks, benefits, and pain points from the ad insights to inform the persona's desires, pain points, and language.
 
-Guidelines:
-- name: Descriptive persona name (e.g., 'Worried First-Time Dog Mom')
-- snapshot: 2-3 sentence big picture description of this person
-- demographics: Age range, gender, location, income, education, occupation, family status
-- transformation_map: What they're experiencing now (before) vs what they want (after)
-- desires: Split into care_protection, social_approval, freedom_from_fear categories. Each desire has text and source="ai_generated"
-- self_narratives: "Because I am X, I do Y" statements that define their identity
-- current_self_image vs desired_self_image: Who they are vs who they want to become
-- identity_artifacts: Brands/products associated with their desired identity
-- social_relations: Who they want to impress, fear being judged by, and who influences their decisions
-- worldview: Their general interpretation of reality
-- core_values: What matters most to them
-- allergies: Marketing tactics that turn them off (e.g., fake urgency, too good to be true claims)
-- pain_points: Split into emotional, social, functional categories
-- outcomes_jtbd: What outcomes they want - emotional, social, functional
-- failed_solutions: What they've tried before that didn't work
-- buying_objections: What makes them hesitate - emotional, social, functional concerns
-- familiar_promises: Claims they've heard before and are skeptical of
-- activation_events: What triggers them to buy NOW
-- decision_process: How they typically make purchase decisions
-- current_workarounds: What they're doing instead of buying the ideal solution
-- emotional_risks: Fears about purchasing
-- barriers_to_behavior: What prevents them from acting"""
+Return JSON with this structure:
+{{
+  "name": "Descriptive persona name (e.g., 'Worried First-Time Dog Mom')",
+  "snapshot": "2-3 sentence big picture description",
+
+  "demographics": {{
+    "age_range": "e.g., 28-45",
+    "gender": "male/female/any",
+    "location": "e.g., Suburban USA",
+    "income_level": "e.g., Middle to upper-middle class",
+    "education": "e.g., College educated",
+    "occupation": "e.g., Professional, works from home",
+    "family_status": "e.g., Married with young children"
+  }},
+
+  "transformation_map": {{
+    "before": ["Current frustration 1", "Current limitation 2"],
+    "after": ["Desired outcome 1", "Desired state 2"]
+  }},
+
+  "desires": {{
+    "care_protection": [
+      {{"text": "I want to give my dog the absolute best", "source": "ai_generated"}}
+    ],
+    "social_approval": [
+      {{"text": "I want the vet to say I'm doing a great job", "source": "ai_generated"}}
+    ],
+    "freedom_from_fear": [
+      {{"text": "I don't want to worry about my pet's health", "source": "ai_generated"}}
+    ]
+  }},
+
+  "self_narratives": [
+    "Because I am a responsible pet owner, I research everything before buying"
+  ],
+  "current_self_image": "How they see themselves now",
+  "desired_self_image": "How they want to be seen/who they want to become",
+  "identity_artifacts": ["Brands/products associated with their desired identity"],
+
+  "social_relations": {{
+    "want_to_impress": ["Their vet", "Other pet owners"],
+    "fear_judged_by": ["Other pet parents"],
+    "influence_decisions": ["Pet influencers", "Facebook groups"]
+  }},
+
+  "worldview": "Their general interpretation of reality",
+  "core_values": ["Value 1", "Value 2"],
+  "allergies": {{
+    "fake urgency": "They immediately distrust 'LIMITED TIME' messaging",
+    "too good to be true": "Skeptical of miracle claims"
+  }},
+
+  "pain_points": {{
+    "emotional": ["Worry about health", "Guilt"],
+    "social": ["Embarrassment", "Judgment"],
+    "functional": ["Hard to find products that work"]
+  }},
+
+  "outcomes_jtbd": {{
+    "emotional": ["Feel confident"],
+    "social": ["Be seen as great parent"],
+    "functional": ["Healthy pet"]
+  }},
+
+  "failed_solutions": ["What they've tried before that didn't work"],
+  "buying_objections": {{
+    "emotional": ["What if it doesn't work?"],
+    "social": ["What if people think I'm being duped?"],
+    "functional": ["Will my pet like it?"]
+  }},
+  "familiar_promises": ["Claims they've heard before and are skeptical of"],
+
+  "activation_events": ["What triggers them to buy NOW"],
+  "decision_process": "How they typically make purchase decisions",
+  "current_workarounds": ["What they're doing instead"],
+
+  "emotional_risks": ["Fear of wasting money"],
+  "barriers_to_behavior": ["Price concerns"]
+}}
+
+IMPORTANT: Return ONLY valid JSON, no markdown code blocks, no other text."""
 
 
 class PersonaService:
@@ -695,11 +753,10 @@ class PersonaService:
         # Gather ad insights from existing analyses
         ad_insights = await self._gather_ad_insights(resolved_brand_id, product_id)
 
-        # Pydantic AI Agent with structured output (eliminates JSON parsing errors)
+        # Pydantic AI Agent
         agent = Agent(
             model=Config.get_model("creative"),
-            system_prompt="You are an expert persona creator.",
-            output_type=PersonaAIResponse
+            system_prompt="You are an expert persona creator. Return ONLY valid JSON."
         )
 
         prompt = PERSONA_GENERATION_PROMPT.format(
@@ -710,14 +767,15 @@ class PersonaService:
 
         result = await agent.run(prompt)
 
-        # result.data is already a PersonaAIResponse object - no JSON parsing needed
-        ai_response: PersonaAIResponse = result.data
+        # Parse response with robust JSON repair
+        persona_data = parse_llm_json(result.output)
 
-        # Build Persona4D model from structured AI response
-        persona = self._build_persona_from_structured_response(
-            ai_response,
+        # Build Persona4D model from AI response
+        persona = self._build_persona_from_ai_response(
+            persona_data,
             product_id=product_id,
-            brand_id=brand_id or UUID(product.get("brand_id")) if product.get("brand_id") else None
+            brand_id=brand_id or UUID(product.get("brand_id")) if product.get("brand_id") else None,
+            raw_response=result.output
         )
 
         logger.info(f"Generated persona for product {product_id}: {persona.name}")
