@@ -511,14 +511,11 @@ def upload_product_images(product_id: str, files: list, progress_placeholder=Non
                 {"content-type": content_type, "upsert": "true"}
             )
 
-            # Create database record
+            # Create database record (only columns that exist in the table)
             db.table("product_images").insert({
                 "product_id": product_id,
                 "storage_path": storage_path,
-                "filename": file.name,
-                "is_main": False,
-                "is_image": True,
-                "is_pdf": False
+                "is_main": False
             }).execute()
 
             uploaded_count += 1
