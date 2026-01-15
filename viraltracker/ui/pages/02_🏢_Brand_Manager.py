@@ -449,13 +449,17 @@ def get_brand_ads_for_grouping(brand_id: str) -> list:
     """Fetch brand's scraped ads for URL grouping."""
     db = get_supabase_client()
     result = db.table("brand_facebook_ads").select(
-        "facebook_ads(id, ad_archive_id, snapshot)"
+        "facebook_ads(id, ad_archive_id, snapshot, ad_body)"
     ).eq("brand_id", brand_id).execute()
 
     ads = []
     for r in (result.data or []):
         if r.get('facebook_ads'):
-            ads.append(r['facebook_ads'])
+            ad = r['facebook_ads']
+            # Add 'copy' field from ad_body for analysis compatibility
+            if ad.get('ad_body'):
+                ad['copy'] = ad['ad_body']
+            ads.append(ad)
     return ads
 
 

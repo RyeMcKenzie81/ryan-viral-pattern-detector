@@ -499,9 +499,18 @@ def get_competitor_ads_for_grouping(competitor_id: str) -> List[Dict]:
     """Fetch competitor's scraped ads for URL grouping."""
     db = get_supabase_client()
     result = db.table("competitor_ads").select(
-        "id, ad_archive_id, snapshot_data, link_url"
+        "id, ad_archive_id, snapshot_data, link_url, ad_body"
     ).eq("competitor_id", competitor_id).execute()
-    return result.data or []
+
+    # Add 'copy' and 'snapshot' fields for analysis compatibility
+    ads = []
+    for ad in (result.data or []):
+        if ad.get('ad_body'):
+            ad['copy'] = ad['ad_body']
+        if ad.get('snapshot_data'):
+            ad['snapshot'] = ad['snapshot_data']
+        ads.append(ad)
+    return ads
 
 
 def render_competitor_offer_discovery(competitor_id: str):
