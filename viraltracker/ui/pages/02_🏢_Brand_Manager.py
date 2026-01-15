@@ -625,7 +625,9 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                                     preview_image_url=group.get('preview_image_url')
                                 )
 
-                                analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
+                                analyses = asyncio.run(ad_service.analyze_ad_group(
+                                    ad_group, max_ads=10, force_reanalyze=True
+                                ))
                                 synthesis = ad_service.synthesize_messaging(analyses)
 
                                 db = get_supabase_client()

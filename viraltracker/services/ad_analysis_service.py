@@ -514,6 +514,7 @@ class AdAnalysisService:
         max_ads: int = 10,
         analyze_images: bool = True,
         analyze_videos: bool = True,
+        force_reanalyze: bool = False,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Dict[str, Any]:
         """
@@ -529,6 +530,7 @@ class AdAnalysisService:
             max_ads: Maximum ads to analyze per group
             analyze_images: Whether to analyze images
             analyze_videos: Whether to analyze videos
+            force_reanalyze: If True, re-analyze even if already analyzed
             progress_callback: Optional callback(current, total, status_msg)
 
         Returns:
@@ -541,13 +543,18 @@ class AdAnalysisService:
             ad.get('ad_archive_id') or ad.get('id')
             for ad in candidate_ads
         ]
-        already_analyzed = self._get_analyzed_ad_ids(ad_archive_ids)
 
-        # Filter to only ads that still need analysis
-        ads_to_analyze = [
-            ad for ad in candidate_ads
-            if (ad.get('ad_archive_id') or ad.get('id')) not in already_analyzed
-        ]
+        if force_reanalyze:
+            # Skip resume check - analyze all ads fresh
+            already_analyzed = set()
+            ads_to_analyze = candidate_ads
+        else:
+            already_analyzed = self._get_analyzed_ad_ids(ad_archive_ids)
+            # Filter to only ads that still need analysis
+            ads_to_analyze = [
+                ad for ad in candidate_ads
+                if (ad.get('ad_archive_id') or ad.get('id')) not in already_analyzed
+            ]
 
         skipped_count = len(already_analyzed)
         total = len(ads_to_analyze)
