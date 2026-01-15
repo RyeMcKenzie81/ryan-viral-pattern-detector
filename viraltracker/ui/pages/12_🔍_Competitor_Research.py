@@ -947,11 +947,25 @@ with tab_ads:
     # FULL RESEARCH PIPELINE
     # -------------------------------------------------------------------------
     st.markdown("### 🚀 Full Research Pipeline")
-    st.caption("Run all research steps automatically: Download assets → Analyze videos/images/copy")
+    st.caption(
+        "Run all research steps automatically",
+        help=(
+            "**Pipeline Steps:**\n\n"
+            "1. **Scrape Ads** - Fetch ads from Facebook Ad Library\n"
+            "2. **Download Assets** - Download videos/images from ad snapshots\n"
+            "3. **Analyze Videos** - AI vision analysis of video content\n"
+            "4. **Analyze Images** - AI vision analysis of image creatives\n"
+            "5. **Analyze Copy** - AI analysis of ad text/messaging"
+        )
+    )
 
     with st.expander("⚙️ Pipeline Settings", expanded=False):
         col_p1, col_p2 = st.columns(2)
         with col_p1:
+            pipeline_scrape_limit = st.number_input(
+                "Max ads to scrape from Ad Library", 50, 1000, 500, step=50, key="pipeline_scrape_limit",
+                help="Number of ads to fetch from Facebook Ad Library"
+            )
             pipeline_download_limit = st.number_input(
                 "Max ads to download assets from", 10, 200, 100, key="pipeline_dl_limit"
             )
@@ -983,7 +997,9 @@ with tab_ads:
                 st.error(f"❌ Pipeline failed: {prev.get('error', 'Unknown error')}")
 
             # Results summary
-            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            col_r0, col_r1, col_r2, col_r3, col_r4 = st.columns(5)
+            with col_r0:
+                st.metric("Ads Scraped", prev.get('ads_scraped', 0))
             with col_r1:
                 dl = prev.get('download', {})
                 st.metric("Downloads", f"{dl.get('videos', 0)} vid / {dl.get('images', 0)} img")
@@ -1026,6 +1042,7 @@ with tab_ads:
                 'competitor_name': selected_competitor_name,
                 'status': 'running',
                 'log': [],
+                'ads_scraped': 0,
                 'download': {'videos': 0, 'images': 0, 'errors': 0},
                 'videos_analyzed': 0,
                 'video_errors': 0,
@@ -1041,9 +1058,35 @@ with tab_ads:
                 results_log.markdown("\n".join(log_messages))
 
             try:
-                # Step 1: Download Assets (20%)
-                status_text.info("📥 Step 1/4: Downloading assets...")
-                progress_bar.progress(5, text="Downloading assets...")
+                # Step 1: Scrape Ads from Ad Library (15%)
+                status_text.info("🔍 Step 1/5: Scraping ads from Ad Library...")
+                progress_bar.progress(2, text="Scraping ads...")
+
+                # Get ad library URL from competitor
+                ad_library_url = competitor.get('ad_library_url') if competitor else None
+                if ad_library_url:
+                    scrape_result = scrape_competitor_facebook_ads(
+                        ad_library_url=ad_library_url,
+                        competitor_id=selected_competitor_id,
+                        brand_id=selected_brand_id,
+                        max_ads=pipeline_scrape_limit
+                    )
+                    if scrape_result['success']:
+                        if scrape_result['saved'] > 0:
+                            pipeline_result['ads_scraped'] = scrape_result['saved']
+                            log(f"Scrape: Saved {scrape_result['saved']} new ads")
+                        else:
+                            log("Scrape: No new ads found (may already be scraped)")
+                    else:
+                        log(f"Scrape: Failed - {scrape_result['message']}")
+                else:
+                    log("Scrape: Skipped (no Ad Library URL configured)")
+
+                progress_bar.progress(15, text="Ads scraped")
+
+                # Step 2: Download Assets (35%)
+                status_text.info("📥 Step 2/5: Downloading assets...")
+                progress_bar.progress(18, text="Downloading assets...")
 
                 def run_download():
                     import asyncio
@@ -1073,11 +1116,11 @@ with tab_ads:
                     if skipped > 0:
                         log(f"Assets: ⚠️ {skipped} ads had no downloadable URLs (may be expired)")
 
-                progress_bar.progress(20, text="Assets downloaded")
+                progress_bar.progress(35, text="Assets downloaded")
 
-                # Step 2: Analyze Videos (40%)
-                status_text.info("🎬 Step 2/4: Analyzing videos...")
-                progress_bar.progress(25, text="Analyzing videos...")
+                # Step 3: Analyze Videos (55%)
+                status_text.info("🎬 Step 3/5: Analyzing videos...")
+                progress_bar.progress(40, text="Analyzing videos...")
 
                 def run_video_analysis():
                     import asyncio
@@ -1098,11 +1141,11 @@ with tab_ads:
                 pipeline_result['video_errors'] = video_errors
                 log(f"Videos: Analyzed {video_success} videos" + (f" ({video_errors} errors)" if video_errors else ""))
 
-                progress_bar.progress(45, text="Videos analyzed")
+                progress_bar.progress(55, text="Videos analyzed")
 
-                # Step 3: Analyze Images (60%)
-                status_text.info("🖼️ Step 3/4: Analyzing images...")
-                progress_bar.progress(50, text="Analyzing images...")
+                # Step 4: Analyze Images (75%)
+                status_text.info("🖼️ Step 4/5: Analyzing images...")
+                progress_bar.progress(60, text="Analyzing images...")
 
                 def run_image_analysis():
                     import asyncio
@@ -1123,11 +1166,11 @@ with tab_ads:
                 pipeline_result['image_errors'] = image_errors
                 log(f"Images: Analyzed {image_success} images" + (f" ({image_errors} errors)" if image_errors else ""))
 
-                progress_bar.progress(70, text="Images analyzed")
+                progress_bar.progress(75, text="Images analyzed")
 
-                # Step 4: Analyze Copy (80%)
-                status_text.info("📝 Step 4/4: Analyzing ad copy...")
-                progress_bar.progress(75, text="Analyzing copy...")
+                # Step 5: Analyze Copy (90%)
+                status_text.info("📝 Step 5/5: Analyzing ad copy...")
+                progress_bar.progress(80, text="Analyzing copy...")
 
                 def run_copy_analysis():
                     import asyncio
