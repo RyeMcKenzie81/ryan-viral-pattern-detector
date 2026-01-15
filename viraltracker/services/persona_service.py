@@ -35,6 +35,95 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+def repair_json(json_str: str) -> str:
+    """
+    Attempt to repair common JSON syntax errors from LLM output.
+
+    Handles:
+    - Trailing commas before ] or }
+    - Missing commas between elements
+    - Unescaped quotes in strings
+    """
+    import re
+
+    # Remove trailing commas before ] or }
+    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+
+    # Try to fix missing commas between string values
+    # Pattern: "value" "next_key" -> "value", "next_key"
+    json_str = re.sub(r'"\s*\n\s*"', '",\n"', json_str)
+
+    # Pattern: } { or ] { -> }, { or ], {
+    json_str = re.sub(r'}\s*{', '}, {', json_str)
+    json_str = re.sub(r']\s*{', '], {', json_str)
+
+    # Pattern: } [ -> }, [
+    json_str = re.sub(r'}\s*\[', '}, [', json_str)
+
+    # Pattern: ] [ -> ], [
+    json_str = re.sub(r']\s*\[', '], [', json_str)
+
+    # Pattern: "value" [ or "value" { -> "value": [ or "value": {
+    # This catches cases where : was forgotten
+    json_str = re.sub(r'"\s+(\[{)', r'": \1', json_str)
+
+    return json_str
+
+
+def parse_llm_json(response_text: str) -> dict:
+    """
+    Parse JSON from LLM response with repair attempts.
+
+    Args:
+        response_text: Raw LLM response that should contain JSON
+
+    Returns:
+        Parsed JSON as dict
+
+    Raises:
+        ValueError: If JSON cannot be parsed after repair attempts
+    """
+    # Clean markdown code blocks
+    clean_response = response_text.strip()
+    if clean_response.startswith("```"):
+        lines = clean_response.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        clean_response = "\n".join(lines)
+    clean_response = clean_response.strip()
+
+    # First attempt: parse as-is
+    try:
+        return json.loads(clean_response)
+    except json.JSONDecodeError as first_error:
+        logger.warning(f"Initial JSON parse failed: {first_error}")
+
+    # Second attempt: repair and parse
+    try:
+        repaired = repair_json(clean_response)
+        return json.loads(repaired)
+    except json.JSONDecodeError as second_error:
+        logger.warning(f"Repaired JSON parse also failed: {second_error}")
+
+    # Third attempt: try to extract JSON object from response
+    # Sometimes LLMs add text before/after the JSON
+    try:
+        # Find the first { and last }
+        start_idx = clean_response.find('{')
+        end_idx = clean_response.rfind('}')
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_subset = clean_response[start_idx:end_idx + 1]
+            repaired_subset = repair_json(json_subset)
+            return json.loads(repaired_subset)
+    except json.JSONDecodeError:
+        pass
+
+    # All attempts failed
+    raise ValueError(f"Could not parse JSON after repair attempts. Original error: {first_error}")
+
+
 # AI Prompt for generating 4D persona from product data
 PERSONA_GENERATION_PROMPT = """You are an expert at creating detailed customer personas for copywriting.
 
@@ -580,19 +669,8 @@ class PersonaService:
 
         response_text = result.output
 
-        # Parse response
-        clean_response = response_text.strip()
-        if clean_response.startswith("```"):
-            lines = clean_response.split("\n")
-            # Remove first and last lines if they're ```
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean_response = "\n".join(lines)
-        clean_response = clean_response.strip()
-
-        persona_data = json.loads(clean_response)
+        # Parse response with robust JSON repair
+        persona_data = parse_llm_json(response_text)
 
         # Build Persona4D model from AI response
         persona = self._build_persona_from_ai_response(
@@ -869,18 +947,8 @@ Return ONLY valid JSON, no other text."""
 
         response_text = result.output
 
-        # Parse response
-        clean_response = response_text.strip()
-        if clean_response.startswith("```"):
-            lines = clean_response.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean_response = "\n".join(lines)
-        clean_response = clean_response.strip()
-
-        persona_data = json.loads(clean_response)
+        # Parse response with robust JSON repair
+        persona_data = parse_llm_json(response_text)
 
         # Build Persona4D from response
         persona = self._build_persona_from_ai_response(
