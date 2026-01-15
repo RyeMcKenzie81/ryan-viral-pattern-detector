@@ -1935,7 +1935,7 @@ def render_existing_personas(brand_id: str, product_id: Optional[str] = None):
 
     # Query personas
     query = db.table("personas_4d").select(
-        "id, name, archetype, created_at, pain_points, desires, emotional_triggers"
+        "id, name, persona_type, created_at, pain_points, desires"
     )
 
     if product_id:
@@ -1952,7 +1952,7 @@ def render_existing_personas(brand_id: str, product_id: Optional[str] = None):
     st.success(f"Found {len(result.data)} existing persona(s)")
 
     for persona in result.data:
-        with st.expander(f"**{persona['name']}** ({persona.get('archetype', 'Unknown archetype')})", expanded=False):
+        with st.expander(f"**{persona['name']}** ({persona.get('persona_type', 'Unknown type')})", expanded=False):
             col1, col2 = st.columns(2)
 
             with col1:
