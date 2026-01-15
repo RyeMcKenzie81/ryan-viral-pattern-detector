@@ -279,7 +279,7 @@ class VeoService:
 
                 reference_image_objects = []
                 for i, img_bytes in enumerate(reference_image_bytes[:3]):
-                    # Save bytes to temp file
+                    # Save bytes to temp file for upload
                     with tempfile.NamedTemporaryFile(
                         suffix='.png', delete=False
                     ) as tmp_file:
@@ -287,12 +287,15 @@ class VeoService:
                         tmp_path = tmp_file.name
                         temp_files_to_cleanup.append(tmp_path)
 
-                    # Create Image from file using types.Image.from_file()
-                    image_obj = types.Image.from_file(tmp_path)
+                    # Upload to Gemini Files API
+                    uploaded_file = await asyncio.to_thread(
+                        lambda p=tmp_path: self.client.files.upload(file=p)
+                    )
 
-                    # Create VideoGenerationReferenceImage
+                    # Create VideoGenerationReferenceImage with uploaded file
+                    # Pass the File object directly - the SDK handles it
                     ref_image = types.VideoGenerationReferenceImage(
-                        image=image_obj,
+                        image=uploaded_file,
                         reference_type="asset"
                     )
                     reference_image_objects.append(ref_image)
