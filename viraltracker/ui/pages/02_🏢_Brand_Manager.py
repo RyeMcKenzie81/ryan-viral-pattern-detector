@@ -644,7 +644,11 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                                         "source_ad_ids": synthesis.get("source_ad_ids", [])
                                     }
                                 }
-                                db.table("product_offer_variants").insert(variant_data).execute()
+                                # Use upsert to update existing variant if URL already exists
+                                db.table("product_offer_variants").upsert(
+                                    variant_data,
+                                    on_conflict="product_id,landing_page_url"
+                                ).execute()
 
                                 # Auto-sync URL to landing pages for Brand Research
                                 sync_url_to_landing_pages(brand_id, display_url, product_id)
