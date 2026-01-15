@@ -699,7 +699,7 @@ class PersonaService:
         agent = Agent(
             model=Config.get_model("creative"),
             system_prompt="You are an expert persona creator.",
-            result_type=PersonaAIResponse
+            output_type=PersonaAIResponse
         )
 
         prompt = PERSONA_GENERATION_PROMPT.format(
