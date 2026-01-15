@@ -1341,7 +1341,8 @@ async def generate_nano_banana_prompt(
     color_mode: str = "original",
     brand_colors: Optional[Dict] = None,
     brand_fonts: Optional[Dict] = None,
-    num_variations: int = 5
+    num_variations: int = 5,
+    image_resolution: str = "2K"
 ) -> Dict:
     """
     Generate Nano Banana Pro 3 prompt for ad image generation using JSON format.
@@ -1372,6 +1373,7 @@ async def generate_nano_banana_prompt(
         brand_colors: Brand color data when color_mode is "brand" (dict with primary, secondary, background, all)
         brand_fonts: Brand font data (dict with primary, secondary, primary_weights)
         num_variations: Total number of variations being generated
+        image_resolution: Output resolution - "1K", "2K", or "4K". Default "2K".
 
     Returns:
         Dictionary with Nano Banana prompt in JSON format:
@@ -1625,7 +1627,8 @@ async def generate_nano_banana_prompt(
             "json_prompt": json_prompt,
             "full_prompt": full_prompt,
             "template_reference_path": reference_ad_path,
-            "product_image_paths": product_image_paths
+            "product_image_paths": product_image_paths,
+            "image_resolution": image_resolution
         }
 
         logger.info(f"Generated JSON prompt for variation {prompt_index} ({len(full_prompt)} chars)")
@@ -1717,11 +1720,15 @@ async def execute_nano_banana(
         else:
             logger.info("Prompt uses single image mode (no SECONDARY)")
 
+        # Extract image resolution from prompt dict (default 2K)
+        image_resolution = nano_banana_prompt.get('image_resolution', '2K')
+
         # Call Gemini Nano Banana API with metadata tracking
         generation_result = await ctx.deps.gemini.generate_image(
             prompt=nano_banana_prompt['full_prompt'],
             reference_images=reference_images,
-            return_metadata=True
+            return_metadata=True,
+            image_size=image_resolution
         )
 
         generated_ad = {
@@ -3123,7 +3130,8 @@ async def complete_ad_workflow(
     additional_instructions: Optional[str] = None,
     angle_data: Optional[Dict] = None,
     match_template_structure: bool = False,
-    offer_variant_id: Optional[str] = None
+    offer_variant_id: Optional[str] = None,
+    image_resolution: str = "2K"
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -3181,6 +3189,8 @@ async def complete_ad_workflow(
         offer_variant_id: Optional UUID of offer variant (landing page angle). When provided,
             the offer variant's pain points, benefits, and target audience are used to ensure
             ad copy is congruent with the destination landing page messaging.
+        image_resolution: Output resolution for generated images. Options: "1K", "2K", "4K".
+            Default is "2K". Use "4K" for products with detailed text on packaging.
 
     Returns:
         Dictionary with AdCreationResult structure:
@@ -3656,7 +3666,8 @@ async def complete_ad_workflow(
                     color_mode=color_mode,
                     brand_colors=brand_colors,
                     brand_fonts=brand_fonts,
-                    num_variations=num_variations
+                    num_variations=num_variations,
+                    image_resolution=image_resolution
                 )
 
                 # Execute generation

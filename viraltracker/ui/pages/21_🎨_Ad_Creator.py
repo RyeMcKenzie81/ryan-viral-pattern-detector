@@ -376,7 +376,8 @@ async def run_workflow(
     additional_instructions: str = None,
     angle_data: dict = None,
     match_template_structure: bool = False,
-    offer_variant_id: str = None
+    offer_variant_id: str = None,
+    image_resolution: str = "2K"
 ):
     """Run the ad creation workflow with optional export.
 
@@ -401,6 +402,7 @@ async def run_workflow(
         angle_data: Dict with angle info for belief_first mode {id, name, belief_statement, explanation}
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
         offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
+        image_resolution: Output resolution "1K", "2K", or "4K". Default "2K".
     """
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
@@ -435,7 +437,8 @@ async def run_workflow(
         additional_instructions=additional_instructions,
         angle_data=angle_data,
         match_template_structure=match_template_structure,
-        offer_variant_id=offer_variant_id
+        offer_variant_id=offer_variant_id,
+        image_resolution=image_resolution
     )
 
     # Handle exports if configured
@@ -1556,6 +1559,22 @@ else:
 
         st.divider()
 
+        # Image resolution selection
+        resolution_options = ["1K", "2K", "4K"]
+        current_resolution = st.session_state.get('image_resolution', '2K')
+        default_resolution_index = resolution_options.index(current_resolution) if current_resolution in resolution_options else 1
+
+        image_resolution = st.selectbox(
+            "Image Resolution",
+            options=resolution_options,
+            index=default_resolution_index,
+            help="4K recommended for products with detailed packaging text. Higher resolution uses more API credits.",
+            disabled=st.session_state.workflow_running
+        )
+        st.session_state.image_resolution = image_resolution
+
+        st.divider()
+
         # Submit button - disabled while workflow is running
         is_running = st.session_state.workflow_running
         button_text = "⏳ Generating... Please wait" if is_running else "🚀 Generate Ad Variations"
@@ -1638,6 +1657,9 @@ else:
             # Get offer_variant_id from session state
             offer_variant_id = st.session_state.selected_offer_variant_id
 
+            # Get image resolution from session state
+            image_resolution = st.session_state.get('image_resolution', '2K')
+
             # Run the workflow
             result = asyncio.run(run_workflow(
                 product_id=selected_product_id,
@@ -1659,7 +1681,8 @@ else:
                 additional_instructions=add_instructions,
                 angle_data=angle_data,
                 match_template_structure=match_template,
-                offer_variant_id=offer_variant_id
+                offer_variant_id=offer_variant_id,
+                image_resolution=image_resolution
             ))
 
             # Record template usage if a scraped template was used

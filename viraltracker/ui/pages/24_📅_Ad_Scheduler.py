@@ -1196,6 +1196,16 @@ def render_create_schedule():
             help="Auto mode picks up to 2 diverse images (e.g., packaging + contents)"
         )
 
+        # Image resolution selection
+        resolution_options = ['1K', '2K', '4K']
+        current_resolution = existing_params.get('image_resolution', '2K')
+        image_resolution = st.selectbox(
+            "Image Resolution",
+            options=resolution_options,
+            index=resolution_options.index(current_resolution) if current_resolution in resolution_options else 1,
+            help="4K recommended for products with detailed packaging text. Higher resolution uses more API credits."
+        )
+
     st.divider()
 
     # ========================================================================
@@ -1498,7 +1508,8 @@ def render_create_schedule():
                     'variant_id': variant_id,
                     'offer_variant_id': offer_variant_id,
                     'destination_url': destination_url,
-                    'additional_instructions': additional_instructions if additional_instructions else None
+                    'additional_instructions': additional_instructions if additional_instructions else None,
+                    'image_resolution': image_resolution
                 }
 
                 # Add belief-first parameters based on content_source
