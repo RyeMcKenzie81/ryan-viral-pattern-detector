@@ -460,6 +460,37 @@ def render_video_generation(brand_id: str):
             help="What should the subject say? Veo 3.1 generates synchronized audio"
         )
 
+        # Product-specific settings
+        st.markdown("### Product Settings")
+        col1, col2 = st.columns(2)
+        with col1:
+            product_dimensions = st.text_input(
+                "Product Dimensions (optional)",
+                placeholder="e.g., 8-inch tall bottle, 3 inches wide",
+                help="Helps AI maintain consistent product size and prevent morphing"
+            )
+        with col2:
+            strict_product_mode = st.checkbox(
+                "Strict Product Mode",
+                value=True,
+                help="Adds extra prompts to preserve product packaging, text, and labels"
+            )
+
+        with st.expander("💡 Tips for better product videos"):
+            st.markdown("""
+            **For best results:**
+            - Use **multiple reference images** (front, side, close-up of label)
+            - Include **product dimensions** to prevent size changes
+            - Keep product **stationary or minimal movement** to preserve text
+            - Use **"standard" model** for higher quality text rendering
+            - Add specific instructions like "product remains on table" or "steady grip on bottle"
+
+            **What to avoid:**
+            - Complex movements (picking up, rotating) - causes morphing
+            - Fast actions - text becomes blurry
+            - Multiple products - harder to maintain consistency
+            """)
+
         st.markdown("### Video Settings")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -498,9 +529,10 @@ def render_video_generation(brand_id: str):
             estimated_cost = duration * rate
             st.metric("Estimated Cost", f"${estimated_cost:.2f}")
 
+        default_negative = "blurry, low quality, distorted, deformed, ugly, bad anatomy, morphing objects, changing shapes, altered text, modified labels, incorrect packaging, regenerated text, watermarks, subtitles, text overlays"
         negative_prompt = st.text_input(
             "Negative Prompt",
-            value="blurry, low quality, distorted, deformed, ugly, bad anatomy",
+            value=default_negative,
             help="Content to avoid in generation"
         )
 
@@ -532,12 +564,23 @@ def render_video_generation(brand_id: str):
                     if img_bytes and len(ref_images) < 3:
                         ref_images.append(img_bytes)
 
+                # Build enhanced prompt with product settings
+                enhanced_prompt = prompt
+
+                # Add product dimensions if provided
+                if product_dimensions:
+                    enhanced_prompt += f" The product is {product_dimensions}."
+
+                # Add strict product mode instructions
+                if strict_product_mode and selected_image_path:
+                    enhanced_prompt += " IMPORTANT: Maintain exact product appearance as shown in reference image. Do not alter, modify, or regenerate any text, labels, or logos on the product packaging. Keep product proportions and colors exactly as shown."
+
                 # Build request
                 request = VeoGenerationRequest(
                     brand_id=UUID(brand_id),
                     avatar_id=selected_avatar.id if selected_avatar else None,
                     product_id=UUID(selected_product_id) if selected_product_id else None,
-                    prompt=prompt,
+                    prompt=enhanced_prompt,
                     action_description=action_description if action_description else None,
                     dialogue=dialogue if dialogue else None,
                     background_description=background_description if background_description else None,
