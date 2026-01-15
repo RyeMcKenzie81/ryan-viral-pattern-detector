@@ -419,6 +419,106 @@ def save_image_notes(image_id: str, notes: str):
         return False
 
 
+def upload_product_images(product_id: str, files: list) -> int:
+    """
+    Upload multiple images for a product.
+
+    Args:
+        product_id: UUID of the product
+        files: List of UploadedFile objects from st.file_uploader
+
+    Returns:
+        Number of successfully uploaded images
+    """
+    import uuid
+    db = get_supabase_client()
+    uploaded_count = 0
+
+    for file in files:
+        try:
+            # Generate unique filename
+            file_ext = file.name.split('.')[-1].lower()
+            unique_filename = f"{uuid.uuid4()}.{file_ext}"
+            storage_path = f"product-images/{product_id}/{unique_filename}"
+
+            # Determine content type
+            content_types = {
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'webp': 'image/webp',
+                'gif': 'image/gif'
+            }
+            content_type = content_types.get(file_ext, 'image/jpeg')
+
+            # Upload to Supabase storage
+            file_bytes = file.read()
+            db.storage.from_("product-images").upload(
+                f"{product_id}/{unique_filename}",
+                file_bytes,
+                {"content-type": content_type, "upsert": "true"}
+            )
+
+            # Create database record
+            db.table("product_images").insert({
+                "product_id": product_id,
+                "storage_path": storage_path,
+                "filename": file.name,
+                "is_main": False,
+                "is_image": True,
+                "is_pdf": False
+            }).execute()
+
+            uploaded_count += 1
+
+        except Exception as e:
+            st.error(f"Failed to upload {file.name}: {e}")
+
+    return uploaded_count
+
+
+def set_main_image(product_id: str, image_id: str) -> bool:
+    """Set an image as the main/hero image for a product."""
+    try:
+        db = get_supabase_client()
+        # First, unset all other main images for this product
+        db.table("product_images").update({
+            "is_main": False
+        }).eq("product_id", product_id).execute()
+
+        # Then set this one as main
+        db.table("product_images").update({
+            "is_main": True
+        }).eq("id", image_id).execute()
+
+        return True
+    except Exception as e:
+        st.error(f"Failed to set main image: {e}")
+        return False
+
+
+def delete_product_image(image_id: str, storage_path: str) -> bool:
+    """Delete a product image from storage and database."""
+    try:
+        db = get_supabase_client()
+
+        # Delete from storage
+        if storage_path:
+            # Extract the path without bucket name
+            path = storage_path.replace("product-images/", "")
+            try:
+                db.storage.from_("product-images").remove([path])
+            except:
+                pass  # Storage deletion is best-effort
+
+        # Delete from database
+        db.table("product_images").delete().eq("id", image_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete image: {e}")
+        return False
+
+
 def save_brand_code(brand_id: str, brand_code: str) -> bool:
     """Save brand_code for a brand (used in ad filenames)."""
     try:
@@ -1665,23 +1765,52 @@ else:
                 with tab_images:
                     images = product.get('product_images', [])
 
-                    if not images:
-                        st.info("No images uploaded for this product.")
-                    else:
-                        # Analyze All button - only for images (not PDFs)
-                        analyzable_images = [i for i in images if i.get('is_image', True) and not i.get('is_pdf')]
-                        unanalyzed = [i for i in analyzable_images if not i.get('analyzed_at')]
-                        if unanalyzed:
-                            if st.button(f"🔍 Analyze All ({len(unanalyzed)} unanalyzed)", key=f"analyze_all_{product_id}"):
-                                st.info("Analyzing images... This may take a minute.")
-                                for img in unanalyzed:
-                                    try:
-                                        analysis = asyncio.run(analyze_image(img['storage_path']))
-                                        save_image_analysis(img['id'], analysis)
-                                    except Exception as e:
-                                        st.error(f"Failed to analyze {img['storage_path']}: {e}")
-                                st.success("Analysis complete!")
+                    # Image Upload Section
+                    st.markdown("**Upload Product Images**")
+                    uploaded_files = st.file_uploader(
+                        "Choose images",
+                        type=['png', 'jpg', 'jpeg', 'webp', 'gif'],
+                        accept_multiple_files=True,
+                        key=f"upload_images_{product_id}",
+                        help="Upload product photos for use in ad generation"
+                    )
+
+                    if uploaded_files:
+                        if st.button(f"📤 Upload {len(uploaded_files)} Image(s)", type="primary", key=f"do_upload_{product_id}"):
+                            with st.spinner(f"Uploading {len(uploaded_files)} images..."):
+                                count = upload_product_images(product_id, uploaded_files)
+                            if count > 0:
+                                st.success(f"Uploaded {count} image(s)!")
+                                st.cache_data.clear()
                                 st.rerun()
+
+                    st.divider()
+
+                    if not images:
+                        st.info("No images uploaded for this product yet.")
+                    else:
+                        # Action buttons row
+                        col_actions1, col_actions2 = st.columns(2)
+                        with col_actions1:
+                            # Analyze All button - only for images (not PDFs)
+                            analyzable_images = [i for i in images if i.get('is_image', True) and not i.get('is_pdf')]
+                            unanalyzed = [i for i in analyzable_images if not i.get('analyzed_at')]
+                            if unanalyzed:
+                                if st.button(f"🔍 Analyze All ({len(unanalyzed)} unanalyzed)", key=f"analyze_all_{product_id}"):
+                                    st.info("Analyzing images... This may take a minute.")
+                                    for img in unanalyzed:
+                                        try:
+                                            analysis = asyncio.run(analyze_image(img['storage_path']))
+                                            save_image_analysis(img['id'], analysis)
+                                        except Exception as e:
+                                            st.error(f"Failed to analyze {img['storage_path']}: {e}")
+                                    st.success("Analysis complete!")
+                                    st.rerun()
+
+                        # Show main image indicator
+                        main_image = next((i for i in images if i.get('is_main')), None)
+                        if main_image:
+                            st.caption(f"⭐ Main image: {main_image.get('filename', 'Set')}")
 
                         # Image/file grid
                         cols = st.columns(4)
@@ -1689,6 +1818,11 @@ else:
                             with cols[idx % 4]:
                                 is_pdf = img.get('is_pdf', False)
                                 is_image = img.get('is_image', True)
+                                is_main = img.get('is_main', False)
+
+                                # Main image badge
+                                if is_main:
+                                    st.markdown("⭐ **Main Image**")
 
                                 # Display thumbnail or PDF badge
                                 if is_pdf:
@@ -1731,6 +1865,21 @@ else:
                                                     st.error(f"Failed: {e}")
                                 elif is_pdf:
                                     st.caption("📋 PDF - Gemini analysis coming soon")
+
+                                # Action buttons: Set Main | Delete
+                                btn_col1, btn_col2 = st.columns(2)
+                                with btn_col1:
+                                    if not is_main and is_image and not is_pdf:
+                                        if st.button("⭐", key=f"main_{img['id']}", help="Set as main image"):
+                                            if set_main_image(product_id, img['id']):
+                                                st.success("Set as main!")
+                                                st.rerun()
+                                with btn_col2:
+                                    if st.button("🗑️", key=f"del_img_{img['id']}", help="Delete image"):
+                                        if delete_product_image(img['id'], img.get('storage_path', '')):
+                                            st.success("Deleted!")
+                                            st.cache_data.clear()
+                                            st.rerun()
 
                                 # Notes input (for all file types)
                                 current_notes = img.get('notes', '') or ''
