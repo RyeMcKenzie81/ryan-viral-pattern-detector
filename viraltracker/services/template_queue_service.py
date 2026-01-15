@@ -728,3 +728,71 @@ class TemplateQueueService:
         }).eq("id", str(queue_id)).execute()
 
         logger.info(f"Cancelled approval for queue item {queue_id} - returned to pending")
+
+    async def start_bulk_approval(self, queue_ids: List[UUID]) -> List[Dict[str, Any]]:
+        """
+        Run AI analysis on multiple queue items concurrently.
+
+        Args:
+            queue_ids: List of queue item UUIDs to analyze
+
+        Returns:
+            List of dicts with {queue_id, suggestions, success} for successful items
+        """
+        import asyncio
+
+        async def analyze_one(qid: UUID) -> Dict[str, Any]:
+            try:
+                suggestions = await self.analyze_template_for_approval(qid)
+                # Update status to pending_details
+                self.supabase.table("template_queue").update({
+                    "status": "pending_details",
+                    "ai_suggestions": suggestions
+                }).eq("id", str(qid)).execute()
+                return {"queue_id": str(qid), "suggestions": suggestions, "success": True}
+            except Exception as e:
+                logger.error(f"AI analysis failed for {qid}: {e}")
+                return {"queue_id": str(qid), "error": str(e), "success": False}
+
+        results = await asyncio.gather(*[analyze_one(qid) for qid in queue_ids])
+        successful = [r for r in results if r.get("success")]
+        logger.info(f"Bulk approval started: {len(successful)}/{len(queue_ids)} items analyzed successfully")
+        return successful
+
+    def finalize_bulk_approval(
+        self,
+        items: List[Dict[str, Any]],
+        reviewed_by: str = "streamlit_user"
+    ) -> int:
+        """
+        Finalize multiple approvals using AI suggestions as defaults.
+
+        Args:
+            items: List of dicts with {queue_id, suggestions}
+            reviewed_by: Who approved the items
+
+        Returns:
+            Count of successfully approved items
+        """
+        approved_count = 0
+        for item in items:
+            try:
+                queue_id = UUID(item["queue_id"])
+                s = item["suggestions"]
+                self.finalize_approval(
+                    queue_id=queue_id,
+                    name=s.get("suggested_name", "Template"),
+                    description=s.get("suggested_description", ""),
+                    category=s.get("format_type", "other"),
+                    industry_niche=s.get("industry_niche", "other"),
+                    target_sex=s.get("target_sex", "unisex"),
+                    awareness_level=s.get("awareness_level", 3),
+                    sales_event=s.get("sales_event"),
+                    reviewed_by=reviewed_by
+                )
+                approved_count += 1
+            except Exception as e:
+                logger.error(f"Failed to finalize {item.get('queue_id')}: {e}")
+
+        logger.info(f"Bulk approval finalized: {approved_count}/{len(items)} items approved")
+        return approved_count

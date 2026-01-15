@@ -43,6 +43,10 @@ if 'reviewing_item_id' not in st.session_state:
     st.session_state.reviewing_item_id = None  # Item ID being reviewed (pending_details)
 if 'ai_suggestions' not in st.session_state:
     st.session_state.ai_suggestions = None  # AI suggestions for current review
+if 'bulk_review_items' not in st.session_state:
+    st.session_state.bulk_review_items = []  # List of {queue_id, suggestions} for bulk review
+if 'bulk_review_mode' not in st.session_state:
+    st.session_state.bulk_review_mode = False  # Whether we're in bulk review mode
 
 
 def get_template_queue_service():
@@ -416,9 +420,130 @@ def render_details_review():
                 st.rerun()
 
 
+# ============================================================================
+# Bulk Review Functions
+# ============================================================================
+
+def get_asset_url_for_queue_id(queue_id: str) -> Optional[str]:
+    """Get preview URL for a queue item by its ID."""
+    service = get_template_queue_service()
+    item = service.get_pending_details_item(queue_id)
+    if item:
+        asset = item.get("scraped_ad_assets", {})
+        storage_path = asset.get("storage_path", "")
+        if storage_path:
+            return get_asset_url(storage_path)
+    return None
+
+
+def cancel_single_from_bulk(queue_id: str):
+    """Remove one item from bulk review and revert its status to pending."""
+    from uuid import UUID
+    service = get_template_queue_service()
+    service.cancel_approval(UUID(queue_id))
+
+
+def cancel_all_bulk_items():
+    """Cancel all pending_details items from bulk review."""
+    for item in st.session_state.bulk_review_items:
+        cancel_single_from_bulk(item["queue_id"])
+
+
+def render_bulk_review():
+    """Render bulk review screen showing all analyzed templates."""
+    items = st.session_state.bulk_review_items
+
+    if not items:
+        st.warning("No items to review.")
+        st.session_state.bulk_review_mode = False
+        st.rerun()
+        return
+
+    st.subheader(f"Review AI Suggestions ({len(items)} templates)")
+    st.caption("Review the AI-generated metadata. Remove any you don't want to approve, then click 'Confirm & Approve All'.")
+
+    # Action buttons at top
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Back to Queue", use_container_width=True):
+            # Cancel all pending_details items
+            cancel_all_bulk_items()
+            st.session_state.bulk_review_mode = False
+            st.session_state.bulk_review_items = []
+            st.cache_data.clear()
+            st.rerun()
+
+    with col2:
+        if st.button(
+            f"Confirm & Approve All ({len(items)} templates)",
+            type="primary",
+            use_container_width=True
+        ):
+            service = get_template_queue_service()
+            count = service.finalize_bulk_approval(items)
+            st.success(f"Approved {count} templates!")
+            st.session_state.bulk_review_mode = False
+            st.session_state.bulk_review_items = []
+            st.cache_data.clear()
+            st.rerun()
+
+    st.divider()
+
+    # Show each item with Remove button
+    for i, item in enumerate(items):
+        suggestions = item.get("suggestions", {})
+        queue_id = item["queue_id"]
+
+        with st.container():
+            col1, col2, col3 = st.columns([1, 3, 1])
+
+            with col1:
+                # Preview image
+                url = get_asset_url_for_queue_id(queue_id)
+                if url:
+                    st.image(url, use_container_width=True)
+                else:
+                    st.write("No preview")
+
+            with col2:
+                st.markdown(f"**{suggestions.get('suggested_name', 'Unnamed Template')}**")
+                desc = suggestions.get('suggested_description', '')
+                if desc:
+                    st.caption(desc[:150] + "..." if len(desc) > 150 else desc)
+
+                # Show metadata
+                category = suggestions.get('format_type', 'N/A')
+                niche = suggestions.get('industry_niche', 'N/A')
+                awareness = suggestions.get('awareness_level', 'N/A')
+                target = suggestions.get('target_sex', 'N/A')
+
+                st.text(f"Category: {category} | Niche: {niche} | Awareness: {awareness} | Target: {target}")
+
+            with col3:
+                if st.button("Remove", key=f"remove_{queue_id}"):
+                    # Revert status and remove from list
+                    cancel_single_from_bulk(queue_id)
+                    st.session_state.bulk_review_items = [
+                        x for x in st.session_state.bulk_review_items
+                        if x["queue_id"] != queue_id
+                    ]
+                    st.cache_data.clear()
+                    st.rerun()
+
+            st.divider()
+
+
 def render_pending_queue():
     """Render pending items for review."""
-    # Check if we're in the middle of reviewing an item
+    import asyncio
+    from uuid import UUID
+
+    # Check if we're in bulk review mode
+    if st.session_state.bulk_review_mode:
+        render_bulk_review()
+        return
+
+    # Check if we're in the middle of reviewing a single item
     if st.session_state.reviewing_item_id:
         render_details_review()
         return
@@ -430,6 +555,8 @@ def render_pending_queue():
         return
 
     service = get_template_queue_service()
+
+    st.caption("Reject any templates you don't want, then click 'Approve All' to analyze the remaining templates.")
 
     for item in items:
         asset = item.get("scraped_ad_assets", {})
@@ -458,27 +585,38 @@ def render_pending_queue():
                 if ai_analysis and ai_analysis.get("analyzed"):
                     st.caption(f"Pre-Analysis: {ai_analysis.get('suggested_category', 'N/A')}")
 
-                st.markdown("**Quick Actions**")
-                st.caption("Click 'Approve' to run AI analysis and review suggested metadata.")
-
-                # Action buttons (not a form - for immediate action)
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    if st.button("Approve", key=f"approve_{item['id']}", type="primary"):
-                        if start_ai_approval(item["id"]):
-                            st.rerun()
-                with col_b:
-                    if st.button("Skip", key=f"skip_{item['id']}"):
-                        archive_item(item["id"])
-                        st.rerun()
-                with col_c:
-                    if st.button("Reject", key=f"reject_{item['id']}"):
-                        reject_item(item["id"], "Rejected via UI")
-                        st.rerun()
+                # Only Reject button - Approve All handles the rest
+                if st.button("Reject", key=f"reject_{item['id']}", type="secondary"):
+                    reject_item(item["id"], "Rejected via UI")
+                    st.rerun()
 
             st.divider()
 
+    # Approve All button
+    remaining_count = len(items)
+    st.divider()
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button(
+            f"Approve All & Run AI Analysis ({remaining_count} templates)",
+            type="primary",
+            use_container_width=True
+        ):
+            queue_ids = [UUID(item["id"]) for item in items]
+            with st.spinner(f"Running AI analysis on {remaining_count} templates... This may take a minute."):
+                results = asyncio.run(service.start_bulk_approval(queue_ids))
+
+            if results:
+                st.session_state.bulk_review_items = results
+                st.session_state.bulk_review_mode = True
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("No templates were analyzed successfully. Check the logs.")
+
     # Pagination
+    st.divider()
     col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
         if st.session_state.queue_page > 0:

@@ -293,6 +293,18 @@ def render_avatar_card(avatar, brand_id: str):
 # Video Generation Section
 # ============================================================================
 
+def get_product_variants(product_id: str):
+    """Fetch variants for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("product_variants").select("*").eq(
+            "product_id", product_id
+        ).order("display_order").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
 def render_video_generation(brand_id: str):
     """Render video generation section."""
     st.subheader("🎬 Generate Video with Veo 3.1")
@@ -310,7 +322,91 @@ def render_video_generation(brand_id: str):
     else:
         st.warning("Select an avatar above, or generate a video without avatar reference")
 
-    # Video generation form
+    # =========================================================================
+    # Product & Image Selection (OUTSIDE form for dynamic updates)
+    # =========================================================================
+    st.markdown("### Optional: Product Reference Image")
+
+    products = get_products_for_brand(brand_id)
+    product_options = {"None": None}
+    product_options.update({p["name"]: p["id"] for p in products})
+
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_product_name = st.selectbox(
+            "Select Product",
+            options=list(product_options.keys()),
+            key="veo_product_select",
+            help="Select a product to choose an image from"
+        )
+    selected_product_id = product_options[selected_product_name]
+
+    # Show variants if product selected
+    selected_variant_id = None
+    if selected_product_id:
+        variants = get_product_variants(selected_product_id)
+        if variants:
+            with col2:
+                variant_options = {"All (no variant filter)": None}
+                variant_options.update({v["name"]: v["id"] for v in variants})
+                selected_variant_name = st.selectbox(
+                    "Select Variant (optional)",
+                    options=list(variant_options.keys()),
+                    key="veo_variant_select"
+                )
+                selected_variant_id = variant_options[selected_variant_name]
+
+    # Show images for selected product
+    selected_image_path = None
+    if selected_product_id:
+        product_images = get_product_images(selected_product_id)
+
+        if product_images:
+            st.markdown("**Select an image to use as reference:**")
+
+            # Display images in a grid
+            cols = st.columns(4)
+            for i, img in enumerate(product_images[:8]):  # Max 8 images
+                storage_path = img.get('storage_path', '')
+                is_main = img.get('is_main', False)
+                notes = img.get('notes', '')
+
+                with cols[i % 4]:
+                    # Get signed URL for display
+                    url = get_signed_url(storage_path)
+                    if url:
+                        st.image(url, width=150)
+
+                        # Label
+                        label = "⭐ Main" if is_main else f"Image {i+1}"
+                        if notes:
+                            label += f" ({notes[:20]}...)" if len(notes) > 20 else f" ({notes})"
+
+                        # Radio-style selection using button
+                        if st.button(
+                            f"Select: {label}",
+                            key=f"select_img_{img['id']}",
+                            use_container_width=True
+                        ):
+                            st.session_state.selected_product_image_path = storage_path
+                            st.rerun()
+
+            # Show currently selected
+            if st.session_state.get('selected_product_image_path'):
+                st.info(f"✅ Selected: {st.session_state.selected_product_image_path.split('/')[-1]}")
+                selected_image_path = st.session_state.selected_product_image_path
+
+                if st.button("❌ Clear Selection"):
+                    st.session_state.selected_product_image_path = None
+                    st.rerun()
+        else:
+            st.info("No images found for this product")
+
+    st.markdown("---")
+
+    # =========================================================================
+    # Video Generation Form
+    # =========================================================================
     with st.form("generate_video_form"):
         st.markdown("### Video Prompt")
 
@@ -386,18 +482,6 @@ def render_video_generation(brand_id: str):
             help="Content to avoid in generation"
         )
 
-        # Optional: Include product image
-        st.markdown("### Optional: Product Reference")
-        products = get_products_for_brand(brand_id)
-        product_options = {"None": None}
-        product_options.update({p["name"]: p["id"] for p in products})
-        selected_product_name = st.selectbox(
-            "Include Product Image",
-            options=list(product_options.keys()),
-            help="Select a product to include its image as reference"
-        )
-        selected_product_id = product_options[selected_product_name]
-
         submitted = st.form_submit_button("🚀 Generate Video", type="primary")
 
         if submitted and prompt:
@@ -420,19 +504,11 @@ def render_video_generation(brand_id: str):
                     avatar_refs = await avatar_service.get_all_reference_images(selected_avatar.id)
                     ref_images.extend(avatar_refs)
 
-                # Add product image if selected
-                if selected_product_id:
-                    product_images = get_product_images(selected_product_id)
-                    if product_images:
-                        # Use main image or first image
-                        main_img = next(
-                            (img for img in product_images if img.get('is_main')),
-                            product_images[0] if product_images else None
-                        )
-                        if main_img and main_img.get('storage_path'):
-                            img_bytes = download_image_from_storage(main_img['storage_path'])
-                            if img_bytes and len(ref_images) < 3:
-                                ref_images.append(img_bytes)
+                # Add selected product image
+                if selected_image_path:
+                    img_bytes = download_image_from_storage(selected_image_path)
+                    if img_bytes and len(ref_images) < 3:
+                        ref_images.append(img_bytes)
 
                 # Build request
                 request = VeoGenerationRequest(

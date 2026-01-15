@@ -261,21 +261,47 @@ class VeoService:
             # Prepare reference images if provided
             reference_paths = []
             if reference_image_bytes:
-                from PIL import Image
+                import tempfile
+                import os
 
                 reference_image_objects = []
                 for i, img_bytes in enumerate(reference_image_bytes[:3]):
-                    # Convert bytes to PIL Image for the API
-                    img = Image.open(BytesIO(img_bytes))
-                    reference_image_objects.append(img)
+                    # Save bytes to temp file for upload to Gemini Files API
+                    with tempfile.NamedTemporaryFile(
+                        suffix='.png', delete=False
+                    ) as tmp_file:
+                        tmp_file.write(img_bytes)
+                        tmp_path = tmp_file.name
 
-                    # Upload reference to storage for record keeping
-                    ref_path = f"{generation_id}/reference_{i+1}.png"
-                    await self._upload_to_storage(ref_path, img_bytes, "image/png")
-                    reference_paths.append(ref_path)
+                    try:
+                        # Upload to Gemini Files API
+                        uploaded_file = await asyncio.to_thread(
+                            lambda p=tmp_path: self.client.files.upload(file=p)
+                        )
 
-                veo_config.reference_images = reference_image_objects
-                logger.info(f"Added {len(reference_image_objects)} reference images")
+                        # Create VideoGenerationReferenceImage
+                        ref_image = types.VideoGenerationReferenceImage(
+                            image=types.Image(
+                                uri=uploaded_file.uri,
+                                mime_type="image/png"
+                            ),
+                            reference_type="asset"
+                        )
+                        reference_image_objects.append(ref_image)
+
+                        # Also upload to Supabase for record keeping
+                        ref_path = f"{generation_id}/reference_{i+1}.png"
+                        await self._upload_to_storage(ref_path, img_bytes, "image/png")
+                        reference_paths.append(ref_path)
+
+                    finally:
+                        # Clean up temp file
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+
+                if reference_image_objects:
+                    veo_config.reference_images = reference_image_objects
+                    logger.info(f"Added {len(reference_image_objects)} reference images")
 
             # Call Veo 3.1 API
             logger.info(f"Starting Veo generation: {generation_id}")
