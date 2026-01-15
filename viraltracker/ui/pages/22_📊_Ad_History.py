@@ -237,6 +237,110 @@ def get_ad_creation_service():
     return AdCreationService()
 
 
+def fetch_reference_ad_base64(storage_path: str) -> tuple[str, str]:
+    """
+    Fetch reference ad from storage and convert to base64.
+
+    Returns:
+        Tuple of (base64_data, filename)
+    """
+    import base64
+
+    if not storage_path:
+        return None, None
+
+    try:
+        db = get_supabase_client()
+        # Parse bucket and path
+        parts = storage_path.split('/', 1)
+        if len(parts) == 2:
+            bucket, path = parts
+        else:
+            bucket = "reference-ads"
+            path = storage_path
+
+        # Download the file
+        response = db.storage.from_(bucket).download(path)
+        base64_data = base64.b64encode(response).decode('utf-8')
+
+        # Extract filename from path
+        filename = path.split('/')[-1] if '/' in path else path
+
+        return base64_data, filename
+    except Exception as e:
+        st.error(f"Failed to fetch reference ad: {e}")
+        return None, None
+
+
+async def retry_ad_run(run: dict) -> dict:
+    """
+    Retry an ad run with the same parameters.
+
+    Args:
+        run: The ad run dict containing parameters and reference_ad_storage_path
+
+    Returns:
+        Result from the ad workflow
+    """
+    from viraltracker.ui.pages import _ad_creator_helpers
+
+    # Get the reference ad
+    reference_path = run.get('reference_ad_storage_path')
+    if not reference_path:
+        raise ValueError("No reference ad found for this run")
+
+    base64_data, filename = fetch_reference_ad_base64(reference_path)
+    if not base64_data:
+        raise ValueError("Failed to fetch reference ad from storage")
+
+    # Get parameters
+    params = run.get('parameters', {}) or {}
+    product_id = run.get('product_id')
+
+    if not product_id:
+        raise ValueError("No product_id found for this run")
+
+    # Import and call the workflow
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+    from viraltracker.agent.dependencies import AgentDependencies
+
+    # Create dependencies
+    deps = AgentDependencies.create(project_name="default")
+
+    # Create RunContext
+    ctx = RunContext(
+        deps=deps,
+        model=None,
+        usage=RunUsage()
+    )
+
+    # Run workflow with same parameters
+    result = await complete_ad_workflow(
+        ctx=ctx,
+        product_id=product_id,
+        reference_ad_base64=base64_data,
+        reference_ad_filename=filename,
+        project_id="",
+        num_variations=params.get('num_variations', 5),
+        content_source=params.get('content_source', 'hooks'),
+        color_mode=params.get('color_mode', 'original'),
+        brand_colors=params.get('brand_colors'),
+        image_selection_mode=params.get('image_selection_mode', 'auto'),
+        selected_image_paths=params.get('selected_image_paths'),
+        persona_id=params.get('persona_id'),
+        variant_id=params.get('variant_id'),
+        additional_instructions=params.get('additional_instructions'),
+        angle_data=params.get('angle_data'),
+        match_template_structure=params.get('match_template_structure', False),
+        offer_variant_id=params.get('offer_variant_id'),
+        image_resolution=params.get('image_resolution', '2K')
+    )
+
+    return result
+
+
 def get_performance_for_ads(ad_ids: list) -> dict:
     """
     Get Meta performance data for a list of generated ad IDs.
@@ -662,51 +766,76 @@ else:
                 # Header with download button
                 st.markdown("### All Generated Ads")
 
-                # Download all button - prominent placement
-                if ads:
-                    # Create safe filename
-                    safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
-                    zip_filename = f"{safe_product_name}_{run_id_short}_ads.zip"
+                # Action buttons - Download and Retry
+                # Create safe filename
+                safe_product_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in product_name)
+                zip_filename = f"{safe_product_name}_{run_id_short}_ads.zip"
 
-                    # Use session state to track if we should prepare download
-                    download_key = f"prepare_download_{run_id_full}"
-                    if download_key not in st.session_state:
-                        st.session_state[download_key] = False
+                # Use session state to track if we should prepare download
+                download_key = f"prepare_download_{run_id_full}"
+                retry_key = f"retrying_{run_id_full}"
+                if download_key not in st.session_state:
+                    st.session_state[download_key] = False
+                if retry_key not in st.session_state:
+                    st.session_state[retry_key] = False
 
-                    col_btn1, col_btn2, col_spacer = st.columns([1, 1, 2])
+                col_btn1, col_btn2, col_btn3, col_spacer = st.columns([1, 1, 1, 1])
 
-                    with col_btn1:
+                with col_btn1:
+                    if ads:
                         if st.button("📥 Prepare Download", key=f"btn_{run_id_full}", use_container_width=True):
                             st.session_state[download_key] = True
                             st.rerun()
 
-                    with col_btn2:
-                        if st.session_state[download_key]:
-                            # Get codes for structured naming
-                            product_data = run.get('products', {}) or {}
-                            brand_data = product_data.get('brands', {}) or {}
-                            brand_code = brand_data.get('brand_code')
-                            product_code = product_data.get('product_code')
+                with col_btn2:
+                    if ads and st.session_state[download_key]:
+                        # Get codes for structured naming
+                        product_data = run.get('products', {}) or {}
+                        brand_data = product_data.get('brands', {}) or {}
+                        brand_code = brand_data.get('brand_code')
+                        product_code = product_data.get('product_code')
 
-                            with st.spinner("Creating ZIP..."):
-                                zip_data = create_zip_for_run(
-                                    ads=ads,
-                                    product_name=product_name,
-                                    run_id=run_id_full,  # Use full UUID for structured naming
-                                    reference_path=run.get('reference_ad_storage_path'),
-                                    brand_code=brand_code,
-                                    product_code=product_code
-                                )
-                            st.download_button(
-                                label="💾 Download ZIP",
-                                data=zip_data,
-                                file_name=zip_filename,
-                                mime="application/zip",
-                                key=f"save_{run_id_full}",
-                                use_container_width=True
+                        with st.spinner("Creating ZIP..."):
+                            zip_data = create_zip_for_run(
+                                ads=ads,
+                                product_name=product_name,
+                                run_id=run_id_full,  # Use full UUID for structured naming
+                                reference_path=run.get('reference_ad_storage_path'),
+                                brand_code=brand_code,
+                                product_code=product_code
                             )
+                        st.download_button(
+                            label="💾 Download ZIP",
+                            data=zip_data,
+                            file_name=zip_filename,
+                            mime="application/zip",
+                            key=f"save_{run_id_full}",
+                            use_container_width=True
+                        )
 
-                    st.markdown("")  # Spacing
+                with col_btn3:
+                    # Retry button - only show if run has parameters and reference ad
+                    if run.get('reference_ad_storage_path') and run.get('parameters'):
+                        if st.session_state[retry_key]:
+                            st.info("🔄 Retrying...")
+                        else:
+                            if st.button("🔄 Retry Run", key=f"retry_{run_id_full}", use_container_width=True,
+                                        help="Re-run with same parameters"):
+                                st.session_state[retry_key] = True
+                                try:
+                                    with st.spinner("Starting new ad run with same parameters..."):
+                                        result = asyncio.run(retry_ad_run(run))
+                                    if result:
+                                        new_run_id = result.get('ad_run_id', 'unknown')[:8]
+                                        st.success(f"✅ New run started: `{new_run_id}`")
+                                        st.session_state[retry_key] = False
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"Retry failed: {e}")
+                                    st.session_state[retry_key] = False
+
+                st.markdown("")  # Spacing
 
                 if not ads:
                     st.info("No ads found for this run.")
