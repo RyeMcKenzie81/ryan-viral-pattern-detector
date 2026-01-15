@@ -2903,13 +2903,9 @@ class BrandResearchService:
             "url_pattern, product_id"
         ).in_("product_id", product_ids).execute()
 
-        if not urls_result.data:
-            logger.info(f"No URL patterns found for brand: {brand_id}")
-            return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
-
         # Build full URLs from patterns (patterns are partial, need https://)
         urls_to_scrape = {}  # url -> product_id mapping
-        for row in urls_result.data:
+        for row in (urls_result.data or []):
             pattern = row['url_pattern']
             # Add https:// if not present
             if not pattern.startswith('http'):
@@ -2917,6 +2913,20 @@ class BrandResearchService:
             else:
                 full_url = pattern
             urls_to_scrape[full_url] = row['product_id']
+
+        # Also include pending URLs from brand_landing_pages (e.g., from offer variant sync)
+        pending_result = self.supabase.table("brand_landing_pages").select(
+            "url, product_id"
+        ).eq("brand_id", str(brand_id)).eq("scrape_status", "pending").execute()
+
+        for row in (pending_result.data or []):
+            url = row['url']
+            if url not in urls_to_scrape:
+                urls_to_scrape[url] = row.get('product_id')
+
+        if not urls_to_scrape:
+            logger.info(f"No URLs found to scrape for brand: {brand_id}")
+            return {"urls_found": 0, "pages_scraped": 0, "pages_failed": 0}
 
         logger.info(f"Found {len(urls_to_scrape)} URL patterns for brand")
 
