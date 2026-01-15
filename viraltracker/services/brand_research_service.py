@@ -3098,7 +3098,11 @@ class BrandResearchService:
                 "scraped_at": datetime.utcnow().isoformat()
             }
 
-            result = self.supabase.table("brand_landing_pages").insert(record).execute()
+            # Use upsert to handle pre-existing "pending" records from offer variant sync
+            result = self.supabase.table("brand_landing_pages").upsert(
+                record,
+                on_conflict="brand_id,url"
+            ).execute()
 
             if result.data:
                 logger.info(f"Saved landing page: {url[:50]}..." + (f" (product: {product_id})" if product_id else ""))
@@ -3127,7 +3131,11 @@ class BrandResearchService:
                 "scraped_at": datetime.utcnow().isoformat()
             }
 
-            self.supabase.table("brand_landing_pages").insert(record).execute()
+            # Use upsert to handle pre-existing "pending" records
+            self.supabase.table("brand_landing_pages").upsert(
+                record,
+                on_conflict="brand_id,url"
+            ).execute()
 
         except Exception as e:
             logger.error(f"Failed to save landing page error: {e}")
