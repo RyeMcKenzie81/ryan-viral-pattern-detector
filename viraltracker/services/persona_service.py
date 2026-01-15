@@ -755,7 +755,7 @@ class PersonaService:
 
         # Pydantic AI Agent
         agent = Agent(
-            model=Config.get_model("creative"),
+            model=Config.get_model("persona"),
             system_prompt="You are an expert persona creator. Return ONLY valid JSON."
         )
 
@@ -1037,7 +1037,7 @@ Return ONLY valid JSON, no other text."""
         # Call Claude for synthesis
         # Pydantic AI Agent (Creative)
         agent = Agent(
-            model=Config.get_model("creative"),
+            model=Config.get_model("persona"),
             system_prompt="You are an expert persona synthesizer. Return ONLY valid JSON."
         )
 
