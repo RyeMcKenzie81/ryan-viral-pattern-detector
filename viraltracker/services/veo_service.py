@@ -182,6 +182,16 @@ class VeoService:
         )
         return data
 
+    def _cleanup_temp_files(self, temp_files: list) -> None:
+        """Clean up temporary files."""
+        import os
+        for path in temp_files:
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file {path}: {e}")
+
     async def generate_video(
         self,
         request: VeoGenerationRequest,
@@ -245,6 +255,9 @@ class VeoService:
             }).execute()
         )
 
+        # Track temp files for cleanup
+        temp_files_to_cleanup = []
+
         try:
             start_time = time.time()
 
@@ -266,38 +279,28 @@ class VeoService:
 
                 reference_image_objects = []
                 for i, img_bytes in enumerate(reference_image_bytes[:3]):
-                    # Save bytes to temp file for upload to Gemini Files API
+                    # Save bytes to temp file
                     with tempfile.NamedTemporaryFile(
                         suffix='.png', delete=False
                     ) as tmp_file:
                         tmp_file.write(img_bytes)
                         tmp_path = tmp_file.name
+                        temp_files_to_cleanup.append(tmp_path)
 
-                    try:
-                        # Upload to Gemini Files API
-                        uploaded_file = await asyncio.to_thread(
-                            lambda p=tmp_path: self.client.files.upload(file=p)
-                        )
+                    # Create Image from file using types.Image.from_file()
+                    image_obj = types.Image.from_file(tmp_path)
 
-                        # Create VideoGenerationReferenceImage
-                        ref_image = types.VideoGenerationReferenceImage(
-                            image=types.Image(
-                                uri=uploaded_file.uri,
-                                mime_type="image/png"
-                            ),
-                            reference_type="asset"
-                        )
-                        reference_image_objects.append(ref_image)
+                    # Create VideoGenerationReferenceImage
+                    ref_image = types.VideoGenerationReferenceImage(
+                        image=image_obj,
+                        reference_type="asset"
+                    )
+                    reference_image_objects.append(ref_image)
 
-                        # Also upload to Supabase for record keeping
-                        ref_path = f"{generation_id}/reference_{i+1}.png"
-                        await self._upload_to_storage(ref_path, img_bytes, "image/png")
-                        reference_paths.append(ref_path)
-
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(tmp_path):
-                            os.unlink(tmp_path)
+                    # Also upload to Supabase for record keeping
+                    ref_path = f"{generation_id}/reference_{i+1}.png"
+                    await self._upload_to_storage(ref_path, img_bytes, "image/png")
+                    reference_paths.append(ref_path)
 
                 if reference_image_objects:
                     veo_config.reference_images = reference_image_objects
@@ -359,6 +362,9 @@ class VeoService:
                     f"({generation_time:.1f}s, ${cost_usd:.2f})"
                 )
 
+                # Clean up temp files
+                self._cleanup_temp_files(temp_files_to_cleanup)
+
                 return VeoGenerationResult(
                     generation_id=generation_id,
                     status=GenerationStatus.COMPLETED,
@@ -374,6 +380,9 @@ class VeoService:
 
         except Exception as e:
             logger.error(f"Video generation failed: {generation_id} - {e}")
+
+            # Clean up temp files
+            self._cleanup_temp_files(temp_files_to_cleanup)
 
             # Update record with failure
             await asyncio.to_thread(

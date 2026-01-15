@@ -293,14 +293,31 @@ def render_avatar_card(avatar, brand_id: str):
 # Video Generation Section
 # ============================================================================
 
-def get_product_variants(product_id: str):
-    """Fetch variants for a product."""
+def get_offer_variants(product_id: str):
+    """Fetch offer variants for a product."""
     try:
         db = get_supabase_client()
-        result = db.table("product_variants").select("*").eq(
+        result = db.table("product_offer_variants").select("*").eq(
             "product_id", product_id
-        ).order("display_order").execute()
+        ).order("name").execute()
         return result.data or []
+    except Exception:
+        return []
+
+
+def get_offer_variant_images(offer_variant_id: str):
+    """Get images associated with an offer variant via junction table."""
+    try:
+        db = get_supabase_client()
+        result = db.table("offer_variant_images").select(
+            "*, product_images(*)"
+        ).eq("offer_variant_id", offer_variant_id).order("display_order").execute()
+        # Extract product_images from junction records
+        images = []
+        for record in result.data or []:
+            if record.get("product_images"):
+                images.append(record["product_images"])
+        return images
     except Exception:
         return []
 
@@ -341,32 +358,37 @@ def render_video_generation(brand_id: str):
         )
     selected_product_id = product_options[selected_product_name]
 
-    # Show variants if product selected
+    # Show offer variants if product selected
     selected_variant_id = None
     if selected_product_id:
-        variants = get_product_variants(selected_product_id)
+        variants = get_offer_variants(selected_product_id)
         if variants:
             with col2:
-                variant_options = {"All (no variant filter)": None}
+                variant_options = {"All images": None}
                 variant_options.update({v["name"]: v["id"] for v in variants})
                 selected_variant_name = st.selectbox(
-                    "Select Variant (optional)",
+                    "Filter by Offer Variant",
                     options=list(variant_options.keys()),
-                    key="veo_variant_select"
+                    key="veo_variant_select",
+                    help="Filter images to show only those from a specific offer variant"
                 )
                 selected_variant_id = variant_options[selected_variant_name]
 
-    # Show images for selected product
+    # Show images for selected product (filtered by variant if selected)
     selected_image_path = None
     if selected_product_id:
-        product_images = get_product_images(selected_product_id)
+        # Get images - either from variant or all product images
+        if selected_variant_id:
+            product_images = get_offer_variant_images(selected_variant_id)
+        else:
+            product_images = get_product_images(selected_product_id)
 
         if product_images:
-            st.markdown("**Select an image to use as reference:**")
+            st.markdown(f"**Select an image to use as reference:** ({len(product_images)} images)")
 
-            # Display images in a grid
+            # Display images in a scrollable grid (4 columns, paginate if many)
             cols = st.columns(4)
-            for i, img in enumerate(product_images[:8]):  # Max 8 images
+            for i, img in enumerate(product_images):  # No limit
                 storage_path = img.get('storage_path', '')
                 is_main = img.get('is_main', False)
                 notes = img.get('notes', '')
