@@ -622,7 +622,7 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                                 )
 
                                 analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
-                                synthesis = ad_service.synthesize_messaging(analyses, [group])
+                                synthesis = ad_service.synthesize_messaging(analyses)
 
                                 db = get_supabase_client()
                                 suggested_name = synthesis.get("suggested_name", f"Variant from {display_url[:30]}")
