@@ -1461,6 +1461,19 @@ else:
                                     st.markdown("---")
                                     st.caption(f"*Source: {source}*")
 
+                                # Delete button
+                                st.markdown("---")
+                                delete_col1, delete_col2 = st.columns([3, 1])
+                                with delete_col2:
+                                    if st.button("🗑️ Delete", key=f"delete_ov_{ov_id}", type="secondary"):
+                                        try:
+                                            db = get_supabase_client()
+                                            db.table("product_offer_variants").delete().eq("id", ov_id).execute()
+                                            st.success("Offer variant deleted!")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Failed to delete: {e}")
+
                 with tab_discover:
                     render_offer_variant_discovery(selected_brand_id, product_id, product['name'])
 
