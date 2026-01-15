@@ -31,8 +31,109 @@ from .models import (
     Demographics, TransformationMap, SocialRelations, DomainSentiment,
     DesireInstance, CopyBrief, ProductPersonaLink
 )
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Pydantic Models for Structured AI Output
+# ============================================================================
+
+class DesireItemResponse(BaseModel):
+    """A single desire item from AI."""
+    text: str
+    source: str = "ai_generated"
+
+
+class DesiresResponse(BaseModel):
+    """Desires section from AI response."""
+    care_protection: List[DesireItemResponse] = Field(default_factory=list)
+    social_approval: List[DesireItemResponse] = Field(default_factory=list)
+    freedom_from_fear: List[DesireItemResponse] = Field(default_factory=list)
+
+
+class DemographicsResponse(BaseModel):
+    """Demographics from AI response."""
+    age_range: str = ""
+    gender: str = ""
+    location: str = ""
+    income_level: str = ""
+    education: str = ""
+    occupation: str = ""
+    family_status: str = ""
+
+
+class TransformationMapResponse(BaseModel):
+    """Before/after transformation from AI response."""
+    before: List[str] = Field(default_factory=list)
+    after: List[str] = Field(default_factory=list)
+
+
+class SocialRelationsResponse(BaseModel):
+    """Social relations from AI response."""
+    want_to_impress: List[str] = Field(default_factory=list)
+    fear_judged_by: List[str] = Field(default_factory=list)
+    influence_decisions: List[str] = Field(default_factory=list)
+
+
+class DomainPainPointsResponse(BaseModel):
+    """Pain points by domain from AI response."""
+    emotional: List[str] = Field(default_factory=list)
+    social: List[str] = Field(default_factory=list)
+    functional: List[str] = Field(default_factory=list)
+
+
+class DomainOutcomesResponse(BaseModel):
+    """Outcomes/JTBD by domain from AI response."""
+    emotional: List[str] = Field(default_factory=list)
+    social: List[str] = Field(default_factory=list)
+    functional: List[str] = Field(default_factory=list)
+
+
+class DomainObjectionsResponse(BaseModel):
+    """Buying objections by domain from AI response."""
+    emotional: List[str] = Field(default_factory=list)
+    social: List[str] = Field(default_factory=list)
+    functional: List[str] = Field(default_factory=list)
+
+
+class PersonaAIResponse(BaseModel):
+    """
+    Structured output model for AI persona generation.
+    Using Pydantic model as result_type eliminates JSON parsing errors.
+    """
+    name: str = Field(description="Descriptive persona name")
+    snapshot: str = Field(description="2-3 sentence big picture description")
+
+    demographics: DemographicsResponse = Field(default_factory=DemographicsResponse)
+    transformation_map: TransformationMapResponse = Field(default_factory=TransformationMapResponse)
+    desires: DesiresResponse = Field(default_factory=DesiresResponse)
+
+    self_narratives: List[str] = Field(default_factory=list)
+    current_self_image: str = ""
+    desired_self_image: str = ""
+    identity_artifacts: List[str] = Field(default_factory=list)
+
+    social_relations: SocialRelationsResponse = Field(default_factory=SocialRelationsResponse)
+
+    worldview: str = ""
+    core_values: List[str] = Field(default_factory=list)
+    allergies: Dict[str, str] = Field(default_factory=dict)
+
+    pain_points: DomainPainPointsResponse = Field(default_factory=DomainPainPointsResponse)
+    outcomes_jtbd: DomainOutcomesResponse = Field(default_factory=DomainOutcomesResponse)
+
+    failed_solutions: List[str] = Field(default_factory=list)
+    buying_objections: DomainObjectionsResponse = Field(default_factory=DomainObjectionsResponse)
+    familiar_promises: List[str] = Field(default_factory=list)
+
+    activation_events: List[str] = Field(default_factory=list)
+    decision_process: str = ""
+    current_workarounds: List[str] = Field(default_factory=list)
+
+    emotional_risks: List[str] = Field(default_factory=list)
+    barriers_to_behavior: List[str] = Field(default_factory=list)
 
 
 def repair_json(json_str: str) -> str:
@@ -138,91 +239,32 @@ EXISTING TARGET AUDIENCE (if any):
 AD INSIGHTS (extracted from analyzed ads - use these to inform the persona):
 {ad_insights}
 
-Generate a detailed 4D persona with ALL of the following sections. Be specific and use language the customer would actually use.
+Generate a detailed 4D persona with ALL sections filled out. Be specific and use language the customer would actually use.
 Use the hooks, benefits, and pain points from the ad insights to inform the persona's desires, pain points, and language.
 
-Return JSON with this structure:
-{{
-  "name": "Descriptive persona name (e.g., 'Worried First-Time Dog Mom')",
-  "snapshot": "2-3 sentence big picture description",
-
-  "demographics": {{
-    "age_range": "e.g., 28-45",
-    "gender": "male/female/any",
-    "location": "e.g., Suburban USA",
-    "income_level": "e.g., Middle to upper-middle class",
-    "education": "e.g., College educated",
-    "occupation": "e.g., Professional, works from home",
-    "family_status": "e.g., Married with young children"
-  }},
-
-  "transformation_map": {{
-    "before": ["Current frustration 1", "Current limitation 2", "..."],
-    "after": ["Desired outcome 1", "Desired state 2", "..."]
-  }},
-
-  "desires": {{
-    "care_protection": [
-      {{"text": "I want to give my dog the absolute best", "source": "ai_generated"}}
-    ],
-    "social_approval": [
-      {{"text": "I want the vet to say I'm doing a great job", "source": "ai_generated"}}
-    ],
-    "freedom_from_fear": [
-      {{"text": "I don't want to worry about my pet's health", "source": "ai_generated"}}
-    ]
-  }},
-
-  "self_narratives": [
-    "Because I am a responsible pet owner, I research everything before buying",
-    "I'm the kind of person who only wants the best for my family"
-  ],
-  "current_self_image": "How they see themselves now",
-  "desired_self_image": "How they want to be seen/who they want to become",
-  "identity_artifacts": ["Brands/products associated with their desired identity"],
-
-  "social_relations": {{
-    "want_to_impress": ["Their vet", "Other pet owners at the dog park"],
-    "fear_judged_by": ["Other pet parents who might think they're not caring enough"],
-    "influence_decisions": ["Pet influencers", "Facebook pet groups"]
-  }},
-
-  "worldview": "Their general interpretation of reality",
-  "core_values": ["Value 1", "Value 2"],
-  "allergies": {{
-    "fake urgency": "They immediately distrust 'LIMITED TIME' messaging",
-    "too good to be true": "Skeptical of miracle claims"
-  }},
-
-  "pain_points": {{
-    "emotional": ["Worry about pet's health", "Guilt when can't afford premium"],
-    "social": ["Embarrassment at vet visits", "Judgment from other owners"],
-    "functional": ["Hard to find products that actually work"]
-  }},
-
-  "outcomes_jtbd": {{
-    "emotional": ["Feel confident they're doing the right thing"],
-    "social": ["Be seen as a great pet parent"],
-    "functional": ["Healthy, happy pet with good dental health"]
-  }},
-
-  "failed_solutions": ["What they've tried before that didn't work"],
-  "buying_objections": {{
-    "emotional": ["What if it doesn't work and I wasted money?"],
-    "social": ["What if people think I'm being duped?"],
-    "functional": ["Will my pet actually like it?"]
-  }},
-  "familiar_promises": ["Claims they've heard before and are skeptical of"],
-
-  "activation_events": ["What triggers them to buy NOW - e.g., vet visit, bad breath noticed"],
-  "decision_process": "How they typically make purchase decisions",
-  "current_workarounds": ["What they're doing instead of buying the ideal solution"],
-
-  "emotional_risks": ["Fear of wasting money", "Fear of looking foolish"],
-  "barriers_to_behavior": ["Price concerns", "Uncertainty about effectiveness"]
-}}
-
-Return ONLY valid JSON, no other text."""
+Guidelines:
+- name: Descriptive persona name (e.g., 'Worried First-Time Dog Mom')
+- snapshot: 2-3 sentence big picture description of this person
+- demographics: Age range, gender, location, income, education, occupation, family status
+- transformation_map: What they're experiencing now (before) vs what they want (after)
+- desires: Split into care_protection, social_approval, freedom_from_fear categories. Each desire has text and source="ai_generated"
+- self_narratives: "Because I am X, I do Y" statements that define their identity
+- current_self_image vs desired_self_image: Who they are vs who they want to become
+- identity_artifacts: Brands/products associated with their desired identity
+- social_relations: Who they want to impress, fear being judged by, and who influences their decisions
+- worldview: Their general interpretation of reality
+- core_values: What matters most to them
+- allergies: Marketing tactics that turn them off (e.g., fake urgency, too good to be true claims)
+- pain_points: Split into emotional, social, functional categories
+- outcomes_jtbd: What outcomes they want - emotional, social, functional
+- failed_solutions: What they've tried before that didn't work
+- buying_objections: What makes them hesitate - emotional, social, functional concerns
+- familiar_promises: Claims they've heard before and are skeptical of
+- activation_events: What triggers them to buy NOW
+- decision_process: How they typically make purchase decisions
+- current_workarounds: What they're doing instead of buying the ideal solution
+- emotional_risks: Fears about purchasing
+- barriers_to_behavior: What prevents them from acting"""
 
 
 class PersonaService:
@@ -653,10 +695,11 @@ class PersonaService:
         # Gather ad insights from existing analyses
         ad_insights = await self._gather_ad_insights(resolved_brand_id, product_id)
 
-        # Pydantic AI Agent (Creative)
+        # Pydantic AI Agent with structured output (eliminates JSON parsing errors)
         agent = Agent(
             model=Config.get_model("creative"),
-            system_prompt="You are an expert persona creator. Return ONLY valid JSON."
+            system_prompt="You are an expert persona creator.",
+            result_type=PersonaAIResponse
         )
 
         prompt = PERSONA_GENERATION_PROMPT.format(
@@ -667,17 +710,14 @@ class PersonaService:
 
         result = await agent.run(prompt)
 
-        response_text = result.output
+        # result.data is already a PersonaAIResponse object - no JSON parsing needed
+        ai_response: PersonaAIResponse = result.data
 
-        # Parse response with robust JSON repair
-        persona_data = parse_llm_json(response_text)
-
-        # Build Persona4D model from AI response
-        persona = self._build_persona_from_ai_response(
-            persona_data,
+        # Build Persona4D model from structured AI response
+        persona = self._build_persona_from_structured_response(
+            ai_response,
             product_id=product_id,
-            brand_id=brand_id or UUID(product.get("brand_id")) if product.get("brand_id") else None,
-            raw_response=response_text
+            brand_id=brand_id or UUID(product.get("brand_id")) if product.get("brand_id") else None
         )
 
         logger.info(f"Generated persona for product {product_id}: {persona.name}")
@@ -963,6 +1003,121 @@ Return ONLY valid JSON, no other text."""
         logger.info(f"Synthesized competitor persona for {level_desc}: {persona.name}")
         return persona
 
+    def _build_persona_from_structured_response(
+        self,
+        ai_response: PersonaAIResponse,
+        product_id: Optional[UUID] = None,
+        brand_id: Optional[UUID] = None
+    ) -> Persona4D:
+        """Build a Persona4D from structured AI response (no JSON parsing needed)."""
+
+        # Convert demographics
+        demographics = Demographics(
+            age_range=ai_response.demographics.age_range,
+            gender=ai_response.demographics.gender,
+            location=ai_response.demographics.location,
+            income_level=ai_response.demographics.income_level,
+            education=ai_response.demographics.education,
+            occupation=ai_response.demographics.occupation,
+            family_status=ai_response.demographics.family_status
+        )
+
+        # Convert transformation map
+        transformation_map = TransformationMap(
+            before=ai_response.transformation_map.before,
+            after=ai_response.transformation_map.after
+        )
+
+        # Convert desires - structured response already has proper types
+        desires = {}
+        if ai_response.desires.care_protection:
+            desires["care_protection"] = [
+                DesireInstance(text=d.text, source=d.source)
+                for d in ai_response.desires.care_protection
+            ]
+        if ai_response.desires.social_approval:
+            desires["social_approval"] = [
+                DesireInstance(text=d.text, source=d.source)
+                for d in ai_response.desires.social_approval
+            ]
+        if ai_response.desires.freedom_from_fear:
+            desires["freedom_from_fear"] = [
+                DesireInstance(text=d.text, source=d.source)
+                for d in ai_response.desires.freedom_from_fear
+            ]
+
+        # Convert social relations
+        social_relations = SocialRelations(
+            want_to_impress=ai_response.social_relations.want_to_impress,
+            fear_judged_by=ai_response.social_relations.fear_judged_by,
+            influence_decisions=ai_response.social_relations.influence_decisions
+        )
+
+        # Convert domain sentiments
+        pain_points = DomainSentiment(
+            emotional=ai_response.pain_points.emotional,
+            social=ai_response.pain_points.social,
+            functional=ai_response.pain_points.functional
+        )
+        outcomes_jtbd = DomainSentiment(
+            emotional=ai_response.outcomes_jtbd.emotional,
+            social=ai_response.outcomes_jtbd.social,
+            functional=ai_response.outcomes_jtbd.functional
+        )
+        buying_objections = DomainSentiment(
+            emotional=ai_response.buying_objections.emotional,
+            social=ai_response.buying_objections.social,
+            functional=ai_response.buying_objections.functional
+        )
+
+        return Persona4D(
+            name=ai_response.name,
+            persona_type=PersonaType.PRODUCT_SPECIFIC if product_id else PersonaType.OWN_BRAND,
+            brand_id=brand_id,
+            product_id=product_id,
+
+            # Basics
+            snapshot=ai_response.snapshot,
+            demographics=demographics,
+
+            # Psychographic
+            transformation_map=transformation_map,
+            desires=desires,
+
+            # Identity
+            self_narratives=ai_response.self_narratives,
+            current_self_image=ai_response.current_self_image,
+            desired_self_image=ai_response.desired_self_image,
+            identity_artifacts=ai_response.identity_artifacts,
+
+            # Social
+            social_relations=social_relations,
+
+            # Worldview
+            worldview=ai_response.worldview,
+            core_values=ai_response.core_values,
+            allergies=ai_response.allergies,
+
+            # Domain Sentiment
+            outcomes_jtbd=outcomes_jtbd,
+            pain_points=pain_points,
+            failed_solutions=ai_response.failed_solutions,
+            buying_objections=buying_objections,
+            familiar_promises=ai_response.familiar_promises,
+
+            # Purchase Behavior
+            activation_events=ai_response.activation_events,
+            decision_process=ai_response.decision_process,
+            current_workarounds=ai_response.current_workarounds,
+
+            # 3D Objections
+            emotional_risks=ai_response.emotional_risks,
+            barriers_to_behavior=ai_response.barriers_to_behavior,
+
+            # Meta
+            source_type=SourceType.AI_GENERATED
+        )
+
     def _build_persona_from_ai_response(
         self,
         data: Dict[str, Any],
@@ -972,7 +1127,7 @@ Return ONLY valid JSON, no other text."""
         competitor_product_id: Optional[UUID] = None,
         raw_response: str = ""
     ) -> Persona4D:
-        """Build a Persona4D from AI-generated JSON data."""
+        """Build a Persona4D from AI-generated JSON data (used for competitor personas)."""
 
         # Parse demographics
         demographics = Demographics(**(data.get("demographics", {})))
