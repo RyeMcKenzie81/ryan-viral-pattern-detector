@@ -282,8 +282,6 @@ async def retry_ad_run(run: dict) -> dict:
     Returns:
         Result from the ad workflow
     """
-    from viraltracker.ui.pages import _ad_creator_helpers
-
     # Get the reference ad
     reference_path = run.get('reference_ad_storage_path')
     if not reference_path:
@@ -334,8 +332,7 @@ async def retry_ad_run(run: dict) -> dict:
         additional_instructions=params.get('additional_instructions'),
         angle_data=params.get('angle_data'),
         match_template_structure=params.get('match_template_structure', False),
-        offer_variant_id=params.get('offer_variant_id'),
-        image_resolution=params.get('image_resolution', '2K')
+        offer_variant_id=params.get('offer_variant_id')
     )
 
     return result
