@@ -2147,8 +2147,8 @@ else:
         render_synthesis_section(selected_brand_id, selected_product_id)
 
         # Show existing personas
-        with st.expander("View Existing Personas", expanded=True):
-            render_existing_personas(selected_brand_id, selected_product_id)
+        st.markdown("#### View Existing Personas")
+        render_existing_personas(selected_brand_id, selected_product_id)
 
         st.divider()
 
