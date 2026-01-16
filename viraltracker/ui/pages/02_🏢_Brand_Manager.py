@@ -1573,7 +1573,7 @@ else:
                                             )
 
                                             # Also sync to brand research URL patterns
-                                            sync_offer_variant_urls(UUID(product_id))
+                                            sync_url_to_landing_pages(selected_brand_id, new_ov_url, product_id)
 
                                             # Clear the form state
                                             st.session_state[f"{new_ov_key}_analysis"] = None
