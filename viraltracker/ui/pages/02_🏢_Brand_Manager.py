@@ -1448,11 +1448,151 @@ else:
                                 st.rerun()
 
                 with tab_offers:
-                    # Offer Variants = Landing page angles with pain points/benefits
+                    # ========================================
+                    # Add New Offer Variant Section
+                    # ========================================
+                    with st.expander("➕ **Add New Offer Variant**", expanded=False):
+                        st.markdown("Add a new landing page angle by entering the URL. We'll scrape and analyze it automatically.")
+
+                        # Session state for new variant form
+                        new_ov_key = f"new_ov_{product_id}"
+                        if f"{new_ov_key}_analysis" not in st.session_state:
+                            st.session_state[f"{new_ov_key}_analysis"] = None
+                        if f"{new_ov_key}_url" not in st.session_state:
+                            st.session_state[f"{new_ov_key}_url"] = ""
+
+                        # URL Input
+                        new_ov_url = st.text_input(
+                            "Landing Page URL",
+                            value=st.session_state[f"{new_ov_key}_url"],
+                            placeholder="https://example.com/offer-page",
+                            key=f"{new_ov_key}_url_input"
+                        )
+                        st.session_state[f"{new_ov_key}_url"] = new_ov_url
+
+                        # Analyze button
+                        if new_ov_url and st.button("🔍 Analyze Landing Page", key=f"{new_ov_key}_analyze"):
+                            with st.spinner("Scraping and analyzing landing page..."):
+                                from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                ov_service = ProductOfferVariantService()
+                                analysis = ov_service.analyze_landing_page(new_ov_url)
+                                st.session_state[f"{new_ov_key}_analysis"] = analysis
+                                if analysis.get('success'):
+                                    st.success("Analysis complete! Review and edit the extracted data below.")
+                                else:
+                                    st.error(f"Analysis failed: {analysis.get('error', 'Unknown error')}")
+                                st.rerun()
+
+                        # Show form if analysis is available
+                        analysis = st.session_state[f"{new_ov_key}_analysis"]
+                        if analysis and analysis.get('success'):
+                            st.markdown("---")
+                            st.markdown("**Review Extracted Data**")
+
+                            # Editable fields pre-filled with analysis results
+                            new_ov_name = st.text_input(
+                                "Variant Name",
+                                value=analysis.get('name', ''),
+                                key=f"{new_ov_key}_name",
+                                help="Short name for this offer angle"
+                            )
+
+                            new_ov_target = st.text_area(
+                                "Target Audience",
+                                value=analysis.get('target_audience', ''),
+                                key=f"{new_ov_key}_target",
+                                height=80
+                            )
+
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                pain_points_text = "\n".join(analysis.get('pain_points', []))
+                                new_ov_pain = st.text_area(
+                                    "Pain Points (one per line)",
+                                    value=pain_points_text,
+                                    key=f"{new_ov_key}_pain",
+                                    height=120
+                                )
+
+                                benefits_text = "\n".join(analysis.get('benefits', []))
+                                new_ov_benefits = st.text_area(
+                                    "Benefits (one per line)",
+                                    value=benefits_text,
+                                    key=f"{new_ov_key}_benefits",
+                                    height=120
+                                )
+
+                            with col2:
+                                desires_text = "\n".join(analysis.get('desires_goals', []))
+                                new_ov_desires = st.text_area(
+                                    "Desires/Goals (one per line)",
+                                    value=desires_text,
+                                    key=f"{new_ov_key}_desires",
+                                    height=120
+                                )
+
+                                new_ov_disclaimers = st.text_area(
+                                    "Required Disclaimers",
+                                    value="",
+                                    key=f"{new_ov_key}_disclaimers",
+                                    height=120,
+                                    help="Legal disclaimers required for this offer"
+                                )
+
+                            new_ov_default = st.checkbox(
+                                "Set as default variant for this product",
+                                value=False,
+                                key=f"{new_ov_key}_default"
+                            )
+
+                            # Create button
+                            if st.button("✅ Create Offer Variant", key=f"{new_ov_key}_create", type="primary"):
+                                if not new_ov_name:
+                                    st.error("Please enter a variant name")
+                                else:
+                                    with st.spinner("Creating offer variant..."):
+                                        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                        ov_service = ProductOfferVariantService()
+
+                                        # Parse text areas into lists
+                                        pain_list = [p.strip() for p in new_ov_pain.split('\n') if p.strip()]
+                                        benefits_list = [b.strip() for b in new_ov_benefits.split('\n') if b.strip()]
+                                        desires_list = [d.strip() for d in new_ov_desires.split('\n') if d.strip()]
+
+                                        try:
+                                            variant_id = ov_service.create_offer_variant(
+                                                product_id=UUID(product_id),
+                                                name=new_ov_name,
+                                                landing_page_url=new_ov_url,
+                                                pain_points=pain_list,
+                                                desires_goals=desires_list,
+                                                benefits=benefits_list,
+                                                target_audience=new_ov_target,
+                                                required_disclaimers=new_ov_disclaimers if new_ov_disclaimers else None,
+                                                is_default=new_ov_default
+                                            )
+
+                                            # Also sync to brand research URL patterns
+                                            sync_offer_variant_urls(UUID(product_id))
+
+                                            # Clear the form state
+                                            st.session_state[f"{new_ov_key}_analysis"] = None
+                                            st.session_state[f"{new_ov_key}_url"] = ""
+
+                                            st.success(f"✅ Created offer variant: **{new_ov_name}**")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Failed to create variant: {e}")
+
+                    st.markdown("---")
+
+                    # ========================================
+                    # Existing Offer Variants
+                    # ========================================
                     offer_variants = get_offer_variants_for_product(product_id)
 
                     if not offer_variants:
-                        st.info("No offer variants imported. These are created during brand onboarding from Amazon analysis or ad library scraping.")
+                        st.info("No offer variants yet. Use the form above to add a landing page angle.")
                     else:
                         st.markdown(f"**{len(offer_variants)} offer variant(s)** (landing page angles)")
 
