@@ -505,6 +505,27 @@ def get_edit_presets() -> dict:
     return service.EDIT_PRESETS
 
 
+def update_ad_status(ad_id: str, new_status: str) -> bool:
+    """Update the final_status of an ad.
+
+    Args:
+        ad_id: UUID string of the ad
+        new_status: New status (approved, rejected, flagged, pending)
+
+    Returns:
+        True if successful
+    """
+    try:
+        db = get_supabase_client()
+        db.table("generated_ads").update({
+            "final_status": new_status
+        }).eq("id", ad_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update ad status: {e}")
+        return False
+
+
 def get_format_code_from_spec(prompt_spec: dict) -> str:
     """Determine format code from prompt_spec canvas dimensions."""
     if not prompt_spec:
@@ -1152,6 +1173,25 @@ else:
                                                     st.session_state.edit_ad_id = None
                                                     st.session_state.edit_result = None
                                                     st.rerun()
+
+                                    # Approve/Reject buttons for pending ads
+                                    if ad_id and ad_status == 'pending':
+                                        st.markdown("**Review:**")
+                                        review_cols = st.columns(2)
+                                        with review_cols[0]:
+                                            if st.button("✅ Approve", key=f"approve_{ad_id}", type="primary"):
+                                                if update_ad_status(ad_id, "approved"):
+                                                    st.success("Approved!")
+                                                    st.rerun()
+                                                else:
+                                                    st.error("Failed to approve")
+                                        with review_cols[1]:
+                                            if st.button("❌ Reject", key=f"reject_{ad_id}"):
+                                                if update_ad_status(ad_id, "rejected"):
+                                                    st.warning("Rejected")
+                                                    st.rerun()
+                                                else:
+                                                    st.error("Failed to reject")
 
                                     # Delete button for all ads
                                     if ad_id:
