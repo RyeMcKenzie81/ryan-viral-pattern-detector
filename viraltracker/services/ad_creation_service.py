@@ -1548,3 +1548,355 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             logger.error(f"Failed to get template for plan {plan_id}: {e}")
             return None
 
+    # ============================================
+    # SMART AD EDITING
+    # ============================================
+
+    # Quick edit presets for common modifications
+    EDIT_PRESETS = {
+        "text_larger": "Make all text 20% larger and more prominent",
+        "more_contrast": "Increase contrast between text and background for better readability",
+        "brighter": "Make the overall image 15% brighter",
+        "warmer": "Shift the color palette to warmer tones (more orange/red)",
+        "cooler": "Shift the color palette to cooler tones (more blue/green)",
+        "bolder_cta": "Make the call-to-action button or text more prominent and eye-catching",
+        "cleaner_layout": "Simplify the layout and reduce visual clutter while keeping all elements",
+    }
+
+    async def create_edited_ad(
+        self,
+        source_ad_id: UUID,
+        edit_prompt: str,
+        temperature: float = 0.3,
+        preserve_text: bool = True,
+        preserve_colors: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Create an edited version of an existing ad using Gemini.
+
+        Takes an existing generated ad and creates a modified version based on
+        the edit instructions. The edited ad goes through the same review process
+        as newly generated ads.
+
+        Args:
+            source_ad_id: UUID of the source ad to edit
+            edit_prompt: Instructions for what to change (e.g., "make the headline larger")
+            temperature: Generation temperature (0.0-1.0). Lower = more faithful to original.
+                         Default 0.3 for faithful edits.
+            preserve_text: If True, explicitly instruct to keep text identical unless changing it
+            preserve_colors: If True, explicitly instruct to keep colors identical unless changing them
+
+        Returns:
+            Dict with edited ad info:
+            {
+                "ad_id": str,
+                "storage_path": str,
+                "edit_prompt": str,
+                "generation_time_ms": int,
+                "source_ad_id": str
+            }
+
+        Raises:
+            ValueError: If source ad not found
+            Exception: If generation fails
+        """
+        from .gemini_service import GeminiService
+        import uuid as uuid_module
+        import time
+
+        logger.info(f"Creating edited ad from source {source_ad_id}")
+        start_time = time.time()
+
+        # Get source ad data
+        result = self.supabase.table("generated_ads").select(
+            "id, storage_path, prompt_spec, prompt_text, hook_text, hook_id, "
+            "ad_run_id, angle_id, template_id, belief_plan_id, "
+            "meta_headline, meta_primary_text, template_name, "
+            "ad_runs(product_id)"
+        ).eq("id", str(source_ad_id)).execute()
+
+        if not result.data:
+            raise ValueError(f"Source ad not found: {source_ad_id}")
+
+        source_ad = result.data[0]
+        ad_run_id = source_ad.get("ad_run_id")
+        hook_text = source_ad.get("hook_text", "")
+        original_spec = source_ad.get("prompt_spec", {})
+
+        # Get product_id from ad_run
+        product_id = None
+        if source_ad.get("ad_runs") and source_ad["ad_runs"].get("product_id"):
+            product_id = UUID(source_ad["ad_runs"]["product_id"])
+
+        # Get source image
+        source_image_base64 = await self.get_image_as_base64(source_ad["storage_path"])
+
+        # Build preservation instructions
+        preservation_rules = []
+        if preserve_text:
+            preservation_rules.append(
+                "- Keep ALL text EXACTLY the same (same words, fonts, sizes, positions) "
+                "unless the edit specifically asks to change text"
+            )
+        if preserve_colors:
+            preservation_rules.append(
+                "- Keep ALL colors EXACTLY the same unless the edit specifically asks to change colors"
+            )
+
+        preservation_text = "\n".join(preservation_rules) if preservation_rules else ""
+
+        # Get canvas dimensions from original spec
+        canvas = original_spec.get("canvas", {})
+        if isinstance(canvas, dict):
+            dimensions = canvas.get("dimensions", "1080x1080")
+        else:
+            dimensions = "1080x1080"
+
+        # Build the edit prompt
+        full_prompt = f"""Edit this Facebook ad image according to the following instructions.
+
+**EDIT INSTRUCTIONS:**
+{edit_prompt}
+
+**PRESERVATION RULES (CRITICAL):**
+{preservation_text}
+- The hook text is: "{hook_text}" - preserve this exactly unless told to change it
+- Maintain the same overall composition and visual hierarchy
+- Keep the product image(s) exactly the same - do not modify products
+- Output at the same dimensions: {dimensions}px
+
+**REFERENCE IMAGE:**
+The attached image is the original ad to edit. Make ONLY the requested changes.
+
+This is a SMART EDIT - be precise and targeted. Change only what is requested."""
+
+        # Generate edited image
+        gemini_service = GeminiService()
+        generation_result = await gemini_service.generate_image(
+            prompt=full_prompt,
+            reference_images=[source_image_base64],
+            return_metadata=True,
+            temperature=temperature
+        )
+
+        generated_image_base64 = generation_result["image_base64"]
+        generation_time_ms = generation_result.get("generation_time_ms", 0)
+        model_used = generation_result.get("model_used", "models/gemini-3-pro-image-preview")
+
+        # Generate new ad ID
+        new_ad_id = uuid_module.uuid4()
+
+        # Build storage path
+        if product_id:
+            brand_code, product_code = await self.get_brand_product_codes(product_id)
+            format_code = self.get_format_code(dimensions)
+            filename = self.generate_ad_filename(
+                brand_code=brand_code,
+                product_code=product_code,
+                ad_run_id=ad_run_id,
+                ad_id=new_ad_id,
+                format_code=format_code
+            )
+            storage_filename = f"{ad_run_id}/{filename}"
+        else:
+            storage_filename = f"{ad_run_id}/edit_{new_ad_id.hex[:8]}.png"
+
+        # Upload to storage
+        image_data = base64.b64decode(generated_image_base64)
+        self.supabase.storage.from_("generated-ads").upload(
+            storage_filename,
+            image_data,
+            {"content-type": "image/png"}
+        )
+
+        full_storage_path = f"generated-ads/{storage_filename}"
+
+        # Create updated prompt spec for the edit
+        edit_spec = original_spec.copy() if original_spec else {}
+        edit_spec["edit_instructions"] = edit_prompt
+
+        # Get next prompt_index for this run (edits get higher indices)
+        index_result = self.supabase.table("generated_ads").select(
+            "prompt_index"
+        ).eq("ad_run_id", str(ad_run_id)).order("prompt_index", desc=True).limit(1).execute()
+
+        next_index = 1
+        if index_result.data and index_result.data[0].get("prompt_index"):
+            next_index = index_result.data[0]["prompt_index"] + 1
+
+        # Save to database
+        data = {
+            "id": str(new_ad_id),
+            "ad_run_id": str(ad_run_id),
+            "prompt_index": next_index,
+            "prompt_text": full_prompt,
+            "prompt_spec": edit_spec,
+            "hook_text": hook_text,
+            "storage_path": full_storage_path,
+            "final_status": "pending",  # Will go through review
+            "model_used": model_used,
+            "generation_time_ms": int((time.time() - start_time) * 1000),
+            # Edit-specific fields
+            "edit_parent_id": str(source_ad_id),
+            "edit_prompt": edit_prompt,
+            "edit_temperature": temperature,
+            "is_edit": True
+        }
+
+        # Copy over hook_id if present
+        if source_ad.get("hook_id"):
+            data["hook_id"] = source_ad["hook_id"]
+
+        # Copy belief plan metadata if present
+        if source_ad.get("angle_id"):
+            data["angle_id"] = source_ad["angle_id"]
+        if source_ad.get("template_id"):
+            data["template_id"] = source_ad["template_id"]
+        if source_ad.get("belief_plan_id"):
+            data["belief_plan_id"] = source_ad["belief_plan_id"]
+        if source_ad.get("meta_headline"):
+            data["meta_headline"] = source_ad["meta_headline"]
+        if source_ad.get("meta_primary_text"):
+            data["meta_primary_text"] = source_ad["meta_primary_text"]
+        if source_ad.get("template_name"):
+            data["template_name"] = source_ad["template_name"]
+
+        self.supabase.table("generated_ads").insert(data).execute()
+
+        logger.info(f"Created edited ad {new_ad_id} from source {source_ad_id} ({generation_time_ms}ms)")
+
+        return {
+            "ad_id": str(new_ad_id),
+            "storage_path": full_storage_path,
+            "edit_prompt": edit_prompt,
+            "generation_time_ms": generation_time_ms,
+            "source_ad_id": str(source_ad_id)
+        }
+
+    async def get_edit_history(self, ad_id: UUID) -> List[Dict]:
+        """
+        Get the edit history chain for an ad.
+
+        Returns a list of ads in the edit chain, from the original
+        to the most recent edit.
+
+        Args:
+            ad_id: UUID of any ad in the chain (original or edit)
+
+        Returns:
+            List of ad records in chronological order (oldest first)
+        """
+        # First, find the root (original) ad by walking up the chain
+        current_id = str(ad_id)
+        visited = set()
+
+        while True:
+            if current_id in visited:
+                logger.warning(f"Circular reference detected in edit chain for {ad_id}")
+                break
+            visited.add(current_id)
+
+            result = self.supabase.table("generated_ads").select(
+                "id, edit_parent_id"
+            ).eq("id", current_id).execute()
+
+            if not result.data:
+                break
+
+            parent_id = result.data[0].get("edit_parent_id")
+            if not parent_id:
+                # This is the root
+                break
+            current_id = parent_id
+
+        root_id = current_id
+
+        # Now walk down from root to get full history
+        history = []
+        current_id = root_id
+
+        while current_id:
+            result = self.supabase.table("generated_ads").select(
+                "id, storage_path, edit_prompt, edit_temperature, is_edit, "
+                "created_at, final_status, hook_text"
+            ).eq("id", current_id).execute()
+
+            if not result.data:
+                break
+
+            history.append(result.data[0])
+
+            # Find child (edited version)
+            child_result = self.supabase.table("generated_ads").select(
+                "id"
+            ).eq("edit_parent_id", current_id).order("created_at").limit(1).execute()
+
+            if child_result.data:
+                current_id = child_result.data[0]["id"]
+            else:
+                current_id = None
+
+        return history
+
+    async def get_editable_ads(
+        self,
+        product_id: Optional[UUID] = None,
+        brand_id: Optional[UUID] = None,
+        status: str = "approved",
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Get ads that can be edited.
+
+        Returns approved ads (non-variants) that can be used as source for edits.
+
+        Args:
+            product_id: Filter by product UUID
+            brand_id: Filter by brand UUID
+            status: Filter by status (default: "approved")
+            limit: Maximum results
+
+        Returns:
+            List of ad records with product/brand info
+        """
+        # Build query - exclude variants (parent_ad_id is null)
+        query = self.supabase.table("generated_ads").select(
+            "id, storage_path, hook_text, final_status, created_at, is_edit, "
+            "ad_run_id, ad_runs(product_id, products(id, name, brand_id, brands(id, name)))"
+        ).eq("final_status", status).is_("parent_ad_id", "null")
+
+        # Apply filters
+        if product_id:
+            # Need to filter via ad_runs
+            runs_result = self.supabase.table("ad_runs").select("id").eq(
+                "product_id", str(product_id)
+            ).execute()
+            run_ids = [r["id"] for r in runs_result.data] if runs_result.data else []
+            if run_ids:
+                query = query.in_("ad_run_id", run_ids)
+            else:
+                return []  # No runs for this product
+
+        if brand_id:
+            # Get products for brand, then runs for products
+            products_result = self.supabase.table("products").select("id").eq(
+                "brand_id", str(brand_id)
+            ).execute()
+            product_ids = [p["id"] for p in products_result.data] if products_result.data else []
+            if product_ids:
+                runs_result = self.supabase.table("ad_runs").select("id").in_(
+                    "product_id", product_ids
+                ).execute()
+                run_ids = [r["id"] for r in runs_result.data] if runs_result.data else []
+                if run_ids:
+                    query = query.in_("ad_run_id", run_ids)
+                else:
+                    return []
+            else:
+                return []
+
+        query = query.order("created_at", desc=True).limit(limit)
+        result = query.execute()
+
+        return result.data or []
+

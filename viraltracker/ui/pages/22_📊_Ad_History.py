@@ -481,6 +481,30 @@ async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
     )
 
 
+async def create_edited_ad_async(
+    ad_id: str,
+    edit_prompt: str,
+    temperature: float = 0.3,
+    preserve_text: bool = True,
+    preserve_colors: bool = True
+) -> dict:
+    """Create an edited ad using the AdCreationService."""
+    service = get_ad_creation_service()
+    return await service.create_edited_ad(
+        source_ad_id=UUID(ad_id),
+        edit_prompt=edit_prompt,
+        temperature=temperature,
+        preserve_text=preserve_text,
+        preserve_colors=preserve_colors
+    )
+
+
+def get_edit_presets() -> dict:
+    """Get edit preset definitions from the service."""
+    service = get_ad_creation_service()
+    return service.EDIT_PRESETS
+
+
 def get_format_code_from_spec(prompt_spec: dict) -> str:
     """Determine format code from prompt_spec canvas dimensions."""
     if not prompt_spec:
@@ -620,6 +644,14 @@ if 'size_variant_results' not in st.session_state:
 # Delete ad state
 if 'delete_confirm_ad_id' not in st.session_state:
     st.session_state.delete_confirm_ad_id = None
+
+# Smart Edit state
+if 'edit_ad_id' not in st.session_state:
+    st.session_state.edit_ad_id = None
+if 'edit_generating' not in st.session_state:
+    st.session_state.edit_generating = False
+if 'edit_result' not in st.session_state:
+    st.session_state.edit_result = None
 
 PAGE_SIZE = 25
 
@@ -1010,6 +1042,116 @@ else:
 
                                                 st.session_state.size_variant_generating = False
                                                 st.rerun()
+
+                                        # Smart Edit button for approved ads (non-variants only)
+                                        is_edit_modal_open = st.session_state.edit_ad_id == ad_id
+
+                                        if st.button("✏️ Smart Edit", key=f"smart_edit_{ad_id}"):
+                                            if is_edit_modal_open:
+                                                st.session_state.edit_ad_id = None
+                                            else:
+                                                st.session_state.edit_ad_id = ad_id
+                                                st.session_state.edit_result = None
+                                            st.rerun()
+
+                                        # Show edit modal
+                                        if is_edit_modal_open:
+                                            st.markdown("**Smart Edit**")
+                                            st.caption("Edit this ad with specific instructions")
+
+                                            # Edit prompt input
+                                            edit_prompt = st.text_area(
+                                                "What would you like to change?",
+                                                placeholder="e.g., Make the headline text larger, Add more contrast...",
+                                                key=f"edit_prompt_{ad_id}",
+                                                height=80
+                                            )
+
+                                            # Quick presets
+                                            st.markdown("**Quick Presets:**")
+                                            presets = get_edit_presets()
+                                            preset_cols = st.columns(3)
+                                            selected_preset = None
+
+                                            for idx, (preset_key, preset_desc) in enumerate(presets.items()):
+                                                col_idx = idx % 3
+                                                with preset_cols[col_idx]:
+                                                    preset_label = preset_key.replace("_", " ").title()
+                                                    if st.button(preset_label, key=f"preset_{ad_id}_{preset_key}",
+                                                                help=preset_desc, use_container_width=True):
+                                                        selected_preset = preset_desc
+
+                                            # Preservation options
+                                            st.markdown("**Preservation Options:**")
+                                            preserve_text = st.checkbox(
+                                                "Keep text identical",
+                                                value=True,
+                                                key=f"preserve_text_{ad_id}",
+                                                help="Keep all text exactly the same unless editing it"
+                                            )
+                                            preserve_colors = st.checkbox(
+                                                "Keep colors identical",
+                                                value=True,
+                                                key=f"preserve_colors_{ad_id}",
+                                                help="Keep all colors exactly the same unless editing them"
+                                            )
+
+                                            # Temperature slider
+                                            temperature = st.slider(
+                                                "Faithfulness",
+                                                min_value=0.1,
+                                                max_value=0.8,
+                                                value=0.3,
+                                                step=0.1,
+                                                key=f"edit_temp_{ad_id}",
+                                                help="Lower = more faithful to original, Higher = more creative"
+                                            )
+
+                                            # Show result if available
+                                            if st.session_state.edit_result:
+                                                result = st.session_state.edit_result
+                                                if "ad_id" in result:
+                                                    st.success(f"✅ Edit created! New ad ID: {result['ad_id'][:8]}")
+                                                    st.caption(f"Generation time: {result.get('generation_time_ms', 0)}ms")
+                                                elif "error" in result:
+                                                    st.error(f"❌ Edit failed: {result['error']}")
+
+                                            # Action buttons
+                                            edit_btn_col1, edit_btn_col2 = st.columns(2)
+                                            with edit_btn_col1:
+                                                # Use preset if selected, otherwise use text input
+                                                final_prompt = selected_preset or edit_prompt
+                                                can_generate = bool(final_prompt) and not st.session_state.edit_generating
+
+                                                if st.button(
+                                                    "🎨 Generate Edit",
+                                                    key=f"generate_edit_{ad_id}",
+                                                    disabled=not can_generate,
+                                                    type="primary"
+                                                ):
+                                                    st.session_state.edit_generating = True
+                                                    with st.spinner("Creating edited ad..."):
+                                                        try:
+                                                            result = asyncio.run(
+                                                                create_edited_ad_async(
+                                                                    ad_id=ad_id,
+                                                                    edit_prompt=final_prompt,
+                                                                    temperature=temperature,
+                                                                    preserve_text=preserve_text,
+                                                                    preserve_colors=preserve_colors
+                                                                )
+                                                            )
+                                                            st.session_state.edit_result = result
+                                                        except Exception as e:
+                                                            st.session_state.edit_result = {"error": str(e)}
+                                                    st.session_state.edit_generating = False
+                                                    st.rerun()
+
+                                            with edit_btn_col2:
+                                                if st.button("Cancel", key=f"cancel_edit_{ad_id}"):
+                                                    st.session_state.edit_ad_id = None
+                                                    st.session_state.edit_result = None
+                                                    st.rerun()
 
                                     # Delete button for all ads
                                     if ad_id:

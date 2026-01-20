@@ -505,3 +505,124 @@ class TemplateRecommendationService:
         unused = total - used
 
         return {"total": total, "used": used, "unused": unused}
+
+    # =========================================================================
+    # Asset Matching Integration
+    # =========================================================================
+
+    def get_recommendations_with_asset_check(
+        self,
+        product_id: UUID,
+        unused_only: bool = False,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recommendations with asset matching scores.
+
+        Extends get_recommendations() to include asset match information
+        for each recommended template.
+
+        Args:
+            product_id: Product UUID
+            unused_only: If True, only return unused recommendations
+            limit: Max results
+
+        Returns:
+            List of recommendations with added asset_match fields:
+            - asset_match_score: 0.0-1.0 how well assets match requirements
+            - matched_assets: List of asset tags that are available
+            - missing_assets: List of required assets that are missing
+            - warnings: Human-readable warnings for missing assets
+        """
+        from .template_element_service import TemplateElementService
+
+        # Get base recommendations
+        recs = self.get_recommendations(product_id, unused_only, limit)
+
+        if not recs:
+            return recs
+
+        # Initialize element service for asset matching
+        element_service = TemplateElementService(self.supabase)
+
+        # Add asset match info to each recommendation
+        for rec in recs:
+            template_id = rec.get("template_id")
+            if template_id:
+                try:
+                    match_result = element_service.match_assets_to_template(
+                        UUID(template_id),
+                        product_id
+                    )
+                    rec["asset_match_score"] = match_result.get("asset_match_score", 1.0)
+                    rec["matched_assets"] = match_result.get("matched_assets", [])
+                    rec["missing_assets"] = match_result.get("missing_assets", [])
+                    rec["missing_details"] = match_result.get("missing_details", [])
+                    rec["warnings"] = match_result.get("warnings", [])
+                    rec["detection_status"] = match_result.get("detection_status", "unknown")
+                except Exception as e:
+                    logger.warning(f"Failed to get asset match for template {template_id}: {e}")
+                    rec["asset_match_score"] = 1.0
+                    rec["matched_assets"] = []
+                    rec["missing_assets"] = []
+                    rec["warnings"] = []
+                    rec["detection_status"] = "error"
+
+        return recs
+
+    def get_templates_with_asset_check(
+        self,
+        product_id: UUID,
+        template_ids: Optional[List[UUID]] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get templates with asset matching info (for non-recommended templates).
+
+        Args:
+            product_id: Product UUID for asset matching
+            template_ids: Optional list to filter templates
+            limit: Max results
+
+        Returns:
+            List of templates with asset match information
+        """
+        from .template_element_service import TemplateElementService
+
+        # Build query
+        query = self.supabase.table("scraped_templates").select(
+            "id, name, category, storage_path, description, industry_niche, "
+            "awareness_level, target_sex, template_elements, element_detection_version"
+        ).eq("is_active", True)
+
+        if template_ids:
+            query = query.in_("id", [str(t) for t in template_ids])
+
+        query = query.order("times_used", desc=True).limit(limit)
+        result = query.execute()
+        templates = result.data or []
+
+        # Initialize element service
+        element_service = TemplateElementService(self.supabase)
+
+        # Add asset match info
+        for tpl in templates:
+            template_id = tpl.get("id")
+            if template_id:
+                try:
+                    match_result = element_service.match_assets_to_template(
+                        UUID(template_id),
+                        product_id
+                    )
+                    tpl["asset_match_score"] = match_result.get("asset_match_score", 1.0)
+                    tpl["matched_assets"] = match_result.get("matched_assets", [])
+                    tpl["missing_assets"] = match_result.get("missing_assets", [])
+                    tpl["missing_details"] = match_result.get("missing_details", [])
+                    tpl["warnings"] = match_result.get("warnings", [])
+                    tpl["detection_status"] = match_result.get("detection_status", "unknown")
+                except Exception as e:
+                    logger.warning(f"Failed to get asset match for template {template_id}: {e}")
+                    tpl["asset_match_score"] = 1.0
+                    tpl["detection_status"] = "error"
+
+        return templates

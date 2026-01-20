@@ -342,6 +342,48 @@ def get_scraped_template_url(storage_path: str) -> str:
         return ""
 
 
+def get_template_asset_match(template_id: str, product_id: str) -> dict:
+    """Get asset match info for a template.
+
+    Args:
+        template_id: UUID string of the template
+        product_id: UUID string of the product
+
+    Returns:
+        Dict with asset_match_score, missing_assets, warnings, detection_status
+    """
+    try:
+        from viraltracker.services.template_element_service import TemplateElementService
+        from uuid import UUID
+        service = TemplateElementService()
+        return service.match_assets_to_template(UUID(template_id), UUID(product_id))
+    except Exception as e:
+        logger.debug(f"Asset match check failed: {e}")
+        return {"asset_match_score": 1.0, "detection_status": "error"}
+
+
+def get_asset_badge_html(score: float, detection_status: str = "analyzed") -> str:
+    """Generate HTML badge for asset match score.
+
+    Args:
+        score: Asset match score 0.0-1.0
+        detection_status: Status of element detection
+
+    Returns:
+        HTML string for badge
+    """
+    if detection_status == "not_analyzed":
+        return ""  # No badge if not analyzed
+
+    if score >= 1.0:
+        return '<span style="background:#28a745;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">All assets</span>'
+    elif score >= 0.5:
+        pct = int(score * 100)
+        return f'<span style="background:#ffc107;color:black;padding:1px 4px;border-radius:3px;font-size:9px;">{pct}% assets</span>'
+    else:
+        return '<span style="background:#dc3545;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">Missing assets</span>'
+
+
 def record_template_usage(template_id: str, ad_run_id: str = None):
     """Record that a scraped template was used."""
     try:
@@ -1654,6 +1696,22 @@ else:
                     if times_used > 0:
                         st.caption(f"Used {times_used}x")
 
+                    # Show asset match badge if product is selected
+                    if st.session_state.selected_product:
+                        asset_match = get_template_asset_match(template_id, st.session_state.selected_product)
+                        badge_html = get_asset_badge_html(
+                            asset_match.get("asset_match_score", 1.0),
+                            asset_match.get("detection_status", "unknown")
+                        )
+                        if badge_html:
+                            st.markdown(badge_html, unsafe_allow_html=True)
+                            # Show warnings on hover/tooltip via expander if missing
+                            warnings = asset_match.get("warnings", [])
+                            if warnings:
+                                with st.expander("View missing assets", expanded=False):
+                                    for w in warnings:
+                                        st.caption(f"- {w}")
+
                     # Parse bucket and path for storage
                     parts = storage_path.split("/", 1) if storage_path else ["", ""]
                     bucket = parts[0] if len(parts) == 2 else "scraped-assets"
@@ -2188,6 +2246,143 @@ else:
 
             # Show link to check database directly
             st.info("💡 Check the sidebar for recent runs - some ads may have been generated before the error.")
+
+# ============================================================================
+# Smart Edit Section (collapsible)
+# ============================================================================
+
+with st.expander("✏️ Smart Edit - Edit Existing Ads", expanded=False):
+    st.caption("Make targeted edits to approved ads with AI assistance")
+
+    # Initialize smart edit state
+    if 'smart_edit_product_filter' not in st.session_state:
+        st.session_state.smart_edit_product_filter = None
+    if 'smart_edit_selected_ad' not in st.session_state:
+        st.session_state.smart_edit_selected_ad = None
+    if 'smart_edit_result' not in st.session_state:
+        st.session_state.smart_edit_result = None
+
+    # Product filter (optional - use selected product by default)
+    smart_edit_product = st.session_state.selected_product
+
+    if smart_edit_product:
+        # Get approved ads for this product
+        try:
+            from viraltracker.services.ad_creation_service import AdCreationService
+            ad_service = AdCreationService()
+            editable_ads = asyncio.get_event_loop().run_until_complete(
+                ad_service.get_editable_ads(product_id=UUID(smart_edit_product), limit=20)
+            )
+
+            if editable_ads:
+                st.markdown(f"**{len(editable_ads)} approved ads available for editing**")
+
+                # Display ads in a grid
+                edit_cols = st.columns(4)
+                for idx, ad in enumerate(editable_ads[:8]):  # Show max 8
+                    with edit_cols[idx % 4]:
+                        # Get thumbnail URL
+                        storage_path = ad.get('storage_path', '')
+                        if storage_path:
+                            thumb_url = get_signed_url(storage_path)
+                            if thumb_url:
+                                st.image(thumb_url, use_container_width=True)
+
+                        hook = ad.get('hook_text', '')[:30] + "..." if ad.get('hook_text') else "No hook"
+                        st.caption(hook)
+
+                        is_edit = ad.get('is_edit', False)
+                        edit_label = " (edit)" if is_edit else ""
+                        if st.button(f"Edit{edit_label}", key=f"smart_edit_select_{idx}"):
+                            st.session_state.smart_edit_selected_ad = ad
+                            st.rerun()
+
+                # Selected ad edit panel
+                if st.session_state.smart_edit_selected_ad:
+                    st.divider()
+                    selected_ad = st.session_state.smart_edit_selected_ad
+
+                    st.markdown("**Edit Selected Ad**")
+
+                    # Show selected ad thumbnail
+                    sel_cols = st.columns([1, 2])
+                    with sel_cols[0]:
+                        sel_url = get_signed_url(selected_ad.get('storage_path', ''))
+                        if sel_url:
+                            st.image(sel_url, width=150)
+
+                    with sel_cols[1]:
+                        # Edit prompt
+                        edit_prompt = st.text_area(
+                            "What would you like to change?",
+                            placeholder="e.g., Make the headline larger, add more contrast...",
+                            key="smart_edit_prompt",
+                            height=80
+                        )
+
+                        # Quick presets
+                        presets = ad_service.EDIT_PRESETS
+                        preset_options = [""] + list(presets.keys())
+                        selected_preset = st.selectbox(
+                            "Or choose a preset",
+                            options=preset_options,
+                            format_func=lambda x: x.replace("_", " ").title() if x else "Select preset...",
+                            key="smart_edit_preset"
+                        )
+
+                        final_prompt = presets.get(selected_preset, "") if selected_preset else edit_prompt
+
+                        # Options
+                        opt_cols = st.columns(2)
+                        with opt_cols[0]:
+                            preserve_text = st.checkbox("Keep text identical", value=True, key="se_preserve_text")
+                        with opt_cols[1]:
+                            preserve_colors = st.checkbox("Keep colors identical", value=True, key="se_preserve_colors")
+
+                        temperature = st.slider("Faithfulness", 0.1, 0.8, 0.3, 0.1,
+                                              help="Lower = more faithful to original",
+                                              key="se_temperature")
+
+                        # Generate button
+                        btn_cols = st.columns(2)
+                        with btn_cols[0]:
+                            if st.button("🎨 Generate Edit", disabled=not final_prompt, type="primary",
+                                        key="se_generate"):
+                                with st.spinner("Creating edited ad..."):
+                                    try:
+                                        result = asyncio.get_event_loop().run_until_complete(
+                                            ad_service.create_edited_ad(
+                                                source_ad_id=UUID(selected_ad['id']),
+                                                edit_prompt=final_prompt,
+                                                temperature=temperature,
+                                                preserve_text=preserve_text,
+                                                preserve_colors=preserve_colors
+                                            )
+                                        )
+                                        st.session_state.smart_edit_result = result
+                                        st.success(f"Edit created! ID: {result['ad_id'][:8]}")
+                                    except Exception as e:
+                                        st.error(f"Edit failed: {e}")
+
+                        with btn_cols[1]:
+                            if st.button("Cancel", key="se_cancel"):
+                                st.session_state.smart_edit_selected_ad = None
+                                st.session_state.smart_edit_result = None
+                                st.rerun()
+
+                        # Show result
+                        if st.session_state.smart_edit_result:
+                            result = st.session_state.smart_edit_result
+                            st.caption(f"Generation time: {result.get('generation_time_ms', 0)}ms")
+                            result_url = get_signed_url(result.get('storage_path', ''))
+                            if result_url:
+                                st.image(result_url, caption="Edited Ad", width=200)
+            else:
+                st.info("No approved ads found for this product. Generate some ads first!")
+        except Exception as e:
+            st.warning(f"Could not load editable ads: {e}")
+    else:
+        st.info("Select a product above to browse ads for editing.")
 
 # ============================================================================
 # Sidebar - Recent Runs
