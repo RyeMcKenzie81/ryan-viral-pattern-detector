@@ -15,6 +15,7 @@ import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
+from uuid import UUID
 
 # Handle Streamlit's event loop for async operations
 import nest_asyncio
@@ -96,6 +97,9 @@ if 'multi_template_progress' not in st.session_state:
     st.session_state.multi_template_progress = None  # {current: int, total: int, results: []}
 if 'multi_template_results' not in st.session_state:
     st.session_state.multi_template_results = None  # Final batch results
+# Template recommendation filter state
+if 'template_rec_filter' not in st.session_state:
+    st.session_state.template_rec_filter = "all"  # all, recommended, unused_recommended
 
 
 def toggle_template_selection(template_info: dict):
@@ -1492,6 +1496,41 @@ else:
             st.warning("No uploaded templates found. Upload a reference ad first, or use Scraped Template Library.")
 
     elif reference_source == "Scraped Template Library":
+        # Recommendation filter row (product-specific)
+        rec_filter_col1, rec_filter_col2, rec_filter_col3 = st.columns([2, 2, 4])
+        with rec_filter_col1:
+            rec_filter_options = ["All Templates", "Recommended", "Unused Recommended"]
+            rec_filter = st.selectbox(
+                "Filter by Recommendation",
+                options=rec_filter_options,
+                index=rec_filter_options.index(
+                    {"all": "All Templates", "recommended": "Recommended", "unused_recommended": "Unused Recommended"}.get(
+                        st.session_state.template_rec_filter, "All Templates"
+                    )
+                ),
+                key="template_rec_filter_select",
+                help="Filter to show only templates recommended for this product"
+            )
+            st.session_state.template_rec_filter = {
+                "All Templates": "all",
+                "Recommended": "recommended",
+                "Unused Recommended": "unused_recommended"
+            }.get(rec_filter, "all")
+
+        with rec_filter_col2:
+            # Show recommendation counts if product is selected
+            if selected_product_id and st.session_state.template_rec_filter != "all":
+                try:
+                    from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                    rec_service = TemplateRecommendationService()
+                    counts = rec_service.get_recommendation_count(UUID(selected_product_id))
+                    if st.session_state.template_rec_filter == "recommended":
+                        st.caption(f"{counts['total']} recommended templates")
+                    else:
+                        st.caption(f"{counts['unused']} unused recommendations")
+                except Exception:
+                    pass
+
         # Filter row - 4 columns
         filter_cols = st.columns(4)
 
@@ -1543,8 +1582,25 @@ else:
             awareness_level=selected_awareness,
             industry_niche=selected_niche if selected_niche != "all" else None,
             target_sex=selected_sex if selected_sex != "all" else None,
-            limit=50
+            limit=100  # Fetch more since we may filter
         )
+
+        # Apply recommendation filter
+        if st.session_state.template_rec_filter != "all" and selected_product_id:
+            try:
+                from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                rec_service = TemplateRecommendationService()
+                unused_only = st.session_state.template_rec_filter == "unused_recommended"
+                recommended_ids = rec_service.get_recommended_template_ids(
+                    UUID(selected_product_id), unused_only=unused_only
+                )
+                recommended_id_strs = {str(rid) for rid in recommended_ids}
+                scraped_templates = [
+                    t for t in scraped_templates
+                    if t.get('id') in recommended_id_strs
+                ]
+            except Exception as e:
+                logger.warning(f"Failed to filter by recommendations: {e}")
 
         if scraped_templates:
             # Selection count and clear button
@@ -1988,6 +2044,13 @@ else:
                             ad_run_id = result.get('ad_run_id')
                             if ad_run_id:
                                 record_template_usage(template_id=template_id, ad_run_id=ad_run_id)
+                            # Mark recommendation as used (non-critical)
+                            try:
+                                from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                                rec_service = TemplateRecommendationService()
+                                rec_service.mark_as_used(UUID(selected_product_id), UUID(template_id))
+                            except Exception:
+                                pass  # Non-critical
 
                         results['successful'].append({
                             'template_id': template_id,
@@ -2101,6 +2164,16 @@ else:
                     template_id=st.session_state.selected_scraped_template,
                     ad_run_id=ad_run_id
                 )
+                # Mark recommendation as used (non-critical)
+                try:
+                    from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                    rec_service = TemplateRecommendationService()
+                    rec_service.mark_as_used(
+                        UUID(selected_product_id),
+                        UUID(st.session_state.selected_scraped_template)
+                    )
+                except Exception:
+                    pass  # Non-critical, don't fail the workflow
 
             # Success - store result and show
             st.session_state.workflow_result = result

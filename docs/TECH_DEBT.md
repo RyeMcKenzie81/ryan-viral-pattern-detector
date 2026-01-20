@@ -78,6 +78,79 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 3. Ad Scheduler - Scraped Template Support
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-01-19
+
+**Context**: The Template Recommendation system only integrates with Ad Creator because the Ad Scheduler uses uploaded templates from `reference-ads` bucket, not the scraped template library. Users can't leverage recommendations in scheduled runs.
+
+**What's needed**:
+1. Add "Scraped Template Library" as a template source option in Ad Scheduler
+2. Port the template selection UI from Ad Creator (filters, grid, checkboxes)
+3. Add recommendation filter (All / Recommended / Unused Recommended)
+4. Update job execution to download from `scraped-templates` bucket
+
+**Related files**:
+- `viraltracker/ui/pages/24_📅_Ad_Scheduler.py`
+- `viraltracker/services/template_recommendation_service.py`
+
+---
+
+### 4. Template Recommendations - Performance-Based Methodology
+
+**Priority**: Low (needs performance data first)
+**Complexity**: Medium
+**Added**: 2026-01-19
+
+**Context**: The `RecommendationMethodology.PERFORMANCE` enum exists but raises "not yet available" error. Once we have ad performance data (CTR, conversions, ROAS) linked to templates, we can recommend templates based on historical performance.
+
+**What's needed**:
+1. Track which template was used for each ad run (already done via `source_template_id`)
+2. Link ad performance metrics (from Meta Ads) back to templates
+3. Calculate template performance scores per product/niche
+4. Implement `_score_templates_performance()` method in recommendation service
+
+**Prerequisite**: Meta Ads performance data syncing must be working
+
+---
+
+### 5. Template Recommendations - Batch AI Analysis
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-01-19
+
+**Context**: Currently the AI Match methodology analyzes templates sequentially (one Gemini call per template). For 100 templates, this can take several minutes.
+
+**What's needed**:
+1. Use `asyncio.gather()` to analyze multiple templates in parallel
+2. Respect Gemini rate limits (add semaphore for concurrency control)
+3. Show real-time progress as templates are scored
+
+**File**: `viraltracker/services/template_recommendation_service.py` - `_score_templates_ai()` method
+
+---
+
+### 6. Template Recommendations - Auto-Generation on Template Approval
+
+**Priority**: Low
+**Complexity**: Low-Medium
+**Added**: 2026-01-19
+
+**Context**: Users must manually go to the Recommendations page to generate suggestions. Could automatically generate recommendations when new templates are approved in Template Queue.
+
+**What's needed**:
+1. Hook into `template_queue_service.finalize_approval()`
+2. For each product with recommendations enabled, score the new template
+3. If score > threshold, auto-add to recommendations
+4. Notify user of new recommendations (optional)
+
+**Consideration**: May want a per-product setting to opt-in to auto-recommendations
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._

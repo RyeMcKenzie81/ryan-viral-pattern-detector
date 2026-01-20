@@ -2350,3 +2350,113 @@ class GapReport(BaseModel):
         default_factory=list,
         description="Proof types that are missing"
     )
+
+
+# =============================================================================
+# Template Recommendation Models
+# =============================================================================
+
+
+class RecommendationMethodology(str, Enum):
+    """Available recommendation methodologies."""
+    AI_MATCH = "ai_match"
+    PERFORMANCE = "performance"  # Future: based on ad performance data
+    DIVERSITY = "diversity"       # Ensure variety in formats
+
+
+class ScoreBreakdown(BaseModel):
+    """Breakdown of recommendation score components."""
+    niche_match: float = Field(default=0.0, ge=0.0, le=1.0, description="Industry/niche alignment")
+    awareness_match: float = Field(default=0.0, ge=0.0, le=1.0, description="Awareness level fit")
+    audience_match: float = Field(default=0.0, ge=0.0, le=1.0, description="Target audience alignment")
+    format_fit: float = Field(default=0.0, ge=0.0, le=1.0, description="Format suitability")
+
+    model_config = {"extra": "allow"}  # Allow additional score components
+
+
+class TemplateRecommendation(BaseModel):
+    """A single template recommendation for a product."""
+    id: UUID = Field(..., description="Recommendation record ID")
+    product_id: UUID = Field(..., description="Product this recommendation is for")
+    template_id: UUID = Field(..., description="Recommended template ID")
+    offer_variant_id: Optional[UUID] = Field(None, description="Optional offer variant context")
+
+    # Recommendation details
+    methodology: RecommendationMethodology = Field(..., description="How this was recommended")
+    score: float = Field(..., ge=0.0, le=1.0, description="Overall recommendation score")
+    score_breakdown: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
+    reasoning: Optional[str] = Field(None, description="AI explanation for recommendation")
+
+    # Usage tracking
+    used: bool = Field(default=False, description="Has been used in ad run")
+    times_used: int = Field(default=0, ge=0, description="Number of times used")
+    last_used_at: Optional[datetime] = Field(None, description="When last used")
+
+    # Lifecycle
+    recommended_at: datetime = Field(..., description="When recommendation was created")
+    recommended_by: str = Field(default="system", description="Who created recommendation")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "product_id": "123e4567-e89b-12d3-a456-426614174000",
+                "template_id": "789e0123-e89b-12d3-a456-426614174000",
+                "methodology": "ai_match",
+                "score": 0.85,
+                "score_breakdown": {"niche_match": 0.9, "awareness_match": 0.8},
+                "reasoning": "Template targets health supplements with awareness level 3...",
+                "used": False,
+                "recommended_at": "2026-01-19T10:30:00Z"
+            }
+        }
+    }
+
+
+class TemplateRecommendationCandidate(BaseModel):
+    """A candidate template with recommendation score (before saving)."""
+    template_id: UUID = Field(..., description="Template UUID")
+    template_name: str = Field(..., description="Template display name")
+    template_category: str = Field(..., description="Template category (testimonial, quote_card, etc.)")
+    storage_path: str = Field(..., description="Supabase storage path for preview")
+
+    # Matching scores
+    score: float = Field(..., ge=0.0, le=1.0, description="Overall recommendation score")
+    score_breakdown: ScoreBreakdown = Field(..., description="Score component breakdown")
+    reasoning: str = Field(..., description="AI explanation for this score")
+
+    # Template metadata for display
+    industry_niche: Optional[str] = Field(None, description="Template industry niche")
+    awareness_level: Optional[int] = Field(None, ge=1, le=5, description="Awareness level 1-5")
+    target_sex: Optional[str] = Field(None, description="Target audience sex")
+
+
+class GenerateRecommendationsRequest(BaseModel):
+    """Request to generate template recommendations."""
+    product_id: UUID = Field(..., description="Product to recommend templates for")
+    offer_variant_id: Optional[UUID] = Field(None, description="Optional offer variant for context")
+    methodology: RecommendationMethodology = Field(
+        default=RecommendationMethodology.AI_MATCH,
+        description="Recommendation methodology"
+    )
+    limit: int = Field(default=20, ge=1, le=50, description="Max recommendations to generate")
+
+    @field_validator('methodology')
+    @classmethod
+    def validate_methodology(cls, v):
+        if v == RecommendationMethodology.PERFORMANCE:
+            # Performance-based not yet implemented
+            raise ValueError("Performance-based recommendations not yet available")
+        return v
+
+
+class GenerateRecommendationsResult(BaseModel):
+    """Result of generating recommendations."""
+    product_id: UUID = Field(..., description="Product recommendations were generated for")
+    product_name: str = Field(..., description="Product display name")
+    methodology: RecommendationMethodology = Field(..., description="Methodology used")
+    candidates: List[TemplateRecommendationCandidate] = Field(
+        ..., description="Ranked list of candidate templates"
+    )
+    total_templates_analyzed: int = Field(..., ge=0, description="Total templates considered")
+    generation_time_ms: int = Field(..., ge=0, description="Time taken in milliseconds")
