@@ -93,6 +93,51 @@ def get_asset_url(storage_path: str) -> str:
 
 
 # ============================================================================
+# Element Detection
+# ============================================================================
+
+def get_template_element_service():
+    """Get TemplateElementService instance."""
+    from viraltracker.services.template_element_service import TemplateElementService
+    return TemplateElementService()
+
+
+def get_element_detection_stats() -> Dict[str, int]:
+    """Get element detection statistics."""
+    db = get_supabase_client()
+
+    # Total active templates
+    total = db.table("scraped_templates").select("id", count="exact").eq("is_active", True).execute()
+
+    # Analyzed templates (have element_detection_version)
+    analyzed = db.table("scraped_templates").select("id", count="exact").eq("is_active", True).not_.is_("element_detection_version", "null").execute()
+
+    return {
+        "total": total.count or 0,
+        "analyzed": analyzed.count or 0,
+        "pending": (total.count or 0) - (analyzed.count or 0)
+    }
+
+
+def get_unanalyzed_templates(limit: int = 10) -> List[Dict]:
+    """Get templates that haven't been analyzed yet."""
+    db = get_supabase_client()
+    result = db.table("scraped_templates").select(
+        "id, name, storage_path, category"
+    ).eq("is_active", True).is_("element_detection_version", "null").limit(limit).execute()
+    return result.data or []
+
+
+def get_analyzed_templates(limit: int = 10) -> List[Dict]:
+    """Get templates that have been analyzed."""
+    db = get_supabase_client()
+    result = db.table("scraped_templates").select(
+        "id, name, storage_path, category, template_elements, element_detection_version"
+    ).eq("is_active", True).not_.is_("element_detection_version", "null").order("element_detection_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+# ============================================================================
 # Actions
 # ============================================================================
 
@@ -768,6 +813,198 @@ def render_ingestion_trigger():
             st.error(f"Failed to run pipeline: {e}")
 
 
+def render_element_detection():
+    """Render Element Detection tab for analyzing template visual elements."""
+    import asyncio
+    from uuid import UUID
+
+    st.subheader("Template Element Detection")
+    st.caption("Analyze templates to detect visual elements (people, objects, logos) for asset matching")
+
+    # Initialize session state for this tab
+    if 'element_detection_running' not in st.session_state:
+        st.session_state.element_detection_running = False
+    if 'element_detection_result' not in st.session_state:
+        st.session_state.element_detection_result = None
+    if 'batch_detection_progress' not in st.session_state:
+        st.session_state.batch_detection_progress = None
+
+    # Stats
+    stats = get_element_detection_stats()
+    stat_cols = st.columns(3)
+    with stat_cols[0]:
+        st.metric("Total Templates", stats["total"])
+    with stat_cols[1]:
+        st.metric("Analyzed", stats["analyzed"])
+    with stat_cols[2]:
+        st.metric("Pending Analysis", stats["pending"])
+
+    st.divider()
+
+    # Two sections: Test Single and Batch Analyze
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Test Single Template")
+        st.caption("Analyze one template to verify detection is working")
+
+        unanalyzed = get_unanalyzed_templates(limit=5)
+
+        if unanalyzed:
+            # Show a few unanalyzed templates to pick from
+            template_options = {t["id"]: f"{t['name']} ({t['category']})" for t in unanalyzed}
+            selected_id = st.selectbox(
+                "Select template to analyze",
+                options=list(template_options.keys()),
+                format_func=lambda x: template_options[x],
+                key="single_template_select"
+            )
+
+            # Show preview
+            selected_template = next((t for t in unanalyzed if t["id"] == selected_id), None)
+            if selected_template and selected_template.get("storage_path"):
+                preview_url = get_asset_url(selected_template["storage_path"])
+                if preview_url:
+                    st.image(preview_url, width=200)
+
+            if st.button("🔍 Analyze This Template", type="primary", key="analyze_single"):
+                with st.spinner("Analyzing template elements..."):
+                    try:
+                        service = get_template_element_service()
+                        result = asyncio.run(service.analyze_template_elements(UUID(selected_id)))
+                        st.session_state.element_detection_result = result
+                        st.success("Analysis complete!")
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+
+            # Show result
+            if st.session_state.element_detection_result:
+                result = st.session_state.element_detection_result
+                st.markdown("**Detected Elements:**")
+
+                if result.get("people"):
+                    st.markdown(f"- **People:** {len(result['people'])} detected")
+                    for p in result["people"]:
+                        st.caption(f"  - {p.get('role', 'unknown')}: {p.get('description', 'N/A')}")
+
+                if result.get("objects"):
+                    st.markdown(f"- **Objects:** {len(result['objects'])} detected")
+                    for o in result["objects"]:
+                        st.caption(f"  - {o.get('type', 'unknown')}: {o.get('description', 'N/A')}")
+
+                if result.get("required_assets"):
+                    st.markdown(f"- **Required Assets:** `{result['required_assets']}`")
+
+                if result.get("optional_assets"):
+                    st.markdown(f"- **Optional Assets:** `{result['optional_assets']}`")
+        else:
+            st.success("All templates have been analyzed!")
+
+    with col2:
+        st.markdown("### Batch Analyze")
+        st.caption("Analyze all pending templates (may take several minutes)")
+
+        if stats["pending"] > 0:
+            st.info(f"**{stats['pending']} templates** need analysis")
+
+            batch_size = st.number_input(
+                "Batch size",
+                min_value=5,
+                max_value=50,
+                value=10,
+                help="Number of templates to process at once"
+            )
+
+            if st.button(f"🚀 Analyze All {stats['pending']} Templates", type="primary", key="batch_analyze"):
+                st.session_state.element_detection_running = True
+                st.rerun()
+
+            # Run batch outside button to show progress
+            if st.session_state.element_detection_running:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                try:
+                    service = get_template_element_service()
+
+                    # Get all unanalyzed template IDs
+                    db = get_supabase_client()
+                    all_pending = db.table("scraped_templates").select("id").eq(
+                        "is_active", True
+                    ).is_("element_detection_version", "null").execute()
+
+                    template_ids = [UUID(t["id"]) for t in (all_pending.data or [])]
+                    total = len(template_ids)
+
+                    if total > 0:
+                        successful = 0
+                        failed = 0
+
+                        for i, tid in enumerate(template_ids):
+                            status_text.text(f"Analyzing template {i+1}/{total}...")
+                            progress_bar.progress((i + 1) / total)
+
+                            try:
+                                asyncio.run(service.analyze_template_elements(tid))
+                                successful += 1
+                            except Exception as e:
+                                failed += 1
+                                st.warning(f"Failed on template {tid}: {e}")
+
+                        st.session_state.element_detection_running = False
+                        st.session_state.batch_detection_progress = {
+                            "successful": successful,
+                            "failed": failed
+                        }
+                        st.rerun()
+                    else:
+                        st.session_state.element_detection_running = False
+                        st.success("No templates to analyze!")
+
+                except Exception as e:
+                    st.session_state.element_detection_running = False
+                    st.error(f"Batch analysis failed: {e}")
+
+            # Show batch results
+            if st.session_state.batch_detection_progress:
+                progress = st.session_state.batch_detection_progress
+                st.success(f"Batch complete! {progress['successful']} analyzed, {progress['failed']} failed")
+        else:
+            st.success("All templates have been analyzed!")
+
+    # Show recently analyzed templates
+    st.divider()
+    st.markdown("### Recently Analyzed")
+    analyzed = get_analyzed_templates(limit=5)
+
+    if analyzed:
+        for t in analyzed:
+            with st.expander(f"{t['name']} ({t['category']})"):
+                cols = st.columns([1, 2])
+                with cols[0]:
+                    if t.get("storage_path"):
+                        preview_url = get_asset_url(t["storage_path"])
+                        if preview_url:
+                            st.image(preview_url, width=150)
+
+                with cols[1]:
+                    elements = t.get("template_elements", {})
+                    st.markdown(f"**Version:** {t.get('element_detection_version', 'N/A')}")
+
+                    if elements.get("required_assets"):
+                        st.markdown(f"**Required:** `{elements['required_assets']}`")
+
+                    if elements.get("people"):
+                        people_desc = ", ".join([p.get("role", "person") for p in elements["people"]])
+                        st.markdown(f"**People:** {people_desc}")
+
+                    if elements.get("objects"):
+                        obj_desc = ", ".join([o.get("type", "object") for o in elements["objects"]])
+                        st.markdown(f"**Objects:** {obj_desc}")
+    else:
+        st.info("No templates analyzed yet. Use the buttons above to start.")
+
+
 # ============================================================================
 # Main Page
 # ============================================================================
@@ -780,7 +1017,7 @@ render_stats()
 st.divider()
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["Pending Review", "Template Library", "Ingest New"])
+tab1, tab2, tab3, tab4 = st.tabs(["Pending Review", "Template Library", "Ingest New", "Element Detection"])
 
 with tab1:
     render_pending_queue()
@@ -790,3 +1027,6 @@ with tab2:
 
 with tab3:
     render_ingestion_trigger()
+
+with tab4:
+    render_element_detection()
