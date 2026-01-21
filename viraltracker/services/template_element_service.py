@@ -121,6 +121,129 @@ class TemplateElementService:
         self.supabase = supabase or get_supabase_client()
         logger.info("TemplateElementService initialized")
 
+    def _extract_json_from_response(self, response: str) -> Dict[str, Any]:
+        """
+        Extract JSON from a Gemini response that may contain markdown or text.
+
+        Handles various response formats:
+        - Pure JSON
+        - JSON in markdown code blocks
+        - JSON with text before/after
+
+        Args:
+            response: Raw response string from Gemini
+
+        Returns:
+            Parsed JSON as dict
+
+        Raises:
+            ValueError: If no valid JSON found
+        """
+        import re
+
+        text = response.strip()
+
+        # Try 1: Direct JSON parse
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try 2: Extract from markdown code block
+        if "```" in text:
+            # Find content between ``` markers
+            pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+            matches = re.findall(pattern, text)
+            for match in matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+
+        # Try 3: Find JSON object by matching braces
+        # Find the first { and last }
+        start_idx = text.find('{')
+        end_idx = text.rfind('}')
+
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = text[start_idx:end_idx + 1]
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+
+        # Try 4: More aggressive - find balanced braces
+        if start_idx != -1:
+            depth = 0
+            for i, char in enumerate(text[start_idx:], start_idx):
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = text[start_idx:i + 1]
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            break
+
+        # Log the response for debugging
+        logger.warning(f"Could not extract JSON from response. First 300 chars: {text[:300]}")
+        raise ValueError(f"No valid JSON found in response")
+
+    def _extract_array_from_response(self, response: str) -> List[str]:
+        """
+        Extract JSON array from a Gemini response.
+
+        Args:
+            response: Raw response string from Gemini
+
+        Returns:
+            Parsed JSON array
+
+        Raises:
+            ValueError: If no valid JSON array found
+        """
+        import re
+
+        text = response.strip()
+
+        # Try 1: Direct JSON parse
+        try:
+            result = json.loads(text)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # Try 2: Extract from markdown code block
+        if "```" in text:
+            pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+            matches = re.findall(pattern, text)
+            for match in matches:
+                try:
+                    result = json.loads(match.strip())
+                    if isinstance(result, list):
+                        return result
+                except json.JSONDecodeError:
+                    continue
+
+        # Try 3: Find JSON array by matching brackets
+        start_idx = text.find('[')
+        end_idx = text.rfind(']')
+
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = text[start_idx:end_idx + 1]
+            try:
+                result = json.loads(json_str)
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning(f"Could not extract JSON array from response. First 300 chars: {text[:300]}")
+        raise ValueError(f"No valid JSON array found in response")
+
     # =========================================================================
     # Template Element Detection
     # =========================================================================
@@ -196,18 +319,8 @@ class TemplateElementService:
 
         # Parse JSON response
         try:
-            # Clean up response
-            clean = response.strip()
-            if clean.startswith("```"):
-                parts = clean.split("```")
-                if len(parts) >= 2:
-                    clean = parts[1]
-                if clean.startswith("json"):
-                    clean = clean[4:]
-            clean = clean.strip()
-
-            elements = json.loads(clean)
-        except json.JSONDecodeError as e:
+            elements = self._extract_json_from_response(response)
+        except Exception as e:
             logger.error(f"Failed to parse element detection response: {e}")
             logger.debug(f"Response was: {response[:500]}")
             # Return empty structure rather than failing
@@ -394,21 +507,10 @@ class TemplateElementService:
         gemini = GeminiService()
         response = await gemini.analyze_image(image_base64, IMAGE_TAGGING_PROMPT)
 
-        # Parse JSON response
+        # Parse JSON response (expecting an array)
         try:
-            clean = response.strip()
-            if clean.startswith("```"):
-                parts = clean.split("```")
-                if len(parts) >= 2:
-                    clean = parts[1]
-                if clean.startswith("json"):
-                    clean = clean[4:]
-            clean = clean.strip()
-
-            tags = json.loads(clean)
-            if not isinstance(tags, list):
-                tags = []
-        except json.JSONDecodeError as e:
+            tags = self._extract_array_from_response(response)
+        except Exception as e:
             logger.error(f"Failed to parse tagging response: {e}")
             tags = []
 
