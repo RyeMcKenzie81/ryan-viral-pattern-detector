@@ -1569,7 +1569,8 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         edit_prompt: str,
         temperature: float = 0.3,
         preserve_text: bool = True,
-        preserve_colors: bool = True
+        preserve_colors: bool = True,
+        reference_image_ids: Optional[List[UUID]] = None
     ) -> Dict[str, Any]:
         """
         Create an edited version of an existing ad using Gemini.
@@ -1585,6 +1586,8 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
                          Default 0.3 for faithful edits.
             preserve_text: If True, explicitly instruct to keep text identical unless changing it
             preserve_colors: If True, explicitly instruct to keep colors identical unless changing them
+            reference_image_ids: Optional list of product_images UUIDs to include as references
+                                 (e.g., correct logo, specific product shots)
 
         Returns:
             Dict with edited ad info:
@@ -1670,11 +1673,56 @@ The attached image is the original ad to edit. Make ONLY the requested changes.
 
 This is a SMART EDIT - be precise and targeted. Change only what is requested."""
 
+        # Build reference images list (source ad first)
+        all_reference_images = [source_image_base64]
+
+        # Fetch additional reference images if provided
+        reference_image_descriptions = []
+        if reference_image_ids:
+            for img_id in reference_image_ids:
+                try:
+                    # Get image path from product_images table
+                    img_result = self.supabase.table("product_images").select(
+                        "storage_path, image_type, alt_text"
+                    ).eq("id", str(img_id)).execute()
+
+                    if img_result.data:
+                        img_data = img_result.data[0]
+                        img_path = img_data["storage_path"]
+                        img_type = img_data.get("image_type", "reference")
+                        img_alt = img_data.get("alt_text", "")
+
+                        # Get image as base64
+                        img_base64 = await self.get_image_as_base64(img_path)
+                        all_reference_images.append(img_base64)
+
+                        # Track description for prompt
+                        desc = f"Reference {len(all_reference_images)}: {img_type}"
+                        if img_alt:
+                            desc += f" ({img_alt})"
+                        reference_image_descriptions.append(desc)
+
+                        logger.info(f"Added reference image: {img_id} ({img_type})")
+                except Exception as e:
+                    logger.warning(f"Failed to load reference image {img_id}: {e}")
+
+        # If we have additional reference images, update the prompt
+        if reference_image_descriptions:
+            ref_images_text = "\n".join(f"- {desc}" for desc in reference_image_descriptions)
+            full_prompt += f"""
+
+**ADDITIONAL REFERENCE IMAGES PROVIDED:**
+{ref_images_text}
+
+Use these reference images to ensure accurate reproduction of elements like logos,
+product shots, or brand assets. The FIRST image is the ad to edit, subsequent
+images are reference materials to use."""
+
         # Generate edited image
         gemini_service = GeminiService()
         generation_result = await gemini_service.generate_image(
             prompt=full_prompt,
-            reference_images=[source_image_base64],
+            reference_images=all_reference_images,
             return_metadata=True,
             temperature=temperature
         )

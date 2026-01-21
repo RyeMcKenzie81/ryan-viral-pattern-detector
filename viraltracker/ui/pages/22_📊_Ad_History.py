@@ -486,16 +486,19 @@ async def create_edited_ad_async(
     edit_prompt: str,
     temperature: float = 0.3,
     preserve_text: bool = True,
-    preserve_colors: bool = True
+    preserve_colors: bool = True,
+    reference_image_ids: list = None
 ) -> dict:
     """Create an edited ad using the AdCreationService."""
     service = get_ad_creation_service()
+    ref_ids = [UUID(rid) for rid in reference_image_ids] if reference_image_ids else None
     return await service.create_edited_ad(
         source_ad_id=UUID(ad_id),
         edit_prompt=edit_prompt,
         temperature=temperature,
         preserve_text=preserve_text,
-        preserve_colors=preserve_colors
+        preserve_colors=preserve_colors,
+        reference_image_ids=ref_ids
     )
 
 
@@ -503,6 +506,52 @@ def get_edit_presets() -> dict:
     """Get edit preset definitions from the service."""
     service = get_ad_creation_service()
     return service.EDIT_PRESETS
+
+
+def get_product_images_for_ad(ad_id: str) -> list:
+    """Get product images available for the product associated with an ad.
+
+    Returns list of dicts with id, storage_path, image_type, alt_text, signed_url
+    """
+    try:
+        supabase = get_supabase()
+
+        # Get product_id from the ad's ad_run
+        ad_result = supabase.table("generated_ads").select(
+            "ad_runs(product_id)"
+        ).eq("id", ad_id).execute()
+
+        if not ad_result.data or not ad_result.data[0].get("ad_runs"):
+            return []
+
+        product_id = ad_result.data[0]["ad_runs"].get("product_id")
+        if not product_id:
+            return []
+
+        # Get all images for this product
+        images_result = supabase.table("product_images").select(
+            "id, storage_path, image_type, alt_text"
+        ).eq("product_id", product_id).execute()
+
+        if not images_result.data:
+            return []
+
+        images = []
+        for img in images_result.data:
+            # Generate signed URL for display
+            try:
+                bucket, path = img["storage_path"].split("/", 1)
+                signed = supabase.storage.from_(bucket).create_signed_url(path, 3600)
+                img["signed_url"] = signed.get("signedURL", "")
+            except Exception:
+                img["signed_url"] = ""
+            images.append(img)
+
+        return images
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to get product images: {e}")
+        return []
 
 
 def update_ad_status(ad_id: str, new_status: str) -> bool:
@@ -1102,6 +1151,29 @@ else:
                                                                 help=preset_desc, use_container_width=True):
                                                         selected_preset = preset_desc
 
+                                            # Reference Images Selection
+                                            product_images = get_product_images_for_ad(ad_id)
+                                            selected_ref_images = []
+                                            if product_images:
+                                                with st.expander("📷 Add Reference Images (e.g., correct logo)", expanded=False):
+                                                    st.caption("Select images to include as references for the edit")
+
+                                                    # Create grid of images with checkboxes
+                                                    img_cols = st.columns(4)
+                                                    for idx, img in enumerate(product_images):
+                                                        with img_cols[idx % 4]:
+                                                            if img.get("signed_url"):
+                                                                st.image(img["signed_url"], width=80)
+                                                            img_label = img.get("image_type", "image")
+                                                            if img.get("alt_text"):
+                                                                img_label += f": {img['alt_text'][:20]}"
+                                                            if st.checkbox(
+                                                                img_label,
+                                                                key=f"ref_img_{ad_id}_{img['id']}",
+                                                                help=img.get("alt_text", "")
+                                                            ):
+                                                                selected_ref_images.append(img["id"])
+
                                             # Preservation options
                                             st.markdown("**Preservation Options:**")
                                             preserve_text = st.checkbox(
@@ -1159,7 +1231,8 @@ else:
                                                                     edit_prompt=final_prompt,
                                                                     temperature=temperature,
                                                                     preserve_text=preserve_text,
-                                                                    preserve_colors=preserve_colors
+                                                                    preserve_colors=preserve_colors,
+                                                                    reference_image_ids=selected_ref_images if selected_ref_images else None
                                                                 )
                                                             )
                                                             st.session_state.edit_result = result
