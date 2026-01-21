@@ -2,7 +2,7 @@
 
 **Date:** 2026-01-21
 **Branch:** feat/veo-avatar-tool
-**Status:** Complete (pending brand logo feature)
+**Status:** Complete (including brand logo feature)
 
 ## Features Implemented
 
@@ -58,19 +58,24 @@ Users can now select product images as references when using Smart Edit to fix i
 - Smart Edit with reference images from product_images table
 - Template element detection batch analysis (435 templates analyzed)
 - Asset matching badges on template grid
+- **Brand logos in Smart Edit reference images** (added in follow-up commit)
+- **Logo upload UI in Brand Manager page** (added in follow-up commit)
 
 **Not Working / Missing:**
-- Brand logos not accessible in reference images (stored in `brands.logo_storage_path` but no upload UI)
-- Logo upload in Client Onboarding has TODO comment - not implemented
+- Logo upload in Client Onboarding has TODO comment - not implemented (separate feature)
 
-## Next Steps
+## Brand Logo Feature (Implemented)
 
-1. **Add brand logo support to reference images** (planned next)
-   - Fetch logo from `brands.logo_storage_path`
-   - Show in reference images section alongside product images
-   - May need to add logo upload UI to Brand Manager
+Added support for brand logos in Smart Edit reference images:
 
-2. Consider adding logo upload to Brand Manager page
+| File | Changes |
+|------|---------|
+| `migrations/2026-01-21_brand_assets.sql` | New table for brand logos |
+| `viraltracker/ui/pages/02_🏢_Brand_Manager.py` | Logo upload UI in Brand Settings |
+| `viraltracker/ui/pages/22_📊_Ad_History.py` | Brand logos section in reference images |
+| `viraltracker/services/ad_creation_service.py` | Lookup images from both tables |
+
+**Storage Pattern:** `brand-assets/{brand_id}/logo_{uuid}.png`
 
 ---
 
@@ -99,11 +104,14 @@ Gemini generates edit with reference images
 ### Database Schema Reference
 
 ```sql
--- Product images (currently used)
+-- Product images
 product_images:
   id, product_id, storage_path, image_analysis, analyzed_at, is_main
 
--- Brand logo (not yet integrated)
-brands:
-  id, name, logo_storage_path (nullable, often empty)
+-- Brand assets (logos, etc.) - NEW
+brand_assets:
+  id, brand_id, storage_path, asset_type, filename, is_primary,
+  sort_order, image_analysis, analyzed_at, notes
+
+-- Deprecated: brands.logo_storage_path (not used, logos now in brand_assets)
 ```
