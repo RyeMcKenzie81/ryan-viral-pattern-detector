@@ -129,6 +129,7 @@ class TemplateElementService:
         - Pure JSON
         - JSON in markdown code blocks
         - JSON with text before/after
+        - Double-escaped braces ({{ and }})
 
         Args:
             response: Raw response string from Gemini
@@ -142,6 +143,9 @@ class TemplateElementService:
         import re
 
         text = response.strip()
+
+        # Fix double braces that Gemini sometimes returns
+        text = text.replace('{{', '{').replace('}}', '}')
 
         # Try 1: Direct JSON parse
         try:
@@ -207,6 +211,9 @@ class TemplateElementService:
         import re
 
         text = response.strip()
+
+        # Fix double braces that Gemini sometimes returns
+        text = text.replace('{{', '{').replace('}}', '}')
 
         # Try 1: Direct JSON parse
         try:
