@@ -549,19 +549,28 @@ def get_product_images_for_ad(ad_id: str) -> list:
 
         logger.debug(f"Found product_id {product_id} for ad {ad_id}")
 
-        # Step 3: Get all images for this product
+        # Step 3: Get all images for this product (use same columns as Ad Creator)
+        # Supported image formats
+        image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+
         images_result = supabase.table("product_images").select(
-            "id, storage_path, image_type, alt_text"
-        ).eq("product_id", product_id).execute()
+            "id, storage_path, image_analysis, analyzed_at, is_main"
+        ).eq("product_id", product_id).order("is_main", desc=True).execute()
 
         if not images_result.data:
             logger.debug(f"No images found for product {product_id}")
             return []
 
-        logger.debug(f"Found {len(images_result.data)} images for product {product_id}")
+        # Filter to only image files (not PDFs)
+        all_images = [
+            img for img in images_result.data
+            if img.get('storage_path', '').lower().endswith(image_extensions)
+        ]
+
+        logger.debug(f"Found {len(all_images)} images for product {product_id}")
 
         images = []
-        for img in images_result.data:
+        for img in all_images:
             # Generate signed URL for display
             try:
                 storage_path = img.get("storage_path", "")
@@ -1193,13 +1202,22 @@ else:
                                                         with img_cols[idx % 4]:
                                                             if img.get("signed_url"):
                                                                 st.image(img["signed_url"], width=80)
-                                                            img_label = img.get("image_type", "image")
-                                                            if img.get("alt_text"):
-                                                                img_label += f": {img['alt_text'][:20]}"
+                                                            # Build label from available data
+                                                            if img.get("is_main"):
+                                                                img_label = "⭐ Main"
+                                                            else:
+                                                                img_label = f"Image {idx + 1}"
+                                                            # Add analysis info if available
+                                                            analysis = img.get("image_analysis")
+                                                            help_text = ""
+                                                            if analysis:
+                                                                use_cases = analysis.get("best_use_cases", [])[:2]
+                                                                if use_cases:
+                                                                    help_text = ", ".join(use_cases)
                                                             if st.checkbox(
                                                                 img_label,
                                                                 key=f"ref_img_{ad_id}_{img['id']}",
-                                                                help=img.get("alt_text", "")
+                                                                help=help_text if help_text else "Select to include as reference"
                                                             ):
                                                                 selected_ref_images.append(img["id"])
                                                 else:
