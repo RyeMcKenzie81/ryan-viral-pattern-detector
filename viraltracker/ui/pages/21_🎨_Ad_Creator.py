@@ -953,6 +953,7 @@ else:
     )
     st.session_state.selected_product_name = selected_product_name
     selected_product_id = product_options[selected_product_name]
+    st.session_state.selected_product = selected_product_id  # For asset badge matching
 
     # Show product details
     selected_product = next((p for p in products if p['id'] == selected_product_id), None)
