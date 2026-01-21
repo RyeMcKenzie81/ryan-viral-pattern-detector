@@ -1154,8 +1154,9 @@ else:
                                             # Reference Images Selection
                                             product_images = get_product_images_for_ad(ad_id)
                                             selected_ref_images = []
-                                            if product_images:
-                                                with st.expander("📷 Add Reference Images (e.g., correct logo)", expanded=False):
+
+                                            with st.expander("📷 Add Reference Images (e.g., correct logo)", expanded=False):
+                                                if product_images:
                                                     st.caption("Select images to include as references for the edit")
 
                                                     # Create grid of images with checkboxes
@@ -1173,6 +1174,8 @@ else:
                                                                 help=img.get("alt_text", "")
                                                             ):
                                                                 selected_ref_images.append(img["id"])
+                                                else:
+                                                    st.info("No product images found. Upload images in Brand Manager to use as references.")
 
                                             # Preservation options
                                             st.markdown("**Preservation Options:**")
