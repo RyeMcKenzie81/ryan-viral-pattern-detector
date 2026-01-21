@@ -614,21 +614,33 @@ def get_brand_logos_for_ad(ad_id: str) -> list:
         if not ad_run_id:
             return []
 
-        # Step 2: Get brand_id from ad_runs
+        # Step 2: Get product_id from ad_runs
         run_result = supabase.table("ad_runs").select(
-            "brand_id"
+            "product_id"
         ).eq("id", ad_run_id).execute()
 
         if not run_result.data:
             return []
 
-        brand_id = run_result.data[0].get("brand_id")
+        product_id = run_result.data[0].get("product_id")
+        if not product_id:
+            return []
+
+        # Step 3: Get brand_id from products
+        product_result = supabase.table("products").select(
+            "brand_id"
+        ).eq("id", product_id).execute()
+
+        if not product_result.data:
+            return []
+
+        brand_id = product_result.data[0].get("brand_id")
         if not brand_id:
             return []
 
         logger.debug(f"Found brand_id {brand_id} for ad {ad_id}")
 
-        # Step 3: Get all logos for this brand from brand_assets
+        # Step 4: Get all logos for this brand from brand_assets
         logos_result = supabase.table("brand_assets").select(
             "id, storage_path, asset_type, is_primary, filename"
         ).eq("brand_id", brand_id).eq("asset_type", "logo").order("is_primary", desc=True).execute()
