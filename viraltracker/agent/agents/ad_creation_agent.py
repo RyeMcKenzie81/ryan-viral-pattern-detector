@@ -532,70 +532,37 @@ async def analyze_reference_ad(
             elif image_base64.startswith('UklGR'):
                 media_type = "image/webp"
         except Exception:
-            pass 
+            pass
 
-        # Create temporary agent for this specific vision task
-        vision_agent = Agent(
-            model=Config.get_model("vision"),
-            system_prompt="You are a simplified vision analysis expert. Return ONLY valid JSON."
-        )
-
-        logger.info(f"Running vision analysis with model: {vision_agent.model}")
-
-        # Construct Prompt content with Image
-        # Note: Pydantic AI 0.0.18+ supports list of content parts including images
-        # We need to construct the message properly based on how Pydantic AI expects it
-        # For now, we'll try the standard run() with user_content list if supported, 
-        # or separate system prompt instruction if image input is complex.
-        # But `agent.run()` typically takes a string or list of messages.
-        # Let's try passing the image as a BinaryContent or similar if the library supports it,
-        # OR just rely on the model adapter if it handles image URLs/base64 in text.
-        # 
-        # Wait, Pydantic AI's `run` method usually takes `user_prompt` (str) or `message_history`.
-        # To send an image, we usually need to use a model-specific structure OR 
-        # the `BinaryContent` if using standard Pydantic models.
-        # 
-        # Let's look at how we were passing it to Anthropic: 
-        # {"type": "image", "source": {"type": "base64", ...}}
-        # 
-        # Update: Pydantic AI recently added proper support for multi-modal via `BinaryContent`.
-        # from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
-        
         from pydantic_ai.messages import BinaryContent
-        
+        from viraltracker.services.models import AdAnalysis
+
         # Decode base64 to bytes if it's a string, because BinaryContent takes bytes
         if isinstance(image_data, str):
              image_bytes = base64.b64decode(image_data)
         else:
              image_bytes = image_data
-             
-        # Run agent
-        # We pass a list containing the image and the prompt
-        # Note: If Pydantic AI version in env doesn't support list for `user_prompt`, 
-        # we might need to use `deps` or a specific model approach. 
-        # Assuming modern Pydantic AI:
-        
+
+        # Create agent with structured output using AdAnalysis Pydantic model
+        # This ensures Gemini returns valid, validated JSON matching our schema
+        vision_agent = Agent(
+            model=Config.get_model("vision"),
+            system_prompt="You are a vision analysis expert. Analyze the ad image and extract structured data.",
+            result_type=AdAnalysis
+        )
+
+        logger.info(f"Running vision analysis with model: {vision_agent.model}")
+
+        # Run agent with structured output validation
         result = await vision_agent.run(
             [
-                analysis_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                analysis_prompt,
                 BinaryContent(data=image_bytes, media_type=media_type)
             ]
         )
-        
-        analysis_result = result.output
 
-        # Strip markdown code fences if present (Gemini/Claude sometimes wraps JSON in ```json...```)
-        analysis_result_clean = analysis_result.strip()
-        if analysis_result_clean.startswith('```'):
-            # Find the first newline after the opening fence
-            first_newline = analysis_result_clean.find('\n')
-            # Find the closing fence
-            last_fence = analysis_result_clean.rfind('```')
-            if first_newline != -1 and last_fence > first_newline:
-                analysis_result_clean = analysis_result_clean[first_newline + 1:last_fence].strip()
-
-        # Parse JSON response
-        analysis_dict = json.loads(analysis_result_clean)
+        # result.output is already a validated AdAnalysis Pydantic model
+        analysis_dict = result.output.model_dump()
 
         logger.info(f"Reference ad analyzed: format={analysis_dict.get('format_type')}, "
                    f"layout={analysis_dict.get('layout_structure')}")

@@ -782,6 +782,17 @@ class AdAnalysis(BaseModel):
     text_placement: Dict[str, Any] = Field(default_factory=dict, description="Text positioning details")
     color_palette: List[str] = Field(default_factory=list, description="Hex color codes")
     authenticity_markers: List[str] = Field(default_factory=list, description="Timestamps, usernames, emojis")
+    # Social proof elements
+    has_social_proof: bool = Field(default=False, description="Whether social proof elements are present")
+    social_proof_style: Optional[str] = Field(default=None, description="How social proof is displayed (e.g., corner badge, banner)")
+    social_proof_placement: Optional[str] = Field(default=None, description="Where social proof is positioned")
+    # Founder elements
+    has_founder_signature: bool = Field(default=False, description="Whether founder signature/sign-off is present")
+    founder_signature_style: Optional[str] = Field(default=None, description="How signature appears (e.g., handwritten at bottom)")
+    founder_signature_placement: Optional[str] = Field(default=None, description="Position of signature")
+    has_founder_mention: bool = Field(default=False, description="Whether founders are referenced in body text")
+    founder_mention_style: Optional[str] = Field(default=None, description="How founders are mentioned (e.g., first-person narrative)")
+    # Required fields
     canvas_size: str = Field(..., description="Image dimensions e.g. 1080x1080px")
     detailed_description: str = Field(..., description="Comprehensive description for prompt engineering")
 
