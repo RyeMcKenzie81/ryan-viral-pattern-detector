@@ -517,7 +517,7 @@ def get_product_images_for_ad(ad_id: str) -> list:
     logger = logging.getLogger(__name__)
 
     try:
-        supabase = get_supabase()
+        supabase = get_supabase_client()
 
         # Step 1: Get ad_run_id from generated_ads
         ad_result = supabase.table("generated_ads").select(
