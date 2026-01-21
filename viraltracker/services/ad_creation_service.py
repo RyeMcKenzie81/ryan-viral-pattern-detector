@@ -1681,16 +1681,39 @@ This is a SMART EDIT - be precise and targeted. Change only what is requested.""
         if reference_image_ids:
             for img_id in reference_image_ids:
                 try:
-                    # Get image path from product_images table
+                    img_data = None
+                    img_type = "reference"
+                    img_desc = ""
+
+                    # First try product_images table
                     img_result = self.supabase.table("product_images").select(
-                        "storage_path, image_type, alt_text"
+                        "storage_path, is_main, image_analysis"
                     ).eq("id", str(img_id)).execute()
 
                     if img_result.data:
                         img_data = img_result.data[0]
+                        img_type = "main product" if img_data.get("is_main") else "product image"
+                        # Get description from analysis if available
+                        analysis = img_data.get("image_analysis") or {}
+                        if analysis.get("best_use_cases"):
+                            img_desc = analysis["best_use_cases"][0] if analysis["best_use_cases"] else ""
+                    else:
+                        # Try brand_assets table
+                        logo_result = self.supabase.table("brand_assets").select(
+                            "storage_path, asset_type, is_primary, filename"
+                        ).eq("id", str(img_id)).execute()
+
+                        if logo_result.data:
+                            img_data = logo_result.data[0]
+                            asset_type = img_data.get("asset_type", "logo")
+                            if img_data.get("is_primary"):
+                                img_type = "primary brand logo"
+                            else:
+                                img_type = f"brand {asset_type.replace('_', ' ')}"
+                            img_desc = "Use this as the correct brand logo"
+
+                    if img_data:
                         img_path = img_data["storage_path"]
-                        img_type = img_data.get("image_type", "reference")
-                        img_alt = img_data.get("alt_text", "")
 
                         # Get image as base64
                         img_base64 = await self.get_image_as_base64(img_path)
@@ -1698,11 +1721,13 @@ This is a SMART EDIT - be precise and targeted. Change only what is requested.""
 
                         # Track description for prompt
                         desc = f"Reference {len(all_reference_images)}: {img_type}"
-                        if img_alt:
-                            desc += f" ({img_alt})"
+                        if img_desc:
+                            desc += f" ({img_desc})"
                         reference_image_descriptions.append(desc)
 
                         logger.info(f"Added reference image: {img_id} ({img_type})")
+                    else:
+                        logger.warning(f"Reference image {img_id} not found in product_images or brand_assets")
                 except Exception as e:
                     logger.warning(f"Failed to load reference image {img_id}: {e}")
 

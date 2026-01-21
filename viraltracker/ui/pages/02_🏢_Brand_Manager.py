@@ -598,6 +598,160 @@ def save_product_code(product_id: str, product_code: str) -> bool:
         return False
 
 
+# ============================================================================
+# BRAND ASSET FUNCTIONS (Logos, etc.)
+# ============================================================================
+
+def get_brand_assets(brand_id: str, asset_type: str = None) -> list:
+    """Fetch brand assets (logos, etc.) for a brand."""
+    try:
+        db = get_supabase_client()
+        query = db.table("brand_assets").select("*").eq("brand_id", brand_id)
+        if asset_type:
+            query = query.eq("asset_type", asset_type)
+        result = query.order("is_primary", desc=True).order("sort_order").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch brand assets: {e}")
+        return []
+
+
+def upload_brand_logo(brand_id: str, file, asset_type: str = "logo") -> dict:
+    """
+    Upload a brand logo to storage and create database record.
+
+    Args:
+        brand_id: UUID of the brand
+        file: UploadedFile object from st.file_uploader
+        asset_type: Type of asset (logo, logo_white, logo_dark, etc.)
+
+    Returns:
+        Dict with success status and message/asset_id
+    """
+    import uuid as uuid_module
+    try:
+        db = get_supabase_client()
+
+        # Generate unique filename (always use .png to preserve transparency)
+        unique_filename = f"{uuid_module.uuid4()}.png"
+        storage_path = f"brand-assets/{brand_id}/{unique_filename}"
+
+        # Read file
+        file_bytes = file.read()
+
+        # Process logo (keep transparency for logos - different from product images)
+        processed_bytes, content_type = process_logo_image(file_bytes)
+
+        # Upload to Supabase storage
+        db.storage.from_("brand-assets").upload(
+            f"{brand_id}/{unique_filename}",
+            processed_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+
+        # Check if this is the first logo (make it primary)
+        existing_logos = get_brand_assets(brand_id, asset_type="logo")
+        is_primary = len(existing_logos) == 0
+
+        # Create database record
+        result = db.table("brand_assets").insert({
+            "brand_id": brand_id,
+            "storage_path": storage_path,
+            "asset_type": asset_type,
+            "filename": file.name,
+            "is_primary": is_primary
+        }).execute()
+
+        return {"success": True, "asset_id": result.data[0]["id"]}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def process_logo_image(file_bytes: bytes, max_size: int = 1000) -> tuple[bytes, str]:
+    """
+    Process logo image: resize if needed but preserve transparency.
+
+    Args:
+        file_bytes: Original image bytes
+        max_size: Maximum dimension in pixels
+
+    Returns:
+        Tuple of (processed_bytes, content_type)
+    """
+    from PIL import Image
+    import io
+
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+
+        # Keep original mode to preserve transparency
+        original_mode = img.mode
+
+        # Resize if needed
+        width, height = img.size
+        if max(width, height) > max_size:
+            ratio = max_size / max(width, height)
+            new_size = (int(width * ratio), int(height * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+        # Save with transparency if present
+        output = io.BytesIO()
+        if original_mode in ('RGBA', 'P', 'LA'):
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            img.save(output, format='PNG', optimize=True)
+            return output.getvalue(), "image/png"
+        else:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.save(output, format='JPEG', quality=90, optimize=True)
+            return output.getvalue(), "image/jpeg"
+
+    except Exception as e:
+        return file_bytes, "image/png"
+
+
+def delete_brand_asset(asset_id: str, storage_path: str) -> bool:
+    """Delete a brand asset from storage and database."""
+    try:
+        db = get_supabase_client()
+
+        # Delete from storage
+        if storage_path:
+            path = storage_path.replace("brand-assets/", "")
+            try:
+                db.storage.from_("brand-assets").remove([path])
+            except:
+                pass  # Storage deletion is best-effort
+
+        # Delete from database
+        db.table("brand_assets").delete().eq("id", asset_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete asset: {e}")
+        return False
+
+
+def set_primary_brand_logo(brand_id: str, asset_id: str) -> bool:
+    """Set a logo as the primary logo for a brand."""
+    try:
+        db = get_supabase_client()
+        # First, unset all other primary logos for this brand
+        db.table("brand_assets").update({
+            "is_primary": False
+        }).eq("brand_id", brand_id).eq("asset_type", "logo").execute()
+
+        # Then set this one as primary
+        db.table("brand_assets").update({
+            "is_primary": True
+        }).eq("id", asset_id).execute()
+
+        return True
+    except Exception as e:
+        st.error(f"Failed to set primary logo: {e}")
+        return False
+
+
 def get_brand_ads_for_grouping(brand_id: str) -> list:
     """Fetch brand's scraped ads for URL grouping."""
     db = get_supabase_client()
@@ -1128,6 +1282,83 @@ with st.container():
                 st.markdown(f"Secondary: **{brand_fonts['secondary']}**")
         else:
             st.caption("No brand fonts configured")
+
+    # Brand Logos Section
+    st.markdown("")  # Spacer
+    st.markdown("**Brand Logos**")
+    st.caption("Upload brand logos for use in ad generation and smart editing")
+
+    # Fetch existing logos
+    brand_logos = get_brand_assets(selected_brand_id, asset_type="logo")
+
+    if brand_logos:
+        # Display existing logos in a grid
+        logo_cols = st.columns(4)
+        for idx, logo in enumerate(brand_logos):
+            col = logo_cols[idx % 4]
+            with col:
+                # Get signed URL for logo
+                try:
+                    db = get_supabase_client()
+                    storage_path = logo['storage_path']
+                    path = storage_path.replace("brand-assets/", "")
+                    signed_url = db.storage.from_("brand-assets").create_signed_url(path, 3600)
+                    url = signed_url.get('signedURL') or signed_url.get('signedUrl')
+
+                    if url:
+                        st.image(url, use_container_width=True)
+                    else:
+                        st.warning("Could not load image")
+                except Exception as e:
+                    st.warning(f"Image error: {e}")
+
+                # Show primary badge and filename
+                label = ""
+                if logo.get('is_primary'):
+                    label = "⭐ Primary"
+                elif logo.get('asset_type'):
+                    label = logo['asset_type'].replace('_', ' ').title()
+
+                if label:
+                    st.caption(label)
+
+                # Action buttons
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if not logo.get('is_primary'):
+                        if st.button("⭐", key=f"set_primary_logo_{logo['id']}", help="Set as primary"):
+                            if set_primary_brand_logo(selected_brand_id, logo['id']):
+                                st.rerun()
+                with btn_col2:
+                    if st.button("🗑️", key=f"delete_logo_{logo['id']}", help="Delete"):
+                        if delete_brand_asset(logo['id'], logo.get('storage_path')):
+                            st.success("Logo deleted")
+                            st.rerun()
+    else:
+        st.info("No logos uploaded yet")
+
+    # Upload new logo
+    uploaded_logo = st.file_uploader(
+        "Upload Logo",
+        type=["png", "jpg", "jpeg", "webp"],
+        key="upload_brand_logo",
+        help="PNG with transparency recommended"
+    )
+
+    if uploaded_logo:
+        # Preview
+        st.image(uploaded_logo, width=150, caption="Preview")
+
+        upload_col1, upload_col2 = st.columns([1, 3])
+        with upload_col1:
+            if st.button("Upload Logo", key="confirm_upload_logo", type="primary"):
+                with st.spinner("Uploading..."):
+                    result = upload_brand_logo(selected_brand_id, uploaded_logo, "logo")
+                    if result["success"]:
+                        st.success("Logo uploaded!")
+                        st.rerun()
+                    else:
+                        st.error(f"Upload failed: {result['message']}")
 
     # Brand Guidelines
     if selected_brand.get('brand_guidelines'):

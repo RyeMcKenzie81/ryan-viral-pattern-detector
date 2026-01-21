@@ -591,6 +591,76 @@ def get_product_images_for_ad(ad_id: str) -> list:
         return []
 
 
+def get_brand_logos_for_ad(ad_id: str) -> list:
+    """Get brand logos available for the brand associated with an ad.
+
+    Returns list of dicts with id, storage_path, asset_type, is_primary, signed_url
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        supabase = get_supabase_client()
+
+        # Step 1: Get ad_run_id from generated_ads
+        ad_result = supabase.table("generated_ads").select(
+            "ad_run_id"
+        ).eq("id", ad_id).execute()
+
+        if not ad_result.data:
+            return []
+
+        ad_run_id = ad_result.data[0].get("ad_run_id")
+        if not ad_run_id:
+            return []
+
+        # Step 2: Get brand_id from ad_runs
+        run_result = supabase.table("ad_runs").select(
+            "brand_id"
+        ).eq("id", ad_run_id).execute()
+
+        if not run_result.data:
+            return []
+
+        brand_id = run_result.data[0].get("brand_id")
+        if not brand_id:
+            return []
+
+        logger.debug(f"Found brand_id {brand_id} for ad {ad_id}")
+
+        # Step 3: Get all logos for this brand from brand_assets
+        logos_result = supabase.table("brand_assets").select(
+            "id, storage_path, asset_type, is_primary, filename"
+        ).eq("brand_id", brand_id).eq("asset_type", "logo").order("is_primary", desc=True).execute()
+
+        if not logos_result.data:
+            logger.debug(f"No logos found for brand {brand_id}")
+            return []
+
+        logger.debug(f"Found {len(logos_result.data)} logos for brand {brand_id}")
+
+        logos = []
+        for logo in logos_result.data:
+            # Generate signed URL for display
+            try:
+                storage_path = logo.get("storage_path", "")
+                if "/" in storage_path:
+                    bucket, path = storage_path.split("/", 1)
+                    signed = supabase.storage.from_(bucket).create_signed_url(path, 3600)
+                    logo["signed_url"] = signed.get("signedURL", "")
+                else:
+                    logo["signed_url"] = ""
+            except Exception as e:
+                logger.debug(f"Failed to sign URL for logo {logo.get('id')}: {e}")
+                logo["signed_url"] = ""
+            logos.append(logo)
+
+        return logos
+    except Exception as e:
+        logger.warning(f"Failed to get brand logos for ad {ad_id}: {e}")
+        return []
+
+
 def update_ad_status(ad_id: str, new_status: str) -> bool:
     """Update the final_status of an ad.
 
@@ -1190,11 +1260,36 @@ else:
 
                                             # Reference Images Selection
                                             product_images = get_product_images_for_ad(ad_id)
+                                            brand_logos = get_brand_logos_for_ad(ad_id)
                                             selected_ref_images = []
 
                                             with st.expander("📷 Add Reference Images (e.g., correct logo)", expanded=False):
+                                                # Brand Logos Section
+                                                if brand_logos:
+                                                    st.markdown("**Brand Logos**")
+                                                    logo_cols = st.columns(4)
+                                                    for idx, logo in enumerate(brand_logos):
+                                                        with logo_cols[idx % 4]:
+                                                            if logo.get("signed_url"):
+                                                                st.image(logo["signed_url"], width=80)
+                                                            # Build label
+                                                            if logo.get("is_primary"):
+                                                                logo_label = "⭐ Primary Logo"
+                                                            else:
+                                                                logo_label = logo.get("filename", f"Logo {idx + 1}")
+                                                            if st.checkbox(
+                                                                logo_label,
+                                                                key=f"ref_logo_{ad_id}_{logo['id']}",
+                                                                help="Select to use this logo as reference"
+                                                            ):
+                                                                selected_ref_images.append(logo["id"])
+
+                                                # Product Images Section
                                                 if product_images:
-                                                    st.caption("Select images to include as references for the edit")
+                                                    if brand_logos:
+                                                        st.markdown("**Product Images**")
+                                                    else:
+                                                        st.caption("Select images to include as references for the edit")
 
                                                     # Create grid of images with checkboxes
                                                     img_cols = st.columns(4)
@@ -1220,8 +1315,9 @@ else:
                                                                 help=help_text if help_text else "Select to include as reference"
                                                             ):
                                                                 selected_ref_images.append(img["id"])
-                                                else:
-                                                    st.info("No product images found. Upload images in Brand Manager to use as references.")
+
+                                                if not product_images and not brand_logos:
+                                                    st.info("No reference images available. Upload logos in Brand Manager or product images to use as references.")
 
                                             # Preservation options
                                             st.markdown("**Preservation Options:**")
