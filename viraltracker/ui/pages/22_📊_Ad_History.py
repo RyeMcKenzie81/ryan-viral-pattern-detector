@@ -513,44 +513,72 @@ def get_product_images_for_ad(ad_id: str) -> list:
 
     Returns list of dicts with id, storage_path, image_type, alt_text, signed_url
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         supabase = get_supabase()
 
-        # Get product_id from the ad's ad_run
+        # Step 1: Get ad_run_id from generated_ads
         ad_result = supabase.table("generated_ads").select(
-            "ad_runs(product_id)"
+            "ad_run_id"
         ).eq("id", ad_id).execute()
 
-        if not ad_result.data or not ad_result.data[0].get("ad_runs"):
+        if not ad_result.data:
+            logger.debug(f"No ad found with id {ad_id}")
             return []
 
-        product_id = ad_result.data[0]["ad_runs"].get("product_id")
+        ad_run_id = ad_result.data[0].get("ad_run_id")
+        if not ad_run_id:
+            logger.debug(f"Ad {ad_id} has no ad_run_id")
+            return []
+
+        # Step 2: Get product_id from ad_runs
+        run_result = supabase.table("ad_runs").select(
+            "product_id"
+        ).eq("id", ad_run_id).execute()
+
+        if not run_result.data:
+            logger.debug(f"No ad_run found with id {ad_run_id}")
+            return []
+
+        product_id = run_result.data[0].get("product_id")
         if not product_id:
+            logger.debug(f"Ad run {ad_run_id} has no product_id")
             return []
 
-        # Get all images for this product
+        logger.debug(f"Found product_id {product_id} for ad {ad_id}")
+
+        # Step 3: Get all images for this product
         images_result = supabase.table("product_images").select(
             "id, storage_path, image_type, alt_text"
         ).eq("product_id", product_id).execute()
 
         if not images_result.data:
+            logger.debug(f"No images found for product {product_id}")
             return []
+
+        logger.debug(f"Found {len(images_result.data)} images for product {product_id}")
 
         images = []
         for img in images_result.data:
             # Generate signed URL for display
             try:
-                bucket, path = img["storage_path"].split("/", 1)
-                signed = supabase.storage.from_(bucket).create_signed_url(path, 3600)
-                img["signed_url"] = signed.get("signedURL", "")
-            except Exception:
+                storage_path = img.get("storage_path", "")
+                if "/" in storage_path:
+                    bucket, path = storage_path.split("/", 1)
+                    signed = supabase.storage.from_(bucket).create_signed_url(path, 3600)
+                    img["signed_url"] = signed.get("signedURL", "")
+                else:
+                    img["signed_url"] = ""
+            except Exception as e:
+                logger.debug(f"Failed to sign URL for image {img.get('id')}: {e}")
                 img["signed_url"] = ""
             images.append(img)
 
         return images
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to get product images: {e}")
+        logger.warning(f"Failed to get product images for ad {ad_id}: {e}")
         return []
 
 
