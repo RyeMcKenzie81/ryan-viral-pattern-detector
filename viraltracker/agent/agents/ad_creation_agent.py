@@ -543,26 +543,57 @@ async def analyze_reference_ad(
         else:
              image_bytes = image_data
 
-        # Create agent with structured output using AdAnalysis Pydantic model
-        # This ensures Gemini returns valid, validated JSON matching our schema
+        # Create vision agent (GoogleModel doesn't support output_type, so we parse manually)
         vision_agent = Agent(
             model=Config.get_model("vision"),
-            system_prompt="You are a vision analysis expert. Analyze the ad image and extract structured data.",
-            output_type=AdAnalysis
+            system_prompt="You are a vision analysis expert. Return ONLY valid JSON, no markdown."
         )
 
         logger.info(f"Running vision analysis with model: {vision_agent.model}")
 
-        # Run agent with structured output validation
-        result = await vision_agent.run(
-            [
-                analysis_prompt,
-                BinaryContent(data=image_bytes, media_type=media_type)
-            ]
-        )
+        # Run with retries for parsing failures
+        max_retries = 3
+        last_error = None
 
-        # result.output is already a validated AdAnalysis Pydantic model
-        analysis_dict = result.output.model_dump()
+        for attempt in range(max_retries):
+            result = await vision_agent.run(
+                [
+                    analysis_prompt + "\n\nIMPORTANT: Return ONLY the JSON object, no markdown code fences, no explanations.",
+                    BinaryContent(data=image_bytes, media_type=media_type)
+                ]
+            )
+
+            analysis_result = result.output
+
+            # Clean up response - strip markdown fences if present
+            analysis_clean = analysis_result.strip()
+            if analysis_clean.startswith('```'):
+                first_newline = analysis_clean.find('\n')
+                last_fence = analysis_clean.rfind('```')
+                if first_newline != -1 and last_fence > first_newline:
+                    analysis_clean = analysis_clean[first_newline + 1:last_fence].strip()
+
+            # Handle double braces from some Gemini responses
+            analysis_clean = analysis_clean.replace('{{', '{').replace('}}', '}')
+
+            try:
+                # Parse JSON
+                analysis_dict = json.loads(analysis_clean)
+
+                # Validate against Pydantic model (this fills in defaults for missing fields)
+                validated = AdAnalysis.model_validate(analysis_dict)
+                analysis_dict = validated.model_dump()
+
+                # Success - break out of retry loop
+                break
+
+            except (json.JSONDecodeError, Exception) as e:
+                last_error = e
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed to parse response: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    raise Exception(f"Failed to parse analysis after {max_retries} attempts: {last_error}")
 
         logger.info(f"Reference ad analyzed: format={analysis_dict.get('format_type')}, "
                    f"layout={analysis_dict.get('layout_structure')}")
