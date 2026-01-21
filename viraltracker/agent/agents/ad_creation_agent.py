@@ -548,7 +548,7 @@ async def analyze_reference_ad(
         vision_agent = Agent(
             model=Config.get_model("vision"),
             system_prompt="You are a vision analysis expert. Analyze the ad image and extract structured data.",
-            result_type=AdAnalysis
+            output_type=AdAnalysis
         )
 
         logger.info(f"Running vision analysis with model: {vision_agent.model}")
