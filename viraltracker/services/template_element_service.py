@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 # Current detection algorithm version
-DETECTION_VERSION = "1.0"
+DETECTION_VERSION = "1.1"
 
 
 # Element detection prompt for Gemini Vision
-ELEMENT_DETECTION_PROMPT = """Analyze this Facebook ad template image and identify ALL visual elements that would need to be provided to recreate this ad.
+ELEMENT_DETECTION_PROMPT = """Analyze this Facebook ad template image and identify ALL visual elements.
 
 Identify and categorize:
 
@@ -35,12 +35,12 @@ Identify and categorize:
    - Type: professional (doctor, vet, expert), casual (everyday person), athletic, elderly, parent, child
    - Role: testimonial giver, product user, authority figure, model
    - Description: Brief visual description
-   - Importance: "required" if central to the ad, "optional" if supplementary
+   - Note: People are ALWAYS optional - AI can generate them if needed
 
 2. **OBJECTS** - Products, props, and items
    - Type: product (the main product being advertised), prop (supporting items), equipment
    - Description: What the object is
-   - Importance: "required" or "optional"
+   - Importance: "required" for the main product, "optional" for props
 
 3. **TEXT_AREAS** - Regions where text appears
    - Type: headline, subheadline, body_text, cta (call-to-action), testimonial_quote, price
@@ -51,14 +51,16 @@ Identify and categorize:
    - Position: top_left, top_right, bottom_left, bottom_right, center
    - Size: small, medium, large
 
-Based on your analysis, also provide:
-- **required_assets**: List of asset tags that MUST be provided (e.g., "person:vet", "product:bottle", "logo")
-- **optional_assets**: List of asset tags that are nice to have
+Based on your analysis, provide:
+- **required_assets**: ONLY product images that must be provided (e.g., "product:bottle", "product:supplements")
+- **optional_assets**: Nice to have assets including ALL people and logos (e.g., "person:woman", "logo")
+
+IMPORTANT: People should ALWAYS go in optional_assets because AI can generate them.
 
 Return ONLY valid JSON with this exact structure:
 {{
   "people": [
-    {{"type": "professional", "role": "vet", "description": "veterinarian in white coat", "importance": "required"}}
+    {{"type": "professional", "role": "vet", "description": "veterinarian in white coat"}}
   ],
   "objects": [
     {{"type": "product", "description": "supplement bottle with label", "importance": "required"}}
@@ -70,12 +72,11 @@ Return ONLY valid JSON with this exact structure:
   "logo_areas": [
     {{"position": "bottom_right", "size": "small"}}
   ],
-  "required_assets": ["person:vet", "product:bottle"],
-  "optional_assets": ["logo"]
+  "required_assets": ["product:bottle"],
+  "optional_assets": ["person:vet", "logo"]
 }}
 
-If an element category has no items, use an empty array [].
-Be thorough - missing a required element will cause generation problems."""
+If an element category has no items, use an empty array []."""
 
 
 # Image tagging prompt for auto-tagging product images
