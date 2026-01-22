@@ -697,6 +697,8 @@ def render_schedule_list():
                     type_badge = "🔄 "
                 elif job_type == 'scorecard':
                     type_badge = "📊 "
+                elif job_type == 'template_scrape':
+                    type_badge = "📥 "
                 st.markdown(f"### {status_emoji} {type_badge}{job['name']}")
 
                 # Show brand → product for ad_creation, just brand for others
@@ -739,6 +741,10 @@ def render_schedule_list():
                 elif job_type == 'scorecard':
                     params = job.get('parameters', {}) or {}
                     st.caption(f"Analyzes last {params.get('days_back', 7)} days")
+                elif job_type == 'template_scrape':
+                    params = job.get('parameters', {}) or {}
+                    max_ads = params.get('max_ads', 50)
+                    st.caption(f"Scrapes up to {max_ads} ads")
 
             with col4:
                 if st.button("View", key=f"view_{job['id']}", use_container_width=True):
@@ -747,6 +753,327 @@ def render_schedule_list():
                     st.rerun()
 
             st.divider()
+
+
+# ============================================================================
+# Template Scrape Job Form
+# ============================================================================
+
+def _render_template_scrape_form(existing_job, is_edit):
+    """Render the template scrape job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+
+    default_brand = None
+    if existing_job:
+        for b in brands:
+            if b['id'] == existing_job['brand_id']:
+                default_brand = b['name']
+                break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=list(brand_options.keys()),
+        index=list(brand_options.keys()).index(default_brand) if default_brand else 0,
+        help="Select the brand to associate scraped templates with",
+        key="scrape_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    existing_params = existing_job.get('parameters', {}) if existing_job else {}
+
+    job_name = st.text_input(
+        "Name for this scrape schedule",
+        value=existing_job.get('name', '') if existing_job else "",
+        placeholder="e.g., Weekly Competitor Scrape - Supplements",
+        help="A descriptive name to identify this scheduled scrape job",
+        key="scrape_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Scrape Settings
+    # ========================================================================
+
+    st.subheader("3. Scrape Settings")
+
+    search_url = st.text_input(
+        "Facebook Ad Library Search URL",
+        value=existing_params.get('search_url', ''),
+        placeholder="https://www.facebook.com/ads/library/?...",
+        help="The Facebook Ad Library search URL to scrape. Go to facebook.com/ads/library, set your filters, and copy the URL.",
+        key="scrape_search_url"
+    )
+
+    if search_url and not search_url.startswith('https://www.facebook.com/ads/library'):
+        st.warning("URL should start with https://www.facebook.com/ads/library")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        max_ads = st.number_input(
+            "Max Ads per Scrape",
+            min_value=10,
+            max_value=500,
+            value=existing_params.get('max_ads', 50),
+            help="Maximum number of ads to scrape each run",
+            key="scrape_max_ads"
+        )
+
+    with col2:
+        images_only = st.checkbox(
+            "Images Only (skip video ads)",
+            value=existing_params.get('images_only', True),
+            help="When enabled, only image ads will be scraped. Video ads will be skipped.",
+            key="scrape_images_only"
+        )
+
+    auto_queue = st.checkbox(
+        "Auto-add to Review Queue",
+        value=existing_params.get('auto_queue', True),
+        help="Automatically add new scraped ads to the template review queue",
+        key="scrape_auto_queue"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule Configuration
+    # ========================================================================
+
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job['schedule_type'] == 'recurring' else 1,
+        format_func=lambda x: "🔄 Recurring" if x == 'recurring' else "1️⃣ One-time",
+        horizontal=True,
+        key="scrape_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly', 'monthly'],
+                index=1,  # Default to weekly
+                format_func=lambda x: x.capitalize(),
+                key="scrape_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,  # Monday
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="scrape_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=5,  # 6
+                    key="scrape_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="scrape_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="scrape_ampm"
+                )
+
+            # Convert to 24-hour format
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        # One-time schedule
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date() + timedelta(days=1),
+                min_value=datetime.now(PST).date(),
+                key="scrape_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=5,  # 6
+                    key="scrape_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="scrape_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="scrape_onetime_ampm"
+                )
+
+            # Convert to 24-hour format
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    # Run limits (only for recurring schedules)
+    max_runs = None
+    if schedule_type == 'recurring':
+        st.markdown("**Run Limits**")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            limit_runs = st.checkbox(
+                "Limit number of runs",
+                value=existing_job.get('max_runs') is not None if existing_job else False,
+                key="scrape_limit_runs"
+            )
+
+        with col2:
+            if limit_runs:
+                max_runs = st.number_input(
+                    "Maximum runs",
+                    min_value=1,
+                    max_value=100,
+                    value=existing_job.get('max_runs', 12) if existing_job else 12,
+                    key="scrape_max_runs"
+                )
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Button
+    # ========================================================================
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_scrape_schedule"):
+            # Validation
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+            if not search_url:
+                st.error("Please enter a Facebook Ad Library search URL")
+                st.stop()
+
+            # Build parameters
+            parameters = {
+                'search_url': search_url,
+                'max_ads': max_ads,
+                'images_only': images_only,
+                'auto_queue': auto_queue
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'template_scrape',
+                'product_id': None,  # Template scrape doesn't need product
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': max_runs,
+                'template_source': None,
+                'template_mode': None,
+                'template_count': None,
+                'template_ids': None,
+                'scraped_template_ids': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("Cancel", use_container_width=True, key="cancel_scrape_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
 
 
 # ============================================================================
@@ -774,6 +1101,38 @@ def render_create_schedule():
             st.error("Job not found")
             return
 
+    # ========================================================================
+    # Job Type Selection (only when creating new, not editing)
+    # ========================================================================
+
+    existing_job_type = existing_job.get('job_type', 'ad_creation') if existing_job else 'ad_creation'
+
+    if not is_edit:
+        st.subheader("Job Type")
+        job_type = st.radio(
+            "What type of job do you want to schedule?",
+            options=['ad_creation', 'template_scrape'],
+            index=0,
+            format_func=lambda x: {
+                'ad_creation': '🎨 Ad Creation - Generate ads from templates',
+                'template_scrape': '📥 Template Scrape - Scrape Facebook Ad Library for templates'
+            }.get(x, x),
+            horizontal=True,
+            key="job_type_selector"
+        )
+        st.divider()
+    else:
+        job_type = existing_job_type
+
+    # ========================================================================
+    # TEMPLATE SCRAPE JOB FORM
+    # ========================================================================
+    if job_type == 'template_scrape':
+        _render_template_scrape_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # AD CREATION JOB FORM (original form)
     # ========================================================================
     # Section 1: Product Selection
     # ========================================================================
@@ -2009,6 +2368,8 @@ def render_schedule_detail():
             type_badge = "🔄 "
         elif job_type == 'scorecard':
             type_badge = "📊 "
+        elif job_type == 'template_scrape':
+            type_badge = "📥 "
         st.title(f"{status_emoji} {type_badge}{job['name']}")
         if job_type == 'ad_creation':
             st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
@@ -2107,6 +2468,16 @@ def render_schedule_detail():
             st.markdown(f"**Min Spend:** ${params.get('min_spend', 10.0)}")
             if params.get('export_email'):
                 st.markdown(f"**Email:** {params['export_email']}")
+        elif job_type == 'template_scrape':
+            st.markdown("### Scrape Settings")
+            params = job.get('parameters', {}) or {}
+            st.markdown(f"**Max Ads:** {params.get('max_ads', 50)}")
+            st.markdown(f"**Images Only:** {'Yes' if params.get('images_only', True) else 'No'}")
+            st.markdown(f"**Auto Queue:** {'Yes' if params.get('auto_queue', True) else 'No'}")
+            search_url = params.get('search_url', '')
+            if search_url:
+                st.markdown(f"**Search URL:**")
+                st.caption(search_url[:80] + "..." if len(search_url) > 80 else search_url)
 
     st.divider()
 

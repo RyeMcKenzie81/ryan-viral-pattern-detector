@@ -475,6 +475,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_meta_sync_job(job)
     elif job_type == 'scorecard':
         return await execute_scorecard_job(job)
+    elif job_type == 'template_scrape':
+        return await execute_template_scrape_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -1302,6 +1304,246 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
         })
 
         return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Template Scrape Job Handler
+# ============================================================================
+
+async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a template scraping job.
+
+    Scrapes Facebook Ad Library for competitor/industry ads and stores them
+    with longevity tracking. Optionally queues new ads for template review.
+
+    This is thin orchestration - all business logic is in services:
+    - FacebookService.search_ads() - scraping logic
+    - AdScrapingService.save_facebook_ad_with_tracking() - storage + dedup + longevity
+    - AdScrapingService.scrape_and_store_assets() - asset handling
+    - TemplateQueueService.add_to_queue() - queue management
+
+    Parameters (from job['parameters']):
+        search_url: str - Facebook Ad Library search URL (required)
+        max_ads: int - Max ads per scrape (default: 50)
+        images_only: bool - Skip video ads (default: True)
+        auto_queue: bool - Auto-add to review queue (default: True)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting template scrape job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        search_url = params.get('search_url')
+        if not search_url:
+            raise ValueError("search_url is required for template_scrape jobs")
+
+        max_ads = params.get('max_ads', 50)
+        images_only = params.get('images_only', True)
+        auto_queue = params.get('auto_queue', True)
+
+        logs.append(f"Scraping templates for brand: {brand_name}")
+        logs.append(f"Search URL: {search_url[:80]}...")
+        logs.append(f"Max ads: {max_ads}, Images only: {images_only}, Auto queue: {auto_queue}")
+
+        # Import services
+        from viraltracker.services.facebook_service import FacebookService
+        from viraltracker.services.ad_scraping_service import AdScrapingService
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        from uuid import UUID
+
+        facebook_service = FacebookService()
+        scraping_service = AdScrapingService()
+        queue_service = TemplateQueueService()
+
+        # Step 1: Scrape ads from Facebook Ad Library
+        logs.append(f"Scraping Facebook Ad Library...")
+        ads = await facebook_service.search_ads(
+            search_url=search_url,
+            project="scheduled_scrape",
+            count=max_ads,
+            save_to_db=False  # We'll save manually with tracking
+        )
+
+        if not ads:
+            logs.append("No ads found at the specified URL")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            # Still calculate next run
+            _update_job_next_run(job, job_id)
+            return {"success": True, "new_ads": 0, "updated_ads": 0, "message": "No ads found"}
+
+        logs.append(f"Scraped {len(ads)} ads from Facebook Ad Library")
+
+        # Step 2: Process each ad with longevity tracking
+        new_count = 0
+        updated_count = 0
+        queued_count = 0
+        skipped_videos = 0
+
+        for ad in ads:
+            try:
+                ad_dict = ad.model_dump() if hasattr(ad, 'model_dump') else ad
+
+                # Skip video ads if images_only is True
+                if images_only:
+                    snapshot = ad_dict.get('snapshot', {})
+                    if isinstance(snapshot, str):
+                        import json
+                        try:
+                            snapshot = json.loads(snapshot)
+                        except:
+                            snapshot = {}
+                    # Check for video indicators
+                    has_video = bool(
+                        snapshot.get('video_hd_url') or
+                        snapshot.get('video_sd_url') or
+                        snapshot.get('videos')
+                    )
+                    has_image = bool(
+                        snapshot.get('original_image_url') or
+                        snapshot.get('resized_image_url') or
+                        snapshot.get('images') or
+                        snapshot.get('cards')
+                    )
+                    if has_video and not has_image:
+                        skipped_videos += 1
+                        continue
+
+                # Save ad with tracking (handles dedup via ad_archive_id)
+                result = scraping_service.save_facebook_ad_with_tracking(
+                    ad_data=ad_dict,
+                    brand_id=UUID(brand_id) if brand_id else None,
+                    scrape_source="scheduled_scrape"
+                )
+
+                if not result:
+                    continue
+
+                ad_id = result['ad_id']
+                is_new = result['is_new']
+
+                if is_new:
+                    new_count += 1
+                    # Download and store assets for new ads
+                    snapshot = ad_dict.get('snapshot', {})
+                    if isinstance(snapshot, str):
+                        import json
+                        try:
+                            snapshot = json.loads(snapshot)
+                        except:
+                            snapshot = {}
+
+                    if snapshot:
+                        asset_result = await scraping_service.scrape_and_store_assets(
+                            facebook_ad_id=ad_id,
+                            snapshot=snapshot,
+                            brand_id=UUID(brand_id) if brand_id else None,
+                            scrape_source="scheduled_scrape"
+                        )
+
+                        # Queue for review if auto_queue enabled and we got assets
+                        if auto_queue:
+                            asset_ids = asset_result.get('images', []) + asset_result.get('videos', [])
+                            if asset_ids:
+                                try:
+                                    queued = await queue_service.add_to_queue(
+                                        asset_ids=asset_ids,
+                                        run_ai_analysis=False  # Skip AI analysis for scheduled scrapes
+                                    )
+                                    queued_count += queued
+                                except Exception as qe:
+                                    logger.warning(f"Failed to queue assets: {qe}")
+                else:
+                    updated_count += 1
+                    # Longevity tracking already updated by save_facebook_ad_with_tracking
+
+            except Exception as e:
+                logger.warning(f"Error processing ad: {e}")
+                continue
+
+        # Summary
+        logs.append(f"")
+        logs.append(f"=== Summary ===")
+        logs.append(f"New ads: {new_count}")
+        logs.append(f"Updated ads: {updated_count}")
+        if skipped_videos > 0:
+            logs.append(f"Skipped videos: {skipped_videos}")
+        if auto_queue:
+            logs.append(f"Queued for review: {queued_count}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job: increment runs_completed, calculate next_run
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed template scrape job: {job_name} - {new_count} new, {updated_count} updated")
+        return {
+            "success": True,
+            "new_ads": new_count,
+            "updated_ads": updated_count,
+            "queued": queued_count
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Template scrape job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        return {"success": False, "error": error_msg}
+
+
+def _update_job_next_run(job: Dict, job_id: str):
+    """Helper to update job runs_completed and next_run_at."""
+    runs_completed = job.get('runs_completed', 0) + 1
+    max_runs = job.get('max_runs')
+
+    job_updates = {"runs_completed": runs_completed}
+
+    if max_runs and runs_completed >= max_runs:
+        job_updates["status"] = "completed"
+        job_updates["next_run_at"] = None
+    elif job['schedule_type'] == 'recurring':
+        next_run = calculate_next_run(job['cron_expression'])
+        if next_run:
+            job_updates["next_run_at"] = next_run.isoformat()
+    else:
+        job_updates["status"] = "completed"
+        job_updates["next_run_at"] = None
+
+    update_job(job_id, job_updates)
 
 
 # ============================================================================

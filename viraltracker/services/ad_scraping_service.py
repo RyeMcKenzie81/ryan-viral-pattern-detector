@@ -289,7 +289,57 @@ class AdScrapingService:
         Returns:
             UUID of saved record or None if failed
         """
+        result = self.save_facebook_ad_with_tracking(
+            ad_data=ad_data,
+            brand_id=brand_id,
+            project_id=project_id,
+            scrape_source=scrape_source
+        )
+        return result.get("ad_id") if result else None
+
+    def save_facebook_ad_with_tracking(
+        self,
+        ad_data: Dict,
+        brand_id: Optional[UUID] = None,
+        project_id: Optional[UUID] = None,
+        scrape_source: str = "ad_library_search"
+    ) -> Optional[Dict]:
+        """
+        Save a Facebook ad to the database with longevity tracking.
+
+        This method handles deduplication via ad_archive_id and tracks:
+        - first_seen_at: When we first scraped this ad
+        - last_seen_at: Last time we saw the ad as active
+        - last_checked_at: Last time we checked this ad
+        - times_seen: Number of times seen across scrapes
+
+        Args:
+            ad_data: Ad data from FacebookService (FacebookAd model dict)
+            brand_id: Optional brand to link
+            project_id: Optional project to link
+            scrape_source: Source identifier
+
+        Returns:
+            Dict with ad_id, is_new, was_active (previous active status), or None if failed
+        """
         try:
+            ad_archive_id = ad_data.get("ad_archive_id")
+            if not ad_archive_id:
+                logger.error("ad_archive_id is required for saving Facebook ad")
+                return None
+
+            # Check if ad already exists
+            existing_result = self.supabase.table("facebook_ads").select(
+                "id, first_seen_at, is_active, last_seen_at, times_seen"
+            ).eq("ad_archive_id", ad_archive_id).maybeSingle().execute()
+
+            existing = existing_result.data
+            is_new = existing is None
+            was_active = existing.get("is_active") if existing else None
+
+            now = datetime.utcnow().isoformat()
+            is_currently_active = ad_data.get("is_active", False)
+
             # Parse snapshot to extract additional fields
             snapshot_raw = ad_data.get("snapshot")
             snapshot = {}
@@ -309,10 +359,10 @@ class AdScrapingService:
             # Map from FacebookAd model to database columns
             record = {
                 "ad_id": ad_data.get("id"),
-                "ad_archive_id": ad_data.get("ad_archive_id"),
+                "ad_archive_id": ad_archive_id,
                 "page_id": ad_data.get("page_id"),
                 "page_name": ad_data.get("page_name"),
-                "is_active": ad_data.get("is_active", False),
+                "is_active": is_currently_active,
                 "start_date": ad_data.get("start_date"),
                 "end_date": ad_data.get("end_date"),
                 "currency": ad_data.get("currency"),
@@ -327,7 +377,7 @@ class AdScrapingService:
                 "brand_id": str(brand_id) if brand_id else None,
                 "project_id": str(project_id) if project_id else None,
                 "scrape_source": scrape_source,
-                "scraped_at": datetime.utcnow().isoformat(),
+                "scraped_at": now,
                 # Extracted fields from snapshot
                 "link_url": snapshot.get("link_url"),
                 "cta_text": snapshot.get("cta_text"),
@@ -339,7 +389,27 @@ class AdScrapingService:
                 "page_like_count": snapshot.get("page_like_count"),
                 "page_profile_uri": snapshot.get("page_profile_uri"),
                 "display_format": snapshot.get("display_format"),
+                # Longevity tracking - always update last_checked_at
+                "last_checked_at": now,
             }
+
+            # Handle longevity fields based on new vs existing
+            if is_new:
+                # New ad - set all tracking fields
+                record["first_seen_at"] = now
+                record["last_seen_at"] = now if is_currently_active else None
+                record["times_seen"] = 1
+            else:
+                # Existing ad - preserve first_seen_at, update others
+                record["first_seen_at"] = existing.get("first_seen_at")
+                # Update last_seen_at only if currently active
+                if is_currently_active:
+                    record["last_seen_at"] = now
+                else:
+                    # Keep the previous last_seen_at (when it was last active)
+                    record["last_seen_at"] = existing.get("last_seen_at")
+                # Increment times_seen
+                record["times_seen"] = (existing.get("times_seen") or 1) + 1
 
             # Upsert based on ad_archive_id
             result = self.supabase.table("facebook_ads").upsert(
@@ -348,9 +418,14 @@ class AdScrapingService:
             ).execute()
 
             if result.data:
-                ad_id = result.data[0]["id"]
-                logger.info(f"Saved Facebook ad: {ad_id}")
-                return UUID(ad_id)
+                ad_id = UUID(result.data[0]["id"])
+                action = "Created new" if is_new else "Updated"
+                logger.info(f"{action} Facebook ad: {ad_id} (times_seen: {record['times_seen']})")
+                return {
+                    "ad_id": ad_id,
+                    "is_new": is_new,
+                    "was_active": was_active
+                }
 
             return None
 

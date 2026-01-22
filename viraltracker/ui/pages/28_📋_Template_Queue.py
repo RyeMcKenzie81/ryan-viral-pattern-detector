@@ -813,6 +813,136 @@ def render_ingestion_trigger():
             st.error(f"Failed to run pipeline: {e}")
 
 
+# ============================================================================
+# Scheduled Scraping Tab
+# ============================================================================
+
+def get_scheduled_scrape_jobs():
+    """Fetch active template_scrape scheduled jobs."""
+    db = get_supabase_client()
+    try:
+        result = db.table("scheduled_jobs").select(
+            "id, name, brand_id, status, next_run_at, runs_completed, max_runs, parameters, brands(name)"
+        ).eq("job_type", "template_scrape").in_("status", ["active", "paused"]).order("created_at", desc=True).execute()
+
+        # Also fetch brand names
+        jobs = result.data or []
+        brand_ids = set(j.get('brand_id') for j in jobs if j.get('brand_id'))
+        if brand_ids:
+            brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids)).execute()
+            brand_map = {b['id']: b['name'] for b in (brands_result.data or [])}
+            for job in jobs:
+                job['brand_name'] = brand_map.get(job.get('brand_id'), 'Unknown')
+
+        return jobs
+    except Exception as e:
+        return []
+
+
+def get_recent_scrape_runs(job_id: str, limit: int = 5):
+    """Fetch recent runs for a scrape job."""
+    db = get_supabase_client()
+    try:
+        result = db.table("scheduled_job_runs").select(
+            "id, status, started_at, completed_at, logs"
+        ).eq("scheduled_job_id", job_id).order("started_at", desc=True).limit(limit).execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+
+def render_scheduled_scraping():
+    """Render the Scheduled Scraping tab."""
+    import pytz
+    PST = pytz.timezone('America/Los_Angeles')
+
+    st.subheader("Scheduled Template Scraping")
+    st.caption("View and manage automated Facebook Ad Library scraping jobs")
+
+    # Quick action to create new scrape schedule
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("➕ New Scrape Schedule", type="primary", use_container_width=True):
+            st.info("Go to **Ad Scheduler** page and select 'Template Scrape' job type to create a new scheduled scrape.")
+
+    st.divider()
+
+    # Fetch scheduled scrape jobs
+    jobs = get_scheduled_scrape_jobs()
+
+    if not jobs:
+        st.info("No scheduled scraping jobs found. Create one from the Ad Scheduler page.")
+        return
+
+    # Display jobs
+    for job in jobs:
+        status_emoji = {'active': '🟢', 'paused': '⏸️'}.get(job['status'], '❓')
+        params = job.get('parameters', {}) or {}
+
+        with st.expander(f"{status_emoji} {job['name']} ({job.get('brand_name', 'Unknown')})", expanded=False):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("**Settings**")
+                st.text(f"Max ads: {params.get('max_ads', 50)}")
+                st.text(f"Images only: {'Yes' if params.get('images_only', True) else 'No'}")
+                st.text(f"Auto queue: {'Yes' if params.get('auto_queue', True) else 'No'}")
+
+            with col2:
+                st.markdown("**Schedule**")
+                runs = f"{job.get('runs_completed', 0)}"
+                if job.get('max_runs'):
+                    runs += f" / {job['max_runs']}"
+                st.text(f"Runs: {runs}")
+
+                if job.get('next_run_at'):
+                    try:
+                        next_run = datetime.fromisoformat(job['next_run_at'].replace('Z', '+00:00'))
+                        st.text(f"Next: {next_run.strftime('%b %d, %I:%M %p')}")
+                    except:
+                        st.text("Next: Pending")
+
+            with col3:
+                st.markdown("**Search URL**")
+                search_url = params.get('search_url', '')
+                if search_url:
+                    st.caption(search_url[:60] + "..." if len(search_url) > 60 else search_url)
+                else:
+                    st.caption("No URL configured")
+
+            # Show recent runs
+            st.markdown("**Recent Runs**")
+            runs = get_recent_scrape_runs(job['id'], limit=3)
+            if runs:
+                for run in runs:
+                    run_status = run.get('status', 'unknown')
+                    run_emoji = {'completed': '✅', 'failed': '❌', 'running': '⏳'}.get(run_status, '❓')
+                    started = run.get('started_at', '')
+                    if started:
+                        try:
+                            started_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
+                            started_str = started_dt.strftime('%b %d, %I:%M %p')
+                        except:
+                            started_str = started[:16]
+                    else:
+                        started_str = "Unknown"
+
+                    # Try to extract summary from logs
+                    logs = run.get('logs', '')
+                    summary = ""
+                    if logs and "New ads:" in logs:
+                        for line in logs.split('\n'):
+                            if "New ads:" in line:
+                                summary = line.strip()
+                                break
+                    elif logs and "No ads found" in logs:
+                        summary = "No ads found"
+
+                    st.caption(f"{run_emoji} {started_str} - {summary if summary else run_status}")
+            else:
+                st.caption("No runs yet")
+
+
 def render_element_detection():
     """Render Element Detection tab for analyzing template visual elements."""
     import asyncio
@@ -1017,7 +1147,7 @@ render_stats()
 st.divider()
 
 # Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["Pending Review", "Template Library", "Ingest New", "Element Detection"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pending Review", "Template Library", "Ingest New", "Scheduled Scraping", "Element Detection"])
 
 with tab1:
     render_pending_queue()
@@ -1029,4 +1159,7 @@ with tab3:
     render_ingestion_trigger()
 
 with tab4:
+    render_scheduled_scraping()
+
+with tab5:
     render_element_detection()
