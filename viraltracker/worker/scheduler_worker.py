@@ -1409,14 +1409,30 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         # Log first ad for debugging
         if ads:
             first_ad = ads[0]
-            first_dict = first_ad.model_dump(mode='json') if hasattr(first_ad, 'model_dump') else first_ad
-            logger.info(f"First ad sample - ad_archive_id: {first_dict.get('ad_archive_id')}, page_name: {first_dict.get('page_name')}")
-            logs.append(f"First ad: {first_dict.get('page_name')} (archive_id: {first_dict.get('ad_archive_id', 'MISSING')[:20]}...)")
+            logger.info(f"First ad sample - ad_archive_id: {first_ad.ad_archive_id}, page_name: {first_ad.page_name}")
+            logs.append(f"First ad: {first_ad.page_name} (archive_id: {first_ad.ad_archive_id[:20]}...)")
 
         for ad in ads:
             try:
-                # Use mode='json' to ensure datetime objects are serialized as ISO strings
-                ad_dict = ad.model_dump(mode='json') if hasattr(ad, 'model_dump') else ad
+                # Build dict manually to match template_ingestion pattern exactly
+                ad_dict = {
+                    "id": ad.id,
+                    "ad_archive_id": ad.ad_archive_id,
+                    "page_id": ad.page_id,
+                    "page_name": ad.page_name,
+                    "is_active": ad.is_active,
+                    "start_date": ad.start_date.isoformat() if ad.start_date else None,
+                    "end_date": ad.end_date.isoformat() if ad.end_date else None,
+                    "currency": ad.currency,
+                    "spend": ad.spend,
+                    "impressions": ad.impressions,
+                    "reach_estimate": ad.reach_estimate,
+                    "snapshot": ad.snapshot,
+                    "categories": ad.categories,
+                    "publisher_platform": ad.publisher_platform,
+                    "political_countries": ad.political_countries,
+                    "entity_type": ad.entity_type,
+                }
 
                 # Skip video ads if images_only is True
                 if images_only:
@@ -1443,10 +1459,10 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                         skipped_videos += 1
                         continue
 
-                # Save ad with tracking (handles dedup via ad_archive_id)
+                # Save ad using same method as template_ingestion
+                # Note: Not passing brand_id to match working pattern
                 result = scraping_service.save_facebook_ad_with_tracking(
                     ad_data=ad_dict,
-                    brand_id=UUID(brand_id) if brand_id else None,
                     scrape_source="scheduled_scrape"
                 )
 
