@@ -295,7 +295,10 @@ class AdScrapingService:
             project_id=project_id,
             scrape_source=scrape_source
         )
-        return result.get("ad_id") if result else None
+        # Return ad_id only if successful (no error key)
+        if result and "ad_id" in result:
+            return result.get("ad_id")
+        return None
 
     def save_facebook_ad_with_tracking(
         self,
@@ -431,10 +434,12 @@ class AdScrapingService:
 
         except Exception as e:
             ad_archive_id = ad_data.get("ad_archive_id", "unknown")
-            logger.error(f"Failed to save Facebook ad (archive_id: {ad_archive_id}): {e}")
+            error_msg = str(e)
+            logger.error(f"Failed to save Facebook ad (archive_id: {ad_archive_id}): {error_msg}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            return None
+            # Return error info so caller can log it
+            return {"error": error_msg, "ad_archive_id": ad_archive_id}
 
     def save_failed_asset_record(
         self,

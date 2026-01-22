@@ -1466,13 +1466,14 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                     scrape_source="scheduled_scrape"
                 )
 
-                if not result:
+                if not result or result.get('error'):
                     failed_saves += 1
                     ad_archive_id = ad_dict.get('ad_archive_id', 'missing')
-                    logger.warning(f"save_facebook_ad_with_tracking returned None for ad_archive_id: {ad_archive_id}")
-                    # Only log first few failures to avoid huge logs
+                    error_msg = result.get('error', 'Unknown error') if result else 'None returned'
+                    logger.warning(f"save_facebook_ad_with_tracking failed for ad_archive_id: {ad_archive_id}: {error_msg}")
+                    # Log first few failures with error details
                     if failed_saves <= 3:
-                        logs.append(f"Failed to save ad (archive_id: {str(ad_archive_id)[:20]}...)")
+                        logs.append(f"Save failed: {error_msg[:50]}...")
                     continue
 
                 ad_id = result['ad_id']
