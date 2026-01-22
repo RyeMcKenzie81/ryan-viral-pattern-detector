@@ -1336,7 +1336,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
     brand_name = brand_info.get('name', 'Unknown')
     params = job.get('parameters') or {}
 
-    logger.info(f"Starting template scrape job: {job_name} for brand {brand_name}")
+    logger.info(f"Starting template scrape job: {job_name} (ID: {job_id}) for brand {brand_name}")
+    logger.info(f"Job parameters: {params}")
 
     # Immediately clear next_run_at to prevent duplicate execution
     update_job(job_id, {"next_run_at": None})
@@ -1360,8 +1361,11 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         auto_queue = params.get('auto_queue', True)
 
         logs.append(f"Scraping templates for brand: {brand_name}")
-        logs.append(f"Search URL: {search_url[:80]}...")
+        logs.append(f"Search URL: {search_url}")
         logs.append(f"Max ads: {max_ads}, Images only: {images_only}, Auto queue: {auto_queue}")
+
+        # Also log full URL to console for debugging
+        logger.info(f"Template scrape URL (full): {search_url}")
 
         # Import services
         from viraltracker.services.facebook_service import FacebookService
@@ -1400,10 +1404,19 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         updated_count = 0
         queued_count = 0
         skipped_videos = 0
+        failed_saves = 0
+
+        # Log first ad for debugging
+        if ads:
+            first_ad = ads[0]
+            first_dict = first_ad.model_dump(mode='json') if hasattr(first_ad, 'model_dump') else first_ad
+            logger.info(f"First ad sample - ad_archive_id: {first_dict.get('ad_archive_id')}, page_name: {first_dict.get('page_name')}")
+            logs.append(f"First ad: {first_dict.get('page_name')} (archive_id: {first_dict.get('ad_archive_id', 'MISSING')[:20]}...)")
 
         for ad in ads:
             try:
-                ad_dict = ad.model_dump() if hasattr(ad, 'model_dump') else ad
+                # Use mode='json' to ensure datetime objects are serialized as ISO strings
+                ad_dict = ad.model_dump(mode='json') if hasattr(ad, 'model_dump') else ad
 
                 # Skip video ads if images_only is True
                 if images_only:
@@ -1438,6 +1451,12 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                 )
 
                 if not result:
+                    failed_saves += 1
+                    ad_archive_id = ad_dict.get('ad_archive_id', 'missing')
+                    logger.warning(f"save_facebook_ad_with_tracking returned None for ad_archive_id: {ad_archive_id}")
+                    # Only log first few failures to avoid huge logs
+                    if failed_saves <= 3:
+                        logs.append(f"Failed to save ad (archive_id: {str(ad_archive_id)[:20]}...)")
                     continue
 
                 ad_id = result['ad_id']
@@ -1479,7 +1498,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                     # Longevity tracking already updated by save_facebook_ad_with_tracking
 
             except Exception as e:
-                logger.warning(f"Error processing ad: {e}")
+                logger.warning(f"Error processing ad {ad_dict.get('ad_archive_id', 'unknown')}: {e}")
+                logs.append(f"Error processing ad: {e}")
                 continue
 
         # Summary
@@ -1489,6 +1509,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Updated ads: {updated_count}")
         if skipped_videos > 0:
             logs.append(f"Skipped videos: {skipped_videos}")
+        if failed_saves > 0:
+            logs.append(f"Failed to save: {failed_saves}")
         if auto_queue:
             logs.append(f"Queued for review: {queued_count}")
 

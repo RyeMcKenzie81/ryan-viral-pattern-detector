@@ -430,7 +430,10 @@ class AdScrapingService:
             return None
 
         except Exception as e:
-            logger.error(f"Failed to save Facebook ad: {e}")
+            ad_archive_id = ad_data.get("ad_archive_id", "unknown")
+            logger.error(f"Failed to save Facebook ad (archive_id: {ad_archive_id}): {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
     def save_failed_asset_record(
