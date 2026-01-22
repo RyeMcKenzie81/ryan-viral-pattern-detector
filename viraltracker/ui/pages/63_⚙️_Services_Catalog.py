@@ -128,36 +128,17 @@ st.divider()
 # ============================================================================
 
 def render_method(method_info):
-    """Render a single method with its details."""
-    # Method header
+    """Render a single method as a simple list item (no expander to avoid nesting)."""
     async_badge = "🔄 " if method_info.is_async else ""
-    with st.expander(f"📌 `{async_badge}{method_info.name}()`", expanded=False):
-        # Docstring
-        doc_lines = method_info.docstring.split('\n\n')
-        summary = doc_lines[0] if doc_lines else "No documentation"
-        st.markdown(f"**{summary}**")
+    async_prefix = "async " if method_info.is_async else ""
 
-        if len(doc_lines) > 1:
-            st.divider()
-            for section in doc_lines[1:]:
-                st.markdown(section)
+    # Get first line of docstring as summary
+    summary = method_info.docstring.split('\n')[0] if method_info.docstring else "No description"
+    if len(summary) > 80:
+        summary = summary[:80] + "..."
 
-        st.divider()
-
-        # Signature
-        st.markdown("**Signature:**")
-        async_prefix = "async " if method_info.is_async else ""
-        st.code(f"{async_prefix}def {method_info.name}{method_info.signature}", language="python")
-
-        # Parameters
-        if method_info.parameters:
-            st.markdown("**Parameters:**")
-            for param in method_info.parameters:
-                required_badge = " *(required)*" if param.required else f" = `{param.default}`"
-                st.markdown(f"- **`{param.name}`** (`{param.type_str}`){required_badge}")
-
-        # Return type
-        st.markdown(f"**Returns:** `{method_info.return_type}`")
+    # Simple format: method signature with summary
+    st.markdown(f"- `{async_prefix}{method_info.name}{method_info.signature}` - {summary}")
 
 
 def render_service(service_info):
@@ -176,7 +157,7 @@ def render_service(service_info):
 
         st.divider()
 
-        # Methods
+        # Methods - simple list format (no nested expanders)
         if service_info.methods:
             st.markdown("**Methods:**")
             for method_info in service_info.methods:

@@ -195,9 +195,127 @@ def extract_agent_info(
         return None
 
 
+def get_static_agents() -> Dict[str, AgentInfo]:
+    """
+    Return static agent metadata as fallback when imports fail.
+
+    This ensures the catalog always shows useful information even
+    when pydantic_ai or other dependencies aren't available.
+    """
+    static_agents = {
+        'orchestrator': AgentInfo(
+            name='orchestrator',
+            display_name='Orchestrator Agent',
+            module_path='viraltracker.agent.orchestrator',
+            description='Routes requests to specialized agents based on intent.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=7,
+            tools=[
+                ToolSummary('route_to_twitter_agent', 'Route to Twitter Agent', 'Routing'),
+                ToolSummary('route_to_tiktok_agent', 'Route to TikTok Agent', 'Routing'),
+                ToolSummary('route_to_youtube_agent', 'Route to YouTube Agent', 'Routing'),
+                ToolSummary('route_to_facebook_agent', 'Route to Facebook Agent', 'Routing'),
+                ToolSummary('route_to_analysis_agent', 'Route to Analysis Agent', 'Routing'),
+                ToolSummary('route_to_ad_creation_agent', 'Route to Ad Creation Agent', 'Routing'),
+                ToolSummary('resolve_product_name', 'Look up product by name', 'Routing'),
+            ],
+            role='Intelligent request routing and coordination',
+            is_orchestrator=True
+        ),
+        'twitter_agent': AgentInfo(
+            name='twitter_agent',
+            display_name='Twitter Agent',
+            module_path='viraltracker.agent.agents.twitter_agent',
+            description='Handles Twitter/X data operations.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=8,
+            tools=[],
+            role='Twitter/X platform specialist',
+            is_orchestrator=False
+        ),
+        'tiktok_agent': AgentInfo(
+            name='tiktok_agent',
+            display_name='TikTok Agent',
+            module_path='viraltracker.agent.agents.tiktok_agent',
+            description='Handles TikTok video discovery and analysis.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=5,
+            tools=[],
+            role='TikTok platform specialist',
+            is_orchestrator=False
+        ),
+        'youtube_agent': AgentInfo(
+            name='youtube_agent',
+            display_name='YouTube Agent',
+            module_path='viraltracker.agent.agents.youtube_agent',
+            description='Handles YouTube video search and discovery.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=1,
+            tools=[],
+            role='YouTube platform specialist',
+            is_orchestrator=False
+        ),
+        'facebook_agent': AgentInfo(
+            name='facebook_agent',
+            display_name='Facebook Agent',
+            module_path='viraltracker.agent.agents.facebook_agent',
+            description='Handles Facebook Ad Library operations.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=2,
+            tools=[],
+            role='Facebook Ad Library specialist',
+            is_orchestrator=False
+        ),
+        'analysis_agent': AgentInfo(
+            name='analysis_agent',
+            display_name='Analysis Agent',
+            module_path='viraltracker.agent.agents.analysis_agent',
+            description='Handles statistical analysis and AI-powered insights.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=3,
+            tools=[],
+            role='Advanced analytics and AI-powered insights',
+            is_orchestrator=False
+        ),
+        'ad_creation_agent': AgentInfo(
+            name='ad_creation_agent',
+            display_name='Ad Creation Agent',
+            module_path='viraltracker.agent.agents.ad_creation_agent',
+            description='Handles Facebook ad creative generation.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=14,
+            tools=[],
+            role='Facebook ad creative generation specialist',
+            is_orchestrator=False
+        ),
+        'audio_production_agent': AgentInfo(
+            name='audio_production_agent',
+            display_name='Audio Production Agent',
+            module_path='viraltracker.agent.agents.audio_production_agent',
+            description='Handles ElevenLabs audio generation.',
+            system_prompt='',
+            model='claude-sonnet-4-5-20250929',
+            tool_count=11,
+            tools=[],
+            role='ElevenLabs audio generation specialist',
+            is_orchestrator=False
+        ),
+    }
+    return static_agents
+
+
 def get_all_agents() -> Dict[str, AgentInfo]:
     """
     Discover all agents from viraltracker.agent.
+
+    Falls back to static metadata if imports fail (e.g., pydantic_ai not available).
 
     Returns:
         Dictionary mapping agent names to AgentInfo objects
@@ -243,7 +361,12 @@ def get_all_agents() -> Dict[str, AgentInfo]:
         except Exception as e:
             logger.debug(f"Could not import {module_path}: {e}")
 
-    logger.info(f"Discovered {len(agents)} agents")
+    # If no agents discovered dynamically, use static fallback
+    if not agents:
+        logger.info("Using static agent metadata (dynamic import failed)")
+        return get_static_agents()
+
+    logger.info(f"Discovered {len(agents)} agents dynamically")
 
     return agents
 
