@@ -1,22 +1,18 @@
 """
-Services Catalog - Comprehensive documentation for the service layer.
+Services Catalog - Auto-generated documentation for the service layer.
 
-This page provides:
-- Service layer architecture overview
-- Method signatures and documentation
-- Parameter types and return values
-- Service dependencies and responsibilities
+This page automatically extracts all services from viraltracker/services/
+and displays them organized by category.
+
+Benefits:
+- Zero-maintenance documentation (auto-updates when services are added)
+- Single source of truth (service class definitions)
+- No hardcoded data - everything extracted via introspection
 """
 
 import streamlit as st
 import inspect
 from typing import get_type_hints
-
-# Import services
-from viraltracker.services.twitter_service import TwitterService
-from viraltracker.services.gemini_service import GeminiService
-from viraltracker.services.stats_service import StatsService
-from viraltracker.services.scraping_service import ScrapingService
 
 # Page config
 st.set_page_config(
@@ -30,77 +26,100 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 
 st.title("⚙️ Services Catalog")
-st.markdown("**Layered architecture: Agent Layer → Service Layer**")
+st.markdown("**Explore all services organized by functional category**")
+
+st.divider()
 
 # ============================================================================
 # Architecture Overview
 # ============================================================================
 
-st.markdown("""
-The architecture is organized in two layers:
-
-**Agent Layer (PydanticAI):**
-- 1 Orchestrator Agent routes queries to specialized agents
-- 5 Specialized Agents (Twitter, TikTok, YouTube, Facebook, Analysis)
-- Natural language interface with Claude Sonnet 4.5
-- Intelligent routing and context management
-
-**Service Layer (Core):**
-- Reusable business logic accessible from all interfaces
-- Database operations, AI analysis, statistics, scraping
-- Called by agents, CLI, API, and UI
-""")
-
-st.divider()
-
-# Architecture diagram
-st.subheader("Layered Architecture")
+st.subheader("Service Layer Architecture")
 
 col1, col2 = st.columns([2, 3])
 
 with col1:
     st.markdown("""
-    **Agent Layer (PydanticAI)**
-    - Orchestrator (routing)
-    - 5 Specialized Agents
+    **Architecture Pattern:**
 
-    **Service Layer (Core)**
-    - `TwitterService` - Database operations
-    - `GeminiService` - AI analysis
-    - `StatsService` - Statistical calculations
-    - `ScrapingService` - Apify integration
+    The service layer provides reusable business logic
+    accessible from all interfaces:
+    - Agent tools (thin wrappers)
+    - Streamlit UI pages
+    - CLI commands
+    - FastAPI endpoints
+
+    **Key Principles:**
+    - Services contain business logic
+    - Tools are thin orchestration wrappers
+    - Services are stateless (DB via Supabase)
+    - Async methods for I/O operations
     """)
 
 with col2:
     st.code("""
 ┌─────────────────────────────────────────────────┐
 │          AGENT LAYER (PydanticAI)               │
-│  ┌──────────────────────────────────────┐       │
-│  │ Orchestrator (Routing)               │       │
-│  └──────────────┬───────────────────────┘       │
-│                 │                               │
-│     ┌───────────┼───────────┬─────────┬────┐    │
-│     ▼           ▼           ▼         ▼    ▼    │
-│  Twitter    TikTok      YouTube    FB   Analysis│
-│  (8 tools)  (5 tools)   (1 tool)  (2) (3 tools) │
+│   Orchestrator → Specialized Agents → Tools     │
+└──────────────────┬──────────────────────────────┘
+                   │  (thin wrappers)
+┌──────────────────▼──────────────────────────────┐
+│          SERVICE LAYER (Core)                   │
+│   Platform | AI/LLM | Content | Research | ...  │
+│                                                 │
+│   - Business logic implementation               │
+│   - Database operations                         │
+│   - External API integrations                   │
+│   - Reusable across all interfaces              │
 └──────────────────┬──────────────────────────────┘
                    │
-┌──────────────────┴──────────────────────────────┐
-│          SERVICE LAYER (Core)                   │
-│  - TwitterService (DB access)                   │
-│  - GeminiService (AI analysis)                  │
-│  - StatsService (calculations)                  │
-│  - ScrapingService (Apify integration)          │
-└──────────────┬──────────────────────────────────┘
-               │
-   ┌───────────┼───────────┬──────────────┐
-   │           │           │              │
-   ▼           ▼           ▼              ▼
-┌──────┐  ┌───────┐  ┌─────────┐  ┌────────────┐
-│ CLI  │  │ Agent │  │Streamlit│  │ FastAPI    │
-│      │  │(Chat) │  │  (UI)   │  │ (Webhooks) │
-└──────┘  └───────┘  └─────────┘  └────────────┘
+       ┌───────────┼───────────┬──────────────┐
+       │           │           │              │
+       ▼           ▼           ▼              ▼
+    ┌──────┐  ┌───────┐  ┌─────────┐  ┌────────────┐
+    │ CLI  │  │ Agent │  │Streamlit│  │ FastAPI    │
+    └──────┘  └───────┘  └─────────┘  └────────────┘
     """, language=None)
+
+st.divider()
+
+# ============================================================================
+# Get Services from Collector
+# ============================================================================
+
+try:
+    from viraltracker.agent.service_collector import (
+        get_services_by_category,
+        get_service_stats
+    )
+
+    # Get services and stats
+    services_by_category = get_services_by_category()
+    stats = get_service_stats()
+
+except Exception as e:
+    st.error(f"Error loading services: {e}")
+    st.info("Services could not be loaded. This may be due to import errors in service files.")
+    st.stop()
+
+if not services_by_category:
+    st.warning("No services found.")
+    st.stop()
+
+# ============================================================================
+# Metrics
+# ============================================================================
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric("Total Services", stats['total_services'], help="Service classes discovered")
+with col2:
+    st.metric("Total Methods", stats['total_methods'], help="Public methods across all services")
+with col3:
+    st.metric("Categories", stats['categories'], help="Functional categories")
+with col4:
+    st.metric("Avg Methods/Service", stats['avg_methods_per_service'], help="Average methods per service")
 
 st.divider()
 
@@ -108,264 +127,166 @@ st.divider()
 # Helper Functions
 # ============================================================================
 
-def get_method_signature(method):
-    """Get clean method signature string"""
-    try:
-        sig = inspect.signature(method)
-        return str(sig)
-    except Exception:
-        return "()"
+def render_method(method_info):
+    """Render a single method with its details."""
+    # Method header
+    async_badge = "🔄 " if method_info.is_async else ""
+    with st.expander(f"📌 `{async_badge}{method_info.name}()`", expanded=False):
+        # Docstring
+        doc_lines = method_info.docstring.split('\n\n')
+        summary = doc_lines[0] if doc_lines else "No documentation"
+        st.markdown(f"**{summary}**")
 
-def get_method_params(method):
-    """Extract parameter information from method"""
-    try:
-        sig = inspect.signature(method)
-        params = []
-
-        for param_name, param in sig.parameters.items():
-            if param_name in ['self', 'cls']:
-                continue
-
-            # Get type annotation
-            annotation = param.annotation
-            if annotation == inspect.Parameter.empty:
-                param_type = "Any"
-            else:
-                param_type = str(annotation).replace('typing.', '').replace('<class \'', '').replace('\'>', '')
-
-            # Get default value
-            default = param.default
-            if default == inspect.Parameter.empty:
-                default_str = "required"
-            else:
-                default_str = repr(default)
-
-            params.append({
-                'name': param_name,
-                'type': param_type,
-                'default': default_str
-            })
-
-        return params
-    except Exception:
-        return []
-
-def get_return_type(method):
-    """Get return type annotation"""
-    try:
-        sig = inspect.signature(method)
-        return_annotation = sig.return_annotation
-
-        if return_annotation == inspect.Signature.empty:
-            return "None"
-
-        return str(return_annotation).replace('typing.', '').replace('<class \'', '').replace('\'>', '')
-    except Exception:
-        return "None"
-
-def render_service(service_class, service_name, description, purpose):
-    """Render a service with all its methods"""
-    st.header(service_name)
-    st.markdown(f"**Purpose:** {purpose}")
-    st.markdown(f"**Module:** `viraltracker.services.{service_name.lower().replace('service', '_service')}`")
-
-    st.divider()
-
-    st.markdown(description)
-
-    st.divider()
-
-    st.subheader("Methods")
-
-    # Get all public methods (exclude private methods starting with _)
-    methods = []
-    for name, method in inspect.getmembers(service_class):
-        # Skip magic methods, private methods, and non-callables
-        if name.startswith('_') or not callable(method):
-            continue
-
-        # Check if it's actually a method of this class (not inherited from object)
-        if hasattr(method, '__self__') or inspect.ismethod(method) or inspect.isfunction(method):
-            methods.append((name, method))
-
-    # Sort methods alphabetically
-    methods.sort(key=lambda x: x[0])
-
-    if not methods:
-        st.info("No public methods found")
-        return
-
-    # Display each method
-    for method_name, method in methods:
-        with st.expander(f"📌 `{method_name}()`", expanded=False):
-            # Get docstring
-            doc = inspect.getdoc(method)
-            if doc:
-                # Split docstring into summary and details
-                doc_lines = doc.split('\n\n')
-                summary = doc_lines[0]
-
-                st.markdown(f"**{summary}**")
-
-                if len(doc_lines) > 1:
-                    st.divider()
-                    for section in doc_lines[1:]:
-                        st.markdown(section)
-            else:
-                st.markdown("*No documentation available*")
-
+        if len(doc_lines) > 1:
             st.divider()
+            for section in doc_lines[1:]:
+                st.markdown(section)
 
-            # Method signature
-            st.markdown("**Signature:**")
-            signature = get_method_signature(method)
-            st.code(f"{method_name}{signature}", language="python")
+        st.divider()
 
-            # Parameters
-            params = get_method_params(method)
-            if params:
-                st.markdown("**Parameters:**")
-                for param in params:
-                    default_info = f" = `{param['default']}`" if param['default'] != "required" else " *(required)*"
-                    st.markdown(f"- **`{param['name']}`** (`{param['type']}`){default_info}")
+        # Signature
+        st.markdown("**Signature:**")
+        async_prefix = "async " if method_info.is_async else ""
+        st.code(f"{async_prefix}def {method_info.name}{method_info.signature}", language="python")
 
-            # Return type
-            return_type = get_return_type(method)
-            st.markdown(f"**Returns:** `{return_type}`")
+        # Parameters
+        if method_info.parameters:
+            st.markdown("**Parameters:**")
+            for param in method_info.parameters:
+                required_badge = " *(required)*" if param.required else f" = `{param.default}`"
+                st.markdown(f"- **`{param.name}`** (`{param.type_str}`){required_badge}")
+
+        # Return type
+        st.markdown(f"**Returns:** `{method_info.return_type}`")
+
+
+def render_service(service_info):
+    """Render a service with all its methods."""
+    with st.expander(f"🔧 **{service_info.name}** ({service_info.method_count} methods)", expanded=False):
+        # Description
+        st.markdown(f"**Description:** {service_info.description}")
+        st.markdown(f"**Module:** `{service_info.module_path}`")
+
+        # Full docstring if different from description
+        if service_info.full_docstring and service_info.full_docstring != service_info.description:
+            if len(service_info.full_docstring) > len(service_info.description) + 10:
+                st.divider()
+                st.markdown("**Details:**")
+                st.markdown(service_info.full_docstring)
+
+        st.divider()
+
+        # Methods
+        if service_info.methods:
+            st.markdown("**Methods:**")
+            for method_info in service_info.methods:
+                render_method(method_info)
+        else:
+            st.info("No public methods found")
 
 # ============================================================================
-# Services Tabs
+# Category Descriptions
 # ============================================================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "TwitterService",
-    "GeminiService",
-    "StatsService",
-    "ScrapingService"
-])
+CATEGORY_DESCRIPTIONS = {
+    'Platform': 'Platform-specific integrations (Twitter, TikTok, YouTube, Facebook, Meta Ads)',
+    'AI/LLM': 'AI model integrations (Gemini, Veo, ElevenLabs)',
+    'Content Creation': 'Content generation and creative workflows',
+    'Research & Analysis': 'Research tools and analytical services',
+    'Business Logic': 'Core business logic and workflow management',
+    'Utility': 'Utility services (FFmpeg, statistics, comparisons)',
+    'Integration': 'External integrations (Apify, Slack, email, scraping)',
+    'Comic Video': 'Comic video production pipeline services',
+    'Content Pipeline': 'Content pipeline orchestration and node services',
+    'Knowledge Base': 'RAG knowledge base and document services',
+    'Models': 'Pydantic model definitions',
+    'Other': 'Uncategorized services'
+}
 
-# TwitterService
-with tab1:
-    render_service(
-        TwitterService,
-        "TwitterService",
-        """
-        Database operations for Twitter data. Handles all interactions with the Supabase database,
-        including fetching tweets, saving hook analyses, and managing outlier detection.
+# Define preferred category order
+CATEGORY_ORDER = [
+    'Platform',
+    'AI/LLM',
+    'Content Creation',
+    'Research & Analysis',
+    'Business Logic',
+    'Utility',
+    'Integration',
+    'Comic Video',
+    'Content Pipeline',
+    'Knowledge Base',
+    'Models',
+    'Other'
+]
 
-        **Key Features:**
-        - Clean async interface for database queries
-        - Type-safe Tweet and HookAnalysis models
-        - Support for time-based and ID-based queries
-        - Automatic project filtering
+# ============================================================================
+# Display Services by Category
+# ============================================================================
 
-        **Dependencies:**
-        - Supabase client (configured via environment)
-        - Tweet and HookAnalysis Pydantic models
-        """,
-        "Database access layer for Twitter data"
-    )
+st.subheader("Services by Category")
 
-# GeminiService
-with tab2:
-    render_service(
-        GeminiService,
-        "GeminiService",
-        """
-        AI-powered hook analysis using Google Gemini. Provides intelligent classification of viral content
-        with automatic rate limiting and retry logic.
+# Create tabs for categories (in preferred order)
+ordered_categories = [cat for cat in CATEGORY_ORDER if cat in services_by_category]
+# Add any categories not in our order list
+for cat in services_by_category:
+    if cat not in ordered_categories:
+        ordered_categories.append(cat)
 
-        **Key Features:**
-        - Automatic rate limiting (9 req/min for free tier)
-        - Exponential backoff on rate limit errors
-        - Structured JSON response parsing
-        - Hook Intelligence framework integration
+if not ordered_categories:
+    st.info("No services available.")
+    st.stop()
 
-        **Classifications:**
-        - **Hook Types:** 14 types (relatable_slice, shock_violation, listicle_howto, etc.)
-        - **Emotional Triggers:** 10 emotions (humor, validation, curiosity, etc.)
-        - **Content Patterns:** 8 patterns (question, statement, listicle, etc.)
+tabs = st.tabs(ordered_categories)
 
-        **Dependencies:**
-        - Google Generative AI SDK
-        - Gemini API key (via Config.GEMINI_API_KEY)
-        """,
-        "AI analysis using Google Gemini"
-    )
+for tab, category in zip(tabs, ordered_categories):
+    with tab:
+        services = services_by_category.get(category, [])
 
-# StatsService
-with tab3:
-    render_service(
-        StatsService,
-        "StatsService",
-        """
-        Statistical calculations for outlier detection and analysis. Pure computational functions
-        with no side effects - all methods are static.
+        # Category description
+        description = CATEGORY_DESCRIPTIONS.get(category, '')
+        if description:
+            st.markdown(f"*{description}*")
 
-        **Key Features:**
-        - Z-score outlier detection with trimmed statistics
-        - Percentile-based outlier detection
-        - Summary statistics (mean, median, std, quartiles)
-        - Numpy and SciPy powered for performance
+        st.markdown(f"**{len(services)} service(s) in this category**")
 
-        **Methods:**
-        - All methods are `@staticmethod` - no instance needed
-        - Can be called directly: `StatsService.calculate_zscore_outliers(...)`
+        st.divider()
 
-        **Dependencies:**
-        - NumPy for numerical computations
-        - SciPy for statistical functions
-        """,
-        "Statistical calculations and outlier detection"
-    )
+        # Display each service
+        for service_info in services:
+            render_service(service_info)
 
-# ScrapingService
-with tab4:
-    render_service(
-        ScrapingService,
-        "ScrapingService",
-        """
-        Twitter scraping via Apify integration. Wraps the TwitterScraper to provide a clean
-        async service layer interface for the agent and other consumers.
+# ============================================================================
+# Category Breakdown
+# ============================================================================
 
-        **Key Features:**
-        - Async interface to Twitter scraping
-        - Automatic database persistence
-        - Quality filtering (malformed tweet detection)
-        - Returns both tweets and metadata
+st.divider()
+st.subheader("Category Breakdown")
 
-        **Workflow:**
-        1. Scrape tweets via Apify (saves to database)
-        2. Fetch saved tweets by IDs
-        3. Return Tweet models + metadata
+# Show category distribution
+col1, col2 = st.columns(2)
 
-        **Dependencies:**
-        - TwitterScraper (legacy scraper)
-        - TwitterService (for fetching saved tweets)
-        - Apify API (via scraper)
-        """,
-        "Twitter scraping via Apify"
-    )
+with col1:
+    st.markdown("**Services per Category:**")
+    for category in ordered_categories:
+        count = len(services_by_category.get(category, []))
+        st.markdown(f"- **{category}**: {count} services")
+
+with col2:
+    st.markdown("**Method Statistics:**")
+    st.markdown(f"- **Total Methods:** {stats['total_methods']}")
+    st.markdown(f"- **Async Methods:** {stats['async_methods']} ({round(stats['async_methods']/stats['total_methods']*100, 1)}%)")
+    st.markdown(f"- **Sync Methods:** {stats['sync_methods']}")
+    st.markdown(f"- **Average per Service:** {stats['avg_methods_per_service']}")
 
 # ============================================================================
 # Footer
 # ============================================================================
 
 st.markdown("---")
-st.caption("""
-**Layered Architecture Benefits:**
+st.caption(f"""
+**Auto-Generated Catalog**
+This page automatically extracts service information from class definitions.
+When new services are added to `viraltracker/services/`, they appear here automatically.
 
-**Agent Layer:**
-- Natural language interface with intelligent routing
-- Specialized agents for each platform (Twitter, TikTok, YouTube, Facebook)
-- Cross-platform analysis agent
-- All powered by Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
-
-**Service Layer:**
-- Reusable across all interfaces (CLI, Agent, API, UI)
-- Type-safe with Pydantic models
-- Clean separation of concerns
-- Easy to test and maintain
-
-**Total Stack:** 6 agents → 4 services → 4 interfaces (CLI, Agent, API, UI)
+**Total Services:** {stats['total_services']} | **Total Methods:** {stats['total_methods']} | **Last Updated:** On page load
 """)

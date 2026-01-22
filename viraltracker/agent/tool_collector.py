@@ -77,26 +77,30 @@ def extract_tool_info(tool_name: str, tool: Any, platform: str) -> ToolInfo:
 
 def get_all_tools() -> Dict[str, ToolInfo]:
     """
-    Collect all tools from all agents.
+    Collect all tools from all agents including orchestrator.
 
     Returns:
         Dictionary mapping tool names to ToolInfo objects
     """
     # Import agents (this triggers tool registration via decorators)
+    from .orchestrator import orchestrator
     from .agents.twitter_agent import twitter_agent
     from .agents.tiktok_agent import tiktok_agent
     from .agents.youtube_agent import youtube_agent
     from .agents.facebook_agent import facebook_agent
     from .agents.analysis_agent import analysis_agent
     from .agents.ad_creation_agent import ad_creation_agent
+    from .agents.audio_production_agent import audio_production_agent
 
     agents = {
+        'Orchestrator': orchestrator,
         'Twitter': twitter_agent,
         'TikTok': tiktok_agent,
         'YouTube': youtube_agent,
         'Facebook': facebook_agent,
         'Analysis': analysis_agent,
-        'Ad Creation': ad_creation_agent
+        'Ad Creation': ad_creation_agent,
+        'Audio Production': audio_production_agent
     }
 
     all_tools = {}
