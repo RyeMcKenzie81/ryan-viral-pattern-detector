@@ -48,27 +48,35 @@ def get_all_scheduled_jobs(include_completed_last_24h: bool = True) -> List[Dict
     try:
         db = get_supabase_client()
 
-        # Fetch active jobs
+        # Fetch active jobs (without direct brands join - no FK relationship)
         result = db.table("scheduled_jobs").select(
             "id, name, job_type, brand_id, product_id, status, next_run_at, "
             "runs_completed, max_runs, schedule_type, cron_expression, parameters, "
-            "products(name, brands(name)), brands(name)"
+            "products(name, brands(name))"
         ).in_("status", ["active", "paused"]).order("next_run_at").execute()
 
         jobs = result.data or []
 
-        # For jobs without products (meta_sync, scorecard, template_scrape), brand comes from brands join
-        # For jobs with products (ad_creation), brand comes from products.brands
+        # Collect brand_ids for jobs without products to fetch brand names separately
+        brand_ids_needed = set()
+        for job in jobs:
+            if not job.get('products') and job.get('brand_id'):
+                brand_ids_needed.add(job['brand_id'])
+
+        # Fetch brand names for jobs without products
+        brand_map = {}
+        if brand_ids_needed:
+            brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids_needed)).execute()
+            brand_map = {b['id']: b['name'] for b in (brands_result.data or [])}
+
+        # Set display names for each job
         for job in jobs:
             if job.get('products'):
                 brand_info = job['products'].get('brands', {}) or {}
                 job['_brand_name'] = brand_info.get('name', 'Unknown')
                 job['_product_name'] = job['products'].get('name', 'Unknown')
-            elif job.get('brands'):
-                job['_brand_name'] = job['brands'].get('name', 'Unknown')
-                job['_product_name'] = None
             else:
-                job['_brand_name'] = 'Unknown'
+                job['_brand_name'] = brand_map.get(job.get('brand_id'), 'Unknown')
                 job['_product_name'] = None
 
         return jobs
@@ -85,7 +93,7 @@ def get_recent_completed_runs(limit: int = 10) -> List[Dict]:
 
         result = db.table("scheduled_job_runs").select(
             "id, scheduled_job_id, status, started_at, completed_at, "
-            "scheduled_jobs(name, job_type, brand_id, brands(name))"
+            "scheduled_jobs(name, job_type, brand_id)"
         ).gte("completed_at", cutoff).order("completed_at", desc=True).limit(limit).execute()
 
         return result.data or []
