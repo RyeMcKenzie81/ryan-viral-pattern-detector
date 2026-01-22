@@ -19,7 +19,7 @@ import logging
 import signal
 import sys
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import pytz
 import base64
 
@@ -209,15 +209,97 @@ def record_template_usage(product_id: str, template_storage_name: str, ad_run_id
         logger.error(f"Failed to record template usage: {e}")
 
 
-def get_template_base64(storage_name: str) -> Optional[str]:
-    """Download template and return as base64."""
+def get_template_base64(template: Union[str, Dict]) -> Optional[str]:
+    """Download template and return as base64.
+
+    Args:
+        template: Either storage_name (str) for uploaded templates,
+                  or dict with {id, storage_path, bucket} for scraped templates
+
+    Returns:
+        Base64 encoded image data, or None on failure
+    """
     try:
         db = get_supabase_client()
-        data = db.storage.from_("reference-ads").download(storage_name)
+
+        if isinstance(template, dict):
+            # Scraped template - get storage info from dict
+            storage_path = template.get('storage_path', '')
+            bucket = template.get('bucket', 'scraped-assets')
+
+            # If storage_path contains bucket prefix, parse it
+            if '/' in storage_path and not bucket:
+                parts = storage_path.split('/', 1)
+                bucket = parts[0]
+                storage_path = parts[1]
+
+            data = db.storage.from_(bucket).download(storage_path)
+        else:
+            # Uploaded template - reference-ads bucket
+            data = db.storage.from_("reference-ads").download(template)
+
         return base64.b64encode(data).decode('utf-8')
     except Exception as e:
-        logger.error(f"Failed to download template {storage_name}: {e}")
+        template_ref = template.get('id', template) if isinstance(template, dict) else template
+        logger.error(f"Failed to download template {template_ref}: {e}")
         return None
+
+
+def get_scraped_templates_for_job(template_ids: List[str]) -> List[Dict]:
+    """Fetch scraped templates by ID and return with storage info.
+
+    Args:
+        template_ids: List of template UUID strings
+
+    Returns:
+        List of dicts with {id, name, storage_path, bucket}
+    """
+    if not template_ids:
+        return []
+
+    try:
+        db = get_supabase_client()
+        result = db.table("scraped_templates").select(
+            "id, name, storage_path"
+        ).in_("id", template_ids).execute()
+
+        templates = []
+        for t in (result.data or []):
+            storage_path = t.get('storage_path', '')
+            # Parse bucket and path from storage_path (format: "bucket/path/to/file.jpg")
+            parts = storage_path.split('/', 1) if storage_path else ['scraped-assets', '']
+            bucket = parts[0] if len(parts) == 2 else 'scraped-assets'
+            path = parts[1] if len(parts) == 2 else storage_path
+
+            templates.append({
+                'id': t['id'],
+                'name': t.get('name', 'Template'),
+                'storage_path': path,
+                'bucket': bucket,
+                'full_storage_path': storage_path
+            })
+
+        return templates
+    except Exception as e:
+        logger.error(f"Failed to fetch scraped templates: {e}")
+        return []
+
+
+def mark_recommendation_as_used(product_id: str, template_id: str):
+    """Mark a template recommendation as used for a product.
+
+    Args:
+        product_id: Product UUID string
+        template_id: Template UUID string
+    """
+    try:
+        from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+        from uuid import UUID
+        rec_service = TemplateRecommendationService()
+        rec_service.mark_as_used(UUID(product_id), UUID(template_id))
+    except Exception as e:
+        # Non-critical - log and continue
+        logger.debug(f"Failed to mark recommendation as used: {e}")
 
 
 def get_belief_plan(plan_id: str) -> Optional[Dict]:
@@ -450,8 +532,18 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         content_source = params.get('content_source', 'hooks')
         logs.append(f"Content source: {content_source}")
 
+        # Determine template source (default to 'uploaded' for backward compatibility)
+        template_source = job.get('template_source', 'uploaded')
+        is_scraped_source = template_source == 'scraped'
+        logs.append(f"Template source: {template_source}")
+
         # Get templates to use
-        if job.get('template_mode') == 'unused':
+        if is_scraped_source:
+            # Scraped template library
+            scraped_template_ids = job.get('scraped_template_ids') or []
+            templates = get_scraped_templates_for_job(scraped_template_ids)
+            logs.append(f"Loaded {len(templates)} scraped templates from library")
+        elif job.get('template_mode') == 'unused':
             template_count = job.get('template_count', 5)
             templates = get_unused_templates(product_id, template_count)
             logs.append(f"Selected {len(templates)} unused templates")
@@ -533,17 +625,25 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                 belief_statement = angle.get('belief_statement', '')
                 logs.append(f"\n--- Angle {angle_idx + 1}/{len(angles_to_process)}: {angle_name} ---")
 
-                for template_idx, template_storage_name in enumerate(templates):
+                for template_idx, template in enumerate(templates):
                     if shutdown_requested:
                         break
 
                     if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
                         break
 
-                    logs.append(f"  Template {template_idx + 1}/{len(templates)}: {template_storage_name}")
+                    # Get template reference for logging (handle both dict and str)
+                    if is_scraped_source:
+                        template_ref = template.get('name', template.get('id', 'Unknown'))
+                        template_id = template.get('id')
+                    else:
+                        template_ref = template
+                        template_id = None
+
+                    logs.append(f"  Template {template_idx + 1}/{len(templates)}: {template_ref}")
 
                     # Download template
-                    template_base64 = get_template_base64(template_storage_name)
+                    template_base64 = get_template_base64(template)
                     if not template_base64:
                         logs.append(f"    Failed to download template")
                         continue
@@ -569,7 +669,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                             ctx=ctx,
                             product_id=product_id,
                             reference_ad_base64=template_base64,
-                            reference_ad_filename=template_storage_name,
+                            reference_ad_filename=template_ref,
                             project_id="",
                             num_variations=params.get('num_variations', 5),
                             content_source='hooks',  # Use hooks mode but with angle as context
@@ -585,12 +685,17 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                         if result and result.get('ad_run_id'):
                             ad_run_id = result['ad_run_id']
                             ad_run_ids.append(ad_run_id)
-                            templates_used.append(template_storage_name)
+                            templates_used.append(template_ref)
                             if angle_id and angle_id not in angles_used:
                                 angles_used.append(angle_id)
 
-                            # Record template usage
-                            record_template_usage(product_id, template_storage_name, ad_run_id)
+                            # Record template usage based on source
+                            if is_scraped_source and template_id:
+                                # Mark recommendation as used for scraped templates
+                                mark_recommendation_as_used(product_id, template_id)
+                            else:
+                                # Record in product_template_usage for uploaded templates
+                                record_template_usage(product_id, template_ref, ad_run_id)
 
                             approved = result.get('approved_count', 0)
                             rejected = result.get('rejected_count', 0)
@@ -612,11 +717,11 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                     except Exception as e:
                         logs.append(f"    Error: {str(e)}")
-                        logger.error(f"Error processing angle {angle_name} + template {template_storage_name}: {e}")
+                        logger.error(f"Error processing angle {angle_name} + template {template_ref}: {e}")
 
         else:
             # Traditional mode (hooks, recreate_template): Loop through templates only
-            for idx, template_storage_name in enumerate(templates):
+            for idx, template in enumerate(templates):
                 if shutdown_requested:
                     logs.append("Shutdown requested, stopping job execution")
                     break
@@ -625,13 +730,21 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
                     break
 
-                logs.append(f"Processing template {idx + 1}/{len(templates)}: {template_storage_name}")
+                # Get template reference for logging (handle both dict and str)
+                if is_scraped_source:
+                    template_ref = template.get('name', template.get('id', 'Unknown'))
+                    template_id = template.get('id')
+                else:
+                    template_ref = template
+                    template_id = None
+
+                logs.append(f"Processing template {idx + 1}/{len(templates)}: {template_ref}")
                 logger.info(f"Job {job_name}: Processing template {idx + 1}/{len(templates)}")
 
                 # Download template
-                template_base64 = get_template_base64(template_storage_name)
+                template_base64 = get_template_base64(template)
                 if not template_base64:
-                    logs.append(f"  Failed to download template: {template_storage_name}")
+                    logs.append(f"  Failed to download template: {template_ref}")
                     continue
 
                 # Create RunContext
@@ -657,7 +770,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                         ctx=ctx,
                         product_id=product_id,
                         reference_ad_base64=template_base64,
-                        reference_ad_filename=template_storage_name,
+                        reference_ad_filename=template_ref,
                         project_id="",
                         num_variations=params.get('num_variations', 5),
                         content_source=content_source,
@@ -673,10 +786,15 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     if result and result.get('ad_run_id'):
                         ad_run_id = result['ad_run_id']
                         ad_run_ids.append(ad_run_id)
-                        templates_used.append(template_storage_name)
+                        templates_used.append(template_ref)
 
-                        # Record template usage
-                        record_template_usage(product_id, template_storage_name, ad_run_id)
+                        # Record template usage based on source
+                        if is_scraped_source and template_id:
+                            # Mark recommendation as used for scraped templates
+                            mark_recommendation_as_used(product_id, template_id)
+                        else:
+                            # Record in product_template_usage for uploaded templates
+                            record_template_usage(product_id, template_ref, ad_run_id)
 
                         approved = result.get('approved_count', 0)
                         rejected = result.get('rejected_count', 0)
@@ -700,7 +818,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                 except Exception as e:
                     logs.append(f"  Error: {str(e)}")
-                    logger.error(f"Error processing template {template_storage_name}: {e}")
+                    logger.error(f"Error processing template {template_ref}: {e}")
 
         logs.append(f"\n=== Summary: {ads_generated} ads generated, {len(ad_run_ids)} runs created ===")
 

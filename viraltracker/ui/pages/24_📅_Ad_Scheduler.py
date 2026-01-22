@@ -65,6 +65,16 @@ if 'sched_selected_angle_ids' not in st.session_state:
 if 'sched_selected_offer_variant_id' not in st.session_state:
     st.session_state.sched_selected_offer_variant_id = None
 
+# Scraped template library state
+if 'sched_template_source' not in st.session_state:
+    st.session_state.sched_template_source = 'uploaded'  # 'uploaded' or 'scraped'
+if 'sched_selected_scraped_templates' not in st.session_state:
+    st.session_state.sched_selected_scraped_templates = []  # List of {id, name, storage_path, bucket}
+if 'sched_scraped_category' not in st.session_state:
+    st.session_state.sched_scraped_category = 'all'
+if 'sched_scraped_rec_filter' not in st.session_state:
+    st.session_state.sched_scraped_rec_filter = 'all'  # all, recommended, unused_recommended
+
 
 # ============================================================================
 # Database Functions
@@ -304,6 +314,154 @@ def get_signed_url(storage_path: str) -> str:
         return result.get('signedURL', '')
     except Exception as e:
         return ""
+
+
+# ============================================================================
+# Scraped Template Library Functions
+# ============================================================================
+
+def get_scraped_templates(
+    category: str = None,
+    awareness_level: int = None,
+    industry_niche: str = None,
+    target_sex: str = None,
+    limit: int = 100
+):
+    """Get approved scraped templates from database.
+
+    Args:
+        category: Optional category filter (testimonial, quote_card, etc.)
+        awareness_level: Optional awareness level (1-5)
+        industry_niche: Optional industry/niche filter
+        target_sex: Optional target sex filter (male/female/unisex)
+        limit: Maximum templates to return
+
+    Returns:
+        List of template records with storage paths
+    """
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_templates(
+            category=category if category != "all" else None,
+            awareness_level=awareness_level,
+            industry_niche=industry_niche if industry_niche != "all" else None,
+            target_sex=target_sex if target_sex != "all" else None,
+            active_only=True,
+            limit=limit
+        )
+    except Exception as e:
+        st.warning(f"Could not load scraped templates: {e}")
+        return []
+
+
+def get_template_categories():
+    """Get list of template categories."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return ["all"] + service.get_template_categories()
+    except Exception:
+        return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
+                "ugc_style", "meme", "carousel_frame", "story_format", "other"]
+
+
+def get_awareness_levels():
+    """Get awareness level filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_awareness_levels()
+    except Exception:
+        return []
+
+
+def get_industry_niches():
+    """Get industry niche filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_industry_niches()
+    except Exception:
+        return []
+
+
+def get_scraped_template_url(storage_path: str) -> str:
+    """Get public URL for scraped template asset."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_asset_preview_url(storage_path)
+    except Exception:
+        return ""
+
+
+def get_template_asset_match(template_id: str, product_id: str) -> dict:
+    """Get asset match info for a template.
+
+    Args:
+        template_id: UUID string of the template
+        product_id: UUID string of the product
+
+    Returns:
+        Dict with asset_match_score, missing_assets, warnings, detection_status
+    """
+    try:
+        from viraltracker.services.template_element_service import TemplateElementService
+        from uuid import UUID
+        service = TemplateElementService()
+        return service.match_assets_to_template(UUID(template_id), UUID(product_id))
+    except Exception:
+        return {"asset_match_score": 1.0, "detection_status": "error"}
+
+
+def get_asset_badge_html(score: float, detection_status: str = "analyzed") -> str:
+    """Generate HTML badge for asset match score.
+
+    Args:
+        score: Asset match score 0.0-1.0
+        detection_status: Status of element detection
+
+    Returns:
+        HTML string for badge
+    """
+    if detection_status == "not_analyzed":
+        return ""  # No badge if not analyzed
+
+    if score >= 1.0:
+        return '<span style="background:#28a745;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">All assets</span>'
+    elif score >= 0.5:
+        pct = int(score * 100)
+        return f'<span style="background:#ffc107;color:black;padding:1px 4px;border-radius:3px;font-size:9px;">{pct}% assets</span>'
+    else:
+        return '<span style="background:#dc3545;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">Missing assets</span>'
+
+
+def toggle_scraped_template_selection(template_info: dict):
+    """Toggle a scraped template in the selection list.
+
+    Args:
+        template_info: Dict with {id, name, storage_path, bucket}
+    """
+    current_selections = st.session_state.sched_selected_scraped_templates
+
+    # Check if already selected by id
+    existing_idx = next(
+        (i for i, t in enumerate(current_selections) if t['id'] == template_info['id']),
+        None
+    )
+
+    if existing_idx is not None:
+        # Remove from selection
+        current_selections.pop(existing_idx)
+    else:
+        # Add to selection
+        current_selections.append(template_info)
+
+    st.session_state.sched_selected_scraped_templates = current_selections
+
+
+def is_scraped_template_selected(template_id: str) -> bool:
+    """Check if a scraped template is currently selected."""
+    return any(t['id'] == template_id for t in st.session_state.sched_selected_scraped_templates)
 
 
 def upload_template_files(files: list) -> list:
@@ -563,13 +721,18 @@ def render_schedule_list():
 
                 # Show template info for ad_creation jobs, parameters for others
                 if job_type == 'ad_creation':
-                    template_mode = job.get('template_mode', 'unused')
-                    if template_mode == 'unused':
-                        template_info = f"{job.get('template_count', '?')} templates"
+                    template_source = job.get('template_source', 'uploaded')
+                    if template_source == 'scraped':
+                        scraped_ids = job.get('scraped_template_ids') or []
+                        st.caption(f"Source: Scraped Library ({len(scraped_ids)} templates)")
                     else:
-                        template_ids = job.get('template_ids') or []
-                        template_info = f"{len(template_ids)} templates"
-                    st.caption(f"Mode: {template_mode} ({template_info})")
+                        template_mode = job.get('template_mode', 'unused')
+                        if template_mode == 'unused':
+                            template_info = f"{job.get('template_count', '?')} templates"
+                        else:
+                            template_ids = job.get('template_ids') or []
+                            template_info = f"{len(template_ids)} templates"
+                        st.caption(f"Mode: {template_mode} ({template_info})")
                 elif job_type == 'meta_sync':
                     params = job.get('parameters', {}) or {}
                     st.caption(f"Syncs last {params.get('days_back', 7)} days")
@@ -825,130 +988,376 @@ def render_create_schedule():
 
     st.subheader("4. Templates")
 
-    # Determine default index for template mode
-    mode_options = ['unused', 'specific', 'upload']
+    # Template source toggle
+    existing_template_source = 'uploaded'
     if existing_job:
-        existing_mode = existing_job.get('template_mode', 'unused')
-        default_index = mode_options.index(existing_mode) if existing_mode in mode_options else 0
-    else:
-        default_index = 0
+        existing_template_source = existing_job.get('template_source', 'uploaded')
 
-    template_mode = st.radio(
-        "Template Selection Mode",
-        options=mode_options,
-        index=default_index,
+    template_source = st.radio(
+        "Template Source",
+        options=['uploaded', 'scraped'],
+        index=0 if existing_template_source == 'uploaded' else 1,
         format_func=lambda x: {
-            'unused': '🔄 Use Unused Templates - Auto-select templates not yet used for this product',
-            'specific': '📋 Specific Templates - Choose from existing templates',
-            'upload': '📤 Upload New - Upload reference ads for this run'
+            'uploaded': '📤 Uploaded Templates - Use templates from reference-ads storage',
+            'scraped': '📚 Scraped Template Library - Use curated templates with recommendations'
         }.get(x, x),
-        horizontal=False
+        horizontal=True,
+        key="template_source_radio"
     )
-    st.session_state.sched_template_mode = template_mode
+    st.session_state.sched_template_source = template_source
 
-    if template_mode == 'unused':
-        # Show count of unused templates
-        all_templates = get_existing_templates()
-        used_templates = get_used_templates(selected_product_id)
-        unused_count = len([t for t in all_templates if t['storage_name'] not in used_templates])
+    st.divider()
 
-        st.info(f"📊 {unused_count} unused templates available for this product")
+    # Initialize template variables
+    template_mode = None
+    template_count = 0
+    template_ids = None
+    scraped_template_ids = []
 
-        template_count = st.slider(
-            "Templates per run",
-            min_value=1,
-            max_value=min(20, unused_count) if unused_count > 0 else 1,
-            value=min(5, unused_count) if unused_count > 0 else 1,
-            help="Number of templates to use in each scheduled run"
+    if template_source == 'uploaded':
+        # Original uploaded template UI
+        # Determine default index for template mode
+        mode_options = ['unused', 'specific', 'upload']
+        if existing_job and existing_job.get('template_source', 'uploaded') == 'uploaded':
+            existing_mode = existing_job.get('template_mode', 'unused')
+            default_index = mode_options.index(existing_mode) if existing_mode in mode_options else 0
+        else:
+            default_index = 0
+
+        template_mode = st.radio(
+            "Template Selection Mode",
+            options=mode_options,
+            index=default_index,
+            format_func=lambda x: {
+                'unused': '🔄 Use Unused Templates - Auto-select templates not yet used for this product',
+                'specific': '📋 Specific Templates - Choose from existing templates',
+                'upload': '📤 Upload New - Upload reference ads for this run'
+            }.get(x, x),
+            horizontal=False
         )
-        template_ids = None
+        st.session_state.sched_template_mode = template_mode
 
-    elif template_mode == 'specific':
-        # Specific template selection
-        templates = get_existing_templates()
+        if template_mode == 'unused':
+            # Show count of unused templates
+            all_templates = get_existing_templates()
+            used_templates = get_used_templates(selected_product_id)
+            unused_count = len([t for t in all_templates if t['storage_name'] not in used_templates])
 
-        if templates:
-            st.markdown("**Select templates to use:**")
+            st.info(f"📊 {unused_count} unused templates available for this product")
 
-            # Initialize selection from existing job
-            if existing_job and existing_job.get('template_ids'):
-                if not st.session_state.sched_selected_templates:
-                    st.session_state.sched_selected_templates = existing_job['template_ids']
+            template_count = st.slider(
+                "Templates per run",
+                min_value=1,
+                max_value=min(20, unused_count) if unused_count > 0 else 1,
+                value=min(5, unused_count) if unused_count > 0 else 1,
+                help="Number of templates to use in each scheduled run"
+            )
+            template_ids = None
 
-            visible_count = min(st.session_state.sched_templates_visible, len(templates))
-            visible_templates = templates[:visible_count]
+        elif template_mode == 'specific':
+            # Specific template selection
+            templates = get_existing_templates()
 
+            if templates:
+                st.markdown("**Select templates to use:**")
+
+                # Initialize selection from existing job
+                if existing_job and existing_job.get('template_ids'):
+                    if not st.session_state.sched_selected_templates:
+                        st.session_state.sched_selected_templates = existing_job['template_ids']
+
+                visible_count = min(st.session_state.sched_templates_visible, len(templates))
+                visible_templates = templates[:visible_count]
+
+                cols = st.columns(5)
+                for idx, template in enumerate(visible_templates):
+                    with cols[idx % 5]:
+                        storage_name = template['storage_name']
+                        is_selected = storage_name in st.session_state.sched_selected_templates
+
+                        thumb_url = get_signed_url(f"reference-ads/{storage_name}")
+                        if thumb_url:
+                            border = "3px solid #00ff00" if is_selected else "1px solid #333"
+                            st.markdown(
+                                f'<div style="border:{border};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                                f'<img src="{thumb_url}" style="width:100%;border-radius:2px;"/></div>',
+                                unsafe_allow_html=True
+                            )
+
+                        if st.checkbox(
+                            "✓" if is_selected else "Select",
+                            value=is_selected,
+                            key=f"tpl_select_{idx}"
+                        ):
+                            if storage_name not in st.session_state.sched_selected_templates:
+                                st.session_state.sched_selected_templates.append(storage_name)
+                        else:
+                            if storage_name in st.session_state.sched_selected_templates:
+                                st.session_state.sched_selected_templates.remove(storage_name)
+
+                if visible_count < len(templates):
+                    if st.button(f"Load More ({len(templates) - visible_count} more)"):
+                        st.session_state.sched_templates_visible += 30
+                        st.rerun()
+
+                st.markdown(f"**Selected:** {len(st.session_state.sched_selected_templates)} templates")
+                template_ids = st.session_state.sched_selected_templates
+                template_count = len(template_ids)
+            else:
+                st.warning("No templates available")
+                template_ids = []
+                template_count = 0
+
+        elif template_mode == 'upload':
+            # Upload new templates mode
+            st.markdown("**Upload reference ad templates:**")
+
+            uploaded_files = st.file_uploader(
+                "Upload reference ad images",
+                type=['jpg', 'jpeg', 'png', 'webp'],
+                accept_multiple_files=True,
+                help="Upload one or more reference ads to use for this scheduled run",
+                key="sched_file_uploader"
+            )
+
+            if uploaded_files:
+                # Preview uploaded files in grid
+                num_cols = min(5, len(uploaded_files))
+                cols = st.columns(num_cols)
+                for idx, file in enumerate(uploaded_files):
+                    with cols[idx % num_cols]:
+                        st.image(file, use_container_width=True)
+                        st.caption(file.name[:20] + "..." if len(file.name) > 20 else file.name)
+
+                st.success(f"📤 {len(uploaded_files)} template(s) ready to upload")
+
+                # Store files in session state for upload on save
+                st.session_state.sched_uploaded_files = uploaded_files
+                template_count = len(uploaded_files)
+                template_ids = None  # Will be populated on save after upload
+            else:
+                st.info("Upload one or more reference ad images to use for this scheduled run")
+                st.session_state.sched_uploaded_files = []
+                template_count = 0
+                template_ids = None
+
+    else:
+        # Scraped Template Library
+        from uuid import UUID
+
+        # Recommendation filter row
+        rec_filter_col1, rec_filter_col2 = st.columns([2, 1])
+
+        with rec_filter_col1:
+            rec_filter = st.selectbox(
+                "Show Templates",
+                options=["All Templates", "Recommended", "Unused Recommended"],
+                index={"all": 0, "recommended": 1, "unused_recommended": 2}.get(
+                    st.session_state.sched_scraped_rec_filter, 0
+                ),
+                key="sched_rec_filter_select",
+                help="Filter to show only templates recommended for this product"
+            )
+            st.session_state.sched_scraped_rec_filter = {
+                "All Templates": "all",
+                "Recommended": "recommended",
+                "Unused Recommended": "unused_recommended"
+            }.get(rec_filter, "all")
+
+        with rec_filter_col2:
+            # Show recommendation counts if product is selected
+            if selected_product_id and st.session_state.sched_scraped_rec_filter != "all":
+                try:
+                    from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                    rec_service = TemplateRecommendationService()
+                    counts = rec_service.get_recommendation_count(UUID(selected_product_id))
+                    if st.session_state.sched_scraped_rec_filter == "recommended":
+                        st.caption(f"{counts['total']} recommended templates")
+                    else:
+                        st.caption(f"{counts['unused']} unused recommendations")
+                except Exception:
+                    pass
+
+        # Filter row - 4 columns
+        filter_cols = st.columns(4)
+
+        # Category filter
+        with filter_cols[0]:
+            categories = get_template_categories()
+            selected_category = st.selectbox(
+                "Category",
+                options=categories,
+                index=categories.index(st.session_state.sched_scraped_category) if st.session_state.sched_scraped_category in categories else 0,
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+                key="sched_filter_category"
+            )
+            st.session_state.sched_scraped_category = selected_category
+
+        # Awareness Level filter
+        with filter_cols[1]:
+            awareness_opts = [{"value": None, "label": "All"}] + get_awareness_levels()
+            selected_awareness = st.selectbox(
+                "Awareness Level",
+                options=[a["value"] for a in awareness_opts],
+                format_func=lambda x: next((a["label"] for a in awareness_opts if a["value"] == x), "All"),
+                key="sched_filter_awareness"
+            )
+
+        # Industry/Niche filter
+        with filter_cols[2]:
+            niches = ["all"] + get_industry_niches()
+            selected_niche = st.selectbox(
+                "Industry/Niche",
+                options=niches,
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+                key="sched_filter_niche"
+            )
+
+        # Target Sex filter
+        with filter_cols[3]:
+            sex_options = ["all", "male", "female", "unisex"]
+            selected_sex = st.selectbox(
+                "Target Audience",
+                options=sex_options,
+                format_func=lambda x: x.title() if x != "all" else "All",
+                key="sched_filter_sex"
+            )
+
+        # Get scraped templates with all filters
+        scraped_templates_list = get_scraped_templates(
+            category=selected_category if selected_category != "all" else None,
+            awareness_level=selected_awareness,
+            industry_niche=selected_niche if selected_niche != "all" else None,
+            target_sex=selected_sex if selected_sex != "all" else None,
+            limit=100  # Fetch more since we may filter
+        )
+
+        # Apply recommendation filter
+        if st.session_state.sched_scraped_rec_filter != "all" and selected_product_id:
+            try:
+                from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                rec_service = TemplateRecommendationService()
+                unused_only = st.session_state.sched_scraped_rec_filter == "unused_recommended"
+                recommended_ids = rec_service.get_recommended_template_ids(
+                    UUID(selected_product_id), unused_only=unused_only
+                )
+                recommended_id_strs = {str(rid) for rid in recommended_ids}
+                scraped_templates_list = [
+                    t for t in scraped_templates_list
+                    if t.get('id') in recommended_id_strs
+                ]
+            except Exception:
+                pass
+
+        # Initialize selection from existing job
+        if existing_job and existing_job.get('scraped_template_ids'):
+            if not st.session_state.sched_selected_scraped_templates:
+                # Fetch template details for display
+                existing_ids = existing_job['scraped_template_ids']
+                st.session_state.sched_selected_scraped_templates = [
+                    {'id': tid, 'name': 'Template', 'storage_path': '', 'bucket': 'scraped-assets'}
+                    for tid in existing_ids
+                ]
+
+        if scraped_templates_list:
+            # Selection count and clear button
+            selected_count = len(st.session_state.sched_selected_scraped_templates)
+            header_cols = st.columns([3, 1])
+            with header_cols[0]:
+                category_label = f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""
+                st.caption(f"Showing {len(scraped_templates_list)} templates{category_label} | **{selected_count} selected**")
+            with header_cols[1]:
+                if selected_count > 0:
+                    if st.button("Clear Selection", key="sched_clear_scraped_selection", use_container_width=True):
+                        st.session_state.sched_selected_scraped_templates = []
+                        st.rerun()
+
+            # Thumbnail grid - 5 columns with checkboxes
             cols = st.columns(5)
-            for idx, template in enumerate(visible_templates):
+            for idx, template in enumerate(scraped_templates_list):
                 with cols[idx % 5]:
-                    storage_name = template['storage_name']
-                    is_selected = storage_name in st.session_state.sched_selected_templates
+                    template_id = template.get('id', '')
+                    template_name = template.get('name', 'Unnamed')
+                    storage_path = template.get('storage_path', '')
+                    category = template.get('category', 'other')
+                    times_used = template.get('times_used', 0) or 0
 
-                    thumb_url = get_signed_url(f"reference-ads/{storage_name}")
+                    is_selected = is_scraped_template_selected(template_id)
+
+                    # Get preview URL
+                    thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+
+                    # Show thumbnail with selection border
                     if thumb_url:
-                        border = "3px solid #00ff00" if is_selected else "1px solid #333"
+                        border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
                         st.markdown(
-                            f'<div style="border:{border};border-radius:4px;padding:2px;margin-bottom:4px;">'
-                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;"/></div>',
+                            f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{template_name}"/>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f'<div style="height:80px;background:#333;border-radius:4px;'
+                            f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
+                            f'{template_name[:10]}...</div>',
                             unsafe_allow_html=True
                         )
 
+                    # Show template info
+                    st.caption(f"📁 {category.replace('_', ' ').title()}")
+                    if times_used > 0:
+                        st.caption(f"Used {times_used}x")
+
+                    # Show asset match badge if product is selected
+                    if selected_product_id:
+                        asset_match = get_template_asset_match(template_id, selected_product_id)
+                        badge_html = get_asset_badge_html(
+                            asset_match.get("asset_match_score", 1.0),
+                            asset_match.get("detection_status", "unknown")
+                        )
+                        if badge_html:
+                            st.markdown(badge_html, unsafe_allow_html=True)
+
+                    # Parse bucket and path for storage
+                    parts = storage_path.split("/", 1) if storage_path else ["", ""]
+                    bucket = parts[0] if len(parts) == 2 else "scraped-assets"
+                    path = parts[1] if len(parts) == 2 else storage_path
+
+                    # Checkbox for multi-select
                     if st.checkbox(
-                        "✓" if is_selected else "Select",
+                        template_name[:15] + "..." if len(template_name) > 15 else template_name,
                         value=is_selected,
-                        key=f"tpl_select_{idx}"
+                        key=f"sched_scraped_tpl_cb_{idx}",
+                        help=template_name
                     ):
-                        if storage_name not in st.session_state.sched_selected_templates:
-                            st.session_state.sched_selected_templates.append(storage_name)
+                        if not is_selected:
+                            # Add to selection
+                            toggle_scraped_template_selection({
+                                'id': template_id,
+                                'name': template_name,
+                                'storage_path': path,
+                                'bucket': bucket
+                            })
+                            st.rerun()
                     else:
-                        if storage_name in st.session_state.sched_selected_templates:
-                            st.session_state.sched_selected_templates.remove(storage_name)
+                        if is_selected:
+                            # Remove from selection
+                            toggle_scraped_template_selection({
+                                'id': template_id,
+                                'name': template_name,
+                                'storage_path': path,
+                                'bucket': bucket
+                            })
+                            st.rerun()
 
-            if visible_count < len(templates):
-                if st.button(f"Load More ({len(templates) - visible_count} more)"):
-                    st.session_state.sched_templates_visible += 30
-                    st.rerun()
-
-            st.markdown(f"**Selected:** {len(st.session_state.sched_selected_templates)} templates")
-            template_ids = st.session_state.sched_selected_templates
-            template_count = len(template_ids)
+            # Set scraped_template_ids from selection
+            scraped_template_ids = [t['id'] for t in st.session_state.sched_selected_scraped_templates]
+            template_count = len(scraped_template_ids)
         else:
-            st.warning("No templates available")
-            template_ids = []
+            st.info("No scraped templates found. Use the Template Queue to approve templates from competitor ads.")
+            scraped_template_ids = []
             template_count = 0
-
-    elif template_mode == 'upload':
-        # Upload new templates mode
-        st.markdown("**Upload reference ad templates:**")
-
-        uploaded_files = st.file_uploader(
-            "Upload reference ad images",
-            type=['jpg', 'jpeg', 'png', 'webp'],
-            accept_multiple_files=True,
-            help="Upload one or more reference ads to use for this scheduled run",
-            key="sched_file_uploader"
-        )
-
-        if uploaded_files:
-            # Preview uploaded files in grid
-            num_cols = min(5, len(uploaded_files))
-            cols = st.columns(num_cols)
-            for idx, file in enumerate(uploaded_files):
-                with cols[idx % num_cols]:
-                    st.image(file, use_container_width=True)
-                    st.caption(file.name[:20] + "..." if len(file.name) > 20 else file.name)
-
-            st.success(f"📤 {len(uploaded_files)} template(s) ready to upload")
-
-            # Store files in session state for upload on save
-            st.session_state.sched_uploaded_files = uploaded_files
-            template_count = len(uploaded_files)
-            template_ids = None  # Will be populated on save after upload
-        else:
-            st.info("Upload one or more reference ad images to use for this scheduled run")
-            st.session_state.sched_uploaded_files = []
-            template_count = 0
-            template_ids = None
 
     st.divider()
 
@@ -1453,10 +1862,18 @@ def render_create_schedule():
             errors = []
             if not job_name:
                 errors.append("Job name is required")
-            if template_mode == 'specific' and not template_ids:
-                errors.append("Select at least one template")
-            if template_mode == 'upload' and not st.session_state.sched_uploaded_files:
-                errors.append("Upload at least one template image")
+
+            # Template validation based on source
+            if template_source == 'uploaded':
+                if template_mode == 'specific' and not template_ids:
+                    errors.append("Select at least one template")
+                if template_mode == 'upload' and not st.session_state.sched_uploaded_files:
+                    errors.append("Upload at least one template image")
+            else:
+                # Scraped template source
+                if not scraped_template_ids:
+                    errors.append("Select at least one scraped template")
+
             if export_destination in ['email', 'both'] and not export_email:
                 errors.append("Email address is required")
 
@@ -1474,8 +1891,8 @@ def render_create_schedule():
                 for error in errors:
                     st.error(error)
             else:
-                # Handle upload mode - upload files first
-                if template_mode == 'upload':
+                # Handle upload mode - upload files first (only for uploaded template source)
+                if template_source == 'uploaded' and template_mode == 'upload':
                     with st.spinner("Uploading templates..."):
                         uploaded_storage_names = upload_template_files(st.session_state.sched_uploaded_files)
 
@@ -1486,6 +1903,7 @@ def render_create_schedule():
                     template_ids = uploaded_storage_names
                     template_count = len(uploaded_storage_names)
                     st.success(f"✅ Uploaded {template_count} template(s)")
+
                 # Build job data
                 parameters = {
                     'num_variations': num_variations,
@@ -1520,10 +1938,14 @@ def render_create_schedule():
                     'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
                     'next_run_at': next_run.isoformat() if next_run else None,
                     'max_runs': max_runs,
-                    'template_mode': template_mode,
-                    'template_count': template_count if template_mode == 'unused' else None,
-                    # Both 'specific' and 'upload' modes use template_ids
-                    'template_ids': template_ids if template_mode in ['specific', 'upload'] else None,
+                    # Template source indicator
+                    'template_source': template_source,
+                    # For uploaded templates
+                    'template_mode': template_mode if template_source == 'uploaded' else None,
+                    'template_count': template_count if template_source == 'uploaded' and template_mode == 'unused' else None,
+                    'template_ids': template_ids if template_source == 'uploaded' and template_mode in ['specific', 'upload'] else None,
+                    # For scraped templates
+                    'scraped_template_ids': scraped_template_ids if template_source == 'scraped' else None,
                     'parameters': parameters
                 }
 
@@ -1534,6 +1956,7 @@ def render_create_schedule():
                         st.session_state.sched_selected_templates = []
                         st.session_state.sched_uploaded_files = []
                         st.session_state.sched_selected_angle_ids = []
+                        st.session_state.sched_selected_scraped_templates = []
                         st.rerun()
                 else:
                     job_id = create_scheduled_job(job_data)
@@ -1543,6 +1966,7 @@ def render_create_schedule():
                         st.session_state.sched_selected_templates = []
                         st.session_state.sched_uploaded_files = []
                         st.session_state.sched_selected_angle_ids = []
+                        st.session_state.sched_selected_scraped_templates = []
                         st.rerun()
 
     with col2:
@@ -1551,6 +1975,7 @@ def render_create_schedule():
             st.session_state.sched_selected_templates = []
             st.session_state.sched_uploaded_files = []
             st.session_state.sched_selected_angle_ids = []
+            st.session_state.sched_selected_scraped_templates = []
             st.rerun()
 
 
@@ -1656,14 +2081,21 @@ def render_schedule_detail():
     with col2:
         if job_type == 'ad_creation':
             st.markdown("### Templates")
-            template_mode = job.get('template_mode') or 'unused'
-            st.markdown(f"**Mode:** {template_mode.capitalize()}")
+            template_source = job.get('template_source', 'uploaded')
+            st.markdown(f"**Source:** {'Scraped Library' if template_source == 'scraped' else 'Uploaded'}")
 
-            if template_mode == 'unused':
-                st.markdown(f"**Per Run:** {job.get('template_count', 'N/A')} templates")
+            if template_source == 'scraped':
+                scraped_ids = job.get('scraped_template_ids') or []
+                st.markdown(f"**Selected:** {len(scraped_ids)} templates")
             else:
-                template_ids = job.get('template_ids') or []
-                st.markdown(f"**Selected:** {len(template_ids)} templates")
+                template_mode = job.get('template_mode') or 'unused'
+                st.markdown(f"**Mode:** {template_mode.capitalize()}")
+
+                if template_mode == 'unused':
+                    st.markdown(f"**Per Run:** {job.get('template_count', 'N/A')} templates")
+                else:
+                    template_ids = job.get('template_ids') or []
+                    st.markdown(f"**Selected:** {len(template_ids)} templates")
         elif job_type == 'meta_sync':
             st.markdown("### Sync Settings")
             params = job.get('parameters', {}) or {}
