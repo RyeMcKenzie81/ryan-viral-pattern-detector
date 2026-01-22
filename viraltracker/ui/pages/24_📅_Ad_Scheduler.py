@@ -1050,11 +1050,6 @@ def _render_template_scrape_form(existing_job, is_edit):
                 'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
                 'next_run_at': next_run.isoformat() if next_run else None,
                 'max_runs': max_runs,
-                'template_source': None,
-                'template_mode': None,
-                'template_count': None,
-                'template_ids': None,
-                'scraped_template_ids': None,
                 'parameters': parameters
             }
 
