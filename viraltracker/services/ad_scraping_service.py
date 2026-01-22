@@ -334,9 +334,10 @@ class AdScrapingService:
             # Check if ad already exists
             existing_result = self.supabase.table("facebook_ads").select(
                 "id, first_seen_at, is_active, last_seen_at, times_seen"
-            ).eq("ad_archive_id", ad_archive_id).maybeSingle().execute()
+            ).eq("ad_archive_id", ad_archive_id).execute()
 
-            existing = existing_result.data
+            # Handle result - will be a list, take first item if exists
+            existing = existing_result.data[0] if existing_result.data else None
             is_new = existing is None
             was_active = existing.get("is_active") if existing else None
 
