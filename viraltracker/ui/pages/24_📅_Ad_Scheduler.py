@@ -1079,10 +1079,41 @@ def _render_template_approval_form(existing_job, is_edit):
     """Render the template approval job creation form."""
 
     # ========================================================================
-    # Section 1: Job Name
+    # Section 1: Brand Selection (for organization)
     # ========================================================================
 
-    st.subheader("1. Job Name")
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+
+    default_brand = None
+    if existing_job:
+        for b in brands:
+            if b['id'] == existing_job.get('brand_id'):
+                default_brand = b['name']
+                break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=list(brand_options.keys()),
+        index=list(brand_options.keys()).index(default_brand) if default_brand else 0,
+        help="Select a brand for organizational purposes (job processes all pending items)",
+        key="approval_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
 
     existing_params = existing_job.get('parameters', {}) if existing_job else {}
 
@@ -1097,10 +1128,10 @@ def _render_template_approval_form(existing_job, is_edit):
     st.divider()
 
     # ========================================================================
-    # Section 2: Approval Settings
+    # Section 3: Approval Settings
     # ========================================================================
 
-    st.subheader("2. Approval Settings")
+    st.subheader("3. Approval Settings")
 
     batch_size = st.number_input(
         "Items per Run",
@@ -1123,10 +1154,10 @@ def _render_template_approval_form(existing_job, is_edit):
     st.divider()
 
     # ========================================================================
-    # Section 3: Schedule Configuration
+    # Section 4: Schedule Configuration
     # ========================================================================
 
-    st.subheader("3. Schedule")
+    st.subheader("4. Schedule")
 
     current_time = datetime.now(PST)
     st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
@@ -1280,7 +1311,7 @@ def _render_template_approval_form(existing_job, is_edit):
             job_data = {
                 'job_type': 'template_approval',
                 'product_id': None,  # Template approval doesn't need product
-                'brand_id': None,    # Not brand-specific
+                'brand_id': selected_brand_id,
                 'name': job_name,
                 'schedule_type': schedule_type,
                 'cron_expression': cron_expression,
