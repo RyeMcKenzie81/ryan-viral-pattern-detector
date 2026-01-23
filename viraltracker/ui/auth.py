@@ -337,57 +337,26 @@ def sign_out() -> None:
 # ============================================================================
 
 def _show_login_form() -> None:
-    """Display the login/signup form."""
+    """Display the login form."""
     st.markdown("### Welcome to ViralTracker")
     st.markdown("Sign in to access your dashboard.")
 
-    # Tabs for login and signup
-    tab_login, tab_signup = st.tabs(["Sign In", "Sign Up"])
+    with st.form("login_form", clear_on_submit=False):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
-    with tab_login:
-        with st.form("login_form", clear_on_submit=False):
-            email = st.text_input("Email", key="login_email")
-            password = st.text_input("Password", type="password", key="login_password")
-            remember = st.checkbox("Remember me", value=True, key="login_remember")
-            submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
-
-            if submitted:
-                if not email or not password:
-                    st.error("Please enter both email and password")
+        if submitted:
+            if not email or not password:
+                st.error("Please enter both email and password")
+            else:
+                with st.spinner("Signing in..."):
+                    success, error = sign_in(email, password)
+                if success:
+                    st.success("Signed in successfully!")
+                    st.rerun()
                 else:
-                    with st.spinner("Signing in..."):
-                        success, error = sign_in(email, password)
-                    if success:
-                        st.success("Signed in successfully!")
-                        st.rerun()
-                    else:
-                        st.error(error or "Sign in failed")
-
-    with tab_signup:
-        with st.form("signup_form", clear_on_submit=False):
-            email = st.text_input("Email", key="signup_email")
-            password = st.text_input("Password", type="password", key="signup_password")
-            password_confirm = st.text_input("Confirm Password", type="password", key="signup_password_confirm")
-            submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
-
-            if submitted:
-                if not email or not password:
-                    st.error("Please enter both email and password")
-                elif password != password_confirm:
-                    st.error("Passwords do not match")
-                elif len(password) < 6:
-                    st.error("Password must be at least 6 characters")
-                else:
-                    with st.spinner("Creating account..."):
-                        success, message = sign_up(email, password)
-                    if success:
-                        if message:
-                            st.info(message)
-                        else:
-                            st.success("Account created!")
-                            st.rerun()
-                    else:
-                        st.error(message or "Sign up failed")
+                    st.error(error or "Sign in failed")
 
     # Stop execution - don't render rest of page
     st.stop()
