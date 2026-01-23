@@ -220,20 +220,21 @@ class TemplateQueueService:
 
     def get_queue_stats(self) -> Dict:
         """
-        Get queue statistics.
+        Get queue statistics using count queries (not limited by Supabase 1000 row default).
 
         Returns:
             Dict with counts by status
         """
-        result = self.supabase.table("template_queue").select(
-            "status"
-        ).execute()
+        stats = {"pending": 0, "approved": 0, "rejected": 0, "archived": 0, "pending_details": 0, "total": 0}
 
-        stats = {"pending": 0, "approved": 0, "rejected": 0, "archived": 0, "total": 0}
-        for item in result.data:
-            status = item.get("status", "pending")
-            stats[status] = stats.get(status, 0) + 1
-            stats["total"] += 1
+        # Query count for each status separately to avoid Supabase 1000 row limit
+        for status in ["pending", "approved", "rejected", "archived", "pending_details"]:
+            result = self.supabase.table("template_queue").select(
+                "id", count="exact"
+            ).eq("status", status).execute()
+            count = result.count if result.count is not None else 0
+            stats[status] = count
+            stats["total"] += count
 
         return stats
 

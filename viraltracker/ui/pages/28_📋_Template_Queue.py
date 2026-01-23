@@ -275,8 +275,11 @@ def render_stats():
     """Render queue statistics."""
     stats = get_queue_stats()
 
+    # Combine pending + pending_details for display (both are "in review")
+    pending_total = stats.get("pending", 0) + stats.get("pending_details", 0)
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Pending", stats.get("pending", 0))
+    col1.metric("Pending", pending_total)
     col2.metric("Approved", stats.get("approved", 0))
     col3.metric("Rejected", stats.get("rejected", 0))
     col4.metric("Total", stats.get("total", 0))
