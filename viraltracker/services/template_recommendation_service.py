@@ -270,6 +270,8 @@ class TemplateRecommendationService:
             candidates = await self._score_templates_ai(product, templates, request.limit)
         elif request.methodology == RecommendationMethodology.DIVERSITY:
             candidates = self._score_templates_diversity(product, templates, request.limit)
+        elif request.methodology == RecommendationMethodology.LONGEVITY:
+            candidates = self._score_templates_longevity(templates, request.limit)
         else:
             raise ValueError(f"Unsupported methodology: {request.methodology}")
 
@@ -318,7 +320,7 @@ class TemplateRecommendationService:
         """Get active templates from library."""
         result = self.supabase.table("scraped_templates").select(
             "id, name, category, storage_path, description, industry_niche, "
-            "awareness_level, awareness_level_name, target_sex, times_used"
+            "awareness_level, awareness_level_name, target_sex, times_used, source_facebook_ad_id"
         ).eq("is_active", True).order("times_used", desc=True).limit(limit).execute()
 
         return result.data or []
@@ -447,6 +449,123 @@ class TemplateRecommendationService:
                 ))
 
         return candidates[:limit]
+
+    def _score_templates_longevity(
+        self,
+        templates: List[Dict[str, Any]],
+        limit: int,
+    ) -> List[TemplateRecommendationCandidate]:
+        """
+        Score templates by how long their source ads have been running.
+
+        Joins to facebook_ads via source_facebook_ad_id to get longevity data.
+        Calculates days_active = last_seen_at - start_date.
+
+        Args:
+            templates: List of template dicts with source_facebook_ad_id
+            limit: Maximum number of candidates to return
+
+        Returns:
+            List of TemplateRecommendationCandidate sorted by days active (longest first)
+        """
+        from datetime import datetime
+
+        # Get template IDs that have source_facebook_ad_id
+        fb_ad_ids = [
+            t['source_facebook_ad_id'] for t in templates
+            if t.get('source_facebook_ad_id')
+        ]
+
+        if not fb_ad_ids:
+            logger.warning("No templates have source_facebook_ad_id for longevity scoring")
+            return []
+
+        # Query facebook_ads for longevity data
+        fb_result = self.supabase.table("facebook_ads").select(
+            "id, start_date, last_seen_at, is_active"
+        ).in_("id", fb_ad_ids).execute()
+
+        # Build lookup: facebook_ad_id -> longevity data
+        fb_lookup = {ad['id']: ad for ad in (fb_result.data or [])}
+
+        # Calculate days_active for each template
+        scored = []
+        for t in templates:
+            fb_ad_id = t.get('source_facebook_ad_id')
+            if not fb_ad_id or fb_ad_id not in fb_lookup:
+                continue  # Skip templates without longevity data
+
+            fb_ad = fb_lookup[fb_ad_id]
+            start_date_str = fb_ad.get('start_date')
+            last_seen_str = fb_ad.get('last_seen_at')
+
+            if not start_date_str or not last_seen_str:
+                continue
+
+            try:
+                # Parse dates - handle both date and datetime formats
+                if 'T' in str(start_date_str):
+                    start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                else:
+                    start_date = datetime.fromisoformat(start_date_str)
+
+                if 'T' in str(last_seen_str):
+                    last_seen = datetime.fromisoformat(last_seen_str.replace('Z', '+00:00'))
+                else:
+                    last_seen = datetime.fromisoformat(last_seen_str)
+
+                # Calculate days active (using date part only for consistency)
+                days_active = (last_seen.date() - start_date.date()).days
+
+                if days_active >= 0:
+                    scored.append({
+                        'template': t,
+                        'days_active': days_active,
+                        'is_active': fb_ad.get('is_active', False)
+                    })
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse dates for template {t.get('id')}: {e}")
+                continue
+
+        if not scored:
+            logger.warning("No templates had valid longevity data")
+            return []
+
+        # Sort by days_active DESC
+        scored.sort(key=lambda x: x['days_active'], reverse=True)
+
+        # Normalize scores and build candidates
+        max_days = scored[0]['days_active'] if scored else 1
+        candidates = []
+
+        for item in scored[:limit]:
+            t = item['template']
+            days = item['days_active']
+            score = days / max_days if max_days > 0 else 0
+
+            # Build status text
+            status = "(still active)" if item['is_active'] else "(inactive)"
+
+            candidates.append(TemplateRecommendationCandidate(
+                template_id=UUID(t['id']),
+                template_name=t.get('name', 'Untitled'),
+                template_category=t.get('category', 'other'),
+                storage_path=t.get('storage_path', ''),
+                score=score,
+                score_breakdown=ScoreBreakdown(
+                    niche_match=0,
+                    awareness_match=0,
+                    audience_match=0,
+                    format_fit=score  # Store longevity score in format_fit
+                ),
+                reasoning=f"Running for {days} days {status}",
+                industry_niche=t.get('industry_niche'),
+                awareness_level=t.get('awareness_level'),
+                target_sex=t.get('target_sex'),
+            ))
+
+        logger.info(f"Scored {len(candidates)} templates by longevity (max: {max_days} days)")
+        return candidates
 
     # =========================================================================
     # Query Helpers (for Ad Creator/Scheduler integration)

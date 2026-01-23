@@ -2373,6 +2373,7 @@ class RecommendationMethodology(str, Enum):
     AI_MATCH = "ai_match"
     PERFORMANCE = "performance"  # Future: based on ad performance data
     DIVERSITY = "diversity"       # Ensure variety in formats
+    LONGEVITY = "longevity"       # Longest running ads (ads that run longer likely perform well)
 
 
 class ScoreBreakdown(BaseModel):

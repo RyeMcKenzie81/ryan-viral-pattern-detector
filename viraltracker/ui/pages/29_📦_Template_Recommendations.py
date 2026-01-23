@@ -42,6 +42,9 @@ if 'selected_candidate_ids' not in st.session_state:
 if 'generation_in_progress' not in st.session_state:
     st.session_state.generation_in_progress = False
 
+if 'last_methodology' not in st.session_state:
+    st.session_state.last_methodology = None
+
 
 # =============================================================================
 # Helper Functions
@@ -155,11 +158,16 @@ col1, col2, col3 = st.columns([2, 2, 2])
 with col1:
     methodology = st.selectbox(
         "Recommendation Methodology",
-        options=["AI Match", "Diversity"],
+        options=["AI Match", "Diversity", "Longevity"],
         key="rec_methodology",
-        help="AI Match: Score templates based on product fit. Diversity: Select variety across categories."
+        help="AI Match: Score templates based on product fit. Diversity: Select variety across categories. Longevity: Recommend longest-running ads."
     )
-    methodology_value = "ai_match" if methodology == "AI Match" else "diversity"
+    methodology_map = {
+        "AI Match": "ai_match",
+        "Diversity": "diversity",
+        "Longevity": "longevity"
+    }
+    methodology_value = methodology_map[methodology]
 
 with col2:
     limit = st.slider(
@@ -186,6 +194,7 @@ if generate_clicked:
     st.session_state.generation_in_progress = True
     st.session_state.recommendation_candidates = []
     st.session_state.selected_candidate_ids = set()
+    st.session_state.last_methodology = methodology_value
 
     # Run async generation
     async def run_generation():
@@ -270,9 +279,20 @@ with tab1:
                         else:
                             st.caption("No preview")
 
-                        # Checkbox for selection
+                        # Checkbox for selection - show different label for longevity
+                        if st.session_state.last_methodology == "longevity":
+                            # Extract days from reasoning (format: "Running for X days ...")
+                            reasoning = candidate.reasoning or ""
+                            if reasoning.startswith("Running for "):
+                                days_part = reasoning.split(" days")[0].replace("Running for ", "")
+                                label = f"**{days_part} days** - {candidate.template_name[:18]}"
+                            else:
+                                label = f"**{candidate.template_name[:25]}**"
+                        else:
+                            label = f"**{int(candidate.score * 100)}%** - {candidate.template_name[:20]}"
+
                         checked = st.checkbox(
-                            f"**{int(candidate.score * 100)}%** - {candidate.template_name[:20]}",
+                            label,
                             value=is_selected,
                             key=f"cand_cb_{template_id_str}"
                         )
@@ -283,12 +303,18 @@ with tab1:
                         elif not checked and is_selected:
                             st.session_state.selected_candidate_ids.discard(template_id_str)
 
-                        # Score breakdown
+                        # Score breakdown - different display for longevity
                         breakdown = candidate.score_breakdown
-                        st.caption(
-                            f"Niche: {int(breakdown.niche_match * 100)}% | "
-                            f"Aware: {int(breakdown.awareness_match * 100)}%"
-                        )
+                        if st.session_state.last_methodology == "longevity":
+                            # Show active status instead of scores
+                            is_active = "(still active)" in (candidate.reasoning or "")
+                            status = "🟢 Active" if is_active else "⚪ Inactive"
+                            st.caption(status)
+                        else:
+                            st.caption(
+                                f"Niche: {int(breakdown.niche_match * 100)}% | "
+                                f"Aware: {int(breakdown.awareness_match * 100)}%"
+                            )
 
                         # Metadata badges
                         badges = []
@@ -434,6 +460,7 @@ with st.sidebar:
     2. **Choose Methodology**
        - *AI Match*: Scores templates based on niche, awareness level, audience, and format fit
        - *Diversity*: Selects variety across template categories
+       - *Longevity*: Recommends templates from the longest-running ads (ads that run longer likely perform well)
 
     3. **Generate & Review** - AI analyzes templates and ranks them by fit
 
