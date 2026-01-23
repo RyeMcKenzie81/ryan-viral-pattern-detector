@@ -47,6 +47,15 @@ if 'bulk_review_items' not in st.session_state:
     st.session_state.bulk_review_items = []  # List of {queue_id, suggestions} for bulk review
 if 'bulk_review_mode' not in st.session_state:
     st.session_state.bulk_review_mode = False  # Whether we're in bulk review mode
+# Template Library filters
+if 'library_category_filter' not in st.session_state:
+    st.session_state.library_category_filter = "all"
+if 'library_awareness_filter' not in st.session_state:
+    st.session_state.library_awareness_filter = None
+if 'library_niche_filter' not in st.session_state:
+    st.session_state.library_niche_filter = "all"
+if 'library_sex_filter' not in st.session_state:
+    st.session_state.library_sex_filter = "all"
 
 
 def get_template_queue_service():
@@ -78,10 +87,23 @@ def get_pending_items(limit: int = 20, offset: int = 0) -> List[Dict]:
     return service.get_pending_queue(limit=limit, offset=offset)
 
 
-def get_approved_templates(limit: int = 50) -> List[Dict]:
-    """Get approved templates."""
+def get_approved_templates(
+    limit: int = 50,
+    category: str = None,
+    awareness_level: int = None,
+    industry_niche: str = None,
+    target_sex: str = None
+) -> List[Dict]:
+    """Get approved templates with optional filters."""
     service = get_template_queue_service()
-    return service.get_templates(active_only=True, limit=limit)
+    return service.get_templates(
+        category=category,
+        awareness_level=awareness_level,
+        industry_niche=industry_niche,
+        target_sex=target_sex,
+        active_only=True,
+        limit=limit
+    )
 
 
 def get_asset_url(storage_path: str) -> str:
@@ -90,6 +112,34 @@ def get_asset_url(storage_path: str) -> str:
         return ""
     service = get_template_queue_service()
     return service.get_asset_preview_url(storage_path)
+
+
+def get_template_categories() -> List[str]:
+    """Get unique template categories."""
+    try:
+        service = get_template_queue_service()
+        return service.get_template_categories()
+    except Exception:
+        return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
+                "ugc_style", "meme", "carousel_frame", "story_format", "other"]
+
+
+def get_awareness_levels() -> List[Dict]:
+    """Get awareness level filter options."""
+    try:
+        service = get_template_queue_service()
+        return service.get_awareness_levels()
+    except Exception:
+        return []
+
+
+def get_industry_niches() -> List[str]:
+    """Get industry niche filter options."""
+    try:
+        service = get_template_queue_service()
+        return service.get_industry_niches()
+    except Exception:
+        return []
 
 
 # ============================================================================
@@ -679,12 +729,72 @@ def render_pending_queue():
 
 
 def render_template_library():
-    """Render approved templates library."""
-    templates = get_approved_templates(limit=50)
+    """Render approved templates library with filters."""
+    # Filter row - 4 columns
+    filter_cols = st.columns(4)
+
+    # Category filter
+    with filter_cols[0]:
+        categories = ["all"] + get_template_categories()
+        selected_category = st.selectbox(
+            "Category",
+            options=categories,
+            index=categories.index(st.session_state.library_category_filter) if st.session_state.library_category_filter in categories else 0,
+            format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+            key="lib_filter_category"
+        )
+        st.session_state.library_category_filter = selected_category
+
+    # Awareness Level filter
+    with filter_cols[1]:
+        awareness_opts = [{"value": None, "label": "All"}] + get_awareness_levels()
+        selected_awareness = st.selectbox(
+            "Awareness Level",
+            options=[a["value"] for a in awareness_opts],
+            format_func=lambda x: next((a["label"] for a in awareness_opts if a["value"] == x), "All"),
+            key="lib_filter_awareness"
+        )
+        st.session_state.library_awareness_filter = selected_awareness
+
+    # Industry/Niche filter
+    with filter_cols[2]:
+        niches = ["all"] + get_industry_niches()
+        selected_niche = st.selectbox(
+            "Industry/Niche",
+            options=niches,
+            format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+            key="lib_filter_niche"
+        )
+        st.session_state.library_niche_filter = selected_niche
+
+    # Target Sex filter
+    with filter_cols[3]:
+        sex_options = ["all", "male", "female", "unisex"]
+        selected_sex = st.selectbox(
+            "Target Audience",
+            options=sex_options,
+            format_func=lambda x: x.title() if x != "all" else "All",
+            key="lib_filter_sex"
+        )
+        st.session_state.library_sex_filter = selected_sex
+
+    st.divider()
+
+    # Get templates with filters
+    templates = get_approved_templates(
+        limit=100,
+        category=selected_category if selected_category != "all" else None,
+        awareness_level=selected_awareness,
+        industry_niche=selected_niche if selected_niche != "all" else None,
+        target_sex=selected_sex if selected_sex != "all" else None
+    )
 
     if not templates:
-        st.info("No approved templates yet. Approve items from the pending queue.")
+        st.info("No templates match the current filters. Try adjusting your filters or approve items from the pending queue.")
         return
+
+    # Show count
+    st.caption(f"Showing {len(templates)} templates")
 
     # Group by category
     by_category = {}
@@ -707,6 +817,17 @@ def render_template_library():
                         st.image(url, use_container_width=True)
 
                 st.caption(template.get("name", "Unnamed"))
+
+                # Show metadata badges
+                badges = []
+                if template.get("industry_niche") and template["industry_niche"] != "other":
+                    badges.append(template["industry_niche"].replace("_", " ").title())
+                if template.get("awareness_level"):
+                    badges.append(f"L{template['awareness_level']}")
+                if template.get("target_sex") and template["target_sex"] != "unisex":
+                    badges.append(template["target_sex"][:1].upper())
+                if badges:
+                    st.caption(" | ".join(badges))
 
                 times_used = template.get("times_used", 0)
                 if times_used > 0:
