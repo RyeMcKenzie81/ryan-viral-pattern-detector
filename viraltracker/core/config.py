@@ -19,6 +19,8 @@ class Config:
     # Supabase
     SUPABASE_URL: str = os.getenv('SUPABASE_URL', '')
     SUPABASE_SERVICE_KEY: str = os.getenv('SUPABASE_SERVICE_KEY', '')
+    # SUPABASE_KEY is the anon key (RLS enforced), used for UI auth
+    SUPABASE_ANON_KEY: str = os.getenv('SUPABASE_ANON_KEY', '') or os.getenv('SUPABASE_KEY', '')
 
     # Apify
     APIFY_TOKEN: str = os.getenv('APIFY_TOKEN', '')

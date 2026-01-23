@@ -87,6 +87,7 @@ slowapi==0.1.9
 streamlit==1.40.0
 streamlit-authenticator==0.4.1
 extra-streamlit-components==0.1.71
+streamlit-cookies-controller==0.0.4
 
 # Email & Notification Dependencies
 resend==2.19.0
