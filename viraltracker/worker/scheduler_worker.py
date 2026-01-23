@@ -477,6 +477,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_scorecard_job(job)
     elif job_type == 'template_scrape':
         return await execute_template_scrape_job(job)
+    elif job_type == 'template_approval':
+        return await execute_template_approval_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -1583,6 +1585,149 @@ def _update_job_next_run(job: Dict, job_id: str):
         job_updates["next_run_at"] = None
 
     update_job(job_id, job_updates)
+
+
+# ============================================================================
+# Template Approval Job Handler
+# ============================================================================
+
+async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a batch template approval job.
+
+    Processes pending template queue items with AI analysis in batches,
+    respecting API rate limits. Items are processed with auto-approval
+    using AI suggestions.
+
+    Parameters (from job['parameters']):
+        batch_size: int - Items to process per run (default: 100)
+        auto_approve: bool - Auto-accept AI suggestions (default: True)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting template approval job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        batch_size = params.get('batch_size', 100)
+        auto_approve = params.get('auto_approve', True)
+
+        logs.append(f"Batch size: {batch_size}, Auto-approve: {auto_approve}")
+
+        # Import services
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        from uuid import UUID
+
+        queue_service = TemplateQueueService()
+
+        # Get pending queue items (status='pending')
+        db = get_supabase_client()
+        pending_result = db.table("template_queue").select(
+            "id"
+        ).eq("status", "pending").limit(batch_size).execute()
+
+        pending_items = pending_result.data or []
+
+        if not pending_items:
+            logs.append("No pending items in queue")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "approved": 0, "message": "No pending items"}
+
+        logs.append(f"Found {len(pending_items)} pending items to process")
+
+        # Convert to UUIDs
+        queue_ids = [UUID(item['id']) for item in pending_items]
+
+        # Step 1: Run AI analysis on all items
+        logs.append(f"Running AI analysis on {len(queue_ids)} items...")
+        logger.info(f"Running AI analysis on {len(queue_ids)} items")
+
+        try:
+            analyzed_items = await queue_service.start_bulk_approval(queue_ids)
+            logs.append(f"AI analysis completed: {len(analyzed_items)} successful")
+        except Exception as e:
+            logs.append(f"AI analysis failed: {e}")
+            raise
+
+        if not analyzed_items:
+            logs.append("No items were successfully analyzed")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "approved": 0, "message": "No items analyzed"}
+
+        # Step 2: Finalize approvals (auto-approve with AI suggestions)
+        if auto_approve:
+            logs.append(f"Auto-approving {len(analyzed_items)} items...")
+            approved_count = queue_service.finalize_bulk_approval(
+                items=analyzed_items,
+                reviewed_by="scheduler_worker"
+            )
+            logs.append(f"Approved: {approved_count} items")
+        else:
+            # Leave in pending_details for manual review
+            approved_count = 0
+            logs.append(f"Left {len(analyzed_items)} items in pending_details for manual review")
+
+        # Summary
+        logs.append(f"")
+        logs.append(f"=== Summary ===")
+        logs.append(f"Processed: {len(queue_ids)}")
+        logs.append(f"Analyzed: {len(analyzed_items)}")
+        logs.append(f"Approved: {approved_count}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed template approval job: {job_name} - {approved_count} approved")
+        return {
+            "success": True,
+            "processed": len(queue_ids),
+            "analyzed": len(analyzed_items),
+            "approved": approved_count
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Template approval job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        return {"success": False, "error": error_msg}
 
 
 # ============================================================================

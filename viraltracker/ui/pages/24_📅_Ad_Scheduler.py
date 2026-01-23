@@ -699,11 +699,15 @@ def render_schedule_list():
                     type_badge = "📊 "
                 elif job_type == 'template_scrape':
                     type_badge = "📥 "
+                elif job_type == 'template_approval':
+                    type_badge = "✅ "
                 st.markdown(f"### {status_emoji} {type_badge}{job['name']}")
 
-                # Show brand → product for ad_creation, just brand for others
+                # Show brand → product for ad_creation, just brand for others, system-wide for template_approval
                 if job_type == 'ad_creation':
                     st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+                elif job_type == 'template_approval':
+                    st.caption("System-wide")
                 else:
                     st.caption(f"{brand_info.get('name', 'Unknown')}")
 
@@ -1071,6 +1075,239 @@ def _render_template_scrape_form(existing_job, is_edit):
             st.rerun()
 
 
+def _render_template_approval_form(existing_job, is_edit):
+    """Render the template approval job creation form."""
+
+    # ========================================================================
+    # Section 1: Job Name
+    # ========================================================================
+
+    st.subheader("1. Job Name")
+
+    existing_params = existing_job.get('parameters', {}) if existing_job else {}
+
+    job_name = st.text_input(
+        "Name for this approval schedule",
+        value=existing_job.get('name', '') if existing_job else "Daily Template Queue Approval",
+        placeholder="e.g., Daily Template Queue Approval",
+        help="A descriptive name to identify this scheduled approval job",
+        key="approval_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Approval Settings
+    # ========================================================================
+
+    st.subheader("2. Approval Settings")
+
+    batch_size = st.number_input(
+        "Items per Run",
+        min_value=10,
+        max_value=500,
+        value=existing_params.get('batch_size', 100),
+        help="Maximum number of pending items to process each run. ~10 items/minute with API rate limits.",
+        key="approval_batch_size"
+    )
+
+    st.caption(f"Estimated processing time: ~{batch_size // 9 + 1} minutes per run (at 9 items/minute)")
+
+    auto_approve = st.checkbox(
+        "Auto-approve with AI suggestions",
+        value=existing_params.get('auto_approve', True),
+        help="Automatically approve items using AI-generated metadata. If unchecked, items will be analyzed but left for manual review.",
+        key="approval_auto_approve"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Schedule Configuration
+    # ========================================================================
+
+    st.subheader("3. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job['schedule_type'] == 'recurring' else 1,
+        format_func=lambda x: "🔄 Recurring" if x == 'recurring' else "1️⃣ One-time",
+        horizontal=True,
+        key="approval_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly'],
+                index=0,  # Default to daily
+                format_func=lambda x: x.capitalize(),
+                key="approval_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,  # Monday
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="approval_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=2,  # 3 AM default
+                    key="approval_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="approval_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="approval_ampm"
+                )
+
+            # Convert to 24-hour format
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        # One-time schedule
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date(),
+                min_value=datetime.now(PST).date(),
+                key="approval_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=2,  # 3
+                    key="approval_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="approval_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="approval_onetime_ampm"
+                )
+
+            # Convert to 24-hour format
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Button
+    # ========================================================================
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_approval_schedule"):
+            # Validation
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            # Build parameters
+            parameters = {
+                'batch_size': batch_size,
+                'auto_approve': auto_approve
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'template_approval',
+                'product_id': None,  # Template approval doesn't need product
+                'brand_id': None,    # Not brand-specific
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("Cancel", use_container_width=True, key="cancel_approval_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
 # ============================================================================
 # View: Create/Edit Schedule
 # ============================================================================
@@ -1106,11 +1343,12 @@ def render_create_schedule():
         st.subheader("Job Type")
         job_type = st.radio(
             "What type of job do you want to schedule?",
-            options=['ad_creation', 'template_scrape'],
+            options=['ad_creation', 'template_scrape', 'template_approval'],
             index=0,
             format_func=lambda x: {
                 'ad_creation': '🎨 Ad Creation - Generate ads from templates',
-                'template_scrape': '📥 Template Scrape - Scrape Facebook Ad Library for templates'
+                'template_scrape': '📥 Template Scrape - Scrape Facebook Ad Library for templates',
+                'template_approval': '✅ Template Approval - Batch AI analysis of pending queue items'
             }.get(x, x),
             horizontal=True,
             key="job_type_selector"
@@ -1124,6 +1362,13 @@ def render_create_schedule():
     # ========================================================================
     if job_type == 'template_scrape':
         _render_template_scrape_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # TEMPLATE APPROVAL JOB FORM
+    # ========================================================================
+    if job_type == 'template_approval':
+        _render_template_approval_form(existing_job, is_edit)
         return
 
     # ========================================================================
@@ -2365,9 +2610,13 @@ def render_schedule_detail():
             type_badge = "📊 "
         elif job_type == 'template_scrape':
             type_badge = "📥 "
+        elif job_type == 'template_approval':
+            type_badge = "✅ "
         st.title(f"{status_emoji} {type_badge}{job['name']}")
         if job_type == 'ad_creation':
             st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+        elif job_type == 'template_approval':
+            st.caption("System-wide template queue processing")
         else:
             st.caption(f"{brand_info.get('name', 'Unknown')}")
 

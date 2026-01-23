@@ -49,13 +49,13 @@ class GeminiService:
     - Structured hook analysis
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.0-flash-exp"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
         """
         Initialize Gemini service.
 
         Args:
             api_key: Gemini API key (if None, uses Config.GEMINI_API_KEY)
-            model: Gemini model to use (default: gemini-2.0-flash-exp for speed/cost)
+            model: Gemini model to use (default: gemini-2.5-flash for speed/cost)
 
         Raises:
             ValueError: If API key not found
@@ -282,61 +282,60 @@ IMPORTANT:
         max_retries: int = 3
     ) -> str:
         """
-        Generate long-form content from analyzed hooks.
+        Generate long-form content from analyzed hooks using Claude Opus 4.5.
+
+        Uses Claude Opus 4.5 for high-quality creative writing (threads/articles).
 
         Args:
             hook_analyses: List of HookAnalysis objects to use as inspiration
             content_type: Type of content to generate ('thread' or 'article')
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on errors
 
         Returns:
             Generated content as string
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If generation fails after retries
         """
-        # Wait for rate limit
-        await self._rate_limit()
+        from pydantic_ai import Agent
+        from ..core.config import Config
 
         # Build prompt
         prompt = self._build_content_prompt(hook_analyses, content_type)
 
-        # Call API with retries
+        # Use Claude Opus 4.5 for creative writing
+        agent = Agent(
+            model=Config.CREATIVE_MODEL,
+            system_prompt="You are an expert content strategist and writer. Generate engaging, high-quality content."
+        )
+
         retry_count = 0
         last_error = None
 
         while retry_count <= max_retries:
             try:
-                logger.debug(f"Generating {content_type} content from {len(hook_analyses)} hooks...")
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=[prompt]
-                )
-                return response.text
+                logger.debug(f"Generating {content_type} content from {len(hook_analyses)} hooks using Claude Opus 4.5...")
+                result = await agent.run(prompt)
+                return result.data
 
             except Exception as e:
                 error_str = str(e)
                 last_error = e
+                retry_count += 1
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
-                    retry_count += 1
-                    if retry_count <= max_retries:
-                        retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    else:
-                        logger.error("Max retries exceeded for content generation")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                if retry_count <= max_retries:
+                    retry_delay = 15 * (2 ** (retry_count - 1))
+                    logger.warning(f"Content generation error. Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
+                    await asyncio.sleep(retry_delay)
+                    continue
                 else:
-                    logger.error(f"Error generating content: {e}")
+                    logger.error(f"Max retries exceeded for content generation: {e}")
                     raise
 
         raise last_error or Exception("Unknown error during content generation")
 
     def _build_content_prompt(self, hook_analyses: list, content_type: str) -> str:
-        """Build content generation prompt for Gemini"""
+        """Build content generation prompt for thread/article generation."""
         # Extract key information from hook analyses
         hooks_summary = []
         for i, analysis in enumerate(hook_analyses[:5], 1):  # Limit to top 5
