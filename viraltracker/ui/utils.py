@@ -4,6 +4,89 @@ import streamlit as st
 from typing import Optional, Tuple
 
 
+# ============================================================================
+# ORGANIZATION UTILITIES
+# ============================================================================
+
+def get_current_organization_id() -> Optional[str]:
+    """
+    Get current organization ID from session state.
+
+    Returns:
+        Organization ID string or None if not set
+    """
+    return st.session_state.get("current_organization_id")
+
+
+def set_current_organization_id(org_id: str) -> None:
+    """
+    Set current organization ID in session state.
+
+    Args:
+        org_id: Organization ID to set
+    """
+    st.session_state["current_organization_id"] = org_id
+
+
+def render_organization_selector(key: str = "org_selector") -> Optional[str]:
+    """
+    Render organization selector in sidebar.
+
+    Auto-selects if user has only one organization. Shows dropdown if multiple.
+
+    Args:
+        key: Unique key for the selectbox widget
+
+    Returns:
+        Selected organization ID or None if no orgs/user not authenticated
+    """
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.services.organization_service import OrganizationService
+    from viraltracker.core.database import get_supabase_client
+
+    user_id = get_current_user_id()
+    if not user_id:
+        return None
+
+    service = OrganizationService(get_supabase_client())
+    orgs = service.get_user_organizations(user_id)
+
+    if not orgs:
+        st.sidebar.warning("No organizations found")
+        return None
+
+    if len(orgs) == 1:
+        # Auto-select single org
+        org_id = orgs[0]["organization"]["id"]
+        set_current_organization_id(org_id)
+        return org_id
+
+    # Multiple orgs - show selector
+    org_options = {o["organization"]["name"]: o["organization"]["id"] for o in orgs}
+
+    # Get current selection or default to first
+    current_org_id = get_current_organization_id()
+    current_name = next(
+        (name for name, oid in org_options.items() if oid == current_org_id),
+        list(org_options.keys())[0]
+    )
+
+    selected_name = st.sidebar.selectbox(
+        "Workspace",
+        list(org_options.keys()),
+        index=list(org_options.keys()).index(current_name),
+        key=key
+    )
+
+    selected_id = org_options[selected_name]
+    set_current_organization_id(selected_id)
+    return selected_id
+
+
+# ============================================================================
+# BRAND UTILITIES
+# ============================================================================
+
 def get_brands():
     """Fetch brands from database."""
     from viraltracker.core.database import get_supabase_client
