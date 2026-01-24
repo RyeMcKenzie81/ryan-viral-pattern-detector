@@ -115,6 +115,72 @@ def render_organization_selector(key: str = "org_selector") -> Optional[str]:
 
 
 # ============================================================================
+# FEATURE ACCESS UTILITIES
+# ============================================================================
+
+def has_feature(feature_key: str, organization_id: Optional[str] = None) -> bool:
+    """
+    Check if current organization has a feature enabled.
+
+    Args:
+        feature_key: Feature to check (use FeatureKey constants)
+        organization_id: Org ID to check, or None to use current session org
+
+    Returns:
+        True if feature is enabled
+    """
+    from viraltracker.services.feature_service import FeatureService
+    from viraltracker.core.database import get_supabase_client
+
+    if organization_id is None:
+        organization_id = get_current_organization_id()
+
+    if not organization_id:
+        return False
+
+    service = FeatureService(get_supabase_client())
+    return service.has_feature(organization_id, feature_key)
+
+
+def require_feature(feature_key: str, feature_name: str = None) -> bool:
+    """
+    Require a feature to be enabled for the current organization.
+
+    Call this at the top of a page (after require_auth) to gate access.
+    Shows an error message and stops page execution if feature is disabled.
+
+    Args:
+        feature_key: Feature to require (use FeatureKey constants)
+        feature_name: Human-readable name for error message (optional)
+
+    Returns:
+        True if feature is enabled (page can continue)
+
+    Usage:
+        from viraltracker.ui.utils import require_feature
+        from viraltracker.services.feature_service import FeatureKey
+
+        require_feature(FeatureKey.VEO_AVATARS, "Veo Avatars")
+    """
+    org_id = get_current_organization_id()
+
+    if not org_id:
+        st.error("Please select an organization first.")
+        st.stop()
+        return False
+
+    if has_feature(feature_key, org_id):
+        return True
+
+    # Feature not enabled - show error
+    display_name = feature_name or feature_key.replace("_", " ").title()
+    st.error(f"**{display_name}** is not enabled for your organization.")
+    st.info("Contact your administrator to enable this feature.")
+    st.stop()
+    return False
+
+
+# ============================================================================
 # BRAND UTILITIES
 # ============================================================================
 
