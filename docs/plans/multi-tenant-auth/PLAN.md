@@ -138,6 +138,30 @@ class UsageLimit(BaseModel):
 - Sessions survive page refresh and browser close
 - Auto-refresh of expired tokens
 
+### Phase 3: Organization Schema ✅
+- Created `organizations` and `user_organizations` tables
+- Added `organization_id` to brands with backfill
+- Auto-create org trigger on user signup
+- Created `OrganizationService`
+- Added org selector utilities to `utils.py`
+- Commit: `8b80bab`
+
+---
+
+## Implementation Order (Updated)
+
+**Note**: Phase 5 is being implemented before Phase 4 to complete multi-tenant isolation first.
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1-2 | ✅ Complete | Supabase Auth + Sessions |
+| Phase 3 | ✅ Complete | Organization Schema |
+| **Phase 5** | 🔄 Next | Python Org Filtering + Superuser |
+| Phase 4 | ⏸️ Deferred | Usage Tracking |
+| Phase 6 | Pending | Feature Access Control |
+| Phase 7 | Pending | Usage Limits |
+| Phase 8 | Pending | RLS Policies |
+
 ### Phase 1-2 Fixes Required ⚠️
 
 The implementation needs refactoring to follow service layer pattern:
@@ -498,63 +522,128 @@ See: `PHASE_4_USAGE_TRACKING.md` (updated with Pydantic models and AgentDependen
 
 ---
 
-### Phase 5: Python Org Filtering
+### Phase 5: Python Org Filtering + Superuser Support
 
-**Goal**: Filter all data queries by organization
+**Goal**: Filter all data queries by organization, with superuser override
 
-**Services to Modify**:
+---
 
-| Service | Method | Change |
-|---------|--------|--------|
-| `AdCreationService` | `get_hooks()`, `create_ad()`, etc. | Add `organization_id` param, filter queries |
-| `BrandResearchService` | All methods | Add `organization_id` param |
-| `CompetitorService` | All methods | Add `organization_id` param |
-| Various UI helpers | `get_brands()`, etc. | Pass org_id from session |
+#### 5.1: User Profiles & Superuser Flag
 
-**Pattern for Service Methods**:
+**Migration**: `migrations/2026-01-23_user_profiles.sql`
+```sql
+CREATE TABLE user_profiles (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    is_superuser BOOLEAN DEFAULT false,
+    display_name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Make existing admin user a superuser
+INSERT INTO user_profiles (user_id, is_superuser)
+VALUES ('54093883-c9de-40a3-b940-86cc52825365', true);
+```
+
+**Helper Function** (`viraltracker/ui/utils.py`):
 ```python
-# Before (no org filtering)
-def get_brands(self) -> List[dict]:
-    result = self.client.table("brands").select("*").execute()
-    return result.data
+def is_superuser(user_id: str) -> bool:
+    """Check if user is a superuser."""
+    from viraltracker.core.database import get_supabase_client
+    result = get_supabase_client().table("user_profiles").select(
+        "is_superuser"
+    ).eq("user_id", user_id).single().execute()
+    return result.data.get("is_superuser", False) if result.data else False
+```
 
-# After (with org filtering)
-def get_brands(self, organization_id: str) -> List[dict]:
+---
+
+#### 5.2: Organization Selector with "All Organizations" Option
+
+**Update** `render_organization_selector()` in `utils.py`:
+```python
+def render_organization_selector(key: str = "org_selector") -> Optional[str]:
+    user_id = get_current_user_id()
+    if not user_id:
+        return None
+
+    service = OrganizationService(get_supabase_client())
+    orgs = service.get_user_organizations(user_id)
+
+    if not orgs:
+        st.sidebar.warning("No organizations found")
+        return None
+
+    # Build options
+    org_options = {o["organization"]["name"]: o["organization"]["id"] for o in orgs}
+
+    # Superuser gets "All Organizations" option
+    if is_superuser(user_id):
+        org_options = {"All Organizations": "all", **org_options}
+
+    # Single org (non-superuser) - auto-select
+    if len(org_options) == 1:
+        org_id = list(org_options.values())[0]
+        set_current_organization_id(org_id)
+        return org_id
+
+    # Multiple orgs - show selector
+    # ... rest of selector logic
+```
+
+---
+
+#### 5.3: Update Data Query Functions
+
+**Pattern for `get_brands()` and similar**:
+```python
+def get_brands(organization_id: str = None) -> List[dict]:
     """
-    Get all brands for an organization.
+    Get brands, filtered by organization.
 
     Args:
-        organization_id: Organization to filter by
+        organization_id: Org to filter by, or "all" for superuser mode
 
     Returns:
-        List of brands belonging to the organization
+        List of brands
     """
-    result = self.client.table("brands").select("*").eq(
-        "organization_id", organization_id
-    ).execute()
-    return result.data
+    query = db.table("brands").select("id, name, organization_id")
+
+    if organization_id and organization_id != "all":
+        query = query.eq("organization_id", organization_id)
+
+    return query.order("name").execute().data or []
 ```
 
-**Pattern for UI Pages**:
-```python
-# At top of page (after require_auth())
-from viraltracker.ui.utils import render_organization_selector, get_current_organization_id
+---
 
-org_id = render_organization_selector()
-if not org_id:
-    st.warning("Please select an organization")
-    st.stop()
+#### 5.4: User Access Modes
 
-# Pass org_id to all service calls
-brands = service.get_brands(organization_id=org_id)
-```
+| User Type | Org Selector Shows | Data Access |
+|-----------|-------------------|-------------|
+| Normal (1 org) | Auto-selected | Their org only |
+| Normal (multi-org) | Dropdown of their orgs | Selected org only |
+| Superuser | "All Organizations" + their orgs | All data or selected org |
 
-**Files to Modify**:
-1. `viraltracker/services/ad_creation_service.py`
-2. `viraltracker/services/brand_research_service.py`
-3. `viraltracker/services/competitor_service.py`
-4. `viraltracker/ui/pages/*.py` (all pages that query data)
-5. `viraltracker/ui/utils.py` (update `get_brands()` helper)
+---
+
+#### 5.5: Files to Modify
+
+| File | Changes |
+|------|---------|
+| `migrations/2026-01-23_user_profiles.sql` | NEW - user_profiles table |
+| `viraltracker/ui/utils.py` | Add `is_superuser()`, update `render_organization_selector()`, update `get_brands()` |
+| `viraltracker/ui/pages/*.py` | Add org selector call where missing |
+
+---
+
+#### 5.6: Implementation Order
+
+1. Create `user_profiles` migration
+2. Add `is_superuser()` helper to utils.py
+3. Update `render_organization_selector()` with superuser support
+4. Update `get_brands()` to filter by org (with "all" support)
+5. Test with superuser and normal user
 
 ---
 

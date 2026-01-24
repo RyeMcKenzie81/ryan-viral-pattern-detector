@@ -13,7 +13,8 @@ def get_current_organization_id() -> Optional[str]:
     Get current organization ID from session state.
 
     Returns:
-        Organization ID string or None if not set
+        Organization ID string or None if not set.
+        Returns "all" for superuser mode (see all organizations).
     """
     return st.session_state.get("current_organization_id")
 
@@ -23,9 +24,32 @@ def set_current_organization_id(org_id: str) -> None:
     Set current organization ID in session state.
 
     Args:
-        org_id: Organization ID to set
+        org_id: Organization ID to set, or "all" for superuser mode
     """
     st.session_state["current_organization_id"] = org_id
+
+
+def is_superuser(user_id: str) -> bool:
+    """
+    Check if user is a superuser.
+
+    Superusers can see data from all organizations.
+
+    Args:
+        user_id: User ID to check
+
+    Returns:
+        True if user is a superuser, False otherwise
+    """
+    from viraltracker.core.database import get_supabase_client
+
+    try:
+        result = get_supabase_client().table("user_profiles").select(
+            "is_superuser"
+        ).eq("user_id", user_id).single().execute()
+        return result.data.get("is_superuser", False) if result.data else False
+    except Exception:
+        return False
 
 
 def render_organization_selector(key: str = "org_selector") -> Optional[str]:
@@ -33,12 +57,13 @@ def render_organization_selector(key: str = "org_selector") -> Optional[str]:
     Render organization selector in sidebar.
 
     Auto-selects if user has only one organization. Shows dropdown if multiple.
+    Superusers get an "All Organizations" option to see all data.
 
     Args:
         key: Unique key for the selectbox widget
 
     Returns:
-        Selected organization ID or None if no orgs/user not authenticated
+        Selected organization ID, "all" for superuser mode, or None if not authenticated
     """
     from viraltracker.ui.auth import get_current_user_id
     from viraltracker.services.organization_service import OrganizationService
@@ -55,15 +80,21 @@ def render_organization_selector(key: str = "org_selector") -> Optional[str]:
         st.sidebar.warning("No organizations found")
         return None
 
-    if len(orgs) == 1:
-        # Auto-select single org
-        org_id = orgs[0]["organization"]["id"]
+    # Build options dict
+    org_options = {o["organization"]["name"]: o["organization"]["id"] for o in orgs}
+
+    # Superusers get "All Organizations" option
+    user_is_superuser = is_superuser(user_id)
+    if user_is_superuser:
+        org_options = {"All Organizations": "all", **org_options}
+
+    # Single org (non-superuser) - auto-select
+    if len(org_options) == 1:
+        org_id = list(org_options.values())[0]
         set_current_organization_id(org_id)
         return org_id
 
-    # Multiple orgs - show selector
-    org_options = {o["organization"]["name"]: o["organization"]["id"] for o in orgs}
-
+    # Multiple orgs or superuser - show selector
     # Get current selection or default to first
     current_org_id = get_current_organization_id()
     current_name = next(
@@ -87,11 +118,33 @@ def render_organization_selector(key: str = "org_selector") -> Optional[str]:
 # BRAND UTILITIES
 # ============================================================================
 
-def get_brands():
-    """Fetch brands from database."""
+def get_brands(organization_id: Optional[str] = None):
+    """
+    Fetch brands from database, filtered by organization.
+
+    Args:
+        organization_id: Organization ID to filter by.
+            - If None, uses current org from session state
+            - If "all", returns all brands (superuser mode)
+            - Otherwise filters to specific org
+
+    Returns:
+        List of brand dicts with id and name
+    """
     from viraltracker.core.database import get_supabase_client
+
+    # Use current org from session if not provided
+    if organization_id is None:
+        organization_id = get_current_organization_id()
+
     db = get_supabase_client()
-    result = db.table("brands").select("id, name").order("name").execute()
+    query = db.table("brands").select("id, name, organization_id")
+
+    # Filter by org unless "all" (superuser mode)
+    if organization_id and organization_id != "all":
+        query = query.eq("organization_id", organization_id)
+
+    result = query.order("name").execute()
     return result.data or []
 
 
@@ -116,6 +169,7 @@ def render_brand_selector(
     """
     Render a brand selector that persists across pages.
 
+    Automatically renders organization selector in sidebar first.
     Uses st.session_state.selected_brand_id to maintain selection
     when switching between pages in the same browser session.
 
@@ -131,7 +185,15 @@ def render_brand_selector(
         If include_product=False: Selected brand ID as string, or None
         If include_product=True: Tuple of (brand_id, product_id) or (None, None)
     """
-    brands = get_brands()
+    # Render org selector in sidebar (handles superuser "All Organizations" option)
+    org_id = render_organization_selector()
+    if not org_id:
+        if include_product:
+            return None, None
+        return None
+
+    # Get brands filtered by organization
+    brands = get_brands(org_id)
 
     if not brands:
         st.warning("No brands found. Create a brand first.")
