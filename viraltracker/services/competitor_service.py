@@ -24,6 +24,9 @@ from ..core.config import Config
 from pydantic_ai import Agent
 import asyncio
 
+from .agent_tracking import run_agent_with_tracking
+from .usage_tracker import UsageTracker
+
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +89,29 @@ class CompetitorService:
             supabase: Optional Supabase client. If not provided, creates one.
         """
         self.supabase = supabase or get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("CompetitorService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # =========================================================================
     # COMPETITOR CRUD (existing entity)
@@ -1497,8 +1522,16 @@ Return ONLY valid JSON."""
                 model=Config.get_model("basic"),
                 system_prompt="You are a marketing analysis expert. Return ONLY valid JSON."
             )
-            
-            result = await agent.run(prompt)
+
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="competitor_service",
+                operation="analyze_landing_page"
+            )
             response_text = result.output
 
             # Parse response
@@ -1880,8 +1913,16 @@ Return ONLY valid JSON."""
                 model=Config.get_model("complex"),
                 system_prompt="You are an expert market analyst. Return ONLY valid JSON."
             )
-            
-            result = await agent.run(prompt)
+
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="competitor_service",
+                operation="extract_belief_signals"
+            )
             response_text = result.output
 
             # Parse JSON response
@@ -2517,7 +2558,15 @@ Return ONLY valid JSON."""
         )
 
         try:
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="competitor_service",
+                operation="analyze_reviews"
+            )
             # result.output is now a validated AmazonReviewAnalysis object
             analysis = result.output.model_dump()
             logger.info(f"Successfully analyzed reviews with {len(analysis.get('pain_points', []))} pain point themes")

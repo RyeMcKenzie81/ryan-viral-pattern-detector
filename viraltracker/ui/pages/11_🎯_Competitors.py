@@ -41,9 +41,12 @@ def get_supabase_client():
 
 
 def get_competitor_service():
-    """Get CompetitorService instance."""
+    """Get CompetitorService instance with tracking enabled."""
     from viraltracker.services.competitor_service import CompetitorService
-    return CompetitorService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = CompetitorService()
+    setup_tracking_context(service)
+    return service
 
 
 def extract_facebook_page_id(input_value: str) -> str:

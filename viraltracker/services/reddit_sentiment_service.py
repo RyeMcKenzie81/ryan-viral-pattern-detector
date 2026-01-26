@@ -27,6 +27,8 @@ import asyncio
 from supabase import Client
 
 from ..core.database import get_supabase_client
+from .agent_tracking import run_agent_with_tracking, run_agent_sync_with_tracking
+from .usage_tracker import UsageTracker
 from .apify_service import ApifyService
 from .models import (
     RedditPost,
@@ -83,9 +85,29 @@ class RedditSentimentService:
         """
         self.apify = apify_service or ApifyService()
         self.supabase: Client = get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("RedditSentimentService initialized")
 
-        logger.info("RedditSentimentService initialized")
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # =========================================================================
     # SCRAPING
@@ -419,7 +441,15 @@ class RedditSentimentService:
         for batch in self._batch(posts, 10):
             prompt = self._build_relevance_prompt(batch, persona_context, topic_context)
 
-            result = agent.run_sync(prompt)
+            result = run_agent_sync_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="reddit_sentiment_service",
+                operation="score_relevance"
+            )
 
             scores = self._parse_batch_scores(result.output, len(batch))
 
@@ -472,8 +502,16 @@ class RedditSentimentService:
         for batch in self._batch(posts, 10):
             prompt = self._build_signal_prompt(batch)
 
-            result = await agent.run(prompt)
-            
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="reddit_sentiment_service",
+                operation="filter_signal"
+            )
+
             # Using result.output instead of response.content
             scores = self._parse_batch_scores(result.output, len(batch))
 
@@ -524,7 +562,15 @@ class RedditSentimentService:
         for batch in self._batch(posts, 10):
             prompt = self._build_intent_prompt(batch)
 
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="reddit_sentiment_service",
+                operation="score_intent"
+            )
             scores = self._parse_batch_scores(result.output, len(batch))
 
             for post, score_data in zip(batch, scores):
@@ -618,7 +664,15 @@ class RedditSentimentService:
         for batch in self._batch(posts, 5):
             prompt = self._build_extraction_prompt(batch, brand_context, product_context)
 
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="reddit_sentiment_service",
+                operation="extract_quotes"
+            )
 
             extracted = self._parse_extraction_response(result.output, batch)
 
@@ -1269,7 +1323,15 @@ Extract only genuine, insightful quotes - quality over quantity."""
             system_prompt="You are an expert at extracting belief-relevant signals from Reddit discussions for marketing research."
         )
 
-        response = await agent.run(prompt)
+        response = await run_agent_with_tracking(
+            agent,
+            prompt,
+            tracker=self._tracker,
+            user_id=self._user_id,
+            organization_id=self._org_id,
+            tool_name="reddit_sentiment_service",
+            operation="extract_belief_signals"
+        )
 
         # Parse the response - use response.output for pydantic-ai
         logger.info(f"Belief extraction LLM response received, parsing...")

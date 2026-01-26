@@ -1007,8 +1007,10 @@ else:
         st.caption("Select the belief angle to use for ad generation")
 
         from viraltracker.services.planning_service import PlanningService
+        from viraltracker.ui.utils import setup_tracking_context
         from uuid import UUID
         planning_service = PlanningService()
+        setup_tracking_context(planning_service)
 
         # A) Offer (Optional)
         offers = planning_service.get_offers_for_product(UUID(selected_product_id))

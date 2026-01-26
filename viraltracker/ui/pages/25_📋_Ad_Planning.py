@@ -120,10 +120,12 @@ def init_session_state():
             try:
                 from viraltracker.core.database import get_supabase_client
                 from viraltracker.services.planning_service import PlanningService
+                from viraltracker.ui.utils import setup_tracking_context
                 from uuid import UUID
-                
+
                 db = get_supabase_client()
                 service = PlanningService()
+                setup_tracking_context(service)
                 debug_log = []
                 
                 # Brand
@@ -230,9 +232,12 @@ init_session_state()
 # ============================================
 
 def get_planning_service():
-    """Get PlanningService instance (fresh for each call)."""
+    """Get PlanningService instance with tracking enabled."""
     from viraltracker.services.planning_service import PlanningService
-    return PlanningService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PlanningService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_supabase_client():
@@ -1142,7 +1147,9 @@ def render_step_8_copy_generation():
     if st.button("Generate Copy for All Angles", type="primary", disabled=selected_headline_count == 0 and selected_primary_count == 0):
         with st.spinner("Generating copy variants for all angles..."):
             from viraltracker.services.copy_scaffold_service import CopyScaffoldService
+            from viraltracker.ui.utils import setup_tracking_context
             copy_service = CopyScaffoldService()
+            setup_tracking_context(copy_service)
 
             copy_sets = []
             for angle in selected_angles:

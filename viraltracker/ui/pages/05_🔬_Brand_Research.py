@@ -54,9 +54,12 @@ def get_brand_research_service():
 
 
 def get_persona_service():
-    """Get PersonaService instance."""
+    """Get PersonaService instance with tracking enabled."""
     from viraltracker.services.persona_service import PersonaService
-    return PersonaService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PersonaService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_angle_candidate_service():
@@ -1179,9 +1182,12 @@ def get_landing_pages_for_brand(brand_id: str) -> list:
 
 
 def get_amazon_review_service():
-    """Get AmazonReviewService instance."""
+    """Get AmazonReviewService instance with tracking enabled."""
     from viraltracker.services.amazon_review_service import AmazonReviewService
-    return AmazonReviewService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = AmazonReviewService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_amazon_review_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, Any]:

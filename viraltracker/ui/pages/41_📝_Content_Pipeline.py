@@ -240,11 +240,14 @@ def get_topic_service():
 
 
 def get_script_service():
-    """Get ScriptGenerationService instance."""
+    """Get ScriptGenerationService instance with tracking enabled."""
     from viraltracker.services.content_pipeline.services.script_service import ScriptGenerationService
+    from viraltracker.ui.utils import setup_tracking_context
     db = get_supabase_client()
     docs = get_doc_service()
-    return ScriptGenerationService(supabase_client=db, docs_service=docs)
+    service = ScriptGenerationService(supabase_client=db, docs_service=docs)
+    setup_tracking_context(service)
+    return service
 
 
 def get_handoff_service():
@@ -262,11 +265,14 @@ def get_handoff_service():
 
 
 def get_comic_service():
-    """Get ComicService instance."""
+    """Get ComicService instance with tracking enabled."""
     from viraltracker.services.content_pipeline.services.comic_service import ComicService
+    from viraltracker.ui.utils import setup_tracking_context
     db = get_supabase_client()
     docs = get_doc_service()
-    return ComicService(supabase_client=db, docs_service=docs)
+    service = ComicService(supabase_client=db, docs_service=docs)
+    setup_tracking_context(service)
+    return service
 
 
 def get_script_data_for_project(project_id: str) -> Optional[Dict]:

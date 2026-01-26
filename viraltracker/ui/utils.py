@@ -584,3 +584,42 @@ def render_belief_first_aggregation(aggregation: dict, entity_name: str = "Brand
                         status = issue.get("status", "")
                         priority = issue.get("priority", "medium")
                         st.markdown(f"- **{layer}**: {status} (Priority: {priority})")
+
+
+# ============================================================================
+# USAGE TRACKING UTILITIES
+# ============================================================================
+
+def setup_tracking_context(service: object) -> None:
+    """
+    Set up usage tracking context on a service instance.
+
+    Call this after creating a service instance that supports usage tracking.
+    Services with a `set_tracking_context` method will have their tracking
+    context configured from the current session state.
+
+    Args:
+        service: Service instance with set_tracking_context method
+
+    Example:
+        service = ScriptService(...)
+        setup_tracking_context(service)
+        # Now service calls will be tracked
+    """
+    # Check if service supports tracking
+    if not hasattr(service, "set_tracking_context"):
+        return
+
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.core.database import get_supabase_client
+
+    user_id = get_current_user_id()
+    org_id = get_current_organization_id()
+
+    # Skip if no org context (e.g., not logged in)
+    if not org_id:
+        return
+
+    tracker = UsageTracker(get_supabase_client())
+    service.set_tracking_context(tracker, user_id, org_id)

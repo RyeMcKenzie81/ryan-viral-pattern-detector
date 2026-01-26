@@ -22,9 +22,12 @@ st.set_page_config(
 # ============================================
 
 def get_planning_service():
-    """Get PlanningService instance."""
+    """Get PlanningService instance with tracking enabled."""
     from viraltracker.services.planning_service import PlanningService
-    return PlanningService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PlanningService()
+    setup_tracking_context(service)
+    return service
 
 def get_supabase_client():
     """Get Supabase client."""

@@ -61,10 +61,12 @@ def get_web_scraping_service():
 
 
 def get_amazon_service():
-    """Get AmazonReviewService instance."""
+    """Get AmazonReviewService instance with tracking enabled."""
     from viraltracker.services.amazon_review_service import AmazonReviewService
-
-    return AmazonReviewService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = AmazonReviewService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_ad_analysis_service():

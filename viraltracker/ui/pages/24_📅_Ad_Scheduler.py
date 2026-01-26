@@ -189,8 +189,10 @@ def get_plan_details(plan_id: str):
     """Get full plan details including angles and templates."""
     try:
         from viraltracker.services.planning_service import PlanningService
+        from viraltracker.ui.utils import setup_tracking_context
         from uuid import UUID
         service = PlanningService()
+        setup_tracking_context(service)
         return service.get_plan(UUID(plan_id))
     except Exception as e:
         return None

@@ -50,9 +50,12 @@ def get_supabase_client():
 
 
 def get_persona_service():
-    """Get PersonaService instance."""
+    """Get PersonaService instance with tracking enabled."""
     from viraltracker.services.persona_service import PersonaService
-    return PersonaService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PersonaService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_brands():

@@ -26,6 +26,8 @@ import asyncio
 
 
 from ..core.database import get_supabase_client
+from .agent_tracking import run_agent_with_tracking
+from .usage_tracker import UsageTracker
 from .models import (
     Persona4D, PersonaSummary, PersonaType, SourceType,
     Demographics, TransformationMap, SocialRelations, DomainSentiment,
@@ -330,7 +332,29 @@ class PersonaService:
 
     def __init__(self, supabase: Optional[Client] = None):
         self.supabase = supabase or get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("PersonaService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # =========================================================================
     # CRUD Operations
@@ -765,7 +789,15 @@ class PersonaService:
             ad_insights=json.dumps(ad_insights, indent=2) if ad_insights else "No ad analyses available yet."
         )
 
-        result = await agent.run(prompt)
+        result = await run_agent_with_tracking(
+            agent,
+            prompt,
+            tracker=self._tracker,
+            user_id=self._user_id,
+            organization_id=self._org_id,
+            tool_name="persona_service",
+            operation="generate_persona_from_product"
+        )
 
         # Parse response with robust JSON repair
         persona_data = parse_llm_json(result.output)
@@ -1041,7 +1073,15 @@ Return ONLY valid JSON, no other text."""
             system_prompt="You are an expert persona synthesizer. Return ONLY valid JSON."
         )
 
-        result = await agent.run(prompt)
+        result = await run_agent_with_tracking(
+            agent,
+            prompt,
+            tracker=self._tracker,
+            user_id=self._user_id,
+            organization_id=self._org_id,
+            tool_name="persona_service",
+            operation="synthesize_competitor_persona"
+        )
 
         response_text = result.output
 

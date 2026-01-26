@@ -27,6 +27,9 @@ from ..core.config import Config
 from pydantic_ai import Agent
 import asyncio
 
+from .agent_tracking import run_agent_with_tracking
+from .usage_tracker import UsageTracker
+
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,28 @@ class AmazonReviewService:
         """
         self.apify = apify_service or ApifyService()
         self.supabase = get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # =========================================================================
     # URL Parsing
@@ -611,11 +636,18 @@ class AmazonReviewService:
         )
 
         try:
-            result = await agent.run(
-                REVIEW_ANALYSIS_PROMPT.format(
-                    reviews_text=reviews_text,
-                    review_count=len(reviews)
-                )
+            prompt = REVIEW_ANALYSIS_PROMPT.format(
+                reviews_text=reviews_text,
+                review_count=len(reviews)
+            )
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="amazon_review_service",
+                operation="analyze_reviews"
             )
 
             # Parse response
@@ -1198,7 +1230,15 @@ class AmazonReviewService:
             nest_asyncio.apply()
 
             async def run_analysis():
-                return await agent.run(prompt)
+                return await run_agent_with_tracking(
+                    agent,
+                    prompt,
+                    tracker=self._tracker,
+                    user_id=self._user_id,
+                    organization_id=self._org_id,
+                    tool_name="amazon_review_service",
+                    operation="analyze_reviews_for_product"
+                )
 
             ai_result = asyncio.get_event_loop().run_until_complete(run_analysis())
             analysis = ai_result.output.model_dump()

@@ -22,6 +22,9 @@ from viraltracker.core.config import Config
 from pydantic_ai import Agent
 import asyncio
 
+from viraltracker.services.agent_tracking import run_agent_with_tracking
+from viraltracker.services.usage_tracker import UsageTracker
+
 logger = logging.getLogger(__name__)
 
 
@@ -205,7 +208,29 @@ Keep what's working well and only change what needs to be fixed."""
         """
         self.supabase = supabase_client
         self.docs = docs_service
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("ScriptGenerationService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     def _ensure_client(self) -> None:
         """Deprecated: Pydantic AI Agent is always available via Config."""
@@ -311,8 +336,14 @@ Keep what's working well and only change what needs to be fixed."""
 
         try:
             # Call Agent with higher max_tokens for full script output
-            result = await agent.run(
+            result = await run_agent_with_tracking(
+                agent,
                 prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="script_service",
+                operation="generate_script",
                 model_settings={'max_tokens': 16000}
             )
             content = result.output
@@ -368,8 +399,14 @@ Keep what's working well and only change what needs to be fixed."""
 
         try:
             # Call Agent with sufficient max_tokens for detailed review
-            result = await agent.run(
+            result = await run_agent_with_tracking(
+                agent,
                 prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="script_service",
+                operation="review_script",
                 model_settings={'max_tokens': 16000}
             )
             content = result.output
@@ -424,8 +461,14 @@ Keep what's working well and only change what needs to be fixed."""
 
         try:
             # Call Agent with higher max_tokens for full script output
-            result = await agent.run(
+            result = await run_agent_with_tracking(
+                agent,
                 prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="script_service",
+                operation="revise_script",
                 model_settings={'max_tokens': 16000}
             )
             content = result.output

@@ -28,6 +28,9 @@ from viraltracker.core.config import Config
 from pydantic_ai import Agent
 import asyncio
 
+from viraltracker.services.agent_tracking import run_agent_with_tracking
+from viraltracker.services.usage_tracker import UsageTracker
+
 logger = logging.getLogger(__name__)
 
 
@@ -427,7 +430,29 @@ THRESHOLDS:
         """
         self.supabase = supabase_client
         self.docs = docs_service
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("ComicService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     def _ensure_client(self) -> None:
         """Deprecated: Pydantic AI Agent is always available via Config."""
@@ -726,8 +751,16 @@ THRESHOLDS:
         )
 
         try:
-            # Call Agent
-            result = await agent.run(prompt)
+            # Call Agent with tracking
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="comic_service",
+                operation="condense_to_comic"
+            )
             content = result.output
 
             # Parse response
@@ -827,8 +860,16 @@ THRESHOLDS:
         )
 
         try:
-            # Call Agent
-            result = await agent.run(prompt)
+            # Call Agent with tracking
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="comic_service",
+                operation="evaluate_comic_script"
+            )
             content = result.output
 
             # Parse response
@@ -991,8 +1032,16 @@ Return ONLY the JSON, no other text."""
         )
 
         try:
-            # Call Agent
-            result = await agent.run(prompt)
+            # Call Agent with tracking
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="comic_service",
+                operation="revise_comic"
+            )
             response_text = result.output.strip()
 
             # Parse JSON response

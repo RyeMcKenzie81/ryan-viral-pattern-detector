@@ -46,9 +46,12 @@ def get_supabase_client():
 
 
 def get_competitor_service():
-    """Get CompetitorService instance."""
+    """Get CompetitorService instance with tracking enabled."""
     from viraltracker.services.competitor_service import CompetitorService
-    return CompetitorService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = CompetitorService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_brands():
@@ -2151,7 +2154,9 @@ with tab_persona:
         with st.spinner("Synthesizing persona from collected data..."):
             try:
                 from viraltracker.services.persona_service import PersonaService
+                from viraltracker.ui.utils import setup_tracking_context
                 persona_service = PersonaService()
+                setup_tracking_context(persona_service)
 
                 # Determine product_id based on level
                 comp_product_id = None
@@ -2198,7 +2203,9 @@ with tab_persona:
             with col_save:
                 if st.button("✅ Save", type="primary", key="save_preview"):
                     from viraltracker.services.persona_service import PersonaService
+                    from viraltracker.ui.utils import setup_tracking_context
                     persona_service = PersonaService()
+                    setup_tracking_context(persona_service)
                     persona_id = persona_service.create_persona(preview)
                     st.session_state.competitor_persona_preview = None
                     st.success(f"Persona saved!")
