@@ -23,6 +23,17 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
+# Organization selector for usage tracking
+from viraltracker.ui.utils import render_organization_selector
+org_id = render_organization_selector(key="comic_json_org_selector")
+if not org_id:
+    st.warning("Please select a workspace to continue.")
+    st.stop()
+
 # Initialize session state
 if "comic_json_result" not in st.session_state:
     st.session_state.comic_json_result = None
@@ -33,9 +44,26 @@ if "script_analysis" not in st.session_state:
 
 
 def get_gemini_service():
-    """Get Gemini service for vision analysis."""
+    """Get Gemini service for vision analysis with usage tracking."""
     from viraltracker.services.gemini_service import GeminiService
-    return GeminiService()
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.core.database import get_supabase_client
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
+    service = GeminiService()
+
+    # Set up usage tracking if org context available
+    org_id = get_current_organization_id()
+    if org_id and org_id != "all":
+        try:
+            db = get_supabase_client()
+            tracker = UsageTracker(db)
+            service.set_tracking_context(tracker, get_current_user_id(), org_id)
+        except Exception as e:
+            logger.warning(f"Failed to set up usage tracking: {e}")
+
+    return service
 
 
 async def analyze_comic_layout(image_bytes: bytes, filename: str) -> Dict[str, Any]:
