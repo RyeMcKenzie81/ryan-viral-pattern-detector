@@ -47,6 +47,7 @@ class GeminiService:
     - Exponential backoff on rate limit errors
     - JSON response parsing with validation
     - Structured hook analysis
+    - Usage tracking for billing (optional)
     """
 
     def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
@@ -74,7 +75,91 @@ class GeminiService:
         self._requests_per_minute = 9  # Default: 9 req/min for safety (under 10 req/min free tier)
         self._min_delay = 60.0 / self._requests_per_minute
 
+        # Usage tracking (optional)
+        self._usage_tracker = None
+        self._user_id = None
+        self._organization_id = None
+
         logger.info(f"GeminiService initialized with model: {model}, rate limit: {self._requests_per_minute} req/min")
+
+    def set_tracking_context(
+        self,
+        usage_tracker,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None
+    ) -> None:
+        """
+        Set usage tracking context.
+
+        Call this to enable usage tracking for all subsequent API calls.
+
+        Args:
+            usage_tracker: UsageTracker instance
+            user_id: User ID for tracking
+            organization_id: Organization ID for billing
+        """
+        self._usage_tracker = usage_tracker
+        self._user_id = user_id
+        self._organization_id = organization_id
+        logger.debug(f"Usage tracking enabled for org: {organization_id}")
+
+    def _track_usage(
+        self,
+        operation: str,
+        model: str,
+        response=None,
+        units: float = None,
+        unit_type: str = None,
+        duration_ms: int = None,
+        metadata: dict = None
+    ) -> None:
+        """
+        Track API usage (fire-and-forget, never fails).
+
+        Args:
+            operation: Operation name (e.g., 'generate_image', 'analyze_image')
+            model: Model used
+            response: API response (for extracting token counts)
+            units: Unit count for non-token APIs
+            unit_type: Unit type (e.g., 'image_generation')
+            duration_ms: Call duration in milliseconds
+            metadata: Additional context
+        """
+        if not self._usage_tracker or not self._organization_id:
+            return
+
+        try:
+            from .usage_tracker import UsageRecord
+
+            # Extract token counts from response if available
+            input_tokens = 0
+            output_tokens = 0
+            if response and hasattr(response, 'usage_metadata') and response.usage_metadata:
+                um = response.usage_metadata
+                input_tokens = getattr(um, 'prompt_token_count', 0) or 0
+                output_tokens = getattr(um, 'candidates_token_count', 0) or 0
+
+            record = UsageRecord(
+                provider="google",
+                model=model,
+                tool_name="gemini_service",
+                operation=operation,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                units=units,
+                unit_type=unit_type,
+                duration_ms=duration_ms,
+                request_metadata=metadata,
+            )
+
+            self._usage_tracker.track(
+                user_id=self._user_id,
+                organization_id=self._organization_id,
+                record=record
+            )
+
+        except Exception as e:
+            logger.warning(f"Usage tracking failed (non-fatal): {e}")
 
     def set_rate_limit(self, requests_per_minute: int) -> None:
         """
@@ -124,6 +209,13 @@ class GeminiService:
                 response = self.client.models.generate_content(
                     model=self.model_name,
                     contents=[prompt]
+                )
+
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="analyze_hook",
+                    model=self.model_name,
+                    response=response,
                 )
 
                 # Parse response
@@ -534,6 +626,16 @@ Generate the article now:"""
                                    f"model_requested={model_requested}, model_used={model_used}, "
                                    f"time={generation_time_ms}ms, retries={total_retries}")
 
+                        # Track usage (fire-and-forget)
+                        self._track_usage(
+                            operation="generate_image",
+                            model=model_used or model_requested,
+                            response=response,
+                            units=1.0,
+                            unit_type="image_generation",
+                            duration_ms=generation_time_ms,
+                        )
+
                         if return_metadata:
                             return {
                                 "image_base64": image_base64,
@@ -659,6 +761,15 @@ Generate the article now:"""
                     raise Exception("Gemini response has no content parts")
 
                 logger.debug(f"Image analysis complete")
+
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="analyze_image",
+                    model=self.model_name,
+                    response=response,
+                    duration_ms=int((time.time() - self._last_call_time) * 1000) if self._last_call_time else None,
+                )
+
                 return response.text
 
             except Exception as e:
@@ -778,6 +889,14 @@ Generate the article now:"""
                     raise Exception("Gemini response has no content parts")
 
                 logger.info(f"Text analysis completed successfully")
+
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="analyze_text",
+                    model=self.model_name,
+                    response=response,
+                )
+
                 return response.text
 
             except Exception as e:

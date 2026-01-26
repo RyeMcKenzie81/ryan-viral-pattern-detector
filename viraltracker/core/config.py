@@ -82,6 +82,81 @@ class Config:
         return getattr(cls, key, default)
 
     # ========================================================================
+    # Usage Tracking - Cost Configuration
+    # ========================================================================
+
+    # Token costs per 1M tokens (input_cost, output_cost)
+    TOKEN_COSTS: Dict[str, tuple] = {
+        # Anthropic
+        "claude-opus-4-5-20251101": (15.00, 75.00),
+        "claude-opus-4-5": (15.00, 75.00),  # Alias
+        "claude-sonnet-4-5-20250929": (3.00, 15.00),
+        "claude-sonnet-4-20250514": (3.00, 15.00),
+        "claude-sonnet-4": (3.00, 15.00),  # Alias
+        # OpenAI
+        "gpt-4o": (2.50, 10.00),
+        "gpt-4o-mini": (0.15, 0.60),
+        "gpt-5.2-2025-12-11": (5.00, 15.00),
+        # Google Gemini
+        "gemini-2.0-flash": (0.10, 0.40),
+        "gemini-2.5-flash": (0.15, 0.60),
+        "gemini-2.5-pro": (1.25, 5.00),
+        "gemini-3-pro": (1.25, 5.00),
+        "gemini-3-flash": (0.15, 0.60),
+        "models/gemini-2.0-flash": (0.10, 0.40),
+        "models/gemini-2.5-pro": (1.25, 5.00),
+        "models/gemini-3-pro-image-preview": (1.25, 5.00),
+        "models/gemini-3-flash-preview": (0.15, 0.60),
+    }
+
+    # Unit costs for non-token APIs
+    UNIT_COSTS: Dict[str, float] = {
+        # Image generation (per image)
+        "google_image_generation": 0.02,
+        "openai_image_generation": 0.04,
+        # Video generation (per second)
+        "google_veo_seconds": 0.05,
+        "sora_video_seconds": 0.10,
+        # Audio/TTS (per character)
+        "elevenlabs_characters": 0.00003,
+    }
+
+    @classmethod
+    def get_token_cost(cls, model: str) -> tuple:
+        """
+        Get token costs for a model.
+
+        Args:
+            model: Model identifier
+
+        Returns:
+            Tuple of (input_cost_per_1m, output_cost_per_1m) or (0, 0) if unknown
+        """
+        # Try exact match first
+        if model in cls.TOKEN_COSTS:
+            return cls.TOKEN_COSTS[model]
+
+        # Try partial match (for model strings with prefixes like "google-gla:")
+        for key, cost in cls.TOKEN_COSTS.items():
+            if key in model or model in key:
+                return cost
+
+        return (0.0, 0.0)
+
+    @classmethod
+    def get_unit_cost(cls, unit_type: str) -> float:
+        """
+        Get cost per unit for non-token APIs.
+
+        Args:
+            unit_type: Unit type key (e.g., "google_image_generation")
+
+        Returns:
+            Cost per unit or 0 if unknown
+        """
+        return cls.UNIT_COSTS.get(unit_type, 0.0)
+
+    # ========================================================================
     # Model Configuration
     # ========================================================================
     

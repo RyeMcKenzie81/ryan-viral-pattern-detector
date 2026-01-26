@@ -490,9 +490,15 @@ async def run_workflow(
     from pydantic_ai.usage import RunUsage
     from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
     from viraltracker.agent.dependencies import AgentDependencies
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
 
-    # Create dependencies
-    deps = AgentDependencies.create(project_name="default")
+    # Create dependencies with usage tracking context
+    deps = AgentDependencies.create(
+        project_name="default",
+        user_id=get_current_user_id(),
+        organization_id=get_current_organization_id()
+    )
 
     # Create RunContext
     ctx = RunContext(

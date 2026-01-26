@@ -37,6 +37,7 @@ from ..services.content_pipeline.services.sora_service import SoraService
 from ..services.reddit_sentiment_service import RedditSentimentService
 from ..services.product_context_service import ProductContextService
 from ..services.belief_analysis_service import BeliefAnalysisService
+from ..services.usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +137,19 @@ class AgentDependencies(BaseModel):
         gemini_api_key: Optional[str] = None,
         gemini_model: str = "models/gemini-3-pro-image-preview",
         rate_limit_rpm: int = 9,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ) -> "AgentDependencies":
         """
         Factory method to create AgentDependencies with initialized services.
+
+        Args:
+            project_name: Project name for context
+            gemini_api_key: Optional Gemini API key (uses env var if not provided)
+            gemini_model: Gemini model to use
+            rate_limit_rpm: Rate limit for Gemini API
+            user_id: Optional user ID for usage tracking
+            organization_id: Optional organization ID for usage tracking/billing
         """
         logger.info(f"Initializing agent dependencies for project: {project_name}")
 
@@ -150,6 +161,16 @@ class AgentDependencies(BaseModel):
         gemini = GeminiService(api_key=gemini_api_key, model=gemini_model)
         gemini.set_rate_limit(rate_limit_rpm)
         logger.info(f"GeminiService initialized (model: {gemini_model}, rate limit: {rate_limit_rpm} req/min)")
+
+        # Set up usage tracking if organization_id is provided
+        if organization_id:
+            try:
+                supabase_client = get_supabase_client()
+                usage_tracker = UsageTracker(supabase_client)
+                gemini.set_tracking_context(usage_tracker, user_id, organization_id)
+                logger.info(f"GeminiService usage tracking enabled (org: {organization_id})")
+            except Exception as e:
+                logger.warning(f"Failed to set up usage tracking: {e}")
 
         # Initialize StatsService (no initialization needed, static methods)
         stats = StatsService()
