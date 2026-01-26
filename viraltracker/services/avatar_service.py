@@ -50,6 +50,23 @@ class AvatarService:
         self.gemini = gemini_service or GeminiService()
         logger.info("AvatarService initialized")
 
+    def set_tracking_context(
+        self,
+        usage_tracker,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None
+    ) -> None:
+        """
+        Set usage tracking context (passed through to GeminiService).
+
+        Args:
+            usage_tracker: UsageTracker instance
+            user_id: User ID for tracking
+            organization_id: Organization ID for billing
+        """
+        self.gemini.set_tracking_context(usage_tracker, user_id, organization_id)
+        logger.debug(f"AvatarService usage tracking enabled for org: {organization_id}")
+
     # =========================================================================
     # CRUD Operations
     # =========================================================================

@@ -25,6 +25,7 @@ from google.genai import types
 
 from ..core.config import Config
 from ..core.database import get_supabase_client
+from .usage_tracker import UsageTracker, UsageRecord
 from .veo_models import (
     VeoConfig,
     VeoGenerationRequest,
@@ -76,7 +77,63 @@ class VeoService:
         self.client = genai.Client(api_key=self.api_key)
         self.supabase = get_supabase_client()
 
+        # Usage tracking (optional)
+        self._usage_tracker = None
+        self._user_id = None
+        self._organization_id = None
+
         logger.info("VeoService initialized")
+
+    def set_tracking_context(
+        self,
+        usage_tracker: UsageTracker,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None
+    ) -> None:
+        """
+        Set usage tracking context.
+
+        Args:
+            usage_tracker: UsageTracker instance
+            user_id: User ID for tracking
+            organization_id: Organization ID for billing
+        """
+        self._usage_tracker = usage_tracker
+        self._user_id = user_id
+        self._organization_id = organization_id
+        logger.debug(f"VeoService usage tracking enabled for org: {organization_id}")
+
+    def _track_usage(
+        self,
+        operation: str,
+        model: str,
+        duration_seconds: int,
+        cost_usd: float,
+        metadata: dict = None
+    ) -> None:
+        """Track video generation usage (fire-and-forget)."""
+        if not self._usage_tracker or not self._organization_id:
+            return
+
+        try:
+            record = UsageRecord(
+                provider="google",
+                model=model,
+                tool_name="veo_service",
+                operation=operation,
+                units=float(duration_seconds),
+                unit_type="video_seconds",
+                cost_usd=cost_usd,
+                request_metadata=metadata,
+            )
+
+            self._usage_tracker.track(
+                user_id=self._user_id,
+                organization_id=self._organization_id,
+                record=record
+            )
+        except Exception as e:
+            logger.warning(f"Usage tracking failed (non-fatal): {e}")
 
     def _get_model_name(self, variant: ModelVariant) -> str:
         """Get Veo model name for variant."""
@@ -380,6 +437,20 @@ class VeoService:
                 logger.info(
                     f"Video generation completed: {generation_id} "
                     f"({generation_time:.1f}s, ${cost_usd:.2f})"
+                )
+
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="generate_video",
+                    model=self._get_model_name(config.model_variant),
+                    duration_seconds=config.duration_seconds,
+                    cost_usd=cost_usd,
+                    metadata={
+                        "generation_id": str(generation_id),
+                        "brand_id": str(request.brand_id),
+                        "resolution": config.resolution.value,
+                        "aspect_ratio": config.aspect_ratio.value,
+                    }
                 )
 
                 # Clean up temp files

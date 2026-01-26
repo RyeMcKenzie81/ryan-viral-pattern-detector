@@ -49,15 +49,39 @@ def get_supabase_client():
 
 
 def get_avatar_service():
-    """Create fresh AvatarService instance."""
+    """Create fresh AvatarService instance with usage tracking."""
     from viraltracker.services.avatar_service import AvatarService
-    return AvatarService()
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
+    service = AvatarService()
+
+    # Set up usage tracking if org context available
+    org_id = get_current_organization_id()
+    if org_id and org_id != "all":
+        tracker = UsageTracker(get_supabase_client())
+        service.set_tracking_context(tracker, get_current_user_id(), org_id)
+
+    return service
 
 
 def get_veo_service():
-    """Create fresh VeoService instance."""
+    """Create fresh VeoService instance with usage tracking."""
     from viraltracker.services.veo_service import VeoService
-    return VeoService()
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
+    service = VeoService()
+
+    # Set up usage tracking if org context available
+    org_id = get_current_organization_id()
+    if org_id and org_id != "all":
+        tracker = UsageTracker(get_supabase_client())
+        service.set_tracking_context(tracker, get_current_user_id(), org_id)
+
+    return service
 
 
 def get_product_images(product_id: str):
@@ -175,10 +199,9 @@ def render_avatar_management(brand_id: str):
 
             if submitted and name:
                 async def create_avatar():
-                    from viraltracker.services.avatar_service import AvatarService
                     from viraltracker.services.veo_models import BrandAvatarCreate, AspectRatio, Resolution
 
-                    service = AvatarService()
+                    service = get_avatar_service()
                     ref_images = [f.read() for f in uploaded_files[:3]] if uploaded_files else None
 
                     data = BrandAvatarCreate(
@@ -542,12 +565,11 @@ def render_video_generation(brand_id: str):
             st.session_state.generating_video = True
 
             async def generate():
-                from viraltracker.services.veo_service import VeoService
                 from viraltracker.services.veo_models import (
                     VeoGenerationRequest, VeoConfig, AspectRatio, Resolution, ModelVariant
                 )
 
-                service = VeoService()
+                service = get_veo_service()
 
                 # Collect reference images
                 ref_images = []
