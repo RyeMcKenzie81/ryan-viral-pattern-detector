@@ -190,18 +190,24 @@ def get_products():
             "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts, organization_id)"
         )
 
-        # Filter by organization (unless superuser "all" mode)
-        if org_id and org_id != "all":
-            # Get brand IDs for this organization first
-            brand_result = db.table("brands").select("id").eq("organization_id", org_id).execute()
-            brand_ids = [b["id"] for b in (brand_result.data or [])]
+        # No org selected = no products (security)
+        if not org_id:
+            return []
 
-            if not brand_ids:
-                return []
+        # Superuser "all" mode = all products
+        if org_id == "all":
+            result = query.order("name").execute()
+            return result.data
 
-            # Filter products by those brands
-            query = query.in_("brand_id", brand_ids)
+        # Filter by organization
+        brand_result = db.table("brands").select("id").eq("organization_id", org_id).execute()
+        brand_ids = [b["id"] for b in (brand_result.data or [])]
 
+        if not brand_ids:
+            return []
+
+        # Filter products by those brands
+        query = query.in_("brand_id", brand_ids)
         result = query.order("name").execute()
         return result.data
     except Exception as e:
