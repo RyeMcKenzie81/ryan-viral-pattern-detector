@@ -6,12 +6,28 @@
 
 ## Rollout Order
 
-| Step | Service | Provider | Complexity | Status |
-|------|---------|----------|------------|--------|
-| 0 | Infrastructure | - | Medium | Pending |
-| 1 | Ad Creator | Anthropic (Claude) | Low | Pending |
-| 2 | TBD | TBD | - | Pending |
-| 3 | TBD | TBD | - | Pending |
+| Step | Service/Page | Provider | Status |
+|------|--------------|----------|--------|
+| 0 | Infrastructure (table + UsageTracker) | - | Pending |
+| 1 | Ad Creator | Anthropic | Pending |
+| **--- Brands ---** | | | |
+| 2 | Brand Manager | Mixed | Pending |
+| 3 | Personas | Anthropic/OpenAI | Pending |
+| 4 | URL Mapping | Gemini | Pending |
+| 5 | Brand Research | Mixed | Pending |
+| 6 | Client Onboarding | Mixed | Pending |
+| **--- Competitors ---** | | | |
+| 7 | Competitors | Mixed | Pending |
+| 8 | Competitor Research | Mixed | Pending |
+| 9 | Competitive Analysis | Anthropic | Pending |
+| 10 | Reddit Research | OpenAI | Pending |
+| **--- Other ---** | | | |
+| 11 | Veo Avatars | Google (Veo) | Pending |
+| 12 | Knowledge Base | OpenAI (embeddings) | Pending |
+| **--- System ---** | | | |
+| 13 | Scheduled Tasks | Mixed | Pending |
+| 14 | Agent Catalog | - | Pending |
+| 15 | Remaining services | Mixed | Pending |
 
 ---
 
