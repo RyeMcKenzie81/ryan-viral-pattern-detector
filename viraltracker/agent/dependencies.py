@@ -254,9 +254,11 @@ class AgentDependencies(BaseModel):
             logger.info("DocService skipped (OPENAI_API_KEY not set)")
 
         # Initialize ContentPipelineService for content pipeline workflow
+        # Pass gemini service with tracking context for AI operations
         content_pipeline = ContentPipelineService(
             supabase_client=supabase,
-            docs_service=docs
+            docs_service=docs,
+            gemini_service=gemini  # Inherits tracking context from above
         )
         logger.info("ContentPipelineService initialized")
 

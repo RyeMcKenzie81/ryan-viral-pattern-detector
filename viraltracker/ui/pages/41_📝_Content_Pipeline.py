@@ -166,10 +166,22 @@ def get_doc_service():
 
 
 def get_gemini_service():
-    """Get GeminiService instance."""
+    """Get GeminiService instance with usage tracking."""
     from viraltracker.services.gemini_service import GeminiService
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
     try:
-        return GeminiService()
+        service = GeminiService()
+
+        # Set up usage tracking if org context available
+        org_id = get_current_organization_id()
+        if org_id and org_id != "all":
+            tracker = UsageTracker(get_supabase_client())
+            service.set_tracking_context(tracker, get_current_user_id(), org_id)
+
+        return service
     except ValueError:
         return None
 
