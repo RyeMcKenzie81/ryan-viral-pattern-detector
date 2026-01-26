@@ -16,7 +16,7 @@ Rolled out usage tracking to all major AI services that use GeminiService, VeoSe
 | Ad Creator | Generate ad | ✅ Tracked (generate_image, analyze_image) |
 | VEO Avatars | Generate video | ✅ Tracked (8s video @ $3.20) |
 | Content Pipeline | Pending | - |
-| Knowledge Base | Pending | - |
+| Knowledge Base | Search query | ✅ Tracked (embed, text-embedding-3-small) |
 
 ## Services Instrumented
 
@@ -82,7 +82,14 @@ viraltracker/ui/pages/21_🎨_Ad_Creator.py    (org selector + filtering)
 viraltracker/ui/pages/41_📝_Content_Pipeline.py (tracking context)
 viraltracker/ui/pages/46_📚_Knowledge_Base.py (tracking context)
 viraltracker/ui/pages/47_🎬_Veo_Avatars.py   (tracking context)
+viraltracker/services/veo_models.py          (removed default negative_prompt)
 ```
+
+### Bug Fix: Knowledge Base Tracking
+
+The Knowledge Base page was missing an organization selector. Without it,
+`get_current_organization_id()` returned None and tracking context was never set.
+Fixed by adding `render_organization_selector()` to the page.
 
 ---
 
