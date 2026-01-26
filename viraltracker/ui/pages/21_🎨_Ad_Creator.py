@@ -178,12 +178,31 @@ def get_offer_variants_for_product(product_id: str):
 
 
 def get_products():
-    """Fetch all products from database with brand info."""
+    """Fetch products from database filtered by current organization."""
+    from viraltracker.ui.utils import get_current_organization_id
+
     try:
         db = get_supabase_client()
-        result = db.table("products").select(
-            "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts)"
-        ).order("name").execute()
+        org_id = get_current_organization_id()
+
+        # Base query with brand info
+        query = db.table("products").select(
+            "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts, organization_id)"
+        )
+
+        # Filter by organization (unless superuser "all" mode)
+        if org_id and org_id != "all":
+            # Get brand IDs for this organization first
+            brand_result = db.table("brands").select("id").eq("organization_id", org_id).execute()
+            brand_ids = [b["id"] for b in (brand_result.data or [])]
+
+            if not brand_ids:
+                return []
+
+            # Filter products by those brands
+            query = query.in_("brand_id", brand_ids)
+
+        result = query.order("name").execute()
         return result.data
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
