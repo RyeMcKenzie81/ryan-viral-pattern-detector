@@ -68,8 +68,8 @@ class VeoConfig(BaseModel):
         description="Video duration in seconds: 4, 6, or 8"
     )
     negative_prompt: Optional[str] = Field(
-        default="blurry, low quality, distorted, deformed, ugly, bad anatomy",
-        description="Content to avoid in generation"
+        default=None,  # Veo API may not support negative prompts for all accounts
+        description="Content to avoid in generation (may not be supported)"
     )
     seed: Optional[int] = Field(
         default=None,
