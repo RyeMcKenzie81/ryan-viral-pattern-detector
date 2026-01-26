@@ -552,11 +552,11 @@ def render_video_generation(brand_id: str):
             estimated_cost = duration * rate
             st.metric("Estimated Cost", f"${estimated_cost:.2f}")
 
-        default_negative = "blurry, low quality, distorted, deformed, ugly, bad anatomy, morphing objects, changing shapes, altered text, modified labels, incorrect packaging, regenerated text, watermarks, subtitles, text overlays"
+        # Note: Negative prompts may not be supported on all Veo API accounts
         negative_prompt = st.text_input(
-            "Negative Prompt",
-            value=default_negative,
-            help="Content to avoid in generation"
+            "Negative Prompt (optional)",
+            value="",
+            help="Content to avoid in generation. Leave empty if not supported by your API."
         )
 
         submitted = st.form_submit_button("🚀 Generate Video", type="primary")
