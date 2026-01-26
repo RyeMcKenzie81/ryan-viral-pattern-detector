@@ -185,6 +185,9 @@ def get_products():
         db = get_supabase_client()
         org_id = get_current_organization_id()
 
+        # DEBUG: Show org_id (remove after testing)
+        st.sidebar.write(f"DEBUG org_id: {org_id}")
+
         # Base query with brand info
         query = db.table("products").select(
             "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts, organization_id)"
