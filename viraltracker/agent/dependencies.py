@@ -247,6 +247,13 @@ class AgentDependencies(BaseModel):
             try:
                 supabase = get_supabase_client()
                 docs = DocService(supabase=supabase)
+
+                # Set up usage tracking for DocService if org context available
+                if organization_id and organization_id != "all":
+                    docs.set_tracking_context(
+                        UsageTracker(supabase), user_id, organization_id
+                    )
+
                 logger.info("DocService initialized (knowledge base enabled)")
             except Exception as e:
                 logger.warning(f"DocService initialization failed: {e}")

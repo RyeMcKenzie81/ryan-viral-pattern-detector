@@ -156,13 +156,27 @@ def get_supabase_client():
 
 
 def get_doc_service():
-    """Get DocService instance for knowledge base queries."""
+    """Get DocService instance with usage tracking."""
     import os
     from viraltracker.services.knowledge_base import DocService
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
-    return DocService(supabase=get_supabase_client(), openai_api_key=api_key)
+
+    db = get_supabase_client()
+    service = DocService(supabase=db, openai_api_key=api_key)
+
+    # Set up usage tracking if org context available
+    org_id = get_current_organization_id()
+    if org_id and org_id != "all":
+        tracker = UsageTracker(db)
+        service.set_tracking_context(tracker, get_current_user_id(), org_id)
+
+    return service
 
 
 def get_gemini_service():
