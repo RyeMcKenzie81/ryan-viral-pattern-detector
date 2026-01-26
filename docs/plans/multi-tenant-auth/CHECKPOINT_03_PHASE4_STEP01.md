@@ -1,7 +1,18 @@
 # Checkpoint 03: Phase 4 Step 0-1 Complete
 
 **Date**: 2026-01-25
-**Status**: Ready for Testing
+**Status**: Testing - Debugging user/org setup
+
+---
+
+## Current Status (End of Session 2026-01-25)
+
+- Migration ran successfully
+- Ad Creator works (no errors)
+- **Issue**: No usage records appearing
+- **Cause**: Likely using superuser "All Organizations" mode (skips tracking)
+- **Next**: Need to test with a non-superuser account (ryan@ryanmckenzie.com)
+- **Problem Found**: ryan@ryanmckenzie.com has no organization membership yet
 
 ---
 
