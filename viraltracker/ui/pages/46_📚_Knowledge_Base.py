@@ -24,6 +24,13 @@ st.set_page_config(
 from viraltracker.ui.auth import require_auth
 require_auth()
 
+# Organization selector for usage tracking
+from viraltracker.ui.utils import render_organization_selector
+org_id = render_organization_selector(key="knowledge_base_org_selector")
+if not org_id:
+    st.warning("Please select a workspace to continue.")
+    st.stop()
+
 # Initialize session state
 if 'kb_view' not in st.session_state:
     st.session_state.kb_view = "browse"  # browse, upload, search
