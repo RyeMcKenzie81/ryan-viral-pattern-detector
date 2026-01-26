@@ -9,6 +9,15 @@
 
 Rolled out usage tracking to all major AI services that use GeminiService, VeoService, or OpenAI embeddings.
 
+## Validation Results (2026-01-26)
+
+| Service | Test | Result |
+|---------|------|--------|
+| Ad Creator | Generate ad | ✅ Tracked (generate_image, analyze_image) |
+| VEO Avatars | Generate video | ✅ Tracked (8s video @ $3.20) |
+| Content Pipeline | Pending | - |
+| Knowledge Base | Pending | - |
+
 ## Services Instrumented
 
 | Service | Provider | Operations Tracked | Status |
