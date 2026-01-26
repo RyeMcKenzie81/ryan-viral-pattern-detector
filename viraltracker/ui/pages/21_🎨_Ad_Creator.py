@@ -185,9 +185,6 @@ def get_products():
         db = get_supabase_client()
         org_id = get_current_organization_id()
 
-        # DEBUG: Show org_id (remove after testing)
-        st.sidebar.write(f"DEBUG org_id: {org_id}")
-
         # Base query with brand info
         query = db.table("products").select(
             "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts, organization_id)"
@@ -788,6 +785,13 @@ async def handle_export(
 
 st.title("🎨 Ad Creator")
 st.markdown("**Generate Facebook ad variations with AI-powered dual review**")
+
+# Organization selector (required for multi-tenant filtering)
+from viraltracker.ui.utils import render_organization_selector
+org_id = render_organization_selector(key="ad_creator_org_selector")
+if not org_id:
+    st.warning("Please select a workspace to continue.")
+    st.stop()
 
 st.divider()
 
