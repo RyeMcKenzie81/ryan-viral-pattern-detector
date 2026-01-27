@@ -673,7 +673,7 @@ def render_url_groups_for_competitor(url_groups: List[Dict], competitor_id: str,
                                 )
 
                                 analyses = asyncio.run(ad_service.analyze_ad_group(ad_group, max_ads=10))
-                                synthesis = ad_service.synthesize_messaging(analyses, [group])
+                                synthesis = ad_service.synthesize_messaging(analyses)
 
                                 db = get_supabase_client()
                                 db.table("competitor_landing_pages").upsert({
