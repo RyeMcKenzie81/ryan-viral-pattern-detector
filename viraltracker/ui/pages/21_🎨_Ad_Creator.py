@@ -2160,6 +2160,17 @@ else:
                         })
 
                     except Exception as e:
+                        # Stop entire batch if usage limit exceeded
+                        from viraltracker.services.usage_limit_service import UsageLimitExceeded
+                        if isinstance(e, UsageLimitExceeded):
+                            results['failed'].append({
+                                'template_id': template_id,
+                                'template_name': template_name,
+                                'error': str(e)
+                            })
+                            results['limit_exceeded'] = str(e)
+                            break
+
                         logger.error(f"Batch workflow failed for template {template_name}: {e}")
                         results['failed'].append({
                             'template_id': template_id,
@@ -2174,6 +2185,14 @@ else:
             # Complete progress
             progress_placeholder.progress(1.0, text="Batch processing complete!")
             status_placeholder.empty()
+
+            # Check for usage limit exceeded
+            if batch_results.get('limit_exceeded'):
+                st.session_state.workflow_running = False
+                st.session_state.workflow_error = batch_results['limit_exceeded']
+                st.error(f"Usage limit reached: {batch_results['limit_exceeded']}")
+                st.info("Contact your administrator to increase limits.")
+                st.stop()
 
             # Store batch results and clear selections
             st.session_state.multi_template_results = batch_results
@@ -2283,10 +2302,14 @@ else:
         except Exception as e:
             st.session_state.workflow_running = False
             st.session_state.workflow_error = str(e)
-            st.error(f"Workflow failed: {str(e)}")
 
-            # Show link to check database directly
-            st.info("💡 Check the sidebar for recent runs - some ads may have been generated before the error.")
+            from viraltracker.services.usage_limit_service import UsageLimitExceeded
+            if isinstance(e, UsageLimitExceeded):
+                st.error(f"Usage limit reached: {e}")
+                st.info("Contact your administrator to increase limits.")
+            else:
+                st.error(f"Workflow failed: {str(e)}")
+                st.info("💡 Check the sidebar for recent runs - some ads may have been generated before the error.")
 
 # ============================================================================
 # Smart Edit Section (collapsible)
