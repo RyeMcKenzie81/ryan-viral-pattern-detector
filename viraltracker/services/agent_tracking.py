@@ -5,11 +5,12 @@ Provides a centralized way to run PydanticAI agents while
 automatically tracking token usage to the billing system.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Optional, Any, TypeVar
 
 from pydantic_ai import Agent
-from pydantic_ai.result import RunResult
 
 from .usage_tracker import UsageTracker, UsageRecord
 
@@ -28,7 +29,7 @@ async def run_agent_with_tracking(
     tool_name: str = "pydantic_agent",
     operation: str = "run",
     **run_kwargs
-) -> RunResult[T]:
+):
     """
     Run a PydanticAI agent and track usage.
 
@@ -76,7 +77,7 @@ def run_agent_sync_with_tracking(
     tool_name: str = "pydantic_agent",
     operation: str = "run",
     **run_kwargs
-) -> RunResult[T]:
+):
     """
     Synchronous version of run_agent_with_tracking.
 
@@ -113,7 +114,7 @@ def run_agent_sync_with_tracking(
 
 
 def _track_agent_usage(
-    result: RunResult,
+    result,
     agent: Agent,
     tracker: UsageTracker,
     user_id: Optional[str],
