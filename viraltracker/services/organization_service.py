@@ -203,10 +203,10 @@ class OrganizationService:
         if not memberships:
             return []
 
-        # Get user details from user_profiles
+        # Get user details from user_profiles (no email column - lives in auth.users)
         user_ids = [m["user_id"] for m in memberships]
         profiles_result = self.client.table("user_profiles").select(
-            "user_id, display_name, email"
+            "user_id, display_name"
         ).in_("user_id", user_ids).execute()
         profiles = {p["user_id"]: p for p in (profiles_result.data or [])}
 
@@ -218,7 +218,6 @@ class OrganizationService:
                 "user_id": m["user_id"],
                 "role": m["role"],
                 "created_at": m["created_at"],
-                "email": profile.get("email", ""),
                 "display_name": profile.get("display_name", ""),
             })
 

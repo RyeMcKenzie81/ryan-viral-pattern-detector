@@ -144,8 +144,7 @@ with tab_users:
             member_rows = []
             for m in members:
                 member_rows.append({
-                    "Email": m.get("email", "N/A"),
-                    "Display Name": m.get("display_name", "N/A"),
+                    "Display Name": m.get("display_name") or m["user_id"][:8] + "...",
                     "Role": m["role"].title(),
                     "Joined": str(m.get("created_at", ""))[:10],
                     "User ID": m["user_id"],
@@ -157,7 +156,7 @@ with tab_users:
             st.subheader("Manage Member")
 
             member_options = {
-                f"{m.get('email') or m.get('display_name') or m['user_id'][:8]} ({m['role']})": m
+                f"{m.get('display_name') or m['user_id'][:8]} ({m['role']})": m
                 for m in members
             }
             selected_label = st.selectbox(
