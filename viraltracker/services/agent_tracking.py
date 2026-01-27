@@ -46,6 +46,21 @@ async def run_agent_with_tracking(
     Returns:
         The agent run result (same as agent.run())
     """
+    # Enforce usage limit before running (fail open)
+    if organization_id and organization_id != "all":
+        try:
+            from .usage_limit_service import UsageLimitService
+            from ..core.database import get_supabase_client
+            limit_svc = UsageLimitService(get_supabase_client())
+            limit_svc.enforce_limit(organization_id, "monthly_cost")
+        except ImportError:
+            pass
+        except Exception as e:
+            from .usage_limit_service import UsageLimitExceeded
+            if isinstance(e, UsageLimitExceeded):
+                raise
+            logger.warning(f"Usage limit check failed (non-fatal): {e}")
+
     # Run the agent
     result = await agent.run(prompt, **run_kwargs)
 
@@ -94,6 +109,21 @@ def run_agent_sync_with_tracking(
     Returns:
         The agent run result (same as agent.run_sync())
     """
+    # Enforce usage limit before running (fail open)
+    if organization_id and organization_id != "all":
+        try:
+            from .usage_limit_service import UsageLimitService
+            from ..core.database import get_supabase_client
+            limit_svc = UsageLimitService(get_supabase_client())
+            limit_svc.enforce_limit(organization_id, "monthly_cost")
+        except ImportError:
+            pass
+        except Exception as e:
+            from .usage_limit_service import UsageLimitExceeded
+            if isinstance(e, UsageLimitExceeded):
+                raise
+            logger.warning(f"Usage limit check failed (non-fatal): {e}")
+
     result = agent.run_sync(prompt, **run_kwargs)
 
     if tracker and organization_id and organization_id != "all":

@@ -101,6 +101,15 @@ class GeminiService:
         self._usage_tracker = usage_tracker
         self._user_id = user_id
         self._organization_id = organization_id
+        # Set up limit enforcement
+        self._limit_service = None
+        if organization_id and organization_id != "all":
+            try:
+                from .usage_limit_service import UsageLimitService
+                from ..core.database import get_supabase_client
+                self._limit_service = UsageLimitService(get_supabase_client())
+            except Exception:
+                pass
         logger.debug(f"Usage tracking enabled for org: {organization_id}")
 
     def _track_usage(
@@ -161,6 +170,11 @@ class GeminiService:
         except Exception as e:
             logger.warning(f"Usage tracking failed (non-fatal): {e}")
 
+    def _check_usage_limit(self) -> None:
+        """Check usage limit before an API call. Raises UsageLimitExceeded if over."""
+        if self._limit_service and self._organization_id:
+            self._limit_service.enforce_limit(self._organization_id, "monthly_cost")
+
     def set_rate_limit(self, requests_per_minute: int) -> None:
         """
         Set rate limit for API calls.
@@ -192,6 +206,8 @@ class GeminiService:
         Raises:
             Exception: If all retries fail or non-rate-limit error occurs
         """
+        self._check_usage_limit()
+
         # Wait for rate limit
         await self._rate_limit()
 
@@ -529,6 +545,8 @@ Generate the article now:"""
         Raises:
             Exception: If all retries fail or non-rate-limit error occurs
         """
+        self._check_usage_limit()
+
         import time
 
         # Track metadata
@@ -691,6 +709,8 @@ Generate the article now:"""
         Raises:
             Exception: If all retries fail or non-rate-limit error occurs
         """
+        self._check_usage_limit()
+
         # Wait for rate limit
         await self._rate_limit()
 
@@ -843,6 +863,8 @@ Generate the article now:"""
         Raises:
             Exception: If all retries fail or non-rate-limit error occurs
         """
+        self._check_usage_limit()
+
         import asyncio
 
         # Wait for rate limit

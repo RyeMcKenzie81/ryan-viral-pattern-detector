@@ -171,3 +171,70 @@ class OrganizationService:
         }).eq("organization_id", org_id).eq("user_id", user_id).execute()
         logger.info(f"Updated user {user_id} role to {new_role} in org {org_id}")
         return result.data[0]
+
+    def get_all_organizations(self) -> List[dict]:
+        """
+        Get all organizations (superuser use).
+
+        Returns:
+            List of organization dicts with id, name, slug, owner_user_id, created_at
+        """
+        result = self.client.table("organizations").select(
+            "id, name, slug, owner_user_id, created_at"
+        ).order("name").execute()
+        return result.data or []
+
+    def get_org_members(self, org_id: str) -> List[dict]:
+        """
+        Get all members of an organization with user details.
+
+        Args:
+            org_id: Organization ID
+
+        Returns:
+            List of member dicts with user_id, role, created_at, email, display_name
+        """
+        # Get memberships
+        result = self.client.table("user_organizations").select(
+            "user_id, role, created_at"
+        ).eq("organization_id", org_id).execute()
+        memberships = result.data or []
+
+        if not memberships:
+            return []
+
+        # Get user details from user_profiles
+        user_ids = [m["user_id"] for m in memberships]
+        profiles_result = self.client.table("user_profiles").select(
+            "user_id, display_name, email"
+        ).in_("user_id", user_ids).execute()
+        profiles = {p["user_id"]: p for p in (profiles_result.data or [])}
+
+        # Merge memberships with profiles
+        members = []
+        for m in memberships:
+            profile = profiles.get(m["user_id"], {})
+            members.append({
+                "user_id": m["user_id"],
+                "role": m["role"],
+                "created_at": m["created_at"],
+                "email": profile.get("email", ""),
+                "display_name": profile.get("display_name", ""),
+            })
+
+        return members
+
+    def get_member_count(self, org_id: str) -> int:
+        """
+        Count members in an organization.
+
+        Args:
+            org_id: Organization ID
+
+        Returns:
+            Number of members
+        """
+        result = self.client.table("user_organizations").select(
+            "id", count="exact"
+        ).eq("organization_id", org_id).execute()
+        return result.count if result.count else 0

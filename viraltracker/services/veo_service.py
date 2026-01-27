@@ -101,6 +101,14 @@ class VeoService:
         self._usage_tracker = usage_tracker
         self._user_id = user_id
         self._organization_id = organization_id
+        # Set up limit enforcement
+        self._limit_service = None
+        if organization_id and organization_id != "all":
+            try:
+                from .usage_limit_service import UsageLimitService
+                self._limit_service = UsageLimitService(self.supabase)
+            except Exception:
+                pass
         logger.debug(f"VeoService usage tracking enabled for org: {organization_id}")
 
     def _track_usage(
@@ -268,6 +276,10 @@ class VeoService:
             ValueError: If invalid parameters provided
             Exception: If video generation fails
         """
+        # Enforce usage limit before expensive operation
+        if self._limit_service and self._organization_id:
+            self._limit_service.enforce_limit(self._organization_id, "monthly_cost")
+
         # Validate and adjust config
         config = self._validate_config(request.config)
 

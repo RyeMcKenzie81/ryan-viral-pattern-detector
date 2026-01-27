@@ -231,6 +231,20 @@ Keep what's working well and only change what needs to be fixed."""
         self._tracker = tracker
         self._user_id = user_id
         self._org_id = org_id
+        # Set up limit enforcement
+        self._limit_service = None
+        if org_id and org_id != "all":
+            try:
+                from viraltracker.services.usage_limit_service import UsageLimitService
+                from viraltracker.core.database import get_supabase_client
+                self._limit_service = UsageLimitService(get_supabase_client())
+            except Exception:
+                pass
+
+    def _check_usage_limit(self) -> None:
+        """Check usage limit before an expensive operation."""
+        if self._limit_service and self._org_id:
+            self._limit_service.enforce_limit(self._org_id, "monthly_cost")
 
     def _ensure_client(self) -> None:
         """Deprecated: Pydantic AI Agent is always available via Config."""
@@ -334,6 +348,8 @@ Keep what's working well and only change what needs to be fixed."""
             system_prompt="You are a professional script writer. Return ONLY valid JSON."
         )
 
+        self._check_usage_limit()
+
         try:
             # Call Agent with higher max_tokens for full script output
             result = await run_agent_with_tracking(
@@ -397,6 +413,8 @@ Keep what's working well and only change what needs to be fixed."""
             system_prompt="You are a strict script reviewer. Return ONLY valid JSON."
         )
 
+        self._check_usage_limit()
+
         try:
             # Call Agent with sufficient max_tokens for detailed review
             result = await run_agent_with_tracking(
@@ -458,6 +476,8 @@ Keep what's working well and only change what needs to be fixed."""
             model=Config.get_model("script"),
             system_prompt="You are a script revision expert. Return ONLY valid JSON."
         )
+
+        self._check_usage_limit()
 
         try:
             # Call Agent with higher max_tokens for full script output
