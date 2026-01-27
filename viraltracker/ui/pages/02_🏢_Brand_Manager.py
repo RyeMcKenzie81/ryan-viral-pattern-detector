@@ -46,11 +46,15 @@ def get_supabase_client():
 
 
 def get_brands():
-    """Fetch all brands."""
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_current_organization_id
     try:
         db = get_supabase_client()
-        result = db.table("brands").select("*").order("name").execute()
-        return result.data
+        query = db.table("brands").select("*")
+        org_id = get_current_organization_id()
+        if org_id and org_id != "all":
+            query = query.eq("organization_id", org_id)
+        return query.order("name").execute().data or []
     except Exception as e:
         st.error(f"Failed to fetch brands: {e}")
         return []
