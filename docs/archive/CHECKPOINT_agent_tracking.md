@@ -163,7 +163,7 @@ Added `nest_asyncio.apply()` to all 13 pages that use `asyncio.run()`:
 
 ## Verification
 
-### Tracking Verified (4/9 services)
+### Tracking Verified (9/9 services) ✅ COMPLETE
 
 | Service | Status | Verified Via |
 |---------|--------|-------------|
@@ -171,10 +171,10 @@ Added `nest_asyncio.apply()` to all 13 pages that use `asyncio.run()`:
 | CompetitorService | ✅ Verified | Competitor Research |
 | BeliefAnalysisService | ✅ Verified | Belief Canvas (1,486 in + 3,525 out tokens) |
 | RedditSentimentService | ✅ Verified | Reddit Research |
-| PlanningService | ⏳ Pending | Ad Planning |
-| PersonaService | ⏳ Pending | Personas |
-| AmazonReviewService | ⏳ Pending | Brand Research / Client Onboarding |
-| CopyScaffoldService | ⏳ Pending | Ad Planning (generate copy) |
+| PlanningService | ✅ Verified | Ad Planning |
+| PersonaService | ✅ Verified | Personas |
+| AmazonReviewService | ✅ Verified | Brand Research / Client Onboarding |
+| CopyScaffoldService | ✅ Verified | Ad Planning (generate copy) |
 
 ### SQL to verify
 
@@ -199,9 +199,6 @@ Usage tracked to `token_usage` table:
 
 ---
 
-## Remaining Work
+## Status: COMPLETE
 
-- Test PlanningService (Ad Planning page)
-- Test PersonaService (Personas page)
-- Test AmazonReviewService (Brand Research / Client Onboarding)
-- Test CopyScaffoldService (Ad Planning - generate copy step)
+All 9 PydanticAI agent services are tracked and verified. All 14 UI pages pass tracking context. Both graph pipelines (Belief Reverse Engineer, Reddit Sentiment) set up tracking on their internally-created dependencies. Organization filtering fixed across 15 pages. Asyncio compatibility fixed across 13 pages.
