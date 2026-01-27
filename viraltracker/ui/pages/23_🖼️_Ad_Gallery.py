@@ -56,14 +56,19 @@ def get_supabase_client():
 # ============================================================================
 
 @st.cache_data(ttl=60)
-def get_products_for_filter() -> List[Dict[str, Any]]:
-    """Get all products that have generated ads."""
+def get_products_for_filter(org_id: str = None) -> List[Dict[str, Any]]:
+    """Get products filtered by organization."""
     db = get_supabase_client()
 
-    # Get products that have at least one ad run with generated ads
-    result = db.table("products").select(
-        "id, name"
-    ).execute()
+    if org_id and org_id != "all":
+        # Get brand IDs for this org
+        brands = db.table("brands").select("id").eq("organization_id", org_id).execute()
+        brand_ids = [b['id'] for b in brands.data]
+        if not brand_ids:
+            return []
+        result = db.table("products").select("id, name").in_("brand_id", brand_ids).execute()
+    else:
+        result = db.table("products").select("id, name").execute()
 
     return result.data
 
@@ -71,16 +76,31 @@ def get_products_for_filter() -> List[Dict[str, Any]]:
 @st.cache_data(ttl=30)
 def get_gallery_ads(
     product_id: Optional[str] = None,
+    org_id: Optional[str] = None,
     limit: int = 40,
     offset: int = 0,
     sort: str = "newest"
 ) -> tuple[List[Dict[str, Any]], int]:
     """
-    Get ads for gallery display.
+    Get ads for gallery display, filtered by organization.
 
     Returns tuple of (ads_list, total_count)
     """
     db = get_supabase_client()
+
+    # Get product IDs to filter by (org-scoped)
+    filter_product_ids = None
+    if product_id:
+        filter_product_ids = [product_id]
+    elif org_id and org_id != "all":
+        brands = db.table("brands").select("id").eq("organization_id", org_id).execute()
+        brand_ids = [b['id'] for b in brands.data]
+        if not brand_ids:
+            return [], 0
+        products = db.table("products").select("id").in_("brand_id", brand_ids).execute()
+        filter_product_ids = [p['id'] for p in products.data]
+        if not filter_product_ids:
+            return [], 0
 
     # Build query for generated_ads with joins
     # We need: ad image, product name, created date, status, variant info
@@ -90,9 +110,11 @@ def get_gallery_ads(
         "ad_run_id, ad_runs!inner(id, product_id, created_at, products!inner(id, name))"
     )
 
-    # Filter by product if specified
-    if product_id:
-        query = query.eq("ad_runs.product_id", product_id)
+    # Filter by product(s)
+    if filter_product_ids and len(filter_product_ids) == 1:
+        query = query.eq("ad_runs.product_id", filter_product_ids[0])
+    elif filter_product_ids:
+        query = query.in_("ad_runs.product_id", filter_product_ids)
 
     # Sort order
     if sort == "newest":
@@ -105,8 +127,10 @@ def get_gallery_ads(
         "id, ad_runs!inner(product_id)",
         count="exact"
     )
-    if product_id:
-        count_query = count_query.eq("ad_runs.product_id", product_id)
+    if filter_product_ids and len(filter_product_ids) == 1:
+        count_query = count_query.eq("ad_runs.product_id", filter_product_ids[0])
+    elif filter_product_ids:
+        count_query = count_query.in_("ad_runs.product_id", filter_product_ids)
 
     count_result = count_query.execute()
     total_count = count_result.count if count_result.count else 0
@@ -533,11 +557,18 @@ def render_load_more_button(current_count: int, total_count: int):
 st.title("Ad Gallery")
 st.markdown("**Browse all generated ads in a grid layout**")
 
+# Organization selector
+from viraltracker.ui.utils import render_organization_selector
+gallery_org_id = render_organization_selector(key="ad_gallery_org_selector")
+if not gallery_org_id:
+    st.warning("Please select a workspace.")
+    st.stop()
+
 # Inject CSS
 st.markdown(STATS_CSS, unsafe_allow_html=True)
 
-# Load products for filter
-products = get_products_for_filter()
+# Load products for filter (org-scoped)
+products = get_products_for_filter(org_id=gallery_org_id)
 
 # Render filter bar
 render_filter_bar(products)
@@ -659,9 +690,10 @@ if st.session_state.gallery_product_filter != "All Products":
     if matching:
         product_id = matching[0]["id"]
 
-# Load ads
+# Load ads (org-scoped)
 ads, total_count = get_gallery_ads(
     product_id=product_id,
+    org_id=gallery_org_id,
     limit=st.session_state.gallery_loaded_count,
     offset=0,
     sort=st.session_state.gallery_sort

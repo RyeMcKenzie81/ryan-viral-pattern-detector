@@ -17,6 +17,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
 # ============================================
 # SERVICE INITIALIZATION
 # ============================================
@@ -52,13 +56,24 @@ if 'confirm_delete' not in st.session_state:
 # ============================================
 
 @st.cache_data(ttl=30)
-def fetch_plans():
-    """Fetch all plans with related data."""
+def fetch_plans(org_id: str = None):
+    """Fetch plans with related data, filtered by organization."""
     db = get_supabase_client()
     try:
-        result = db.table("belief_plans").select(
-            "*, brands(name), products(name), personas_4d(name), belief_jtbd_framed(name)"
-        ).order("created_at", desc=True).execute()
+        query = db.table("belief_plans").select(
+            "*, brands(name, organization_id), products(name), personas_4d(name), belief_jtbd_framed(name)"
+        ).order("created_at", desc=True)
+
+        # Filter by org through brand relationship
+        if org_id and org_id != "all":
+            brands = db.table("brands").select("id").eq("organization_id", org_id).execute()
+            brand_ids = [b['id'] for b in brands.data]
+            if brand_ids:
+                query = query.in_("brand_id", brand_ids)
+            else:
+                return []
+
+        result = query.execute()
         return result.data or []
     except Exception as e:
         st.error(f"Failed to fetch plans: {e}")
@@ -276,6 +291,13 @@ def render_plan_details(plan_id: str):
 st.title("📊 Plan List")
 st.write("View and manage your belief-first ad testing plans.")
 
+# Organization selector
+from viraltracker.ui.utils import render_organization_selector
+plan_list_org_id = render_organization_selector(key="plan_list_org_selector")
+if not plan_list_org_id:
+    st.warning("Please select a workspace.")
+    st.stop()
+
 # Check if viewing a specific plan
 if st.session_state.selected_plan_id:
     render_plan_details(st.session_state.selected_plan_id)
@@ -294,8 +316,8 @@ else:
             st.cache_data.clear()
             st.rerun()
 
-    # Fetch and display plans
-    plans = fetch_plans()
+    # Fetch and display plans (org-filtered)
+    plans = fetch_plans(org_id=plan_list_org_id)
 
     # Apply filter
     if st.session_state.plan_list_filter != "all":

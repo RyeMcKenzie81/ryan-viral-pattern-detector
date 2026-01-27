@@ -87,14 +87,9 @@ def get_supabase_client():
 
 
 def get_brands():
-    """Fetch all brands."""
-    try:
-        db = get_supabase_client()
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data or []
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
-        return []
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 
 def get_products(brand_id: str = None):
@@ -2872,6 +2867,10 @@ def render_schedule_detail():
 # ============================================================================
 # Main Router
 # ============================================================================
+
+# Organization selector (sets context for brand filtering)
+from viraltracker.ui.utils import render_organization_selector
+render_organization_selector(key="ad_scheduler_org_selector")
 
 # Initialize confirm_delete state
 if 'confirm_delete' not in st.session_state:

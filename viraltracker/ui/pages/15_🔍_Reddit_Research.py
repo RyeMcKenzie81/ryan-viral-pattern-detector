@@ -68,10 +68,9 @@ def get_supabase():
 
 
 def get_brands():
-    """Fetch all brands."""
-    db = get_supabase()
-    result = db.table("brands").select("id, name").order("name").execute()
-    return result.data or []
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 
 def get_personas_for_brand(brand_id: str):
@@ -620,6 +619,10 @@ def main():
         "Extract customer insights and quotes from Reddit discussions. "
         "Results can be synced to persona fields for belief-first planning."
     )
+
+    # Organization selector (sets context for brand filtering)
+    from viraltracker.ui.utils import render_organization_selector
+    render_organization_selector(key="reddit_research_org_selector")
 
     # Search config
     render_search_config()

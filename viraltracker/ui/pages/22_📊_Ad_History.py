@@ -39,27 +39,36 @@ def get_supabase_client():
     return get_supabase_client()
 
 
-def get_brands():
-    """Fetch all brands from database."""
-    try:
-        db = get_supabase_client()
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
+def _get_product_ids_for_org(db, org_id: str) -> list:
+    """Get all product IDs belonging to brands in an organization."""
+    brands = db.table("brands").select("id").eq("organization_id", org_id).execute()
+    brand_ids = [b['id'] for b in brands.data]
+    if not brand_ids:
         return []
+    products = db.table("products").select("id").in_("brand_id", brand_ids).execute()
+    return [p['id'] for p in products.data]
 
 
-def get_ad_runs_count(brand_id: str = None) -> int:
+def _get_product_ids_for_brand(db, brand_id: str) -> list:
+    """Get all product IDs for a specific brand."""
+    products = db.table("products").select("id").eq("brand_id", brand_id).execute()
+    return [p['id'] for p in products.data]
+
+
+def get_ad_runs_count(brand_id: str = None, org_id: str = None) -> int:
     """Get total count of ad runs for pagination."""
     try:
         db = get_supabase_client()
         query = db.table("ad_runs").select("id", count="exact")
 
         if brand_id and brand_id != "all":
-            # Get product IDs for this brand first
-            products = db.table("products").select("id").eq("brand_id", brand_id).execute()
-            product_ids = [p['id'] for p in products.data]
+            product_ids = _get_product_ids_for_brand(db, brand_id)
+            if product_ids:
+                query = query.in_("product_id", product_ids)
+            else:
+                return 0
+        elif org_id and org_id != "all":
+            product_ids = _get_product_ids_for_org(db, org_id)
             if product_ids:
                 query = query.in_("product_id", product_ids)
             else:
@@ -71,12 +80,13 @@ def get_ad_runs_count(brand_id: str = None) -> int:
         return 0
 
 
-def get_ad_runs(brand_id: str = None, page: int = 1, page_size: int = 25):
+def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_size: int = 25):
     """
     Fetch ad runs with product info and stats (paginated).
 
     Args:
         brand_id: Optional brand ID to filter by
+        org_id: Organization ID to filter by (used when brand is "all")
         page: Page number (1-indexed)
         page_size: Number of records per page
 
@@ -99,9 +109,13 @@ def get_ad_runs(brand_id: str = None, page: int = 1, page_size: int = 25):
 
         # Filter by brand if specified (do this in query for proper pagination)
         if brand_id and brand_id != "all":
-            # Get product IDs for this brand first
-            products = db.table("products").select("id").eq("brand_id", brand_id).execute()
-            product_ids = [p['id'] for p in products.data]
+            product_ids = _get_product_ids_for_brand(db, brand_id)
+            if product_ids:
+                query = query.in_("product_id", product_ids)
+            else:
+                return []
+        elif org_id and org_id != "all":
+            product_ids = _get_product_ids_for_org(db, org_id)
             if product_ids:
                 query = query.in_("product_id", product_ids)
             else:
@@ -844,8 +858,15 @@ if 'edit_result' not in st.session_state:
 
 PAGE_SIZE = 25
 
-# Brand filter
-brands = get_brands()
+# Organization selector
+from viraltracker.ui.utils import render_organization_selector, get_brands as get_org_brands
+org_id = render_organization_selector(key="ad_history_org_selector")
+if not org_id:
+    st.warning("Please select a workspace.")
+    st.stop()
+
+# Brand filter (filtered by org)
+brands = get_org_brands(org_id)
 brand_options = {"all": "All Brands"}
 for b in brands:
     brand_options[b['id']] = b['name']
@@ -862,7 +883,7 @@ st.markdown("---")
 
 # Get total count and fetch paginated ad runs
 brand_filter = selected_brand if selected_brand != "all" else None
-total_count = get_ad_runs_count(brand_filter)
+total_count = get_ad_runs_count(brand_filter, org_id=org_id)
 total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
 
 # Ensure current page is valid
@@ -870,7 +891,7 @@ if st.session_state.ad_history_page > total_pages:
     st.session_state.ad_history_page = 1
 
 with st.spinner("Loading ad runs..."):
-    ad_runs = get_ad_runs(brand_filter, page=st.session_state.ad_history_page, page_size=PAGE_SIZE)
+    ad_runs = get_ad_runs(brand_filter, org_id=org_id, page=st.session_state.ad_history_page, page_size=PAGE_SIZE)
 
 if not ad_runs:
     st.info("No ad runs found. Create some ads in the Ad Creator page!")
