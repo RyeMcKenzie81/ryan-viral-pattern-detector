@@ -123,15 +123,18 @@ class UsageLimitService:
         Returns:
             Upserted limit dict
         """
-        result = self.client.table("usage_limits").upsert({
-            "organization_id": org_id,
-            "limit_type": limit_type,
-            "limit_value": limit_value,
-            "period": period,
-            "alert_threshold": alert_threshold,
-            "enabled": enabled,
-            "updated_at": "now()",
-        }).execute()
+        result = self.client.table("usage_limits").upsert(
+            {
+                "organization_id": org_id,
+                "limit_type": limit_type,
+                "limit_value": limit_value,
+                "period": period,
+                "alert_threshold": alert_threshold,
+                "enabled": enabled,
+                "updated_at": "now()",
+            },
+            on_conflict="organization_id,limit_type",
+        ).execute()
         logger.info(
             f"Set limit {limit_type}={limit_value} (period={period}) for org {org_id}"
         )
