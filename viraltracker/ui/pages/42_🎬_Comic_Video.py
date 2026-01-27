@@ -18,6 +18,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config (must be first)
 st.set_page_config(
     page_title="Comic Video",

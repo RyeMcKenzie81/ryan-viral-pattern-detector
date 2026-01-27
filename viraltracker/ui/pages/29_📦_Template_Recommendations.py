@@ -13,6 +13,10 @@ import streamlit as st
 from typing import Dict, List, Optional, Set
 from uuid import UUID
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config must be first
 st.set_page_config(
     page_title="Template Recommendations",

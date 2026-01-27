@@ -14,6 +14,10 @@ import streamlit as st
 from datetime import datetime
 from uuid import UUID
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 st.set_page_config(
     page_title="Plan Executor",
     page_icon="🎯",

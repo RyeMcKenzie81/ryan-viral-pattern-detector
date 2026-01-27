@@ -15,6 +15,10 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, List, Dict
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config (must be first)
 st.set_page_config(
     page_title="Reddit Research",

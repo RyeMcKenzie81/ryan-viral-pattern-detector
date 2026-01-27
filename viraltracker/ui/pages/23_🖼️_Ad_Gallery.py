@@ -15,6 +15,10 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config (must be first)
 st.set_page_config(
     page_title="Ad Gallery",

@@ -19,6 +19,10 @@ from uuid import UUID
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 # Page config
 st.set_page_config(
     page_title="Editor Handoff",

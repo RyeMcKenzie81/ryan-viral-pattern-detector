@@ -10,6 +10,10 @@ from viraltracker.core.config import Config
 from viraltracker.services.content_pipeline.services.sora_service import SoraService
 from viraltracker.ui.auth import require_auth
 
+# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
+import nest_asyncio
+nest_asyncio.apply()
+
 # Auth protection
 # Auth protection
 st.set_page_config(
