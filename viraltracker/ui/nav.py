@@ -13,12 +13,13 @@ Two-tier gating model:
 - **Page keys** (``ad_creator``, ``veo_avatars``, …) are opt-in:
   hidden by default unless explicitly enabled.
 
-Visibility rule::
+Visibility rules::
 
-    page_visible = section_enabled OR page_key_enabled
+    base_page_visible  = section_enabled
+    opt_in_page_visible = page_key_enabled   (independent of section)
 
-This lets admins disable an entire section, then selectively re-enable
-individual pages within it.
+Disabling a section hides its base pages but does NOT affect opt-in pages.
+Enabling a section shows base pages but does NOT auto-enable opt-in pages.
 
 Usage (from app.py):
     from viraltracker.ui.nav import build_navigation_pages
@@ -116,12 +117,15 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         return features.get(key, False)
 
     def visible(section_key: str, page_key: str | None = None) -> bool:
-        """True when a page should appear in the sidebar."""
-        if has_section(section_key):
-            return True
-        if page_key and has_page(page_key):
-            return True
-        return False
+        """True when a page should appear in the sidebar.
+
+        - Base pages (no page_key): follow the section toggle.
+        - Opt-in pages (page_key given): follow their own toggle only,
+          independent of the section state.
+        """
+        if page_key:
+            return has_page(page_key)
+        return has_section(section_key)
 
     # -- build pages ------------------------------------------------------
 

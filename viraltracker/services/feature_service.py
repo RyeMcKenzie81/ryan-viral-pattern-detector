@@ -33,9 +33,10 @@ class FeatureKey:
     - **Page keys** (everything else): opt-in — hidden by default.
       Enable one to show a specific page.
 
-    Visibility rule used by ``nav.py``::
+    Visibility rules used by ``nav.py``::
 
-        page_visible = section_enabled OR page_key_enabled
+        base_page_visible  = section_enabled
+        opt_in_page_visible = page_key_enabled   (independent of section)
     """
 
     # --- Section-level keys (opt-out: visible unless explicitly disabled) ---

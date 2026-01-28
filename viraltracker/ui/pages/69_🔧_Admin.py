@@ -309,8 +309,8 @@ with tab_features:
     st.subheader("Feature Flags")
 
     st.caption(
-        "**Section ON** → all base pages in section visible. "
-        "**Section OFF** → base pages hidden, but individual pages can still be enabled."
+        "**Section toggle** → controls base pages only. "
+        "**Opt-in pages** → controlled by their own toggle, independent of section state."
     )
 
     # Get current feature states from DB
@@ -448,9 +448,7 @@ with tab_features:
                     if new_page != page_enabled:
                         all_changes[pk] = new_page
 
-                    # Show effective visibility hint
-                    if new_section and not new_page:
-                        st.caption(f"  ↳ *{label}* visible via section toggle")
+                    # No hint needed — opt-in pages are independent of section
 
     if all_changes:
         if st.button("Save Feature Changes", type="primary", key="admin_save_features"):
