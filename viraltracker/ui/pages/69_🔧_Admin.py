@@ -322,7 +322,7 @@ with tab_features:
         {
             "key": FeatureKey.SECTION_BRANDS,
             "label": "Brands",
-            "base_pages": ["Brand Manager", "Personas", "URL Mapping", "Client Onboarding"],
+            "base_pages": ["Brand Manager", "Personas", "URL Mapping"],
             "opt_in": [
                 (FeatureKey.BRAND_RESEARCH, "Brand Research"),
             ],
@@ -339,29 +339,36 @@ with tab_features:
         {
             "key": FeatureKey.SECTION_ADS,
             "label": "Ads",
-            "base_pages": [
-                "Ad Gallery", "Plan List", "Plan Executor",
-                "Template Queue", "Template Evaluation", "Template Recommendations",
-            ],
+            "base_pages": ["Ad Gallery"],
             "opt_in": [
                 (FeatureKey.AD_CREATOR, "Ad Creator"),
-                (FeatureKey.AD_LIBRARY, "Ad History & Ad Performance"),
+                (FeatureKey.AD_HISTORY, "Ad History"),
+                (FeatureKey.AD_PERFORMANCE, "Ad Performance"),
                 (FeatureKey.AD_SCHEDULER, "Ad Scheduler"),
                 (FeatureKey.AD_PLANNING, "Ad Planning"),
+                (FeatureKey.PLAN_LIST, "Plan List"),
+                (FeatureKey.PLAN_EXECUTOR, "Plan Executor"),
+                (FeatureKey.TEMPLATE_QUEUE, "Template Queue"),
+                (FeatureKey.TEMPLATE_EVALUATION, "Template Evaluation"),
+                (FeatureKey.TEMPLATE_RECOMMENDATIONS, "Template Recommendations"),
                 (FeatureKey.BELIEF_CANVAS, "Belief Canvas"),
                 (FeatureKey.RESEARCH_INSIGHTS, "Research Insights"),
+                (FeatureKey.PUBLIC_GALLERY, "Public Gallery"),
             ],
         },
         {
             "key": FeatureKey.SECTION_CONTENT,
             "label": "Content",
-            "base_pages": [
-                "Comic Video", "Comic JSON Generator", "Editor Handoff",
-                "Audio Production", "Knowledge Base",
-            ],
+            "base_pages": [],
             "opt_in": [
                 (FeatureKey.CONTENT_PIPELINE, "Content Pipeline"),
+                (FeatureKey.COMIC_VIDEO, "Comic Video"),
+                (FeatureKey.COMIC_JSON_GENERATOR, "Comic JSON Generator"),
+                (FeatureKey.EDITOR_HANDOFF, "Editor Handoff"),
+                (FeatureKey.AUDIO_PRODUCTION, "Audio Production"),
+                (FeatureKey.KNOWLEDGE_BASE, "Knowledge Base"),
                 (FeatureKey.VEO_AVATARS, "Veo Avatars"),
+                (FeatureKey.SORA_MVP, "Sora MVP"),
             ],
         },
         {
@@ -370,8 +377,8 @@ with tab_features:
             "base_pages": [
                 "Agent Catalog", "Scheduled Tasks", "Tools Catalog",
                 "Services Catalog", "Database Browser", "Platform Settings",
-                "History", "Public Gallery", "Pipeline Visualizer",
-                "Usage Dashboard", "Admin", "Sora MVP",
+                "History", "Client Onboarding", "Pipeline Visualizer",
+                "Usage Dashboard", "Admin",
             ],
             "opt_in": [],
         },

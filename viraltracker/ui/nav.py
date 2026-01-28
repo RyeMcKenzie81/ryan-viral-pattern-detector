@@ -66,18 +66,34 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SECTION_ADS: True,
             FeatureKey.SECTION_CONTENT: True,
             FeatureKey.SECTION_SYSTEM: True,
-            # Pages
-            FeatureKey.AD_CREATOR: True,
-            FeatureKey.AD_LIBRARY: True,
-            FeatureKey.AD_SCHEDULER: True,
-            FeatureKey.AD_PLANNING: True,
-            FeatureKey.VEO_AVATARS: True,
+            # Brands pages
+            FeatureKey.BRAND_RESEARCH: True,
+            # Competitors pages
             FeatureKey.COMPETITOR_RESEARCH: True,
             FeatureKey.REDDIT_RESEARCH: True,
-            FeatureKey.BRAND_RESEARCH: True,
+            # Ads pages
+            FeatureKey.AD_CREATOR: True,
+            FeatureKey.AD_HISTORY: True,
+            FeatureKey.AD_PERFORMANCE: True,
+            FeatureKey.AD_SCHEDULER: True,
+            FeatureKey.AD_PLANNING: True,
             FeatureKey.BELIEF_CANVAS: True,
-            FeatureKey.CONTENT_PIPELINE: True,
             FeatureKey.RESEARCH_INSIGHTS: True,
+            FeatureKey.PLAN_LIST: True,
+            FeatureKey.PLAN_EXECUTOR: True,
+            FeatureKey.TEMPLATE_QUEUE: True,
+            FeatureKey.TEMPLATE_EVALUATION: True,
+            FeatureKey.TEMPLATE_RECOMMENDATIONS: True,
+            FeatureKey.PUBLIC_GALLERY: True,
+            # Content pages
+            FeatureKey.CONTENT_PIPELINE: True,
+            FeatureKey.COMIC_VIDEO: True,
+            FeatureKey.COMIC_JSON_GENERATOR: True,
+            FeatureKey.EDITOR_HANDOFF: True,
+            FeatureKey.AUDIO_PRODUCTION: True,
+            FeatureKey.KNOWLEDGE_BASE: True,
+            FeatureKey.VEO_AVATARS: True,
+            FeatureKey.SORA_MVP: True,
         }
 
     try:
@@ -144,7 +160,6 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
             st.Page("pages/02_🏢_Brand_Manager.py", title="Brand Manager", icon="🏢"),
             st.Page("pages/03_👤_Personas.py", title="Personas", icon="👤"),
             st.Page("pages/04_🔗_URL_Mapping.py", title="URL Mapping", icon="🔗"),
-            st.Page("pages/06_🚀_Client_Onboarding.py", title="Client Onboarding", icon="🚀"),
         ])
     if visible(SK_BRANDS, "brand_research"):
         brands.append(st.Page("pages/05_🔬_Brand_Research.py", title="Brand Research", icon="🔬"))
@@ -169,36 +184,42 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     # --- Ads ---
     SK_ADS = "section_ads"
     ads: List[st.Page] = []
+    if has_section(SK_ADS):
+        ads.append(st.Page("pages/23_🖼️_Ad_Gallery.py", title="Ad Gallery", icon="🖼️"))
     if visible(SK_ADS, "ad_creator"):
         ads.append(st.Page("pages/21_🎨_Ad_Creator.py", title="Ad Creator", icon="🎨"))
-    if has_section(SK_ADS):
-        ads.extend([
-            st.Page("pages/23_🖼️_Ad_Gallery.py", title="Ad Gallery", icon="🖼️"),
-            st.Page("pages/26_📊_Plan_List.py", title="Plan List", icon="📊"),
-            st.Page("pages/27_🎯_Plan_Executor.py", title="Plan Executor", icon="🎯"),
-            st.Page("pages/28_📋_Template_Queue.py", title="Template Queue", icon="📋"),
-            st.Page(
-                "pages/29_🔍_Template_Evaluation.py",
-                title="Template Evaluation", icon="🔍",
-                url_path="template-evaluation",
-            ),
-            st.Page(
-                "pages/29_📦_Template_Recommendations.py",
-                title="Template Recommendations", icon="📦",
-                url_path="template-recommendations",
-            ),
-        ])
-    if visible(SK_ADS, "ad_library"):
+    if visible(SK_ADS, "ad_history"):
         ads.append(st.Page("pages/22_📊_Ad_History.py", title="Ad History", icon="📊"))
+    if visible(SK_ADS, "ad_performance"):
         ads.append(st.Page("pages/30_📈_Ad_Performance.py", title="Ad Performance", icon="📈"))
     if visible(SK_ADS, "ad_scheduler"):
         ads.append(st.Page("pages/24_📅_Ad_Scheduler.py", title="Ad Scheduler", icon="📅"))
     if visible(SK_ADS, "ad_planning"):
         ads.append(st.Page("pages/25_📋_Ad_Planning.py", title="Ad Planning", icon="📋"))
+    if visible(SK_ADS, "plan_list"):
+        ads.append(st.Page("pages/26_📊_Plan_List.py", title="Plan List", icon="📊"))
+    if visible(SK_ADS, "plan_executor"):
+        ads.append(st.Page("pages/27_🎯_Plan_Executor.py", title="Plan Executor", icon="🎯"))
+    if visible(SK_ADS, "template_queue"):
+        ads.append(st.Page("pages/28_📋_Template_Queue.py", title="Template Queue", icon="📋"))
+    if visible(SK_ADS, "template_evaluation"):
+        ads.append(st.Page(
+            "pages/29_🔍_Template_Evaluation.py",
+            title="Template Evaluation", icon="🔍",
+            url_path="template-evaluation",
+        ))
+    if visible(SK_ADS, "template_recommendations"):
+        ads.append(st.Page(
+            "pages/29_📦_Template_Recommendations.py",
+            title="Template Recommendations", icon="📦",
+            url_path="template-recommendations",
+        ))
     if visible(SK_ADS, "belief_canvas"):
         ads.append(st.Page("pages/31_🧠_Belief_Canvas.py", title="Belief Canvas", icon="🧠"))
     if visible(SK_ADS, "research_insights"):
         ads.append(st.Page("pages/32_💡_Research_Insights.py", title="Research Insights", icon="💡"))
+    if visible(SK_ADS, "public_gallery"):
+        ads.append(st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"))
     if ads:
         pages["Ads"] = ads
 
@@ -207,16 +228,20 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     content: List[st.Page] = []
     if visible(SK_CONTENT, "content_pipeline"):
         content.append(st.Page("pages/41_📝_Content_Pipeline.py", title="Content Pipeline", icon="📝"))
-    if has_section(SK_CONTENT):
-        content.extend([
-            st.Page("pages/42_🎬_Comic_Video.py", title="Comic Video", icon="🎬"),
-            st.Page("pages/43_📝_Comic_JSON_Generator.py", title="Comic JSON Generator", icon="📝"),
-            st.Page("pages/44_🎬_Editor_Handoff.py", title="Editor Handoff", icon="🎬"),
-            st.Page("pages/45_🎙️_Audio_Production.py", title="Audio Production", icon="🎙️"),
-            st.Page("pages/46_📚_Knowledge_Base.py", title="Knowledge Base", icon="📚"),
-        ])
+    if visible(SK_CONTENT, "comic_video"):
+        content.append(st.Page("pages/42_🎬_Comic_Video.py", title="Comic Video", icon="🎬"))
+    if visible(SK_CONTENT, "comic_json_generator"):
+        content.append(st.Page("pages/43_📝_Comic_JSON_Generator.py", title="Comic JSON Generator", icon="📝"))
+    if visible(SK_CONTENT, "editor_handoff"):
+        content.append(st.Page("pages/44_🎬_Editor_Handoff.py", title="Editor Handoff", icon="🎬"))
+    if visible(SK_CONTENT, "audio_production"):
+        content.append(st.Page("pages/45_🎙️_Audio_Production.py", title="Audio Production", icon="🎙️"))
+    if visible(SK_CONTENT, "knowledge_base"):
+        content.append(st.Page("pages/46_📚_Knowledge_Base.py", title="Knowledge Base", icon="📚"))
     if visible(SK_CONTENT, "veo_avatars"):
         content.append(st.Page("pages/47_🎬_Veo_Avatars.py", title="Veo Avatars", icon="🎬"))
+    if visible(SK_CONTENT, "sora_mvp"):
+        content.append(st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"))
     if content:
         pages["Content"] = content
 
@@ -232,11 +257,10 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
             st.Page("pages/64_🗄️_Database_Browser.py", title="Database Browser", icon="🗄️", url_path="database-browser"),
             st.Page("pages/64_⚙️_Platform_Settings.py", title="Platform Settings", icon="⚙️", url_path="platform-settings"),
             st.Page("pages/65_📜_History.py", title="History", icon="📜"),
-            st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"),
+            st.Page("pages/06_🚀_Client_Onboarding.py", title="Client Onboarding", icon="🚀"),
             st.Page("pages/67_📊_Pipeline_Visualizer.py", title="Pipeline Visualizer", icon="📊"),
             st.Page("pages/68_📊_Usage_Dashboard.py", title="Usage Dashboard", icon="📊"),
             st.Page("pages/69_🔧_Admin.py", title="Admin", icon="🔧"),
-            st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"),
         ])
     if system:
         pages["System"] = system

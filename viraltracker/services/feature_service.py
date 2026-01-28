@@ -47,17 +47,35 @@ class FeatureKey:
     SECTION_SYSTEM = "section_system"
 
     # --- Page-level keys (opt-in: hidden unless explicitly enabled) ---
-    AD_CREATOR = "ad_creator"
-    AD_LIBRARY = "ad_library"
-    AD_SCHEDULER = "ad_scheduler"
-    AD_PLANNING = "ad_planning"
-    VEO_AVATARS = "veo_avatars"
+    # Brands
+    BRAND_RESEARCH = "brand_research"
+    # Competitors
     COMPETITOR_RESEARCH = "competitor_research"
     REDDIT_RESEARCH = "reddit_research"
-    BRAND_RESEARCH = "brand_research"
+    # Ads
+    AD_CREATOR = "ad_creator"
+    AD_HISTORY = "ad_history"
+    AD_PERFORMANCE = "ad_performance"
+    AD_LIBRARY = "ad_library"  # legacy — kept for backward compat
+    AD_SCHEDULER = "ad_scheduler"
+    AD_PLANNING = "ad_planning"
     BELIEF_CANVAS = "belief_canvas"
-    CONTENT_PIPELINE = "content_pipeline"
     RESEARCH_INSIGHTS = "research_insights"
+    PLAN_LIST = "plan_list"
+    PLAN_EXECUTOR = "plan_executor"
+    TEMPLATE_QUEUE = "template_queue"
+    TEMPLATE_EVALUATION = "template_evaluation"
+    TEMPLATE_RECOMMENDATIONS = "template_recommendations"
+    PUBLIC_GALLERY = "public_gallery"
+    # Content
+    CONTENT_PIPELINE = "content_pipeline"
+    COMIC_VIDEO = "comic_video"
+    COMIC_JSON_GENERATOR = "comic_json_generator"
+    EDITOR_HANDOFF = "editor_handoff"
+    AUDIO_PRODUCTION = "audio_production"
+    KNOWLEDGE_BASE = "knowledge_base"
+    VEO_AVATARS = "veo_avatars"
+    SORA_MVP = "sora_mvp"
 
 
 class FeatureService:
@@ -176,18 +194,34 @@ class FeatureService:
             FeatureKey.SECTION_ADS,
             FeatureKey.SECTION_CONTENT,
             FeatureKey.SECTION_SYSTEM,
-            # Pages
-            FeatureKey.AD_CREATOR,
-            FeatureKey.AD_LIBRARY,
-            FeatureKey.AD_SCHEDULER,
-            FeatureKey.AD_PLANNING,
-            FeatureKey.VEO_AVATARS,
+            # Brands pages
+            FeatureKey.BRAND_RESEARCH,
+            # Competitors pages
             FeatureKey.COMPETITOR_RESEARCH,
             FeatureKey.REDDIT_RESEARCH,
-            FeatureKey.BRAND_RESEARCH,
+            # Ads pages
+            FeatureKey.AD_CREATOR,
+            FeatureKey.AD_HISTORY,
+            FeatureKey.AD_PERFORMANCE,
+            FeatureKey.AD_SCHEDULER,
+            FeatureKey.AD_PLANNING,
             FeatureKey.BELIEF_CANVAS,
-            FeatureKey.CONTENT_PIPELINE,
             FeatureKey.RESEARCH_INSIGHTS,
+            FeatureKey.PLAN_LIST,
+            FeatureKey.PLAN_EXECUTOR,
+            FeatureKey.TEMPLATE_QUEUE,
+            FeatureKey.TEMPLATE_EVALUATION,
+            FeatureKey.TEMPLATE_RECOMMENDATIONS,
+            FeatureKey.PUBLIC_GALLERY,
+            # Content pages
+            FeatureKey.CONTENT_PIPELINE,
+            FeatureKey.COMIC_VIDEO,
+            FeatureKey.COMIC_JSON_GENERATOR,
+            FeatureKey.EDITOR_HANDOFF,
+            FeatureKey.AUDIO_PRODUCTION,
+            FeatureKey.KNOWLEDGE_BASE,
+            FeatureKey.VEO_AVATARS,
+            FeatureKey.SORA_MVP,
         ]
         for feature in all_features:
             self.set_feature(organization_id, feature, True)
