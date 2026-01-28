@@ -358,6 +358,14 @@ with tab_features:
         "**Opt-in pages** → controlled by their own toggle, independent of section state."
     )
 
+    # Flush stale checkbox state when org changes so DB values take effect
+    _prev_key = "_admin_features_prev_org"
+    if st.session_state.get(_prev_key) != tab_org:
+        for k in [k for k in st.session_state
+                  if k.startswith(("admin_section_", "admin_page_"))]:
+            del st.session_state[k]
+        st.session_state[_prev_key] = tab_org
+
     # Get current feature states from DB
     current_features = feature_service.get_org_features(tab_org)
     feature_states = {f["feature_key"]: f.get("enabled", False) for f in current_features}
@@ -541,6 +549,14 @@ with tab_limits:
 
     limit_service = _get_limit_service()
     st.subheader("Usage Limits")
+
+    # Flush stale widget state when org changes so DB values take effect
+    _prev_limit_key = "_admin_limits_prev_org"
+    if st.session_state.get(_prev_limit_key) != tab_org:
+        for k in [k for k in st.session_state
+                  if k.startswith("admin_limit_")]:
+            del st.session_state[k]
+        st.session_state[_prev_limit_key] = tab_org
 
     limit_types = [
         {"type": LimitType.MONTHLY_COST, "label": "Monthly Cost (USD)", "period": "monthly", "help": "Maximum monthly spend in USD"},
