@@ -29,6 +29,8 @@ st.set_page_config(
 # Auth
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("reddit_research", "Reddit Research")
 
 
 # ============================================

@@ -31,6 +31,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("brand_research", "Brand Research")
 
 # Initialize session state
 if 'analysis_running' not in st.session_state:

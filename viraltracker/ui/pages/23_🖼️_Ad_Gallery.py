@@ -29,6 +29,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("ad_library", "Ad Gallery")
 
 # Initialize session state
 if 'gallery_product_filter' not in st.session_state:

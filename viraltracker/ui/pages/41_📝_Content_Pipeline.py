@@ -36,6 +36,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("content_pipeline", "Content Pipeline")
 
 # Comic video imports for editing controls
 from viraltracker.services.comic_video.models import (

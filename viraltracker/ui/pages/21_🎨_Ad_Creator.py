@@ -33,6 +33,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("ad_creator", "Ad Creator")
 
 # Initialize session state
 if 'workflow_running' not in st.session_state:
@@ -2040,6 +2042,22 @@ else:
     batch_templates = st.session_state.selected_templates_for_generation
     is_batch_mode = len(batch_templates) > 0 and st.session_state.workflow_running
     is_single_mode = reference_ad_base64 and st.session_state.workflow_running and not is_batch_mode
+
+    # Pre-flight usage limit check (before any workflow processing)
+    if is_batch_mode or is_single_mode:
+        try:
+            from viraltracker.services.usage_limit_service import UsageLimitService, UsageLimitExceeded
+            _org_id = get_current_organization_id()
+            if _org_id and _org_id != "all":
+                _limit_svc = UsageLimitService(get_supabase_client())
+                _limit_svc.enforce_limit(_org_id, "monthly_cost")
+        except UsageLimitExceeded as e:
+            st.session_state.workflow_running = False
+            st.error(f"Usage limit reached: {e}")
+            st.info("Contact your administrator to increase limits.")
+            st.stop()
+        except Exception:
+            pass  # Fail open
 
     if is_batch_mode:
         # BATCH MODE: Process multiple templates

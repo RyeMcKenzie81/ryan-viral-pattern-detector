@@ -31,6 +31,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("competitor_research", "Competitor Research")
 
 # Initialize session state
 if 'research_competitor_id' not in st.session_state:
