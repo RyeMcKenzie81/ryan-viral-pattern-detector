@@ -151,6 +151,28 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 7. Phase 8: Row-Level Security (RLS) Policies
+
+**Priority**: Low (security hardening, not blocking any features)
+**Complexity**: High
+**Added**: 2026-01-28
+
+**Context**: Multi-tenant auth Phases 1-7 are complete. All data isolation is enforced at the Python/service layer. Phase 8 adds database-level RLS as defense-in-depth — Postgres policies that prevent cross-tenant data access even if application code has a bug.
+
+**What's needed**:
+1. Enable RLS on `brands`, `organizations`, `user_organizations` tables
+2. Create `auth.user_organization_ids()` helper function
+3. Create SELECT/INSERT/UPDATE/DELETE policies per table
+4. Switch UI pages from `get_supabase_client()` (service key, bypasses RLS) to `get_anon_client()` (respects RLS)
+5. Pass user access tokens to Supabase client per request
+6. Extensive testing with multiple users/orgs + rollback plan
+
+**When to prioritize**: Before onboarding external/untrusted tenants. Not needed while platform is internal-only.
+
+**Reference**: `docs/plans/multi-tenant-auth/PLAN.md` (Phase 8 section)
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._
