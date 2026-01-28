@@ -226,9 +226,10 @@ with tab_users:
         selected_label = st.selectbox(
             "Select Member",
             list(member_options.keys()),
-            key="admin_member_select",
+            key=f"admin_member_select_{tab_org}",
         )
         selected_member = member_options[selected_label]
+        sel_uid = selected_member["user_id"]
 
         # Edit display name
         current_display = selected_member.get("display_name") or ""
@@ -237,11 +238,11 @@ with tab_users:
             new_display_name = st.text_input(
                 "Display Name",
                 value=current_display,
-                key=f"admin_edit_display_name_{tab_org}",
+                key=f"admin_edit_display_name_{tab_org}_{sel_uid}",
             )
         with col_name_btn:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Save Name", key=f"admin_save_display_name_{tab_org}"):
+            if st.button("Save Name", key=f"admin_save_display_name_{tab_org}_{sel_uid}"):
                 if new_display_name != current_display:
                     try:
                         org_service.update_display_name(
@@ -272,7 +273,7 @@ with tab_users:
                 role_options,
                 index=current_idx,
                 disabled=not can_change,
-                key="admin_role_change",
+                key=f"admin_role_change_{tab_org}_{sel_uid}",
             )
             # Owner role change requires typed confirmation
             needs_confirm = can_change and new_role == "owner" and new_role != selected_member["role"]
@@ -285,12 +286,12 @@ with tab_users:
                 )
                 confirm_text = st.text_input(
                     "Type CONFIRM to proceed",
-                    key=f"admin_confirm_owner_{tab_org}",
+                    key=f"admin_confirm_owner_{tab_org}_{sel_uid}",
                     label_visibility="collapsed",
                     placeholder="Type CONFIRM",
                 )
 
-            if st.button("Update Role", disabled=not can_change, key="admin_update_role"):
+            if st.button("Update Role", disabled=not can_change, key=f"admin_update_role_{tab_org}_{sel_uid}"):
                 if new_role != selected_member["role"]:
                     if needs_confirm and confirm_text != "CONFIRM":
                         st.error("You must type CONFIRM to assign the owner role.")
@@ -312,7 +313,7 @@ with tab_users:
                 "Remove Member",
                 disabled=not can_remove,
                 type="primary",
-                key="admin_remove_member",
+                key=f"admin_remove_member_{tab_org}_{sel_uid}",
             ):
                 try:
                     org_service.remove_member(tab_org, selected_member["user_id"])
