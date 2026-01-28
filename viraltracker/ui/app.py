@@ -6,15 +6,23 @@ Unauthenticated users see only the Sign In and Public Gallery pages.
 Authenticated users see pages filtered by their organization's enabled features.
 
 Run with:
-    streamlit run viraltracker/ui/app_v2.py [--server.port 8502]
-
-This entry point coexists with the original app.py.
-Once validated, swap app_v2.py -> app.py.
+    streamlit run viraltracker/ui/app.py
 """
 
+import asyncio
 import os
 import sys
 import logging
+
+# Force standard asyncio event loop so nest_asyncio can patch it.
+# uvloop (pulled in by uvicorn[standard]) cannot be patched, which
+# causes ValueError in every page that calls nest_asyncio.apply().
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_loop)
+
+import nest_asyncio
+nest_asyncio.apply()
 
 import streamlit as st
 
@@ -87,12 +95,20 @@ print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 from viraltracker.ui.auth import is_authenticated
 
 if is_authenticated():
-    from viraltracker.ui.utils import render_organization_selector
+    from viraltracker.ui.utils import render_organization_selector, get_current_organization_id
 
     # Org selector in sidebar — drives which features (and pages) are visible
     render_organization_selector(key="nav_org_selector")
 
-    from viraltracker.ui.nav import build_navigation_pages
+    from viraltracker.ui.nav import build_navigation_pages, _get_org_features
+
+    # Debug: show active org + features in sidebar (remove after validation)
+    _debug_org = get_current_organization_id()
+    _debug_features = _get_org_features(_debug_org) if _debug_org else set()
+    with st.sidebar:
+        with st.expander("🐛 Nav Debug", expanded=False):
+            st.caption(f"**org_id:** `{_debug_org}`")
+            st.caption(f"**features ({len(_debug_features)}):** {sorted(_debug_features) if _debug_features else 'none'}")
 
     pages = build_navigation_pages()
 else:
