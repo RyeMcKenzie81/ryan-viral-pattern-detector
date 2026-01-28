@@ -2045,6 +2045,7 @@ else:
 
     # Pre-flight usage limit check (before any workflow processing)
     if is_batch_mode or is_single_mode:
+        from viraltracker.ui.utils import get_current_organization_id
         _org_id = get_current_organization_id()
         if _org_id and _org_id != "all":
             try:
