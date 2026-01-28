@@ -274,14 +274,33 @@ with tab_users:
                 disabled=not can_change,
                 key="admin_role_change",
             )
+            # Owner role change requires typed confirmation
+            needs_confirm = can_change and new_role == "owner" and new_role != selected_member["role"]
+            if needs_confirm:
+                member_label = selected_member.get("display_name") or selected_member["user_id"][:8]
+                st.warning(
+                    f"⚠️ You are about to make **{member_label}** an **owner**. "
+                    "Owners have full control of the organization and cannot be "
+                    "demoted by non-superusers. Type **CONFIRM** below to proceed."
+                )
+                confirm_text = st.text_input(
+                    "Type CONFIRM to proceed",
+                    key=f"admin_confirm_owner_{tab_org}",
+                    label_visibility="collapsed",
+                    placeholder="Type CONFIRM",
+                )
+
             if st.button("Update Role", disabled=not can_change, key="admin_update_role"):
                 if new_role != selected_member["role"]:
-                    try:
-                        org_service.update_member_role(tab_org, selected_member["user_id"], new_role)
-                        st.success(f"Role updated to {new_role}.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to update role: {e}")
+                    if needs_confirm and confirm_text != "CONFIRM":
+                        st.error("You must type CONFIRM to assign the owner role.")
+                    else:
+                        try:
+                            org_service.update_member_role(tab_org, selected_member["user_id"], new_role)
+                            st.success(f"Role updated to {new_role}.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to update role: {e}")
 
         with col_remove:
             can_remove = selected_member["user_id"] != user_id and (
