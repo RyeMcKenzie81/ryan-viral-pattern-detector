@@ -247,10 +247,18 @@ class UsageLimitService:
         """
         # Superuser mode - never enforce
         if not org_id or org_id == "all":
+            logger.debug(f"Skipping limit enforcement: org_id={org_id}")
             return
 
         try:
             status = self.get_current_period_usage(org_id, limit_type)
+            logger.info(
+                f"Usage limit check: org={org_id}, type={limit_type}, "
+                f"usage={status['current_usage']:.4f}, "
+                f"limit={status['limit_value']}, "
+                f"exceeded={status['is_exceeded']}, "
+                f"enabled={status['enabled']}"
+            )
 
             # No limit configured or disabled - pass through
             if status["limit_value"] is None or not status["enabled"]:
@@ -293,14 +301,18 @@ class UsageLimitService:
                     "sum_token_usage",
                     {"p_org_id": org_id, "p_column": "cost_usd", "p_start_date": period_start.isoformat()}
                 ).execute()
-                return float(result.data) if result.data else 0.0
+                value = float(result.data) if result.data else 0.0
+                logger.debug(f"RPC sum_token_usage(cost_usd): raw={result.data}, parsed={value}")
+                return value
 
             elif limit_type == LimitType.MONTHLY_TOKENS:
                 result = self.client.rpc(
                     "sum_token_usage",
                     {"p_org_id": org_id, "p_column": "total_tokens", "p_start_date": period_start.isoformat()}
                 ).execute()
-                return float(result.data) if result.data else 0.0
+                value = float(result.data) if result.data else 0.0
+                logger.debug(f"RPC sum_token_usage(total_tokens): raw={result.data}, parsed={value}")
+                return value
 
             elif limit_type == LimitType.DAILY_REQUESTS:
                 result = self.client.table("token_usage").select(

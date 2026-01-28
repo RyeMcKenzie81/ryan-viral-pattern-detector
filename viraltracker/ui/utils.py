@@ -142,12 +142,55 @@ def has_feature(feature_key: str, organization_id: Optional[str] = None) -> bool
     return service.has_feature(organization_id, feature_key)
 
 
+def _auto_init_organization() -> Optional[str]:
+    """
+    Auto-initialize the current organization from user memberships.
+
+    Called when require_feature() needs an org but none is set in session state.
+    For non-superusers with one org, auto-selects it.
+    For superusers, defaults to their first non-"all" org (not "all" which bypasses checks).
+
+    Returns:
+        Organization ID if resolved, None if unable to determine
+    """
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.services.organization_service import OrganizationService
+    from viraltracker.core.database import get_supabase_client
+
+    user_id = get_current_user_id()
+    if not user_id:
+        return None
+
+    try:
+        service = OrganizationService(get_supabase_client())
+        orgs = service.get_user_organizations(user_id)
+
+        if not orgs:
+            return None
+
+        if len(orgs) == 1:
+            # Single org - auto-select
+            org_id = orgs[0]["organization"]["id"]
+            set_current_organization_id(org_id)
+            return org_id
+
+        # Multiple orgs - for feature gating, use first specific org
+        # (superusers selecting "All Organizations" would bypass feature checks)
+        org_id = orgs[0]["organization"]["id"]
+        set_current_organization_id(org_id)
+        return org_id
+
+    except Exception:
+        return None
+
+
 def require_feature(feature_key: str, feature_name: str = None) -> bool:
     """
     Require a feature to be enabled for the current organization.
 
     Call this at the top of a page (after require_auth) to gate access.
     Shows an error message and stops page execution if feature is disabled.
+    Auto-initializes the organization from user memberships if not yet set.
 
     Args:
         feature_key: Feature to require (use FeatureKey constants)
@@ -163,6 +206,16 @@ def require_feature(feature_key: str, feature_name: str = None) -> bool:
         require_feature(FeatureKey.VEO_AVATARS, "Veo Avatars")
     """
     org_id = get_current_organization_id()
+
+    # Auto-initialize org if not set (e.g., first page visit in session)
+    if not org_id:
+        org_id = _auto_init_organization()
+
+    # Superuser "all" mode - need to check the actual org, not bypass
+    # If org is "all", try to resolve to the actual org for feature checking
+    if org_id == "all":
+        # Superusers in "all" mode bypass feature gating by design
+        return True
 
     if not org_id:
         st.error("Please select an organization first.")

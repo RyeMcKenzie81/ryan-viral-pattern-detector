@@ -2048,15 +2048,19 @@ else:
         try:
             from viraltracker.services.usage_limit_service import UsageLimitService, UsageLimitExceeded
             _org_id = get_current_organization_id()
+            logger.info(f"Pre-flight limit check: org_id={_org_id}, batch={is_batch_mode}, single={is_single_mode}")
             if _org_id and _org_id != "all":
                 _limit_svc = UsageLimitService(get_supabase_client())
                 _limit_svc.enforce_limit(_org_id, "monthly_cost")
+            else:
+                logger.info(f"Skipping pre-flight: org_id={_org_id}")
         except UsageLimitExceeded as e:
             st.session_state.workflow_running = False
             st.error(f"Usage limit reached: {e}")
             st.info("Contact your administrator to increase limits.")
             st.stop()
-        except Exception:
+        except Exception as _e:
+            logger.warning(f"Pre-flight limit check error (non-fatal): {_e}")
             pass  # Fail open
 
     if is_batch_mode:
