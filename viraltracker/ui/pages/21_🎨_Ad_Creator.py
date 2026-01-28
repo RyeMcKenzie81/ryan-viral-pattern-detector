@@ -2045,23 +2045,50 @@ else:
 
     # Pre-flight usage limit check (before any workflow processing)
     if is_batch_mode or is_single_mode:
-        try:
-            from viraltracker.services.usage_limit_service import UsageLimitService, UsageLimitExceeded
-            _org_id = get_current_organization_id()
-            logger.info(f"Pre-flight limit check: org_id={_org_id}, batch={is_batch_mode}, single={is_single_mode}")
-            if _org_id and _org_id != "all":
-                _limit_svc = UsageLimitService(get_supabase_client())
-                _limit_svc.enforce_limit(_org_id, "monthly_cost")
-            else:
-                logger.info(f"Skipping pre-flight: org_id={_org_id}")
-        except UsageLimitExceeded as e:
-            st.session_state.workflow_running = False
-            st.error(f"Usage limit reached: {e}")
-            st.info("Contact your administrator to increase limits.")
-            st.stop()
-        except Exception as _e:
-            logger.warning(f"Pre-flight limit check error (non-fatal): {_e}")
-            pass  # Fail open
+        _org_id = get_current_organization_id()
+        if _org_id and _org_id != "all":
+            try:
+                from datetime import datetime as _dt
+                _db = get_supabase_client()
+
+                # 1. Check if a monthly_cost limit exists and is enabled
+                _limit_result = _db.table("usage_limits").select("*").eq(
+                    "organization_id", _org_id
+                ).eq("limit_type", "monthly_cost").eq("enabled", True).execute()
+
+                if _limit_result.data:
+                    _limit_value = float(_limit_result.data[0]["limit_value"])
+
+                    # 2. Get current month's total cost directly from token_usage
+                    _now = _dt.now()
+                    _period_start = _now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                    _usage_result = _db.table("token_usage").select("cost_usd").eq(
+                        "organization_id", _org_id
+                    ).gte("created_at", _period_start.isoformat()).execute()
+
+                    _rows = _usage_result.data or []
+                    _current_cost = sum(float(r.get("cost_usd", 0) or 0) for r in _rows)
+
+                    logger.info(
+                        f"Usage limit check: org={_org_id}, "
+                        f"limit=${_limit_value:.2f}, usage=${_current_cost:.2f}, "
+                        f"rows={len(_rows)}, exceeded={_current_cost >= _limit_value}"
+                    )
+
+                    # 3. Block if over limit
+                    if _current_cost >= _limit_value:
+                        st.session_state.workflow_running = False
+                        st.error(
+                            f"**Monthly cost limit exceeded:** ${_current_cost:.2f} spent "
+                            f"of ${_limit_value:.2f} limit."
+                        )
+                        st.info("Contact your administrator to increase limits.")
+                        st.stop()
+
+            except Exception as _e:
+                # Show error visibly so we can debug - don't silently fail
+                logger.error(f"Usage limit check error: {_e}")
+                st.warning(f"Usage limit check error: {_e}")
 
     if is_batch_mode:
         # BATCH MODE: Process multiple templates
