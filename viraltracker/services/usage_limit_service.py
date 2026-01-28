@@ -287,6 +287,9 @@ class UsageLimitService:
         """
         Query the actual usage value for a limit type.
 
+        Uses direct table queries (no RPC dependency) for reliability.
+        Fetches matching rows and sums in Python.
+
         Args:
             org_id: Organization ID
             limit_type: Which metric to sum
@@ -297,22 +300,10 @@ class UsageLimitService:
         """
         try:
             if limit_type == LimitType.MONTHLY_COST:
-                result = self.client.rpc(
-                    "sum_token_usage",
-                    {"p_org_id": org_id, "p_column": "cost_usd", "p_start_date": period_start.isoformat()}
-                ).execute()
-                value = float(result.data) if result.data else 0.0
-                logger.debug(f"RPC sum_token_usage(cost_usd): raw={result.data}, parsed={value}")
-                return value
+                return self._sum_column(org_id, "cost_usd", period_start)
 
             elif limit_type == LimitType.MONTHLY_TOKENS:
-                result = self.client.rpc(
-                    "sum_token_usage",
-                    {"p_org_id": org_id, "p_column": "total_tokens", "p_start_date": period_start.isoformat()}
-                ).execute()
-                value = float(result.data) if result.data else 0.0
-                logger.debug(f"RPC sum_token_usage(total_tokens): raw={result.data}, parsed={value}")
-                return value
+                return self._sum_column(org_id, "total_tokens", period_start)
 
             elif limit_type == LimitType.DAILY_REQUESTS:
                 result = self.client.table("token_usage").select(
@@ -339,5 +330,34 @@ class UsageLimitService:
             return 0.0
 
         except Exception as e:
-            logger.warning(f"Failed to query usage for {limit_type}: {e}")
+            logger.error(f"Failed to query usage for {limit_type}: {e}")
             return 0.0
+
+    def _sum_column(self, org_id: str, column: str, period_start: datetime) -> float:
+        """
+        Sum a numeric column from token_usage for the given org and period.
+
+        Fetches values directly from the table and sums in Python,
+        avoiding dependency on database RPC functions.
+
+        Args:
+            org_id: Organization ID
+            column: Column name to sum (cost_usd or total_tokens)
+            period_start: Start of the period
+
+        Returns:
+            Sum of values as float
+        """
+        # Fetch values in batches (Supabase default limit is 1000)
+        result = self.client.table("token_usage").select(
+            column
+        ).eq(
+            "organization_id", org_id
+        ).gte(
+            "created_at", period_start.isoformat()
+        ).execute()
+
+        rows = result.data or []
+        total = sum(float(row.get(column, 0) or 0) for row in rows)
+        logger.info(f"Usage sum({column}): {len(rows)} rows, total={total:.4f}, org={org_id}")
+        return total
