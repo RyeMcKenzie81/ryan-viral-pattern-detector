@@ -322,16 +322,21 @@ with tab_features:
         {
             "key": FeatureKey.SECTION_BRANDS,
             "label": "Brands",
-            "base_pages": ["Brand Manager", "Personas", "URL Mapping"],
+            "base_pages": [],
             "opt_in": [
+                (FeatureKey.BRAND_MANAGER, "Brand Manager"),
+                (FeatureKey.PERSONAS, "Personas"),
+                (FeatureKey.URL_MAPPING, "URL Mapping"),
                 (FeatureKey.BRAND_RESEARCH, "Brand Research"),
             ],
         },
         {
             "key": FeatureKey.SECTION_COMPETITORS,
             "label": "Competitors",
-            "base_pages": ["Competitors", "Competitive Analysis"],
+            "base_pages": [],
             "opt_in": [
+                (FeatureKey.COMPETITORS, "Competitors"),
+                (FeatureKey.COMPETITIVE_ANALYSIS, "Competitive Analysis"),
                 (FeatureKey.COMPETITOR_RESEARCH, "Competitor Research"),
                 (FeatureKey.REDDIT_RESEARCH, "Reddit Research"),
             ],
@@ -374,13 +379,20 @@ with tab_features:
         {
             "key": FeatureKey.SECTION_SYSTEM,
             "label": "System",
-            "base_pages": [
-                "Agent Catalog", "Scheduled Tasks", "Tools Catalog",
-                "Services Catalog", "Database Browser", "Platform Settings",
-                "History", "Client Onboarding", "Pipeline Visualizer",
-                "Usage Dashboard", "Admin",
+            "base_pages": [],
+            "opt_in": [
+                (FeatureKey.AGENT_CATALOG, "Agent Catalog"),
+                (FeatureKey.SCHEDULED_TASKS, "Scheduled Tasks"),
+                (FeatureKey.TOOLS_CATALOG, "Tools Catalog"),
+                (FeatureKey.SERVICES_CATALOG, "Services Catalog"),
+                (FeatureKey.DATABASE_BROWSER, "Database Browser"),
+                (FeatureKey.PLATFORM_SETTINGS, "Platform Settings"),
+                (FeatureKey.HISTORY, "History"),
+                (FeatureKey.CLIENT_ONBOARDING, "Client Onboarding"),
+                (FeatureKey.PIPELINE_VISUALIZER, "Pipeline Visualizer"),
+                (FeatureKey.USAGE_DASHBOARD, "Usage Dashboard"),
+                (FeatureKey.ADMIN, "Admin"),
             ],
-            "opt_in": [],
         },
     ]
 

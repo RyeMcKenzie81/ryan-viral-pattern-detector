@@ -48,8 +48,13 @@ class FeatureKey:
 
     # --- Page-level keys (opt-in: hidden unless explicitly enabled) ---
     # Brands
+    BRAND_MANAGER = "brand_manager"
+    PERSONAS = "personas"
+    URL_MAPPING = "url_mapping"
     BRAND_RESEARCH = "brand_research"
     # Competitors
+    COMPETITORS = "competitors"
+    COMPETITIVE_ANALYSIS = "competitive_analysis"
     COMPETITOR_RESEARCH = "competitor_research"
     REDDIT_RESEARCH = "reddit_research"
     # Ads
@@ -76,6 +81,18 @@ class FeatureKey:
     KNOWLEDGE_BASE = "knowledge_base"
     VEO_AVATARS = "veo_avatars"
     SORA_MVP = "sora_mvp"
+    # System
+    AGENT_CATALOG = "agent_catalog"
+    SCHEDULED_TASKS = "scheduled_tasks"
+    TOOLS_CATALOG = "tools_catalog"
+    SERVICES_CATALOG = "services_catalog"
+    DATABASE_BROWSER = "database_browser"
+    PLATFORM_SETTINGS = "platform_settings"
+    HISTORY = "history"
+    CLIENT_ONBOARDING = "client_onboarding"
+    PIPELINE_VISUALIZER = "pipeline_visualizer"
+    USAGE_DASHBOARD = "usage_dashboard"
+    ADMIN = "admin"
 
 
 class FeatureService:
@@ -195,8 +212,13 @@ class FeatureService:
             FeatureKey.SECTION_CONTENT,
             FeatureKey.SECTION_SYSTEM,
             # Brands pages
+            FeatureKey.BRAND_MANAGER,
+            FeatureKey.PERSONAS,
+            FeatureKey.URL_MAPPING,
             FeatureKey.BRAND_RESEARCH,
             # Competitors pages
+            FeatureKey.COMPETITORS,
+            FeatureKey.COMPETITIVE_ANALYSIS,
             FeatureKey.COMPETITOR_RESEARCH,
             FeatureKey.REDDIT_RESEARCH,
             # Ads pages
@@ -222,6 +244,18 @@ class FeatureService:
             FeatureKey.KNOWLEDGE_BASE,
             FeatureKey.VEO_AVATARS,
             FeatureKey.SORA_MVP,
+            # System pages
+            FeatureKey.AGENT_CATALOG,
+            FeatureKey.SCHEDULED_TASKS,
+            FeatureKey.TOOLS_CATALOG,
+            FeatureKey.SERVICES_CATALOG,
+            FeatureKey.DATABASE_BROWSER,
+            FeatureKey.PLATFORM_SETTINGS,
+            FeatureKey.HISTORY,
+            FeatureKey.CLIENT_ONBOARDING,
+            FeatureKey.PIPELINE_VISUALIZER,
+            FeatureKey.USAGE_DASHBOARD,
+            FeatureKey.ADMIN,
         ]
         for feature in all_features:
             self.set_feature(organization_id, feature, True)

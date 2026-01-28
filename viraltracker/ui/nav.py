@@ -67,8 +67,13 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SECTION_CONTENT: True,
             FeatureKey.SECTION_SYSTEM: True,
             # Brands pages
+            FeatureKey.BRAND_MANAGER: True,
+            FeatureKey.PERSONAS: True,
+            FeatureKey.URL_MAPPING: True,
             FeatureKey.BRAND_RESEARCH: True,
             # Competitors pages
+            FeatureKey.COMPETITORS: True,
+            FeatureKey.COMPETITIVE_ANALYSIS: True,
             FeatureKey.COMPETITOR_RESEARCH: True,
             FeatureKey.REDDIT_RESEARCH: True,
             # Ads pages
@@ -94,6 +99,18 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.KNOWLEDGE_BASE: True,
             FeatureKey.VEO_AVATARS: True,
             FeatureKey.SORA_MVP: True,
+            # System pages
+            FeatureKey.AGENT_CATALOG: True,
+            FeatureKey.SCHEDULED_TASKS: True,
+            FeatureKey.TOOLS_CATALOG: True,
+            FeatureKey.SERVICES_CATALOG: True,
+            FeatureKey.DATABASE_BROWSER: True,
+            FeatureKey.PLATFORM_SETTINGS: True,
+            FeatureKey.HISTORY: True,
+            FeatureKey.CLIENT_ONBOARDING: True,
+            FeatureKey.PIPELINE_VISUALIZER: True,
+            FeatureKey.USAGE_DASHBOARD: True,
+            FeatureKey.ADMIN: True,
         }
 
     try:
@@ -155,12 +172,12 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     # --- Brands ---
     SK_BRANDS = "section_brands"
     brands: List[st.Page] = []
-    if has_section(SK_BRANDS):
-        brands.extend([
-            st.Page("pages/02_🏢_Brand_Manager.py", title="Brand Manager", icon="🏢"),
-            st.Page("pages/03_👤_Personas.py", title="Personas", icon="👤"),
-            st.Page("pages/04_🔗_URL_Mapping.py", title="URL Mapping", icon="🔗"),
-        ])
+    if visible(SK_BRANDS, "brand_manager"):
+        brands.append(st.Page("pages/02_🏢_Brand_Manager.py", title="Brand Manager", icon="🏢"))
+    if visible(SK_BRANDS, "personas"):
+        brands.append(st.Page("pages/03_👤_Personas.py", title="Personas", icon="👤"))
+    if visible(SK_BRANDS, "url_mapping"):
+        brands.append(st.Page("pages/04_🔗_URL_Mapping.py", title="URL Mapping", icon="🔗"))
     if visible(SK_BRANDS, "brand_research"):
         brands.append(st.Page("pages/05_🔬_Brand_Research.py", title="Brand Research", icon="🔬"))
     if brands:
@@ -169,11 +186,10 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     # --- Competitors ---
     SK_COMP = "section_competitors"
     competitors: List[st.Page] = []
-    if has_section(SK_COMP):
-        competitors.extend([
-            st.Page("pages/11_🎯_Competitors.py", title="Competitors", icon="🎯"),
-            st.Page("pages/13_📊_Competitive_Analysis.py", title="Competitive Analysis", icon="📊"),
-        ])
+    if visible(SK_COMP, "competitors"):
+        competitors.append(st.Page("pages/11_🎯_Competitors.py", title="Competitors", icon="🎯"))
+    if visible(SK_COMP, "competitive_analysis"):
+        competitors.append(st.Page("pages/13_📊_Competitive_Analysis.py", title="Competitive Analysis", icon="📊"))
     if visible(SK_COMP, "competitor_research"):
         competitors.append(st.Page("pages/12_🔍_Competitor_Research.py", title="Competitor Research", icon="🔍"))
     if visible(SK_COMP, "reddit_research"):
@@ -248,20 +264,28 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     # --- System ---
     SK_SYSTEM = "section_system"
     system: List[st.Page] = []
-    if has_section(SK_SYSTEM):
-        system.extend([
-            st.Page("pages/61_🤖_Agent_Catalog.py", title="Agent Catalog", icon="🤖", url_path="agent-catalog"),
-            st.Page("pages/61_📅_Scheduled_Tasks.py", title="Scheduled Tasks", icon="📅", url_path="scheduled-tasks"),
-            st.Page("pages/62_📚_Tools_Catalog.py", title="Tools Catalog", icon="📚"),
-            st.Page("pages/63_⚙️_Services_Catalog.py", title="Services Catalog", icon="⚙️"),
-            st.Page("pages/64_🗄️_Database_Browser.py", title="Database Browser", icon="🗄️", url_path="database-browser"),
-            st.Page("pages/64_⚙️_Platform_Settings.py", title="Platform Settings", icon="⚙️", url_path="platform-settings"),
-            st.Page("pages/65_📜_History.py", title="History", icon="📜"),
-            st.Page("pages/06_🚀_Client_Onboarding.py", title="Client Onboarding", icon="🚀"),
-            st.Page("pages/67_📊_Pipeline_Visualizer.py", title="Pipeline Visualizer", icon="📊"),
-            st.Page("pages/68_📊_Usage_Dashboard.py", title="Usage Dashboard", icon="📊"),
-            st.Page("pages/69_🔧_Admin.py", title="Admin", icon="🔧"),
-        ])
+    if visible(SK_SYSTEM, "agent_catalog"):
+        system.append(st.Page("pages/61_🤖_Agent_Catalog.py", title="Agent Catalog", icon="🤖", url_path="agent-catalog"))
+    if visible(SK_SYSTEM, "scheduled_tasks"):
+        system.append(st.Page("pages/61_📅_Scheduled_Tasks.py", title="Scheduled Tasks", icon="📅", url_path="scheduled-tasks"))
+    if visible(SK_SYSTEM, "tools_catalog"):
+        system.append(st.Page("pages/62_📚_Tools_Catalog.py", title="Tools Catalog", icon="📚"))
+    if visible(SK_SYSTEM, "services_catalog"):
+        system.append(st.Page("pages/63_⚙️_Services_Catalog.py", title="Services Catalog", icon="⚙️"))
+    if visible(SK_SYSTEM, "database_browser"):
+        system.append(st.Page("pages/64_🗄️_Database_Browser.py", title="Database Browser", icon="🗄️", url_path="database-browser"))
+    if visible(SK_SYSTEM, "platform_settings"):
+        system.append(st.Page("pages/64_⚙️_Platform_Settings.py", title="Platform Settings", icon="⚙️", url_path="platform-settings"))
+    if visible(SK_SYSTEM, "history"):
+        system.append(st.Page("pages/65_📜_History.py", title="History", icon="📜"))
+    if visible(SK_SYSTEM, "client_onboarding"):
+        system.append(st.Page("pages/06_🚀_Client_Onboarding.py", title="Client Onboarding", icon="🚀"))
+    if visible(SK_SYSTEM, "pipeline_visualizer"):
+        system.append(st.Page("pages/67_📊_Pipeline_Visualizer.py", title="Pipeline Visualizer", icon="📊"))
+    if visible(SK_SYSTEM, "usage_dashboard"):
+        system.append(st.Page("pages/68_📊_Usage_Dashboard.py", title="Usage Dashboard", icon="📊"))
+    if visible(SK_SYSTEM, "admin"):
+        system.append(st.Page("pages/69_🔧_Admin.py", title="Admin", icon="🔧"))
     if system:
         pages["System"] = system
 
