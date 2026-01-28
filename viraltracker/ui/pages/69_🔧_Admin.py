@@ -208,6 +208,7 @@ with tab_users:
         for m in members:
             member_rows.append({
                 "Display Name": m.get("display_name") or m["user_id"][:8] + "...",
+                "Email": m.get("email", ""),
                 "Role": m["role"].title(),
                 "Joined": str(m.get("created_at", ""))[:10],
                 "User ID": m["user_id"],
@@ -228,6 +229,30 @@ with tab_users:
             key="admin_member_select",
         )
         selected_member = member_options[selected_label]
+
+        # Edit display name
+        current_display = selected_member.get("display_name") or ""
+        col_name, col_name_btn = st.columns([3, 1])
+        with col_name:
+            new_display_name = st.text_input(
+                "Display Name",
+                value=current_display,
+                key=f"admin_edit_display_name_{tab_org}",
+            )
+        with col_name_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Save Name", key=f"admin_save_display_name_{tab_org}"):
+                if new_display_name != current_display:
+                    try:
+                        org_service.update_display_name(
+                            selected_member["user_id"], new_display_name
+                        )
+                        st.success("Display name updated.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to update display name: {e}")
+                else:
+                    st.info("No change.")
 
         col_role, col_remove = st.columns(2)
 
@@ -519,24 +544,24 @@ with tab_limits:
             if "cost" in lt:
                 new_val = st.number_input(
                     "Limit Value", min_value=0.0, value=current_val, step=10.0,
-                    help=lt_info["help"], key=f"admin_limit_val_{lt}", label_visibility="collapsed",
+                    help=lt_info["help"], key=f"admin_limit_val_{lt}_{tab_org}", label_visibility="collapsed",
                 )
             else:
                 new_val = st.number_input(
                     "Limit Value", min_value=0, value=int(current_val), step=100,
-                    help=lt_info["help"], key=f"admin_limit_val_{lt}", label_visibility="collapsed",
+                    help=lt_info["help"], key=f"admin_limit_val_{lt}_{tab_org}", label_visibility="collapsed",
                 )
 
         with col_thresh:
             current_thresh = float(existing.get("alert_threshold", 0.8)) if existing else 0.8
             new_thresh = st.slider(
                 "Alert %", min_value=0.0, max_value=1.0, value=current_thresh,
-                step=0.05, key=f"admin_limit_thresh_{lt}",
+                step=0.05, key=f"admin_limit_thresh_{lt}_{tab_org}",
             )
 
         with col_enabled:
             current_enabled = existing.get("enabled", True) if existing else True
-            new_enabled = st.checkbox("Enabled", value=current_enabled, key=f"admin_limit_enabled_{lt}")
+            new_enabled = st.checkbox("Enabled", value=current_enabled, key=f"admin_limit_enabled_{lt}_{tab_org}")
 
         try:
             status = limit_service.get_current_period_usage(tab_org, lt)
@@ -552,7 +577,7 @@ with tab_limits:
 
         col_save, col_delete = st.columns(2)
         with col_save:
-            if st.button("Save", key=f"admin_limit_save_{lt}"):
+            if st.button("Save", key=f"admin_limit_save_{lt}_{tab_org}"):
                 if new_val > 0:
                     limit_service.set_limit(tab_org, lt, float(new_val), lt_info["period"], new_thresh, new_enabled)
                     st.success(f"Saved {lt_info['label']} limit.")
@@ -561,7 +586,7 @@ with tab_limits:
                     st.warning("Limit value must be greater than 0.")
         with col_delete:
             if existing:
-                if st.button("Remove", key=f"admin_limit_del_{lt}"):
+                if st.button("Remove", key=f"admin_limit_del_{lt}_{tab_org}"):
                     limit_service.delete_limit(tab_org, lt)
                     st.success(f"Removed {lt_info['label']} limit.")
                     st.rerun()

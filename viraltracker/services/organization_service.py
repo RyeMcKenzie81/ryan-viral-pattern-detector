@@ -210,7 +210,18 @@ class OrganizationService:
         ).in_("user_id", user_ids).execute()
         profiles = {p["user_id"]: p for p in (profiles_result.data or [])}
 
-        # Merge memberships with profiles
+        # Fetch emails from auth.users via admin API
+        emails = {}
+        for uid in user_ids:
+            try:
+                auth_user = self.client.auth.admin.get_user_by_id(uid)
+                if auth_user and auth_user.user:
+                    emails[uid] = auth_user.user.email or ""
+            except Exception as e:
+                logger.warning(f"Could not fetch email for user {uid}: {e}")
+                emails[uid] = ""
+
+        # Merge memberships with profiles and emails
         members = []
         for m in memberships:
             profile = profiles.get(m["user_id"], {})
@@ -219,9 +230,28 @@ class OrganizationService:
                 "role": m["role"],
                 "created_at": m["created_at"],
                 "display_name": profile.get("display_name", ""),
+                "email": emails.get(m["user_id"], ""),
             })
 
         return members
+
+    def update_display_name(self, user_id: str, display_name: str) -> dict:
+        """
+        Update a user's display name in user_profiles (upsert).
+
+        Args:
+            user_id: User ID
+            display_name: New display name
+
+        Returns:
+            Updated profile dict
+        """
+        result = self.client.table("user_profiles").upsert({
+            "user_id": user_id,
+            "display_name": display_name,
+        }, on_conflict="user_id").execute()
+        logger.info(f"Updated display name for user {user_id} to '{display_name}'")
+        return result.data[0] if result.data else {}
 
     def get_member_count(self, org_id: str) -> int:
         """
