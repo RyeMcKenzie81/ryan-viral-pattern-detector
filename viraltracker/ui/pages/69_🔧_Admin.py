@@ -443,7 +443,6 @@ with tab_features:
                 (FeatureKey.HISTORY, "History"),
                 (FeatureKey.CLIENT_ONBOARDING, "Client Onboarding"),
                 (FeatureKey.PIPELINE_VISUALIZER, "Pipeline Visualizer"),
-                (FeatureKey.USAGE_DASHBOARD, "Usage Dashboard"),
                 (FeatureKey.ADMIN, "Admin"),
             ],
         },

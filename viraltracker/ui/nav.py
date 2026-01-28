@@ -109,7 +109,6 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.HISTORY: True,
             FeatureKey.CLIENT_ONBOARDING: True,
             FeatureKey.PIPELINE_VISUALIZER: True,
-            FeatureKey.USAGE_DASHBOARD: True,
             FeatureKey.ADMIN: True,
         }
 
@@ -282,7 +281,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         system.append(st.Page("pages/06_🚀_Client_Onboarding.py", title="Client Onboarding", icon="🚀"))
     if visible(SK_SYSTEM, "pipeline_visualizer"):
         system.append(st.Page("pages/67_📊_Pipeline_Visualizer.py", title="Pipeline Visualizer", icon="📊"))
-    if visible(SK_SYSTEM, "usage_dashboard"):
+    if has_section(SK_SYSTEM):
         system.append(st.Page("pages/68_📊_Usage_Dashboard.py", title="Usage Dashboard", icon="📊"))
     if visible(SK_SYSTEM, "admin"):
         system.append(st.Page("pages/69_🔧_Admin.py", title="Admin", icon="🔧"))
