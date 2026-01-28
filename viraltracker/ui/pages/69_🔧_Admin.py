@@ -89,7 +89,7 @@ with tab_orgs:
                 rows.append({
                     "Name": o["name"],
                     "Slug": o.get("slug", ""),
-                    "Owner": o.get("owner_user_id", "")[:8] + "...",
+                    "Owner": (o.get("owner_user_id") or "")[:8] + "...",
                     "Members": member_count,
                     "Created": str(o.get("created_at", ""))[:10],
                 })
