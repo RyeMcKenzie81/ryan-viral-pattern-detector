@@ -84,11 +84,9 @@ print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 # Navigation
 # ============================================================================
 
-from viraltracker.ui.auth import is_authenticated, _add_logout_button
+from viraltracker.ui.auth import is_authenticated
 
 if is_authenticated():
-    _add_logout_button()
-
     from viraltracker.ui.nav import build_navigation_pages
 
     pages = build_navigation_pages()
