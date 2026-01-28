@@ -104,11 +104,20 @@ if is_authenticated():
 
     # Debug: show active org + features in sidebar (remove after validation)
     _debug_org = get_current_organization_id()
-    _debug_features = _get_org_features(_debug_org) if _debug_org else set()
+    _debug_features = _get_org_features(_debug_org) if _debug_org else {}
+    _enabled = sorted(k for k, v in _debug_features.items() if v)
+    _disabled = sorted(k for k, v in _debug_features.items() if not v)
+    _sections_default = [
+        s for s in ["section_brands", "section_competitors", "section_ads", "section_content", "section_system"]
+        if s not in _debug_features
+    ]
     with st.sidebar:
         with st.expander("🐛 Nav Debug", expanded=False):
             st.caption(f"**org_id:** `{_debug_org}`")
-            st.caption(f"**features ({len(_debug_features)}):** {sorted(_debug_features) if _debug_features else 'none'}")
+            st.caption(f"**enabled:** {_enabled or 'none'}")
+            st.caption(f"**disabled:** {_disabled or 'none'}")
+            if _sections_default:
+                st.caption(f"**sections (not configured = visible):** {_sections_default}")
 
     pages = build_navigation_pages()
 else:

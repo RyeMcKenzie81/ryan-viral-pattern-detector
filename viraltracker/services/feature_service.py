@@ -25,7 +25,27 @@ class FeatureKey:
     Feature flag keys.
 
     Use these constants when checking/setting features to avoid typos.
+
+    Two kinds of keys:
+
+    - **Section keys** (``SECTION_*``): opt-out — visible by default.
+      Disable one to hide every page in that sidebar section.
+    - **Page keys** (everything else): opt-in — hidden by default.
+      Enable one to show a specific page.
+
+    Visibility rule used by ``nav.py``::
+
+        page_visible = section_enabled OR page_key_enabled
     """
+
+    # --- Section-level keys (opt-out: visible unless explicitly disabled) ---
+    SECTION_BRANDS = "section_brands"
+    SECTION_COMPETITORS = "section_competitors"
+    SECTION_ADS = "section_ads"
+    SECTION_CONTENT = "section_content"
+    SECTION_SYSTEM = "section_system"
+
+    # --- Page-level keys (opt-in: hidden unless explicitly enabled) ---
     AD_CREATOR = "ad_creator"
     AD_LIBRARY = "ad_library"
     AD_SCHEDULER = "ad_scheduler"
@@ -149,6 +169,13 @@ class FeatureService:
         Useful when onboarding a new client with full access.
         """
         all_features = [
+            # Sections
+            FeatureKey.SECTION_BRANDS,
+            FeatureKey.SECTION_COMPETITORS,
+            FeatureKey.SECTION_ADS,
+            FeatureKey.SECTION_CONTENT,
+            FeatureKey.SECTION_SYSTEM,
+            # Pages
             FeatureKey.AD_CREATOR,
             FeatureKey.AD_LIBRARY,
             FeatureKey.AD_SCHEDULER,
