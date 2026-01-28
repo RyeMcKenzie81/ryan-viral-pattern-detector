@@ -1,0 +1,655 @@
+"""
+Agent Chat page — ChatGPT-style interface for Viraltracker AI agent.
+
+Extracted from app.py for use as a page under st.navigation().
+Keeps require_auth() as defense-in-depth backup.
+"""
+
+import asyncio
+import base64
+import json
+import os
+import traceback
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import logging
+import pandas as pd
+import streamlit as st
+
+from viraltracker.agent import agent, AgentDependencies
+from viraltracker.services.models import (
+    OutlierResult,
+    HookAnalysisResult,
+    TweetExportResult,
+    AdCreationResult,
+)
+from viraltracker.core.database import get_supabase_client
+
+logger = logging.getLogger(__name__)
+
+# Defense-in-depth: require auth even though nav already gates access
+from viraltracker.ui.auth import require_auth
+
+require_auth()
+
+
+# ============================================================================
+# Download Format Converters
+# ============================================================================
+
+
+def result_to_csv(
+    result: OutlierResult | HookAnalysisResult | TweetExportResult | AdCreationResult,
+) -> str:
+    """Convert a structured result to CSV format."""
+    if isinstance(result, AdCreationResult):
+        data = []
+        for ad in result.generated_ads:
+            data.append(
+                {
+                    "Variation": ad.prompt_index,
+                    "Status": ad.final_status.upper(),
+                    "Hook": ad.prompt.hook.adapted_text,
+                    "Hook Category": ad.prompt.hook.category,
+                    "Claude Status": ad.claude_review.status,
+                    "Claude Score": round(ad.claude_review.overall_quality, 2),
+                    "Gemini Status": ad.gemini_review.status,
+                    "Gemini Score": round(ad.gemini_review.overall_quality, 2),
+                    "Storage Path": ad.storage_path,
+                    "Created At": ad.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+        return pd.DataFrame(data).to_csv(index=False)
+
+    elif isinstance(result, OutlierResult):
+        data = []
+        for outlier in result.outliers:
+            t = outlier.tweet
+            data.append(
+                {
+                    "Rank": outlier.rank,
+                    "Z-Score": round(outlier.zscore, 2),
+                    "Percentile": round(outlier.percentile, 1),
+                    "Username": f"@{t.author_username}",
+                    "Followers": t.author_followers,
+                    "Views": t.view_count,
+                    "Likes": t.like_count,
+                    "Replies": t.reply_count,
+                    "Retweets": t.retweet_count,
+                    "Engagement Rate": round(t.engagement_rate * 100, 2),
+                    "Created At": t.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "Tweet Text": t.text,
+                    "URL": t.url,
+                }
+            )
+        return pd.DataFrame(data).to_csv(index=False)
+
+    elif isinstance(result, HookAnalysisResult):
+        data = []
+        for analysis in result.analyses:
+            data.append(
+                {
+                    "Tweet ID": analysis.tweet_id,
+                    "Hook Type": analysis.hook_type,
+                    "Hook Confidence": round(analysis.hook_type_confidence, 2),
+                    "Emotional Trigger": analysis.emotional_trigger,
+                    "Emotion Confidence": round(
+                        analysis.emotional_trigger_confidence, 2
+                    ),
+                    "Content Pattern": analysis.content_pattern,
+                    "Pattern Confidence": round(
+                        analysis.content_pattern_confidence, 2
+                    ),
+                    "Word Count": analysis.word_count,
+                    "Has Emoji": analysis.has_emoji,
+                    "Has Hashtags": analysis.has_hashtags,
+                    "Has Question": analysis.has_question_mark,
+                    "Explanation": analysis.hook_explanation,
+                    "Adaptation Notes": analysis.adaptation_notes,
+                    "Tweet Text": analysis.tweet_text,
+                }
+            )
+        return pd.DataFrame(data).to_csv(index=False)
+
+    elif isinstance(result, TweetExportResult):
+        data = []
+        for tweet in result.tweets:
+            data.append(
+                {
+                    "Username": f"@{tweet.author_username}",
+                    "Followers": tweet.author_followers,
+                    "Views": tweet.view_count,
+                    "Likes": tweet.like_count,
+                    "Replies": tweet.reply_count,
+                    "Retweets": tweet.retweet_count,
+                    "Engagement Rate": round(tweet.engagement_rate * 100, 2),
+                    "Engagement Score": round(tweet.engagement_score, 2),
+                    "Created At": tweet.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "Tweet Text": tweet.text,
+                    "URL": tweet.url,
+                }
+            )
+        return pd.DataFrame(data).to_csv(index=False)
+
+    return ""
+
+
+def result_to_json(
+    result: OutlierResult | HookAnalysisResult | TweetExportResult | AdCreationResult,
+) -> str:
+    """Convert a structured result to JSON format."""
+    return result.model_dump_json(indent=2)
+
+
+def render_download_buttons(
+    result: OutlierResult | HookAnalysisResult | TweetExportResult | AdCreationResult,
+    message_index: int,
+):
+    """Render download buttons for structured results."""
+    if isinstance(result, AdCreationResult):
+        prefix = f"ad_creation_{result.created_at.strftime('%Y%m%d_%H%M%S')}"
+    elif isinstance(result, OutlierResult):
+        prefix = f"outliers_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
+    elif isinstance(result, HookAnalysisResult):
+        prefix = f"hook_analysis_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
+    elif isinstance(result, TweetExportResult):
+        prefix = f"tweets_{result.generated_at.strftime('%Y%m%d_%H%M%S')}"
+    else:
+        return
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.download_button(
+            label="📥 Download JSON",
+            data=result_to_json(result),
+            file_name=f"{prefix}.json",
+            mime="application/json",
+            key=f"json_{message_index}",
+            use_container_width=True,
+        )
+    with col2:
+        st.download_button(
+            label="📊 Download CSV",
+            data=result_to_csv(result),
+            file_name=f"{prefix}.csv",
+            mime="text/csv",
+            key=f"csv_{message_index}",
+            use_container_width=True,
+        )
+    with col3:
+        st.download_button(
+            label="📝 Download Markdown",
+            data=result.to_markdown(),
+            file_name=f"{prefix}.md",
+            mime="text/markdown",
+            key=f"md_{message_index}",
+            use_container_width=True,
+        )
+
+
+def render_ad_creation_results(result: AdCreationResult, message_index: int):
+    """Render ad creation results as rich image cards with status badges."""
+    st.subheader(f"🎨 Generated Ads for {result.product.name}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Ads", len(result.generated_ads))
+    with col2:
+        st.metric("✅ Approved", result.approved_count)
+    with col3:
+        st.metric("❌ Rejected", result.rejected_count)
+    with col4:
+        st.metric("⚠️ Flagged", result.flagged_count)
+
+    st.divider()
+
+    for i, ad in enumerate(result.generated_ads):
+        status_emoji = {"approved": "✅", "rejected": "❌", "flagged": "⚠️"}.get(
+            ad.final_status, "❓"
+        )
+        with st.expander(
+            f"{status_emoji} Variation {ad.prompt_index} - {ad.final_status.upper()}",
+            expanded=(ad.final_status == "approved"),
+        ):
+            st.markdown(f"**Hook**: {ad.prompt.hook.adapted_text}")
+            st.markdown(f"**Category**: {ad.prompt.hook.category}")
+            st.divider()
+
+            col_claude, col_gemini = st.columns(2)
+            with col_claude:
+                st.markdown("**Claude Review**")
+                st.progress(
+                    ad.claude_review.overall_quality,
+                    text=f"Quality: {ad.claude_review.overall_quality:.2f}",
+                )
+                st.caption(f"Status: {ad.claude_review.status}")
+                if ad.claude_review.product_issues:
+                    st.warning(
+                        f"Issues: {', '.join(ad.claude_review.product_issues)}"
+                    )
+            with col_gemini:
+                st.markdown("**Gemini Review**")
+                st.progress(
+                    ad.gemini_review.overall_quality,
+                    text=f"Quality: {ad.gemini_review.overall_quality:.2f}",
+                )
+                st.caption(f"Status: {ad.gemini_review.status}")
+                if ad.gemini_review.product_issues:
+                    st.warning(
+                        f"Issues: {', '.join(ad.gemini_review.product_issues)}"
+                    )
+
+            st.divider()
+            st.caption(f"Storage: `{ad.storage_path}`")
+            st.caption(f"Created: {ad.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.info(
+                "💡 Image preview and download will be available in future update"
+            )
+
+
+# ============================================================================
+# Project Management
+# ============================================================================
+
+
+@st.cache_data(ttl=300)
+def get_available_projects() -> List[Dict[str, str]]:
+    """Fetch available projects from database."""
+    try:
+        client = get_supabase_client()
+        result = client.table("projects").select("slug, name").order("name").execute()
+        return result.data if hasattr(result, "data") else []
+    except Exception as e:
+        logger.error(f"Failed to fetch projects: {e}")
+        return []
+
+
+# ============================================================================
+# Conversation Context
+# ============================================================================
+
+
+def build_conversation_context() -> str:
+    """Build context string from recent tool results."""
+    if "tool_results" not in st.session_state or not st.session_state.tool_results:
+        return ""
+
+    recent_results = st.session_state.tool_results[-3:]
+    if not recent_results:
+        return ""
+
+    context = "## Recent Context:\n\n"
+    context += "You have access to the results of these recent queries:\n\n"
+
+    for i, result in enumerate(recent_results, 1):
+        context += f"{i}. **User asked:** \"{result['user_query']}\"\n"
+        response_preview = result["agent_response"][:800]
+        if len(result["agent_response"]) > 800:
+            response_preview += "..."
+        context += f"   **Result:** {response_preview}\n\n"
+
+    context += (
+        '**IMPORTANT:** When the user refers to "those tweets", "their hooks", '
+        '"them", "these", etc., they are referring to the tweets/results shown above. '
+        "To analyze the SAME tweets:\n"
+        "- Extract usernames (e.g., @username) from the context above\n"
+        "- OR use the SAME tool parameters (hours_back, limit, etc.) to retrieve the same data\n"
+        "- For hook analysis: if the user says 'analyze their hooks' or 'analyze those hooks', "
+        "use analyze_hooks_tool with the SAME time range from the previous find_outliers call\n\n"
+        "---\n\n"
+    )
+    return context
+
+
+def store_tool_result(user_query: str, agent_response: str):
+    """Store a tool execution result for future context."""
+    if "tool_results" not in st.session_state:
+        st.session_state.tool_results = []
+    st.session_state.tool_results.append(
+        {
+            "timestamp": datetime.now().isoformat(),
+            "user_query": user_query,
+            "agent_response": agent_response,
+            "message_count": len(st.session_state.messages),
+        }
+    )
+    st.session_state.tool_results = st.session_state.tool_results[-10:]
+
+
+# ============================================================================
+# Session State
+# ============================================================================
+
+
+def initialize_session_state():
+    """Initialize session state variables on first load."""
+    if "deps" not in st.session_state:
+        try:
+            db_path = os.getenv("DB_PATH", "viraltracker.db")
+            project_name = os.getenv("PROJECT_NAME", "yakety-pack-instagram")
+            st.session_state.deps = AgentDependencies.create(
+                project_name=project_name
+            )
+            st.session_state.db_path = db_path
+            st.session_state.project_name = project_name
+            st.session_state.initialization_error = None
+        except Exception as e:
+            st.session_state.initialization_error = str(e)
+            st.session_state.deps = None
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "tool_results" not in st.session_state:
+        st.session_state.tool_results = []
+    if "structured_results" not in st.session_state:
+        st.session_state.structured_results = {}
+
+
+def update_project_name(new_project_name: str):
+    """Update project name and reinitialize dependencies."""
+    try:
+        st.session_state.deps = AgentDependencies.create(
+            project_name=new_project_name
+        )
+        st.session_state.project_name = new_project_name
+        st.session_state.initialization_error = None
+        st.success(f"Switched to project: {new_project_name}")
+    except Exception as e:
+        st.error(f"Failed to update project: {e}")
+
+
+# ============================================================================
+# Sidebar
+# ============================================================================
+
+
+def render_sidebar():
+    """Render sidebar with project settings and quick actions."""
+    with st.sidebar:
+        st.title("⚙️ Settings")
+
+        # Project configuration
+        st.subheader("Project")
+        projects = get_available_projects()
+
+        if not projects:
+            st.warning("No projects found. Using default project.")
+        else:
+            project_options = {p["name"]: p["slug"] for p in projects}
+            current_slug = st.session_state.get(
+                "project_name", "yakety-pack-instagram"
+            )
+            current_display = None
+            for display_name, slug in project_options.items():
+                if slug == current_slug:
+                    current_display = display_name
+                    break
+            if current_display is None and project_options:
+                current_display = list(project_options.keys())[0]
+                current_slug = project_options[current_display]
+
+            selected = st.selectbox(
+                "Select Project",
+                options=list(project_options.keys()),
+                index=list(project_options.keys()).index(current_display)
+                if current_display
+                else 0,
+                help="Choose a project to analyze",
+            )
+            new_project = project_options[selected]
+            if new_project != current_slug:
+                update_project_name(new_project)
+
+        st.divider()
+
+        # Quick Actions
+        st.subheader("⚡ Quick Actions")
+        if st.button("📊 Find Viral Tweets (24h)", use_container_width=True):
+            _add_quick_action("Show me viral tweets from the last 24 hours")
+        if st.button("🎣 Analyze Hooks", use_container_width=True):
+            _add_quick_action("Analyze the hooks for viral tweets from today")
+        if st.button("📄 Full Report (48h)", use_container_width=True):
+            _add_quick_action(
+                "Give me a full report for the last 48 hours with hooks"
+            )
+
+        st.divider()
+
+        # Chat management
+        st.subheader("💬 Chat")
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.tool_results = []
+            st.rerun()
+
+        st.divider()
+
+        # Footer
+        st.subheader("ℹ️ Info")
+        st.caption(
+            f"**Project:** {st.session_state.get('project_name', 'N/A')}"
+        )
+        st.caption(f"**Database:** {st.session_state.get('db_path', 'N/A')}")
+        st.caption(
+            f"**Messages:** {len(st.session_state.get('messages', []))}"
+        )
+
+
+def _add_quick_action(prompt: str):
+    """Add a quick action message and get agent response."""
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    with st.spinner("Agent is processing..."):
+        try:
+            context = build_conversation_context()
+            full_prompt = f"{context}## Current Query:\n{prompt}"
+            result = asyncio.run(
+                agent.run(full_prompt, deps=st.session_state.deps)
+            )
+            response = result.output
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response}
+            )
+
+            message_idx = len(st.session_state.messages) - 1
+            structured_result = _extract_structured_result(result)
+            if structured_result:
+                st.session_state.structured_results[message_idx] = (
+                    structured_result
+                )
+
+            store_tool_result(prompt, response)
+        except Exception as e:
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": f"Error: {e}\n\nPlease check your API keys and try again.",
+                }
+            )
+
+    st.rerun()
+
+
+def _extract_structured_result(result):
+    """Extract structured result models from agent run result."""
+    if not hasattr(result, "all_messages"):
+        return None
+    for msg in result.all_messages():
+        if not hasattr(msg, "parts"):
+            continue
+        for part in msg.parts:
+            if (
+                part.__class__.__name__ == "ToolReturnPart"
+                and hasattr(part, "content")
+                and isinstance(
+                    part.content,
+                    (
+                        OutlierResult,
+                        HookAnalysisResult,
+                        TweetExportResult,
+                        AdCreationResult,
+                    ),
+                )
+            ):
+                return part.content
+    return None
+
+
+# ============================================================================
+# Chat Interface
+# ============================================================================
+
+
+def render_chat_interface():
+    """Render main chat interface."""
+    st.title("🎯 Viraltracker Agent")
+    st.caption("AI-powered viral content analysis assistant")
+
+    if st.session_state.get("initialization_error"):
+        st.error(
+            f"❌ **Initialization Error:** {st.session_state.initialization_error}\n\n"
+            "Please check that the following environment variables are set:\n"
+            "- `OPENAI_API_KEY`\n"
+            "- `SUPABASE_URL`\n"
+            "- `SUPABASE_KEY`\n"
+            "- `GEMINI_API_KEY`"
+        )
+        return
+
+    # Display chat messages
+    for idx, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+            if (
+                message["role"] == "assistant"
+                and idx in st.session_state.structured_results
+            ):
+                result = st.session_state.structured_results[idx]
+                st.divider()
+                if isinstance(result, AdCreationResult):
+                    render_ad_creation_results(result, idx)
+                    st.divider()
+                    render_download_buttons(result, idx)
+                elif isinstance(
+                    result,
+                    (OutlierResult, HookAnalysisResult, TweetExportResult),
+                ):
+                    render_download_buttons(result, idx)
+
+    # File uploader
+    uploaded_file = st.file_uploader(
+        "📎 Upload Reference Ad (Optional - for Facebook ad creation)",
+        type=["png", "jpg", "jpeg", "webp"],
+        help="Upload a reference ad image to generate similar Facebook ads",
+        key="reference_ad_uploader",
+    )
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.read()
+        st.session_state.reference_ad_base64 = base64.b64encode(
+            file_bytes
+        ).decode("utf-8")
+        st.session_state.reference_ad_filename = uploaded_file.name
+        st.image(file_bytes, caption=f"📎 {uploaded_file.name}", width=200)
+        st.success(f"✅ Reference ad uploaded: {uploaded_file.name}")
+    elif "reference_ad_base64" in st.session_state:
+        st.info(
+            f"📎 Reference ad ready: {st.session_state.reference_ad_filename}"
+        )
+
+    # Chat input
+    if prompt := st.chat_input(
+        "Ask about viral tweets, hooks, ad creation, or request a report..."
+    ):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+
+            try:
+                context = build_conversation_context()
+                full_prompt = f"{context}## Current Query:\n{prompt}"
+
+                with st.spinner("Agent is thinking..."):
+                    result = asyncio.run(
+                        agent.run(full_prompt, deps=st.session_state.deps)
+                    )
+                    full_response = result.output
+
+                message_placeholder.markdown(full_response)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": full_response}
+                )
+
+                message_idx = len(st.session_state.messages) - 1
+                structured_result = _extract_structured_result(result)
+                if structured_result:
+                    st.session_state.structured_results[message_idx] = (
+                        structured_result
+                    )
+                    st.divider()
+                    if isinstance(structured_result, AdCreationResult):
+                        render_ad_creation_results(
+                            structured_result, message_idx
+                        )
+                        st.divider()
+                        render_download_buttons(structured_result, message_idx)
+                    else:
+                        render_download_buttons(structured_result, message_idx)
+
+                store_tool_result(prompt, full_response)
+
+            except Exception as e:
+                error_msg = (
+                    f"❌ **Error:** {e}\n\n"
+                    "**Possible causes:**\n"
+                    "- Invalid API keys\n"
+                    "- Network connectivity issues\n"
+                    "- Database connection problems\n\n"
+                    "**Troubleshooting:**\n"
+                    "- Check your environment variables\n"
+                    "- Verify your database is accessible\n"
+                    "- Try rephrasing your question\n\n"
+                    f"**Debug info:**\n```\n{traceback.format_exc()}\n```"
+                )
+                st.markdown(error_msg)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": error_msg}
+                )
+
+
+# ============================================================================
+# Footer
+# ============================================================================
+
+
+def render_footer():
+    """Render footer with session information."""
+    st.divider()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.caption(
+            f"📁 Project: **{st.session_state.get('project_name', 'N/A')}**"
+        )
+    with col2:
+        st.caption(
+            f"💾 Database: **{st.session_state.get('db_path', 'N/A')}**"
+        )
+    with col3:
+        st.caption(
+            f"💬 Messages: **{len(st.session_state.get('messages', []))}**"
+        )
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+initialize_session_state()
+render_sidebar()
+render_chat_interface()
+render_footer()
