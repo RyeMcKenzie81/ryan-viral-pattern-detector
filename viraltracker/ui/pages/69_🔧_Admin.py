@@ -308,87 +308,164 @@ with tab_features:
     feature_service = _get_feature_service()
     st.subheader("Feature Flags")
 
-    # Section keys (opt-out) + page keys (opt-in)
-    section_keys = [
-        FeatureKey.SECTION_BRANDS,
-        FeatureKey.SECTION_COMPETITORS,
-        FeatureKey.SECTION_ADS,
-        FeatureKey.SECTION_CONTENT,
-        FeatureKey.SECTION_SYSTEM,
-    ]
-    page_keys = [
-        FeatureKey.AD_CREATOR,
-        FeatureKey.AD_LIBRARY,
-        FeatureKey.AD_SCHEDULER,
-        FeatureKey.AD_PLANNING,
-        FeatureKey.VEO_AVATARS,
-        FeatureKey.COMPETITOR_RESEARCH,
-        FeatureKey.REDDIT_RESEARCH,
-        FeatureKey.BRAND_RESEARCH,
-        FeatureKey.BELIEF_CANVAS,
-        FeatureKey.CONTENT_PIPELINE,
-        FeatureKey.RESEARCH_INSIGHTS,
-    ]
-    all_feature_keys = section_keys + page_keys
+    st.caption(
+        "**Section ON** → all base pages in section visible. "
+        "**Section OFF** → base pages hidden, but individual pages can still be enabled."
+    )
 
-    # Get current feature states
+    # Get current feature states from DB
     current_features = feature_service.get_org_features(tab_org)
     feature_states = {f["feature_key"]: f.get("enabled", False) for f in current_features}
+
+    # Section → pages mapping (mirrors nav.py exactly)
+    SECTIONS = [
+        {
+            "key": FeatureKey.SECTION_BRANDS,
+            "label": "Brands",
+            "base_pages": ["Brand Manager", "Personas", "URL Mapping", "Client Onboarding"],
+            "opt_in": [
+                (FeatureKey.BRAND_RESEARCH, "Brand Research"),
+            ],
+        },
+        {
+            "key": FeatureKey.SECTION_COMPETITORS,
+            "label": "Competitors",
+            "base_pages": ["Competitors", "Competitive Analysis"],
+            "opt_in": [
+                (FeatureKey.COMPETITOR_RESEARCH, "Competitor Research"),
+                (FeatureKey.REDDIT_RESEARCH, "Reddit Research"),
+            ],
+        },
+        {
+            "key": FeatureKey.SECTION_ADS,
+            "label": "Ads",
+            "base_pages": [
+                "Ad Gallery", "Plan List", "Plan Executor",
+                "Template Queue", "Template Evaluation", "Template Recommendations",
+            ],
+            "opt_in": [
+                (FeatureKey.AD_CREATOR, "Ad Creator"),
+                (FeatureKey.AD_LIBRARY, "Ad History & Ad Performance"),
+                (FeatureKey.AD_SCHEDULER, "Ad Scheduler"),
+                (FeatureKey.AD_PLANNING, "Ad Planning"),
+                (FeatureKey.BELIEF_CANVAS, "Belief Canvas"),
+                (FeatureKey.RESEARCH_INSIGHTS, "Research Insights"),
+            ],
+        },
+        {
+            "key": FeatureKey.SECTION_CONTENT,
+            "label": "Content",
+            "base_pages": [
+                "Comic Video", "Comic JSON Generator", "Editor Handoff",
+                "Audio Production", "Knowledge Base",
+            ],
+            "opt_in": [
+                (FeatureKey.CONTENT_PIPELINE, "Content Pipeline"),
+                (FeatureKey.VEO_AVATARS, "Veo Avatars"),
+            ],
+        },
+        {
+            "key": FeatureKey.SECTION_SYSTEM,
+            "label": "System",
+            "base_pages": [
+                "Agent Catalog", "Scheduled Tasks", "Tools Catalog",
+                "Services Catalog", "Database Browser", "Platform Settings",
+                "History", "Public Gallery", "Pipeline Visualizer",
+                "Usage Dashboard", "Admin", "Sora MVP",
+            ],
+            "opt_in": [],
+        },
+    ]
+
+    # Build flat list of all feature keys for bulk actions
+    all_feature_keys = [s["key"] for s in SECTIONS]
+    for s in SECTIONS:
+        all_feature_keys.extend(pk for pk, _ in s["opt_in"])
 
     # Bulk actions
     col_enable, col_disable = st.columns(2)
     with col_enable:
         if st.button("Enable All", key="admin_enable_all_features"):
             feature_service.enable_all_features(tab_org)
+            try:
+                from viraltracker.ui.nav import _get_org_features_cached
+                _get_org_features_cached.clear()
+            except Exception:
+                pass
             st.success("All features enabled.")
             st.rerun()
     with col_disable:
         if st.button("Disable All", key="admin_disable_all_features"):
             for fk in all_feature_keys:
                 feature_service.disable_feature(tab_org, fk)
+            try:
+                from viraltracker.ui.nav import _get_org_features_cached
+                _get_org_features_cached.clear()
+            except Exception:
+                pass
             st.success("All features disabled.")
             st.rerun()
 
     st.divider()
 
-    # Section toggles
-    st.markdown("**Sidebar Sections** *(visible by default — disable to hide entire section)*")
-    section_changes = {}
-    for fk in section_keys:
-        display = fk.replace("section_", "").replace("_", " ").title()
-        # Default to True (visible) if not configured
-        current = feature_states.get(fk, True)
-        new_val = st.checkbox(
-            f"Section: {display}",
-            value=current,
-            key=f"admin_feature_{fk}",
-        )
-        if new_val != current:
-            section_changes[fk] = new_val
+    # Always-visible pages
+    st.caption("**Always visible:** Agent Chat (default page)")
 
-    st.divider()
+    # Collect changes across all sections
+    all_changes = {}
 
-    # Page toggles
-    st.markdown("**Individual Pages** *(hidden by default — enable to show)*")
-    page_changes = {}
-    for fk in page_keys:
-        display = fk.replace("_", " ").title()
-        current = feature_states.get(fk, False)
-        new_val = st.checkbox(
-            display,
-            value=current,
-            key=f"admin_feature_{fk}",
-        )
-        if new_val != current:
-            page_changes[fk] = new_val
+    for section in SECTIONS:
+        sk = section["key"]
+        section_enabled = feature_states.get(sk, True)  # Sections default ON
+        icon = "✅" if section_enabled else "❌"
 
-    changes = {**section_changes, **page_changes}
-    if changes:
-        if st.button("Save Feature Changes", key="admin_save_features"):
-            for fk, enabled in changes.items():
+        with st.expander(f"{icon} {section['label']}", expanded=True):
+            # Section master toggle
+            new_section = st.checkbox(
+                f"Show {section['label']} section",
+                value=section_enabled,
+                key=f"admin_section_{sk}",
+            )
+            if new_section != section_enabled:
+                all_changes[sk] = new_section
+
+            # Base pages (follow section toggle, not individually controllable)
+            if section["base_pages"]:
+                status = "**visible**" if new_section else "~~hidden~~"
+                pages_list = ", ".join(section["base_pages"])
+                st.caption(f"Base pages ({status}): {pages_list}")
+
+            # Opt-in pages (individually toggleable)
+            if section["opt_in"]:
+                for pk, label in section["opt_in"]:
+                    page_enabled = feature_states.get(pk, False)  # Pages default OFF
+
+                    new_page = st.checkbox(
+                        label,
+                        value=page_enabled,
+                        key=f"admin_page_{pk}",
+                    )
+                    if new_page != page_enabled:
+                        all_changes[pk] = new_page
+
+                    # Show effective visibility hint
+                    if new_section and not new_page:
+                        st.caption(f"  ↳ *{label}* visible via section toggle")
+
+    if all_changes:
+        if st.button("Save Feature Changes", type="primary", key="admin_save_features"):
+            for fk, enabled in all_changes.items():
                 feature_service.set_feature(tab_org, fk, enabled)
-            st.success(f"Updated {len(changes)} feature(s).")
+            # Clear nav cache so sidebar updates immediately
+            try:
+                from viraltracker.ui.nav import _get_org_features_cached
+                _get_org_features_cached.clear()
+            except Exception:
+                pass
+            st.success(f"Updated {len(all_changes)} feature(s).")
             st.rerun()
+    else:
+        st.info("No changes to save.")
 
 
 # ============================================================================
