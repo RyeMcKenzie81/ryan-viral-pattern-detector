@@ -424,7 +424,7 @@ with tab_features:
             new_section = st.checkbox(
                 f"Show {section['label']} section",
                 value=section_enabled,
-                key=f"admin_section_{sk}",
+                key=f"admin_section_{sk}_{tab_org}",
             )
             if new_section != section_enabled:
                 all_changes[sk] = new_section
@@ -443,7 +443,7 @@ with tab_features:
                     new_page = st.checkbox(
                         label,
                         value=page_enabled,
-                        key=f"admin_page_{pk}",
+                        key=f"admin_page_{pk}_{tab_org}",
                     )
                     if new_page != page_enabled:
                         all_changes[pk] = new_page
