@@ -87,6 +87,11 @@ print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 from viraltracker.ui.auth import is_authenticated
 
 if is_authenticated():
+    from viraltracker.ui.utils import render_organization_selector
+
+    # Org selector in sidebar — drives which features (and pages) are visible
+    render_organization_selector(key="nav_org_selector")
+
     from viraltracker.ui.nav import build_navigation_pages
 
     pages = build_navigation_pages()
