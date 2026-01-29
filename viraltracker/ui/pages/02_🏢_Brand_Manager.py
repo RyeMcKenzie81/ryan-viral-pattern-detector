@@ -372,6 +372,16 @@ def save_product_social_proof(product_id: str, review_platforms: dict, media_fea
         st.error(f"Failed to save social proof: {e}")
         return False
 
+def save_product_details(product_id: str, updates: dict) -> bool:
+    """Save product detail fields (target_audience, benefits, etc.)."""
+    try:
+        db = get_supabase_client()
+        db.table("products").update(updates).eq("id", product_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save product details: {e}")
+        return False
+
 def save_image_analysis(image_id: str, analysis: dict):
     """Save analysis to product_images table."""
     try:
@@ -1518,6 +1528,9 @@ else:
                         else:
                             st.caption("None configured")
 
+                        st.markdown("**Brand Voice Notes**")
+                        st.caption(product.get('brand_voice_notes', 'Not specified'))
+
                     with col_d2:
                         st.markdown("**USPs**")
                         usps = product.get('unique_selling_points', [])
@@ -1532,6 +1545,108 @@ else:
 
                         st.markdown("**Founders**")
                         st.caption(product.get('founders', 'Not specified'))
+
+                        st.markdown("**Key Ingredients**")
+                        ingredients = product.get('key_ingredients', [])
+                        if ingredients:
+                            for ing in ingredients[:5]:
+                                st.caption(f"• {ing}")
+                        else:
+                            st.caption("None configured")
+
+                    # Edit Details toggle
+                    edit_details_key = f"edit_details_{product_id}"
+                    if edit_details_key not in st.session_state:
+                        st.session_state[edit_details_key] = False
+
+                    if st.button("✏️ Edit Details", key=f"btn_edit_details_{product_id}"):
+                        st.session_state[edit_details_key] = not st.session_state[edit_details_key]
+                        st.rerun()
+
+                    if st.session_state[edit_details_key]:
+                        with st.form(key=f"form_details_{product_id}"):
+                            st.markdown("#### Edit Product Details")
+
+                            det_col1, det_col2 = st.columns(2)
+
+                            with det_col1:
+                                edit_current_offer = st.text_input(
+                                    "Current Offer",
+                                    value=product.get('current_offer', '') or '',
+                                    placeholder='e.g. "Up to 30% off"',
+                                    key=f"det_offer_{product_id}"
+                                )
+
+                                edit_target_audience = st.text_area(
+                                    "Target Audience",
+                                    value=product.get('target_audience', '') or '',
+                                    height=80,
+                                    key=f"det_audience_{product_id}"
+                                )
+
+                                current_benefits = product.get('benefits', []) or []
+                                edit_benefits = st.text_area(
+                                    "Benefits (one per line)",
+                                    value="\n".join(current_benefits) if current_benefits else "",
+                                    height=120,
+                                    key=f"det_benefits_{product_id}"
+                                )
+
+                                edit_brand_voice = st.text_area(
+                                    "Brand Voice Notes",
+                                    value=product.get('brand_voice_notes', '') or '',
+                                    height=80,
+                                    placeholder="Tone/style guidance for ad generation",
+                                    key=f"det_voice_{product_id}"
+                                )
+
+                            with det_col2:
+                                current_usps = product.get('unique_selling_points', []) or []
+                                edit_usps = st.text_area(
+                                    "USPs (one per line)",
+                                    value="\n".join(current_usps) if current_usps else "",
+                                    height=120,
+                                    key=f"det_usps_{product_id}"
+                                )
+
+                                current_ingredients = product.get('key_ingredients', []) or []
+                                edit_ingredients = st.text_area(
+                                    "Key Ingredients (one per line)",
+                                    value="\n".join(current_ingredients) if current_ingredients else "",
+                                    height=100,
+                                    key=f"det_ingredients_{product_id}"
+                                )
+
+                                edit_founders = st.text_input(
+                                    "Founders",
+                                    value=product.get('founders', '') or '',
+                                    key=f"det_founders_{product_id}"
+                                )
+
+                            det_save_col, det_cancel_col = st.columns(2)
+                            with det_save_col:
+                                det_submitted = st.form_submit_button("💾 Save", type="primary")
+                            with det_cancel_col:
+                                det_cancelled = st.form_submit_button("Cancel")
+
+                            if det_submitted:
+                                updates = {
+                                    "current_offer": edit_current_offer or None,
+                                    "target_audience": edit_target_audience or None,
+                                    "benefits": [b.strip() for b in edit_benefits.split("\n") if b.strip()] or None,
+                                    "unique_selling_points": [u.strip() for u in edit_usps.split("\n") if u.strip()] or None,
+                                    "key_ingredients": [i.strip() for i in edit_ingredients.split("\n") if i.strip()] or None,
+                                    "founders": edit_founders or None,
+                                    "brand_voice_notes": edit_brand_voice or None,
+                                }
+                                if save_product_details(product_id, updates):
+                                    st.success("Product details saved!")
+                                    st.session_state[edit_details_key] = False
+                                    st.rerun()
+
+                            if det_cancelled:
+                                st.session_state[edit_details_key] = False
+                                st.rerun()
 
                     # Social Proof section (full width)
                     st.markdown("---")
@@ -1638,6 +1753,95 @@ else:
 
                             if cancelled:
                                 st.session_state[edit_key] = False
+                                st.rerun()
+
+                    # Compliance section (prohibited claims, disclaimers, banned terms)
+                    st.markdown("---")
+                    st.markdown("**⚖️ Compliance** (legal/safety fields for ad generation)")
+
+                    col_c1, col_c2, col_c3 = st.columns(3)
+
+                    with col_c1:
+                        st.markdown("**Prohibited Claims**")
+                        prohibited = product.get('prohibited_claims', [])
+                        if prohibited:
+                            for p in prohibited[:5]:
+                                st.caption(f"• {p}")
+                        else:
+                            st.caption("None configured")
+
+                    with col_c2:
+                        st.markdown("**Required Disclaimers**")
+                        disclaimers = product.get('required_disclaimers', '')
+                        st.caption(disclaimers if disclaimers else "None configured")
+
+                    with col_c3:
+                        st.markdown("**Banned Terms**")
+                        banned = product.get('banned_terms', [])
+                        if banned:
+                            for bt in banned[:5]:
+                                st.caption(f"• {bt}")
+                        else:
+                            st.caption("None configured")
+
+                    # Edit Compliance toggle
+                    edit_compliance_key = f"edit_compliance_{product_id}"
+                    if edit_compliance_key not in st.session_state:
+                        st.session_state[edit_compliance_key] = False
+
+                    if st.button("✏️ Edit Compliance", key=f"btn_edit_compliance_{product_id}"):
+                        st.session_state[edit_compliance_key] = not st.session_state[edit_compliance_key]
+                        st.rerun()
+
+                    if st.session_state[edit_compliance_key]:
+                        with st.form(key=f"form_compliance_{product_id}"):
+                            st.markdown("#### Edit Compliance Fields")
+
+                            current_prohibited = product.get('prohibited_claims', []) or []
+                            edit_prohibited = st.text_area(
+                                "Prohibited Claims (one per line)",
+                                value="\n".join(current_prohibited) if current_prohibited else "",
+                                height=100,
+                                placeholder="e.g. 'Cures disease X'\n'FDA approved'",
+                                key=f"comp_prohibited_{product_id}"
+                            )
+
+                            edit_disclaimers = st.text_area(
+                                "Required Disclaimers",
+                                value=product.get('required_disclaimers', '') or '',
+                                height=80,
+                                placeholder="e.g. 'These statements have not been evaluated by the FDA.'",
+                                key=f"comp_disclaimers_{product_id}"
+                            )
+
+                            current_banned = product.get('banned_terms', []) or []
+                            edit_banned = st.text_area(
+                                "Banned Terms (one per line)",
+                                value="\n".join(current_banned) if current_banned else "",
+                                height=80,
+                                placeholder="e.g. competitor names, trademarked terms",
+                                key=f"comp_banned_{product_id}"
+                            )
+
+                            comp_save_col, comp_cancel_col = st.columns(2)
+                            with comp_save_col:
+                                comp_submitted = st.form_submit_button("💾 Save", type="primary")
+                            with comp_cancel_col:
+                                comp_cancelled = st.form_submit_button("Cancel")
+
+                            if comp_submitted:
+                                comp_updates = {
+                                    "prohibited_claims": [p.strip() for p in edit_prohibited.split("\n") if p.strip()] or None,
+                                    "required_disclaimers": edit_disclaimers or None,
+                                    "banned_terms": [t.strip() for t in edit_banned.split("\n") if t.strip()] or None,
+                                }
+                                if save_product_details(product_id, comp_updates):
+                                    st.success("Compliance fields saved!")
+                                    st.session_state[edit_compliance_key] = False
+                                    st.rerun()
+
+                            if comp_cancelled:
+                                st.session_state[edit_compliance_key] = False
                                 st.rerun()
 
                 with tab_offers:
