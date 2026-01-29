@@ -105,6 +105,14 @@ if is_authenticated():
     pg = st.navigation(pages, position="hidden")
 
     with st.sidebar:
+        # Reduce top padding and spacing around the workspace selector
+        st.markdown(
+            """<style>
+            [data-testid="stSidebar"] [data-testid="stSidebarContent"] { padding-top: 1rem; }
+            [data-testid="stSidebar"] hr { margin-top: 0.5rem; margin-bottom: 0.5rem; }
+            </style>""",
+            unsafe_allow_html=True,
+        )
         # Org selector first — drives which features (and pages) are visible
         render_organization_selector(key="nav_org_selector")
         st.divider()
