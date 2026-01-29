@@ -95,36 +95,32 @@ print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 from viraltracker.ui.auth import is_authenticated
 
 if is_authenticated():
-    from viraltracker.ui.utils import render_organization_selector, get_current_organization_id
-
-    # Org selector in sidebar — drives which features (and pages) are visible
-    render_organization_selector(key="nav_org_selector")
-
-    from viraltracker.ui.nav import build_navigation_pages, _get_org_features
-
-    # Debug: show active org + features in sidebar (remove after validation)
-    _debug_org = get_current_organization_id()
-    _debug_features = _get_org_features(_debug_org) if _debug_org else {}
-    _enabled = sorted(k for k, v in _debug_features.items() if v)
-    _disabled = sorted(k for k, v in _debug_features.items() if not v)
-    _sections_default = [
-        s for s in ["section_brands", "section_competitors", "section_ads", "section_content", "section_system"]
-        if s not in _debug_features
-    ]
-    with st.sidebar:
-        with st.expander("🐛 Nav Debug", expanded=False):
-            st.caption(f"**org_id:** `{_debug_org}`")
-            st.caption(f"**enabled:** {_enabled or 'none'}")
-            st.caption(f"**disabled:** {_disabled or 'none'}")
-            if _sections_default:
-                st.caption(f"**sections (not configured = visible):** {_sections_default}")
+    from viraltracker.ui.utils import render_organization_selector
+    from viraltracker.ui.nav import build_navigation_pages
 
     pages = build_navigation_pages()
+
+    # Hide the default navigation so we can build a custom sidebar
+    # with the org selector above the page links.
+    pg = st.navigation(pages, position="hidden")
+
+    with st.sidebar:
+        # Org selector first — drives which features (and pages) are visible
+        render_organization_selector(key="nav_org_selector")
+        st.divider()
+
+        # Render page links grouped by section
+        for section, page_list in pages.items():
+            if section:
+                st.header(section)
+            for page in page_list:
+                st.page_link(page, icon=page.icon)
+
+    pg.run()
 else:
     pages = [
         st.Page("pages/login.py", title="Sign In", icon="🔐", default=True),
         st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"),
     ]
-
-pg = st.navigation(pages)
-pg.run()
+    pg = st.navigation(pages)
+    pg.run()
