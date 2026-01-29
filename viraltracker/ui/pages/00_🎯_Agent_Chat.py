@@ -7,7 +7,6 @@ Keeps require_auth() as defense-in-depth backup.
 
 import asyncio
 import base64
-import json
 import os
 import traceback
 from datetime import datetime
@@ -24,7 +23,6 @@ from viraltracker.services.models import (
     TweetExportResult,
     AdCreationResult,
 )
-from viraltracker.core.database import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -249,23 +247,6 @@ def render_ad_creation_results(result: AdCreationResult, message_index: int):
 
 
 # ============================================================================
-# Project Management
-# ============================================================================
-
-
-@st.cache_data(ttl=300)
-def get_available_projects() -> List[Dict[str, str]]:
-    """Fetch available projects from database."""
-    try:
-        client = get_supabase_client()
-        result = client.table("projects").select("slug, name").order("name").execute()
-        return result.data if hasattr(result, "data") else []
-    except Exception as e:
-        logger.error(f"Failed to fetch projects: {e}")
-        return []
-
-
-# ============================================================================
 # Conversation Context
 # ============================================================================
 
@@ -346,18 +327,6 @@ def initialize_session_state():
         st.session_state.structured_results = {}
 
 
-def update_project_name(new_project_name: str):
-    """Update project name and reinitialize dependencies."""
-    try:
-        st.session_state.deps = AgentDependencies.create(
-            project_name=new_project_name
-        )
-        st.session_state.project_name = new_project_name
-        st.session_state.initialization_error = None
-        st.success(f"Switched to project: {new_project_name}")
-    except Exception as e:
-        st.error(f"Failed to update project: {e}")
-
 
 # ============================================================================
 # Sidebar
@@ -365,110 +334,13 @@ def update_project_name(new_project_name: str):
 
 
 def render_sidebar():
-    """Render sidebar with project settings and quick actions."""
+    """Render sidebar with chat management."""
     with st.sidebar:
-        st.title("⚙️ Settings")
-
-        # Project configuration
-        st.subheader("Project")
-        projects = get_available_projects()
-
-        if not projects:
-            st.warning("No projects found. Using default project.")
-        else:
-            project_options = {p["name"]: p["slug"] for p in projects}
-            current_slug = st.session_state.get(
-                "project_name", "yakety-pack-instagram"
-            )
-            current_display = None
-            for display_name, slug in project_options.items():
-                if slug == current_slug:
-                    current_display = display_name
-                    break
-            if current_display is None and project_options:
-                current_display = list(project_options.keys())[0]
-                current_slug = project_options[current_display]
-
-            selected = st.selectbox(
-                "Select Project",
-                options=list(project_options.keys()),
-                index=list(project_options.keys()).index(current_display)
-                if current_display
-                else 0,
-                help="Choose a project to analyze",
-            )
-            new_project = project_options[selected]
-            if new_project != current_slug:
-                update_project_name(new_project)
-
-        st.divider()
-
-        # Quick Actions
-        st.subheader("⚡ Quick Actions")
-        if st.button("📊 Find Viral Tweets (24h)", use_container_width=True):
-            _add_quick_action("Show me viral tweets from the last 24 hours")
-        if st.button("🎣 Analyze Hooks", use_container_width=True):
-            _add_quick_action("Analyze the hooks for viral tweets from today")
-        if st.button("📄 Full Report (48h)", use_container_width=True):
-            _add_quick_action(
-                "Give me a full report for the last 48 hours with hooks"
-            )
-
-        st.divider()
-
-        # Chat management
-        st.subheader("💬 Chat")
-        if st.button("🗑️ Clear Chat", use_container_width=True):
+        if st.button("Clear Chat", use_container_width=True):
             st.session_state.messages = []
             st.session_state.tool_results = []
             st.rerun()
 
-        st.divider()
-
-        # Footer
-        st.subheader("ℹ️ Info")
-        st.caption(
-            f"**Project:** {st.session_state.get('project_name', 'N/A')}"
-        )
-        st.caption(f"**Database:** {st.session_state.get('db_path', 'N/A')}")
-        st.caption(
-            f"**Messages:** {len(st.session_state.get('messages', []))}"
-        )
-
-
-def _add_quick_action(prompt: str):
-    """Add a quick action message and get agent response."""
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    with st.spinner("Agent is processing..."):
-        try:
-            context = build_conversation_context()
-            full_prompt = f"{context}## Current Query:\n{prompt}"
-            result = asyncio.run(
-                agent.run(full_prompt, deps=st.session_state.deps)
-            )
-            response = result.output
-            st.session_state.messages.append(
-                {"role": "assistant", "content": response}
-            )
-
-            message_idx = len(st.session_state.messages) - 1
-            structured_result = _extract_structured_result(result)
-            if structured_result:
-                st.session_state.structured_results[message_idx] = (
-                    structured_result
-                )
-
-            store_tool_result(prompt, response)
-        except Exception as e:
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": f"Error: {e}\n\nPlease check your API keys and try again.",
-                }
-            )
-
-    st.rerun()
 
 
 def _extract_structured_result(result):
