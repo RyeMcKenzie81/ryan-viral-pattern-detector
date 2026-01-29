@@ -212,6 +212,7 @@ Keep what's working well and only change what needs to be fixed."""
         self._tracker: Optional[UsageTracker] = None
         self._user_id: Optional[str] = None
         self._org_id: Optional[str] = None
+        self._limit_service = None
         logger.info("ScriptGenerationService initialized")
 
     def set_tracking_context(

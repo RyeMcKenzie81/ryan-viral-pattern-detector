@@ -79,6 +79,7 @@ class GeminiService:
         self._usage_tracker = None
         self._user_id = None
         self._organization_id = None
+        self._limit_service = None
 
         logger.info(f"GeminiService initialized with model: {model}, rate limit: {self._requests_per_minute} req/min")
 

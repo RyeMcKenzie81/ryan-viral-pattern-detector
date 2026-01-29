@@ -434,6 +434,7 @@ THRESHOLDS:
         self._tracker: Optional[UsageTracker] = None
         self._user_id: Optional[str] = None
         self._org_id: Optional[str] = None
+        self._limit_service = None
         logger.info("ComicService initialized")
 
     def set_tracking_context(

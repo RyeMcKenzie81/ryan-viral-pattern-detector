@@ -81,6 +81,7 @@ class VeoService:
         self._usage_tracker = None
         self._user_id = None
         self._organization_id = None
+        self._limit_service = None
 
         logger.info("VeoService initialized")
 
