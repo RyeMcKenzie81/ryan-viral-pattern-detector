@@ -7,6 +7,21 @@
 Before making changes, review these docs:
 - `/docs/architecture.md` - System design and layered architecture
 - `/docs/claude_code_guide.md` - Tool development patterns and best practices
+- `/docs/MULTI_TENANT_AUTH.md` - Multi-tenant auth system (organizations, features, usage tracking)
+
+## Multi-Tenancy Awareness (CRITICAL)
+
+ViralTracker is a multi-tenant application. **Before building any feature**, evaluate:
+
+1. **Data isolation**: Does this query/write data? → Filter by `organization_id`
+2. **Feature gating**: Does this add a new page? → Register in `FeatureKey`, add to `nav.py`, add to Admin
+3. **Usage tracking**: Does this call an AI/API? → Wire up `UsageTracker` and enforce limits
+4. **Session context**: Does this need org/user context? → Use `get_current_organization_id()`, `render_brand_selector()`
+5. **Superuser handling**: Does this filter data? → Handle `"all"` org mode for superusers
+
+See [docs/MULTI_TENANT_AUTH.md](docs/MULTI_TENANT_AUTH.md) for full reference.
+
+---
 
 ## Tech Debt & Future Work
 

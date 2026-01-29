@@ -1,11 +1,11 @@
 # Claude Code Developer Guide - ViralTracker Tool Development
 
-**Version**: 3.0.0
-**Date**: 2025-01-24
+**Version**: 4.0.0
+**Date**: 2026-01-28
 **Target**: AI-assisted development with Claude Code
-**Status**: Pydantic AI Migration Complete ✅
+**Status**: Pydantic AI Migration Complete ✅ | Multi-Tenant Auth Complete ✅
 
-> **System Architecture**: For system design and technical decisions, see [ARCHITECTURE.md](ARCHITECTURE.md) | [Documentation Index](README.md)
+> **System Architecture**: For system design and technical decisions, see [ARCHITECTURE.md](ARCHITECTURE.md) | [Multi-Tenant Auth](MULTI_TENANT_AUTH.md) | [Documentation Index](README.md)
 
 ---
 
@@ -40,7 +40,12 @@ When asked to create a new agent tool, follow this checklist:
 - [ ] Include comprehensive docstring (Google format) - this is sent to the LLM
 - [ ] Add ToolMetadata TypedDict with categorization (NOT sent to LLM)
 
-**Step 3: Test**
+**Step 3: Multi-tenancy considerations** (see [MULTI_TENANT_AUTH.md](MULTI_TENANT_AUTH.md))
+- [ ] Does this tool query/write data? → Filter by `organization_id`
+- [ ] Does this tool call an AI/API? → Wire up `UsageTracker` and enforce limits via `UsageLimitService`
+- [ ] Does this tool need org context? → Access via `ctx.deps.organization_id`
+
+**Step 4: Test**
 - [ ] Test via Python: Import agent and check `agent._function_toolset.tools`
 - [ ] Test via API: Check endpoint appears at `/tools/{tool-name}`
 - [ ] Test via CLI: Run agent with natural language query
@@ -925,6 +930,10 @@ viraltracker/
 │   ├── youtube.py                # YouTubeService
 │   ├── facebook.py               # FacebookService
 │   ├── gemini.py                 # GeminiService (AI)
+│   ├── organization_service.py   # Org CRUD, membership, roles
+│   ├── feature_service.py        # Feature flags per org
+│   ├── usage_tracker.py          # AI/API usage tracking
+│   ├── usage_limit_service.py    # Per-org rate limits
 │   └── models.py                 # Pydantic result models
 │
 └── cli/
@@ -949,12 +958,19 @@ from .tool_registry import tool_registry
 from ..services.models import YourResultModel
 
 # Accessing services
-ctx.deps.twitter      # TwitterService
-ctx.deps.tiktok       # TikTokService
-ctx.deps.youtube      # YouTubeService
-ctx.deps.facebook     # FacebookService
-ctx.deps.gemini       # GeminiService
-ctx.deps.project_name # Current project name
+ctx.deps.twitter        # TwitterService
+ctx.deps.tiktok         # TikTokService
+ctx.deps.youtube        # YouTubeService
+ctx.deps.facebook       # FacebookService
+ctx.deps.gemini         # GeminiService
+ctx.deps.project_name   # Current project name
+
+# Multi-tenant services (available when org context is set)
+ctx.deps.user_id         # Current user UUID
+ctx.deps.organization_id # Current org UUID (or "all" for superuser)
+ctx.deps.usage_tracker   # UsageTracker (track AI/API costs)
+ctx.deps.features        # FeatureService (check feature flags)
+ctx.deps.usage_limits    # UsageLimitService (enforce rate limits)
 
 # Tool metadata (target pattern)
 from .tool_metadata import ToolMetadata, create_tool_metadata
@@ -1206,8 +1222,9 @@ Before considering a tool complete:
 
 ---
 
-**Last Updated**: 2025-01-24
+**Last Updated**: 2026-01-28
 **Pydantic AI Migration**: COMPLETE ✅
+**Multi-Tenant Auth**: COMPLETE ✅ (see [MULTI_TENANT_AUTH.md](MULTI_TENANT_AUTH.md))
 **Status**: Production-ready, all tools using @agent.tool() pattern
 
 ---

@@ -1,7 +1,7 @@
 # ViralTracker Architecture
 
-**Version**: 3.0.0 (Pydantic AI Migration Complete)
-**Last Updated**: 2025-01-24
+**Version**: 4.0.0 (Multi-Tenant Auth Complete)
+**Last Updated**: 2026-01-28
 
 ## Table of Contents
 1. [System Overview](#system-overview)
@@ -14,7 +14,7 @@
 
 ## System Overview
 
-ViralTracker is a multi-platform viral content analysis system built on a three-layer architecture:
+ViralTracker is a **multi-tenant**, multi-platform viral content analysis system built on a three-layer architecture. Each tenant (organization) has isolated data, configurable feature flags, usage tracking, and rate limits. See [MULTI_TENANT_AUTH.md](MULTI_TENANT_AUTH.md) for comprehensive multi-tenancy documentation.
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -53,6 +53,10 @@ ViralTracker is a multi-platform viral content analysis system built on a three-
 - **GeminiService**: AI-powered analysis
 - **StatsService**: Statistical calculations
 - **ScrapingService**: External API integration (Apify, Clockworks)
+- **OrganizationService**: Org CRUD, membership, roles (owner/admin/member/viewer)
+- **FeatureService**: Per-org feature flags (two-tier: sections opt-out, pages opt-in)
+- **UsageTracker**: AI/API usage tracking with cost calculation
+- **UsageLimitService**: Per-org rate limits with fail-open enforcement
 
 **Key Pattern**: Reusable services shared across all interfaces
 
@@ -108,6 +112,16 @@ viraltracker/agent/
 - `video_processing` - Processing status and metrics
 - `video_analysis` - AI analysis results (Hook Intelligence)
 
+### Multi-Tenant Tables
+- `organizations` - Tenants (id, name, slug, owner_user_id)
+- `user_organizations` - Membership with roles (owner/admin/member/viewer)
+- `user_profiles` - Extended user data (is_superuser flag)
+- `org_features` - Feature flags per org (two-tier: sections/pages)
+- `token_usage` - AI/API usage tracking (provider, model, tokens, cost)
+- `usage_limits` - Per-org rate limits (monthly_tokens, monthly_cost, daily_ads, daily_requests)
+
+See [MULTI_TENANT_AUTH.md](MULTI_TENANT_AUTH.md) for full schema details.
+
 ### Comment Finder Tables (V1.7)
 - `generated_comments` - AI-generated suggestions with lifecycle
 - `tweet_snapshot` - Historical engagement metrics
@@ -120,6 +134,10 @@ viraltracker/agent/
 generated_comments.tweet_id → posts.post_id
 posts.account_id → accounts.account_id
 accounts.platform_id → platforms.platform_id
+brands.organization_id → organizations.id
+user_organizations.user_id → auth.users.id
+user_organizations.organization_id → organizations.id
+token_usage.organization_id → organizations.id
 ```
 
 ## Tool Registry Pattern
@@ -250,4 +268,5 @@ The key question: **Who decides what happens next—the AI or the user?**
 **Related Documentation**:
 - [Developer Guide](DEVELOPER_GUIDE.md) - How to add agents, tools, services
 - [Claude Code Guide](CLAUDE_CODE_GUIDE.md) - AI-assisted development patterns
+- [Multi-Tenant Auth](MULTI_TENANT_AUTH.md) - Organizations, feature flags, usage tracking, data isolation
 - [Documentation Index](README.md) - Return to main documentation hub
