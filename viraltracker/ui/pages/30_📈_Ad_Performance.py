@@ -14,10 +14,6 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config (must be first)
 st.set_page_config(
     page_title="Ad Performance",
@@ -43,14 +39,11 @@ if "ad_analysis_result" not in st.session_state:
 if "analyzing_ad" not in st.session_state:
     st.session_state.analyzing_ad = False
 
-
 # Session state for linking
 if "ad_perf_match_suggestions" not in st.session_state:
     st.session_state.ad_perf_match_suggestions = None  # List of match suggestions
 if "ad_perf_linking_ad" not in st.session_state:
     st.session_state.ad_perf_linking_ad = None  # Meta ad being manually linked
-
-
 
 # =============================================================================
 # Helper Functions
@@ -61,24 +54,20 @@ def get_supabase_client():
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_meta_ads_service():
     """Get MetaAdsService instance (lazy import to avoid init issues)."""
     from viraltracker.services.meta_ads_service import MetaAdsService
     return MetaAdsService()
-
 
 def get_brand_research_service():
     """Get BrandResearchService instance."""
     from viraltracker.services.brand_research_service import BrandResearchService
     return BrandResearchService()
 
-
 def get_angle_candidate_service():
     """Get AngleCandidateService instance."""
     from viraltracker.services.angle_candidate_service import AngleCandidateService
     return AngleCandidateService()
-
 
 def get_products_for_brand(brand_id: str) -> List[Dict]:
     """Get products for a brand."""
@@ -90,7 +79,6 @@ def get_products_for_brand(brand_id: str) -> List[Dict]:
         return result.data or []
     except Exception:
         return []
-
 
 def save_ad_analysis_as_candidate(
     product_id: str,
@@ -122,7 +110,6 @@ def save_ad_analysis_as_candidate(
         source_ad_id=meta_ad_id,
         brand_id=UUID(brand_id),
     )
-
 
 def fetch_real_ad_copy(meta_ad_id: str) -> Optional[str]:
     """
@@ -164,11 +151,6 @@ def fetch_real_ad_copy(meta_ad_id: str) -> Optional[str]:
         # Fail silently and fall back to ad name
         return None
 
-
-
-
-
-
 def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
     """Get the Meta ad account linked to a brand."""
     try:
@@ -180,7 +162,6 @@ def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
     except Exception as e:
         st.error(f"Failed to fetch ad account: {e}")
         return None
-
 
 def get_performance_data(
     brand_id: str,
@@ -208,7 +189,6 @@ def get_performance_data(
         st.error(f"Failed to fetch performance data: {e}")
         return []
 
-
 def get_linked_ads(brand_id: str) -> List[Dict]:
     """Get ads that are linked between ViralTracker and Meta."""
     try:
@@ -221,7 +201,6 @@ def get_linked_ads(brand_id: str) -> List[Dict]:
         st.error(f"Failed to fetch linked ads: {e}")
         return []
 
-
 def get_linked_meta_ad_ids() -> set:
     """Get set of Meta ad IDs that are already linked."""
     try:
@@ -230,7 +209,6 @@ def get_linked_meta_ad_ids() -> set:
         return set(r["meta_ad_id"] for r in (result.data or []))
     except Exception:
         return set()
-
 
 def get_generated_ads_for_linking(brand_id: str, limit: int = 100) -> List[Dict]:
     """Get generated ads for manual linking picker."""
@@ -262,18 +240,15 @@ def get_generated_ads_for_linking(brand_id: str, limit: int = 100) -> List[Dict]
         st.error(f"Failed to fetch generated ads: {e}")
         return []
 
-
 async def find_auto_matches(brand_id: str) -> List[Dict]:
     """Find auto-match suggestions using MetaAdsService."""
     service = get_meta_ads_service()
     return await service.auto_match_ads(brand_id=UUID(brand_id))
 
-
 async def fetch_missing_thumbnails(brand_id: str) -> int:
     """Fetch thumbnails for ads that don't have them."""
     service = get_meta_ads_service()
     return await service.update_missing_thumbnails(brand_id=UUID(brand_id), limit=50)
-
 
 def create_ad_link(
     generated_ad_id: str,
@@ -301,7 +276,6 @@ def create_ad_link(
         st.error(f"Failed to create link: {e}")
         return False
 
-
 def delete_ad_link(meta_ad_id: str) -> bool:
     """Remove a link between generated ad and Meta ad."""
     try:
@@ -311,7 +285,6 @@ def delete_ad_link(meta_ad_id: str) -> bool:
     except Exception as e:
         st.error(f"Failed to remove link: {e}")
         return False
-
 
 def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
     """
@@ -356,7 +329,6 @@ def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
         st.error(f"Failed to get legacy ads: {e}")
         return []
 
-
 def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
     """Get a signed URL for a storage path."""
     if not storage_path:
@@ -376,7 +348,6 @@ def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
         return result.get("signedURL")
     except Exception:
         return None
-
 
 def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
     """Aggregate performance metrics across all ads."""
@@ -430,7 +401,6 @@ def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
         "campaign_count": len(unique_campaigns),
         "adset_count": len(unique_adsets)
     }
-
 
 def aggregate_time_series(data: List[Dict]) -> Dict[str, List[Dict]]:
     """
@@ -486,7 +456,6 @@ def aggregate_time_series(data: List[Dict]) -> Dict[str, List[Dict]]:
 
     return result
 
-
 def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -> List[Dict]:
     """
     Get top N performing ads by a specified metric.
@@ -512,7 +481,6 @@ def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -
 
     return sorted_ads[:top_n]
 
-
 def get_worst_performers(data: List[Dict], metric: str = "roas", bottom_n: int = 5, min_spend: float = 10.0) -> List[Dict]:
     """
     Get bottom N performing ads by a specified metric.
@@ -537,7 +505,6 @@ def get_worst_performers(data: List[Dict], metric: str = "roas", bottom_n: int =
         sorted_ads = ads_with_spend
 
     return sorted_ads[:bottom_n]
-
 
 def export_to_csv(data: List[Dict]) -> str:
     """
@@ -584,7 +551,6 @@ def export_to_csv(data: List[Dict]) -> str:
 
     return output.getvalue()
 
-
 async def sync_ads_from_meta(
     brand_id: str,
     ad_account_id: str,
@@ -611,7 +577,6 @@ async def sync_ads_from_meta(
     )
 
     return count
-
 
 def analyze_ad_creative(
     creative_file: Optional[Any] = None,
@@ -708,8 +673,6 @@ def analyze_ad_creative(
     }
     return result
 
-
-
 # =============================================================================
 # UI Components
 # =============================================================================
@@ -791,7 +754,6 @@ def render_metric_cards(metrics: Dict[str, Any]):
             help="Total purchase revenue"
         )
 
-
 def render_time_series_charts(data: List[Dict]):
     """Render time-series charts for key metrics."""
     import pandas as pd
@@ -837,7 +799,6 @@ def render_time_series_charts(data: List[Dict]):
 
         st.subheader(f"{metric} Over Time")
         st.line_chart(chart_df, height=250)
-
 
 def render_analysis_result(result: Dict):
     """Render the ad analysis result with 'Create Plan' and 'Save as Candidate' actions."""
@@ -904,7 +865,6 @@ def render_analysis_result(result: Dict):
 
         st.json(result)
 
-
 def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result: Dict):
     """Render UI for saving analysis as an angle candidate."""
     # Get brand from shared selector
@@ -952,9 +912,6 @@ def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result
 
         except Exception as e:
             st.error(f"Failed to save: {e}")
-
-
-
 
 def render_top_performers(data: List[Dict]):
     """Render top and worst performers section."""
@@ -1134,7 +1091,6 @@ def render_top_performers(data: List[Dict]):
         else:
             st.info("No underperforming ads (or none with min $10 spend)")
 
-
 def render_csv_export(data: List[Dict]):
     """Render CSV export button."""
     if not data:
@@ -1151,7 +1107,6 @@ def render_csv_export(data: List[Dict]):
             help="Download performance data as CSV"
         )
 
-
 def get_status_emoji(status: str) -> str:
     """Get emoji for ad status."""
     status_map = {
@@ -1163,7 +1118,6 @@ def get_status_emoji(status: str) -> str:
         "DISAPPROVED": "❌",
     }
     return status_map.get(status.upper() if status else "", "⚫")
-
 
 def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by ad (across all dates in range)."""
@@ -1228,7 +1182,6 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
 
-
 def render_ads_table(data: List[Dict], show_link_button: bool = False):
     """Render ads performance table with aggregated data."""
     import pandas as pd
@@ -1274,7 +1227,6 @@ def render_ads_table(data: List[Dict], show_link_button: bool = False):
             "ROAS": st.column_config.TextColumn("ROAS", width="small"),
         }
     )
-
 
 def derive_delivery_status(ad_statuses: set) -> str:
     """
@@ -1327,7 +1279,6 @@ def derive_delivery_status(ad_statuses: set) -> str:
             return check.replace("_", " ").title()
 
     return "Off"
-
 
 def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by campaign."""
@@ -1411,7 +1362,6 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
 
-
 def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by ad set."""
     from collections import defaultdict
@@ -1494,7 +1444,6 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
 
-
 def render_campaigns_table(data: List[Dict]):
     """Render campaigns summary table."""
     import pandas as pd
@@ -1522,7 +1471,6 @@ def render_campaigns_table(data: List[Dict]):
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
-
 
 def render_adsets_table(data: List[Dict]):
     """Render ad sets summary table."""
@@ -1552,7 +1500,6 @@ def render_adsets_table(data: List[Dict]):
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-
 def render_filter_bar():
     """Render filter bar showing active filters with clear buttons."""
     selected_campaign = st.session_state.ad_perf_selected_campaign
@@ -1575,7 +1522,6 @@ def render_filter_bar():
             st.session_state.ad_perf_selected_campaign = None
             st.session_state.ad_perf_selected_adset = None
             st.rerun()
-
 
 def render_campaigns_table_fb(data: List[Dict]):
     """Render campaigns table with clickable names using AG Grid."""
@@ -1694,7 +1640,6 @@ def render_campaigns_table_fb(data: List[Dict]):
     **Totals ({len(campaigns)}):** Spend **${total_spend:,.2f}** · Impr **{total_impr:,}** ·
     Clicks **{total_clicks:,}** · CTR **{total_ctr:.1f}%** · ATC **{total_atc:,}** · Purchases **{total_purch:,}**
     """)
-
 
 def render_adsets_table_fb(data: List[Dict]):
     """Render ad sets table with clickable names using AG Grid."""
@@ -1820,7 +1765,6 @@ def render_adsets_table_fb(data: List[Dict]):
     Clicks **{total_clicks:,}** · CTR **{total_ctr:.1f}%** · ATC **{total_atc:,}** · Purchases **{total_purch:,}**
     """)
 
-
 def render_ads_table_fb(data: List[Dict]):
     """Render ads table Facebook-style with totals."""
     import pandas as pd
@@ -1894,7 +1838,6 @@ def render_ads_table_fb(data: List[Dict]):
     ATC: **{totals['ATC']:,}** · Purchases: **{totals['Purchases']:,}**
     """)
 
-
 def render_sync_section(brand_id: str, ad_account: Dict):
     """Render the sync controls section."""
     st.subheader("Sync Data from Meta")
@@ -1936,7 +1879,6 @@ def render_sync_section(brand_id: str, ad_account: Dict):
 
     # Scheduling section
     render_sync_scheduling(brand_id)
-
 
 def render_sync_scheduling(brand_id: str):
     """Render the automated sync scheduling UI."""
@@ -2056,7 +1998,6 @@ def render_sync_scheduling(brand_id: str):
             except Exception as e:
                 st.error(f"Failed to create schedule: {e}")
 
-
 def render_setup_instructions(brand_id: str):
     """Render setup instructions and form when no ad account is linked."""
     st.warning("No Meta Ad Account linked to this brand.")
@@ -2118,7 +2059,6 @@ def render_setup_instructions(brand_id: str):
     **Note:** You also need `META_GRAPH_API_TOKEN` set in your environment.
     Get a token from [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
     """)
-
 
 # =============================================================================
 # Linking UI Components
@@ -2217,7 +2157,6 @@ def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
 
             st.divider()
 
-
 def render_manual_link_modal(meta_ad: Dict, brand_id: str, ad_account_id: str):
     """Render modal for manually linking a Meta ad to a generated ad."""
     st.subheader("🔗 Link to Generated Ad")
@@ -2272,7 +2211,6 @@ def render_manual_link_modal(meta_ad: Dict, brand_id: str, ad_account_id: str):
                 st.success("✓ Ad linked successfully!")
                 st.session_state.ad_perf_linking_ad = None
                 st.rerun()
-
 
 def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
     """Render the Linked ads tab with performance data."""
@@ -2336,7 +2274,6 @@ def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
     total_spend = sum(a["spend"] for a in ads)
     total_purchases = sum(a["purchases"] for a in ads)
     st.markdown(f"**{len(ads)} linked ads** · Spend: **${total_spend:,.2f}** · Purchases: **{total_purchases:,}**")
-
 
 def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id: str):
     """Render ads table with link/unlink buttons."""
@@ -2462,7 +2399,6 @@ def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id
     total_clicks = sum(a["link_clicks"] for a in ads)
     active_count = sum(1 for a in ads if a.get("ad_status", "").upper() == "ACTIVE")
     st.markdown(f"**{len(ads)} ads** ({active_count} active) · Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** · Clicks: **{total_clicks:,}**")
-
 
 # =============================================================================
 # Main Page
@@ -3147,10 +3083,8 @@ elif selected_tab == "🔗 Linked":
         else:
             st.success("✅ All legacy ads are linked!")
 
-
 elif selected_tab == "🧪 Manual Analysis":
     render_manual_analysis_tab()
-
 
 # Footer with data info
 if perf_data:

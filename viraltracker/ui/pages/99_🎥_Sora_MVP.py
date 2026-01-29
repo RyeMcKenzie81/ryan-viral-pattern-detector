@@ -10,10 +10,6 @@ from viraltracker.core.config import Config
 from viraltracker.services.content_pipeline.services.sora_service import SoraService
 from viraltracker.ui.auth import require_auth
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Auth protection
 # Auth protection
 st.set_page_config(
@@ -79,7 +75,6 @@ with st.expander("Configuration", expanded=True):
             st.warning("⚠️ PRO model ($0.50/s)")
         else:
             st.success("✅ Standard model ($0.10/s)")
-
 
 # Main Interface
 col1, col2 = st.columns([2, 1])

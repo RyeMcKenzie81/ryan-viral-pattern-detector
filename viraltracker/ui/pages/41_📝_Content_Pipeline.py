@@ -21,9 +21,6 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
 
-import nest_asyncio
-nest_asyncio.apply()
-
 logger = logging.getLogger(__name__)
 
 # Page config
@@ -43,7 +40,6 @@ require_feature("content_pipeline", "Content Pipeline")
 from viraltracker.services.comic_video.models import (
     MOOD_EFFECT_PRESETS, PanelMood, EffectType, TransitionType, CameraEasing, PanelOverrides
 )
-
 
 def get_mood_effects(mood_str: str) -> Dict[str, bool]:
     """Get which effects a mood preset enables."""
@@ -71,7 +67,6 @@ def get_mood_effects(mood_str: str) -> Dict[str, bool]:
     except (ValueError, KeyError):
         return {"vignette": False, "shake": False, "golden_glow": False, "pulse": False, "red_glow": False, "color_tint": False}
 
-
 async def save_panel_overrides(project_id: str, panel_number: int, overrides: dict):
     """Save panel overrides."""
     from viraltracker.services.comic_video import ComicDirectorService
@@ -79,13 +74,11 @@ async def save_panel_overrides(project_id: str, panel_number: int, overrides: di
     panel_overrides = PanelOverrides(panel_number=panel_number, **overrides)
     return await service.save_overrides(project_id, panel_number, panel_overrides)
 
-
 async def clear_panel_overrides(project_id: str, panel_number: int):
     """Clear panel overrides (reset to auto)."""
     from viraltracker.services.comic_video import ComicDirectorService
     service = ComicDirectorService()
     return await service.clear_overrides(project_id, panel_number)
-
 
 # Initialize session state
 if 'pipeline_project_id' not in st.session_state:
@@ -150,12 +143,10 @@ if 'comic_exporting' not in st.session_state:
 if 'comic_revising' not in st.session_state:
     st.session_state.comic_revising = False
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_doc_service():
     """Get DocService instance with usage tracking."""
@@ -180,7 +171,6 @@ def get_doc_service():
 
     return service
 
-
 def get_gemini_service():
     """Get GeminiService instance with usage tracking."""
     from viraltracker.services.gemini_service import GeminiService
@@ -201,7 +191,6 @@ def get_gemini_service():
     except ValueError:
         return None
 
-
 def get_content_pipeline_service():
     """Get ContentPipelineService instance."""
     from viraltracker.services.content_pipeline.services.content_pipeline_service import ContentPipelineService
@@ -210,14 +199,12 @@ def get_content_pipeline_service():
     gemini = get_gemini_service()
     return ContentPipelineService(supabase_client=db, docs_service=docs, gemini_service=gemini)
 
-
 def get_asset_service():
     """Get AssetManagementService instance."""
     from viraltracker.services.content_pipeline.services.asset_service import AssetManagementService
     db = get_supabase_client()
     gemini = get_gemini_service()
     return AssetManagementService(supabase_client=db, gemini_service=gemini)
-
 
 def get_asset_generation_service():
     """Get AssetGenerationService instance."""
@@ -232,14 +219,12 @@ def get_asset_generation_service():
         elevenlabs_api_key=elevenlabs_key
     )
 
-
 def get_topic_service():
     """Get TopicDiscoveryService instance."""
     from viraltracker.services.content_pipeline.services.topic_service import TopicDiscoveryService
     db = get_supabase_client()
     docs = get_doc_service()
     return TopicDiscoveryService(supabase_client=db, docs_service=docs)
-
 
 def get_script_service():
     """Get ScriptGenerationService instance with tracking enabled."""
@@ -250,7 +235,6 @@ def get_script_service():
     service = ScriptGenerationService(supabase_client=db, docs_service=docs)
     setup_tracking_context(service)
     return service
-
 
 def get_handoff_service():
     """Get EditorHandoffService instance."""
@@ -265,7 +249,6 @@ def get_handoff_service():
         asset_service=asset_service
     )
 
-
 def get_comic_service():
     """Get ComicService instance with tracking enabled."""
     from viraltracker.services.content_pipeline.services.comic_service import ComicService
@@ -275,7 +258,6 @@ def get_comic_service():
     service = ComicService(supabase_client=db, docs_service=docs)
     setup_tracking_context(service)
     return service
-
 
 def get_script_data_for_project(project_id: str) -> Optional[Dict]:
     """Load the approved script data for a project."""
@@ -296,7 +278,6 @@ def get_script_data_for_project(project_id: str) -> Optional[Dict]:
         return script_content
     except Exception:
         return None
-
 
 def get_beat_context(script_data: Optional[Dict], script_reference: Any) -> str:
     """
@@ -352,7 +333,6 @@ def get_beat_context(script_data: Optional[Dict], script_reference: Any) -> str:
 
     return "\n".join(contexts)
 
-
 def _build_prompt_preview(asset_name: str, asset_type: str, description: str) -> str:
     """Build a preview of the prompt that will be used for generation."""
     style = (
@@ -405,12 +385,10 @@ Requirements:
     else:
         return f"{description}. {style}"
 
-
 def get_brands():
     """Fetch brands filtered by current organization."""
     from viraltracker.ui.utils import get_brands as get_org_brands
     return get_org_brands()
-
 
 def get_projects_for_brand(brand_id: str) -> List[Dict]:
     """Fetch content projects for a brand."""
@@ -424,7 +402,6 @@ def get_projects_for_brand(brand_id: str) -> List[Dict]:
         st.error(f"Failed to fetch projects: {e}")
         return []
 
-
 def get_topics_for_project(project_id: str) -> List[Dict]:
     """Fetch topic suggestions for a project."""
     try:
@@ -436,7 +413,6 @@ def get_topics_for_project(project_id: str) -> List[Dict]:
     except Exception as e:
         st.error(f"Failed to fetch topics: {e}")
         return []
-
 
 def render_topic_card(topic: Dict, idx: int, project_id: str):
     """Render a single topic suggestion card."""
@@ -514,7 +490,6 @@ def render_topic_card(topic: Dict, idx: int, project_id: str):
 
         st.divider()
 
-
 def select_topic(topic_id: str, project_id: str):
     """Mark a topic as selected."""
     try:
@@ -548,7 +523,6 @@ def select_topic(topic_id: str, project_id: str):
     except Exception as e:
         st.error(f"Failed to select topic: {e}")
 
-
 async def run_topic_discovery(brand_id: str, project_id: str, num_topics: int, focus_areas: List[str]):
     """Run topic discovery asynchronously."""
     service = get_topic_service()
@@ -574,7 +548,6 @@ async def run_topic_discovery(brand_id: str, project_id: str, num_topics: int, f
 
     return topics
 
-
 def render_project_dashboard():
     """Render the main project dashboard."""
     st.header("📝 Content Pipeline")
@@ -593,7 +566,6 @@ def render_project_dashboard():
 
     with tab2:
         render_new_project_form(brand_id)
-
 
 def render_projects_list(brand_id: str):
     """Render list of existing projects."""
@@ -624,7 +596,6 @@ def render_projects_list(brand_id: str):
                 if st.button("Open", key=f"open_project_{project.get('id')}"):
                     st.session_state.pipeline_project_id = project.get('id')
                     st.rerun()
-
 
 def render_new_project_form(brand_id: str):
     """Render form to create a new project."""
@@ -706,7 +677,6 @@ def render_new_project_form(brand_id: str):
             except Exception as e:
                 st.error(f"Failed to create project: {e}")
 
-
 def render_project_detail(project_id: str):
     """Render detailed view of a single project."""
     try:
@@ -738,7 +708,6 @@ def render_project_detail(project_id: str):
         render_script_view(project)
     else:
         st.info(f"Workflow state '{workflow_state}' not yet implemented")
-
 
 def render_topic_selection_view(project: Dict):
     """Render the topic selection interface."""
@@ -804,7 +773,6 @@ def render_topic_selection_view(project: Dict):
                     except Exception as e:
                         st.error(f"Discovery failed: {e}")
 
-
 async def run_script_generation(project_id: str, topic: Dict, brand_id: str):
     """Run script generation asynchronously."""
     service = get_script_service()
@@ -824,7 +792,6 @@ async def run_script_generation(project_id: str, topic: Dict, brand_id: str):
 
     return script_data
 
-
 async def run_script_review(script_data: Dict, brand_id: str):
     """Run script review asynchronously."""
     service = get_script_service()
@@ -835,7 +802,6 @@ async def run_script_review(script_data: Dict, brand_id: str):
     )
 
     return review_result
-
 
 def render_script_view(project: Dict):
     """Render the script generation and review interface."""
@@ -883,7 +849,6 @@ def render_script_view(project: Dict):
 
     with tab8:
         render_comic_tab(project)
-
 
 def render_script_generation_tab(project: Dict):
     """Render the script generation tab."""
@@ -963,7 +928,6 @@ def render_script_generation_tab(project: Dict):
                     st.session_state.script_generating = False
                     st.error(f"Script generation failed: {e}")
 
-
 def render_script_beats(script_data: Dict):
     """Render the script beats in a readable format."""
     st.markdown(f"**Title:** {script_data.get('title', 'Untitled')}")
@@ -982,7 +946,6 @@ def render_script_beats(script_data: Dict):
                     st.markdown(f"**Visuals:** {beat.get('visual_notes')}")
                 if beat.get('audio_notes'):
                     st.markdown(f"**Audio:** {beat.get('audio_notes')}")
-
 
 def render_script_review_tab(project: Dict):
     """Render the script review tab."""
@@ -1045,7 +1008,6 @@ def render_script_review_tab(project: Dict):
 
                 except Exception as e:
                     st.error(f"Review failed: {e}")
-
 
 def render_review_results(review: Dict, show_checkboxes: bool = False) -> List[Dict]:
     """Render review checklist results with optional selection checkboxes.
@@ -1175,7 +1137,6 @@ def render_review_results(review: Dict, show_checkboxes: bool = False) -> List[D
 
     return failed_items
 
-
 def build_revision_prompt_from_selections(
     failed_items: List[Dict],
     selected_keys: set
@@ -1222,7 +1183,6 @@ def build_revision_prompt_from_selections(
         prompt_lines.append("")
 
     return "\n".join(prompt_lines)
-
 
 async def run_script_revision_and_review(
     project_id: str,
@@ -1285,7 +1245,6 @@ async def run_script_revision_and_review(
         "revised_script": revised_script,
         "review_result": review_result
     }
-
 
 def render_script_approval_tab(project: Dict):
     """Render the script approval tab with interactive revision selection."""
@@ -1521,7 +1480,6 @@ def render_script_approval_tab(project: Dict):
                         st.session_state.revision_running = False
                         st.error(f"Manual revision failed: {e}")
 
-
 # =========================================================================
 # Audio Tab Functions (MVP 3)
 # =========================================================================
@@ -1531,18 +1489,15 @@ def get_audio_production_service():
     from viraltracker.services.audio_production_service import AudioProductionService
     return AudioProductionService()
 
-
 def get_els_parser_service():
     """Get ELSParserService instance."""
     from viraltracker.services.els_parser_service import ELSParserService
     return ELSParserService()
 
-
 def get_elevenlabs_service():
     """Get ElevenLabsService instance."""
     from viraltracker.services.elevenlabs_service import ElevenLabsService
     return ElevenLabsService()
-
 
 async def run_els_conversion(project_id: str, script_version_id: str, script_data: Dict, brand_id: str):
     """Convert script to ELS format and save to database."""
@@ -1559,7 +1514,6 @@ async def run_els_conversion(project_id: str, script_version_id: str, script_dat
     )
 
     return {"els_id": str(els_id), "els_content": els_content}
-
 
 async def run_audio_generation(project_id: str, els_content: str, els_version_id: str):
     """Create audio session and generate audio for all beats."""
@@ -1649,7 +1603,6 @@ async def run_audio_generation(project_id: str, els_content: str, els_version_id
         "successful": sum(1 for r in results if r["status"] == "success")
     }
 
-
 async def regenerate_single_beat(session_id: str, beat_id: str, beat_info: Dict, session: Dict):
     """Regenerate audio for a single beat."""
     from pathlib import Path
@@ -1725,7 +1678,6 @@ async def regenerate_single_beat(session_id: str, beat_id: str, beat_info: Dict,
     local_file.unlink(missing_ok=True)
 
     return take
-
 
 def render_audio_tab(project: Dict):
     """Render the audio production tab."""
@@ -1880,7 +1832,6 @@ def render_audio_tab(project: Dict):
                     st.session_state.audio_generating = False
                     st.error(f"Audio generation failed: {e}")
 
-
 def render_audio_session_details(session: Dict, project_id: str):
     """Render the audio session details with playback and take management."""
     session_id = session.get('id')
@@ -2030,7 +1981,6 @@ def render_audio_session_details(session: Dict, project_id: str):
     else:
         st.warning(f"Select takes for all beats before completing. ({selected_count}/{total_beats} selected)")
 
-
 def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Optional[Dict] = None, take_number: int = 1, total_takes: int = 1):
     """Render a single audio take with playback controls."""
     take_id = take.get('id')
@@ -2103,7 +2053,6 @@ def render_audio_take(take: Dict, session_id: str, beat_id: str, beat_info: Opti
             st.session_state[f"regenerating_{beat_id}"] = True
             st.rerun()
 
-
 # =========================================================================
 # Assets Tab Functions (MVP 4)
 # =========================================================================
@@ -2125,7 +2074,6 @@ async def run_asset_extraction(script_version_id: str, script_data: Dict, brand_
     )
 
     return {"matched": matched, "unmatched": unmatched, "all": matched + unmatched}
-
 
 def render_assets_tab(project: Dict):
     """Render the assets management tab."""
@@ -2194,7 +2142,6 @@ def render_assets_tab(project: Dict):
 
     with asset_tab5:
         render_asset_upload(brand_id)
-
 
 def render_asset_extraction(project_id: str, brand_id: str, current_script: Dict, script_data: Dict, existing_requirements: List[Dict]):
     """Render the asset extraction interface."""
@@ -2302,7 +2249,6 @@ def render_asset_extraction(project_id: str, brand_id: str, current_script: Dict
             except Exception as e:
                 st.session_state.asset_extracting = False
                 st.error(f"Asset extraction failed: {e}")
-
 
 def render_asset_generation(project_id: str, brand_id: str, existing_requirements: List[Dict]):
     """Render the asset generation interface."""
@@ -2478,7 +2424,6 @@ def render_asset_generation(project_id: str, brand_id: str, existing_requirement
                         ).eq("id", req.get('id')).execute()
                         st.rerun()
 
-
 def render_asset_review(project_id: str, brand_id: str, existing_requirements: List[Dict]):
     """Render the asset review/approval interface."""
     st.markdown("### Review Generated Assets")
@@ -2622,7 +2567,6 @@ def render_asset_review(project_id: str, brand_id: str, existing_requirements: L
 
             st.divider()
 
-
 def render_requirement_list(requirements: List[Dict], project_id: str):
     """Render a list of asset requirements."""
     for req in requirements:
@@ -2680,7 +2624,6 @@ def render_requirement_list(requirements: List[Dict], project_id: str):
                     pass
 
         st.divider()
-
 
 def render_asset_library(brand_id: str):
     """Render the asset library browser."""
@@ -2746,7 +2689,6 @@ def render_asset_library(brand_id: str):
                 if tags:
                     st.caption(f"Tags: {', '.join(tags[:3])}")
 
-
 def render_asset_upload(brand_id: str):
     """Render the asset upload interface."""
 
@@ -2761,7 +2703,6 @@ def render_asset_upload(brand_id: str):
 
     with upload_tab3:
         render_json_import(brand_id)
-
 
 def render_single_asset_upload(brand_id: str):
     """Render single asset upload form with file upload support."""
@@ -2864,7 +2805,6 @@ def render_single_asset_upload(brand_id: str):
             except Exception as e:
                 st.error(f"Failed to add asset: {e}")
 
-
 def render_batch_file_upload(brand_id: str):
     """Render batch file upload interface."""
     st.markdown("#### Batch File Upload")
@@ -2957,7 +2897,6 @@ def render_batch_file_upload(brand_id: str):
 
             st.rerun()
 
-
 def render_json_import(brand_id: str):
     """Render JSON import interface."""
     st.markdown("#### JSON Import")
@@ -3017,7 +2956,6 @@ def render_json_import(brand_id: str):
 
             except json.JSONDecodeError as e:
                 st.error(f"Invalid JSON: {e}")
-
 
 # =========================================================================
 # SFX Tab Functions
@@ -3083,7 +3021,6 @@ def render_sfx_tab(project: Dict):
 
     with sfx_tab3:
         render_sfx_review(project_id, existing_sfx)
-
 
 def render_sfx_extract(project_id: str, script_content: Dict, existing_sfx: List[Dict]):
     """Render the SFX extraction interface."""
@@ -3171,7 +3108,6 @@ def render_sfx_extract(project_id: str, script_content: Dict, existing_sfx: List
                 with col3:
                     duration = sfx.get('duration_seconds', 2.0)
                     st.caption(f"{duration}s")
-
 
 def render_sfx_generate(project_id: str, brand_id: str, existing_sfx: List[Dict]):
     """Render the SFX generation interface."""
@@ -3289,7 +3225,6 @@ def render_sfx_generate(project_id: str, brand_id: str, existing_sfx: List[Dict]
                         ).eq("id", sfx.get('id')).execute()
                         st.rerun()
 
-
 async def generate_single_sfx(sfx: Dict, brand_id: str, duration: float):
     """Generate a single SFX and save to storage."""
     db = get_supabase_client()
@@ -3335,7 +3270,6 @@ async def generate_single_sfx(sfx: Dict, brand_id: str, duration: float):
             "rejection_reason": str(e)
         }).eq("id", sfx_id).execute()
         raise
-
 
 def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
     """Render the SFX review/approval interface."""
@@ -3443,7 +3377,6 @@ def render_sfx_review(project_id: str, existing_sfx: List[Dict]):
                     st.rerun()
 
             st.divider()
-
 
 # =========================================================================
 # Handoff Tab Functions (MVP 6)
@@ -3618,7 +3551,6 @@ def render_handoff_tab(project: Dict):
                 st.session_state.handoff_generating = False
                 st.error(f"Failed to generate handoff: {e}")
 
-
 # =============================================================================
 # Comic Tab (Phase 8)
 # =============================================================================
@@ -3674,7 +3606,6 @@ def render_comic_tab(project: Dict):
 
     with comic_tab6:
         render_comic_video_tab(project, existing_comics)
-
 
 def render_comic_condense_tab(project: Dict, existing_comics: List[Dict]):
     """Render the comic condensation sub-tab."""
@@ -3784,7 +3715,6 @@ def render_comic_condense_tab(project: Dict, existing_comics: List[Dict]):
             except Exception as e:
                 st.session_state.comic_condensing = False
                 st.error(f"Condensation failed: {e}")
-
 
 def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
     """Render the comic evaluation sub-tab."""
@@ -4012,7 +3942,6 @@ def render_comic_evaluate_tab(project: Dict, existing_comics: List[Dict]):
                 st.session_state.comic_revising = False
                 st.error(f"Revision failed: {e}")
 
-
 def render_comic_approve_tab(project: Dict, existing_comics: List[Dict]):
     """Render the comic approval sub-tab."""
     project_id = project.get('id')
@@ -4078,7 +4007,6 @@ def render_comic_approve_tab(project: Dict, existing_comics: List[Dict]):
     with col2:
         if st.button("Request Revision", type="secondary"):
             st.info("Revision feature coming soon. Create a new version in the Condense tab.")
-
 
 def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
     """Render the comic image generation sub-tab."""
@@ -4431,7 +4359,6 @@ def render_comic_image_tab(project: Dict, existing_comics: List[Dict]):
                 st.session_state.comic_image_evaluating = False
                 st.error(f"Image evaluation failed: {e}")
 
-
 def render_comic_image_evaluation(eval_data: Dict):
     """Render comic image evaluation results."""
     if isinstance(eval_data, str):
@@ -4496,7 +4423,6 @@ def render_comic_image_evaluation(eval_data: Dict):
         with st.expander("Suggestions"):
             for s in suggestions:
                 st.markdown(f"- {s}")
-
 
 def render_comic_export_tab(project: Dict, existing_comics: List[Dict]):
     """Render the comic export (JSON) sub-tab."""
@@ -4635,7 +4561,6 @@ def render_comic_export_tab(project: Dict, existing_comics: List[Dict]):
             except Exception as e:
                 st.session_state.comic_exporting = False
                 st.error(f"Export generation failed: {e}")
-
 
 def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
     """Render the comic video generation sub-tab.
@@ -5181,7 +5106,6 @@ def render_comic_video_tab(project: Dict, existing_comics: List[Dict]):
                 except Exception as e:
                     st.error(f"Failed to create video project: {e}")
 
-
 def render_comic_preview(comic_data: Dict):
     """Render a preview of the comic panels."""
     st.markdown("#### Comic Preview")
@@ -5214,7 +5138,6 @@ def render_comic_preview(comic_data: Dict):
                         st.markdown(f"*{panel.get('character', 'unknown')}*: {panel.get('expression', '')}")
                         st.markdown(f'"{panel.get("dialogue", "")}"')
                         st.caption(panel.get('visual_description', ''))
-
 
 def render_comic_evaluation(eval_results: Dict):
     """Render comic evaluation results."""
@@ -5264,7 +5187,6 @@ def render_comic_evaluation(eval_results: Dict):
             for s in suggestions:
                 st.markdown(f"- {s}")
 
-
 # Main app flow
 def main():
     # Check if viewing a specific project
@@ -5272,7 +5194,6 @@ def main():
         render_project_detail(st.session_state.pipeline_project_id)
     else:
         render_project_dashboard()
-
 
 # Run the app
 if __name__ == "__main__":

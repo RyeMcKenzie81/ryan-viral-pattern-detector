@@ -14,10 +14,6 @@ from datetime import datetime
 from uuid import UUID
 import base64
 
-# Apply nest_asyncio for Streamlit compatibility
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config (must be first Streamlit call)
 st.set_page_config(
     page_title="Veo Avatars",
@@ -39,7 +35,6 @@ if 'generating_video' not in st.session_state:
 if 'generation_result' not in st.session_state:
     st.session_state.generation_result = None
 
-
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -48,7 +43,6 @@ def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_avatar_service():
     """Create fresh AvatarService instance with usage tracking."""
@@ -67,7 +61,6 @@ def get_avatar_service():
 
     return service
 
-
 def get_veo_service():
     """Create fresh VeoService instance with usage tracking."""
     from viraltracker.services.veo_service import VeoService
@@ -85,7 +78,6 @@ def get_veo_service():
 
     return service
 
-
 def get_product_images(product_id: str):
     """Fetch product images."""
     try:
@@ -97,7 +89,6 @@ def get_product_images(product_id: str):
     except Exception as e:
         st.error(f"Failed to fetch product images: {e}")
         return []
-
 
 def get_products_for_brand(brand_id: str):
     """Fetch products for a brand."""
@@ -111,11 +102,9 @@ def get_products_for_brand(brand_id: str):
         st.error(f"Failed to fetch products: {e}")
         return []
 
-
 def run_async(coro):
     """Run async coroutine in Streamlit."""
     return asyncio.get_event_loop().run_until_complete(coro)
-
 
 def download_image_from_storage(storage_path: str) -> bytes:
     """Download image from Supabase storage."""
@@ -129,7 +118,6 @@ def download_image_from_storage(storage_path: str) -> bytes:
         st.error(f"Failed to download image: {e}")
         return None
 
-
 def get_signed_url(storage_path: str, expires_in: int = 3600) -> str:
     """Get signed URL for storage path."""
     try:
@@ -141,7 +129,6 @@ def get_signed_url(storage_path: str, expires_in: int = 3600) -> str:
         return result.get("signedURL", "")
     except Exception:
         return ""
-
 
 # ============================================================================
 # Avatar Management Section
@@ -229,7 +216,6 @@ def render_avatar_management(brand_id: str):
     else:
         st.info("No avatars created yet. Create one above!")
 
-
 def render_avatar_card(avatar, brand_id: str):
     """Render a single avatar card."""
     with st.expander(f"🎭 {avatar.name}", expanded=st.session_state.selected_avatar_id == str(avatar.id)):
@@ -313,7 +299,6 @@ def render_avatar_card(avatar, brand_id: str):
                     st.success("Avatar deleted")
                     st.rerun()
 
-
 # ============================================================================
 # Video Generation Section
 # ============================================================================
@@ -328,7 +313,6 @@ def get_offer_variants(product_id: str):
         return result.data or []
     except Exception:
         return []
-
 
 def get_offer_variant_images(offer_variant_id: str):
     """Get images associated with an offer variant via junction table."""
@@ -345,7 +329,6 @@ def get_offer_variant_images(offer_variant_id: str):
         return images
     except Exception:
         return []
-
 
 def render_video_generation(brand_id: str):
     """Render video generation section."""
@@ -675,7 +658,6 @@ def render_video_generation(brand_id: str):
             st.session_state.generation_result = None
             st.rerun()
 
-
 # ============================================================================
 # Video History Section
 # ============================================================================
@@ -721,7 +703,6 @@ def render_video_history(brand_id: str):
                     if run_async(delete()):
                         st.success("Deleted")
                         st.rerun()
-
 
 # ============================================================================
 # Main Page

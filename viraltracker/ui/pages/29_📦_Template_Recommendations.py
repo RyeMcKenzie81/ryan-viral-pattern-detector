@@ -13,10 +13,6 @@ import streamlit as st
 from typing import Dict, List, Optional, Set
 from uuid import UUID
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config must be first
 st.set_page_config(
     page_title="Template Recommendations",
@@ -31,7 +27,6 @@ require_auth()
 # Imports
 from viraltracker.core.database import get_supabase_client
 from viraltracker.ui.utils import render_brand_selector, get_products_for_brand
-
 
 # =============================================================================
 # Session State Initialization
@@ -49,7 +44,6 @@ if 'generation_in_progress' not in st.session_state:
 if 'last_methodology' not in st.session_state:
     st.session_state.last_methodology = None
 
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -60,7 +54,6 @@ def get_recommendation_service():
     from viraltracker.services.template_recommendation_service import TemplateRecommendationService
     return TemplateRecommendationService()
 
-
 def get_offer_variants(product_id: str) -> List[Dict]:
     """Get offer variants for a product."""
     db = get_supabase_client()
@@ -68,7 +61,6 @@ def get_offer_variants(product_id: str) -> List[Dict]:
         "id, name"
     ).eq("product_id", product_id).eq("is_active", True).order("display_order").execute()
     return result.data or []
-
 
 def get_asset_url(storage_path: str) -> str:
     """Get public URL for template asset."""
@@ -87,7 +79,6 @@ def get_asset_url(storage_path: str) -> str:
     except Exception:
         return ""
 
-
 def toggle_candidate_selection(template_id: str):
     """Toggle a candidate's selection status."""
     if template_id in st.session_state.selected_candidate_ids:
@@ -95,18 +86,15 @@ def toggle_candidate_selection(template_id: str):
     else:
         st.session_state.selected_candidate_ids.add(template_id)
 
-
 def clear_candidate_selections():
     """Clear all candidate selections."""
     st.session_state.selected_candidate_ids = set()
-
 
 def select_all_candidates():
     """Select all candidates."""
     st.session_state.selected_candidate_ids = {
         str(c.template_id) for c in st.session_state.recommendation_candidates
     }
-
 
 # =============================================================================
 # Main Page Content
@@ -376,7 +364,6 @@ with tab1:
         else:
             st.info("Select candidates using the checkboxes, then click Save.")
 
-
 # =============================================================================
 # Tab 2: Saved Recommendations
 # =============================================================================
@@ -448,7 +435,6 @@ with tab2:
             count = service.remove_all_recommendations(UUID(selected_product_id))
             st.success(f"Removed {count} recommendations")
             st.rerun()
-
 
 # =============================================================================
 # Sidebar Info

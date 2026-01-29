@@ -16,10 +16,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Comic JSON Generator",
@@ -46,7 +42,6 @@ if "comic_analysis" not in st.session_state:
 if "script_analysis" not in st.session_state:
     st.session_state.script_analysis = None
 
-
 def get_gemini_service():
     """Get Gemini service for vision analysis with usage tracking."""
     from viraltracker.services.gemini_service import GeminiService
@@ -68,7 +63,6 @@ def get_gemini_service():
             logger.warning(f"Failed to set up usage tracking: {e}")
 
     return service
-
 
 async def analyze_comic_layout(image_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
@@ -141,7 +135,6 @@ Be precise about the grid layout - this is critical for video generation."""
     except Exception as e:
         logger.error(f"Comic analysis failed: {e}")
         return {"error": str(e)}
-
 
 async def analyze_script(script_text: str, panel_count: int) -> Dict[str, Any]:
     """
@@ -217,7 +210,6 @@ Rules:
         logger.error(f"Script analysis failed: {e}")
         return {"error": str(e)}
 
-
 def merge_analyses(comic_analysis: Dict, script_analysis: Dict) -> Dict[str, Any]:
     """
     Merge comic layout analysis with script analysis into final JSON.
@@ -271,7 +263,6 @@ def merge_analyses(comic_analysis: Dict, script_analysis: Dict) -> Dict[str, Any
 
     return result
 
-
 def render_json_editor(json_data: Dict) -> Dict:
     """Render an editable JSON view."""
     json_str = json.dumps(json_data, indent=2)
@@ -287,7 +278,6 @@ def render_json_editor(json_data: Dict) -> Dict:
     except json.JSONDecodeError:
         st.error("Invalid JSON - please fix syntax errors")
         return json_data
-
 
 # Main UI
 st.title("📝 Comic JSON Generator")

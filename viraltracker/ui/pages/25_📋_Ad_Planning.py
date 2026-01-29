@@ -24,10 +24,6 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, List, Dict, Any
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Ad Planning",
@@ -40,7 +36,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 from viraltracker.ui.utils import require_feature
 require_feature("ad_planning", "Ad Planning")
-
 
 # ============================================
 # SESSION STATE INITIALIZATION
@@ -111,7 +106,6 @@ def init_session_state():
     for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
-
 
     # If injected data exists, auto-navigate to Step 6 (Angles) so user can use it immediately
     # Also auto-select the first available Brand/Product/Offer/Persona/JTBD if not set
@@ -228,10 +222,7 @@ def init_session_state():
                 import traceback
                 st.session_state._bridge_debug_log = [f"Error: {e}", traceback.format_exc()]
 
-
-
 init_session_state()
-
 
 # ============================================
 # SERVICE HELPERS
@@ -245,12 +236,10 @@ def get_planning_service():
     setup_tracking_context(service)
     return service
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 # ============================================
 # WIZARD NAVIGATION
@@ -274,7 +263,6 @@ def render_progress_bar():
             else:
                 st.markdown(f":grey[{step_name}]")
 
-
 def can_proceed_to_step(step: int) -> bool:
     """Check if we can proceed to a given step."""
     if step == 2:
@@ -297,20 +285,17 @@ def can_proceed_to_step(step: int) -> bool:
         return st.session_state.copy_generated or len(st.session_state.copy_sets) > 0
     return True
 
-
 def next_step():
     """Go to next wizard step."""
     if can_proceed_to_step(st.session_state.planning_step + 1):
         st.session_state.planning_step += 1
         st.rerun()
 
-
 def prev_step():
     """Go to previous wizard step."""
     if st.session_state.planning_step > 1:
         st.session_state.planning_step -= 1
         st.rerun()
-
 
 # ============================================
 # STEP 1: SELECT BRAND
@@ -334,7 +319,6 @@ def render_step_1_brand():
     with col2:
         if st.button("Next: Select Product →", disabled=not can_proceed_to_step(2)):
             next_step()
-
 
 # ============================================
 # STEP 2: SELECT PRODUCT
@@ -387,7 +371,6 @@ def render_step_2_product():
     with col2:
         if st.button("Next: Define Offer →", disabled=not can_proceed_to_step(3)):
             next_step()
-
 
 # ============================================
 # STEP 3: DEFINE OFFER (OPTIONAL)
@@ -490,7 +473,6 @@ def render_step_3_offer():
         if st.button("Next: Select Persona →"):
             next_step()
 
-
 # ============================================
 # STEP 4: SELECT PERSONA
 # ============================================
@@ -541,7 +523,6 @@ def render_step_4_persona():
     with col2:
         if st.button("Next: Define JTBD →", disabled=not can_proceed_to_step(5)):
             next_step()
-
 
 # ============================================
 # STEP 5: DEFINE JTBD
@@ -678,7 +659,6 @@ def render_step_5_jtbd():
         if st.button("Next: Define Angles →", disabled=not can_proceed_to_step(6)):
             next_step()
 
-
 # ============================================
 # STEP 6: DEFINE ANGLES
 # ============================================
@@ -804,7 +784,6 @@ def render_step_6_angles():
             placeholder="Why this angle might resonate..."
         )
 
-
         if st.button("Add Angle", key="add_angle_btn"):
             if st.session_state.new_angle_name and st.session_state.new_angle_belief:
                 # Save to database immediately
@@ -824,7 +803,6 @@ def render_step_6_angles():
                     st.session_state.injected_angle_data = None
                 
                 st.rerun()
-
 
     with tab2:
         st.subheader("AI Angle Suggestions")
@@ -864,7 +842,6 @@ def render_step_6_angles():
     with col2:
         if st.button("Next: Select Templates →", disabled=not can_proceed_to_step(7)):
             next_step()
-
 
 # ============================================
 # STEP 7: SELECT TEMPLATES
@@ -1063,7 +1040,6 @@ def render_step_7_templates():
         if st.button("Next: Generate Copy →", disabled=not can_proceed_to_step(8)):
             next_step()
 
-
 # ============================================
 # STEP 8: GENERATE COPY
 # ============================================
@@ -1243,7 +1219,6 @@ def render_step_8_copy_generation():
         if st.button("Next: Review & Compile →", disabled=not can_proceed):
             next_step()
 
-
 # ============================================
 # STEP 9: REVIEW & COMPILE
 # ============================================
@@ -1421,7 +1396,6 @@ def render_step_9_review():
                 st.session_state.planning_step = 1
                 st.rerun()
 
-
 # ============================================
 # MAIN PAGE
 # ============================================
@@ -1456,7 +1430,6 @@ def main():
         render_step_8_copy_generation()
     elif step == 9:
         render_step_9_review()
-
 
 if __name__ == "__main__":
     main()

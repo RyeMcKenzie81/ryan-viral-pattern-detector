@@ -17,10 +17,6 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Competitor Research",
@@ -40,12 +36,10 @@ if 'research_competitor_id' not in st.session_state:
 if 'research_competitor_product_id' not in st.session_state:
     st.session_state.research_competitor_product_id = None
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_competitor_service():
     """Get CompetitorService instance with tracking enabled."""
@@ -55,12 +49,10 @@ def get_competitor_service():
     setup_tracking_context(service)
     return service
 
-
 def get_brands():
     """Fetch brands filtered by current organization."""
     from viraltracker.ui.utils import get_brands as get_org_brands
     return get_org_brands()
-
 
 def get_competitors_for_brand(brand_id: str) -> List[Dict]:
     """Fetch competitors for a brand."""
@@ -71,7 +63,6 @@ def get_competitors_for_brand(brand_id: str) -> List[Dict]:
         st.error(f"Failed to fetch competitors: {e}")
         return []
 
-
 def get_competitor_products(competitor_id: str) -> List[Dict]:
     """Fetch products for a competitor."""
     try:
@@ -80,7 +71,6 @@ def get_competitor_products(competitor_id: str) -> List[Dict]:
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
         return []
-
 
 def get_products_for_brand(brand_id: str) -> List[Dict]:
     """Fetch products for a brand (for linking candidates)."""
@@ -93,12 +83,10 @@ def get_products_for_brand(brand_id: str) -> List[Dict]:
     except Exception:
         return []
 
-
 def get_angle_candidate_service():
     """Get AngleCandidateService instance."""
     from viraltracker.services.angle_candidate_service import AngleCandidateService
     return AngleCandidateService()
-
 
 def extract_competitor_candidates(
     competitor_id: str,
@@ -141,7 +129,6 @@ def extract_competitor_candidates(
         stats["by_source"]["landing_pages"] = result
 
     return stats
-
 
 def scrape_competitor_facebook_ads(
     ad_library_url: str,
@@ -198,7 +185,6 @@ def scrape_competitor_facebook_ads(
 
     except Exception as e:
         return {"success": False, "saved": 0, "failed": 0, "message": str(e)}
-
 
 def get_research_stats(
     competitor_id: str,
@@ -270,7 +256,6 @@ def get_research_stats(
     except Exception as e:
         st.error(f"Failed to get stats: {e}")
         return {}
-
 
 def _render_competitor_belief_first_section(
     competitor_id: str,
@@ -392,7 +377,6 @@ def _render_competitor_belief_first_section(
                 else:
                     st.info("Click 'Generate Summary' to see aggregated analysis.")
 
-
 def _get_competitor_pages_with_belief_first(competitor_id: str, product_id: Optional[str]) -> List[Dict]:
     """Get competitor landing pages that have belief-first analysis."""
     db = get_supabase_client()
@@ -406,7 +390,6 @@ def _get_competitor_pages_with_belief_first(competitor_id: str, product_id: Opti
 
     result = query.order("belief_first_analyzed_at", desc=True).execute()
     return result.data or []
-
 
 def _render_competitor_extraction_section(
     competitor_id: str,
@@ -494,7 +477,6 @@ def _render_competitor_extraction_section(
     else:
         st.info("Select at least one source to extract.")
 
-
 def get_competitor_ads_for_grouping(competitor_id: str) -> List[Dict]:
     """Fetch competitor's scraped ads for URL grouping."""
     db = get_supabase_client()
@@ -511,7 +493,6 @@ def get_competitor_ads_for_grouping(competitor_id: str) -> List[Dict]:
             ad['snapshot'] = ad['snapshot_data']
         ads.append(ad)
     return ads
-
 
 def render_competitor_offer_discovery(competitor_id: str):
     """Render offer variant discovery for competitor ads."""
@@ -567,7 +548,6 @@ def render_competitor_offer_discovery(competitor_id: str):
     url_groups = st.session_state.get(session_key, [])
     if url_groups:
         render_url_groups_for_competitor(url_groups, competitor_id, session_key)
-
 
 def render_url_groups_for_competitor(url_groups: List[Dict], competitor_id: str, session_key: str):
     """Display competitor URL groups with checkboxes and merge capability."""
@@ -716,7 +696,6 @@ def render_url_groups_for_competitor(url_groups: List[Dict], competitor_id: str,
                         st.session_state[session_key][i].pop('merged_into_url', None)
                         st.rerun()
 
-
 def _analyze_merged_groups_for_competitor(
     url_groups: list,
     group_indices: list,
@@ -816,7 +795,6 @@ def _analyze_merged_groups_for_competitor(
         progress_bar.empty()
         status_text.empty()
         st.error(f"Merged analysis failed: {e}")
-
 
 # ============================================================================
 # HEADER
@@ -2110,7 +2088,6 @@ with tab_amazon:
         has_amazon=stats.get('has_amazon_analysis', False),
         has_landing_pages=has_landing_pages_for_extraction
     )
-
 
 # ----------------------------------------------------------------------------
 # PERSONA TAB

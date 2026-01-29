@@ -15,10 +15,6 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config (must be first)
 st.set_page_config(
     page_title="Ad Gallery",
@@ -29,7 +25,6 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
-
 
 # Initialize session state
 if 'gallery_product_filter' not in st.session_state:
@@ -49,12 +44,10 @@ if 'gallery_variant_generating' not in st.session_state:
 if 'gallery_variant_results' not in st.session_state:
     st.session_state.gallery_variant_results = None
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 # ============================================================================
 # Data Loading
@@ -76,7 +69,6 @@ def get_products_for_filter(org_id: str = None) -> List[Dict[str, Any]]:
         result = db.table("products").select("id, name").execute()
 
     return result.data
-
 
 @st.cache_data(ttl=30)
 def get_gallery_ads(
@@ -165,7 +157,6 @@ def get_gallery_ads(
 
     return ads, total_count
 
-
 def get_signed_url(storage_path: str) -> str:
     """Get signed URL for image display."""
     if not storage_path:
@@ -183,7 +174,6 @@ def get_signed_url(storage_path: str) -> str:
         return result.get("signedURL", "")
     except Exception:
         return ""
-
 
 @st.cache_data(ttl=60)
 def get_approved_ads_for_variant() -> List[Dict[str, Any]]:
@@ -214,12 +204,10 @@ def get_approved_ads_for_variant() -> List[Dict[str, Any]]:
 
     return ads
 
-
 def get_ad_creation_service():
     """Get AdCreationService instance."""
     from viraltracker.services.ad_creation_service import AdCreationService
     return AdCreationService()
-
 
 def get_existing_variants_gallery(ad_id: str) -> list:
     """Get list of variant sizes that already exist for an ad."""
@@ -232,7 +220,6 @@ def get_existing_variants_gallery(ad_id: str) -> list:
     except Exception as e:
         return []
 
-
 async def create_size_variants_gallery_async(ad_id: str, target_sizes: list) -> dict:
     """Create size variants using the AdCreationService."""
     service = get_ad_creation_service()
@@ -240,7 +227,6 @@ async def create_size_variants_gallery_async(ad_id: str, target_sizes: list) -> 
         source_ad_id=UUID(ad_id),
         target_sizes=target_sizes
     )
-
 
 # ============================================================================
 # CSS Styles (for non-gallery elements)
@@ -274,7 +260,6 @@ STATS_CSS = """
 }
 </style>
 """
-
 
 # ============================================================================
 # UI Components
@@ -330,7 +315,6 @@ def render_filter_bar(products: List[Dict[str, Any]]):
             st.cache_data.clear()
             st.rerun()
 
-
 def render_stats_bar(total_count: int, loaded_count: int, product_filter: str):
     """Render statistics bar."""
     st.markdown(f"""
@@ -349,7 +333,6 @@ def render_stats_bar(total_count: int, loaded_count: int, product_filter: str):
         </div>
     </div>
     """, unsafe_allow_html=True)
-
 
 def render_masonry_gallery(ads: List[Dict[str, Any]]):
     """Render Pinterest-style masonry gallery using components.html for proper rendering."""
@@ -531,7 +514,6 @@ def render_masonry_gallery(ads: List[Dict[str, Any]]):
     # Render using components.html for proper iframe rendering
     components.html(full_html, height=estimated_height, scrolling=True)
 
-
 def render_load_more_button(current_count: int, total_count: int):
     """Render load more button if there are more ads."""
     if current_count >= total_count:
@@ -553,7 +535,6 @@ def render_load_more_button(current_count: int, total_count: int):
         ):
             st.session_state.gallery_loaded_count += 40
             st.rerun()
-
 
 # ============================================================================
 # Main

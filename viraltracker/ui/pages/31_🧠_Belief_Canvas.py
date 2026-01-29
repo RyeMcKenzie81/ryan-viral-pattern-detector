@@ -16,10 +16,6 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, List, Dict, Any
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config (must be first)
 st.set_page_config(
     page_title="Belief Canvas",
@@ -32,7 +28,6 @@ from viraltracker.ui.auth import require_auth
 require_auth()
 from viraltracker.ui.utils import require_feature
 require_feature("belief_canvas", "Belief Canvas")
-
 
 # ============================================
 # SESSION STATE
@@ -59,7 +54,6 @@ def init_session_state():
 
 init_session_state()
 
-
 # ============================================
 # SERVICES
 # ============================================
@@ -69,12 +63,10 @@ def get_supabase():
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_brands():
     """Fetch brands filtered by current organization."""
     from viraltracker.ui.utils import get_brands as get_org_brands
     return get_org_brands()
-
 
 def get_products_for_brand(brand_id: str):
     """Fetch products for a brand."""
@@ -83,7 +75,6 @@ def get_products_for_brand(brand_id: str):
         "id, name, category"
     ).eq("brand_id", brand_id).order("name").execute()
     return result.data or []
-
 
 def get_recent_runs(limit: int = 10, product_id: Optional[str] = None):
     """Fetch recent pipeline runs."""
@@ -100,7 +91,6 @@ def get_recent_runs(limit: int = 10, product_id: Optional[str] = None):
     result = query.execute()
     return result.data or []
 
-
 def get_run_details(run_id: str) -> Optional[Dict]:
     """Fetch full run details."""
     db = get_supabase()
@@ -108,7 +98,6 @@ def get_run_details(run_id: str) -> Optional[Dict]:
         "*"
     ).eq("id", run_id).execute()
     return result.data[0] if result.data else None
-
 
 def create_run(
     product_id: str,
@@ -139,12 +128,10 @@ def create_run(
     }).execute()
     return result.data[0]["id"]
 
-
 def update_run(run_id: str, updates: Dict):
     """Update a run record."""
     db = get_supabase()
     db.table("belief_reverse_engineer_runs").update(updates).eq("id", run_id).execute()
-
 
 # ============================================
 # PIPELINE EXECUTION
@@ -228,7 +215,6 @@ async def run_pipeline(
         })
         raise
 
-
 # ============================================
 # UI COMPONENTS
 # ============================================
@@ -270,7 +256,6 @@ def render_input_section(brand_id: str, product_id: str):
         st.session_state.belief_persona_hint = persona_hint
 
     return messages.strip().split("\n") if messages.strip() else []
-
 
 def render_mode_section():
     """Render the mode selection section."""
@@ -416,7 +401,6 @@ def render_mode_section():
 
     return draft_mode, research_mode
 
-
 def render_results_section(result: Dict):
     """Render the pipeline results."""
     st.subheader("📊 Results")
@@ -456,7 +440,6 @@ def render_results_section(result: Dict):
     with tab4:
         render_trace_map(result.get("trace_map", []))
 
-
 def safe_json_parse(value, default=None):
     """Safely parse a value that might be JSON string or already a dict/list."""
     import json
@@ -472,7 +455,6 @@ def safe_json_parse(value, default=None):
         except (json.JSONDecodeError, TypeError):
             return default
     return default
-
 
 def render_canvas_view(result: Dict):
     """Render the canvas output."""
@@ -503,7 +485,6 @@ def render_canvas_view(result: Dict):
         with col2:
             with st.expander("🎯 Belief Canvas (Sections 10-15)", expanded=False):
                 st.json(safe_json_parse(canvas.get("belief_canvas", {})))
-
 
 def render_risk_flags(risk_flags):
     """Render risk flags with severity indicators."""
@@ -541,7 +522,6 @@ def render_risk_flags(risk_flags):
         if affected:
             st.markdown(f"  **Affected fields:** {', '.join(affected)}")
 
-
 def render_gaps(gaps):
     """Render gaps analysis."""
     # Parse if JSON string
@@ -573,7 +553,6 @@ def render_gaps(gaps):
                     st.markdown(f"- {gap}")
         else:
             st.success("No proof gaps!")
-
 
 def render_trace_map(trace_map):
     """Render the trace map showing field sources."""
@@ -633,7 +612,6 @@ def render_trace_map(trace_map):
         if len(hypothesis) > 10:
             st.caption(f"...and {len(hypothesis) - 10} more")
 
-
 def render_run_history(product_id: Optional[str]):
     """Render historical runs."""
     st.subheader("📜 Run History")
@@ -690,7 +668,6 @@ def render_run_history(product_id: Optional[str]):
 
             if run.get("completeness_score"):
                 st.metric("Completeness", f"{run['completeness_score']:.0%}")
-
 
 # ============================================
 # MAIN PAGE

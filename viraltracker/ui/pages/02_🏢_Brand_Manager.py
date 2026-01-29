@@ -15,10 +15,6 @@ import json
 from datetime import datetime
 from uuid import UUID
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Brand Manager",
@@ -38,12 +34,10 @@ if 'analyzing_image' not in st.session_state:
 if 'scraping_ads' not in st.session_state:
     st.session_state.scraping_ads = False
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_brands():
     """Fetch brands filtered by current organization."""
@@ -58,7 +52,6 @@ def get_brands():
     except Exception as e:
         st.error(f"Failed to fetch brands: {e}")
         return []
-
 
 def get_products_for_brand(brand_id: str):
     """Fetch all products for a brand with images and variants from product_images table."""
@@ -96,7 +89,6 @@ def get_products_for_brand(brand_id: str):
         st.error(f"Failed to fetch products: {e}")
         return []
 
-
 def get_variants_for_product(product_id: str):
     """Fetch all variants for a product."""
     try:
@@ -108,7 +100,6 @@ def get_variants_for_product(product_id: str):
     except Exception as e:
         st.error(f"Failed to fetch variants: {e}")
         return []
-
 
 def create_variant(product_id: str, name: str, variant_type: str = "flavor",
                    description: str = None, is_default: bool = False) -> bool:
@@ -139,7 +130,6 @@ def create_variant(product_id: str, name: str, variant_type: str = "flavor",
         st.error(f"Failed to create variant: {e}")
         return False
 
-
 def update_variant(variant_id: str, updates: dict) -> bool:
     """Update a product variant."""
     try:
@@ -149,7 +139,6 @@ def update_variant(variant_id: str, updates: dict) -> bool:
     except Exception as e:
         st.error(f"Failed to update variant: {e}")
         return False
-
 
 def delete_variant(variant_id: str) -> bool:
     """Delete a product variant."""
@@ -161,7 +150,6 @@ def delete_variant(variant_id: str) -> bool:
         st.error(f"Failed to delete variant: {e}")
         return False
 
-
 def get_hooks_count(product_id: str) -> int:
     """Get count of hooks for a product."""
     try:
@@ -170,7 +158,6 @@ def get_hooks_count(product_id: str) -> int:
         return result.count or 0
     except:
         return 0
-
 
 def get_ad_runs_stats(product_id: str) -> dict:
     """Get ad run statistics for a product."""
@@ -192,7 +179,6 @@ def get_ad_runs_stats(product_id: str) -> dict:
     except:
         return {"runs": 0, "ads": 0, "approved": 0}
 
-
 def get_offer_variants_for_product(product_id: str) -> list:
     """Get offer variants (landing page angles) for a product."""
     try:
@@ -204,7 +190,6 @@ def get_offer_variants_for_product(product_id: str) -> list:
     except Exception as e:
         st.error(f"Failed to fetch offer variants: {e}")
         return []
-
 
 def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -> bool:
     """Sync a URL to brand_landing_pages for scraping/analysis.
@@ -232,7 +217,6 @@ def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -
         logging.warning(f"Failed to sync URL to landing pages: {e}")
         return False
 
-
 def get_offer_variant_images(offer_variant_id: str) -> list:
     """Get images associated with an offer variant via junction table."""
     try:
@@ -244,7 +228,6 @@ def get_offer_variant_images(offer_variant_id: str) -> list:
         return result.data or []
     except Exception:
         return []
-
 
 def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str, url: str) -> dict:
     """Scrape images from landing page and associate with offer variant.
@@ -335,7 +318,6 @@ def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str,
     except Exception as e:
         return {"success": False, "error": str(e), "new_count": 0, "total_count": 0}
 
-
 def get_amazon_analysis_for_product(product_id: str) -> dict:
     """Get Amazon review analysis for a product."""
     try:
@@ -347,7 +329,6 @@ def get_amazon_analysis_for_product(product_id: str) -> dict:
     except Exception as e:
         st.error(f"Failed to fetch Amazon analysis: {e}")
         return {}
-
 
 def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     """Get signed URL for storage path."""
@@ -365,7 +346,6 @@ def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     except:
         return ""
 
-
 async def analyze_image(image_path: str) -> dict:
     """Run image analysis using the agent tool."""
     from pydantic_ai import RunContext
@@ -377,7 +357,6 @@ async def analyze_image(image_path: str) -> dict:
     ctx = RunContext(deps=deps, model=None, usage=RunUsage())
 
     return await analyze_product_image(ctx=ctx, image_storage_path=image_path)
-
 
 def save_product_social_proof(product_id: str, review_platforms: dict, media_features: list, awards_certifications: list):
     """Save social proof data for a product."""
@@ -392,7 +371,6 @@ def save_product_social_proof(product_id: str, review_platforms: dict, media_fea
     except Exception as e:
         st.error(f"Failed to save social proof: {e}")
         return False
-
 
 def save_image_analysis(image_id: str, analysis: dict):
     """Save analysis to product_images table."""
@@ -409,7 +387,6 @@ def save_image_analysis(image_id: str, analysis: dict):
         st.error(f"Failed to save analysis: {e}")
         return False
 
-
 def save_image_notes(image_id: str, notes: str):
     """Save notes for an image."""
     try:
@@ -421,7 +398,6 @@ def save_image_notes(image_id: str, notes: str):
     except Exception as e:
         st.error(f"Failed to save notes: {e}")
         return False
-
 
 def resize_image_if_needed(file_bytes: bytes, max_size: int = 2000) -> tuple[bytes, str]:
     """
@@ -470,7 +446,6 @@ def resize_image_if_needed(file_bytes: bytes, max_size: int = 2000) -> tuple[byt
     except Exception:
         # If PIL fails, return original bytes
         return file_bytes, 'image/jpeg'
-
 
 def upload_product_images(product_id: str, files: list, progress_placeholder=None) -> int:
     """
@@ -533,7 +508,6 @@ def upload_product_images(product_id: str, files: list, progress_placeholder=Non
 
     return uploaded_count
 
-
 def set_main_image(product_id: str, image_id: str) -> bool:
     """Set an image as the main/hero image for a product."""
     try:
@@ -552,7 +526,6 @@ def set_main_image(product_id: str, image_id: str) -> bool:
     except Exception as e:
         st.error(f"Failed to set main image: {e}")
         return False
-
 
 def delete_product_image(image_id: str, storage_path: str) -> bool:
     """Delete a product image from storage and database."""
@@ -575,7 +548,6 @@ def delete_product_image(image_id: str, storage_path: str) -> bool:
         st.error(f"Failed to delete image: {e}")
         return False
 
-
 def save_brand_code(brand_id: str, brand_code: str) -> bool:
     """Save brand_code for a brand (used in ad filenames)."""
     try:
@@ -588,7 +560,6 @@ def save_brand_code(brand_id: str, brand_code: str) -> bool:
         st.error(f"Failed to save brand code: {e}")
         return False
 
-
 def save_product_code(product_id: str, product_code: str) -> bool:
     """Save product_code for a product (used in ad filenames)."""
     try:
@@ -600,7 +571,6 @@ def save_product_code(product_id: str, product_code: str) -> bool:
     except Exception as e:
         st.error(f"Failed to save product code: {e}")
         return False
-
 
 # ============================================================================
 # BRAND ASSET FUNCTIONS (Logos, etc.)
@@ -618,7 +588,6 @@ def get_brand_assets(brand_id: str, asset_type: str = None) -> list:
     except Exception as e:
         st.error(f"Failed to fetch brand assets: {e}")
         return []
-
 
 def upload_brand_logo(brand_id: str, file, asset_type: str = "logo") -> dict:
     """
@@ -670,7 +639,6 @@ def upload_brand_logo(brand_id: str, file, asset_type: str = "logo") -> dict:
     except Exception as e:
         return {"success": False, "message": str(e)}
 
-
 def process_logo_image(file_bytes: bytes, max_size: int = 1000) -> tuple[bytes, str]:
     """
     Process logo image: resize if needed but preserve transparency.
@@ -714,7 +682,6 @@ def process_logo_image(file_bytes: bytes, max_size: int = 1000) -> tuple[bytes, 
     except Exception as e:
         return file_bytes, "image/png"
 
-
 def delete_brand_asset(asset_id: str, storage_path: str) -> bool:
     """Delete a brand asset from storage and database."""
     try:
@@ -735,7 +702,6 @@ def delete_brand_asset(asset_id: str, storage_path: str) -> bool:
         st.error(f"Failed to delete asset: {e}")
         return False
 
-
 def set_primary_brand_logo(brand_id: str, asset_id: str) -> bool:
     """Set a logo as the primary logo for a brand."""
     try:
@@ -755,7 +721,6 @@ def set_primary_brand_logo(brand_id: str, asset_id: str) -> bool:
         st.error(f"Failed to set primary logo: {e}")
         return False
 
-
 def get_brand_ads_for_grouping(brand_id: str) -> list:
     """Fetch brand's scraped ads for URL grouping."""
     db = get_supabase_client()
@@ -772,7 +737,6 @@ def get_brand_ads_for_grouping(brand_id: str) -> list:
                 ad['copy'] = ad['ad_body']
             ads.append(ad)
     return ads
-
 
 def render_offer_variant_discovery(brand_id: str, product_id: str, product_name: str):
     """Render offer variant discovery UI for a product."""
@@ -829,7 +793,6 @@ def render_offer_variant_discovery(brand_id: str, product_id: str, product_name:
     url_groups = st.session_state.get(session_key, [])
     if url_groups:
         render_url_groups_for_brand(url_groups, product_id, brand_id, session_key)
-
 
 def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str, session_key: str):
     """Display URL groups with checkboxes and merge capability."""
@@ -1007,7 +970,6 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                         st.session_state[session_key][i].pop('merged_into_variant', None)
                         st.rerun()
 
-
 def _analyze_merged_groups_for_brand(
     url_groups: list,
     group_indices: list,
@@ -1118,7 +1080,6 @@ def _analyze_merged_groups_for_brand(
         status_text.empty()
         st.error(f"Merged analysis failed: {e}")
 
-
 def _infer_merged_variant_name_brand(urls: list, synthesis: dict) -> str:
     """Infer variant name from merged URLs."""
     url_parts = [url.lower().split("/")[-1].replace("-", " ") for url in urls]
@@ -1142,12 +1103,10 @@ def _infer_merged_variant_name_brand(urls: list, synthesis: dict) -> str:
 
     return "Merged Ad Analysis Variant"
 
-
 def format_color_swatch(hex_color: str, name: str = None) -> str:
     """Create HTML for a color swatch."""
     label = f" {name}" if name else ""
     return f'<span style="display:inline-block;width:20px;height:20px;background:{hex_color};border:1px solid #ccc;border-radius:3px;vertical-align:middle;margin-right:5px;"></span><code>{hex_color}</code>{label}'
-
 
 def scrape_facebook_ads(ad_library_url: str, brand_id: str, max_ads: int = 100) -> dict:
     """
@@ -1188,7 +1147,6 @@ def scrape_facebook_ads(ad_library_url: str, brand_id: str, max_ads: int = 100) 
 
     except Exception as e:
         return {"success": False, "count": 0, "message": str(e)}
-
 
 # ============================================================================
 # MAIN UI

@@ -18,10 +18,6 @@ import asyncio
 from datetime import datetime
 from uuid import UUID
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Ad History",
@@ -38,12 +34,10 @@ require_feature("ad_history", "Ad History")
 st.title("📊 Ad History")
 st.markdown("Review all past ad runs and generated ads.")
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def _get_product_ids_for_org(db, org_id: str) -> list:
     """Get all product IDs belonging to brands in an organization."""
@@ -54,12 +48,10 @@ def _get_product_ids_for_org(db, org_id: str) -> list:
     products = db.table("products").select("id").in_("brand_id", brand_ids).execute()
     return [p['id'] for p in products.data]
 
-
 def _get_product_ids_for_brand(db, brand_id: str) -> list:
     """Get all product IDs for a specific brand."""
     products = db.table("products").select("id").eq("brand_id", brand_id).execute()
     return [p['id'] for p in products.data]
-
 
 def get_ad_runs_count(brand_id: str = None, org_id: str = None) -> int:
     """Get total count of ad runs for pagination."""
@@ -84,7 +76,6 @@ def get_ad_runs_count(brand_id: str = None, org_id: str = None) -> int:
         return result.count if result.count else 0
     except Exception as e:
         return 0
-
 
 def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_size: int = 25):
     """
@@ -147,7 +138,6 @@ def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_si
         st.error(f"Failed to fetch ad runs: {e}")
         return []
 
-
 def get_ads_for_run(ad_run_id: str):
     """Fetch all generated ads for a specific run."""
     try:
@@ -162,7 +152,6 @@ def get_ads_for_run(ad_run_id: str):
     except Exception as e:
         st.error(f"Failed to fetch ads: {e}")
         return []
-
 
 def get_scheduled_job_for_ad_runs(ad_run_ids: list) -> dict:
     """
@@ -193,7 +182,6 @@ def get_scheduled_job_for_ad_runs(ad_run_ids: list) -> dict:
     except Exception as e:
         return {}
 
-
 def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     """Get a signed URL for a storage path."""
     if not storage_path:
@@ -214,7 +202,6 @@ def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     except Exception as e:
         return ""
 
-
 def format_date(date_str: str) -> str:
     """Format ISO date string to readable format."""
     if not date_str:
@@ -225,14 +212,12 @@ def format_date(date_str: str) -> str:
     except:
         return date_str[:19] if date_str else "N/A"
 
-
 def display_thumbnail(url: str, width: int = 80):
     """Display a thumbnail image."""
     if url:
         st.image(url, width=width)
     else:
         st.markdown(f"<div style='width:{width}px;height:{width}px;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:10px;'>No image</div>", unsafe_allow_html=True)
-
 
 def get_status_badge(status: str) -> str:
     """Get colored badge HTML for status."""
@@ -250,12 +235,10 @@ def get_status_badge(status: str) -> str:
     color = colors.get(status, '#6c757d')
     return f"<span style='background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:12px;'>{status}</span>"
 
-
 def get_ad_creation_service():
     """Get AdCreationService instance."""
     from viraltracker.services.ad_creation_service import AdCreationService
     return AdCreationService()
-
 
 def fetch_reference_ad_base64(storage_path: str) -> tuple[str, str]:
     """
@@ -290,7 +273,6 @@ def fetch_reference_ad_base64(storage_path: str) -> tuple[str, str]:
     except Exception as e:
         st.error(f"Failed to fetch reference ad: {e}")
         return None, None
-
 
 async def retry_ad_run(run: dict) -> dict:
     """
@@ -356,7 +338,6 @@ async def retry_ad_run(run: dict) -> dict:
     )
 
     return result
-
 
 def get_performance_for_ads(ad_ids: list) -> dict:
     """
@@ -425,7 +406,6 @@ def get_performance_for_ads(ad_ids: list) -> dict:
     except Exception as e:
         return {}
 
-
 def get_existing_variants(ad_id: str) -> list:
     """Get list of variant sizes that already exist for an ad."""
     try:
@@ -436,7 +416,6 @@ def get_existing_variants(ad_id: str) -> list:
         return [r["variant_size"] for r in result.data if r.get("variant_size")]
     except Exception as e:
         return []
-
 
 def get_ad_current_size(ad: dict) -> str:
     """
@@ -482,7 +461,6 @@ def get_ad_current_size(ad: dict) -> str:
     # Default assumption for ads without explicit size info is 1:1
     return "1:1"
 
-
 async def create_size_variants_async(ad_id: str, target_sizes: list) -> dict:
     """Create size variants using the AdCreationService."""
     service = get_ad_creation_service()
@@ -491,7 +469,6 @@ async def create_size_variants_async(ad_id: str, target_sizes: list) -> dict:
         target_sizes=target_sizes
     )
 
-
 async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
     """Delete an ad using the AdCreationService."""
     service = get_ad_creation_service()
@@ -499,7 +476,6 @@ async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
         ad_id=UUID(ad_id),
         delete_variants=delete_variants
     )
-
 
 async def create_edited_ad_async(
     ad_id: str,
@@ -521,12 +497,10 @@ async def create_edited_ad_async(
         reference_image_ids=ref_ids
     )
 
-
 def get_edit_presets() -> dict:
     """Get edit preset definitions from the service."""
     service = get_ad_creation_service()
     return service.EDIT_PRESETS
-
 
 def get_product_images_for_ad(ad_id: str) -> list:
     """Get product images available for the product associated with an ad.
@@ -610,7 +584,6 @@ def get_product_images_for_ad(ad_id: str) -> list:
         logger.warning(f"Failed to get product images for ad {ad_id}: {e}")
         return []
 
-
 def get_brand_logos_for_ad(ad_id: str) -> list:
     """Get brand logos available for the brand associated with an ad.
 
@@ -692,7 +665,6 @@ def get_brand_logos_for_ad(ad_id: str) -> list:
         logger.warning(f"Failed to get brand logos for ad {ad_id}: {e}")
         return []
 
-
 def update_ad_status(ad_id: str, new_status: str) -> bool:
     """Update the final_status of an ad.
 
@@ -712,7 +684,6 @@ def update_ad_status(ad_id: str, new_status: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to update ad status: {e}")
         return False
-
 
 def get_format_code_from_spec(prompt_spec: dict) -> str:
     """Determine format code from prompt_spec canvas dimensions."""
@@ -742,7 +713,6 @@ def get_format_code_from_spec(prompt_spec: dict) -> str:
     else:
         return "LS"  # Landscape
 
-
 def generate_structured_filename(brand_code: str, product_code: str, run_id: str,
                                   ad_id: str, format_code: str, ext: str = "png") -> str:
     """Generate structured filename like WP-C3-a1b2c3-d4e5f6-SQ.png"""
@@ -751,7 +721,6 @@ def generate_structured_filename(brand_code: str, product_code: str, run_id: str
     bc = (brand_code or "XX").upper()
     pc = (product_code or "XX").upper()
     return f"{bc}-{pc}-{run_short}-{ad_short}-{format_code}.{ext}"
-
 
 def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path: str = None,
                        brand_code: str = None, product_code: str = None) -> bytes:
@@ -830,7 +799,6 @@ def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path
 
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
-
 
 # ============================================
 # MAIN UI

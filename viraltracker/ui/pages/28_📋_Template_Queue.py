@@ -13,10 +13,6 @@ import streamlit as st
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config (must be first)
 st.set_page_config(
     page_title="Template Queue",
@@ -61,18 +57,15 @@ if 'library_niche_filter' not in st.session_state:
 if 'library_sex_filter' not in st.session_state:
     st.session_state.library_sex_filter = "all"
 
-
 def get_template_queue_service():
     """Get TemplateQueueService instance."""
     from viraltracker.services.template_queue_service import TemplateQueueService
     return TemplateQueueService()
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 # ============================================================================
 # Data Loading
@@ -84,12 +77,10 @@ def get_queue_stats() -> Dict[str, int]:
     service = get_template_queue_service()
     return service.get_queue_stats()
 
-
 def get_pending_items(limit: int = 20, offset: int = 0) -> List[Dict]:
     """Get pending queue items."""
     service = get_template_queue_service()
     return service.get_pending_queue(limit=limit, offset=offset)
-
 
 def get_approved_templates(
     limit: int = 50,
@@ -109,14 +100,12 @@ def get_approved_templates(
         limit=limit
     )
 
-
 def get_asset_url(storage_path: str) -> str:
     """Get public URL for asset."""
     if not storage_path:
         return ""
     service = get_template_queue_service()
     return service.get_asset_preview_url(storage_path)
-
 
 def get_template_categories() -> List[str]:
     """Get unique template categories."""
@@ -127,7 +116,6 @@ def get_template_categories() -> List[str]:
         return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
                 "ugc_style", "meme", "carousel_frame", "story_format", "other"]
 
-
 def get_awareness_levels() -> List[Dict]:
     """Get awareness level filter options."""
     try:
@@ -135,7 +123,6 @@ def get_awareness_levels() -> List[Dict]:
         return service.get_awareness_levels()
     except Exception:
         return []
-
 
 def get_industry_niches() -> List[str]:
     """Get industry niche filter options."""
@@ -145,7 +132,6 @@ def get_industry_niches() -> List[str]:
     except Exception:
         return []
 
-
 # ============================================================================
 # Element Detection
 # ============================================================================
@@ -154,7 +140,6 @@ def get_template_element_service():
     """Get TemplateElementService instance."""
     from viraltracker.services.template_element_service import TemplateElementService
     return TemplateElementService()
-
 
 def get_element_detection_stats() -> Dict[str, int]:
     """Get element detection statistics."""
@@ -172,7 +157,6 @@ def get_element_detection_stats() -> Dict[str, int]:
         "pending": (total.count or 0) - (analyzed.count or 0)
     }
 
-
 def get_unanalyzed_templates(limit: int = 10) -> List[Dict]:
     """Get templates that haven't been analyzed yet."""
     db = get_supabase_client()
@@ -181,7 +165,6 @@ def get_unanalyzed_templates(limit: int = 10) -> List[Dict]:
     ).eq("is_active", True).is_("element_detection_version", "null").limit(limit).execute()
     return result.data or []
 
-
 def get_analyzed_templates(limit: int = 10) -> List[Dict]:
     """Get templates that have been analyzed."""
     db = get_supabase_client()
@@ -189,7 +172,6 @@ def get_analyzed_templates(limit: int = 10) -> List[Dict]:
         "id, name, storage_path, category, template_elements, element_detection_version"
     ).eq("is_active", True).not_.is_("element_detection_version", "null").order("element_detection_at", desc=True).limit(limit).execute()
     return result.data or []
-
 
 # ============================================================================
 # Actions
@@ -214,7 +196,6 @@ def approve_item(queue_id: str, category: str, name: str, description: str = "")
         st.error(f"Failed to approve: {e}")
         return False
 
-
 def reject_item(queue_id: str, reason: str):
     """Reject a queue item."""
     from uuid import UUID
@@ -232,7 +213,6 @@ def reject_item(queue_id: str, reason: str):
         st.error(f"Failed to reject: {e}")
         return False
 
-
 def archive_item(queue_id: str):
     """Archive a queue item."""
     from uuid import UUID
@@ -248,7 +228,6 @@ def archive_item(queue_id: str):
     except Exception as e:
         st.error(f"Failed to archive: {e}")
         return False
-
 
 # ============================================================================
 # Two-Step Approval Actions
@@ -269,7 +248,6 @@ def start_ai_approval(queue_id: str):
     except Exception as e:
         st.error(f"AI analysis failed: {e}")
         return False
-
 
 def finalize_ai_approval(
     queue_id: str,
@@ -305,7 +283,6 @@ def finalize_ai_approval(
         st.error(f"Failed to finalize approval: {e}")
         return False
 
-
 def cancel_ai_approval(queue_id: str):
     """Cancel in-progress approval and return to pending."""
     from uuid import UUID
@@ -319,7 +296,6 @@ def cancel_ai_approval(queue_id: str):
     except Exception as e:
         st.error(f"Failed to cancel: {e}")
         return False
-
 
 # ============================================================================
 # UI Components
@@ -338,7 +314,6 @@ def render_stats():
     col3.metric("Rejected", stats.get("rejected", 0))
     col4.metric("Total", stats.get("total", 0))
 
-
 def get_industry_options() -> List[str]:
     """Get list of industry/niche options."""
     return [
@@ -347,7 +322,6 @@ def get_industry_options() -> List[str]:
         "health_wellness", "beauty", "automotive", "travel", "education", "other"
     ]
 
-
 def get_sales_event_options() -> List[str]:
     """Get list of sales event options."""
     return [
@@ -355,7 +329,6 @@ def get_sales_event_options() -> List[str]:
         "valentines_day", "christmas", "new_year", "summer_sale",
         "labor_day", "memorial_day", "other"
     ]
-
 
 def get_awareness_level_options() -> List[tuple]:
     """Get awareness level options as (value, display_name) tuples."""
@@ -366,7 +339,6 @@ def get_awareness_level_options() -> List[tuple]:
         (4, "4 - Product Aware"),
         (5, "5 - Most Aware")
     ]
-
 
 def render_details_review():
     """Render the AI suggestions review form (step 2 of approval)."""
@@ -521,7 +493,6 @@ def render_details_review():
                 cancel_ai_approval(queue_id)
                 st.rerun()
 
-
 # ============================================================================
 # Bulk Review Functions
 # ============================================================================
@@ -537,19 +508,16 @@ def get_asset_url_for_queue_id(queue_id: str) -> Optional[str]:
             return get_asset_url(storage_path)
     return None
 
-
 def cancel_single_from_bulk(queue_id: str):
     """Remove one item from bulk review and revert its status to pending."""
     from uuid import UUID
     service = get_template_queue_service()
     service.cancel_approval(UUID(queue_id))
 
-
 def cancel_all_bulk_items():
     """Cancel all pending_details items from bulk review."""
     for item in st.session_state.bulk_review_items:
         cancel_single_from_bulk(item["queue_id"])
-
 
 def render_bulk_review():
     """Render bulk review screen showing all analyzed templates."""
@@ -633,7 +601,6 @@ def render_bulk_review():
                     st.rerun()
 
             st.divider()
-
 
 def render_pending_queue():
     """Render pending items for review."""
@@ -730,7 +697,6 @@ def render_pending_queue():
             if st.button("Next"):
                 st.session_state.queue_page += 1
                 st.rerun()
-
 
 def render_template_library():
     """Render approved templates library with filters."""
@@ -837,7 +803,6 @@ def render_template_library():
                 if times_used > 0:
                     st.caption(f"Used {times_used}x")
 
-
 def render_ingestion_trigger():
     """Render template ingestion trigger form."""
     st.subheader("Ingest New Templates")
@@ -940,7 +905,6 @@ def render_ingestion_trigger():
             st.session_state.ingestion_running = False
             st.error(f"Failed to run pipeline: {e}")
 
-
 # ============================================================================
 # Scheduled Scraping Tab
 # ============================================================================
@@ -966,7 +930,6 @@ def get_scheduled_scrape_jobs():
     except Exception as e:
         return []
 
-
 def get_recent_scrape_runs(job_id: str, limit: int = 5):
     """Fetch recent runs for a scrape job."""
     db = get_supabase_client()
@@ -977,7 +940,6 @@ def get_recent_scrape_runs(job_id: str, limit: int = 5):
         return result.data or []
     except Exception as e:
         return []
-
 
 def render_scheduled_scraping():
     """Render the Scheduled Scraping tab."""
@@ -1069,7 +1031,6 @@ def render_scheduled_scraping():
                     st.caption(f"{run_emoji} {started_str} - {summary if summary else run_status}")
             else:
                 st.caption("No runs yet")
-
 
 def render_element_detection():
     """Render Element Detection tab for analyzing template visual elements."""
@@ -1261,7 +1222,6 @@ def render_element_detection():
                         st.markdown(f"**Objects:** {obj_desc}")
     else:
         st.info("No templates analyzed yet. Use the buttons above to start.")
-
 
 # ============================================================================
 # Main Page

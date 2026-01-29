@@ -18,8 +18,6 @@ from datetime import datetime
 from uuid import UUID
 
 # Handle Streamlit's event loop for async operations
-import nest_asyncio
-nest_asyncio.apply()
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +101,6 @@ if 'multi_template_results' not in st.session_state:
 if 'template_rec_filter' not in st.session_state:
     st.session_state.template_rec_filter = "all"  # all, recommended, unused_recommended
 
-
 def toggle_template_selection(template_info: dict):
     """Toggle a template in the selection list.
 
@@ -127,22 +124,18 @@ def toggle_template_selection(template_info: dict):
 
     st.session_state.selected_templates_for_generation = current_selections
 
-
 def is_template_selected(template_id: str) -> bool:
     """Check if a template is currently selected."""
     return any(t['id'] == template_id for t in st.session_state.selected_templates_for_generation)
-
 
 def clear_template_selections():
     """Clear all template selections."""
     st.session_state.selected_templates_for_generation = []
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_personas_for_product(product_id: str):
     """Get personas linked to a product for the persona selector."""
@@ -155,7 +148,6 @@ def get_personas_for_product(product_id: str):
         st.warning(f"Could not load personas: {e}")
         return []
 
-
 def get_variants_for_product(product_id: str):
     """Get variants for a product for the variant selector."""
     try:
@@ -167,7 +159,6 @@ def get_variants_for_product(product_id: str):
     except Exception as e:
         return []
 
-
 def get_offer_variants_for_product(product_id: str):
     """Get offer variants (landing page angles) for a product."""
     try:
@@ -177,7 +168,6 @@ def get_offer_variants_for_product(product_id: str):
         return service.get_offer_variants(UUID(product_id), active_only=True)
     except Exception as e:
         return []
-
 
 def get_products():
     """Fetch products from database filtered by current organization."""
@@ -216,7 +206,6 @@ def get_products():
         st.error(f"Failed to fetch products: {e}")
         return []
 
-
 def get_brand_colors(brand_id: str) -> dict:
     """Get brand colors for a specific brand."""
     try:
@@ -227,7 +216,6 @@ def get_brand_colors(brand_id: str) -> dict:
         return {}
     except Exception as e:
         return {}
-
 
 def get_product_images(product_id: str) -> list:
     """Get all images for a product with analysis data from product_images table.
@@ -255,7 +243,6 @@ def get_product_images(product_id: str) -> list:
     except Exception as e:
         st.error(f"Error loading images: {e}")
         return []
-
 
 def get_existing_templates():
     """Get existing reference ad templates from storage, deduplicated by original filename."""
@@ -294,7 +281,6 @@ def get_existing_templates():
         st.warning(f"Could not load existing templates: {e}")
         return []
 
-
 def get_scraped_templates(
     category: str = None,
     awareness_level: int = None,
@@ -329,7 +315,6 @@ def get_scraped_templates(
         st.warning(f"Could not load scraped templates: {e}")
         return []
 
-
 def get_template_categories():
     """Get list of template categories."""
     try:
@@ -340,7 +325,6 @@ def get_template_categories():
         return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
                 "ugc_style", "meme", "carousel_frame", "story_format", "other"]
 
-
 def get_awareness_levels():
     """Get awareness level filter options."""
     try:
@@ -348,7 +332,6 @@ def get_awareness_levels():
         return TemplateQueueService().get_awareness_levels()
     except Exception:
         return []
-
 
 def get_industry_niches():
     """Get industry niche filter options."""
@@ -358,7 +341,6 @@ def get_industry_niches():
     except Exception:
         return []
 
-
 def get_scraped_template_url(storage_path: str) -> str:
     """Get public URL for scraped template asset."""
     try:
@@ -367,7 +349,6 @@ def get_scraped_template_url(storage_path: str) -> str:
         return service.get_asset_preview_url(storage_path)
     except Exception:
         return ""
-
 
 def get_template_asset_match(template_id: str, product_id: str) -> dict:
     """Get asset match info for a template.
@@ -387,7 +368,6 @@ def get_template_asset_match(template_id: str, product_id: str) -> dict:
     except Exception as e:
         logger.debug(f"Asset match check failed: {e}")
         return {"asset_match_score": 1.0, "detection_status": "error"}
-
 
 def get_asset_badge_html(score: float, detection_status: str = "analyzed") -> str:
     """Generate HTML badge for asset match score.
@@ -410,7 +390,6 @@ def get_asset_badge_html(score: float, detection_status: str = "analyzed") -> st
     else:
         return '<span style="background:#dc3545;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">Missing assets</span>'
 
-
 def record_template_usage(template_id: str, ad_run_id: str = None):
     """Record that a scraped template was used."""
     try:
@@ -424,7 +403,6 @@ def record_template_usage(template_id: str, ad_run_id: str = None):
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Failed to record template usage: {e}")
-
 
 def get_signed_url(storage_path: str) -> str:
     """Get a signed URL for a storage path."""
@@ -443,7 +421,6 @@ def get_signed_url(storage_path: str) -> str:
         return result.get('signedURL', '')
     except Exception as e:
         return ""
-
 
 def get_ad_run_details(ad_run_id: str):
     """Fetch ad run details including generated ads."""
@@ -465,7 +442,6 @@ def get_ad_run_details(ad_run_id: str):
     except Exception as e:
         st.error(f"Failed to fetch ad run: {e}")
         return None
-
 
 async def run_workflow(
     product_id: str,
@@ -568,7 +544,6 @@ async def run_workflow(
         )
 
     return result
-
 
 async def run_batch_workflow(
     templates: list,
@@ -693,7 +668,6 @@ async def run_batch_workflow(
 
     return results
 
-
 async def handle_export(
     result: dict,
     export_destination: str,
@@ -785,7 +759,6 @@ async def handle_export(
 
         except Exception as e:
             logger.error(f"Slack export failed: {str(e)}")
-
 
 # ============================================================================
 # Main UI

@@ -1227,7 +1227,10 @@ class AmazonReviewService:
             # Run synchronously for onboarding context
             import asyncio
             import nest_asyncio
-            nest_asyncio.apply()
+            try:
+                nest_asyncio.apply()
+            except ValueError:
+                pass  # Already patched in app.py (uvloop can't be patched)
 
             async def run_analysis():
                 return await run_agent_with_tracking(
