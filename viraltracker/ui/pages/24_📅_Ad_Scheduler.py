@@ -1,5 +1,5 @@
 """
-Ad Scheduler - Schedule automated ad generation jobs.
+Scheduler - Schedule automated jobs (ad creation, template scraping, approvals, etc.).
 
 This page allows users to:
 - View all scheduled jobs with filtering by brand/product
@@ -14,7 +14,7 @@ import pytz
 
 # Page config
 st.set_page_config(
-    page_title="Ad Scheduler",
+    page_title="Scheduler",
     page_icon="📅",
     layout="wide"
 )
@@ -23,7 +23,7 @@ st.set_page_config(
 from viraltracker.ui.auth import require_auth
 require_auth()
 from viraltracker.ui.utils import require_feature
-require_feature("ad_scheduler", "Ad Scheduler")
+require_feature("ad_scheduler", "Scheduler")
 
 # PST timezone for all scheduling
 PST = pytz.timezone('America/Los_Angeles')
@@ -618,7 +618,7 @@ def calculate_next_run(schedule_type: str, cron: str = None, scheduled_at: datet
 
 def render_schedule_list():
     """Render the schedule list view."""
-    st.title("📅 Ad Scheduler")
+    st.title("📅 Scheduler")
     st.markdown("**Automate ad generation with scheduled jobs**")
 
     # Action buttons

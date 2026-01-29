@@ -1796,7 +1796,7 @@ async def run_scheduler():
 def main():
     """Entry point for the scheduler worker."""
     logger.info("=" * 60)
-    logger.info("Ad Scheduler Worker")
+    logger.info("Scheduler Worker")
     logger.info("=" * 60)
 
     try:
