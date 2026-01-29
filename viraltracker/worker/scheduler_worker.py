@@ -1678,13 +1678,34 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
             return {"success": True, "approved": 0, "message": "No items analyzed"}
 
         # Step 2: Finalize approvals (auto-approve with AI suggestions)
+        detected_ok = 0
+        detected_fail = 0
         if auto_approve:
             logs.append(f"Auto-approving {len(analyzed_items)} items...")
-            approved_count = queue_service.finalize_bulk_approval(
+            result = queue_service.finalize_bulk_approval(
                 items=analyzed_items,
                 reviewed_by="scheduler_worker"
             )
+            approved_count = result["approved"]
+            template_ids = result["template_ids"]
             logs.append(f"Approved: {approved_count} items")
+
+            # Step 3: Element detection on newly created templates
+            if template_ids:
+                logs.append(f"Running element detection on {len(template_ids)} templates...")
+                try:
+                    from viraltracker.services.template_element_service import TemplateElementService
+                    element_service = TemplateElementService()
+                    detection = await element_service.batch_analyze_templates(
+                        template_ids=[UUID(tid) for tid in template_ids],
+                        batch_size=10
+                    )
+                    detected_ok = len(detection["successful"])
+                    detected_fail = len(detection["failed"])
+                    logs.append(f"Element detection: {detected_ok} OK, {detected_fail} failed")
+                except Exception as e:
+                    logs.append(f"Element detection failed: {e}")
+                    logger.error(f"Element detection failed in template approval job: {e}")
         else:
             # Leave in pending_details for manual review
             approved_count = 0
@@ -1696,6 +1717,8 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Processed: {len(queue_ids)}")
         logs.append(f"Analyzed: {len(analyzed_items)}")
         logs.append(f"Approved: {approved_count}")
+        if detected_ok or detected_fail:
+            logs.append(f"Element detection: {detected_ok} OK, {detected_fail} failed")
 
         # Update job run as completed
         update_job_run(run_id, {
@@ -1707,12 +1730,13 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
         # Update job scheduling
         _update_job_next_run(job, job_id)
 
-        logger.info(f"Completed template approval job: {job_name} - {approved_count} approved")
+        logger.info(f"Completed template approval job: {job_name} - {approved_count} approved, {detected_ok} detected")
         return {
             "success": True,
             "processed": len(queue_ids),
             "analyzed": len(analyzed_items),
-            "approved": approved_count
+            "approved": approved_count,
+            "element_detection": {"successful": detected_ok, "failed": detected_fail}
         }
 
     except Exception as e:

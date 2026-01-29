@@ -764,7 +764,7 @@ class TemplateQueueService:
         self,
         items: List[Dict[str, Any]],
         reviewed_by: str = "streamlit_user"
-    ) -> int:
+    ) -> Dict[str, Any]:
         """
         Finalize multiple approvals using AI suggestions as defaults.
 
@@ -773,14 +773,14 @@ class TemplateQueueService:
             reviewed_by: Who approved the items
 
         Returns:
-            Count of successfully approved items
+            Dict with 'approved' count and 'template_ids' list
         """
-        approved_count = 0
+        template_ids = []
         for item in items:
             try:
                 queue_id = UUID(item["queue_id"])
                 s = item["suggestions"]
-                self.finalize_approval(
+                template = self.finalize_approval(
                     queue_id=queue_id,
                     name=s.get("suggested_name", "Template"),
                     description=s.get("suggested_description", ""),
@@ -791,9 +791,9 @@ class TemplateQueueService:
                     sales_event=s.get("sales_event"),
                     reviewed_by=reviewed_by
                 )
-                approved_count += 1
+                template_ids.append(template["id"])
             except Exception as e:
                 logger.error(f"Failed to finalize {item.get('queue_id')}: {e}")
 
-        logger.info(f"Bulk approval finalized: {approved_count}/{len(items)} items approved")
-        return approved_count
+        logger.info(f"Bulk approval finalized: {len(template_ids)}/{len(items)} items approved")
+        return {"approved": len(template_ids), "template_ids": template_ids}

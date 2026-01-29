@@ -549,9 +549,29 @@ def render_bulk_review():
             type="primary",
             use_container_width=True
         ):
+            import asyncio
+            from uuid import UUID
+
             service = get_template_queue_service()
-            count = service.finalize_bulk_approval(items)
-            st.success(f"Approved {count} templates!")
+            result = service.finalize_bulk_approval(items)
+            st.success(f"Approved {result['approved']} templates!")
+
+            # Run element detection on newly created templates
+            template_ids = result.get("template_ids", [])
+            if template_ids:
+                with st.spinner(f"Running element detection on {len(template_ids)} templates..."):
+                    element_service = get_template_element_service()
+                    detection = asyncio.run(element_service.batch_analyze_templates(
+                        template_ids=[UUID(tid) for tid in template_ids],
+                        batch_size=10
+                    ))
+                    ok = len(detection["successful"])
+                    fail = len(detection["failed"])
+                    if ok:
+                        st.success(f"Element detection: {ok} templates analyzed")
+                    if fail:
+                        st.warning(f"Element detection: {fail} templates failed")
+
             st.session_state.bulk_review_mode = False
             st.session_state.bulk_review_items = []
             st.cache_data.clear()

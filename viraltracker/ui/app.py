@@ -124,6 +124,15 @@ if is_authenticated():
             for page in page_list:
                 st.page_link(page, icon=page.icon)
 
+        # Logfire observability status
+        st.divider()
+        if _logfire_status["status"] == "success":
+            st.caption(f"✅ Logfire: {_logfire_status['environment']}")
+        elif _logfire_status["status"] == "skipped":
+            st.caption("⚠️ Logfire: off")
+        else:
+            st.caption("❌ Logfire: error")
+
     pg.run()
 else:
     pages = [
