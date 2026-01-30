@@ -83,8 +83,9 @@ Interface Layer (Streamlit UI)
 ```
 User opens page
   → require_auth() checks Supabase session
-  → render_organization_selector() sets current org in session state
-  → render_brand_selector() filters brands by org
+  → app.py renders render_organization_selector() ONCE in sidebar
+      (persisted to browser cookie; restored on refresh)
+  → render_brand_selector() reads org via get_current_organization_id()
   → nav.py gates sidebar pages by org's feature flags
   → Service calls include organization_id for data isolation
   → AI/API calls tracked to organization via UsageTracker
@@ -350,7 +351,10 @@ def is_superuser(user_id: str) -> bool:
 
 **Org selector with superuser mode** (`viraltracker/ui/utils.py`):
 ```python
-def render_organization_selector(key="org_selector") -> Optional[str]:
+def render_organization_selector() -> Optional[str]:
+    # Rendered ONCE in app.py — individual pages use get_current_organization_id()
+    # Uses hardcoded widget key "_workspace_selectbox" (single source of truth)
+    # on_change callback updates session state + saves to cookie before rerun
     # Superusers see: {"All Organizations": "all", ...actual_orgs}
     # Returns "all" for superuser mode
 ```
@@ -731,8 +735,10 @@ Since RLS policies are not yet implemented (Phase 8), both clients effectively h
 
 | Key | Type | Set By | Purpose |
 |-----|------|--------|---------|
-| `current_organization_id` | str | `render_organization_selector()` | Currently selected org UUID or `"all"` |
+| `current_organization_id` | str | `render_organization_selector()` in app.py | Currently selected org UUID or `"all"` |
 | `selected_brand_id` | str | `render_brand_selector()` | Currently selected brand (persists across pages) |
+| `_org_options_map` | dict | `render_organization_selector()` | Name→ID map for on_change callback |
+| `_workspace_selectbox` | str | Streamlit widget | Selected workspace display name |
 
 ### Admin Page Keys
 
@@ -781,27 +787,43 @@ Browser                     Streamlit                   Supabase
 ### Organization Context Flow
 
 ```
-Page Load
+Page Load (app.py runs first)
   │
   ├─ require_auth() ← sets _authenticated, _supabase_user
   │
-  ├─ render_organization_selector()
+  ├─ render_organization_selector()   ← called ONCE in app.py sidebar
   │     │
   │     ├─ get_current_user_id()
   │     ├─ OrganizationService.get_user_organizations(user_id)
   │     ├─ is_superuser(user_id)
   │     │
-  │     ├─ [1 org] → Auto-select
-  │     ├─ [N orgs] → Show dropdown
+  │     ├─ [1 org] → Auto-select (no widget)
+  │     ├─ [N orgs] → Show dropdown (key="_workspace_selectbox")
   │     ├─ [Superuser] → Add "All Organizations" option
+  │     │
+  │     ├─ on_change callback (fires BEFORE rerun):
+  │     │     ├─ Updates current_organization_id
+  │     │     ├─ Clears selected_brand_id, selected_product_id
+  │     │     ├─ Saves org_id to browser cookie (30-day TTL)
+  │     │     └─ Clears _get_org_features_cached (nav rebuilds)
   │     │
   │     └─ Store in st.session_state["current_organization_id"]
   │
-  ├─ render_brand_selector()
-  │     ├─ get_brands(organization_id)  ← filters by org
+  ├─ _auto_init_organization() (on first visit / refresh)
+  │     ├─ Check workspace cookie first → restore if valid
+  │     ├─ Validate "all" is only for superusers
+  │     └─ Fall through to first org if cookie empty/stale
+  │
+  ├─ render_brand_selector()           ← pages call this (NO org selector)
+  │     ├─ get_current_organization_id()  ← reads session state (not a selector)
+  │     ├─ get_brands(organization_id)    ← filters by org
   │     └─ Store in st.session_state["selected_brand_id"]
   │
   └─ Page content uses brand_id for all operations
+
+Note: Individual pages use get_current_organization_id() — they do NOT
+call render_organization_selector(). This prevents duplicate sidebar
+selectboxes that would overwrite the workspace value.
 ```
 
 ### Feature Gating Flow
