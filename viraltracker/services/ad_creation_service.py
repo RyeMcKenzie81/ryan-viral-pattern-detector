@@ -571,7 +571,9 @@ class AdCreationService:
         belief_plan_id: Optional[UUID] = None,
         meta_headline: Optional[str] = None,
         meta_primary_text: Optional[str] = None,
-        template_name: Optional[str] = None
+        template_name: Optional[str] = None,
+        # Regeneration lineage
+        regenerate_parent_id: Optional[UUID] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -598,6 +600,7 @@ class AdCreationService:
             meta_headline: Headline for Meta ad placement (below image)
             meta_primary_text: Primary text for Meta ad placement (above image)
             template_name: Name of template for display
+            regenerate_parent_id: Source ad UUID when regenerated from rejected ad
 
         Returns:
             UUID of generated ad record
@@ -653,6 +656,8 @@ class AdCreationService:
             data["meta_primary_text"] = meta_primary_text
         if template_name is not None:
             data["template_name"] = template_name
+        if regenerate_parent_id is not None:
+            data["regenerate_parent_id"] = str(regenerate_parent_id)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])
@@ -1844,6 +1849,240 @@ images are reference materials to use."""
             "edit_prompt": edit_prompt,
             "generation_time_ms": generation_time_ms,
             "source_ad_id": str(source_ad_id)
+        }
+
+    async def regenerate_ad(self, source_ad_id: UUID) -> Dict[str, Any]:
+        """
+        Regenerate a rejected/flagged ad with the same hook and parameters.
+
+        Creates a brand-new image using the same hook, runs dual review,
+        and saves as a new ad in the same ad_run. The original rejected
+        ad remains in the database for reference.
+
+        Args:
+            source_ad_id: UUID of the rejected/flagged ad to regenerate
+
+        Returns:
+            Dict with new ad info:
+            {
+                "ad_id": str,
+                "storage_path": str,
+                "final_status": str,
+                "claude_review": dict,
+                "gemini_review": dict,
+                "reviewers_agree": bool,
+                "source_ad_id": str,
+                "generation_time_ms": int
+            }
+
+        Raises:
+            ValueError: If source ad not found or not rejected/flagged
+        """
+        from .gemini_service import GeminiService
+        from ..pipelines.ad_creation.services.generation_service import AdGenerationService
+        from ..pipelines.ad_creation.services.review_service import AdReviewService
+        import uuid as uuid_module
+        import time
+
+        logger.info(f"Regenerating ad from source {source_ad_id}")
+        start_time = time.time()
+
+        # 1. Fetch source ad with ad_run data
+        result = self.supabase.table("generated_ads").select(
+            "id, ad_run_id, hook_id, hook_text, prompt_spec, prompt_text, "
+            "storage_path, final_status, "
+            "angle_id, template_id, belief_plan_id, "
+            "meta_headline, meta_primary_text, template_name"
+        ).eq("id", str(source_ad_id)).execute()
+
+        if not result.data:
+            raise ValueError(f"Source ad not found: {source_ad_id}")
+
+        source_ad = result.data[0]
+        ad_run_id = source_ad["ad_run_id"]
+
+        # Verify the ad is rejected or flagged
+        if source_ad["final_status"] not in ("rejected", "flagged"):
+            raise ValueError(
+                f"Can only regenerate rejected/flagged ads, "
+                f"got status: {source_ad['final_status']}"
+            )
+
+        # 2. Fetch ad_run for reference ad and product context
+        run_result = self.supabase.table("ad_runs").select(
+            "reference_ad_storage_path, product_id, parameters, ad_analysis, "
+            "selected_hooks, selected_product_images"
+        ).eq("id", str(ad_run_id)).execute()
+
+        if not run_result.data:
+            raise ValueError(f"Ad run not found: {ad_run_id}")
+
+        ad_run = run_result.data[0]
+        product_id = UUID(ad_run["product_id"])
+        parameters = ad_run.get("parameters") or {}
+        ad_analysis = ad_run.get("ad_analysis") or {}
+        reference_ad_path = ad_run.get("reference_ad_storage_path", "")
+
+        # 3. Get product data
+        product = await self.get_product(product_id)
+        product_dict = product.model_dump() if hasattr(product, 'model_dump') else dict(product)
+
+        # 4. Get ad brief instructions
+        brand_id = product_dict.get("brand_id")
+        ad_brief_instructions = ""
+        if brand_id:
+            template = await self.get_ad_brief_template(UUID(brand_id))
+            if template:
+                ad_brief_instructions = template.get("instructions", "") if isinstance(template, dict) else getattr(template, "instructions", "")
+
+        # 5. Build hook data matching generate_prompt's expected format
+        hook_text = source_ad.get("hook_text", "")
+        hook_id = source_ad.get("hook_id")
+        selected_hook = {
+            "adapted_text": hook_text,
+            "hook_id": hook_id or str(uuid_module.uuid4()),
+        }
+
+        # 6. Get product image paths from the ad_run
+        product_image_paths = ad_run.get("selected_product_images") or []
+
+        # 7. Generate prompt
+        generation_service = AdGenerationService()
+        color_mode = parameters.get("color_mode", "original")
+        brand_colors = parameters.get("brand_colors")
+        brand_fonts = parameters.get("brand_fonts")
+
+        prompt = generation_service.generate_prompt(
+            prompt_index=1,
+            selected_hook=selected_hook,
+            product=product_dict,
+            ad_analysis=ad_analysis,
+            ad_brief_instructions=ad_brief_instructions,
+            reference_ad_path=reference_ad_path,
+            product_image_paths=product_image_paths,
+            color_mode=color_mode,
+            brand_colors=brand_colors,
+            brand_fonts=brand_fonts,
+            num_variations=1,
+        )
+
+        # 8. Execute generation
+        gemini_service = GeminiService()
+        generated_ad = await generation_service.execute_generation(
+            nano_banana_prompt=prompt,
+            ad_creation_service=self,
+            gemini_service=gemini_service,
+        )
+
+        # 9. Upload new image
+        new_ad_id = uuid_module.uuid4()
+        canvas_size = None
+        json_prompt = prompt.get('json_prompt', {})
+        if isinstance(json_prompt, dict):
+            style = json_prompt.get('style', {})
+            canvas_size = style.get('canvas_size', '1080x1080px')
+
+        storage_path, _ = await self.upload_generated_ad(
+            ad_run_id=UUID(ad_run_id),
+            prompt_index=1,
+            image_base64=generated_ad['image_base64'],
+            product_id=product_id,
+            ad_id=new_ad_id,
+            canvas_size=canvas_size,
+        )
+
+        # 10. Dual review
+        review_service = AdReviewService()
+
+        claude_review = None
+        try:
+            claude_review = await review_service.review_ad_claude(
+                storage_path=storage_path,
+                product_name=product_dict.get('name', ''),
+                hook_text=hook_text,
+                ad_analysis=ad_analysis,
+                ad_creation_service=self,
+            )
+        except Exception as e:
+            logger.warning(f"Claude review failed for regenerated ad: {e}")
+            claude_review = review_service.make_failed_review("claude", str(e))
+
+        gemini_review = None
+        try:
+            gemini_review = await review_service.review_ad_gemini(
+                storage_path=storage_path,
+                product_name=product_dict.get('name', ''),
+                hook_text=hook_text,
+                ad_analysis=ad_analysis,
+                ad_creation_service=self,
+                gemini_service=gemini_service,
+            )
+        except Exception as e:
+            logger.warning(f"Gemini review failed for regenerated ad: {e}")
+            gemini_review = review_service.make_failed_review("gemini", str(e))
+
+        final_status, reviewers_agree = review_service.apply_dual_review_logic(
+            claude_review, gemini_review
+        )
+
+        # 11. Get next prompt_index for this run
+        index_result = self.supabase.table("generated_ads").select(
+            "prompt_index"
+        ).eq("ad_run_id", str(ad_run_id)).order(
+            "prompt_index", desc=True
+        ).limit(1).execute()
+
+        next_index = 1
+        if index_result.data and index_result.data[0].get("prompt_index"):
+            next_index = index_result.data[0]["prompt_index"] + 1
+
+        # 12. Save to database
+        data = {
+            "id": str(new_ad_id),
+            "ad_run_id": str(ad_run_id),
+            "prompt_index": next_index,
+            "prompt_text": prompt.get('full_prompt', ''),
+            "prompt_spec": prompt.get('json_prompt', {}),
+            "hook_text": hook_text,
+            "storage_path": storage_path,
+            "claude_review": claude_review,
+            "gemini_review": gemini_review,
+            "reviewers_agree": reviewers_agree,
+            "final_status": final_status,
+            "model_used": generated_ad.get('model_used'),
+            "model_requested": generated_ad.get('model_requested'),
+            "generation_time_ms": generated_ad.get('generation_time_ms'),
+            "generation_retries": generated_ad.get('generation_retries', 0),
+            "regenerate_parent_id": str(source_ad_id),
+        }
+
+        # Copy hook_id if present
+        if hook_id:
+            data["hook_id"] = hook_id
+
+        # Copy belief plan metadata
+        for field in ("angle_id", "template_id", "belief_plan_id",
+                      "meta_headline", "meta_primary_text", "template_name"):
+            if source_ad.get(field):
+                data[field] = source_ad[field]
+
+        self.supabase.table("generated_ads").insert(data).execute()
+
+        total_time_ms = int((time.time() - start_time) * 1000)
+        logger.info(
+            f"Regenerated ad {new_ad_id} from source {source_ad_id} "
+            f"(status={final_status}, {total_time_ms}ms)"
+        )
+
+        return {
+            "ad_id": str(new_ad_id),
+            "storage_path": storage_path,
+            "final_status": final_status,
+            "claude_review": claude_review,
+            "gemini_review": gemini_review,
+            "reviewers_agree": reviewers_agree,
+            "source_ad_id": str(source_ad_id),
+            "generation_time_ms": total_time_ms,
         }
 
     async def get_edit_history(self, ad_id: UUID) -> List[Dict]:

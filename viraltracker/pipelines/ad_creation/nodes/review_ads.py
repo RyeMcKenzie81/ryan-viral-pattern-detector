@@ -57,8 +57,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
     async def run(
         self,
         ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies]
-    ) -> "CompileResultsNode":
-        from .compile_results import CompileResultsNode
+    ) -> "RetryRejectedNode":
+        from .retry_rejected import RetryRejectedNode
         from ..services.review_service import AdReviewService
 
         logger.info(f"Step 7: Reviewing {len(ctx.state.generated_ads)} ads with dual AI review...")
@@ -162,7 +162,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 "claude_review": claude_review,
                 "gemini_review": gemini_review,
                 "reviewers_agree": reviewers_agree,
-                "final_status": final_status
+                "final_status": final_status,
+                "ad_uuid": ad_uuid_str,
             })
 
             ctx.state.ads_reviewed += 1
@@ -171,4 +172,4 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
         ctx.state.mark_step_complete("review_ads")
         logger.info(f"Review complete: {ctx.state.ads_reviewed} ads reviewed")
 
-        return CompileResultsNode()
+        return RetryRejectedNode()

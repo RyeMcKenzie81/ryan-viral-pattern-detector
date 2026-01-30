@@ -97,6 +97,9 @@ if 'multi_template_progress' not in st.session_state:
     st.session_state.multi_template_progress = None  # {current: int, total: int, results: []}
 if 'multi_template_results' not in st.session_state:
     st.session_state.multi_template_results = None  # Final batch results
+# Auto-retry rejected ads
+if 'auto_retry_rejected' not in st.session_state:
+    st.session_state.auto_retry_rejected = False
 # Template recommendation filter state
 if 'template_rec_filter' not in st.session_state:
     st.session_state.template_rec_filter = "all"  # all, recommended, unused_recommended
@@ -443,6 +446,12 @@ def get_ad_run_details(ad_run_id: str):
         st.error(f"Failed to fetch ad run: {e}")
         return None
 
+async def regenerate_ad_async(ad_id: str) -> dict:
+    """Regenerate a rejected/flagged ad using AdCreationService."""
+    from viraltracker.services.ad_creation_service import AdCreationService
+    service = AdCreationService()
+    return await service.regenerate_ad(source_ad_id=UUID(ad_id))
+
 async def run_workflow(
     product_id: str,
     reference_ad_base64: str,
@@ -463,7 +472,8 @@ async def run_workflow(
     additional_instructions: str = None,
     angle_data: dict = None,
     match_template_structure: bool = False,
-    offer_variant_id: str = None
+    offer_variant_id: str = None,
+    auto_retry_rejected: bool = False,
 ):
     """Run the ad creation workflow with optional export.
 
@@ -488,6 +498,7 @@ async def run_workflow(
         angle_data: Dict with angle info for belief_first mode {id, name, belief_statement, explanation}
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
         offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
+        auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
     """
     from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
     from viraltracker.agent.dependencies import AgentDependencies
@@ -518,6 +529,7 @@ async def run_workflow(
         angle_data=angle_data,
         match_template_structure=match_template_structure,
         offer_variant_id=offer_variant_id,
+        auto_retry_rejected=auto_retry_rejected,
         deps=deps,
     )
 
@@ -906,6 +918,28 @@ elif st.session_state.workflow_result:
 
                             if label == "Claude":
                                 st.markdown("---")
+
+                    # Rerun button for rejected/flagged ads
+                    ad_uuid = ad.get('ad_uuid')
+                    if status in ('rejected', 'flagged') and ad_uuid:
+                        if st.button(
+                            "🔄 Rerun",
+                            key=f"rerun_creator_{ad_uuid}",
+                            help="Regenerate with same hook and re-review"
+                        ):
+                            with st.spinner("Regenerating ad..."):
+                                try:
+                                    rerun_result = asyncio.run(
+                                        regenerate_ad_async(ad_uuid)
+                                    )
+                                    new_status = rerun_result.get('final_status', 'unknown')
+                                    st.success(
+                                        f"Regenerated! New ad: "
+                                        f"{rerun_result['ad_id'][:8]} ({new_status})"
+                                    )
+                                except Exception as e:
+                                    st.error(f"Regeneration failed: {e}")
+                            st.rerun()
 
     st.divider()
 
@@ -1971,6 +2005,15 @@ else:
             secondary = colors.get('secondary_name', colors.get('secondary', ''))
             st.info(f"💡 Using official brand colors: **{primary}** and **{secondary}**")
 
+        # Auto-retry rejected ads
+        auto_retry = st.checkbox(
+            "Auto-retry rejected ads",
+            value=st.session_state.auto_retry_rejected,
+            help="Automatically regenerate ads that fail review (up to 1 retry per ad)",
+            disabled=st.session_state.workflow_running
+        )
+        st.session_state.auto_retry_rejected = auto_retry
+
         st.divider()
 
         # Submit button - disabled while workflow is running
@@ -2169,7 +2212,8 @@ else:
                             additional_instructions=add_instructions,
                             angle_data=angle_data,
                             match_template_structure=match_template,
-                            offer_variant_id=offer_variant_id
+                            offer_variant_id=offer_variant_id,
+                            auto_retry_rejected=st.session_state.auto_retry_rejected,
                         )
 
                         # Record template usage if scraped
@@ -2306,7 +2350,8 @@ else:
                 additional_instructions=add_instructions,
                 angle_data=angle_data,
                 match_template_structure=match_template,
-                offer_variant_id=offer_variant_id
+                offer_variant_id=offer_variant_id,
+                auto_retry_rejected=st.session_state.auto_retry_rejected,
             ))
 
             # Record template usage if a scraped template was used

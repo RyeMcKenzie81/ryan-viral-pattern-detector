@@ -487,6 +487,11 @@ async def create_edited_ad_async(
         reference_image_ids=ref_ids
     )
 
+async def regenerate_ad_async(ad_id: str) -> dict:
+    """Regenerate a rejected/flagged ad using AdCreationService."""
+    service = get_ad_creation_service()
+    return await service.regenerate_ad(source_ad_id=UUID(ad_id))
+
 def get_edit_presets() -> dict:
     """Get edit preset definitions from the service."""
     service = get_ad_creation_service()
@@ -820,6 +825,12 @@ if 'edit_generating' not in st.session_state:
 if 'edit_result' not in st.session_state:
     st.session_state.edit_result = None
 
+# Rerun (regenerate) state
+if 'rerun_generating' not in st.session_state:
+    st.session_state.rerun_generating = False
+if 'rerun_result' not in st.session_state:
+    st.session_state.rerun_result = None
+
 PAGE_SIZE = 25
 
 # Organization context (selector rendered once in app.py sidebar)
@@ -1054,13 +1065,23 @@ else:
                         total_purchases = sum(p.get("purchases", 0) for p in performance_data.values())
                         st.info(f"📊 **Performance:** {linked_count} ads linked · ${total_spend:,.2f} spend · {total_purchases} purchases")
 
+                    # Toggle to hide/show rejected ads
+                    show_rejected = st.checkbox(
+                        "Show rejected ads", value=True,
+                        key=f"show_rejected_{run.get('id', 'x')}",
+                        help="Hide ads rejected by both reviewers. Flagged ads are always shown."
+                    )
+                    display_ads = ads if show_rejected else [
+                        a for a in ads if a.get('final_status') != 'rejected'
+                    ]
+
                     # Display ads in a grid
                     cols_per_row = 3
-                    for i in range(0, len(ads), cols_per_row):
+                    for i in range(0, len(display_ads), cols_per_row):
                         cols = st.columns(cols_per_row)
                         for j, col in enumerate(cols):
-                            if i + j < len(ads):
-                                ad = ads[i + j]
+                            if i + j < len(display_ads):
+                                ad = display_ads[i + j]
                                 with col:
                                     # Ad image
                                     ad_url = get_signed_url(ad.get('storage_path', ''))
@@ -1110,6 +1131,31 @@ else:
                                                     items = rev.get(key, [])
                                                     if items:
                                                         st.markdown(f"_{heading}:_ " + ", ".join(items))
+
+                                    # Rerun button for rejected/flagged non-variant ads
+                                    if ad_status in ('rejected', 'flagged') and ad.get('id') and not ad.get('parent_ad_id'):
+                                        rerun_ad_id = ad['id']
+                                        if st.button(
+                                            "🔄 Rerun",
+                                            key=f"rerun_{rerun_ad_id}",
+                                            help="Regenerate with same hook and re-review"
+                                        ):
+                                            st.session_state.rerun_generating = True
+                                            with st.spinner("Regenerating ad..."):
+                                                try:
+                                                    rerun_result = asyncio.run(
+                                                        regenerate_ad_async(rerun_ad_id)
+                                                    )
+                                                    new_status = rerun_result.get('final_status', 'unknown')
+                                                    st.session_state.rerun_result = rerun_result
+                                                    st.success(
+                                                        f"Regenerated! New ad: {rerun_result['ad_id'][:8]} "
+                                                        f"({new_status})"
+                                                    )
+                                                except Exception as e:
+                                                    st.error(f"Regeneration failed: {e}")
+                                            st.session_state.rerun_generating = False
+                                            st.rerun()
 
                                     # Performance data (if linked to Meta)
                                     ad_id = ad.get('id')

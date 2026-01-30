@@ -19,6 +19,7 @@ from .nodes.select_content import SelectContentNode
 from .nodes.select_images import SelectImagesNode
 from .nodes.generate_ads import GenerateAdsNode
 from .nodes.review_ads import ReviewAdsNode
+from .nodes.retry_rejected import RetryRejectedNode
 from .nodes.compile_results import CompileResultsNode
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ ad_creation_graph = Graph(
         SelectImagesNode,
         GenerateAdsNode,
         ReviewAdsNode,
+        RetryRejectedNode,
         CompileResultsNode,
     ),
     name="ad_creation_pipeline"
@@ -65,6 +67,8 @@ async def run_ad_creation(
     additional_instructions: Optional[str] = None,
     angle_data: Optional[Dict[str, Any]] = None,
     match_template_structure: bool = False,
+    auto_retry_rejected: bool = False,
+    max_retry_attempts: int = 1,
     deps: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
@@ -92,6 +96,8 @@ async def run_ad_creation(
         additional_instructions: Optional run-specific instructions
         angle_data: Dict with angle info for belief_first mode
         match_template_structure: Adapt beliefs to template structure
+        auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
+        max_retry_attempts: Max retries per rejected ad (default: 1)
         deps: Optional AgentDependencies (creates if not provided)
 
     Returns:
@@ -134,6 +140,8 @@ async def run_ad_creation(
         additional_instructions=additional_instructions,
         angle_data=angle_data,
         match_template_structure=match_template_structure,
+        auto_retry_rejected=auto_retry_rejected,
+        max_retry_attempts=max_retry_attempts,
     )
 
     try:

@@ -40,6 +40,8 @@ class AdCreationPipelineState:
     angle_data: Optional[Dict[str, Any]] = None
     match_template_structure: bool = False
     project_id: Optional[str] = None
+    auto_retry_rejected: bool = False
+    max_retry_attempts: int = 1  # per rejected ad
 
     # === POPULATED BY NODES ===
 
