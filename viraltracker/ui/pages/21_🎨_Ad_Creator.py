@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
-    page_title="Ad Creator V2",
+    page_title="Ad Creator",
     page_icon="🎨",
     layout="wide"
 )
@@ -754,7 +754,7 @@ async def handle_export(
 # Main UI
 # ============================================================================
 
-st.title("🎨 Ad Creator V2")
+st.title("🎨 Ad Creator")
 st.markdown("**Generate Facebook ad variations with AI-powered dual review**")
 
 # Organization selector (required for multi-tenant filtering)
