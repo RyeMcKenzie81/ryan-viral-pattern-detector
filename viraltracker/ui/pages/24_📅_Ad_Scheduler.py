@@ -2870,9 +2870,7 @@ def render_schedule_detail():
 # Main Router
 # ============================================================================
 
-# Organization selector (sets context for brand filtering)
-from viraltracker.ui.utils import render_organization_selector
-render_organization_selector(key="ad_scheduler_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
 
 # Initialize confirm_delete state
 if 'confirm_delete' not in st.session_state:

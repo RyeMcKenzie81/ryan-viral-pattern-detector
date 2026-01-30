@@ -114,7 +114,7 @@ if is_authenticated():
             unsafe_allow_html=True,
         )
         # Org selector first — drives which features (and pages) are visible
-        render_organization_selector(key="nav_org_selector")
+        render_organization_selector()
         st.divider()
 
         # Render page links grouped by section

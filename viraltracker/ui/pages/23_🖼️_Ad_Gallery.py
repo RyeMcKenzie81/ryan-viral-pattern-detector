@@ -543,9 +543,9 @@ def render_load_more_button(current_count: int, total_count: int):
 st.title("Ad Gallery")
 st.markdown("**Browse all generated ads in a grid layout**")
 
-# Organization selector
-from viraltracker.ui.utils import render_organization_selector
-gallery_org_id = render_organization_selector(key="ad_gallery_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id
+gallery_org_id = get_current_organization_id()
 if not gallery_org_id:
     st.warning("Please select a workspace.")
     st.stop()

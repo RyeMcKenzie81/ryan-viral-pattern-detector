@@ -291,9 +291,9 @@ def render_plan_details(plan_id: str):
 st.title("📊 Plan List")
 st.write("View and manage your belief-first ad testing plans.")
 
-# Organization selector
-from viraltracker.ui.utils import render_organization_selector
-plan_list_org_id = render_organization_selector(key="plan_list_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id
+plan_list_org_id = get_current_organization_id()
 if not plan_list_org_id:
     st.warning("Please select a workspace.")
     st.stop()

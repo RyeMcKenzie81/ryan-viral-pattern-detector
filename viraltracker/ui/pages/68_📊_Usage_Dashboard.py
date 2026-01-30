@@ -16,7 +16,6 @@ from viraltracker.services.usage_tracker import UsageTracker
 from viraltracker.services.usage_limit_service import UsageLimitService, LimitType
 from viraltracker.services.organization_service import OrganizationService
 from viraltracker.ui.utils import (
-    render_organization_selector,
     get_current_organization_id,
     is_superuser,
 )
@@ -225,8 +224,8 @@ def render_cross_org_comparison():
 
 st.title("📊 Usage Dashboard")
 
-# Organization selector
-org_id = render_organization_selector(key="usage_dash_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+org_id = get_current_organization_id()
 if not org_id:
     st.stop()
 

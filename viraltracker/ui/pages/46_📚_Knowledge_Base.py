@@ -24,9 +24,9 @@ st.set_page_config(
 from viraltracker.ui.auth import require_auth
 require_auth()
 
-# Organization selector for usage tracking
-from viraltracker.ui.utils import render_organization_selector
-org_id = render_organization_selector(key="knowledge_base_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id
+org_id = get_current_organization_id()
 if not org_id:
     st.warning("Please select a workspace to continue.")
     st.stop()

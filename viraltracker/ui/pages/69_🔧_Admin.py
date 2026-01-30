@@ -12,7 +12,6 @@ from viraltracker.services.organization_service import OrganizationService
 from viraltracker.services.feature_service import FeatureService, FeatureKey
 from viraltracker.services.usage_limit_service import UsageLimitService, LimitType
 from viraltracker.ui.utils import (
-    render_organization_selector,
     get_current_organization_id,
     is_superuser,
 )
@@ -44,8 +43,8 @@ if not user_id:
 
 user_is_superuser = is_superuser(user_id)
 
-# Organization selector
-org_id = render_organization_selector(key="admin_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+org_id = get_current_organization_id()
 if not org_id:
     st.stop()
 

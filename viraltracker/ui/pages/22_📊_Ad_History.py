@@ -822,9 +822,9 @@ if 'edit_result' not in st.session_state:
 
 PAGE_SIZE = 25
 
-# Organization selector
-from viraltracker.ui.utils import render_organization_selector, get_brands as get_org_brands
-org_id = render_organization_selector(key="ad_history_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id, get_brands as get_org_brands
+org_id = get_current_organization_id()
 if not org_id:
     st.warning("Please select a workspace.")
     st.stop()

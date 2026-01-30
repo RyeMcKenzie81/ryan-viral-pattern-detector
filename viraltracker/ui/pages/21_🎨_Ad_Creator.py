@@ -757,9 +757,9 @@ async def handle_export(
 st.title("🎨 Ad Creator")
 st.markdown("**Generate Facebook ad variations with AI-powered dual review**")
 
-# Organization selector (required for multi-tenant filtering)
-from viraltracker.ui.utils import render_organization_selector
-org_id = render_organization_selector(key="ad_creator_org_selector")
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id
+org_id = get_current_organization_id()
 if not org_id:
     st.warning("Please select a workspace to continue.")
     st.stop()

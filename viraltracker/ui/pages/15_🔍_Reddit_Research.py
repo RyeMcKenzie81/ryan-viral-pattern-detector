@@ -605,9 +605,7 @@ def main():
         "Results can be synced to persona fields for belief-first planning."
     )
 
-    # Organization selector (sets context for brand filtering)
-    from viraltracker.ui.utils import render_organization_selector
-    render_organization_selector(key="reddit_research_org_selector")
+    # Organization context (selector rendered once in app.py sidebar)
 
     # Search config
     render_search_config()

@@ -1,12 +1,61 @@
 """Shared UI utilities for Streamlit pages."""
 
+import logging
 import streamlit as st
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
 # ORGANIZATION UTILITIES
 # ============================================================================
+
+# Cookie name for persisting workspace selection across refreshes
+WORKSPACE_COOKIE_NAME = "viraltracker_workspace"
+
+
+def _get_cookie_controller():
+    """Get a CookieController instance for workspace persistence."""
+    from streamlit_cookies_controller import CookieController
+    return CookieController()
+
+
+def _save_workspace_to_cookie(org_id: str) -> None:
+    """
+    Save workspace org_id to browser cookie (30-day expiry).
+
+    Args:
+        org_id: Organization ID or "all" for superuser mode
+    """
+    try:
+        controller = _get_cookie_controller()
+        controller.set(
+            WORKSPACE_COOKIE_NAME,
+            org_id,
+            max_age=30 * 24 * 60 * 60,
+        )
+    except Exception as e:
+        logger.debug(f"Failed to save workspace cookie: {e}")
+
+
+def _get_workspace_from_cookie() -> Optional[str]:
+    """
+    Read workspace org_id from browser cookie.
+
+    Returns:
+        Organization ID string, or None if cookie absent/invalid.
+    """
+    try:
+        controller = _get_cookie_controller()
+        value = controller.get(WORKSPACE_COOKIE_NAME)
+        if value and isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to read workspace cookie: {e}")
+        return None
+
 
 def get_current_organization_id() -> Optional[str]:
     """
@@ -52,18 +101,54 @@ def is_superuser(user_id: str) -> bool:
         return False
 
 
-def render_organization_selector(key: str = "org_selector") -> Optional[str]:
+def _on_workspace_change() -> None:
     """
-    Render organization selector in sidebar.
+    Callback fired by the workspace selectbox *before* the page reruns.
 
-    Auto-selects if user has only one organization. Shows dropdown if multiple.
-    Superusers get an "All Organizations" option to see all data.
+    Resolves the selected display name back to an org_id, updates session
+    state, clears stale brand/product state, persists to cookie, and
+    invalidates the navigation feature cache so the sidebar rebuilds for
+    the new workspace.
+    """
+    options_map = st.session_state.get("_org_options_map", {})
+    selected_name = st.session_state.get("_workspace_selectbox")
+    if not selected_name or not options_map:
+        return
 
-    Args:
-        key: Unique key for the selectbox widget
+    selected_id = options_map.get(selected_name)
+    if not selected_id:
+        return
+
+    set_current_organization_id(selected_id)
+
+    # Clear brand/product — they belong to the old workspace
+    st.session_state.pop("selected_brand_id", None)
+    st.session_state.pop("selected_product_id", None)
+
+    # Persist to cookie
+    _save_workspace_to_cookie(selected_id)
+
+    # Invalidate the nav feature cache so pages rebuild for the new org
+    try:
+        from viraltracker.ui.nav import _get_org_features_cached
+        _get_org_features_cached.clear()
+    except Exception:
+        pass
+
+
+def render_organization_selector() -> Optional[str]:
+    """
+    Render the single workspace selector in the sidebar.
+
+    This must be called exactly ONCE per page render (in app.py).
+    Individual pages should NOT call this — use get_current_organization_id()
+    instead.
+
+    Uses a hardcoded widget key ("_workspace_selectbox") and an on_change
+    callback so the new org_id is available before the page script reruns.
 
     Returns:
-        Selected organization ID, "all" for superuser mode, or None if not authenticated
+        Selected organization ID, "all" for superuser mode, or None
     """
     from viraltracker.ui.auth import get_current_user_id
     from viraltracker.services.organization_service import OrganizationService
@@ -88,28 +173,35 @@ def render_organization_selector(key: str = "org_selector") -> Optional[str]:
     if user_is_superuser:
         org_options = {"All Organizations": "all", **org_options}
 
-    # Single org (non-superuser) - auto-select
+    # Single org (non-superuser) — auto-select, no widget needed
     if len(org_options) == 1:
         org_id = list(org_options.values())[0]
         set_current_organization_id(org_id)
         return org_id
 
-    # Multiple orgs or superuser - show selector
-    # Get current selection or default to first
+    # Store the name→id map so the on_change callback can resolve it
+    st.session_state["_org_options_map"] = org_options
+
+    # Determine which name to pre-select
     current_org_id = get_current_organization_id()
     current_name = next(
         (name for name, oid in org_options.items() if oid == current_org_id),
-        list(org_options.keys())[0]
+        list(org_options.keys())[0],
     )
 
-    selected_name = st.sidebar.selectbox(
+    names = list(org_options.keys())
+
+    st.sidebar.selectbox(
         "Workspace",
-        list(org_options.keys()),
-        index=list(org_options.keys()).index(current_name),
-        key=key
+        names,
+        index=names.index(current_name),
+        key="_workspace_selectbox",
+        on_change=_on_workspace_change,
     )
 
-    selected_id = org_options[selected_name]
+    # Ensure session state is in sync (covers first render / cookie restore)
+    selected_name = st.session_state.get("_workspace_selectbox", current_name)
+    selected_id = org_options.get(selected_name, list(org_options.values())[0])
     set_current_organization_id(selected_id)
     return selected_id
 
@@ -146,9 +238,9 @@ def _auto_init_organization() -> Optional[str]:
     """
     Auto-initialize the current organization from user memberships.
 
-    Called when require_feature() needs an org but none is set in session state.
-    For non-superusers with one org, auto-selects it.
-    For superusers, defaults to their first non-"all" org (not "all" which bypasses checks).
+    Checks the workspace cookie first so the selection persists across
+    page refreshes.  Falls back to the user's first org if the cookie
+    is empty or contains a stale value.
 
     Returns:
         Organization ID if resolved, None if unable to determine
@@ -168,14 +260,26 @@ def _auto_init_organization() -> Optional[str]:
         if not orgs:
             return None
 
+        valid_org_ids = {o["organization"]["id"] for o in orgs}
+
+        # 1. Try restoring from cookie
+        cookie_org = _get_workspace_from_cookie()
+        if cookie_org:
+            if cookie_org == "all" and is_superuser(user_id):
+                set_current_organization_id("all")
+                return "all"
+            if cookie_org in valid_org_ids:
+                set_current_organization_id(cookie_org)
+                return cookie_org
+            # Cookie value is stale / belongs to a different user — ignore
+
+        # 2. Single org — auto-select
         if len(orgs) == 1:
-            # Single org - auto-select
             org_id = orgs[0]["organization"]["id"]
             set_current_organization_id(org_id)
             return org_id
 
-        # Multiple orgs - for feature gating, use first specific org
-        # (superusers selecting "All Organizations" would bypass feature checks)
+        # 3. Multiple orgs — use first specific org
         org_id = orgs[0]["organization"]["id"]
         set_current_organization_id(org_id)
         return org_id
@@ -304,8 +408,11 @@ def render_brand_selector(
         If include_product=False: Selected brand ID as string, or None
         If include_product=True: Tuple of (brand_id, product_id) or (None, None)
     """
-    # Render org selector in sidebar (handles superuser "All Organizations" option)
-    org_id = render_organization_selector()
+    # Use the org already set by app.py's single workspace selector.
+    # Do NOT render a duplicate org selector here.
+    org_id = get_current_organization_id()
+    if not org_id:
+        org_id = _auto_init_organization()
     if not org_id:
         if include_product:
             return None, None
