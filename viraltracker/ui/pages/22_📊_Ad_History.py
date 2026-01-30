@@ -100,7 +100,7 @@ def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_si
 
         # Build query for ad_runs with product join (including codes for structured naming)
         query = db.table("ad_runs").select(
-            "id, created_at, status, reference_ad_storage_path, product_id, parameters, "
+            "id, created_at, status, error_message, reference_ad_storage_path, product_id, parameters, "
             "products(id, name, brand_id, product_code, brands(id, name, brand_code))"
         ).order("created_at", desc=True)
 
@@ -914,7 +914,13 @@ else:
 
         with col_stats:
             approval_pct = int(approved_ads/total_ads*100) if total_ads > 0 else 0
-            st.markdown(f"{get_status_badge(status)} {approved_ads}/{total_ads} ({approval_pct}%)", unsafe_allow_html=True)
+            if status == 'failed':
+                error_msg = run.get('error_message', '')
+                # Show truncated error in summary row
+                short_error = (error_msg[:80] + '...') if len(error_msg) > 80 else error_msg
+                st.markdown(f"{get_status_badge(status)} {short_error}", unsafe_allow_html=True)
+            else:
+                st.markdown(f"{get_status_badge(status)} {approved_ads}/{total_ads} ({approval_pct}%)", unsafe_allow_html=True)
 
         # Expanded content - ONLY load images when expanded
         if is_expanded:
@@ -944,6 +950,8 @@ else:
                     st.markdown(f"**Run ID:** `{run_id_full}`")
                     st.markdown(f"**Date:** {date_str}")
                     st.markdown(f"**Status:** {get_status_badge(status)}", unsafe_allow_html=True)
+                    if status == 'failed' and run.get('error_message'):
+                        st.error(f"Error: {run['error_message']}")
                     st.markdown(f"**Ads Created:** {total_ads}")
                     st.markdown(f"**Approved:** {approved_ads} ({approval_pct}%)")
 

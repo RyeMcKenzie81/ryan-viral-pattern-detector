@@ -567,6 +567,7 @@ async def run_batch_workflow(
     angle_data: dict = None,
     match_template_structure: bool = False,
     offer_variant_id: str = None,
+    auto_retry_rejected: bool = False,
     progress_callback=None
 ) -> dict:
     """Run ad creation workflow for multiple templates sequentially.
@@ -591,6 +592,7 @@ async def run_batch_workflow(
         angle_data: Dict with angle info for belief_first mode
         match_template_structure: If True with belief_first, analyze template
         offer_variant_id: Optional offer variant UUID
+        auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
         progress_callback: Optional callback function(current, total, template_name)
 
     Returns:
@@ -643,7 +645,8 @@ async def run_batch_workflow(
                 additional_instructions=additional_instructions,
                 angle_data=angle_data,
                 match_template_structure=match_template_structure,
-                offer_variant_id=offer_variant_id
+                offer_variant_id=offer_variant_id,
+                auto_retry_rejected=auto_retry_rejected,
             )
 
             # Record template usage if scraped template
@@ -2165,100 +2168,105 @@ else:
             # Show initial progress
             progress_placeholder.progress(0, text=f"Starting batch processing...")
 
-            # Run batch workflow
-            async def run_batch_with_progress():
-                results = {
-                    'successful': [],
-                    'failed': [],
-                    'total': len(batch_templates)
-                }
+            # Run batch workflow — iterate in main thread so Streamlit
+            # can flush progress updates to the browser between templates.
+            # Reset the global Supabase client to avoid stale TCP connections
+            # from previous asyncio.run() event loops.
+            from viraltracker.core.database import reset_supabase_client
+            reset_supabase_client()
+            db = get_supabase_client()
+            batch_results = {
+                'successful': [],
+                'failed': [],
+                'total': len(batch_templates)
+            }
 
-                db = get_supabase_client()
+            for idx, template in enumerate(batch_templates):
+                template_name = template.get('name', 'Unknown')
+                template_id = template.get('id', '')
 
-                for idx, template in enumerate(batch_templates):
-                    template_name = template.get('name', 'Unknown')
-                    template_id = template.get('id', '')
+                # Update progress UI (main thread — flushes to browser)
+                progress = (idx) / len(batch_templates)
+                progress_placeholder.progress(progress, text=f"Processing template {idx + 1}/{len(batch_templates)}: {template_name}")
+                status_placeholder.caption(f"📄 Currently processing: **{template_name}**")
 
-                    # Update progress UI
-                    progress = (idx) / len(batch_templates)
-                    progress_placeholder.progress(progress, text=f"Processing template {idx + 1}/{len(batch_templates)}: {template_name}")
-                    status_placeholder.caption(f"📄 Currently processing: **{template_name}**")
-
+                try:
+                    # Download template image (refresh client if connection is stale)
+                    bucket = template.get('bucket', 'reference-ads')
+                    storage_path = template.get('storage_path', '')
                     try:
-                        # Download template image
-                        bucket = template.get('bucket', 'reference-ads')
-                        storage_path = template.get('storage_path', '')
                         template_data = db.storage.from_(bucket).download(storage_path)
-                        ref_base64 = base64.b64encode(template_data).decode('utf-8')
+                    except Exception:
+                        # Connection may be stale after asyncio.run() — reset and retry
+                        reset_supabase_client()
+                        db = get_supabase_client()
+                        template_data = db.storage.from_(bucket).download(storage_path)
+                    ref_base64 = base64.b64encode(template_data).decode('utf-8')
 
-                        # Run workflow for this template
-                        result = await run_workflow(
-                            product_id=selected_product_id,
-                            reference_ad_base64=ref_base64,
-                            filename=template_name,
-                            num_variations=num_variations,
-                            content_source=content_source,
-                            color_mode=color_mode,
-                            brand_colors=brand_colors_data,
-                            image_selection_mode=img_mode,
-                            selected_image_paths=img_paths,
-                            export_destination=exp_dest,
-                            export_email=exp_email,
-                            export_slack_webhook=exp_slack,
-                            product_name=prod_name,
-                            brand_name=brd_name,
-                            persona_id=persona_id,
-                            variant_id=variant_id,
-                            additional_instructions=add_instructions,
-                            angle_data=angle_data,
-                            match_template_structure=match_template,
-                            offer_variant_id=offer_variant_id,
-                            auto_retry_rejected=st.session_state.auto_retry_rejected,
-                        )
+                    # Run workflow for this template (own asyncio.run)
+                    result = asyncio.run(run_workflow(
+                        product_id=selected_product_id,
+                        reference_ad_base64=ref_base64,
+                        filename=template_name,
+                        num_variations=num_variations,
+                        content_source=content_source,
+                        color_mode=color_mode,
+                        brand_colors=brand_colors_data,
+                        image_selection_mode=img_mode,
+                        selected_image_paths=img_paths,
+                        export_destination=exp_dest,
+                        export_email=exp_email,
+                        export_slack_webhook=exp_slack,
+                        product_name=prod_name,
+                        brand_name=brd_name,
+                        persona_id=persona_id,
+                        variant_id=variant_id,
+                        additional_instructions=add_instructions,
+                        angle_data=angle_data,
+                        match_template_structure=match_template,
+                        offer_variant_id=offer_variant_id,
+                        auto_retry_rejected=st.session_state.auto_retry_rejected,
+                    ))
 
-                        # Record template usage if scraped
-                        if template.get('source') == 'scraped' and result:
-                            ad_run_id = result.get('ad_run_id')
-                            if ad_run_id:
-                                record_template_usage(template_id=template_id, ad_run_id=ad_run_id)
-                            # Mark recommendation as used (non-critical)
-                            try:
-                                from viraltracker.services.template_recommendation_service import TemplateRecommendationService
-                                rec_service = TemplateRecommendationService()
-                                rec_service.mark_as_used(UUID(selected_product_id), UUID(template_id))
-                            except Exception:
-                                pass  # Non-critical
+                    # Record template usage if scraped
+                    if template.get('source') == 'scraped' and result:
+                        ad_run_id = result.get('ad_run_id')
+                        if ad_run_id:
+                            record_template_usage(template_id=template_id, ad_run_id=ad_run_id)
+                        # Mark recommendation as used (non-critical)
+                        try:
+                            from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                            rec_service = TemplateRecommendationService()
+                            rec_service.mark_as_used(UUID(selected_product_id), UUID(template_id))
+                        except Exception:
+                            pass  # Non-critical
 
-                        results['successful'].append({
-                            'template_id': template_id,
-                            'template_name': template_name,
-                            'ad_run_id': result.get('ad_run_id'),
-                            'approved_count': result.get('approved_count', 0),
-                            'generated_count': len(result.get('generated_ads', []))
-                        })
+                    batch_results['successful'].append({
+                        'template_id': template_id,
+                        'template_name': template_name,
+                        'ad_run_id': result.get('ad_run_id'),
+                        'approved_count': result.get('approved_count', 0),
+                        'generated_count': len(result.get('generated_ads', []))
+                    })
 
-                    except Exception as e:
-                        # Stop entire batch if usage limit exceeded
-                        from viraltracker.services.usage_limit_service import UsageLimitExceeded
-                        if isinstance(e, UsageLimitExceeded):
-                            results['failed'].append({
-                                'template_id': template_id,
-                                'template_name': template_name,
-                                'error': str(e)
-                            })
-                            results['limit_exceeded'] = str(e)
-                            break
-
-                        logger.error(f"Batch workflow failed for template {template_name}: {e}")
-                        results['failed'].append({
+                except Exception as e:
+                    # Stop entire batch if usage limit exceeded
+                    from viraltracker.services.usage_limit_service import UsageLimitExceeded
+                    if isinstance(e, UsageLimitExceeded):
+                        batch_results['failed'].append({
                             'template_id': template_id,
                             'template_name': template_name,
                             'error': str(e)
                         })
+                        batch_results['limit_exceeded'] = str(e)
+                        break
 
-                return results
-
-            batch_results = asyncio.run(run_batch_with_progress())
+                    logger.error(f"Batch workflow failed for template {template_name}: {e}")
+                    batch_results['failed'].append({
+                        'template_id': template_id,
+                        'template_name': template_name,
+                        'error': str(e)
+                    })
 
             # Complete progress
             progress_placeholder.progress(1.0, text="Batch processing complete!")
