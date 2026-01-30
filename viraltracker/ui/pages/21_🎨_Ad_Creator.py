@@ -878,13 +878,34 @@ elif st.session_state.workflow_result:
                         claude = ad.get('claude_review') or {}
                         gemini = ad.get('gemini_review') or {}
 
-                        st.markdown(f"**Claude:** {claude.get('status', 'N/A')}")
-                        if claude.get('reasoning'):
-                            st.caption(claude.get('reasoning', '')[:200])
+                        for label, review in [("Claude", claude), ("Gemini", gemini)]:
+                            rev_status = review.get('status', 'N/A')
+                            st.markdown(f"**{label}:** {rev_status}")
 
-                        st.markdown(f"**Gemini:** {gemini.get('status', 'N/A')}")
-                        if gemini.get('reasoning'):
-                            st.caption(gemini.get('reasoning', '')[:200])
+                            # Scores
+                            scores = []
+                            for key, name in [('product_accuracy', 'Product'), ('text_accuracy', 'Text'),
+                                              ('layout_accuracy', 'Layout'), ('overall_quality', 'Overall')]:
+                                val = review.get(key)
+                                if val is not None:
+                                    scores.append(f"{name}: {val}")
+                            if scores:
+                                st.caption(" · ".join(scores))
+
+                            # Summary notes
+                            if review.get('notes'):
+                                st.caption(review['notes'])
+
+                            # Issue lists (only shown when present)
+                            for key, heading in [('product_issues', 'Product Issues'),
+                                                 ('text_issues', 'Text Issues'),
+                                                 ('ai_artifacts', 'AI Artifacts')]:
+                                items = review.get(key, [])
+                                if items:
+                                    st.markdown(f"_{heading}:_ " + ", ".join(items))
+
+                            if label == "Claude":
+                                st.markdown("---")
 
     st.divider()
 

@@ -1088,11 +1088,28 @@ else:
                                     claude_review = ad.get('claude_review') or {}
                                     gemini_review = ad.get('gemini_review') or {}
 
-                                    claude_score = claude_review.get('overall_score', 'N/A')
-                                    gemini_score = gemini_review.get('overall_score', 'N/A')
+                                    claude_score = claude_review.get('overall_quality', 'N/A')
+                                    gemini_score = gemini_review.get('overall_quality', 'N/A')
 
                                     agree_icon = "✅" if ad.get('reviewers_agree') else "⚠️"
                                     st.caption(f"Claude: {claude_score} | Gemini: {gemini_score} {agree_icon}")
+
+                                    # Show rejection/flagged reasons
+                                    if ad_status in ('rejected', 'flagged', 'needs_revision'):
+                                        with st.expander("Review Details"):
+                                            for label, rev in [("Claude", claude_review), ("Gemini", gemini_review)]:
+                                                if not rev:
+                                                    continue
+                                                rev_status = rev.get('status', 'N/A')
+                                                st.markdown(f"**{label}:** {rev_status}")
+                                                if rev.get('notes'):
+                                                    st.caption(rev['notes'])
+                                                for key, heading in [('product_issues', 'Product Issues'),
+                                                                     ('text_issues', 'Text Issues'),
+                                                                     ('ai_artifacts', 'AI Artifacts')]:
+                                                    items = rev.get(key, [])
+                                                    if items:
+                                                        st.markdown(f"_{heading}:_ " + ", ".join(items))
 
                                     # Performance data (if linked to Meta)
                                     ad_id = ad.get('id')
