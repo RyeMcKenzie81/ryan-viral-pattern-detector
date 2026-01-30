@@ -559,9 +559,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             raise Exception("No templates available for this job")
 
         # Import dependencies
-        from pydantic_ai import RunContext
-        from pydantic_ai.usage import RunUsage
-        from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+        from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
         from viraltracker.agent.dependencies import AgentDependencies
 
         # Create dependencies
@@ -652,13 +650,6 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                         logs.append(f"    Failed to download template")
                         continue
 
-                    # Create RunContext
-                    ctx = RunContext(
-                        deps=deps,
-                        model=None,
-                        usage=RunUsage()
-                    )
-
                     # Build additional instructions with angle and offer variant context
                     angle_instructions = f"ANGLE: {angle_name}\nBELIEF: {belief_statement}"
                     full_instructions = angle_instructions
@@ -669,21 +660,19 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                     # Run ad creation workflow with angle-specific content
                     try:
-                        result = await complete_ad_workflow(
-                            ctx=ctx,
+                        result = await run_ad_creation(
                             product_id=product_id,
                             reference_ad_base64=template_base64,
                             reference_ad_filename=template_ref,
-                            project_id="",
                             num_variations=params.get('num_variations', 5),
                             content_source='hooks',  # Use hooks mode but with angle as context
                             color_mode=params.get('color_mode', 'original'),
                             brand_colors=brand_colors_data,
                             image_selection_mode=params.get('image_selection_mode', 'auto'),
-                            selected_image_paths=None,
                             persona_id=params.get('persona_id') or params.get('belief_persona_id'),
                             variant_id=params.get('variant_id'),
-                            additional_instructions=full_instructions
+                            additional_instructions=full_instructions,
+                            deps=deps,
                         )
 
                         if result and result.get('ad_run_id'):
@@ -751,13 +740,6 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     logs.append(f"  Failed to download template: {template_ref}")
                     continue
 
-                # Create RunContext
-                ctx = RunContext(
-                    deps=deps,
-                    model=None,
-                    usage=RunUsage()
-                )
-
                 # Build combined additional instructions with offer variant context
                 combined_instructions = ""
                 if offer_variant_context:
@@ -770,21 +752,19 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                 # Run ad creation workflow
                 try:
-                    result = await complete_ad_workflow(
-                        ctx=ctx,
+                    result = await run_ad_creation(
                         product_id=product_id,
                         reference_ad_base64=template_base64,
                         reference_ad_filename=template_ref,
-                        project_id="",
                         num_variations=params.get('num_variations', 5),
                         content_source=content_source,
                         color_mode=params.get('color_mode', 'original'),
                         brand_colors=brand_colors_data,
                         image_selection_mode=params.get('image_selection_mode', 'auto'),
-                        selected_image_paths=None,
                         persona_id=params.get('persona_id'),
                         variant_id=params.get('variant_id'),
-                        additional_instructions=combined_instructions if combined_instructions else None
+                        additional_instructions=combined_instructions if combined_instructions else None,
+                        deps=deps,
                     )
 
                     if result and result.get('ad_run_id'):

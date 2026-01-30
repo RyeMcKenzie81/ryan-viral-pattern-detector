@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
-    page_title="Ad Creator",
+    page_title="Ad Creator V2",
     page_icon="🎨",
     layout="wide"
 )
@@ -489,9 +489,7 @@ async def run_workflow(
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
         offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
     """
-    from pydantic_ai import RunContext
-    from pydantic_ai.usage import RunUsage
-    from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+    from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
     from viraltracker.agent.dependencies import AgentDependencies
     from viraltracker.ui.auth import get_current_user_id
     from viraltracker.ui.utils import get_current_organization_id
@@ -503,20 +501,11 @@ async def run_workflow(
         organization_id=get_current_organization_id()
     )
 
-    # Create RunContext
-    ctx = RunContext(
-        deps=deps,
-        model=None,
-        usage=RunUsage()
-    )
-
     # Run workflow
-    result = await complete_ad_workflow(
-        ctx=ctx,
+    result = await run_ad_creation(
         product_id=product_id,
         reference_ad_base64=reference_ad_base64,
         reference_ad_filename=filename,
-        project_id="",
         num_variations=num_variations,
         content_source=content_source,
         color_mode=color_mode,
@@ -528,7 +517,8 @@ async def run_workflow(
         additional_instructions=additional_instructions,
         angle_data=angle_data,
         match_template_structure=match_template_structure,
-        offer_variant_id=offer_variant_id
+        offer_variant_id=offer_variant_id,
+        deps=deps,
     )
 
     # Handle exports if configured
@@ -764,7 +754,7 @@ async def handle_export(
 # Main UI
 # ============================================================================
 
-st.title("🎨 Ad Creator")
+st.title("🎨 Ad Creator V2")
 st.markdown("**Generate Facebook ad variations with AI-powered dual review**")
 
 # Organization selector (required for multi-tenant filtering)

@@ -301,28 +301,17 @@ async def retry_ad_run(run: dict) -> dict:
         raise ValueError("No product_id found for this run")
 
     # Import and call the workflow
-    from pydantic_ai import RunContext
-    from pydantic_ai.usage import RunUsage
-    from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+    from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
     from viraltracker.agent.dependencies import AgentDependencies
 
     # Create dependencies
     deps = AgentDependencies.create(project_name="default")
 
-    # Create RunContext
-    ctx = RunContext(
-        deps=deps,
-        model=None,
-        usage=RunUsage()
-    )
-
     # Run workflow with same parameters
-    result = await complete_ad_workflow(
-        ctx=ctx,
+    result = await run_ad_creation(
         product_id=product_id,
         reference_ad_base64=base64_data,
         reference_ad_filename=filename,
-        project_id="",
         num_variations=params.get('num_variations', 5),
         content_source=params.get('content_source', 'hooks'),
         color_mode=params.get('color_mode', 'original'),
@@ -334,7 +323,8 @@ async def retry_ad_run(run: dict) -> dict:
         additional_instructions=params.get('additional_instructions'),
         angle_data=params.get('angle_data'),
         match_template_structure=params.get('match_template_structure', False),
-        offer_variant_id=params.get('offer_variant_id')
+        offer_variant_id=params.get('offer_variant_id'),
+        deps=deps,
     )
 
     return result
