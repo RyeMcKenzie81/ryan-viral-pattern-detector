@@ -92,7 +92,14 @@ print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 # Navigation
 # ============================================================================
 
-from viraltracker.ui.auth import is_authenticated
+from viraltracker.ui.auth import is_authenticated, are_cookies_ready
+
+# Wait for cookie controller iframe to load before checking auth.
+# Without this, the first render after refresh sees no cookies,
+# falls through to login navigation, and changes the URL.
+if not are_cookies_ready():
+    with st.spinner("Loading..."):
+        st.stop()
 
 if is_authenticated():
     from viraltracker.ui.utils import render_organization_selector

@@ -45,6 +45,7 @@ COOKIE_EXPIRY_DAYS = 30
 USER_KEY = "_supabase_user"
 SESSION_KEY = "_supabase_session"
 AUTHENTICATED_KEY = "_authenticated"
+_COOKIES_CHECKED_KEY = "_cookies_checked"
 
 
 # ============================================================================
@@ -445,6 +446,40 @@ def is_authenticated() -> bool:
 
     # Try to restore from cookie (silent)
     return _restore_session()
+
+
+def are_cookies_ready() -> bool:
+    """
+    Check if the CookieController iframe has loaded and sent back browser cookies.
+
+    On first render after a page refresh, CookieController.getAll() returns {}
+    because the iframe JS hasn't loaded yet. This function detects that state
+    and returns False, allowing the caller to show a loading state instead of
+    the login page (which would change the URL).
+
+    The CookieController is still instantiated (iframe rendered), so it will
+    load and trigger a Streamlit rerun with actual cookie data.
+    """
+    # If already authenticated in this session, cookies are irrelevant
+    if st.session_state.get(AUTHENTICATED_KEY):
+        return True
+
+    # Instantiate controller so iframe is rendered in the DOM
+    controller = _get_cookie_controller()
+    all_cookies = controller.getAll()
+
+    # Non-empty dict means iframe has loaded with real cookies
+    if all_cookies:
+        return True
+
+    # Empty dict — either iframe not loaded OR user has no cookies.
+    # Use a flag to distinguish: first render (no flag) vs second render (flag set).
+    if not st.session_state.get(_COOKIES_CHECKED_KEY):
+        st.session_state[_COOKIES_CHECKED_KEY] = True
+        return False  # First render — wait for iframe
+
+    # Flag exists: we've waited one cycle. Proceed with auth check.
+    return True
 
 
 def get_current_user():
