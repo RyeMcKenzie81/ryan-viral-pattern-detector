@@ -307,6 +307,12 @@ class AdContentService:
         media_features = product.get('media_features', []) or []
         awards_certifications = product.get('awards_certifications', []) or []
 
+        # Pre-extract offer variant data to avoid nested f-string escaping issues
+        offer_variant = product.get('offer_variant') or {}
+        offer_variant_name = offer_variant.get('name', '') if isinstance(offer_variant, dict) else ''
+        offer_variant_label = offer_variant.get('name', 'Landing Page Angle') if isinstance(offer_variant, dict) else 'Landing Page Angle'
+        offer_variant_angle = offer_variant.get('name', 'this specific angle') if isinstance(offer_variant, dict) else 'this specific angle'
+
         # Separate emotional benefits from technical specs
         emotional_benefits = benefits.copy() if benefits else []
         offer_pain_points = pain_points if using_offer_variant else product.get('offer_pain_points', [])
@@ -384,7 +390,7 @@ class AdContentService:
         - Adaptation guidance: {template_angle.get('adaptation_guidance', '')}
 
         {f'''**CRITICAL: OFFER VARIANT OVERRIDE**
-        An offer variant "{product.get('offer_variant', {{}}).get('name', '')}" has been selected.
+        An offer variant "{offer_variant_name}" has been selected.
 
         YOU MUST COMPLETELY IGNORE the template's TOPIC and SUBJECT MATTER above.
         - Do NOT write about: {template_angle.get('original_text', '')[:50]}...
@@ -416,14 +422,14 @@ class AdContentService:
         {_json_dumps(persona_data.get('desires', [])[:5], indent=2)}
 
         **Transformation (before → after):**
-        Before: {_json_dumps(persona_data.get('transformation', {{}}).get('before', [])[:3])}
-        After: {_json_dumps(persona_data.get('transformation', {{}}).get('after', [])[:3])}
+        Before: {_json_dumps((persona_data.get('transformation') or {}).get('before', [])[:3])}
+        After: {_json_dumps((persona_data.get('transformation') or {}).get('after', [])[:3])}
 
         **Their Language (how the persona talks - match this style):**
         {_json_dumps(persona_data.get('their_language', [])[:3], indent=2)}
 
         **Amazon Testimonials (real customer voice - use similar language):**
-        {_json_dumps(persona_data.get('amazon_testimonials', {{}}), indent=2) if persona_data.get('amazon_testimonials') else 'None available'}
+        {_json_dumps(persona_data.get('amazon_testimonials') or {}, indent=2) if persona_data.get('amazon_testimonials') else 'None available'}
 
         PERSONA INTEGRATION RULES:
         1. Frame headlines around the persona's specific pain points
@@ -431,7 +437,7 @@ class AdContentService:
         3. Match the persona's speaking style from "Their Language"
         4. If Amazon testimonials are available, borrow phrases for authenticity
         5. Address their objections implicitly in the headline when possible
-        ''' if persona_data else (f'''**OFFER VARIANT: {product.get('offer_variant', {{}}).get('name', 'Landing Page Angle')}**
+        ''' if persona_data else (f'''**OFFER VARIANT: {offer_variant_label}**
 
         THIS IS THE ONLY TOPIC YOU CAN WRITE ABOUT. Everything else is off-limits.
 
@@ -452,7 +458,7 @@ class AdContentService:
         **REQUIRED:**
         1. EVERY headline must address pain points or benefits from the lists above
         2. If pain points mention "hair", "thinning", "shedding" → write about HAIR
-        3. The landing page is about {product.get('offer_variant', {{}}).get('name', 'this specific angle')} - your ad must match
+        3. The landing page is about {offer_variant_angle} - your ad must match
         4. Ignore what the template was originally about - adapt the STRUCTURE only
         ''' if offer_pain_points or product.get('offer_variant') else '')}
 
