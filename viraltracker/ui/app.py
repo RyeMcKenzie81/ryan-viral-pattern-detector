@@ -95,9 +95,14 @@ print(f"LOGFIRE STATUS: {_logfire_status}", file=sys.stderr, flush=True)
 from viraltracker.ui.auth import is_authenticated, are_cookies_ready
 
 # Wait for cookie controller iframe to load before checking auth.
-# Without this, the first render after refresh sees no cookies,
-# falls through to login navigation, and changes the URL.
+# CRITICAL: st.navigation() MUST be called on every rerun or Streamlit
+# resets the URL to the default page.  We use build_loading_pages() to
+# register all possible page routes so the current URL is preserved,
+# then st.stop() prevents any page script from executing.
 if not are_cookies_ready():
+    from viraltracker.ui.nav import build_loading_pages
+
+    st.navigation(build_loading_pages(), position="hidden")
     with st.spinner("Loading..."):
         st.stop()
 

@@ -28,12 +28,59 @@ Usage (from app.py):
     pg.run()
 """
 
+import glob
 import logging
+import os
 from typing import Any, Dict, List
 
 import streamlit as st
 
 logger = logging.getLogger(__name__)
+
+# Pages with custom url_path that differs from the auto-derived filename path.
+# Must stay in sync with the url_path= arguments in build_navigation_pages().
+_CUSTOM_URL_PATHS: Dict[str, str] = {
+    "29_🔍_Template_Evaluation.py": "template-evaluation",
+    "29_📦_Template_Recommendations.py": "template-recommendations",
+    "61_🤖_Agent_Catalog.py": "agent-catalog",
+    "61_📅_Scheduled_Tasks.py": "scheduled-tasks",
+    "64_🗄️_Database_Browser.py": "database-browser",
+    "64_⚙️_Platform_Settings.py": "platform-settings",
+}
+
+_DEFAULT_PAGE_FILE = "00_🎯_Agent_Chat.py"
+
+
+# ---------------------------------------------------------------------------
+# Loading-phase navigation (no auth required)
+# ---------------------------------------------------------------------------
+
+def build_loading_pages() -> List[st.Page]:
+    """Build a flat list of ALL page objects without feature gating.
+
+    Used during the cookie-loading phase (first render after refresh) so that
+    ``st.navigation()`` can be called before ``st.stop()``.  This preserves
+    the current browser URL — without it, Streamlit resets to the default page
+    because it has no routing information for that render cycle.
+
+    Does NOT require authentication or organization context.
+    """
+    pages_dir = os.path.join(os.path.dirname(__file__), "pages")
+    pages: List[st.Page] = []
+
+    for filepath in sorted(glob.glob(os.path.join(pages_dir, "*.py"))):
+        filename = os.path.basename(filepath)
+        rel_path = f"pages/{filename}"
+
+        kwargs: Dict[str, Any] = {}
+        if filename in _CUSTOM_URL_PATHS:
+            kwargs["url_path"] = _CUSTOM_URL_PATHS[filename]
+        if filename == _DEFAULT_PAGE_FILE:
+            kwargs["default"] = True
+
+        pages.append(st.Page(rel_path, **kwargs))
+
+    return pages
 
 
 # ---------------------------------------------------------------------------
