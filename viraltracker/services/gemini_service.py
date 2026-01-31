@@ -199,13 +199,13 @@ class GeminiService:
         Args:
             tweet_text: Tweet content to analyze
             tweet_id: Optional tweet ID for reference
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             HookAnalysis with AI classifications and explanations
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
         self._check_usage_limit()
 
@@ -240,28 +240,54 @@ class GeminiService:
                 return analysis
 
             except Exception as e:
-                error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     if retry_count <= max_retries:
                         # Exponential backoff: 15s, 30s, 60s
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error(f"Max retries exceeded for tweet: {tweet_text[:50]}...")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 else:
-                    # Non-rate-limit error - don't retry
                     logger.error(f"Error analyzing tweet: {e}")
                     raise
 
         # Should never reach here, but just in case
         raise last_error or Exception("Unknown error during hook analysis")
+
+    @staticmethod
+    def _is_retryable_error(error: Exception) -> bool:
+        """Check if an error is retryable (rate limit or transient server error).
+
+        Retries on:
+        - 429 / quota / rate limit errors
+        - 500, 502, 503 transient server errors
+        - google.genai.errors.ServerError (catches all server-side failures)
+        """
+        # Check exception type first (most reliable)
+        error_type = type(error).__name__
+        if error_type == "ServerError":
+            return True
+
+        error_str = str(error)
+        error_lower = error_str.lower()
+
+        # Rate limit errors (existing)
+        if "429" in error_str or "quota" in error_lower or "rate" in error_lower:
+            return True
+
+        # Transient server errors (new)
+        if "500 INTERNAL" in error_str or "502" in error_str or "503" in error_str:
+            return True
+        if "service unavailable" in error_lower or "bad gateway" in error_lower:
+            return True
+
+        return False
 
     async def _rate_limit(self) -> None:
         """Enforce rate limiting between API calls"""
@@ -529,7 +555,7 @@ Generate the article now:"""
         Args:
             prompt: Text prompt for image generation
             reference_images: Optional list of base64-encoded reference images (up to 14)
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
             return_metadata: If True, return dict with image and generation metadata
             temperature: Generation temperature (0.0-1.0). Lower = more deterministic. Default 0.4.
             image_size: Output resolution - "1K", "2K", or "4K". Default "2K" for better text quality.
@@ -544,7 +570,7 @@ Generate the article now:"""
                 - retries: Number of retries needed
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
         self._check_usage_limit()
 
@@ -669,21 +695,19 @@ Generate the article now:"""
                 raise Exception("No image found in Gemini response")
 
             except Exception as e:
-                error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     total_retries += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error("Max retries exceeded for image generation")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 else:
                     logger.error(f"Error generating image: {e}")
                     raise
@@ -702,13 +726,13 @@ Generate the article now:"""
         Args:
             image_data: Base64-encoded image data
             prompt: Analysis prompt/question about the image
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             JSON string with analysis results
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
         self._check_usage_limit()
 
@@ -797,17 +821,16 @@ Generate the article now:"""
                 error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error("Max retries exceeded for image analysis")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 # Check for whichOneof error (protobuf error when response is malformed)
                 elif "whichOneof" in error_str:
                     logger.error(f"Gemini returned malformed response (whichOneof error). This usually means the image triggered content safety filters or the response was empty.")
@@ -830,13 +853,13 @@ Generate the article now:"""
         Args:
             image_data: Base64-encoded image data
             prompt: Review prompt/criteria
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             JSON string with review results
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
         # Reuse analyze_image logic - review is a type of analysis
         return await self.analyze_image(image_data, prompt, max_retries)
@@ -856,13 +879,13 @@ Generate the article now:"""
         Args:
             text: Text content to analyze
             prompt: Analysis instructions/question
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             AI analysis result as string
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
         self._check_usage_limit()
 
@@ -923,23 +946,18 @@ Generate the article now:"""
                 return response.text
 
             except Exception as e:
-                error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(
-                            f"Rate limit hit during text analysis. "
-                            f"Retry {retry_count}/{max_retries} after {retry_delay}s..."
-                        )
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error(f"Max retries exceeded for text analysis")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 else:
                     logger.error(f"Error analyzing text: {e}")
                     raise
