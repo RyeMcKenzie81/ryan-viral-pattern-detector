@@ -5,6 +5,11 @@
 **Issue:** Gemini API rate limiting (10 requests/minute)
 **Solution:** Implemented intelligent rate limiting with retry logic
 
+> **Update (2026-01-30):** Retry logic in `GeminiService` now also retries on transient
+> server errors (500, 502, 503, `ServerError`), not just 429 rate limits. Detection is
+> centralized in `_is_retryable_error()`. The retry sections below describe the original
+> 429-only implementation; see `gemini_service.py` for current behavior.
+
 ---
 
 ## Problem Statement
@@ -267,32 +272,40 @@ for analysis in analyses:
 
 ### Retry Logic
 
+> **Current (2026-01-30):** `GeminiService` uses `_is_retryable_error()` to detect both
+> rate limit (429) and transient server errors (500/502/503/ServerError), with exponential
+> backoff at 15s, 30s, 60s.
+
 ```python
-if "429" in error or "quota" in error.lower():
+# Current implementation (GeminiService._is_retryable_error)
+if self._is_retryable_error(e):  # 429, 500, 502, 503, ServerError
     retry_count += 1
     if retry_count <= max_retries:
-        # Extract retry delay from error message
-        retry_delay = parse_retry_delay(error) or 45  # Default: 45s
-        time.sleep(retry_delay)
+        retry_delay = 15 * (2 ** (retry_count - 1))  # 15s, 30s, 60s
+        await asyncio.sleep(retry_delay)
         continue  # Retry the request
 ```
 
 **Retry Behavior:**
-1. First 429 error → Wait 45s, retry
-2. Second 429 error → Wait 45s, retry
-3. Third 429 error → Wait 45s, retry
-4. Fourth 429 error → Give up, return default analysis
+1. First retryable error → Wait 15s, retry
+2. Second retryable error → Wait 30s, retry
+3. Third retryable error → Wait 60s, retry
+4. Fourth retryable error → Give up, raise exception
 
 ---
 
 ## Error Handling
 
-### Rate Limit Errors (429)
+### Retryable Errors (429, 500, 502, 503)
 
-**Detection:**
+**Detection (current):**
 ```python
-if "429" in str(e) or "quota" in str(e).lower():
-    # Handle as rate limit error
+# GeminiService._is_retryable_error() checks:
+# - ServerError exception type
+# - 429 / quota / rate limit strings
+# - 500 INTERNAL / 502 / 503 / service unavailable / bad gateway strings
+if self._is_retryable_error(e):
+    # Handle as retryable error
 ```
 
 **Retry Delay Parsing:**

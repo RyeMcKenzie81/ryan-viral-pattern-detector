@@ -191,9 +191,10 @@ Mark a tweet as viral outlier.
 - Automatic delay between requests
 
 **Retry Logic:**
-- Exponential backoff on 429 errors
+- Exponential backoff on retryable errors (15s, 30s, 60s)
+- Retries on: 429 rate limits, 500/502/503 server errors, `ServerError` exceptions
 - Max retries configurable (default: 3)
-- Retries: 15s, 30s, 60s
+- Detection centralized in `_is_retryable_error()` helper
 
 **Response Parsing:**
 - Extracts JSON from markdown code blocks
