@@ -53,6 +53,7 @@ class DesiresResponse(BaseModel):
     care_protection: List[DesireItemResponse] = Field(default_factory=list)
     social_approval: List[DesireItemResponse] = Field(default_factory=list)
     freedom_from_fear: List[DesireItemResponse] = Field(default_factory=list)
+    self_actualization: List[DesireItemResponse] = Field(default_factory=list)
 
 
 class DemographicsResponse(BaseModel):
@@ -77,6 +78,13 @@ class SocialRelationsResponse(BaseModel):
     want_to_impress: List[str] = Field(default_factory=list)
     fear_judged_by: List[str] = Field(default_factory=list)
     influence_decisions: List[str] = Field(default_factory=list)
+    admire: List[str] = Field(default_factory=list)
+    envy: List[str] = Field(default_factory=list)
+    love_loyalty: List[str] = Field(default_factory=list)
+    dislike_animosity: List[str] = Field(default_factory=list)
+    compared_to: List[str] = Field(default_factory=list)
+    want_to_belong: List[str] = Field(default_factory=list)
+    distance_from: List[str] = Field(default_factory=list)
 
 
 class DomainPainPointsResponse(BaseModel):
@@ -136,6 +144,39 @@ class PersonaAIResponse(BaseModel):
 
     emotional_risks: List[str] = Field(default_factory=list)
     barriers_to_behavior: List[str] = Field(default_factory=list)
+
+
+class AmazonTestimonialQuote(BaseModel):
+    """A single Amazon testimonial quote."""
+    quote: str
+    author: Optional[str] = None
+    rating: Optional[int] = None
+
+
+class AmazonTestimonialsResponse(BaseModel):
+    """Amazon testimonials organized by category."""
+    transformation: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    pain_points: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    desired_features: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    past_failures: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    buying_objections: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    familiar_promises: List[AmazonTestimonialQuote] = Field(default_factory=list)
+
+
+class SynthesisPersonaResponse(PersonaAIResponse):
+    """Persona from synthesis — extends PersonaAIResponse with synthesis-specific fields."""
+    confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    forces_of_good: List[str] = Field(default_factory=list)
+    forces_of_evil: List[str] = Field(default_factory=list)
+    amazon_testimonials: AmazonTestimonialsResponse = Field(default_factory=AmazonTestimonialsResponse)
+    pain_symptoms: List[str] = Field(default_factory=list)
+    purchasing_habits: str = ""
+
+
+class SynthesisResponse(BaseModel):
+    """Top-level response from persona synthesis."""
+    segment_analysis: str = ""
+    personas: List[SynthesisPersonaResponse] = Field(default_factory=list)
 
 
 def repair_json(json_str: str) -> str:
