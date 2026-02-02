@@ -400,6 +400,26 @@ class AdIntelligenceService:
             rec_id, RecommendationStatus.ACKNOWLEDGED, note=note, user_id=user_id
         )
 
+    async def search_brands(self, query: str) -> list:
+        """Search brands by name (case-insensitive partial match).
+
+        Args:
+            query: Brand name or partial name.
+
+        Returns:
+            List of dicts with id, name, organization_id.
+        """
+        try:
+            result = self.supabase.table("brands").select(
+                "id, name, organization_id"
+            ).ilike(
+                "name", f"%{query}%"
+            ).limit(10).execute()
+            return result.data or []
+        except Exception as e:
+            logger.warning(f"Error searching brands: {e}")
+            return []
+
     # =========================================================================
     # Private Helpers
     # =========================================================================

@@ -10,9 +10,10 @@ Chat-first UX with slash commands:
 - /congruence_check: Check creative-copy-LP alignment
 - /rec_done, /rec_ignore, /rec_note: Manage recommendations
 
-8 thin tools delegating to AdIntelligenceService facade.
+9 thin tools delegating to AdIntelligenceService facade.
 """
 
+import json
 import logging
 from datetime import date
 from typing import Dict, Optional
@@ -33,12 +34,13 @@ ad_intelligence_agent = Agent(
 Your role is to analyze Meta ad account performance and provide actionable insights.
 
 **Your capabilities:**
-1. **Full Account Analysis** - Classify ads by awareness level, compute baselines,
+1. **Brand Lookup** - Resolve brand names to brand IDs
+2. **Full Account Analysis** - Classify ads by awareness level, compute baselines,
    diagnose issues, and generate recommendations
-2. **Recommendation Management** - View, acknowledge, and act on recommendations
-3. **Fatigue Detection** - Identify ads suffering from audience fatigue
-4. **Coverage Analysis** - Find gaps in awareness level × creative format inventory
-5. **Congruence Checking** - Verify creative, copy, and landing page alignment
+3. **Recommendation Management** - View, acknowledge, and act on recommendations
+4. **Fatigue Detection** - Identify ads suffering from audience fatigue
+5. **Coverage Analysis** - Find gaps in awareness level × creative format inventory
+6. **Congruence Checking** - Verify creative, copy, and landing page alignment
 
 **How you work:**
 - You use a 4-layer model: Classification → Baselines → Diagnosis → Recommendations
@@ -48,13 +50,68 @@ Your role is to analyze Meta ad account performance and provide actionable insig
 - Recommendations include evidence and suggested actions
 
 **Important:**
-- Always identify the brand_id from context before calling tools
+- When the user mentions a brand by name, ALWAYS call resolve_brand_name first to get the brand_id
+- Never ask the user for a brand_id — look it up yourself using resolve_brand_name
 - Use the ChatRenderer output directly — it's already formatted for chat
 - When users ask about "which ads to kill" or "what's not working", use analyze_account
 - When users ask about "fatigued ads" or "frequency", use check_fatigue
 - When users ask about "gaps" or "missing awareness levels", use check_coverage_gaps
 """
 )
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Utility',
+        'platform': 'Meta',
+        'use_cases': [
+            'Look up brand by name',
+            'Resolve brand name to brand_id',
+        ],
+        'examples': [
+            'Analyze Wonder Paws ad account',
+            'Check fatigue for WonderPaws',
+        ],
+    }
+)
+async def resolve_brand_name(
+    ctx: RunContext[AgentDependencies],
+    brand_name: str,
+) -> str:
+    """Look up a brand by name to get its brand_id.
+
+    ALWAYS call this first when the user mentions a brand by name.
+    Use the returned brand_id for all subsequent tool calls.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_name: Brand name or partial name (e.g., "Wonder Paws").
+
+    Returns:
+        JSON with matching brands including id, name, and organization_id.
+    """
+    logger.info(f"Resolving brand name: {brand_name}")
+    brands = await ctx.deps.ad_intelligence.search_brands(brand_name)
+
+    if not brands:
+        return json.dumps({
+            "success": False,
+            "error": f"No brands found matching '{brand_name}'",
+            "count": 0,
+        })
+
+    return json.dumps({
+        "success": True,
+        "brands": [
+            {
+                "id": b["id"],
+                "name": b["name"],
+                "organization_id": b["organization_id"],
+            }
+            for b in brands
+        ],
+        "count": len(brands),
+    })
 
 
 @ad_intelligence_agent.tool(
@@ -375,4 +432,4 @@ async def add_recommendation_note(
     return ChatRenderer.render_status_update(rec)
 
 
-logger.info("Ad Intelligence Agent initialized with 8 tools")
+logger.info("Ad Intelligence Agent initialized with 9 tools")
