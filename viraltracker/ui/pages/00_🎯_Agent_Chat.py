@@ -343,11 +343,20 @@ def render_sidebar():
 
 
 
-def _extract_structured_result(result):
-    """Extract structured result models from agent run result."""
-    if not hasattr(result, "all_messages"):
+def _extract_structured_result(result_or_messages):
+    """Extract structured result models from agent run result or message list.
+
+    Args:
+        result_or_messages: Either an AgentRunResult (with all_messages()),
+            or a raw list of ModelMessage objects from streaming.
+    """
+    if isinstance(result_or_messages, list):
+        messages = result_or_messages
+    elif hasattr(result_or_messages, "all_messages"):
+        messages = result_or_messages.all_messages()
+    else:
         return None
-    for msg in result.all_messages():
+    for msg in messages:
         if not hasattr(msg, "parts"):
             continue
         for part in msg.parts:
@@ -366,6 +375,33 @@ def _extract_structured_result(result):
             ):
                 return part.content
     return None
+
+
+async def _run_agent_streaming(full_prompt, deps, placeholder):
+    """Run the orchestrator agent with streaming text output.
+
+    Streams the LLM's text response token-by-token into the placeholder.
+    During tool execution (sub-agent calls), no text streams — the placeholder
+    shows the "Thinking..." indicator until the final response begins.
+
+    Args:
+        full_prompt: The full prompt with conversation context.
+        deps: AgentDependencies instance.
+        placeholder: Streamlit empty placeholder for progressive rendering.
+
+    Returns:
+        Tuple of (final_output_text, all_messages_list).
+    """
+    async with agent.run_stream(full_prompt, deps=deps) as stream_result:
+        async for text in stream_result.stream_text(
+            delta=False, debounce_by=0.1
+        ):
+            placeholder.markdown(text + "▌")
+
+        final_output = await stream_result.get_output()
+        all_messages = stream_result.all_messages()
+
+    return final_output, all_messages
 
 
 # ============================================================================
@@ -441,24 +477,43 @@ def render_chat_interface():
 
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
+            message_placeholder.markdown("*Thinking...*")
 
             try:
                 context = build_conversation_context()
                 full_prompt = f"{context}## Current Query:\n{prompt}"
 
-                with st.spinner("Agent is thinking..."):
-                    result = asyncio.run(
-                        agent.run(full_prompt, deps=st.session_state.deps)
+                # Clear stale side-channel result before running
+                if st.session_state.deps:
+                    st.session_state.deps.result_cache.custom.pop(
+                        "ad_intelligence_result", None
                     )
-                    full_response = result.output
 
-                message_placeholder.markdown(full_response)
+                full_response, all_messages = asyncio.run(
+                    _run_agent_streaming(
+                        full_prompt,
+                        st.session_state.deps,
+                        message_placeholder,
+                    )
+                )
+
+                # Side-channel: replace LLM paraphrase with exact
+                # ChatRenderer markdown for ad intelligence results
+                ad_intel = st.session_state.deps.result_cache.custom.get(
+                    "ad_intelligence_result"
+                )
+                if ad_intel and ad_intel.get("rendered_markdown"):
+                    display_content = ad_intel["rendered_markdown"]
+                else:
+                    display_content = full_response
+
+                message_placeholder.markdown(display_content)
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": full_response}
+                    {"role": "assistant", "content": display_content}
                 )
 
                 message_idx = len(st.session_state.messages) - 1
-                structured_result = _extract_structured_result(result)
+                structured_result = _extract_structured_result(all_messages)
                 if structured_result:
                     st.session_state.structured_results[message_idx] = (
                         structured_result
@@ -473,7 +528,7 @@ def render_chat_interface():
                     else:
                         render_download_buttons(structured_result, message_idx)
 
-                store_tool_result(prompt, full_response)
+                store_tool_result(prompt, display_content)
 
             except Exception as e:
                 error_msg = (

@@ -173,6 +173,25 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 8. Ad Intelligence - CPC Baseline Uses Per-Row Daily Values
+
+**Priority**: Medium
+**Complexity**: Low-Medium
+**Added**: 2026-02-02
+
+**Context**: The baseline service computes CPC baselines using per-row daily `link_cpc` from Meta. Days with 1 click and $80 spend produce $80 CPC, inflating the p75 (e.g., $79.58). The diagnostic engine correctly computes aggregate CPC = total_spend/total_clicks, which is much lower (~$2). This discrepancy causes misleading diagnostic output like "6 ads with CPC over $79.58" when actual CPC values are around $2.
+
+**What's needed**:
+1. Baseline service should compute CPC per-ad as aggregate `spend / clicks` instead of using per-row daily values
+2. Same treatment for other derived metrics that can be skewed by low-volume days
+3. Re-validate diagnostic thresholds after baseline fix
+
+**Related files**:
+- `viraltracker/services/ad_intelligence/baseline_service.py`
+- `viraltracker/services/ad_intelligence/diagnostic_engine.py`
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._

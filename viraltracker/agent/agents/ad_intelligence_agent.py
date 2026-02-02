@@ -187,7 +187,12 @@ async def analyze_account(
     ctx.deps.result_cache.custom["ad_intelligence_brand_name"] = result.brand_name
     ctx.deps.result_cache.custom["ad_intelligence_run_id"] = str(result.run_id)
 
-    return ChatRenderer.render_account_analysis(result)
+    rendered = ChatRenderer.render_account_analysis(result)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "analyze_account",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -242,7 +247,12 @@ async def get_recommendations(
     recs = await ctx.deps.ad_intelligence.get_recommendation_inbox(
         brand_id=UUID(brand_id), **kwargs
     )
-    return ChatRenderer.render_recommendations(recs)
+    rendered = ChatRenderer.render_recommendations(recs)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_recommendations",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -286,7 +296,12 @@ async def check_fatigue(
         date_range_end=date.today(),
         days_back=days_back,
     )
-    return ChatRenderer.render_fatigue_check(result)
+    rendered = ChatRenderer.render_fatigue_check(result)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "check_fatigue",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -327,7 +342,12 @@ async def check_coverage_gaps(
         brand_id=UUID(brand_id),
         date_range_end=date.today(),
     )
-    return ChatRenderer.render_coverage_gaps(result)
+    rendered = ChatRenderer.render_coverage_gaps(result)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "check_coverage_gaps",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -366,7 +386,12 @@ async def check_congruence(
     result = await ctx.deps.ad_intelligence.congruence.check_congruence(
         brand_id=UUID(brand_id),
     )
-    return ChatRenderer.render_congruence_check(result)
+    rendered = ChatRenderer.render_congruence_check(result)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "check_congruence",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -393,7 +418,12 @@ async def mark_recommendation_done(
     from ...services.ad_intelligence.chat_renderer import ChatRenderer
 
     rec = await ctx.deps.ad_intelligence.handle_rec_done(UUID(recommendation_id))
-    return ChatRenderer.render_status_update(rec)
+    rendered = ChatRenderer.render_status_update(rec)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "mark_recommendation_done",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -420,7 +450,12 @@ async def ignore_recommendation(
     from ...services.ad_intelligence.chat_renderer import ChatRenderer
 
     rec = await ctx.deps.ad_intelligence.handle_rec_ignore(UUID(recommendation_id))
-    return ChatRenderer.render_status_update(rec)
+    rendered = ChatRenderer.render_status_update(rec)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "ignore_recommendation",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 @ad_intelligence_agent.tool(
@@ -451,7 +486,12 @@ async def add_recommendation_note(
     rec = await ctx.deps.ad_intelligence.handle_rec_note(
         UUID(recommendation_id), note
     )
-    return ChatRenderer.render_status_update(rec)
+    rendered = ChatRenderer.render_status_update(rec)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "add_recommendation_note",
+        "rendered_markdown": rendered,
+    }
+    return rendered
 
 
 logger.info("Ad Intelligence Agent initialized with 9 tools")

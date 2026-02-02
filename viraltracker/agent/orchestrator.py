@@ -204,8 +204,16 @@ async def route_to_ad_intelligence_agent(
         context_prefix += " Use this brand unless the user specifies a different one.]\n\n"
         query = context_prefix + query
 
+    # Clear stale side-channel result before sub-agent runs
+    ctx.deps.result_cache.custom.pop("ad_intelligence_result", None)
+
     logger.info(f"Routing to Ad Intelligence Agent: {query}")
     result = await ad_intelligence_agent.run(query, deps=ctx.deps)
+
+    # Return raw ChatRenderer markdown, bypassing sub-agent LLM paraphrase
+    cached = ctx.deps.result_cache.custom.get("ad_intelligence_result")
+    if cached and "rendered_markdown" in cached:
+        return cached["rendered_markdown"]
     return result.output
 
 @orchestrator.tool
