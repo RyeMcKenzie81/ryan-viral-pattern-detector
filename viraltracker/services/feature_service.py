@@ -61,6 +61,7 @@ class FeatureKey:
     AD_CREATOR = "ad_creator"
     AD_HISTORY = "ad_history"
     AD_PERFORMANCE = "ad_performance"
+    AD_INTELLIGENCE = "ad_intelligence"
     AD_LIBRARY = "ad_library"  # legacy — kept for backward compat
     AD_SCHEDULER = "ad_scheduler"
     AD_PLANNING = "ad_planning"
@@ -225,6 +226,7 @@ class FeatureService:
             FeatureKey.AD_CREATOR,
             FeatureKey.AD_HISTORY,
             FeatureKey.AD_PERFORMANCE,
+            FeatureKey.AD_INTELLIGENCE,
             FeatureKey.AD_SCHEDULER,
             FeatureKey.AD_PLANNING,
             FeatureKey.BELIEF_CANVAS,

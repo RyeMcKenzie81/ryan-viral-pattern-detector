@@ -38,6 +38,7 @@ from ..services.reddit_sentiment_service import RedditSentimentService
 from ..services.product_context_service import ProductContextService
 from ..services.belief_analysis_service import BeliefAnalysisService
 from ..services.usage_tracker import UsageTracker
+from ..services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class AgentDependencies(BaseModel):
     product_context: ProductContextService
     belief_analysis: BeliefAnalysisService
     sora: SoraService
+    ad_intelligence: AdIntelligenceService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -285,6 +287,12 @@ class AgentDependencies(BaseModel):
         sora = SoraService()
         logger.info("SoraService initialized")
 
+        # Initialize AdIntelligenceService for ad account analysis
+        if supabase is None:
+            supabase = get_supabase_client()
+        ad_intelligence = AdIntelligenceService(supabase)
+        logger.info("AdIntelligenceService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -310,6 +318,7 @@ class AgentDependencies(BaseModel):
             product_context=product_context,
             belief_analysis=belief_analysis,
             sora=sora,
+            ad_intelligence=ad_intelligence,
             docs=docs,
             project_name=project_name
         )
