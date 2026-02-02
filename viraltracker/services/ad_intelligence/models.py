@@ -242,6 +242,9 @@ class FiredRule(BaseModel):
     skipped: bool = False
     missing_metrics: List[str] = Field(default_factory=list)
 
+    # Aggregation context (populated on top_issues summary, not per-ad diagnostics)
+    affected_ad_ids: List[str] = Field(default_factory=list)
+
 
 class AdDiagnostic(BaseModel):
     """Represents an ad_intelligence_diagnostics row."""

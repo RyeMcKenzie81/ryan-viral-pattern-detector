@@ -217,7 +217,7 @@ class AdIntelligenceService:
 
             # 4. Diagnose all ads
             diagnostics_list = await self.diagnostics.diagnose_account(
-                brand_id, run.id,
+                brand_id, org_id, run.id,
                 datetime.fromisoformat(run.created_at) if isinstance(run.created_at, str) else run.created_at or datetime.now(timezone.utc),
                 active_ids, baselines, config,
             )
@@ -251,14 +251,24 @@ class AdIntelligenceService:
                 health = diag.overall_health.value if hasattr(diag.overall_health, "value") else diag.overall_health
                 health_dist[health] = health_dist.get(health, 0) + 1
 
-            # Top issues (non-skipped, deduplicated by rule_id)
-            all_rules: List[FiredRule] = []
-            seen_rules = set()
+            # Top issues (non-skipped, deduplicated by rule_id, with affected ad IDs)
+            rule_ad_map: Dict[str, List[str]] = {}  # rule_id -> list of meta_ad_ids
+            rule_samples: Dict[str, FiredRule] = {}  # rule_id -> sample FiredRule
             for diag in diagnostics_list:
                 for rule in diag.fired_rules:
-                    if not rule.skipped and rule.rule_id not in seen_rules:
-                        all_rules.append(rule)
-                        seen_rules.add(rule.rule_id)
+                    if not rule.skipped:
+                        if rule.rule_id not in rule_samples:
+                            rule_samples[rule.rule_id] = rule
+                            rule_ad_map[rule.rule_id] = []
+                        rule_ad_map[rule.rule_id].append(diag.meta_ad_id)
+
+            all_rules: List[FiredRule] = []
+            for rule_id, sample_rule in rule_samples.items():
+                enriched = sample_rule.model_copy(
+                    update={"affected_ad_ids": rule_ad_map[rule_id]}
+                )
+                all_rules.append(enriched)
+
             top_issues = sorted(
                 all_rules,
                 key=lambda r: {"critical": 3, "warning": 2, "info": 1}.get(r.severity, 0),

@@ -551,6 +551,7 @@ class DiagnosticEngine:
         self,
         meta_ad_id: str,
         brand_id: UUID,
+        org_id: UUID,
         run_id: UUID,
         run_created_at: datetime,
         baseline: Optional[BaselineSnapshot],
@@ -565,6 +566,7 @@ class DiagnosticEngine:
         Args:
             meta_ad_id: Meta ad ID string.
             brand_id: Brand UUID.
+            org_id: Organization UUID.
             run_id: Analysis run UUID.
             run_created_at: When the run was created.
             baseline: Cohort baseline (may be None).
@@ -582,6 +584,7 @@ class DiagnosticEngine:
             return AdDiagnostic(
                 meta_ad_id=meta_ad_id,
                 brand_id=brand_id,
+                organization_id=org_id,
                 run_id=run_id,
                 overall_health=HealthStatus.INSUFFICIENT_DATA,
                 fired_rules=[],
@@ -621,6 +624,7 @@ class DiagnosticEngine:
         diagnostic = AdDiagnostic(
             meta_ad_id=meta_ad_id,
             brand_id=brand_id,
+            organization_id=org_id,
             run_id=run_id,
             overall_health=overall_health,
             kill_recommendation=kill,
@@ -640,6 +644,7 @@ class DiagnosticEngine:
     async def diagnose_account(
         self,
         brand_id: UUID,
+        org_id: UUID,
         run_id: UUID,
         run_created_at: datetime,
         active_ad_ids: List[str],
@@ -650,6 +655,7 @@ class DiagnosticEngine:
 
         Args:
             brand_id: Brand UUID.
+            org_id: Organization UUID.
             run_id: Analysis run UUID.
             run_created_at: When the run was created.
             active_ad_ids: List of active meta ad IDs.
@@ -681,7 +687,7 @@ class DiagnosticEngine:
                     baseline = brand_wide_baseline
 
                 diag = await self.diagnose_ad(
-                    meta_ad_id, brand_id, run_id, run_created_at,
+                    meta_ad_id, brand_id, org_id, run_id, run_created_at,
                     baseline, run_config
                 )
                 diagnostics.append(diag)
@@ -690,6 +696,7 @@ class DiagnosticEngine:
                 diagnostics.append(AdDiagnostic(
                     meta_ad_id=meta_ad_id,
                     brand_id=brand_id,
+                    organization_id=org_id,
                     run_id=run_id,
                     overall_health=HealthStatus.INSUFFICIENT_DATA,
                     fired_rules=[],

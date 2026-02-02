@@ -86,18 +86,62 @@ class ChatRenderer:
             lines.append("### Top Issues")
             for i, rule in enumerate(result.top_issues[:5], 1):
                 severity_icon = _severity_icon(rule.severity)
+                ad_count = len(rule.affected_ad_ids) if rule.affected_ad_ids else 0
+                count_str = f" ({ad_count} ads)" if ad_count > 0 else ""
                 lines.append(
-                    f"{i}. {severity_icon} **{rule.rule_name}** — {rule.explanation}"
+                    f"{i}. {severity_icon} **{rule.rule_name}**{count_str} — {rule.explanation}"
                 )
+                # Show affected ad IDs (truncate to first 5)
+                if rule.affected_ad_ids:
+                    shown = rule.affected_ad_ids[:5]
+                    ad_list = ", ".join(f"`{aid}`" for aid in shown)
+                    if len(rule.affected_ad_ids) > 5:
+                        ad_list += f" +{len(rule.affected_ad_ids) - 5} more"
+                    lines.append(f"   Ads: {ad_list}")
             lines.append("")
 
-        # Recommendations summary
-        lines.append(
-            f"### Recommendations: "
-            f"{result.critical_recommendations} critical, "
-            f"{result.pending_recommendations} pending"
-        )
-        lines.append("Use `/recommend` for full inbox.")
+        # Recommendations detail
+        if result.recommendations:
+            lines.append(
+                f"### Recommendations ({len(result.recommendations)} total: "
+                f"{result.critical_recommendations} critical, "
+                f"{result.pending_recommendations} pending)"
+            )
+            lines.append("")
+
+            for rec in result.recommendations:
+                priority_icon = _priority_icon(rec.priority)
+                short_id = str(rec.id)[:8] if rec.id else "---"
+                cat_label = rec.category.value if hasattr(rec.category, "value") else rec.category
+                lines.append(f"**{priority_icon} [{short_id}]** {cat_label.upper()}: {rec.title}")
+                lines.append(f"  {rec.summary}")
+
+                if rec.evidence:
+                    for ev in rec.evidence[:2]:
+                        lines.append(f"  - {ev.metric}: {ev.observation}")
+
+                lines.append(f"  **Action**: {rec.action_description}")
+
+                if rec.affected_ad_ids:
+                    shown = rec.affected_ad_ids[:5]
+                    ad_list = ", ".join(f"`{aid}`" for aid in shown)
+                    if len(rec.affected_ad_ids) > 5:
+                        ad_list += f" +{len(rec.affected_ad_ids) - 5} more"
+                    lines.append(f"  Affects: {ad_list}")
+
+                lines.append(
+                    f"  > `/rec_done {short_id}` | "
+                    f"`/rec_ignore {short_id}` | "
+                    f"`/rec_note {short_id} \"text\"`"
+                )
+                lines.append("")
+        else:
+            lines.append(
+                f"### Recommendations: "
+                f"{result.critical_recommendations} critical, "
+                f"{result.pending_recommendations} pending"
+            )
+            lines.append("Use `/recommend` for full inbox.")
 
         return "\n".join(lines)
 

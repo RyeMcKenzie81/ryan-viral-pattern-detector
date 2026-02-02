@@ -215,7 +215,7 @@ async def get_active_ad_ids(
         )
 
         result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id, impressions, spend"
+            "meta_ad_id, impressions, spend, ad_status, date"
         ).eq(
             "brand_id", str(brand_id)
         ).gt(
@@ -230,8 +230,9 @@ async def get_active_ad_ids(
         if not result.data:
             return []
 
-        # Aggregate per meta_ad_id in Python
+        # Aggregate per meta_ad_id in Python, track latest status
         ad_totals: Dict[str, Dict[str, float]] = {}
+        ad_latest_status: Dict[str, tuple] = {}  # ad_id -> (date, status)
         for row in result.data:
             ad_id = row.get("meta_ad_id")
             if not ad_id:
@@ -247,12 +248,28 @@ async def get_active_ad_ids(
             if spend is not None:
                 ad_totals[ad_id]["spend"] += spend
 
+            # Track the most recent ad_status per ad
+            row_date = row.get("date", "")
+            row_status = row.get("ad_status")
+            if row_status and (ad_id not in ad_latest_status or row_date > ad_latest_status[ad_id][0]):
+                ad_latest_status[ad_id] = (row_date, row_status)
+
         # Filter: SUM(impressions) > 0 OR SUM(spend) > 0
-        active_ids = [
-            ad_id
-            for ad_id, totals in ad_totals.items()
-            if totals["impressions"] > 0 or totals["spend"] > 0
-        ]
+        # Also exclude ads where the latest status is not ACTIVE
+        excluded_statuses = {"PAUSED", "DELETED", "ARCHIVED", "DISAPPROVED"}
+        active_ids = []
+        excluded_count = 0
+        for ad_id, totals in ad_totals.items():
+            if totals["impressions"] <= 0 and totals["spend"] <= 0:
+                continue
+            latest = ad_latest_status.get(ad_id)
+            if latest and latest[1] in excluded_statuses:
+                excluded_count += 1
+                continue
+            active_ids.append(ad_id)
+
+        if excluded_count > 0:
+            logger.info(f"Excluded {excluded_count} paused/deleted ads from active set")
 
         logger.info(
             f"Found {len(active_ids)} active ads for brand {brand_id} "
