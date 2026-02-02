@@ -870,6 +870,9 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             "logs": "\n".join(logs)
         })
 
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
         return {"success": False, "error": error_msg}
 
 
@@ -1069,6 +1072,9 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             "error_message": error_msg,
             "logs": "\n".join(logs)
         })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
 
         return {"success": False, "error": error_msg}
 
@@ -1284,6 +1290,9 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
             "error_message": error_msg,
             "logs": "\n".join(logs)
         })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
 
         return {"success": False, "error": error_msg}
 
@@ -1543,7 +1552,27 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
             "logs": "\n".join(logs)
         })
 
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
         return {"success": False, "error": error_msg}
+
+
+def _reschedule_after_failure(job: Dict, job_id: str):
+    """Reschedule a recurring job after a failed run.
+
+    When a job fails, next_run_at has already been cleared (to prevent
+    duplicate execution). This must be recalculated so the job runs again
+    on its next scheduled time. Does NOT increment runs_completed.
+    """
+    if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+        next_run = calculate_next_run(job['cron_expression'])
+        if next_run:
+            update_job(job_id, {"next_run_at": next_run.isoformat()})
+            logger.info(f"Job {job_id} failed but rescheduled for {next_run}")
+        else:
+            logger.error(f"Job {job_id} failed and could not calculate next run")
+    # One-time jobs that fail stay with next_run_at=None (won't re-run)
 
 
 def _update_job_next_run(job: Dict, job_id: str):
@@ -1730,6 +1759,9 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
             "error_message": error_msg,
             "logs": "\n".join(logs)
         })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
 
         return {"success": False, "error": error_msg}
 
