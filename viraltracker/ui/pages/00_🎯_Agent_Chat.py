@@ -343,20 +343,11 @@ def render_sidebar():
 
 
 
-def _extract_structured_result(result_or_messages):
-    """Extract structured result models from agent run result or message list.
-
-    Args:
-        result_or_messages: Either an AgentRunResult (with all_messages()),
-            or a raw list of ModelMessage objects from streaming.
-    """
-    if isinstance(result_or_messages, list):
-        messages = result_or_messages
-    elif hasattr(result_or_messages, "all_messages"):
-        messages = result_or_messages.all_messages()
-    else:
+def _extract_structured_result(result):
+    """Extract structured result models from agent run result."""
+    if not hasattr(result, "all_messages"):
         return None
-    for msg in messages:
+    for msg in result.all_messages():
         if not hasattr(msg, "parts"):
             continue
         for part in msg.parts:
@@ -377,31 +368,6 @@ def _extract_structured_result(result_or_messages):
     return None
 
 
-async def _run_agent_streaming(full_prompt, deps, placeholder):
-    """Run the orchestrator agent with streaming text output.
-
-    Streams the LLM's text response token-by-token into the placeholder.
-    During tool execution (sub-agent calls), no text streams — the placeholder
-    shows the "Thinking..." indicator until the final response begins.
-
-    Args:
-        full_prompt: The full prompt with conversation context.
-        deps: AgentDependencies instance.
-        placeholder: Streamlit empty placeholder for progressive rendering.
-
-    Returns:
-        Tuple of (final_output_text, all_messages_list).
-    """
-    async with agent.run_stream(full_prompt, deps=deps) as stream_result:
-        async for text in stream_result.stream_text(
-            delta=False, debounce_by=0.1
-        ):
-            placeholder.markdown(text + "▌")
-
-        final_output = await stream_result.get_output()
-        all_messages = stream_result.all_messages()
-
-    return final_output, all_messages
 
 
 # ============================================================================
@@ -477,7 +443,6 @@ def render_chat_interface():
 
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("*Thinking...*")
 
             try:
                 context = build_conversation_context()
@@ -489,13 +454,11 @@ def render_chat_interface():
                         "ad_intelligence_result", None
                     )
 
-                full_response, all_messages = asyncio.run(
-                    _run_agent_streaming(
-                        full_prompt,
-                        st.session_state.deps,
-                        message_placeholder,
+                with st.spinner("Agent is thinking..."):
+                    result = asyncio.run(
+                        agent.run(full_prompt, deps=st.session_state.deps)
                     )
-                )
+                    full_response = result.output
 
                 # Side-channel: replace LLM paraphrase with exact
                 # ChatRenderer markdown for ad intelligence results
@@ -513,7 +476,7 @@ def render_chat_interface():
                 )
 
                 message_idx = len(st.session_state.messages) - 1
-                structured_result = _extract_structured_result(all_messages)
+                structured_result = _extract_structured_result(result)
                 if structured_result:
                     st.session_state.structured_results[message_idx] = (
                         structured_result
