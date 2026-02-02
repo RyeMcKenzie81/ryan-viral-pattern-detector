@@ -64,13 +64,18 @@ class ClassifierService:
     CURRENT_PROMPT_VERSION = "v1"
     CURRENT_SCHEMA_VERSION = "1.0"
 
-    def __init__(self, supabase_client):
-        """Initialize with Supabase client.
+    def __init__(self, supabase_client, gemini_service=None):
+        """Initialize with Supabase client and optional GeminiService.
 
         Args:
             supabase_client: Supabase client instance for DB operations.
+            gemini_service: Optional GeminiService instance with configured
+                rate limiting and usage tracking. If not provided, a new
+                instance will be created per classification call (not
+                recommended for production use).
         """
         self.supabase = supabase_client
+        self._gemini = gemini_service
 
     async def classify_ad(
         self,
@@ -650,9 +655,12 @@ class ClassifierService:
             Dict with classification fields.
         """
         try:
-            from ...services.gemini_service import GeminiService
-
-            gemini = GeminiService()
+            if self._gemini is not None:
+                gemini = self._gemini
+            else:
+                from ...services.gemini_service import GeminiService
+                logger.warning("No shared GeminiService provided, creating new instance (no rate limiting)")
+                gemini = GeminiService()
             prompt = CLASSIFICATION_PROMPT.format(ad_copy=ad_copy or "(no copy available)")
 
             if thumbnail_url:

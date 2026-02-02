@@ -209,6 +209,11 @@ async def get_active_ad_ids(
     window_start = date_range_end - timedelta(days=active_window_days)
 
     try:
+        logger.info(
+            f"Querying active ads for brand {brand_id}: "
+            f"date > {window_start.isoformat()} AND date <= {date_range_end.isoformat()}"
+        )
+
         result = supabase.table("meta_ads_performance").select(
             "meta_ad_id, impressions, spend"
         ).eq(
@@ -218,6 +223,9 @@ async def get_active_ad_ids(
         ).lte(
             "date", date_range_end.isoformat()
         ).execute()
+
+        row_count = len(result.data) if result.data else 0
+        logger.info(f"Active ad query returned {row_count} rows")
 
         if not result.data:
             return []

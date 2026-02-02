@@ -290,7 +290,7 @@ class AgentDependencies(BaseModel):
         # Initialize AdIntelligenceService for ad account analysis
         if supabase is None:
             supabase = get_supabase_client()
-        ad_intelligence = AdIntelligenceService(supabase)
+        ad_intelligence = AdIntelligenceService(supabase, gemini_service=gemini)
         logger.info("AdIntelligenceService initialized")
 
         return cls(

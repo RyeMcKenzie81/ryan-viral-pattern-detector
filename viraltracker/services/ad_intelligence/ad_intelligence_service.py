@@ -44,14 +44,17 @@ class AdIntelligenceService:
     Plus standalone analyses: fatigue, coverage, congruence.
     """
 
-    def __init__(self, supabase_client):
+    def __init__(self, supabase_client, gemini_service=None):
         """Initialize all sub-services.
 
         Args:
             supabase_client: Supabase client instance.
+            gemini_service: Optional GeminiService instance with configured
+                rate limiting and usage tracking. Passed through to
+                ClassifierService for Gemini API calls.
         """
         self.supabase = supabase_client
-        self.classifier = ClassifierService(supabase_client)
+        self.classifier = ClassifierService(supabase_client, gemini_service=gemini_service)
         self.baselines = BaselineService(supabase_client)
         self.diagnostics = DiagnosticEngine(supabase_client)
         self.recommendations = RecommendationService(supabase_client)
@@ -163,13 +166,25 @@ class AdIntelligenceService:
             config.thresholds["date_range_start"] = run.date_range_start
             config.thresholds["date_range_end"] = run.date_range_end
 
-            # 1. Get active ads
+            # 1. Get active ads (narrow window first, fallback to full analysis window)
             active_ids = await get_active_ad_ids(
                 self.supabase,
                 brand_id,
                 run.date_range_end,
                 config.active_window_days,
             )
+
+            if not active_ids and config.active_window_days < config.days_back:
+                logger.info(
+                    f"No active ads in {config.active_window_days}-day window, "
+                    f"falling back to full {config.days_back}-day analysis window"
+                )
+                active_ids = await get_active_ad_ids(
+                    self.supabase,
+                    brand_id,
+                    run.date_range_end,
+                    config.days_back,
+                )
 
             if not active_ids:
                 await self._complete_run(run.id, "completed", {
