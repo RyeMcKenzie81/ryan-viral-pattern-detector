@@ -221,7 +221,15 @@ def _check_cpc_above_p75(ad_data: Dict, baseline: Optional[BaselineSnapshot]) ->
 
 
 def _check_roas_below_p25(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
-    """ROAS below 25th percentile."""
+    """ROAS below 25th percentile. Skips non-conversion campaign objectives."""
+    # Skip for campaigns that don't optimize for conversions
+    objective = (ad_data.get("objective") or "").upper()
+    non_conversion_objectives = {"LINK_CLICKS", "TRAFFIC", "POST_ENGAGEMENT",
+                                  "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
+                                  "PAGE_LIKES", "EVENT_RESPONSES"}
+    if objective in non_conversion_objectives:
+        return None
+
     if not baseline or baseline.p25_roas is None:
         return None
     actual = _safe_numeric(ad_data.get("roas")) or 0
@@ -336,7 +344,15 @@ def _check_ctr_declining_7d(ad_data: Dict, baseline: Optional[BaselineSnapshot])
 
 
 def _check_spend_no_conversions(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
-    """Spending with zero conversions."""
+    """Spending with zero conversions. Skips non-conversion campaign objectives."""
+    # Skip for campaigns that don't optimize for conversions
+    objective = (ad_data.get("objective") or "").upper()
+    non_conversion_objectives = {"LINK_CLICKS", "TRAFFIC", "POST_ENGAGEMENT",
+                                  "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
+                                  "PAGE_LIKES", "EVENT_RESPONSES"}
+    if objective in non_conversion_objectives:
+        return None
+
     total_spend = _safe_numeric(ad_data.get("total_spend")) or 0
     conversions = ad_data.get("total_conversions") or 0
 
@@ -434,23 +450,30 @@ def _check_congruence_below_threshold(ad_data: Dict, baseline: Optional[Baseline
 
 
 def _check_impression_starvation(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
-    """Ad receiving very few impressions over 3+ days — may be throttled."""
+    """Ad receiving very few impressions over 3+ days — may be throttled.
+
+    Uses a low threshold that accounts for accounts with many concurrent ads.
+    Only fires as 'info' (doesn't affect health status) to avoid false positives.
+    """
     series = ad_data.get("impressions_series", [])
     if not series or len(series) < 3:
         return None
 
     recent = [_safe_numeric(v) or 0 for v in series[-3:]]
-    if all(v < 50 for v in recent):
+    # Only flag truly starved ads (< 10 impressions/day for 3 days)
+    if all(v < 10 for v in recent):
+        avg_impr = sum(recent) / len(recent)
+        severity = "warning" if avg_impr == 0 else "info"
         return FiredRule(
             rule_id="impression_starvation",
             rule_name="Impression Starvation",
             category="funnel",
-            severity="warning",
+            severity=severity,
             confidence=0.7,
             metric_name="impressions",
-            actual_value=sum(recent) / len(recent),
+            actual_value=avg_impr,
             baseline_value=None,
-            explanation=f"Ad receiving < 50 impressions/day for {len(recent)} consecutive days",
+            explanation=f"Ad receiving < 10 impressions/day for {len(recent)} consecutive days — may be throttled or budget-starved",
             aggregation="daily_series",
             window_days=3,
         )
@@ -778,10 +801,15 @@ class DiagnosticEngine:
         if critical_fatigue:
             return True, "fatigue"
 
-        # Inefficient
-        total_conversions = ad_data.get("total_conversions") or 0
-        if total_conversions == 0 and total_spend > 200:
-            return True, "inefficient"
+        # Inefficient (only for conversion-optimized campaigns)
+        objective = (ad_data.get("objective") or "").upper()
+        non_conversion_objectives = {"LINK_CLICKS", "TRAFFIC", "POST_ENGAGEMENT",
+                                      "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
+                                      "PAGE_LIKES", "EVENT_RESPONSES"}
+        if objective not in non_conversion_objectives:
+            total_conversions = ad_data.get("total_conversions") or 0
+            if total_conversions == 0 and total_spend > 200:
+                return True, "inefficient"
 
         return False, None
 
@@ -912,6 +940,9 @@ class DiagnosticEngine:
             freq_series.append(_safe_numeric(r.get("frequency")))
             impr_series.append(_safe_numeric(r.get("impressions")))
 
+        # Campaign objective (from most recent row)
+        objective = rows[-1].get("objective") if rows else None
+
         data = {
             "days_with_data": len(rows),
             "total_impressions": total_impressions,
@@ -926,6 +957,7 @@ class DiagnosticEngine:
             "hook_rate": hook_rate,
             "hold_rate": hold_rate,
             "impressions": total_impressions,
+            "objective": objective,
             # Series
             "link_ctr_series": ctr_series,
             "frequency_series": freq_series,
