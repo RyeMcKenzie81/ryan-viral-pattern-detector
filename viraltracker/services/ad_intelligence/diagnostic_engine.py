@@ -150,11 +150,39 @@ class DiagnosticRule:
 
 
 # =============================================================================
+# Campaign Objective Sets (used by rules to skip irrelevant metrics)
+# =============================================================================
+
+# Objectives where link_ctr / link_cpc are not meaningful
+# (these optimize for engagement, reach, or views — not link clicks)
+NON_CLICK_OBJECTIVES = {
+    "POST_ENGAGEMENT", "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
+    "PAGE_LIKES", "EVENT_RESPONSES",
+}
+
+# Objectives where conversions / ROAS are not meaningful
+# (these don't optimize for purchase or lead events)
+NON_CONVERSION_OBJECTIVES = NON_CLICK_OBJECTIVES | {"LINK_CLICKS", "TRAFFIC"}
+
+
+def _is_non_click_objective(ad_data: Dict) -> bool:
+    """Check if the ad's campaign objective doesn't optimize for link clicks."""
+    return (ad_data.get("objective") or "").upper() in NON_CLICK_OBJECTIVES
+
+
+def _is_non_conversion_objective(ad_data: Dict) -> bool:
+    """Check if the ad's campaign objective doesn't optimize for conversions."""
+    return (ad_data.get("objective") or "").upper() in NON_CONVERSION_OBJECTIVES
+
+
+# =============================================================================
 # Rule Check Functions
 # =============================================================================
 
 def _check_ctr_below_p25(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
-    """CTR below 25th percentile."""
+    """CTR below 25th percentile. Skips non-click campaign objectives."""
+    if _is_non_click_objective(ad_data):
+        return None
     if not baseline or baseline.p25_ctr is None:
         return None
     actual = _safe_numeric(ad_data.get("link_ctr")) or 0
@@ -176,7 +204,9 @@ def _check_ctr_below_p25(ad_data: Dict, baseline: Optional[BaselineSnapshot]) ->
 
 
 def _check_ctr_below_p10(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
-    """CTR severely below — likely below 10th percentile (approximated as p25 * 0.6)."""
+    """CTR severely below — likely below 10th percentile. Skips non-click objectives."""
+    if _is_non_click_objective(ad_data):
+        return None
     if not baseline or baseline.p25_ctr is None:
         return None
     p10_approx = baseline.p25_ctr * 0.6
@@ -199,7 +229,9 @@ def _check_ctr_below_p10(ad_data: Dict, baseline: Optional[BaselineSnapshot]) ->
 
 
 def _check_cpc_above_p75(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
-    """CPC above 75th percentile — expensive clicks."""
+    """CPC above 75th percentile — expensive clicks. Skips non-click objectives."""
+    if _is_non_click_objective(ad_data):
+        return None
     if not baseline or baseline.p75_cpc is None:
         return None
     actual = _safe_numeric(ad_data.get("link_cpc")) or 0
@@ -222,12 +254,7 @@ def _check_cpc_above_p75(ad_data: Dict, baseline: Optional[BaselineSnapshot]) ->
 
 def _check_roas_below_p25(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
     """ROAS below 25th percentile. Skips non-conversion campaign objectives."""
-    # Skip for campaigns that don't optimize for conversions
-    objective = (ad_data.get("objective") or "").upper()
-    non_conversion_objectives = {"LINK_CLICKS", "TRAFFIC", "POST_ENGAGEMENT",
-                                  "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
-                                  "PAGE_LIKES", "EVENT_RESPONSES"}
-    if objective in non_conversion_objectives:
+    if _is_non_conversion_objective(ad_data):
         return None
 
     if not baseline or baseline.p25_roas is None:
@@ -345,12 +372,7 @@ def _check_ctr_declining_7d(ad_data: Dict, baseline: Optional[BaselineSnapshot])
 
 def _check_spend_no_conversions(ad_data: Dict, baseline: Optional[BaselineSnapshot]) -> Optional[FiredRule]:
     """Spending with zero conversions. Skips non-conversion campaign objectives."""
-    # Skip for campaigns that don't optimize for conversions
-    objective = (ad_data.get("objective") or "").upper()
-    non_conversion_objectives = {"LINK_CLICKS", "TRAFFIC", "POST_ENGAGEMENT",
-                                  "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
-                                  "PAGE_LIKES", "EVENT_RESPONSES"}
-    if objective in non_conversion_objectives:
+    if _is_non_conversion_objective(ad_data):
         return None
 
     total_spend = _safe_numeric(ad_data.get("total_spend")) or 0
@@ -802,11 +824,7 @@ class DiagnosticEngine:
             return True, "fatigue"
 
         # Inefficient (only for conversion-optimized campaigns)
-        objective = (ad_data.get("objective") or "").upper()
-        non_conversion_objectives = {"LINK_CLICKS", "TRAFFIC", "POST_ENGAGEMENT",
-                                      "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS",
-                                      "PAGE_LIKES", "EVENT_RESPONSES"}
-        if objective not in non_conversion_objectives:
+        if not _is_non_conversion_objective(ad_data):
             total_conversions = ad_data.get("total_conversions") or 0
             if total_conversions == 0 and total_spend > 200:
                 return True, "inefficient"
@@ -908,9 +926,18 @@ class DiagnosticEngine:
         link_cpc = (total_spend / total_clicks) if total_clicks > 0 else None
         frequency = _safe_numeric(rows[-1].get("frequency"))  # Use latest
 
-        # Video rates
-        hook_rate = (total_video_views / total_impressions) if total_impressions > 0 and total_video_views > 0 else None
-        hold_rate = (total_p25_watched / total_video_views) if total_video_views > 0 and total_p25_watched > 0 else None
+        # Video rates — only compute for video-classified ads
+        # DPAs and image ads can have spurious video_views from Meta but these aren't meaningful
+        is_video = False
+        if classification and classification.creative_format:
+            fmt = classification.creative_format.value if hasattr(classification.creative_format, "value") else classification.creative_format
+            is_video = fmt.startswith("video_")
+
+        hook_rate = None
+        hold_rate = None
+        if is_video:
+            hook_rate = (total_video_views / total_impressions) if total_impressions > 0 and total_video_views > 0 else None
+            hold_rate = (total_p25_watched / total_video_views) if total_video_views > 0 and total_p25_watched > 0 else None
 
         # Conversions
         total_conversions = 0
