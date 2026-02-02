@@ -190,6 +190,20 @@ async def route_to_ad_intelligence_agent(
     - Creative-copy-landing page alignment
     - Ad recommendations or what to do next
     """
+    # Inject cached brand context for follow-up queries
+    cached_brand_id = ctx.deps.result_cache.custom.get("ad_intelligence_brand_id")
+    cached_brand_name = ctx.deps.result_cache.custom.get("ad_intelligence_brand_name")
+    cached_run_id = ctx.deps.result_cache.custom.get("ad_intelligence_run_id")
+    if cached_brand_id and cached_brand_name:
+        context_prefix = (
+            f"[Context: The user is currently working with brand '{cached_brand_name}' "
+            f"(brand_id: {cached_brand_id})."
+        )
+        if cached_run_id:
+            context_prefix += f" The latest analysis run_id is {cached_run_id}."
+        context_prefix += " Use this brand unless the user specifies a different one.]\n\n"
+        query = context_prefix + query
+
     logger.info(f"Routing to Ad Intelligence Agent: {query}")
     result = await ad_intelligence_agent.run(query, deps=ctx.deps)
     return result.output

@@ -61,9 +61,12 @@ Your role is to analyze Meta ad account performance and provide actionable insig
 **Important:**
 - When the user mentions a brand by name, ALWAYS call resolve_brand_name first to get the brand_id
 - Never ask the user for a brand_id — look it up yourself using resolve_brand_name
+- If the query includes a [Context: ...] block with a brand_id, use that brand_id directly
+  WITHOUT calling resolve_brand_name again. The brand was already resolved in a previous turn.
 - When users ask about "which ads to kill" or "what's not working", use analyze_account
 - When users ask about "fatigued ads" or "frequency", use check_fatigue
 - When users ask about "gaps" or "missing awareness levels", use check_coverage_gaps
+- For follow-up questions about a previous analysis, use the brand_id from context
 """
 )
 
@@ -107,6 +110,11 @@ async def resolve_brand_name(
             "error": f"No brands found matching '{brand_name}'",
             "count": 0,
         })
+
+    # Cache the first matching brand for follow-up context
+    if len(brands) == 1:
+        ctx.deps.result_cache.custom["ad_intelligence_brand_id"] = brands[0]["id"]
+        ctx.deps.result_cache.custom["ad_intelligence_brand_name"] = brands[0]["name"]
 
     return json.dumps({
         "success": True,
@@ -173,6 +181,12 @@ async def analyze_account(
         config=config,
         goal=goal or None,
     )
+
+    # Cache brand context and run_id for follow-up queries
+    ctx.deps.result_cache.custom["ad_intelligence_brand_id"] = brand_id
+    ctx.deps.result_cache.custom["ad_intelligence_brand_name"] = result.brand_name
+    ctx.deps.result_cache.custom["ad_intelligence_run_id"] = str(result.run_id)
+
     return ChatRenderer.render_account_analysis(result)
 
 
