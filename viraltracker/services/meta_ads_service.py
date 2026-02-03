@@ -1142,7 +1142,18 @@ class MetaAdsService:
         """
         source_url = await self.fetch_video_source_url(video_id)
         if not source_url:
-            logger.warning(f"No source URL for video {video_id} (ad {meta_ad_id})")
+            logger.warning(f"No source URL for video {video_id} (ad {meta_ad_id}) - marking as not_downloadable")
+            # Mark as not_downloadable so we don't retry on future runs
+            from ..core.database import get_supabase_client
+            supabase = get_supabase_client()
+            supabase.table("meta_ad_assets").upsert({
+                "meta_ad_id": meta_ad_id,
+                "brand_id": str(brand_id),
+                "asset_type": "video",
+                "storage_path": "",  # No file stored
+                "status": "not_downloadable",
+                "meta_video_id": video_id,
+            }, on_conflict="meta_ad_id,asset_type").execute()
             return None
 
         return await self._download_and_store_asset(
@@ -1260,13 +1271,13 @@ class MetaAdsService:
             if ad_id not in image_ads and thumb:
                 image_ads[ad_id] = thumb
 
-        # --- Check which already have assets ---
+        # --- Check which already have assets (downloaded or marked not_downloadable) ---
         existing_result = supabase.table("meta_ad_assets").select(
             "meta_ad_id, asset_type"
         ).eq(
             "brand_id", str(brand_id)
-        ).eq(
-            "status", "downloaded"
+        ).in_(
+            "status", ["downloaded", "not_downloadable"]
         ).execute()
 
         existing_set = {
