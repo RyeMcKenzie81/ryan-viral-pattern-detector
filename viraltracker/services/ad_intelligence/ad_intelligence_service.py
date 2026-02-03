@@ -44,7 +44,7 @@ class AdIntelligenceService:
     Plus standalone analyses: fatigue, coverage, congruence.
     """
 
-    def __init__(self, supabase_client, gemini_service=None):
+    def __init__(self, supabase_client, gemini_service=None, meta_ads_service=None):
         """Initialize all sub-services.
 
         Args:
@@ -52,9 +52,16 @@ class AdIntelligenceService:
             gemini_service: Optional GeminiService instance with configured
                 rate limiting and usage tracking. Passed through to
                 ClassifierService for Gemini API calls.
+            meta_ads_service: Optional MetaAdsService instance for fetching
+                video source URLs. Passed through to ClassifierService for
+                video classification.
         """
         self.supabase = supabase_client
-        self.classifier = ClassifierService(supabase_client, gemini_service=gemini_service)
+        self.classifier = ClassifierService(
+            supabase_client,
+            gemini_service=gemini_service,
+            meta_ads_service=meta_ads_service,
+        )
         self.baselines = BaselineService(supabase_client)
         self.diagnostics = DiagnosticEngine(supabase_client)
         self.recommendations = RecommendationService(supabase_client)
@@ -206,6 +213,7 @@ class AdIntelligenceService:
             classifications = await self.classifier.classify_batch(
                 brand_id, org_id, run.id, active_ids,
                 max_new=config.max_classifications_per_run,
+                max_video=config.max_video_classifications_per_run,
             )
 
             # 3. Compute baselines

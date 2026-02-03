@@ -349,20 +349,55 @@ class MetaAdsService:
         # Convert to list of dicts
         return [dict(i) for i in insights]
 
+    def _fetch_video_source_url_sync(self, video_id: str) -> Optional[str]:
+        """Synchronous call to get a downloadable video source URL from Meta.
+
+        Uses the AdVideo endpoint to get a temporary direct-download URL.
+
+        Args:
+            video_id: Meta video ID from AdCreative.
+
+        Returns:
+            Temporary video source URL or None.
+        """
+        from facebook_business.adobjects.advideo import AdVideo
+
+        video = AdVideo(video_id)
+        video_data = video.api_get(fields=["source"])
+        return video_data.get("source")
+
+    async def fetch_video_source_url(self, video_id: str) -> Optional[str]:
+        """Get a temporary downloadable URL for a Meta video.
+
+        Args:
+            video_id: Meta video ID from AdCreative.
+
+        Returns:
+            Temporary video source URL or None.
+        """
+        self._ensure_sdk()
+        await self._rate_limit()
+
+        try:
+            return await asyncio.to_thread(self._fetch_video_source_url_sync, video_id)
+        except Exception as e:
+            logger.error(f"Failed to fetch video source URL for {video_id}: {e}")
+            return None
+
     async def fetch_ad_thumbnails(
         self,
         ad_ids: List[str],
         ad_account_id: Optional[str] = None
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
-        Fetch thumbnail URLs for a list of ad IDs.
+        Fetch thumbnail URLs and video metadata for a list of ad IDs.
 
         Args:
             ad_ids: List of Meta ad IDs
             ad_account_id: Ad account ID (for rate limiting context)
 
         Returns:
-            Dict mapping ad_id -> thumbnail_url
+            Dict mapping ad_id -> {"thumbnail_url": str, "video_id": str|None, "is_video": bool}
         """
         if not ad_ids:
             return {}
@@ -381,17 +416,20 @@ class MetaAdsService:
             logger.error(f"Failed to fetch ad thumbnails: {e}")
             return {}
 
-    def _fetch_thumbnails_sync(self, ad_ids: List[str]) -> Dict[str, str]:
+    def _fetch_thumbnails_sync(self, ad_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
-        Synchronous call to fetch ad images/thumbnails.
+        Synchronous call to fetch ad images/thumbnails and video metadata.
 
         For image ads: fetches full resolution image_url
-        For video ads: fetches thumbnail_url
+        For video ads: fetches thumbnail_url and video_id
+
+        Returns:
+            Dict mapping ad_id -> {"thumbnail_url": str, "video_id": str|None, "is_video": bool}
         """
         from facebook_business.adobjects.ad import Ad
         from facebook_business.adobjects.adcreative import AdCreative
 
-        thumbnails = {}
+        thumbnails: Dict[str, Dict[str, Any]] = {}
         logger.info(f"[THUMBNAILS] _fetch_thumbnails_sync called with {len(ad_ids)} ads")
         for ad_id in ad_ids:
             try:
@@ -423,7 +461,8 @@ class MetaAdsService:
                 ])
 
                 # Check if this is a video ad
-                is_video = bool(creative_info.get("video_id"))
+                video_id = creative_info.get("video_id")
+                is_video = bool(video_id)
                 object_type = creative_info.get("object_type", "")
                 if "VIDEO" in object_type.upper():
                     is_video = True
@@ -431,7 +470,7 @@ class MetaAdsService:
                 # Debug logging
                 direct_image_url = creative_info.get("image_url")
                 direct_thumb_url = creative_info.get("thumbnail_url")
-                logger.info(f"Ad {ad_id}: is_video={is_video}, object_type={object_type}, image_url={bool(direct_image_url)}, thumbnail_url={bool(direct_thumb_url)}")
+                logger.info(f"Ad {ad_id}: is_video={is_video}, object_type={object_type}, video_id={video_id}, image_url={bool(direct_image_url)}, thumbnail_url={bool(direct_thumb_url)}")
 
                 image_url = None
 
@@ -478,7 +517,11 @@ class MetaAdsService:
                             logger.info(f"Ad {ad_id}: IMAGE - FALLBACK to thumbnail_url (no image_url found)")
 
                 if image_url:
-                    thumbnails[ad_id] = image_url
+                    thumbnails[ad_id] = {
+                        "thumbnail_url": image_url,
+                        "video_id": video_id,
+                        "is_video": is_video,
+                    }
                 else:
                     logger.warning(f"No image found for ad {ad_id}, creative {creative_id}")
 
@@ -882,13 +925,19 @@ class MetaAdsService:
             logger.info("[THUMBNAILS] No thumbnails returned from Meta API")
             return 0
 
-        # Update database records
+        # Update database records (thumbnail_url + video metadata)
         updated = 0
-        for ad_id, thumbnail_url in thumbnails.items():
+        for ad_id, meta in thumbnails.items():
             try:
-                supabase.table("meta_ads_performance").update({
-                    "thumbnail_url": thumbnail_url
-                }).eq("meta_ad_id", ad_id).execute()
+                update_data = {"thumbnail_url": meta["thumbnail_url"]}
+                if meta.get("video_id"):
+                    update_data["meta_video_id"] = meta["video_id"]
+                if meta.get("is_video") is not None:
+                    update_data["is_video"] = meta["is_video"]
+
+                supabase.table("meta_ads_performance").update(
+                    update_data
+                ).eq("meta_ad_id", ad_id).execute()
                 updated += 1
             except Exception as e:
                 logger.error(f"[THUMBNAILS] Failed to update {ad_id}: {e}")

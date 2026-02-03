@@ -39,6 +39,7 @@ from ..services.product_context_service import ProductContextService
 from ..services.belief_analysis_service import BeliefAnalysisService
 from ..services.usage_tracker import UsageTracker
 from ..services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+from ..services.meta_ads_service import MetaAdsService
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class AgentDependencies(BaseModel):
     belief_analysis: BeliefAnalysisService
     sora: SoraService
     ad_intelligence: AdIntelligenceService
+    meta_ads: MetaAdsService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -287,10 +289,16 @@ class AgentDependencies(BaseModel):
         sora = SoraService()
         logger.info("SoraService initialized")
 
+        # Initialize MetaAdsService for Meta Ads API operations
+        meta_ads = MetaAdsService()
+        logger.info("MetaAdsService initialized")
+
         # Initialize AdIntelligenceService for ad account analysis
         if supabase is None:
             supabase = get_supabase_client()
-        ad_intelligence = AdIntelligenceService(supabase, gemini_service=gemini)
+        ad_intelligence = AdIntelligenceService(
+            supabase, gemini_service=gemini, meta_ads_service=meta_ads
+        )
         logger.info("AdIntelligenceService initialized")
 
         return cls(
@@ -319,6 +327,7 @@ class AgentDependencies(BaseModel):
             belief_analysis=belief_analysis,
             sora=sora,
             ad_intelligence=ad_intelligence,
+            meta_ads=meta_ads,
             docs=docs,
             project_name=project_name
         )

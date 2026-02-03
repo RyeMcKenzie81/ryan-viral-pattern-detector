@@ -82,6 +82,7 @@ class RunConfig(BaseModel):
     value_field: str = "purchase_value"
     kpi: str = "cpa"
     max_classifications_per_run: int = 200
+    max_video_classifications_per_run: int = 5
     thresholds: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -122,6 +123,7 @@ class CreativeClassification(BaseModel):
     creative_format: Optional[CreativeFormat] = None
     creative_angle: Optional[str] = None
     video_length_bucket: Optional[str] = None
+    video_duration_sec: Optional[int] = None
 
     # Copy classification
     copy_awareness_level: Optional[AwarenessLevel] = None

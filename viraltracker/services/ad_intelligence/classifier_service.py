@@ -5,7 +5,8 @@ Produces immutable classification snapshots stored in ad_creative_classification
 
 Classification sources (in priority order):
 1. existing_brand_ad_analysis — Reuse existing Gemini analysis from brand research
-2. gemini_light — Lightweight Gemini classification from thumbnail + copy
+2. gemini_video — Video analysis via Gemini Files API (first 3-5 seconds)
+3. gemini_light — Lightweight Gemini classification from image + copy
 
 Reclassification triggers:
 - force=True (explicit user request)
@@ -19,7 +20,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import tempfile
+import time as time_module
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -53,6 +58,33 @@ Return ONLY valid JSON with these fields:
 
 Return ONLY the JSON object, no other text."""
 
+# Video-specific classification prompt — focuses on the first 3-5 seconds
+VIDEO_CLASSIFICATION_PROMPT = """Analyze this video ad creative and return a JSON classification.
+
+Focus on the FIRST 3-5 SECONDS of the video to determine awareness level.
+The opening hook, framing, and first statement are the primary signals.
+
+Also consider the ad copy below:
+
+Ad Copy:
+{ad_copy}
+
+Return ONLY valid JSON with these fields:
+{{
+    "creative_awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
+    "creative_awareness_confidence": 0.0-1.0,
+    "creative_format": "video_ugc|video_professional|video_testimonial|video_demo|other",
+    "creative_angle": "Brief description of the advertising angle",
+    "video_duration_sec": <integer seconds of the full video>,
+    "hook_type": "curiosity|fear|benefit|social_proof|urgency|transformation|question|statistic|testimonial",
+    "hook_transcript": "Exact words spoken or shown in the first 3-5 seconds",
+    "copy_awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
+    "copy_awareness_confidence": 0.0-1.0,
+    "primary_cta": "The main call-to-action text"
+}}
+
+Return ONLY the JSON object, no other text."""
+
 
 class ClassifierService:
     """Classifies ad creatives by awareness level and format.
@@ -61,11 +93,11 @@ class ClassifierService:
     create new rows; old rows are never overwritten.
     """
 
-    CURRENT_PROMPT_VERSION = "v1"
+    CURRENT_PROMPT_VERSION = "v2"
     CURRENT_SCHEMA_VERSION = "1.0"
 
-    def __init__(self, supabase_client, gemini_service=None):
-        """Initialize with Supabase client and optional GeminiService.
+    def __init__(self, supabase_client, gemini_service=None, meta_ads_service=None):
+        """Initialize with Supabase client and optional services.
 
         Args:
             supabase_client: Supabase client instance for DB operations.
@@ -73,9 +105,12 @@ class ClassifierService:
                 rate limiting and usage tracking. If not provided, a new
                 instance will be created per classification call (not
                 recommended for production use).
+            meta_ads_service: Optional MetaAdsService instance for fetching
+                video source URLs. Required for video classification.
         """
         self.supabase = supabase_client
         self._gemini = gemini_service
+        self._meta_ads = meta_ads_service
 
     async def classify_ad(
         self,
@@ -84,6 +119,7 @@ class ClassifierService:
         org_id: UUID,
         run_id: UUID,
         force: bool = False,
+        video_budget_remaining: int = 0,
     ) -> CreativeClassification:
         """Classify a single ad's creative, copy, and landing page awareness.
 
@@ -92,25 +128,39 @@ class ClassifierService:
         (meta_ad_id, brand_id, prompt_version, schema_version, input_hash, source).
         If match exists and not stale → reuse. Otherwise → create new immutable row.
 
+        Fallback chain:
+        1. existing_brand_ad_analysis — reuse full Gemini analysis
+        2. gemini_video — download video → Gemini Files API (if video + budget)
+        3. gemini_light — image + copy classification
+        4. copy-only — if no thumbnail available
+
         Args:
             meta_ad_id: Meta ad ID string.
             brand_id: Brand UUID.
             org_id: Organization UUID.
             run_id: Analysis run UUID (required).
             force: Force reclassification even if fresh.
+            video_budget_remaining: How many video classifications are still
+                allowed in this run. 0 means skip video classification.
 
         Returns:
             CreativeClassification model.
         """
         assert run_id is not None, "run_id is required for classification"
 
-        # Gather ad data (thumbnail, copy, landing page)
+        # Gather ad data (thumbnail, copy, landing page, video metadata)
         ad_data = await self._fetch_ad_data(meta_ad_id, brand_id)
         thumbnail_url = ad_data.get("thumbnail_url", "")
         ad_copy = ad_data.get("ad_copy", "")
         lp_id = ad_data.get("landing_page_id")
+        video_id = ad_data.get("meta_video_id")
+        is_video = ad_data.get("is_video", False)
 
-        current_hash = self._compute_input_hash(thumbnail_url, ad_copy, str(lp_id) if lp_id else None)
+        current_hash = self._compute_input_hash(
+            thumbnail_url, ad_copy,
+            str(lp_id) if lp_id else None,
+            video_id=video_id,
+        )
 
         # Check for existing classification
         if not force:
@@ -121,13 +171,28 @@ class ClassifierService:
                 logger.debug(f"Reusing existing classification for {meta_ad_id}")
                 return self._row_to_model(existing)
 
-        # Try to extract from existing brand_ad_analysis first
+        # Classification fallback chain
+        classification_data = None
+        source = None
+
+        # 1. Try to extract from existing brand_ad_analysis
         existing_analysis = await self._find_existing_analysis(meta_ad_id, brand_id)
         if existing_analysis:
             classification_data = self._extract_from_existing_analysis(existing_analysis)
             source = "existing_brand_ad_analysis"
-        else:
-            # Classify with Gemini
+
+        # 2. Try video classification if this is a video ad with budget
+        if not classification_data and is_video and video_id and video_budget_remaining > 0:
+            logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
+            video_result = await self._classify_video_with_gemini(
+                video_id, ad_copy, ad_data.get("lp_data")
+            )
+            if video_result:
+                classification_data = video_result
+                source = "gemini_video"
+
+        # 3. Fallback to image+copy classification
+        if not classification_data:
             classification_data = await self._classify_with_gemini(
                 thumbnail_url, ad_copy, ad_data.get("lp_data")
             )
@@ -145,6 +210,7 @@ class ClassifierService:
             "creative_format": classification_data.get("creative_format"),
             "creative_angle": classification_data.get("creative_angle"),
             "video_length_bucket": classification_data.get("video_length_bucket"),
+            "video_duration_sec": classification_data.get("video_duration_sec"),
             "copy_awareness_level": classification_data.get("copy_awareness_level"),
             "copy_awareness_confidence": classification_data.get("copy_awareness_confidence"),
             "hook_type": classification_data.get("hook_type"),
@@ -189,11 +255,13 @@ class ClassifierService:
         run_id: UUID,
         meta_ad_ids: List[str],
         max_new: int = 200,
+        max_video: int = 5,
     ) -> List[CreativeClassification]:
         """Classify a batch of ads, prioritizing by spend.
 
         Sorts unclassified ads by spend descending. Caps new Gemini calls
-        at max_new to prevent runaway costs.
+        at max_new to prevent runaway costs. Video classifications are
+        additionally capped at max_video per run.
 
         Args:
             brand_id: Brand UUID.
@@ -201,12 +269,14 @@ class ClassifierService:
             run_id: Analysis run UUID.
             meta_ad_ids: List of meta ad IDs to classify.
             max_new: Max new Gemini classifications (from RunConfig).
+            max_video: Max video classifications per run (from RunConfig).
 
         Returns:
             List of CreativeClassification models.
         """
         classifications: List[CreativeClassification] = []
         new_classification_count = 0
+        video_classification_count = 0
 
         # Sort ads by spend to prioritize high-spend ads
         spend_order = await self._get_ad_spend_order(brand_id, meta_ad_ids)
@@ -219,8 +289,11 @@ class ClassifierService:
                 thumbnail_url = ad_data.get("thumbnail_url", "")
                 ad_copy = ad_data.get("ad_copy", "")
                 lp_id = ad_data.get("landing_page_id")
+                video_id = ad_data.get("meta_video_id")
                 current_hash = self._compute_input_hash(
-                    thumbnail_url, ad_copy, str(lp_id) if lp_id else None
+                    thumbnail_url, ad_copy,
+                    str(lp_id) if lp_id else None,
+                    video_id=video_id,
                 )
 
                 existing = await self._find_existing_classification(
@@ -238,11 +311,17 @@ class ClassifierService:
                     )
                     break
 
+                video_budget = max_video - video_classification_count
                 classification = await self.classify_ad(
-                    meta_ad_id, brand_id, org_id, run_id
+                    meta_ad_id, brand_id, org_id, run_id,
+                    video_budget_remaining=video_budget,
                 )
                 classifications.append(classification)
                 new_classification_count += 1
+
+                # Track video classifications
+                if classification.source == "gemini_video":
+                    video_classification_count += 1
 
             except Exception as e:
                 logger.error(f"Error classifying ad {meta_ad_id}: {e}")
@@ -250,7 +329,8 @@ class ClassifierService:
 
         logger.info(
             f"Classified batch: {len(classifications)} total, "
-            f"{new_classification_count} new Gemini calls"
+            f"{new_classification_count} new Gemini calls, "
+            f"{video_classification_count} video classifications"
         )
         return classifications
 
@@ -342,6 +422,7 @@ class ClassifierService:
         thumbnail_url: str,
         ad_copy: str,
         lp_id: Optional[str] = None,
+        video_id: Optional[str] = None,
     ) -> str:
         """Compute SHA256 hash of ad inputs for change detection.
 
@@ -349,11 +430,13 @@ class ClassifierService:
             thumbnail_url: Ad thumbnail URL.
             ad_copy: Ad copy text.
             lp_id: Landing page ID string (optional).
+            video_id: Meta video ID (optional). Including this forces
+                reclassification for video ads on first run after deployment.
 
         Returns:
             Hex digest string.
         """
-        content = f"{thumbnail_url or ''}|{ad_copy or ''}|{lp_id or ''}"
+        content = f"{thumbnail_url or ''}|{ad_copy or ''}|{lp_id or ''}|{video_id or ''}"
         return hashlib.sha256(content.encode()).hexdigest()
 
     def _needs_new_classification(
@@ -448,21 +531,22 @@ class ClassifierService:
         meta_ad_id: str,
         brand_id: UUID,
     ) -> Dict[str, Any]:
-        """Fetch ad thumbnail, copy, and landing page data.
+        """Fetch ad thumbnail, copy, video metadata, and landing page data.
 
         Args:
             meta_ad_id: Meta ad ID string.
             brand_id: Brand UUID.
 
         Returns:
-            Dict with thumbnail_url, ad_copy, landing_page_id, lp_data.
+            Dict with thumbnail_url, ad_copy, landing_page_id, lp_data,
+            meta_video_id, is_video.
         """
         result = {}
 
-        # Get thumbnail and ad copy from meta_ads_performance
+        # Get thumbnail, ad copy, and video metadata from meta_ads_performance
         try:
             perf_result = self.supabase.table("meta_ads_performance").select(
-                "thumbnail_url, ad_name, meta_campaign_id"
+                "thumbnail_url, ad_name, meta_campaign_id, meta_video_id, is_video, video_views"
             ).eq(
                 "meta_ad_id", meta_ad_id
             ).eq(
@@ -476,6 +560,18 @@ class ClassifierService:
                 result["thumbnail_url"] = row.get("thumbnail_url", "")
                 result["ad_name"] = row.get("ad_name", "")
                 result["campaign_id"] = row.get("meta_campaign_id", "")
+                result["meta_video_id"] = row.get("meta_video_id")
+                result["is_video"] = row.get("is_video", False)
+
+                # Bootstrap: if meta_video_id is NULL but video_views > 0,
+                # this is likely a video ad whose metadata hasn't been populated yet
+                video_views = _safe_numeric(row.get("video_views"))
+                if not result["meta_video_id"] and video_views and video_views > 0:
+                    result["is_video"] = True
+                    logger.info(
+                        f"Ad {meta_ad_id} has video_views={video_views} but no "
+                        f"meta_video_id — flagging as likely video"
+                    )
         except Exception as e:
             logger.warning(f"Error fetching performance data for {meta_ad_id}: {e}")
 
@@ -637,6 +733,167 @@ class ClassifierService:
             "model_used": "existing_analysis",
             "raw_classification": raw_response,
         }
+
+    async def _classify_video_with_gemini(
+        self,
+        video_id: str,
+        ad_copy: str,
+        lp_data: Optional[Dict] = None,
+    ) -> Optional[Dict]:
+        """Download a video via Meta API and classify with Gemini Files API.
+
+        Follows the same pattern as BrandResearchService.analyze_video_from_url():
+        1. Get video source URL from Meta API
+        2. Download video to temp file
+        3. Upload to Gemini Files API
+        4. Wait for processing (up to 120s)
+        5. Send video + VIDEO_CLASSIFICATION_PROMPT to gemini-2.5-flash
+        6. Cleanup temp file + Gemini file
+        7. Parse response
+
+        Returns None on any failure so the caller falls back to image+copy.
+
+        Args:
+            video_id: Meta video ID from AdCreative.
+            ad_copy: Ad copy text.
+            lp_data: Landing page data (optional, unused currently).
+
+        Returns:
+            Dict with classification fields, or None on failure.
+        """
+        if not self._meta_ads:
+            logger.warning("No MetaAdsService available — cannot classify video")
+            return None
+
+        temp_path = None
+        gemini_file = None
+        client = None
+
+        try:
+            import httpx
+            from google import genai
+
+            # 1. Get temporary video source URL from Meta
+            source_url = await self._meta_ads.fetch_video_source_url(video_id)
+            if not source_url:
+                logger.warning(f"No source URL for video {video_id}")
+                return None
+
+            # 2. Download video to temp file
+            async with httpx.AsyncClient(timeout=120.0) as http_client:
+                response = await http_client.get(source_url)
+                if response.status_code != 200:
+                    logger.warning(f"Failed to download video {video_id}: HTTP {response.status_code}")
+                    return None
+
+                content = response.content
+                logger.info(f"Downloaded video {video_id}: {len(content) / 1024 / 1024:.1f}MB")
+
+            temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            temp_file.write(content)
+            temp_file.close()
+            temp_path = temp_file.name
+
+            # 3. Upload to Gemini Files API
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                logger.warning("GEMINI_API_KEY not set — cannot classify video")
+                return None
+
+            client = genai.Client(api_key=api_key)
+            logger.info(f"Uploading video {video_id} to Gemini Files API")
+            gemini_file = client.files.upload(file=str(temp_path))
+            logger.info(f"Uploaded to Gemini: {gemini_file.uri}")
+
+            # 4. Wait for processing (up to 120s, polling every 2s)
+            max_wait = 120
+            wait_time = 0
+            while gemini_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time_module.sleep(2)
+                wait_time += 2
+                gemini_file = client.files.get(name=gemini_file.name)
+
+            if gemini_file.state.name == "FAILED":
+                logger.warning(f"Gemini video processing failed for {video_id}")
+                return None
+            if gemini_file.state.name == "PROCESSING":
+                logger.warning(f"Gemini video processing timed out for {video_id}")
+                return None
+
+            # 5. Generate classification
+            prompt = VIDEO_CLASSIFICATION_PROMPT.format(
+                ad_copy=ad_copy or "(no copy available)"
+            )
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[gemini_file, prompt],
+            )
+
+            # 6. Parse response
+            result_text = response.text.strip() if response.text else ""
+            parsed = self._parse_gemini_response(result_text)
+            if not parsed:
+                logger.warning(f"Empty/unparseable video classification for {video_id}")
+                return None
+
+            # Extract video_duration_sec and compute video_length_bucket
+            duration = parsed.get("video_duration_sec")
+            if duration is not None:
+                try:
+                    duration = int(duration)
+                    parsed["video_duration_sec"] = duration
+                    parsed["video_length_bucket"] = self._duration_to_bucket(duration)
+                except (ValueError, TypeError):
+                    parsed["video_duration_sec"] = None
+
+            parsed["model_used"] = "gemini_video"
+            parsed["raw_classification"] = parsed.copy()
+
+            logger.info(
+                f"Video classification complete for {video_id}: "
+                f"awareness={parsed.get('creative_awareness_level')}, "
+                f"duration={parsed.get('video_duration_sec')}s"
+            )
+            return parsed
+
+        except Exception as e:
+            logger.error(f"Video classification failed for {video_id}: {e}")
+            return None
+
+        finally:
+            # Cleanup: delete Gemini file
+            if gemini_file and client:
+                try:
+                    client.files.delete(name=gemini_file.name)
+                except Exception:
+                    pass
+            # Cleanup: delete temp file
+            if temp_path and Path(temp_path).exists():
+                try:
+                    Path(temp_path).unlink()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _duration_to_bucket(duration_sec: int) -> str:
+        """Convert video duration in seconds to a length bucket.
+
+        Args:
+            duration_sec: Duration in seconds.
+
+        Returns:
+            Bucket string like "0-15s", "15-30s", "30-60s", "60-180s", "180s+".
+        """
+        if duration_sec <= 15:
+            return "0-15s"
+        elif duration_sec <= 30:
+            return "15-30s"
+        elif duration_sec <= 60:
+            return "30-60s"
+        elif duration_sec <= 180:
+            return "60-180s"
+        else:
+            return "180s+"
 
     async def _classify_with_gemini(
         self,
@@ -920,6 +1177,7 @@ class ClassifierService:
             creative_format=row.get("creative_format"),
             creative_angle=row.get("creative_angle"),
             video_length_bucket=row.get("video_length_bucket"),
+            video_duration_sec=row.get("video_duration_sec"),
             copy_awareness_level=row.get("copy_awareness_level"),
             copy_awareness_confidence=_safe_numeric(row.get("copy_awareness_confidence")),
             hook_type=row.get("hook_type"),
@@ -961,6 +1219,7 @@ class ClassifierService:
             creative_awareness_confidence=_safe_numeric(record.get("creative_awareness_confidence")),
             creative_format=record.get("creative_format"),
             creative_angle=record.get("creative_angle"),
+            video_duration_sec=record.get("video_duration_sec"),
             source=record.get("source", "gemini_light"),
             prompt_version=record.get("prompt_version", "v1"),
             schema_version=record.get("schema_version", "1.0"),
