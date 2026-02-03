@@ -338,6 +338,7 @@ class AccountAnalysisResult(BaseModel):
     awareness_distribution: Dict[str, int] = Field(default_factory=dict)
     format_distribution: Dict[str, int] = Field(default_factory=dict)
     health_distribution: Dict[str, int] = Field(default_factory=dict)
+    healthy_ad_ids: List[str] = Field(default_factory=list)
     top_issues: List[FiredRule] = Field(default_factory=list)
     pending_recommendations: int = 0
     critical_recommendations: int = 0

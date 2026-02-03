@@ -79,6 +79,9 @@ class ChatRenderer:
                 f"Critical: **{critical}** | "
                 f"Insufficient Data: **{insufficient}**"
             )
+            if result.healthy_ad_ids:
+                ad_list = ", ".join(f"`{aid}`" for aid in result.healthy_ad_ids)
+                lines.append(f"- Healthy ads: {ad_list}")
             lines.append("")
 
         # Top issues

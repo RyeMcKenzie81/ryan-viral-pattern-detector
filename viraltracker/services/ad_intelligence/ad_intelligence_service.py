@@ -247,9 +247,12 @@ class AdIntelligenceService:
                     format_dist[fmt_val] = format_dist.get(fmt_val, 0) + 1
 
             health_dist: Dict[str, int] = {}
+            healthy_ad_ids: List[str] = []
             for diag in diagnostics_list:
                 health = diag.overall_health.value if hasattr(diag.overall_health, "value") else diag.overall_health
                 health_dist[health] = health_dist.get(health, 0) + 1
+                if health == "healthy":
+                    healthy_ad_ids.append(diag.meta_ad_id)
 
             # Top issues (non-skipped, deduplicated by rule_id, with affected ad IDs)
             rule_ad_map: Dict[str, List[str]] = {}  # rule_id -> list of meta_ad_ids
@@ -298,6 +301,7 @@ class AdIntelligenceService:
                 awareness_distribution=awareness_dist,
                 format_distribution=format_dist,
                 health_distribution=health_dist,
+                healthy_ad_ids=healthy_ad_ids,
                 top_issues=top_issues,
                 pending_recommendations=pending_recs,
                 critical_recommendations=critical_recs,
