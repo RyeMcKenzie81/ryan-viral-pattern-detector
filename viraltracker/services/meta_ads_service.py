@@ -461,7 +461,17 @@ class MetaAdsService:
                 ])
 
                 # Check if this is a video ad
+                # IMPORTANT: Use video_data.video_id (the uploaded asset) over top-level
+                # video_id (the published reel) - only video_data has downloadable source
                 video_id = creative_info.get("video_id")
+                story_spec = creative_info.get("object_story_spec", {})
+                video_data = story_spec.get("video_data", {})
+                video_data_id = video_data.get("video_id")
+
+                # Prefer video_data.video_id for downloads (has source access)
+                if video_data_id:
+                    video_id = video_data_id
+
                 is_video = bool(video_id)
                 object_type = creative_info.get("object_type", "")
                 if "VIDEO" in object_type.upper():
@@ -470,7 +480,7 @@ class MetaAdsService:
                 # Debug logging
                 direct_image_url = creative_info.get("image_url")
                 direct_thumb_url = creative_info.get("thumbnail_url")
-                logger.info(f"Ad {ad_id}: is_video={is_video}, object_type={object_type}, video_id={video_id}, image_url={bool(direct_image_url)}, thumbnail_url={bool(direct_thumb_url)}")
+                logger.info(f"Ad {ad_id}: is_video={is_video}, object_type={object_type}, video_id={video_id}, video_data_id={video_data_id}, image_url={bool(direct_image_url)}, thumbnail_url={bool(direct_thumb_url)}")
 
                 image_url = None
 
