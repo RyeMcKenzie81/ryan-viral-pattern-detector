@@ -658,7 +658,7 @@ class DiagnosticEngine:
                 fired_rules.append(result)
 
         # Determine overall health
-        overall_health = self._determine_health(fired_rules)
+        overall_health = self._determine_health(fired_rules, ad_data)
 
         # Determine kill recommendation
         kill, kill_reason = self._determine_kill(fired_rules, ad_data, run_config)
@@ -754,19 +754,37 @@ class DiagnosticEngine:
     # Health & Kill Determination
     # =========================================================================
 
-    def _determine_health(self, fired_rules: List[FiredRule]) -> HealthStatus:
-        """Determine overall health from fired rules.
+    # Minimum thresholds for an ad to be considered evaluable.
+    # Below these, the ad is INSUFFICIENT_DATA regardless of rule results.
+    MIN_SPEND_FOR_HEALTH = 50   # $50 minimum spend to start evaluating
+    MIN_IMPRESSIONS_FOR_HEALTH = 300  # 300 impressions minimum
+
+    def _determine_health(
+        self, fired_rules: List[FiredRule], ad_data: Dict[str, Any]
+    ) -> HealthStatus:
+        """Determine overall health from fired rules and ad data.
+
+        Ads below minimum spend/impression thresholds are always
+        INSUFFICIENT_DATA — "not failing" is not the same as "healthy."
 
         Args:
             fired_rules: List of fired/skipped rules.
+            ad_data: Aggregated ad metrics (total_spend, total_impressions, etc.).
 
         Returns:
             HealthStatus enum value.
         """
+        total_spend = _safe_numeric(ad_data.get("total_spend")) or 0
+        total_impressions = _safe_numeric(ad_data.get("total_impressions")) or 0
+
+        # Ads below spend/impression floor haven't proven anything yet
+        if total_spend < self.MIN_SPEND_FOR_HEALTH or total_impressions < self.MIN_IMPRESSIONS_FOR_HEALTH:
+            return HealthStatus.INSUFFICIENT_DATA
+
         non_skipped = [r for r in fired_rules if not r.skipped]
 
         if not non_skipped:
-            # All rules skipped
+            # All rules skipped (e.g., no baseline available)
             all_skipped = all(r.skipped for r in fired_rules) if fired_rules else True
             return HealthStatus.INSUFFICIENT_DATA if all_skipped else HealthStatus.HEALTHY
 
@@ -775,8 +793,6 @@ class DiagnosticEngine:
 
         if critical_count > 0:
             return HealthStatus.CRITICAL
-        elif warning_count >= 2:
-            return HealthStatus.WARNING
         elif warning_count >= 1:
             return HealthStatus.WARNING
         else:
