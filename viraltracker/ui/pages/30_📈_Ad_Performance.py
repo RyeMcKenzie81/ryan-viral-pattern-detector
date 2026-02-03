@@ -2603,19 +2603,41 @@ elif selected_tab == "🔗 Linked":
                     counts = asyncio.run(service.download_new_ad_assets(
                         brand_id=UUID(brand_id), max_videos=20, max_images=40
                     ))
-                    total = counts.get("videos", 0) + counts.get("images", 0)
                     st.session_state.ad_perf_assets_downloaded = counts
+                    # Clear cached stats so they refresh
+                    st.session_state.pop("ad_perf_asset_stats", None)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to download assets: {e}")
 
     with col4:
-        # Show last fetch results
-        if "ad_perf_last_thumb_count" in st.session_state:
-            st.caption(f"Last fetch: {st.session_state.ad_perf_last_thumb_count} thumbnails")
-        if "ad_perf_assets_downloaded" in st.session_state:
-            c = st.session_state.ad_perf_assets_downloaded
-            st.caption(f"Assets: {c.get('videos', 0)} videos, {c.get('images', 0)} images downloaded")
+        # Fetch asset stats if not cached or brand changed
+        cached = st.session_state.get("ad_perf_asset_stats")
+        if not cached or cached.get("_brand_id") != brand_id:
+            try:
+                from viraltracker.services.meta_ads_service import MetaAdsService
+                service = MetaAdsService()
+                stats_data = asyncio.run(
+                    service.get_asset_download_stats(UUID(brand_id))
+                )
+                stats_data["_brand_id"] = brand_id
+                st.session_state.ad_perf_asset_stats = stats_data
+            except Exception:
+                st.session_state.ad_perf_asset_stats = None
+
+        stats = st.session_state.get("ad_perf_asset_stats")
+        if stats:
+            v = stats["videos"]
+            i = stats["images"]
+            # Show downloaded/total and pending
+            st.caption(
+                f"Videos: {v['downloaded']}/{v['total']} "
+                f"({v['pending']} pending)"
+            )
+            st.caption(
+                f"Images: {i['downloaded']}/{i['total']} "
+                f"({i['pending']} pending)"
+            )
 
     # Debug panel
     if st.session_state.get("ad_perf_debug_thumbs"):

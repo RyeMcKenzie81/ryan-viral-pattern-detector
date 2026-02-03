@@ -1209,6 +1209,86 @@ class MetaAdsService:
             file_extension=ext,
         )
 
+    async def get_asset_download_stats(self, brand_id: UUID) -> Dict[str, Any]:
+        """Get statistics on asset downloads for a brand.
+
+        Args:
+            brand_id: Brand UUID.
+
+        Returns:
+            Dict with stats:
+                - videos: {total, downloaded, not_downloadable, pending}
+                - images: {total, downloaded, not_downloadable, pending}
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+
+        # Count video ads with meta_video_id
+        video_ads_result = supabase.table("meta_ads_performance").select(
+            "meta_ad_id", count="exact"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).eq(
+            "is_video", True
+        ).not_.is_(
+            "meta_video_id", "null"
+        ).execute()
+        total_videos = video_ads_result.count or 0
+
+        # Count image ads (non-video with thumbnail_url)
+        image_ads_result = supabase.table("meta_ads_performance").select(
+            "meta_ad_id", count="exact"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).or_(
+            "is_video.is.null,is_video.eq.false"
+        ).not_.is_(
+            "thumbnail_url", "null"
+        ).execute()
+        total_images = image_ads_result.count or 0
+
+        # Count downloaded/not_downloadable assets
+        assets_result = supabase.table("meta_ad_assets").select(
+            "asset_type, status"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).in_(
+            "status", ["downloaded", "not_downloadable"]
+        ).execute()
+
+        videos_downloaded = 0
+        videos_not_downloadable = 0
+        images_downloaded = 0
+        images_not_downloadable = 0
+
+        for row in (assets_result.data or []):
+            if row["asset_type"] == "video":
+                if row["status"] == "downloaded":
+                    videos_downloaded += 1
+                else:
+                    videos_not_downloadable += 1
+            elif row["asset_type"] == "image":
+                if row["status"] == "downloaded":
+                    images_downloaded += 1
+                else:
+                    images_not_downloadable += 1
+
+        return {
+            "videos": {
+                "total": total_videos,
+                "downloaded": videos_downloaded,
+                "not_downloadable": videos_not_downloadable,
+                "pending": total_videos - videos_downloaded - videos_not_downloadable,
+            },
+            "images": {
+                "total": total_images,
+                "downloaded": images_downloaded,
+                "not_downloadable": images_not_downloadable,
+                "pending": total_images - images_downloaded - images_not_downloadable,
+            },
+        }
+
     async def download_new_ad_assets(
         self,
         brand_id: UUID,
