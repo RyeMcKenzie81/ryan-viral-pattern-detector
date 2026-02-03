@@ -31,6 +31,6 @@ COMMENT ON TABLE meta_ad_assets IS 'Downloaded video/image assets from Meta Mark
 COMMENT ON COLUMN meta_ad_assets.meta_ad_id IS 'Meta ad ID from meta_ads_performance';
 COMMENT ON COLUMN meta_ad_assets.storage_path IS 'Supabase storage path: meta-ad-assets/{brand_id}/{meta_ad_id}.mp4';
 COMMENT ON COLUMN meta_ad_assets.source_url IS 'Original CDN URL for re-download if needed';
-COMMENT ON COLUMN meta_ad_assets.status IS 'downloaded, failed, deleted';
+COMMENT ON COLUMN meta_ad_assets.status IS 'downloaded, failed, deleted, not_downloadable (Reel-type videos without source URL)';
 
 -- NOTE: Also create "meta-ad-assets" bucket in Supabase Dashboard (Storage → New Bucket)
