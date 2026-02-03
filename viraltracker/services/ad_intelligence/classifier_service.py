@@ -185,7 +185,8 @@ class ClassifierService:
         if not classification_data and is_video and video_id and video_budget_remaining > 0:
             logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
             video_result = await self._classify_video_with_gemini(
-                video_id, ad_copy, ad_data.get("lp_data")
+                video_id, ad_copy, ad_data.get("lp_data"),
+                meta_ad_id=meta_ad_id, brand_id=brand_id,
             )
             if video_result:
                 classification_data = video_result
@@ -194,7 +195,8 @@ class ClassifierService:
         # 3. Fallback to image+copy classification
         if not classification_data:
             classification_data = await self._classify_with_gemini(
-                thumbnail_url, ad_copy, ad_data.get("lp_data")
+                thumbnail_url, ad_copy, ad_data.get("lp_data"),
+                meta_ad_id=meta_ad_id,
             )
             source = "gemini_light"
 
@@ -734,78 +736,137 @@ class ClassifierService:
             "raw_classification": raw_response,
         }
 
+    async def _find_asset_in_storage(
+        self,
+        meta_ad_id: str,
+        asset_type: str = "video",
+    ) -> Optional[str]:
+        """Find a pre-downloaded ad asset in meta_ad_assets.
+
+        Assets are downloaded by MetaAdsService.download_new_ad_assets()
+        during the nightly meta_sync job or via the manual "Download Assets"
+        button on the Ad Performance page.
+
+        Args:
+            meta_ad_id: Meta ad ID string.
+            asset_type: 'video' or 'image'.
+
+        Returns:
+            Supabase storage path (e.g. "meta-ad-assets/{brand}/{ad}.mp4")
+            or None if not found.
+        """
+        try:
+            result = self.supabase.table("meta_ad_assets").select(
+                "storage_path"
+            ).eq(
+                "meta_ad_id", meta_ad_id
+            ).eq(
+                "asset_type", asset_type
+            ).eq(
+                "status", "downloaded"
+            ).limit(1).execute()
+
+            if result.data:
+                return result.data[0]["storage_path"]
+            return None
+
+        except Exception as e:
+            logger.warning(f"Error looking up {asset_type} in storage for {meta_ad_id}: {e}")
+            return None
+
+    async def _download_from_storage(self, storage_path: str) -> Optional[bytes]:
+        """Download a file from Supabase storage.
+
+        Args:
+            storage_path: Full storage path (e.g. "scraped-assets/uuid/video.mp4").
+
+        Returns:
+            File contents as bytes, or None on failure.
+        """
+        try:
+            # Split "bucket/path" on first "/"
+            parts = storage_path.split("/", 1)
+            if len(parts) != 2:
+                logger.warning(f"Invalid storage path format: {storage_path}")
+                return None
+
+            bucket, path = parts
+            content = self.supabase.storage.from_(bucket).download(path)
+            return content
+
+        except Exception as e:
+            logger.warning(f"Failed to download from storage {storage_path}: {e}")
+            return None
+
     async def _classify_video_with_gemini(
         self,
         video_id: str,
         ad_copy: str,
         lp_data: Optional[Dict] = None,
+        meta_ad_id: Optional[str] = None,
+        brand_id: Optional[UUID] = None,
     ) -> Optional[Dict]:
-        """Download a video via Meta API and classify with Gemini Files API.
+        """Classify a video ad with Gemini Files API.
 
-        Follows the same pattern as BrandResearchService.analyze_video_from_url():
-        1. Get video source URL from Meta API
-        2. Download video to temp file
-        3. Upload to Gemini Files API
-        4. Wait for processing (up to 120s)
-        5. Send video + VIDEO_CLASSIFICATION_PROMPT to gemini-2.5-flash
-        6. Cleanup temp file + Gemini file
-        7. Parse response
-
-        Returns None on any failure so the caller falls back to image+copy.
+        Video must be pre-downloaded into meta_ad_assets by the nightly
+        meta_sync job or the manual "Download Assets" button. If the video
+        isn't in storage, returns None → caller falls back to image+copy.
 
         Args:
             video_id: Meta video ID from AdCreative.
             ad_copy: Ad copy text.
             lp_data: Landing page data (optional, unused currently).
+            meta_ad_id: Meta ad ID for looking up video in storage.
+            brand_id: Brand UUID (unused, kept for interface compat).
 
         Returns:
             Dict with classification fields, or None on failure.
         """
-        if not self._meta_ads:
-            logger.warning("No MetaAdsService available — cannot classify video")
-            return None
-
         temp_path = None
         gemini_file = None
         client = None
 
         try:
-            import httpx
             from google import genai
 
-            # 1. Get temporary video source URL from Meta
-            source_url = await self._meta_ads.fetch_video_source_url(video_id)
-            if not source_url:
-                logger.warning(f"No source URL for video {video_id}")
+            # Look up pre-downloaded video in meta_ad_assets
+            if not meta_ad_id:
+                logger.warning(f"No meta_ad_id provided for video classification (video_id={video_id})")
                 return None
 
-            # 2. Download video to temp file
-            async with httpx.AsyncClient(timeout=120.0) as http_client:
-                response = await http_client.get(source_url)
-                if response.status_code != 200:
-                    logger.warning(f"Failed to download video {video_id}: HTTP {response.status_code}")
-                    return None
+            storage_path = await self._find_asset_in_storage(meta_ad_id, "video")
+            if not storage_path:
+                logger.info(
+                    f"Video not in storage for {meta_ad_id} — "
+                    f"run 'Download Assets' or wait for nightly sync"
+                )
+                return None
 
-                content = response.content
-                logger.info(f"Downloaded video {video_id}: {len(content) / 1024 / 1024:.1f}MB")
+            video_content = await self._download_from_storage(storage_path)
+            if not video_content:
+                logger.warning(f"Failed to download video from storage: {storage_path}")
+                return None
 
+            logger.info(f"Loaded video from storage for {meta_ad_id}: {len(video_content) / 1024 / 1024:.1f}MB")
+
+            # 3. Write to temp file
             temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            temp_file.write(content)
+            temp_file.write(video_content)
             temp_file.close()
             temp_path = temp_file.name
 
-            # 3. Upload to Gemini Files API
+            # 4. Upload to Gemini Files API
             api_key = os.getenv("GEMINI_API_KEY")
             if not api_key:
                 logger.warning("GEMINI_API_KEY not set — cannot classify video")
                 return None
 
             client = genai.Client(api_key=api_key)
-            logger.info(f"Uploading video {video_id} to Gemini Files API")
+            logger.info(f"Uploading video to Gemini Files API ({meta_ad_id or video_id})")
             gemini_file = client.files.upload(file=str(temp_path))
             logger.info(f"Uploaded to Gemini: {gemini_file.uri}")
 
-            # 4. Wait for processing (up to 120s, polling every 2s)
+            # 5. Wait for processing (up to 120s, polling every 2s)
             max_wait = 120
             wait_time = 0
             while gemini_file.state.name == "PROCESSING" and wait_time < max_wait:
@@ -820,7 +881,7 @@ class ClassifierService:
                 logger.warning(f"Gemini video processing timed out for {video_id}")
                 return None
 
-            # 5. Generate classification
+            # 6. Generate classification
             prompt = VIDEO_CLASSIFICATION_PROMPT.format(
                 ad_copy=ad_copy or "(no copy available)"
             )
@@ -829,7 +890,7 @@ class ClassifierService:
                 contents=[gemini_file, prompt],
             )
 
-            # 6. Parse response
+            # 7. Parse response
             result_text = response.text.strip() if response.text else ""
             parsed = self._parse_gemini_response(result_text)
             if not parsed:
@@ -850,14 +911,14 @@ class ClassifierService:
             parsed["raw_classification"] = parsed.copy()
 
             logger.info(
-                f"Video classification complete for {video_id}: "
+                f"Video classification complete for {meta_ad_id or video_id}: "
                 f"awareness={parsed.get('creative_awareness_level')}, "
                 f"duration={parsed.get('video_duration_sec')}s"
             )
             return parsed
 
         except Exception as e:
-            logger.error(f"Video classification failed for {video_id}: {e}")
+            logger.error(f"Video classification failed for {meta_ad_id or video_id}: {e}")
             return None
 
         finally:
@@ -900,13 +961,19 @@ class ClassifierService:
         thumbnail_url: str,
         ad_copy: str,
         lp_data: Optional[Dict] = None,
+        meta_ad_id: Optional[str] = None,
     ) -> Dict:
-        """Run lightweight Gemini classification on ad thumbnail + copy.
+        """Run lightweight Gemini classification on ad image + copy.
+
+        Tries stored image from meta_ad_assets first (permanent, reliable),
+        then falls back to the thumbnail_url (may expire). If neither works,
+        classifies from copy only.
 
         Args:
-            thumbnail_url: URL to ad thumbnail image.
+            thumbnail_url: URL to ad thumbnail/image (fallback).
             ad_copy: Ad copy text.
             lp_data: Landing page data (optional).
+            meta_ad_id: Meta ad ID for stored image lookup.
 
         Returns:
             Dict with classification fields.
@@ -920,21 +987,33 @@ class ClassifierService:
                 gemini = GeminiService()
             prompt = CLASSIFICATION_PROMPT.format(ad_copy=ad_copy or "(no copy available)")
 
-            if thumbnail_url:
-                # Download thumbnail and classify with image
-                import base64
+            image_bytes = None
+
+            # 1. Try stored image from meta_ad_assets (permanent copy)
+            if meta_ad_id:
+                storage_path = await self._find_asset_in_storage(meta_ad_id, "image")
+                if storage_path:
+                    image_bytes = await self._download_from_storage(storage_path)
+                    if image_bytes:
+                        logger.info(f"Using stored image for {meta_ad_id}")
+
+            # 2. Fall back to thumbnail_url (may be expired CDN link)
+            if not image_bytes and thumbnail_url:
                 import urllib.request
 
                 try:
                     with urllib.request.urlopen(thumbnail_url, timeout=10) as response:
                         image_bytes = response.read()
-                    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                    result_text = await gemini.analyze_image(image_b64, prompt)
                 except Exception as img_err:
-                    logger.warning(f"Failed to download thumbnail, classifying from copy only: {img_err}")
-                    result_text = await gemini.generate_text(prompt)
+                    logger.warning(f"Failed to download thumbnail for {meta_ad_id}: {img_err}")
+
+            # 3. Classify with image or copy-only
+            if image_bytes:
+                import base64
+                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                result_text = await gemini.analyze_image(image_b64, prompt)
             else:
-                # No thumbnail, classify from copy only
+                logger.warning(f"No image available for {meta_ad_id or 'unknown'}, classifying from copy only")
                 result_text = await gemini.generate_text(prompt)
 
             # Parse JSON response

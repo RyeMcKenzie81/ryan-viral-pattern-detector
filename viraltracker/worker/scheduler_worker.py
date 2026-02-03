@@ -1030,6 +1030,32 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             ads_synced = len(set(i.get('ad_id') for i in insights if i.get('ad_id')))
             logs.append(f"Synced {ads_synced} ads, {rows_inserted} data rows")
 
+        # Step 3: Update missing thumbnails (populates meta_video_id + is_video)
+        try:
+            thumbs_updated = await service.update_missing_thumbnails(
+                brand_id=UUID(brand_id), limit=100
+            )
+            if thumbs_updated > 0:
+                logs.append(f"Updated {thumbs_updated} missing thumbnails")
+        except Exception as thumb_err:
+            logs.append(f"Thumbnail update error (non-fatal): {thumb_err}")
+            logger.warning(f"Thumbnail update failed for {brand_name}: {thumb_err}")
+
+        # Step 4: Download new ad assets (videos + images) to Supabase storage
+        try:
+            asset_counts = await service.download_new_ad_assets(
+                brand_id=UUID(brand_id), max_downloads=20
+            )
+            total_assets = asset_counts.get("videos", 0) + asset_counts.get("images", 0)
+            if total_assets > 0:
+                logs.append(
+                    f"Downloaded {asset_counts['videos']} videos, "
+                    f"{asset_counts['images']} images to storage"
+                )
+        except Exception as asset_err:
+            logs.append(f"Asset download error (non-fatal): {asset_err}")
+            logger.warning(f"Asset download failed for {brand_name}: {asset_err}")
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",

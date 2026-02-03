@@ -1024,6 +1024,286 @@ class MetaAdsService:
         else:
             raise Exception("Failed to create ad mapping")
 
+    async def _download_and_store_asset(
+        self,
+        meta_ad_id: str,
+        source_url: str,
+        brand_id: UUID,
+        asset_type: str,
+        mime_type: str,
+        file_extension: str,
+        meta_video_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download an asset from a URL and store it in Supabase storage.
+
+        Generic helper for both video and image downloads.
+
+        Args:
+            meta_ad_id: Meta ad ID.
+            source_url: URL to download the asset from.
+            brand_id: Brand UUID for storage path organization.
+            asset_type: 'video' or 'image'.
+            mime_type: MIME type (e.g. 'video/mp4', 'image/jpeg').
+            file_extension: File extension (e.g. '.mp4', '.jpg').
+            meta_video_id: Meta video ID (for video assets only).
+
+        Returns:
+            Storage path string or None on failure.
+        """
+        from ..core.database import get_supabase_client
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=120.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                },
+            ) as http_client:
+                response = await http_client.get(source_url, follow_redirects=True)
+                if response.status_code != 200:
+                    logger.warning(
+                        f"Failed to download {asset_type} for ad {meta_ad_id}: HTTP {response.status_code}"
+                    )
+                    return None
+                content_bytes = response.content
+
+            file_size = len(content_bytes)
+            logger.info(
+                f"Downloaded {asset_type} for ad {meta_ad_id}: {file_size / 1024:.1f}KB"
+            )
+
+            # Upload to Supabase storage
+            storage_key = f"{brand_id}/{meta_ad_id}{file_extension}"
+            supabase = get_supabase_client()
+
+            supabase.storage.from_("meta-ad-assets").upload(
+                storage_key,
+                content_bytes,
+                file_options={"content-type": mime_type, "upsert": "true"},
+            )
+
+            storage_path = f"meta-ad-assets/{storage_key}"
+            logger.info(f"Uploaded {asset_type} to storage: {storage_path}")
+
+            # Record in meta_ad_assets table
+            record = {
+                "meta_ad_id": meta_ad_id,
+                "brand_id": str(brand_id),
+                "asset_type": asset_type,
+                "storage_path": storage_path,
+                "mime_type": mime_type,
+                "file_size_bytes": file_size,
+                "source_url": source_url,
+                "status": "downloaded",
+            }
+            if meta_video_id:
+                record["meta_video_id"] = meta_video_id
+
+            supabase.table("meta_ad_assets").upsert(
+                record,
+                on_conflict="meta_ad_id,asset_type",
+            ).execute()
+
+            return storage_path
+
+        except Exception as e:
+            logger.error(f"Failed to download/store {asset_type} for ad {meta_ad_id}: {e}")
+            return None
+
+    async def download_and_store_video(
+        self,
+        meta_ad_id: str,
+        video_id: str,
+        brand_id: UUID,
+    ) -> Optional[str]:
+        """Download a video from Meta and store it in Supabase storage.
+
+        Fetches the video source URL via the Marketing API, then delegates
+        to _download_and_store_asset for download + storage.
+
+        Args:
+            meta_ad_id: Meta ad ID.
+            video_id: Meta video ID from AdCreative.
+            brand_id: Brand UUID for storage path organization.
+
+        Returns:
+            Storage path string or None on failure.
+        """
+        source_url = await self.fetch_video_source_url(video_id)
+        if not source_url:
+            logger.warning(f"No source URL for video {video_id} (ad {meta_ad_id})")
+            return None
+
+        return await self._download_and_store_asset(
+            meta_ad_id=meta_ad_id,
+            source_url=source_url,
+            brand_id=brand_id,
+            asset_type="video",
+            mime_type="video/mp4",
+            file_extension=".mp4",
+            meta_video_id=video_id,
+        )
+
+    async def download_and_store_image(
+        self,
+        meta_ad_id: str,
+        image_url: str,
+        brand_id: UUID,
+    ) -> Optional[str]:
+        """Download an ad image and store it in Supabase storage.
+
+        For static/image ads, the image_url from the creative is the actual
+        ad creative (not just a thumbnail). This stores a permanent copy.
+
+        Args:
+            meta_ad_id: Meta ad ID.
+            image_url: Full-resolution image URL from the creative.
+            brand_id: Brand UUID for storage path organization.
+
+        Returns:
+            Storage path string or None on failure.
+        """
+        if not image_url:
+            logger.warning(f"No image URL for ad {meta_ad_id}")
+            return None
+
+        # Detect format from URL or default to jpg
+        ext = ".jpg"
+        mime = "image/jpeg"
+        url_lower = image_url.lower()
+        if ".png" in url_lower:
+            ext = ".png"
+            mime = "image/png"
+        elif ".webp" in url_lower:
+            ext = ".webp"
+            mime = "image/webp"
+
+        return await self._download_and_store_asset(
+            meta_ad_id=meta_ad_id,
+            source_url=image_url,
+            brand_id=brand_id,
+            asset_type="image",
+            mime_type=mime,
+            file_extension=ext,
+        )
+
+    async def download_new_ad_assets(
+        self,
+        brand_id: UUID,
+        max_downloads: int = 20,
+    ) -> Dict[str, int]:
+        """Download ad creatives (videos + images) that aren't stored yet.
+
+        For video ads: fetches video via Marketing API AdVideo endpoint.
+        For image ads: fetches the actual ad image from the creative URL
+        stored in thumbnail_url (which for image ads is the full-res image).
+
+        Args:
+            brand_id: Brand UUID.
+            max_downloads: Maximum total assets to download in this batch.
+
+        Returns:
+            Dict with counts: {"videos": N, "images": N}.
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+        downloaded = {"videos": 0, "images": 0}
+        remaining = max_downloads
+
+        # --- Video ads ---
+        video_ads_result = supabase.table("meta_ads_performance").select(
+            "meta_ad_id, meta_video_id"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).eq(
+            "is_video", True
+        ).not_.is_(
+            "meta_video_id", "null"
+        ).execute()
+
+        video_ads = {}
+        for row in (video_ads_result.data or []):
+            ad_id = row["meta_ad_id"]
+            if ad_id not in video_ads:
+                video_ads[ad_id] = row["meta_video_id"]
+
+        # --- Image ads (non-video with a thumbnail_url) ---
+        image_ads_result = supabase.table("meta_ads_performance").select(
+            "meta_ad_id, thumbnail_url"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).or_(
+            "is_video.is.null,is_video.eq.false"
+        ).not_.is_(
+            "thumbnail_url", "null"
+        ).execute()
+
+        image_ads = {}
+        for row in (image_ads_result.data or []):
+            ad_id = row["meta_ad_id"]
+            thumb = row.get("thumbnail_url", "")
+            if ad_id not in image_ads and thumb:
+                image_ads[ad_id] = thumb
+
+        # --- Check which already have assets ---
+        existing_result = supabase.table("meta_ad_assets").select(
+            "meta_ad_id, asset_type"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).eq(
+            "status", "downloaded"
+        ).execute()
+
+        existing_set = {
+            (r["meta_ad_id"], r["asset_type"])
+            for r in (existing_result.data or [])
+        }
+
+        # --- Download videos ---
+        videos_to_dl = {
+            ad_id: vid_id
+            for ad_id, vid_id in video_ads.items()
+            if (ad_id, "video") not in existing_set
+        }
+
+        if videos_to_dl:
+            logger.info(f"Found {len(videos_to_dl)} video ads needing download")
+            for meta_ad_id, video_id in list(videos_to_dl.items())[:remaining]:
+                result = await self.download_and_store_video(meta_ad_id, video_id, brand_id)
+                if result:
+                    downloaded["videos"] += 1
+                    remaining -= 1
+                await self._rate_limit()
+                if remaining <= 0:
+                    break
+
+        # --- Download images ---
+        images_to_dl = {
+            ad_id: url
+            for ad_id, url in image_ads.items()
+            if (ad_id, "image") not in existing_set
+        }
+
+        if images_to_dl and remaining > 0:
+            logger.info(f"Found {len(images_to_dl)} image ads needing download")
+            for meta_ad_id, image_url in list(images_to_dl.items())[:remaining]:
+                result = await self.download_and_store_image(meta_ad_id, image_url, brand_id)
+                if result:
+                    downloaded["images"] += 1
+                    remaining -= 1
+                await self._rate_limit()
+                if remaining <= 0:
+                    break
+
+        logger.info(
+            f"Asset download complete for brand {brand_id}: "
+            f"{downloaded['videos']} videos, {downloaded['images']} images "
+            f"({len(videos_to_dl)} videos pending, {len(images_to_dl)} images pending)"
+        )
+        return downloaded
+
     async def auto_match_ads(
         self,
         brand_id: Optional[UUID] = None

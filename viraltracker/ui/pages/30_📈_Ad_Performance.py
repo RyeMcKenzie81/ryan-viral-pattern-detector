@@ -2567,7 +2567,7 @@ elif selected_tab == "🔗 Linked":
 
     # Find Matches button
 
-    col1, col2, col3 = st.columns([1, 1, 3])
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
     with col1:
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
             with st.spinner("Fetching thumbnails and scanning for matches..."):
@@ -2595,9 +2595,27 @@ elif selected_tab == "🔗 Linked":
             st.rerun()
 
     with col3:
-        # Show last fetch result
+        if st.button("📥 Download Assets", use_container_width=True):
+            with st.spinner("Downloading ad assets from Meta..."):
+                try:
+                    from viraltracker.services.meta_ads_service import MetaAdsService
+                    service = MetaAdsService()
+                    counts = asyncio.run(service.download_new_ad_assets(
+                        brand_id=UUID(brand_id), max_downloads=20
+                    ))
+                    total = counts.get("videos", 0) + counts.get("images", 0)
+                    st.session_state.ad_perf_assets_downloaded = counts
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to download assets: {e}")
+
+    with col4:
+        # Show last fetch results
         if "ad_perf_last_thumb_count" in st.session_state:
             st.caption(f"Last fetch: {st.session_state.ad_perf_last_thumb_count} thumbnails")
+        if "ad_perf_assets_downloaded" in st.session_state:
+            c = st.session_state.ad_perf_assets_downloaded
+            st.caption(f"Assets: {c.get('videos', 0)} videos, {c.get('images', 0)} images downloaded")
 
     # Debug panel
     if st.session_state.get("ad_perf_debug_thumbs"):
