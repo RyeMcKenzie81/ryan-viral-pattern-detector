@@ -2601,7 +2601,7 @@ elif selected_tab == "🔗 Linked":
                     from viraltracker.services.meta_ads_service import MetaAdsService
                     service = MetaAdsService()
                     counts = asyncio.run(service.download_new_ad_assets(
-                        brand_id=UUID(brand_id), max_downloads=20
+                        brand_id=UUID(brand_id), max_videos=20, max_images=40
                     ))
                     total = counts.get("videos", 0) + counts.get("images", 0)
                     st.session_state.ad_perf_assets_downloaded = counts

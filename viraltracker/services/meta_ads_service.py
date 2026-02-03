@@ -1201,7 +1201,8 @@ class MetaAdsService:
     async def download_new_ad_assets(
         self,
         brand_id: UUID,
-        max_downloads: int = 20,
+        max_videos: int = 20,
+        max_images: int = 40,
     ) -> Dict[str, int]:
         """Download ad creatives (videos + images) that aren't stored yet.
 
@@ -1211,7 +1212,8 @@ class MetaAdsService:
 
         Args:
             brand_id: Brand UUID.
-            max_downloads: Maximum total assets to download in this batch.
+            max_videos: Maximum videos to download in this batch.
+            max_images: Maximum images to download in this batch.
 
         Returns:
             Dict with counts: {"videos": N, "images": N}.
@@ -1220,7 +1222,8 @@ class MetaAdsService:
 
         supabase = get_supabase_client()
         downloaded = {"videos": 0, "images": 0}
-        remaining = max_downloads
+        remaining_videos = max_videos
+        remaining_images = max_images
 
         # --- Video ads ---
         video_ads_result = supabase.table("meta_ads_performance").select(
@@ -1278,16 +1281,13 @@ class MetaAdsService:
             if (ad_id, "video") not in existing_set
         }
 
-        if videos_to_dl:
+        if videos_to_dl and remaining_videos > 0:
             logger.info(f"Found {len(videos_to_dl)} video ads needing download")
-            for meta_ad_id, video_id in list(videos_to_dl.items())[:remaining]:
+            for meta_ad_id, video_id in list(videos_to_dl.items())[:remaining_videos]:
                 result = await self.download_and_store_video(meta_ad_id, video_id, brand_id)
                 if result:
                     downloaded["videos"] += 1
-                    remaining -= 1
                 await self._rate_limit()
-                if remaining <= 0:
-                    break
 
         # --- Download images ---
         # Filter to those not already downloaded
@@ -1296,19 +1296,19 @@ class MetaAdsService:
             if (ad_id, "image") not in existing_set
         ]
 
-        if images_to_dl and remaining > 0:
+        if images_to_dl and remaining_images > 0:
             logger.info(f"Found {len(images_to_dl)} image ads needing download")
 
             # Fetch fresh URLs from API (stored URLs expire)
             # Process in batches to avoid API limits
-            batch_size = min(remaining, 50)
+            batch_size = min(remaining_images, 50)
             ad_ids_batch = images_to_dl[:batch_size]
 
             fresh_urls = await self.fetch_ad_thumbnails(ad_ids_batch)
             logger.info(f"Fetched {len(fresh_urls)} fresh image URLs from API")
 
             for meta_ad_id in ad_ids_batch:
-                if remaining <= 0:
+                if downloaded["images"] >= remaining_images:
                     break
 
                 # Get fresh URL from API response
@@ -1322,7 +1322,6 @@ class MetaAdsService:
                 result = await self.download_and_store_image(meta_ad_id, fresh_url, brand_id)
                 if result:
                     downloaded["images"] += 1
-                    remaining -= 1
                 await self._rate_limit()
 
         logger.info(

@@ -192,6 +192,53 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 9. Centralized Notification System
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-03
+
+**Context**: Background operations (asset downloads, sync jobs, scheduled tasks) complete silently or show a toast that disappears on page refresh. Users have no way to see the history of what happened, forcing them to check Logfire manually.
+
+**What's needed**:
+1. Database table for notifications:
+   ```sql
+   CREATE TABLE notifications (
+       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+       organization_id UUID REFERENCES organizations(id),
+       user_id UUID REFERENCES auth.users(id),  -- NULL = org-wide
+       type TEXT NOT NULL,  -- 'success', 'error', 'warning', 'info'
+       category TEXT,  -- 'asset_download', 'sync', 'scheduler', etc.
+       title TEXT NOT NULL,
+       message TEXT,
+       metadata JSONB,  -- Additional context (counts, IDs, etc.)
+       read_at TIMESTAMPTZ,
+       created_at TIMESTAMPTZ DEFAULT now()
+   );
+   ```
+
+2. NotificationService:
+   - `create_notification(org_id, type, title, message, category, metadata)`
+   - `get_unread_count(org_id, user_id)`
+   - `get_notifications(org_id, user_id, limit, include_read)`
+   - `mark_read(notification_id)` / `mark_all_read()`
+
+3. UI Component:
+   - Bell icon in sidebar/header with unread count badge
+   - Dropdown/panel showing recent notifications
+   - "View all" link to full notification history page
+   - Click notification to see details + navigate to relevant page
+
+4. Integration points:
+   - Asset download completion → notification with counts
+   - Sync job completion → notification with summary
+   - Scheduler job results → notification with success/failure
+   - Error conditions → notification with error details
+
+**Benefit**: Users can see what happened without checking logs, and have a history of all background operations.
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._
