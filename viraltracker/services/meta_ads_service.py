@@ -1280,22 +1280,40 @@ class MetaAdsService:
                     break
 
         # --- Download images ---
-        images_to_dl = {
-            ad_id: url
-            for ad_id, url in image_ads.items()
+        # Filter to those not already downloaded
+        images_to_dl = [
+            ad_id for ad_id in image_ads.keys()
             if (ad_id, "image") not in existing_set
-        }
+        ]
 
         if images_to_dl and remaining > 0:
             logger.info(f"Found {len(images_to_dl)} image ads needing download")
-            for meta_ad_id, image_url in list(images_to_dl.items())[:remaining]:
-                result = await self.download_and_store_image(meta_ad_id, image_url, brand_id)
+
+            # Fetch fresh URLs from API (stored URLs expire)
+            # Process in batches to avoid API limits
+            batch_size = min(remaining, 50)
+            ad_ids_batch = images_to_dl[:batch_size]
+
+            fresh_urls = await self.fetch_ad_thumbnails(ad_ids_batch)
+            logger.info(f"Fetched {len(fresh_urls)} fresh image URLs from API")
+
+            for meta_ad_id in ad_ids_batch:
+                if remaining <= 0:
+                    break
+
+                # Get fresh URL from API response
+                ad_data = fresh_urls.get(meta_ad_id, {})
+                fresh_url = ad_data.get("thumbnail_url") if isinstance(ad_data, dict) else None
+
+                if not fresh_url:
+                    logger.warning(f"No fresh URL for image ad {meta_ad_id}")
+                    continue
+
+                result = await self.download_and_store_image(meta_ad_id, fresh_url, brand_id)
                 if result:
                     downloaded["images"] += 1
                     remaining -= 1
                 await self._rate_limit()
-                if remaining <= 0:
-                    break
 
         logger.info(
             f"Asset download complete for brand {brand_id}: "
