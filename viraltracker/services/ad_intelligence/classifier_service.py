@@ -577,41 +577,8 @@ class ClassifierService:
         except Exception as e:
             logger.warning(f"Error fetching performance data for {meta_ad_id}: {e}")
 
-        # Try to get ad copy from facebook_ads via ad_archive_id match
-        try:
-            perf_archive = self.supabase.table("meta_ads_performance").select(
-                "ad_archive_id"
-            ).eq(
-                "meta_ad_id", meta_ad_id
-            ).eq(
-                "brand_id", str(brand_id)
-            ).limit(1).execute()
-
-            ad_archive_id = None
-            if perf_archive.data:
-                ad_archive_id = perf_archive.data[0].get("ad_archive_id")
-
-            if ad_archive_id:
-                fb_result = self.supabase.table("facebook_ads").select(
-                    "id, snapshot"
-                ).eq(
-                    "ad_archive_id", str(ad_archive_id)
-                ).limit(1).execute()
-
-                if fb_result.data:
-                    snapshot = fb_result.data[0].get("snapshot", {})
-                    if isinstance(snapshot, str):
-                        try:
-                            snapshot = json.loads(snapshot)
-                        except (json.JSONDecodeError, TypeError):
-                            snapshot = {}
-                    body_data = snapshot.get("body", {})
-                    ad_copy = body_data.get("text", "") if isinstance(body_data, dict) else ""
-                    headline = snapshot.get("title", "")
-                    result["ad_copy"] = f"{headline}\n{ad_copy}".strip()
-                    result["facebook_ad_id"] = fb_result.data[0].get("id")
-        except Exception as e:
-            logger.warning(f"Error fetching ad copy for {meta_ad_id}: {e}")
+        # Note: ad_archive_id linkage to facebook_ads not implemented.
+        # Ad copy falls back to ad_name below.
 
         # Use ad_name as fallback for ad_copy
         if not result.get("ad_copy"):
@@ -626,7 +593,9 @@ class ClassifierService:
     ) -> Optional[Dict]:
         """Find existing brand_ad_analysis for this ad.
 
-        Links through facebook_ads table via ad_archive_id.
+        Note: ad_archive_id linkage between meta_ads_performance and facebook_ads
+        is not implemented. This method is a placeholder for future functionality
+        when we have a way to link Meta Ads API data to Ad Library data.
 
         Args:
             meta_ad_id: Meta ad ID string.
@@ -635,52 +604,7 @@ class ClassifierService:
         Returns:
             raw_response dict from brand_ad_analysis or None.
         """
-        try:
-            # Get facebook_ad_id via ad_archive_id linkage
-            perf_result = self.supabase.table("meta_ads_performance").select(
-                "ad_archive_id"
-            ).eq(
-                "meta_ad_id", meta_ad_id
-            ).eq(
-                "brand_id", str(brand_id)
-            ).limit(1).execute()
-
-            if not perf_result.data:
-                return None
-
-            ad_archive_id = perf_result.data[0].get("ad_archive_id")
-            if not ad_archive_id:
-                return None
-
-            # Find facebook_ads record
-            fb_result = self.supabase.table("facebook_ads").select(
-                "id"
-            ).eq(
-                "ad_archive_id", str(ad_archive_id)
-            ).limit(1).execute()
-
-            if not fb_result.data:
-                return None
-
-            facebook_ad_id = fb_result.data[0]["id"]
-
-            # Find analysis
-            analysis_result = self.supabase.table("brand_ad_analysis").select(
-                "raw_response, analysis_type"
-            ).eq(
-                "facebook_ad_id", str(facebook_ad_id)
-            ).eq(
-                "brand_id", str(brand_id)
-            ).order(
-                "created_at", desc=True
-            ).limit(1).execute()
-
-            if analysis_result.data:
-                return analysis_result.data[0].get("raw_response")
-
-        except Exception as e:
-            logger.warning(f"Error finding existing analysis for {meta_ad_id}: {e}")
-
+        # Linkage not implemented - always classify fresh
         return None
 
     def _extract_from_existing_analysis(self, raw_response: Dict) -> Dict:
@@ -1014,7 +938,7 @@ class ClassifierService:
                 result_text = await gemini.analyze_image(image_b64, prompt)
             else:
                 logger.warning(f"No image available for {meta_ad_id or 'unknown'}, classifying from copy only")
-                result_text = await gemini.generate_text(prompt)
+                result_text = await gemini.analyze_text(text="", prompt=prompt)
 
             # Parse JSON response
             parsed = self._parse_gemini_response(result_text)
