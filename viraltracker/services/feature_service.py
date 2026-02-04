@@ -67,6 +67,7 @@ class FeatureKey:
     AD_PLANNING = "ad_planning"
     BELIEF_CANVAS = "belief_canvas"
     RESEARCH_INSIGHTS = "research_insights"
+    CONGRUENCE_INSIGHTS = "congruence_insights"
     PLAN_LIST = "plan_list"
     PLAN_EXECUTOR = "plan_executor"
     TEMPLATE_QUEUE = "template_queue"
