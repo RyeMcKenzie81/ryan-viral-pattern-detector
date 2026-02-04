@@ -6,6 +6,65 @@
 
 ---
 
+## Metrics Philosophy
+
+### Primary Metrics
+
+| Metric | Source | What it measures |
+|--------|--------|------------------|
+| **Hook Rate** | `meta_ads_performance.hook_rate` | % viewers past first 3 sec (video engagement) |
+| **ROAS** | `purchase_value / spend` | Profitability |
+| **Spend** | `meta_ads_performance.spend` | Scale / advertiser confidence |
+| **CTR** | `meta_ads_performance.ctr` | Click engagement |
+| **CPA** | `spend / purchases` | Acquisition efficiency |
+
+### Quadrant Analysis (Key Insight)
+
+Plotting **Hook Rate vs ROAS** reveals actionable patterns:
+
+```
+                    HIGH ROAS
+                        │
+     🎯 WINNERS         │         🔍 HIDDEN GEMS
+     High hook rate     │         Low hook rate
+     High ROAS          │         High ROAS
+     → SCALE THESE      │         → Why low engagement?
+                        │
+────────────────────────┼────────────────────────
+                        │
+     ⚠️ ENGAGING BUT    │         💀 LOSERS
+        NOT CONVERTING  │         Low hook rate
+     High hook rate     │         Low ROAS
+     Low ROAS           │         → KILL THESE
+     → Fix downstream   │
+       (LP? offer?)     │
+                        │
+                    LOW ROAS
+```
+
+**High hook rate + bad ROAS** = Hook is working, something else is broken:
+- Landing page mismatch
+- Weak offer
+- Bad video body after hook
+- Wrong audience
+
+### Minimum Thresholds
+
+All "top" queries require minimum spend to be meaningful:
+- Default: `min_spend = $100`
+- Configurable per query
+
+### Slice & Dice
+
+All queries support sorting/filtering by:
+- Hook rate (high/low)
+- ROAS (high/low)
+- Spend (high/low)
+- CTR (high/low)
+- Ad count (volume)
+
+---
+
 ## Overview
 
 Phase 7 is the final phase of the Deep Video Analysis feature. It adds:
@@ -50,8 +109,10 @@ class HookAnalysisService:
         self,
         brand_id: UUID,
         limit: int = 20,
-        min_spend: float = 0,
-        date_range_days: int = 30
+        min_spend: float = 100,
+        date_range_days: int = 30,
+        sort_by: str = "roas",  # roas, hook_rate, spend, ctr, cpa
+        sort_order: str = "desc"
     ) -> List[Dict]:
         """
         Get top performing hooks by unique fingerprint.
@@ -60,8 +121,67 @@ class HookAnalysisService:
         - hook_fingerprint, hook_type, hook_visual_type
         - hook_transcript_spoken, hook_transcript_overlay
         - hook_visual_description, hook_visual_elements
-        - ad_count, total_spend, avg_roas, avg_ctr
+        - ad_count, total_spend, avg_roas, avg_ctr, avg_hook_rate
         - example_ad_ids (top 3 by spend)
+
+        Supports sorting by any metric for flexible analysis.
+        """
+
+    def get_hooks_by_quadrant(
+        self,
+        brand_id: UUID,
+        date_range_days: int = 30,
+        min_spend: float = 100,
+        hook_rate_threshold: float = 0.25,  # 25% = good hook rate
+        roas_threshold: float = 1.0  # 1.0 = breakeven
+    ) -> Dict[str, List[Dict]]:
+        """
+        Categorize hooks into quadrants based on hook_rate vs ROAS.
+
+        Returns:
+        {
+            "winners": [...],           # High hook rate + High ROAS → Scale
+            "hidden_gems": [...],       # Low hook rate + High ROAS → Investigate
+            "engaging_not_converting": [...],  # High hook rate + Low ROAS → Fix downstream
+            "losers": [...]             # Low hook rate + Low ROAS → Kill
+        }
+
+        Each hook includes full metrics + suggested action.
+        """
+
+    def get_high_hook_rate_low_roas(
+        self,
+        brand_id: UUID,
+        date_range_days: int = 30,
+        min_spend: float = 100,
+        hook_rate_threshold: float = 0.25,
+        roas_threshold: float = 1.0,
+        limit: int = 10
+    ) -> List[Dict]:
+        """
+        Get hooks with high engagement but poor conversion.
+
+        These hooks are WORKING to grab attention but something
+        downstream is broken. Returns hooks with:
+        - Hook details
+        - Metrics (hook_rate, roas, spend)
+        - Landing page info (to check for mismatch)
+        - Diagnostic suggestions
+        """
+
+    def get_high_hook_rate_high_roas(
+        self,
+        brand_id: UUID,
+        date_range_days: int = 30,
+        min_spend: float = 100,
+        hook_rate_threshold: float = 0.25,
+        roas_threshold: float = 2.0,
+        limit: int = 10
+    ) -> List[Dict]:
+        """
+        Get winning hooks - high engagement AND high conversion.
+
+        These are your best performers. Scale these.
         """
 
     def get_hooks_by_type(
@@ -316,11 +436,14 @@ After Workstream A: `CHECKPOINT_06_PHASE7_SERVICE.md`
         'use_cases': [
             'Find best performing hooks',
             'Analyze hook patterns',
+            'Find hooks with high engagement but low conversion',
             'Compare hook types'
         ],
         'examples': [
             'What hooks work best for Wonder Paws?',
-            'Show me top performing hooks by ROAS',
+            'Show me hooks with high hook rate but bad ROAS',
+            'Which hooks are winners vs losers?',
+            'Show me top hooks by hook rate',
             'Which visual hook types should I test?'
         ]
     }
@@ -328,7 +451,8 @@ After Workstream A: `CHECKPOINT_06_PHASE7_SERVICE.md`
 async def hook_analysis(
     ctx: RunContext[AgentDependencies],
     brand_name: str,
-    analysis_type: str = "overview",  # overview, by_type, by_visual, by_lp, compare
+    analysis_type: str = "overview",  # overview, quadrant, by_type, by_visual, by_lp, compare, gaps
+    sort_by: str = "roas",  # roas, hook_rate, spend, ctr
     hook_fingerprint: Optional[str] = None,  # for detailed view
     compare_fingerprint: Optional[str] = None,  # for comparison
     limit: int = 10
@@ -338,13 +462,21 @@ async def hook_analysis(
 
     Analysis types:
     - overview: Top performing hooks + key insights
+    - quadrant: Categorize hooks by hook_rate vs ROAS (winners, losers, engaging but not converting, hidden gems)
     - by_type: Performance breakdown by hook type (question, claim, etc.)
     - by_visual: Performance breakdown by visual type (unboxing, demo, etc.)
     - by_lp: Hooks grouped by landing page
     - compare: Compare two specific hooks (requires hook_fingerprint + compare_fingerprint)
     - gaps: Find untested hook types
 
-    Returns actionable insights about which hooks drive best performance.
+    Sort options (applies to most analysis types):
+    - roas: Return on ad spend (default)
+    - hook_rate: Video hook rate (% past 3 sec)
+    - spend: Total spend
+    - ctr: Click-through rate
+
+    Key insight: "quadrant" analysis reveals hooks with HIGH hook rate but LOW ROAS -
+    these are engaging but not converting, suggesting downstream issues (LP, offer, etc.)
     """
 ```
 
@@ -454,8 +586,10 @@ After Workstream B: Update `CHECKPOINT_07_PHASE7_COMPLETE.md`
 1. Page Config + Auth
 2. Brand Selector (render_brand_selector)
 3. Date Range Selector (last 7/14/30/90 days)
-4. Tabs:
+4. Global filters: Min spend, Sort by (ROAS/Hook Rate/Spend/CTR)
+5. Tabs:
    - Overview: Top hooks + key metrics + insights
+   - Quadrant: Hook Rate vs ROAS analysis (winners, losers, etc.)
    - By Type: Hook type breakdown with charts
    - By Visual: Visual type breakdown with charts
    - By Landing Page: Hooks grouped by LP
@@ -465,32 +599,45 @@ After Workstream B: Update `CHECKPOINT_07_PHASE7_COMPLETE.md`
 ### Tab Details
 
 #### Tab 1: Overview
-- **Top metrics row:** Total hooks analyzed, Total spend on video ads, Best ROAS hook, Most used hook
-- **Top 10 hooks table:** Sortable by spend, ROAS, CTR, ad count
+- **Top metrics row:** Total hooks analyzed, Total spend on video ads, Best ROAS hook, Best hook rate hook
+- **Top 10 hooks table:** Sortable by spend, ROAS, CTR, hook rate, ad count
 - **Insights cards:** Auto-generated recommendations
 - **Quick actions:** "View details" links to other tabs
 
-#### Tab 2: By Type
+#### Tab 2: Quadrant Analysis (Hook Rate vs ROAS)
+- **Scatter plot:** X = Hook Rate, Y = ROAS, size = spend
+- **Quadrant sections:** Color-coded (green=winners, red=losers, yellow=investigate)
+- **Four tables:**
+  - 🎯 **Winners** (High hook rate + High ROAS) - "Scale these"
+  - 🔍 **Hidden Gems** (Low hook rate + High ROAS) - "Why low engagement?"
+  - ⚠️ **Engaging but Not Converting** (High hook rate + Low ROAS) - "Fix downstream"
+  - 💀 **Losers** (Low hook rate + Low ROAS) - "Kill these"
+- **Threshold sliders:** Adjust hook_rate and ROAS thresholds
+- **Diagnostic suggestions:** For "engaging but not converting" hooks, show LP info and potential issues
+
+#### Tab 3: By Type
 - **Bar chart:** Performance by hook_type (question, claim, story, etc.)
-- **Metrics:** Ad count, spend, avg ROAS per type
+- **Metrics:** Ad count, spend, avg ROAS, avg hook rate per type
 - **Drill-down:** Click type to see hooks within that type
 - **Recommendation:** Highlight underused high-performing types
 
-#### Tab 3: By Visual
+#### Tab 4: By Visual
 - **Bar chart:** Performance by hook_visual_type (unboxing, demo, etc.)
 - **Visual elements breakdown:** Most common elements in top hooks
 - **Gap analysis:** Visual types not yet tested
+- **Metrics:** Include hook rate alongside ROAS
 
-#### Tab 4: By Landing Page
+#### Tab 5: By Landing Page
 - **LP selector:** Dropdown to filter by specific LP
-- **Table:** LPs with hook count, total spend, avg ROAS
+- **Table:** LPs with hook count, total spend, avg ROAS, avg hook rate
 - **Expandable rows:** Show hooks used with each LP
 - **Best/worst hook per LP highlighted**
+- **Insight:** Flag LPs where hooks have high hook rate but low ROAS (suggests LP issue)
 
-#### Tab 5: Compare
+#### Tab 6: Compare
 - **Two hook selectors:** Dropdown to pick hooks by fingerprint
-- **Side-by-side comparison:** Metrics, transcript, visual
-- **Winner badges:** By ROAS, CTR, spend
+- **Side-by-side comparison:** Metrics (ROAS, hook rate, CTR, spend), transcript, visual
+- **Winner badges:** By ROAS, hook rate, CTR, spend
 - **Confidence indicator:** Based on sample size
 
 ### Components
