@@ -616,19 +616,32 @@ class ClassifierService:
                 return None
 
             # 4. Extract page title from metadata
+            # Note: metadata may be a DocumentMetadata object, not a dict
             page_title = None
+            metadata_dict = None
             if scrape_result.metadata:
-                page_title = scrape_result.metadata.get("title")
+                # Try to get title - handle both dict and object
+                if hasattr(scrape_result.metadata, 'title'):
+                    page_title = scrape_result.metadata.title
+                elif isinstance(scrape_result.metadata, dict):
+                    page_title = scrape_result.metadata.get("title")
+
+                # Convert metadata to dict for storage
+                if hasattr(scrape_result.metadata, '__dict__'):
+                    metadata_dict = {k: v for k, v in vars(scrape_result.metadata).items()
+                                    if not k.startswith('_')}
+                elif isinstance(scrape_result.metadata, dict):
+                    metadata_dict = scrape_result.metadata
 
             # 5. Update LP with scraped data
             extracted_data = {
                 "markdown": scrape_result.markdown,
                 "links": scrape_result.links,
-                "metadata": scrape_result.metadata,
+                "metadata": metadata_dict,
             }
 
             self.supabase.table("brand_landing_pages").update({
-                "scrape_status": "complete",
+                "scrape_status": "scraped",
                 "page_title": page_title,
                 "extracted_data": extracted_data,
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
