@@ -479,6 +479,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_template_scrape_job(job)
     elif job_type == 'template_approval':
         return await execute_template_approval_job(job)
+    elif job_type == 'congruence_reanalysis':
+        return await execute_congruence_reanalysis_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -1778,6 +1780,180 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Template approval job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Congruence Re-analysis Job Handler
+# ============================================================================
+
+async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a congruence re-analysis job.
+
+    Finds ads with video analysis + landing page data but missing congruence
+    components, and re-runs classification with force=True to generate
+    the per-dimension congruence analysis.
+
+    Parameters (from job['parameters']):
+        batch_size: int - Max ads to fetch per run (default: 50)
+        max_gemini_calls: int - Max Gemini API calls per run (default: 20)
+        brand_id: Optional[str] - Specific brand to process (None = all brands)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting congruence re-analysis job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        batch_size = params.get('batch_size', 50)
+        max_gemini_calls = params.get('max_gemini_calls', 20)
+        target_brand_id = params.get('brand_id')
+
+        logs.append(f"Batch size: {batch_size}, Max Gemini calls: {max_gemini_calls}")
+        if target_brand_id:
+            logs.append(f"Target brand: {target_brand_id}")
+        else:
+            logs.append("Processing all brands")
+
+        # Import services
+        from viraltracker.services.ad_intelligence.congruence_insights_service import CongruenceInsightsService
+        from viraltracker.services.ad_intelligence.classifier_service import ClassifierService
+        from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
+        from viraltracker.services.video_analysis_service import VideoAnalysisService
+        from viraltracker.services.gemini_service import GeminiService
+        from uuid import UUID
+
+        db = get_supabase_client()
+
+        # Initialize services
+        insights_service = CongruenceInsightsService(db)
+        gemini_service = GeminiService()
+        congruence_analyzer = CongruenceAnalyzer(gemini_service)
+        video_analysis_service = VideoAnalysisService()
+
+        # Initialize classifier with congruence analyzer
+        classifier = ClassifierService(
+            supabase_client=db,
+            gemini_service=gemini_service,
+            video_analysis_service=video_analysis_service,
+            congruence_analyzer=congruence_analyzer,
+        )
+
+        # Get eligible ads
+        brand_uuid = UUID(target_brand_id) if target_brand_id else None
+        eligible_ads = insights_service.get_eligible_for_reanalysis(
+            brand_id=brand_uuid,
+            limit=batch_size,
+        )
+
+        if not eligible_ads:
+            logs.append("No eligible ads found for re-analysis")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "analyzed": 0, "message": "No eligible ads"}
+
+        logs.append(f"Found {len(eligible_ads)} eligible ads")
+
+        # Process ads
+        analyzed_count = 0
+        error_count = 0
+        gemini_calls = 0
+
+        for ad in eligible_ads:
+            if gemini_calls >= max_gemini_calls:
+                logs.append(f"Reached max Gemini calls ({max_gemini_calls}), stopping")
+                break
+
+            meta_ad_id = ad.get("meta_ad_id")
+            ad_brand_id = ad.get("brand_id")
+            ad_org_id = ad.get("organization_id")
+
+            try:
+                # Create a dummy run_id for classification (we reuse the job run id)
+                classification_run_id = UUID(run_id)
+
+                # Re-classify with force=True to trigger congruence analysis
+                result = await classifier.classify_ad(
+                    meta_ad_id=meta_ad_id,
+                    brand_id=UUID(ad_brand_id),
+                    org_id=UUID(ad_org_id),
+                    run_id=classification_run_id,
+                    force=True,  # Force re-analysis
+                    scrape_missing_lp=False,  # LP already exists
+                )
+
+                gemini_calls += 1
+
+                # Check if congruence was populated
+                if result and result.congruence_components:
+                    analyzed_count += 1
+                    logs.append(f"  ✓ {meta_ad_id}: congruence analyzed ({len(result.congruence_components)} components)")
+                else:
+                    logs.append(f"  - {meta_ad_id}: classified but no congruence components")
+
+            except Exception as e:
+                error_count += 1
+                logs.append(f"  ✗ {meta_ad_id}: {str(e)[:50]}")
+                logger.warning(f"Error re-analyzing ad {meta_ad_id}: {e}")
+
+        # Summary
+        logs.append(f"")
+        logs.append(f"=== Summary ===")
+        logs.append(f"Analyzed: {analyzed_count}")
+        logs.append(f"Errors: {error_count}")
+        logs.append(f"Gemini calls: {gemini_calls}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed congruence re-analysis job: {job_name} - {analyzed_count} analyzed")
+        return {
+            "success": True,
+            "analyzed": analyzed_count,
+            "errors": error_count,
+            "gemini_calls": gemini_calls,
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Congruence re-analysis job {job_name} failed: {error_msg}")
 
         update_job_run(run_id, {
             "status": "failed",
