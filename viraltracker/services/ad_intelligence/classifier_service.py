@@ -211,23 +211,39 @@ class ClassifierService:
                 classification_data = video_result
                 source = "gemini_video"
 
-        # 2b. Skip video ads when budget exhausted (don't pollute data with copy-only)
-        if not classification_data and is_video and video_budget_remaining <= 0:
-            logger.warning(
-                f"Skipping video ad {meta_ad_id}: video classification budget exhausted. "
-                f"Rerun analysis or increase budget to classify remaining video ads."
-            )
+        # 2b. Skip video ads that can't be properly classified (don't pollute data with copy-only)
+        if not classification_data and is_video:
+            # Determine skip reason
+            if video_budget_remaining <= 0:
+                skip_reason = "video_budget_exhausted"
+                logger.warning(
+                    f"Skipping video ad {meta_ad_id}: video classification budget exhausted. "
+                    f"Rerun analysis or increase budget to classify remaining video ads."
+                )
+            elif not video_id:
+                skip_reason = "missing_video_id"
+                logger.warning(
+                    f"Skipping video ad {meta_ad_id}: no meta_video_id in database. "
+                    f"Run 'Download Assets' to populate video metadata."
+                )
+            else:
+                skip_reason = "video_classification_failed"
+                logger.warning(
+                    f"Skipping video ad {meta_ad_id}: video classification failed. "
+                    f"Check video file in storage."
+                )
+
             # Return a minimal classification marking it as skipped
             return CreativeClassification(
                 meta_ad_id=meta_ad_id,
                 brand_id=brand_id,
                 organization_id=org_id,
                 run_id=run_id,
-                source="skipped_video_budget_exhausted",
+                source=f"skipped_{skip_reason}",
                 prompt_version=self.CURRENT_PROMPT_VERSION,
                 schema_version=self.CURRENT_SCHEMA_VERSION,
                 input_hash=current_hash,
-                raw_classification={"skip_reason": "video_budget_exhausted"},
+                raw_classification={"skip_reason": skip_reason},
             )
 
         # 3. Fallback to image+copy classification (for non-video ads only)
