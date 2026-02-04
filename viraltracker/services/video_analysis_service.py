@@ -862,6 +862,25 @@ class VideoAnalysisService:
             return None
 
         except Exception as e:
+            error_str = str(e)
+            # Handle duplicate key error - return existing ID instead
+            if "23505" in error_str or "duplicate key" in error_str.lower():
+                logger.info(
+                    f"Video analysis already exists for {result.meta_ad_id}, "
+                    f"fetching existing ID"
+                )
+                existing_id = await self.check_existing_analysis(
+                    result.meta_ad_id,
+                    result.brand_id,
+                    result.input_hash,
+                    result.prompt_version,
+                )
+                if existing_id:
+                    return existing_id
+                logger.warning(
+                    f"Duplicate key but couldn't find existing analysis for {result.meta_ad_id}"
+                )
+
             logger.error(f"Error saving video analysis for {result.meta_ad_id}: {e}")
             return None
 

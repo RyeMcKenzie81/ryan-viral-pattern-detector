@@ -239,6 +239,38 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 10. Deep Video Analysis - UI & Agent Visibility
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-04
+
+**Context**: The Deep Video Analysis feature (Phases 1-5) stores rich data in the database but has no UI or agent visibility:
+- `ad_video_analysis` - Full video analysis (transcripts, hooks, storyboards, benefits)
+- `ad_creative_classifications.congruence_components` - Per-dimension congruence (awareness, hook/headline, benefits, angle, claims)
+
+**What's needed**:
+
+1. **Agent tool updates**:
+   - Update `/congruence_check` to show per-dimension results when `congruence_components` exist
+   - Or create new `/deep_congruence` tool for detailed analysis
+   - Add hook analysis tool (`/hook_analysis` or `/top_hooks`)
+
+2. **UI additions**:
+   - Ad Performance page: Add expandable section showing congruence components per ad
+   - New "Hook Analysis" page or section showing top hooks by fingerprint, type, and visual type
+   - Video analysis detail view (transcript, storyboard, claims)
+
+3. **Reporting**:
+   - Congruence summary across brand (how many aligned vs weak vs missing)
+   - Hook performance dashboard (which hooks convert best)
+
+**Reference**:
+- Plan: `~/.claude/plans/squishy-tinkering-snowflake.md`
+- Checkpoints: `docs/plans/deep-video-analysis/CHECKPOINT_*.md`
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._

@@ -102,6 +102,7 @@ class ClassifierService:
         gemini_service=None,
         meta_ads_service=None,
         video_analysis_service=None,
+        congruence_analyzer=None,
     ):
         """Initialize with Supabase client and optional services.
 
@@ -116,11 +117,15 @@ class ClassifierService:
             video_analysis_service: Optional VideoAnalysisService for deep
                 video analysis. If provided, will be used for comprehensive
                 video analysis with transcripts, hooks, and storyboards.
+            congruence_analyzer: Optional CongruenceAnalyzer for per-dimension
+                congruence evaluation. If provided, will analyze video-copy-LP
+                alignment when video analysis and LP data are available.
         """
         self.supabase = supabase_client
         self._gemini = gemini_service
         self._meta_ads = meta_ads_service
         self._video_analysis = video_analysis_service
+        self._congruence_analyzer = congruence_analyzer
 
     async def classify_ad(
         self,
@@ -259,6 +264,20 @@ class ClassifierService:
             )
             record["congruence_score"] = score
             record["congruence_notes"] = notes
+
+        # Run deep congruence analysis if we have video analysis and LP data
+        if record.get("video_analysis_id") and ad_data.get("lp_data"):
+            copy_data = {
+                "copy_awareness_level": record.get("copy_awareness_level"),
+                "primary_cta": record.get("primary_cta"),
+            }
+            congruence_components = await self._run_deep_congruence_analysis(
+                video_analysis_id=record.get("video_analysis_id"),
+                lp_data=ad_data.get("lp_data"),
+                copy_data=copy_data,
+            )
+            if congruence_components:
+                record["congruence_components"] = congruence_components
 
         # Insert immutable row
         result = self.supabase.table("ad_creative_classifications").insert(record).execute()
@@ -737,9 +756,10 @@ class ClassifierService:
                 canonical_url = dest_result.data[0].get("canonical_url")
                 destination_url = dest_result.data[0].get("destination_url")
                 if canonical_url:
-                    # Try to find existing LP
+                    # Try to find existing LP - fetch all fields needed for congruence analysis
                     lp_result = self.supabase.table("brand_landing_pages").select(
-                        "id, url, page_title, extracted_data"
+                        "id, url, page_title, extracted_data, benefits, features, "
+                        "call_to_action, product_name, raw_markdown"
                     ).eq("brand_id", str(brand_id)).eq("canonical_url", canonical_url).limit(1).execute()
 
                     if lp_result.data:
@@ -1495,6 +1515,70 @@ class ClassifierService:
                 notes = f"Creative-copy misalignment ({max_gap}-step gap, no LP data)"
 
         return score, notes
+
+    async def _run_deep_congruence_analysis(
+        self,
+        video_analysis_id: Optional[str],
+        lp_data: Optional[Dict],
+        copy_data: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Run deep congruence analysis if data is available.
+
+        Evaluates per-dimension alignment between video content, copy, and LP.
+
+        Args:
+            video_analysis_id: UUID of video analysis row (may be None).
+            lp_data: Landing page data dict (may be None).
+            copy_data: Copy classification data dict.
+
+        Returns:
+            List of congruence component dicts, or empty list if not possible.
+        """
+        # Skip if no congruence analyzer configured
+        if not self._congruence_analyzer:
+            return []
+
+        # Skip if no video analysis or LP data
+        if not video_analysis_id or not lp_data:
+            return []
+
+        try:
+            # Fetch video analysis data
+            video_result = self.supabase.table("ad_video_analysis").select(
+                "awareness_level, hook_transcript_spoken, hook_transcript_overlay, "
+                "hook_visual_description, benefits_shown, angles_used, claims_made, "
+                "pain_points_addressed"
+            ).eq("id", video_analysis_id).limit(1).execute()
+
+            if not video_result.data:
+                logger.warning(f"Video analysis {video_analysis_id} not found for congruence")
+                return []
+
+            video_data = video_result.data[0]
+
+            # Run congruence analysis
+            from .congruence_analyzer import CongruenceAnalyzer
+
+            result = await self._congruence_analyzer.analyze_congruence(
+                video_data=video_data,
+                copy_data=copy_data,
+                lp_data=lp_data,
+            )
+
+            if result.error:
+                logger.warning(f"Congruence analysis error: {result.error}")
+
+            logger.info(
+                f"Deep congruence analysis complete: "
+                f"overall_score={result.overall_score}, "
+                f"components={len(result.components)}"
+            )
+
+            return result.to_components_list()
+
+        except Exception as e:
+            logger.error(f"Deep congruence analysis failed: {e}")
+            return []
 
     async def _get_ad_spend_order(
         self,
