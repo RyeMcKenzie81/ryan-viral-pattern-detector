@@ -658,9 +658,9 @@ with col1:
 with col2:
     min_spend = st.number_input(
         "Min Spend ($)",
-        value=100,
+        value=0,
         min_value=0,
-        step=50,
+        step=10,
         help="Only include hooks with at least this much total spend",
         key="hook_min_spend"
     )

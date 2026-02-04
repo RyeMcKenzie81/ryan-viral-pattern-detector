@@ -25,7 +25,7 @@ from .helpers import _safe_numeric
 logger = logging.getLogger(__name__)
 
 # Default thresholds
-DEFAULT_MIN_SPEND = 100.0  # Minimum $100 spend for statistical significance
+DEFAULT_MIN_SPEND = 0.0  # No minimum spend by default (can be adjusted in UI)
 DEFAULT_HOOK_RATE_THRESHOLD = 0.25  # 25% = good hook rate
 DEFAULT_ROAS_THRESHOLD = 1.0  # 1.0 = breakeven
 
