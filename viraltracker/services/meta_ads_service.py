@@ -1212,6 +1212,8 @@ class MetaAdsService:
     async def get_asset_download_stats(self, brand_id: UUID) -> Dict[str, Any]:
         """Get statistics on asset downloads for a brand.
 
+        Counts UNIQUE ads (not daily performance rows).
+
         Args:
             brand_id: Brand UUID.
 
@@ -1224,29 +1226,34 @@ class MetaAdsService:
 
         supabase = get_supabase_client()
 
-        # Count video ads with meta_video_id
-        video_ads_result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id", count="exact"
+        # Fetch all performance rows and deduplicate by meta_ad_id
+        # Note: meta_ads_performance has daily rows, we need unique ads
+        all_perf = supabase.table("meta_ads_performance").select(
+            "meta_ad_id, is_video, meta_video_id, thumbnail_url"
         ).eq(
             "brand_id", str(brand_id)
-        ).eq(
-            "is_video", True
-        ).not_.is_(
-            "meta_video_id", "null"
         ).execute()
-        total_videos = video_ads_result.count or 0
 
-        # Count image ads (non-video with thumbnail_url)
-        image_ads_result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id", count="exact"
-        ).eq(
-            "brand_id", str(brand_id)
-        ).or_(
-            "is_video.is.null,is_video.eq.false"
-        ).not_.is_(
-            "thumbnail_url", "null"
-        ).execute()
-        total_images = image_ads_result.count or 0
+        # Deduplicate: track unique video and image ads
+        unique_video_ads = set()
+        unique_image_ads = set()
+
+        for row in (all_perf.data or []):
+            meta_ad_id = row.get("meta_ad_id")
+            if not meta_ad_id:
+                continue
+
+            is_video = row.get("is_video")
+            has_video_id = row.get("meta_video_id") is not None
+            has_thumbnail = row.get("thumbnail_url") is not None
+
+            if is_video and has_video_id:
+                unique_video_ads.add(meta_ad_id)
+            elif (not is_video or is_video is None) and has_thumbnail:
+                unique_image_ads.add(meta_ad_id)
+
+        total_videos = len(unique_video_ads)
+        total_images = len(unique_image_ads)
 
         # Count downloaded/not_downloadable assets
         assets_result = supabase.table("meta_ad_assets").select(
