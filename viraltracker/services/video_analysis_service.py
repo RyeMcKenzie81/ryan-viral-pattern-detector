@@ -30,7 +30,7 @@ from supabase import Client
 logger = logging.getLogger(__name__)
 
 # Current prompt version - increment when prompt changes significantly
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 # Deep video analysis prompt - extracts comprehensive structured data
 DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract detailed structured data.
@@ -73,6 +73,10 @@ DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract det
     "visual_hook": "<assessment of visual hook, or null if absent>",
     "combination_score": 0.7
   }},
+
+  "hook_visual_description": "<describe what is visually happening in the first 3-5 seconds>",
+  "hook_visual_elements": ["person", "product", "dog", "text_overlay", "hand_gesture", "unboxing"],
+  "hook_visual_type": "<unboxing|transformation|demonstration|testimonial|lifestyle|problem_agitation|authority|social_proof|product_hero|curiosity|other>",
 
   "storyboard": [
     {{"timestamp_sec": 0.0, "scene_description": "...", "key_elements": ["..."], "text_overlay": "..."}},
@@ -153,6 +157,9 @@ class VideoAnalysisResult:
     hook_fingerprint: Optional[str] = None
     hook_type: Optional[str] = None
     hook_effectiveness_signals: Optional[Dict] = None
+    hook_visual_description: Optional[str] = None
+    hook_visual_elements: List[str] = field(default_factory=list)
+    hook_visual_type: Optional[str] = None
 
     # Storyboard
     storyboard: Optional[List[Dict]] = None
@@ -214,14 +221,23 @@ def compute_input_hash(
     return hashlib.sha256(source.encode()).hexdigest()
 
 
-def compute_hook_fingerprint(spoken: Optional[str], overlay: Optional[str]) -> str:
+def compute_hook_fingerprint(
+    spoken: Optional[str],
+    overlay: Optional[str],
+    visual: Optional[str] = None,
+) -> str:
     """Compute normalized hook fingerprint for deduplication.
 
-    Normalizes spoken + overlay text and computes SHA256 hash.
+    Normalizes spoken + overlay + visual text and computes SHA256 hash.
+    This creates a complete hook fingerprint that captures:
+    - What they say (spoken)
+    - What text appears (overlay)
+    - What you see (visual)
 
     Args:
         spoken: Spoken hook text (may be None).
         overlay: Text overlay hook (may be None).
+        visual: Visual hook description (may be None).
 
     Returns:
         SHA256 hash string.
@@ -229,17 +245,20 @@ def compute_hook_fingerprint(spoken: Optional[str], overlay: Optional[str]) -> s
     # 1. Lowercase
     spoken_norm = (spoken or "").lower()
     overlay_norm = (overlay or "").lower()
+    visual_norm = (visual or "").lower()
 
     # 2. Strip punctuation
     spoken_norm = re.sub(r'[^\w\s]', '', spoken_norm)
     overlay_norm = re.sub(r'[^\w\s]', '', overlay_norm)
+    visual_norm = re.sub(r'[^\w\s]', '', visual_norm)
 
     # 3. Collapse whitespace
     spoken_norm = ' '.join(spoken_norm.split())
     overlay_norm = ' '.join(overlay_norm.split())
+    visual_norm = ' '.join(visual_norm.split())
 
     # 4. Concatenate with delimiters
-    combined = f"spoken:{spoken_norm}|overlay:{overlay_norm}"
+    combined = f"spoken:{spoken_norm}|overlay:{overlay_norm}|visual:{visual_norm}"
 
     # 5. SHA256 hash
     return hashlib.sha256(combined.encode()).hexdigest()
@@ -577,12 +596,15 @@ class VideoAnalysisService:
             # 10. Validate timestamps
             is_valid, validation_errors = validate_analysis_timestamps(parsed)
 
-            # 11. Compute hook fingerprint
+            # 11. Compute hook fingerprint (includes visual for complete fingerprint)
             hook_fingerprint = None
-            if parsed.get("hook_transcript_spoken") or parsed.get("hook_transcript_overlay"):
+            if (parsed.get("hook_transcript_spoken") or
+                parsed.get("hook_transcript_overlay") or
+                parsed.get("hook_visual_description")):
                 hook_fingerprint = compute_hook_fingerprint(
                     parsed.get("hook_transcript_spoken"),
                     parsed.get("hook_transcript_overlay"),
+                    parsed.get("hook_visual_description"),
                 )
 
             # 12. Build result
@@ -609,6 +631,9 @@ class VideoAnalysisService:
                 hook_fingerprint=hook_fingerprint,
                 hook_type=parsed.get("hook_type"),
                 hook_effectiveness_signals=parsed.get("hook_effectiveness_signals"),
+                hook_visual_description=parsed.get("hook_visual_description"),
+                hook_visual_elements=parsed.get("hook_visual_elements", []),
+                hook_visual_type=parsed.get("hook_visual_type"),
 
                 # Storyboard
                 storyboard=parsed.get("storyboard") if is_valid else None,
@@ -740,6 +765,9 @@ class VideoAnalysisService:
                 hook_fingerprint=row.get("hook_fingerprint"),
                 hook_type=row.get("hook_type"),
                 hook_effectiveness_signals=row.get("hook_effectiveness_signals"),
+                hook_visual_description=row.get("hook_visual_description"),
+                hook_visual_elements=row.get("hook_visual_elements", []),
+                hook_visual_type=row.get("hook_visual_type"),
                 storyboard=row.get("storyboard"),
                 benefits_shown=row.get("benefits_shown", []),
                 features_demonstrated=row.get("features_demonstrated", []),
@@ -801,6 +829,9 @@ class VideoAnalysisService:
                 "hook_fingerprint": result.hook_fingerprint,
                 "hook_type": result.hook_type,
                 "hook_effectiveness_signals": result.hook_effectiveness_signals,
+                "hook_visual_description": result.hook_visual_description,
+                "hook_visual_elements": result.hook_visual_elements,
+                "hook_visual_type": result.hook_visual_type,
                 "storyboard": result.storyboard,
                 "benefits_shown": result.benefits_shown,
                 "features_demonstrated": result.features_demonstrated,

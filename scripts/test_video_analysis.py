@@ -118,6 +118,10 @@ async def main():
     print(f"Hook type: {result.hook_type}")
     print(f"Hook fingerprint: {result.hook_fingerprint[:16] if result.hook_fingerprint else '(none)'}...")
     print(f"Effectiveness signals: {result.hook_effectiveness_signals}")
+    print(f"\n--- Visual Hook ---")
+    print(f"Visual description: {result.hook_visual_description}")
+    print(f"Visual elements: {result.hook_visual_elements}")
+    print(f"Visual type: {result.hook_visual_type}")
 
     print(f"\n--- Storyboard ---")
     print(f"Scenes: {len(result.storyboard or [])} scenes")
