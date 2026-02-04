@@ -64,7 +64,7 @@ class AdIntelligenceService:
         video_analysis_service = VideoAnalysisService(supabase_client)
 
         # Create congruence analyzer for per-dimension congruence evaluation
-        congruence_analyzer = CongruenceAnalyzer(supabase_client, gemini_service)
+        congruence_analyzer = CongruenceAnalyzer(gemini_service)
 
         self.classifier = ClassifierService(
             supabase_client,
