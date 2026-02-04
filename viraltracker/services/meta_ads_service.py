@@ -1422,6 +1422,307 @@ class MetaAdsService:
         )
         return downloaded
 
+    async def fetch_ad_destination_urls(
+        self,
+        ad_ids: List[str],
+    ) -> Dict[str, str]:
+        """
+        Fetch destination URLs for a list of ad IDs.
+
+        Gets the landing page URL that users are directed to when clicking the ad.
+        The URL is extracted from the AdCreative's object_story_spec.link_data.link
+        or call_to_action.value.link.
+
+        Args:
+            ad_ids: List of Meta ad IDs.
+
+        Returns:
+            Dict mapping ad_id -> destination_url (original, not canonicalized).
+        """
+        if not ad_ids:
+            return {}
+
+        self._ensure_sdk()
+        await self._rate_limit()
+
+        try:
+            destinations = await asyncio.to_thread(
+                self._fetch_ad_destinations_sync,
+                ad_ids
+            )
+            logger.info(f"Fetched {len(destinations)} ad destination URLs")
+            return destinations
+        except Exception as e:
+            logger.error(f"Failed to fetch ad destination URLs: {e}")
+            return {}
+
+    def _fetch_ad_destinations_sync(self, ad_ids: List[str]) -> Dict[str, str]:
+        """
+        Synchronous call to fetch ad destination URLs.
+
+        Tries multiple locations in the AdCreative:
+        1. object_story_spec.link_data.link
+        2. object_story_spec.link_data.call_to_action.value.link
+        3. object_story_spec.video_data.call_to_action.value.link
+        4. asset_feed_spec.link_urls
+
+        Returns:
+            Dict mapping ad_id -> destination_url.
+        """
+        from facebook_business.adobjects.ad import Ad
+        from facebook_business.adobjects.adcreative import AdCreative
+
+        destinations: Dict[str, str] = {}
+
+        for ad_id in ad_ids:
+            try:
+                # Step 1: Get the creative ID from the ad
+                ad = Ad(ad_id)
+                ad_data = ad.api_get(fields=["id", "creative"])
+
+                creative_data = ad_data.get("creative")
+                if not creative_data:
+                    logger.debug(f"No creative for ad {ad_id}")
+                    continue
+
+                creative_id = creative_data.get("id")
+                if not creative_id:
+                    continue
+
+                # Step 2: Fetch the creative with link-related fields
+                creative = AdCreative(creative_id)
+                creative_info = creative.api_get(fields=[
+                    "id",
+                    "object_story_spec",
+                    "asset_feed_spec",
+                    "link_url",
+                ])
+
+                destination_url = None
+
+                # Try 1: Direct link_url field
+                destination_url = creative_info.get("link_url")
+
+                # Try 2: object_story_spec.link_data.link
+                if not destination_url:
+                    story_spec = creative_info.get("object_story_spec", {})
+                    link_data = story_spec.get("link_data", {})
+                    destination_url = link_data.get("link")
+
+                    # Try 2b: link_data.call_to_action.value.link
+                    if not destination_url:
+                        cta = link_data.get("call_to_action", {})
+                        cta_value = cta.get("value", {})
+                        destination_url = cta_value.get("link")
+
+                # Try 3: object_story_spec.video_data.call_to_action.value.link
+                if not destination_url:
+                    story_spec = creative_info.get("object_story_spec", {})
+                    video_data = story_spec.get("video_data", {})
+                    cta = video_data.get("call_to_action", {})
+                    cta_value = cta.get("value", {})
+                    destination_url = cta_value.get("link")
+
+                # Try 4: asset_feed_spec.link_urls (for dynamic ads)
+                if not destination_url:
+                    asset_feed = creative_info.get("asset_feed_spec", {})
+                    link_urls = asset_feed.get("link_urls", [])
+                    if link_urls and len(link_urls) > 0:
+                        # Take first URL from dynamic feed
+                        first_link = link_urls[0]
+                        if isinstance(first_link, dict):
+                            destination_url = first_link.get("website_url")
+                        elif isinstance(first_link, str):
+                            destination_url = first_link
+
+                if destination_url:
+                    destinations[ad_id] = destination_url
+                    logger.debug(f"Ad {ad_id}: destination={destination_url[:60]}...")
+                else:
+                    logger.debug(f"Ad {ad_id}: no destination URL found in creative")
+
+            except Exception as e:
+                logger.warning(f"Could not fetch destination URL for {ad_id}: {e}")
+                continue
+
+        return destinations
+
+    async def sync_ad_destinations_to_db(
+        self,
+        brand_id: UUID,
+        organization_id: UUID,
+        ad_ids: Optional[List[str]] = None,
+        limit: int = 100,
+    ) -> Dict[str, int]:
+        """
+        Fetch and store ad destination URLs for a brand.
+
+        Fetches destination URLs from Meta API, canonicalizes them,
+        and stores in meta_ad_destinations table.
+
+        Args:
+            brand_id: Brand UUID.
+            organization_id: Organization UUID.
+            ad_ids: Optional specific ad IDs to process. If None, finds ads missing destinations.
+            limit: Maximum ads to process in this batch.
+
+        Returns:
+            Dict with counts: {"fetched": N, "stored": N, "matched": N}.
+        """
+        from ..core.database import get_supabase_client
+        from .url_canonicalizer import canonicalize_url
+
+        supabase = get_supabase_client()
+        stats = {"fetched": 0, "stored": 0, "matched": 0}
+
+        # Get ad IDs to process
+        if ad_ids is None:
+            # Find ads without destination URLs
+            existing_result = supabase.table("meta_ad_destinations").select(
+                "meta_ad_id"
+            ).eq(
+                "brand_id", str(brand_id)
+            ).execute()
+
+            existing_ad_ids = {r["meta_ad_id"] for r in (existing_result.data or [])}
+
+            # Get all ads for this brand
+            ads_result = supabase.table("meta_ads_performance").select(
+                "meta_ad_id"
+            ).eq(
+                "brand_id", str(brand_id)
+            ).execute()
+
+            all_ad_ids = list(set(r["meta_ad_id"] for r in (ads_result.data or [])))
+
+            # Filter to ads without destinations
+            ad_ids = [aid for aid in all_ad_ids if aid not in existing_ad_ids][:limit]
+
+        if not ad_ids:
+            logger.info(f"No ads need destination URL fetching for brand {brand_id}")
+            return stats
+
+        logger.info(f"Fetching destination URLs for {len(ad_ids)} ads")
+
+        # Fetch from Meta API
+        destinations = await self.fetch_ad_destination_urls(ad_ids)
+        stats["fetched"] = len(destinations)
+
+        if not destinations:
+            return stats
+
+        # Store in database with canonicalization
+        for meta_ad_id, destination_url in destinations.items():
+            try:
+                canonical = canonicalize_url(destination_url)
+
+                record = {
+                    "organization_id": str(organization_id),
+                    "brand_id": str(brand_id),
+                    "meta_ad_id": meta_ad_id,
+                    "destination_url": destination_url,
+                    "canonical_url": canonical,
+                }
+
+                supabase.table("meta_ad_destinations").upsert(
+                    record,
+                    on_conflict="brand_id,meta_ad_id,canonical_url"
+                ).execute()
+
+                stats["stored"] += 1
+
+            except Exception as e:
+                logger.error(f"Failed to store destination for {meta_ad_id}: {e}")
+
+        logger.info(
+            f"Synced ad destinations for brand {brand_id}: "
+            f"fetched={stats['fetched']}, stored={stats['stored']}"
+        )
+
+        return stats
+
+    async def match_destinations_to_landing_pages(
+        self,
+        brand_id: UUID,
+    ) -> Dict[str, Any]:
+        """
+        Match ad destination URLs to brand landing pages.
+
+        Compares canonical URLs from meta_ad_destinations to brand_landing_pages
+        and returns matching results.
+
+        Args:
+            brand_id: Brand UUID.
+
+        Returns:
+            Dict with:
+                - matches: List of {meta_ad_id, destination_url, landing_page_id, landing_page_url}
+                - unmatched_count: Number of ads with no matching LP
+                - total_destinations: Total destination URLs checked
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+
+        # Get all destinations for this brand
+        destinations_result = supabase.table("meta_ad_destinations").select(
+            "meta_ad_id, destination_url, canonical_url"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).execute()
+
+        destinations = destinations_result.data or []
+
+        if not destinations:
+            return {"matches": [], "unmatched_count": 0, "total_destinations": 0}
+
+        # Get all landing pages for this brand
+        lps_result = supabase.table("brand_landing_pages").select(
+            "id, url, canonical_url"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).execute()
+
+        landing_pages = lps_result.data or []
+
+        # Build lookup by canonical URL
+        lp_by_canonical: Dict[str, Dict] = {}
+        for lp in landing_pages:
+            canonical = lp.get("canonical_url")
+            if canonical:
+                lp_by_canonical[canonical] = lp
+
+        # Match destinations to LPs
+        matches = []
+        unmatched_count = 0
+
+        for dest in destinations:
+            canonical = dest.get("canonical_url")
+            matched_lp = lp_by_canonical.get(canonical) if canonical else None
+
+            if matched_lp:
+                matches.append({
+                    "meta_ad_id": dest["meta_ad_id"],
+                    "destination_url": dest["destination_url"],
+                    "canonical_url": canonical,
+                    "landing_page_id": matched_lp["id"],
+                    "landing_page_url": matched_lp["url"],
+                })
+            else:
+                unmatched_count += 1
+
+        logger.info(
+            f"LP matching for brand {brand_id}: "
+            f"{len(matches)} matched, {unmatched_count} unmatched "
+            f"of {len(destinations)} total"
+        )
+
+        return {
+            "matches": matches,
+            "unmatched_count": unmatched_count,
+            "total_destinations": len(destinations),
+        }
+
     async def auto_match_ads(
         self,
         brand_id: Optional[UUID] = None
@@ -1490,3 +1791,248 @@ class MetaAdsService:
                     })
 
         return matches
+
+    async def populate_classification_landing_page_ids(
+        self,
+        brand_id: UUID,
+    ) -> Dict[str, int]:
+        """
+        Populate landing_page_id in ad_creative_classifications from LP matches.
+
+        For classifications that have a matching landing page (via meta_ad_destinations),
+        updates the landing_page_id field.
+
+        Args:
+            brand_id: Brand UUID.
+
+        Returns:
+            Dict with counts: {"updated": N, "already_set": N, "no_match": N}.
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+        stats = {"updated": 0, "already_set": 0, "no_match": 0}
+
+        # Get LP matches
+        match_result = await self.match_destinations_to_landing_pages(brand_id)
+        matches = match_result.get("matches", [])
+
+        if not matches:
+            logger.info(f"No LP matches to populate for brand {brand_id}")
+            return stats
+
+        # Build lookup: meta_ad_id -> landing_page_id
+        lp_by_ad: Dict[str, str] = {}
+        for match in matches:
+            lp_by_ad[match["meta_ad_id"]] = match["landing_page_id"]
+
+        # Get classifications that need landing_page_id populated
+        classifications_result = supabase.table("ad_creative_classifications").select(
+            "id, meta_ad_id, landing_page_id"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).execute()
+
+        for row in (classifications_result.data or []):
+            meta_ad_id = row["meta_ad_id"]
+            current_lp_id = row.get("landing_page_id")
+            matched_lp_id = lp_by_ad.get(meta_ad_id)
+
+            if current_lp_id:
+                stats["already_set"] += 1
+            elif matched_lp_id:
+                # Update the classification with the matched LP ID
+                try:
+                    supabase.table("ad_creative_classifications").update({
+                        "landing_page_id": matched_lp_id,
+                    }).eq("id", row["id"]).execute()
+                    stats["updated"] += 1
+                except Exception as e:
+                    logger.error(f"Failed to update classification {row['id']}: {e}")
+            else:
+                stats["no_match"] += 1
+
+        logger.info(
+            f"Populated landing_page_ids for brand {brand_id}: "
+            f"updated={stats['updated']}, already_set={stats['already_set']}, "
+            f"no_match={stats['no_match']}"
+        )
+
+        return stats
+
+    async def get_unmatched_destination_urls(
+        self,
+        brand_id: UUID,
+    ) -> List[Dict[str, str]]:
+        """
+        Get ad destination URLs that don't match any existing landing pages.
+
+        These URLs are candidates for scraping to add new landing pages.
+
+        Args:
+            brand_id: Brand UUID.
+
+        Returns:
+            List of dicts with meta_ad_id, destination_url, canonical_url.
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+
+        # Get all destinations for this brand
+        destinations_result = supabase.table("meta_ad_destinations").select(
+            "meta_ad_id, destination_url, canonical_url"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).execute()
+
+        destinations = destinations_result.data or []
+
+        if not destinations:
+            return []
+
+        # Get all landing pages for this brand
+        lps_result = supabase.table("brand_landing_pages").select(
+            "canonical_url"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).execute()
+
+        existing_canonicals = {lp["canonical_url"] for lp in (lps_result.data or []) if lp.get("canonical_url")}
+
+        # Find unmatched destinations
+        unmatched = []
+        seen_canonicals = set()  # Dedupe by canonical URL
+
+        for dest in destinations:
+            canonical = dest.get("canonical_url")
+            if canonical and canonical not in existing_canonicals and canonical not in seen_canonicals:
+                seen_canonicals.add(canonical)
+                unmatched.append({
+                    "meta_ad_id": dest["meta_ad_id"],
+                    "destination_url": dest["destination_url"],
+                    "canonical_url": canonical,
+                })
+
+        logger.info(f"Found {len(unmatched)} unmatched destination URLs for brand {brand_id}")
+        return unmatched
+
+    async def backfill_unmatched_landing_pages(
+        self,
+        brand_id: UUID,
+        organization_id: UUID,
+        scrape: bool = True,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Backfill landing pages for ad destination URLs that don't have matches.
+
+        This method:
+        1. Identifies unmatched ad destinations
+        2. Creates "pending" records in brand_landing_pages for each new URL
+        3. Optionally scrapes the pending pages using BrandResearchService
+        4. Re-runs matching to link newly scraped pages to ads
+
+        Args:
+            brand_id: Brand UUID.
+            organization_id: Organization UUID.
+            scrape: Whether to scrape the pending pages after creating them.
+            limit: Maximum pages to scrape in this batch.
+
+        Returns:
+            Dict with results: {
+                "pending_created": N,
+                "pages_scraped": N,
+                "pages_failed": N,
+                "new_matches": N,
+            }
+        """
+        from ..core.database import get_supabase_client
+        from .url_canonicalizer import canonicalize_url
+
+        supabase = get_supabase_client()
+        results = {
+            "pending_created": 0,
+            "pages_scraped": 0,
+            "pages_failed": 0,
+            "new_matches": 0,
+        }
+
+        # Step 1: Get unmatched destination URLs
+        unmatched = await self.get_unmatched_destination_urls(brand_id)
+
+        if not unmatched:
+            logger.info(f"No unmatched URLs to backfill for brand {brand_id}")
+            return results
+
+        logger.info(f"Found {len(unmatched)} unmatched URLs to backfill")
+
+        # Step 2: Create "pending" records in brand_landing_pages
+        for item in unmatched[:limit]:
+            try:
+                # Use the original destination_url for the record
+                # but store canonical_url for matching
+                # Note: brand_landing_pages doesn't have organization_id or source columns
+                record = {
+                    "brand_id": str(brand_id),
+                    "url": item["destination_url"],
+                    "canonical_url": item["canonical_url"],
+                    "scrape_status": "pending",
+                }
+
+                # Upsert to handle if URL already exists
+                supabase.table("brand_landing_pages").upsert(
+                    record,
+                    on_conflict="brand_id,url"
+                ).execute()
+
+                results["pending_created"] += 1
+
+            except Exception as e:
+                logger.error(f"Failed to create pending LP for {item['canonical_url']}: {e}")
+
+        logger.info(f"Created {results['pending_created']} pending LP records")
+
+        # Step 3: Optionally scrape the pending pages
+        if scrape and results["pending_created"] > 0:
+            try:
+                from .brand_research_service import BrandResearchService
+                research_service = BrandResearchService(supabase)
+
+                scrape_result = await research_service.scrape_landing_pages_for_brand(
+                    brand_id=brand_id,
+                    limit=limit,
+                )
+
+                results["pages_scraped"] = scrape_result.get("pages_scraped", 0)
+                results["pages_failed"] = scrape_result.get("pages_failed", 0)
+
+            except Exception as e:
+                logger.error(f"Failed to scrape landing pages: {e}")
+
+        # Step 4: Re-run matching to link newly scraped pages
+        if results["pages_scraped"] > 0:
+            try:
+                # Get matches after scraping
+                match_result = await self.match_destinations_to_landing_pages(brand_id)
+                new_match_count = len(match_result.get("matches", []))
+
+                # Update classifications with new matches
+                populate_result = await self.populate_classification_landing_page_ids(brand_id)
+                results["new_matches"] = populate_result.get("updated", 0)
+
+                logger.info(
+                    f"After backfill: {new_match_count} total matches, "
+                    f"{results['new_matches']} classifications updated"
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to re-match after scraping: {e}")
+
+        logger.info(
+            f"Backfill complete for brand {brand_id}: "
+            f"pending={results['pending_created']}, scraped={results['pages_scraped']}, "
+            f"failed={results['pages_failed']}, new_matches={results['new_matches']}"
+        )
+
+        return results
