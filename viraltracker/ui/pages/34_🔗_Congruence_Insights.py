@@ -131,61 +131,39 @@ def render_overview_metrics(summary: Dict[str, Any]):
 
 def render_dimension_chart(summary: Dict[str, Any]):
     """Render stacked bar chart for dimension breakdown."""
-    import plotly.graph_objects as go
+    import pandas as pd
 
     dimensions = summary.get("dimensions", {})
     if not dimensions:
         st.info("No dimension data available.")
         return
 
-    # Prepare data
-    dim_names = []
-    aligned_counts = []
-    weak_counts = []
-    missing_counts = []
-
+    # Prepare data for pandas DataFrame
+    data = []
     for dim in DIMENSION_LABELS.keys():
         if dim in dimensions:
-            dim_names.append(DIMENSION_LABELS[dim])
             counts = dimensions[dim]
-            aligned_counts.append(counts.get("aligned", 0))
-            weak_counts.append(counts.get("weak", 0))
-            missing_counts.append(counts.get("missing", 0))
+            data.append({
+                "Dimension": DIMENSION_LABELS[dim],
+                "Aligned": counts.get("aligned", 0),
+                "Weak": counts.get("weak", 0),
+                "Missing": counts.get("missing", 0),
+            })
 
-    # Create stacked bar chart
-    fig = go.Figure()
+    if not data:
+        st.info("No dimension data to display.")
+        return
 
-    fig.add_trace(go.Bar(
-        name="Aligned",
-        x=dim_names,
-        y=aligned_counts,
-        marker_color=ASSESSMENT_COLORS["aligned"],
-    ))
+    df = pd.DataFrame(data)
+    df = df.set_index("Dimension")
 
-    fig.add_trace(go.Bar(
-        name="Weak",
-        x=dim_names,
-        y=weak_counts,
-        marker_color=ASSESSMENT_COLORS["weak"],
-    ))
+    # Display using Streamlit's native bar chart
+    st.subheader("Congruence by Dimension")
+    st.bar_chart(df, color=["#28a745", "#ffc107", "#dc3545"])
 
-    fig.add_trace(go.Bar(
-        name="Missing",
-        x=dim_names,
-        y=missing_counts,
-        marker_color=ASSESSMENT_COLORS["missing"],
-    ))
-
-    fig.update_layout(
-        barmode="stack",
-        title="Congruence by Dimension",
-        xaxis_title="Dimension",
-        yaxis_title="Number of Ads",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=400,
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+    # Also show as table for exact numbers
+    with st.expander("View exact counts"):
+        st.dataframe(df, use_container_width=True)
 
 
 def render_improvement_suggestions(brand_id: str):
@@ -273,58 +251,30 @@ def render_trends_tab(brand_id: str):
         st.info("Not enough historical data for trends. Check back after running more analysis.")
         return
 
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    import pandas as pd
 
-    # Create figure with secondary y-axis
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # Prepare data
+    df = pd.DataFrame(trends)
+    df = df.rename(columns={
+        "week_start": "Week",
+        "avg_score": "Avg Score",
+        "ad_count": "Ads Analyzed",
+        "aligned_pct": "% Fully Aligned"
+    })
+    df = df.set_index("Week")
 
-    weeks = [t["week_start"] for t in trends]
-    scores = [t["avg_score"] for t in trends]
-    aligned_pcts = [t["aligned_pct"] for t in trends]
-    ad_counts = [t["ad_count"] for t in trends]
+    # Show line chart for score trend
+    st.write("**Average Congruence Score**")
+    st.line_chart(df[["Avg Score"]], color=["#007bff"])
 
-    # Average score line
-    fig.add_trace(
-        go.Scatter(
-            x=weeks,
-            y=scores,
-            mode="lines+markers",
-            name="Avg Score",
-            line=dict(color="#007bff", width=3),
-        ),
-        secondary_y=False,
-    )
-
-    # Fully aligned percentage bars
-    fig.add_trace(
-        go.Bar(
-            x=weeks,
-            y=aligned_pcts,
-            name="% Fully Aligned",
-            marker_color="rgba(40, 167, 69, 0.6)",
-            opacity=0.6,
-        ),
-        secondary_y=True,
-    )
-
-    fig.update_layout(
-        title="Weekly Congruence Trends",
-        xaxis_title="Week",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=400,
-    )
-
-    fig.update_yaxes(title_text="Average Score", secondary_y=False, range=[0, 1])
-    fig.update_yaxes(title_text="% Fully Aligned", secondary_y=True, range=[0, 100])
-
-    st.plotly_chart(fig, use_container_width=True)
+    # Show bar chart for aligned percentage
+    st.write("**% Fully Aligned**")
+    st.bar_chart(df[["% Fully Aligned"]], color=["#28a745"])
 
     # Show summary table
-    import pandas as pd
-    df = pd.DataFrame(trends)
-    df.columns = ["Week", "Avg Score", "Ads Analyzed", "% Fully Aligned"]
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.write("**Weekly Summary**")
+    df_display = df.reset_index()
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
 
 
 def render_reanalysis_tab(brand_id: str):
