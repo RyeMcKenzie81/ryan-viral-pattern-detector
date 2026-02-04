@@ -196,7 +196,7 @@ class ClassifierService:
             logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
             video_result = await self._classify_video_with_gemini(
                 video_id, ad_copy, ad_data.get("lp_data"),
-                meta_ad_id=meta_ad_id, brand_id=brand_id,
+                meta_ad_id=meta_ad_id, brand_id=brand_id, org_id=org_id,
             )
             if video_result:
                 classification_data = video_result
@@ -598,6 +598,25 @@ class ClassifierService:
         if not result.get("ad_copy"):
             result["ad_copy"] = result.get("ad_name", "")
 
+        # Look up landing page from ad destination
+        try:
+            dest_result = self.supabase.table("meta_ad_destinations").select(
+                "canonical_url"
+            ).eq("meta_ad_id", meta_ad_id).eq("brand_id", str(brand_id)).limit(1).execute()
+
+            if dest_result.data:
+                canonical_url = dest_result.data[0].get("canonical_url")
+                if canonical_url:
+                    lp_result = self.supabase.table("brand_landing_pages").select(
+                        "id, url, page_title, extracted_data"
+                    ).eq("brand_id", str(brand_id)).eq("canonical_url", canonical_url).limit(1).execute()
+
+                    if lp_result.data:
+                        result["landing_page_id"] = lp_result.data[0]["id"]
+                        result["lp_data"] = lp_result.data[0]
+        except Exception as e:
+            logger.warning(f"Error looking up landing page for {meta_ad_id}: {e}")
+
         return result
 
     async def _find_existing_analysis(
@@ -743,19 +762,224 @@ class ClassifierService:
         lp_data: Optional[Dict] = None,
         meta_ad_id: Optional[str] = None,
         brand_id: Optional[UUID] = None,
+        org_id: Optional[UUID] = None,
     ) -> Optional[Dict]:
-        """Classify a video ad with Gemini Files API.
+        """Classify a video ad using VideoAnalysisService for deep analysis.
+
+        Uses VideoAnalysisService.deep_analyze_video() for comprehensive video
+        analysis including transcripts, hooks, storyboard, and messaging. The
+        analysis is saved to ad_video_analysis and the video_analysis_id is
+        returned for linking.
+
+        Falls back to legacy Gemini video classification if VideoAnalysisService
+        is not available.
 
         Video must be pre-downloaded into meta_ad_assets by the nightly
         meta_sync job or the manual "Download Assets" button. If the video
-        isn't in storage, returns None → caller falls back to image+copy.
+        isn't in storage, returns None -> caller falls back to image+copy.
 
         Args:
             video_id: Meta video ID from AdCreative.
             ad_copy: Ad copy text.
             lp_data: Landing page data (optional, unused currently).
             meta_ad_id: Meta ad ID for looking up video in storage.
-            brand_id: Brand UUID (unused, kept for interface compat).
+            brand_id: Brand UUID for VideoAnalysisService.
+            org_id: Organization UUID for VideoAnalysisService.
+
+        Returns:
+            Dict with classification fields including video_analysis_id, or None on failure.
+        """
+        if not meta_ad_id:
+            logger.warning(f"No meta_ad_id provided for video classification (video_id={video_id})")
+            return None
+
+        # Use VideoAnalysisService if available
+        if self._video_analysis and brand_id and org_id:
+            return await self._classify_video_with_analysis_service(
+                meta_ad_id, brand_id, org_id, ad_copy
+            )
+
+        # Fallback to legacy Gemini video classification
+        return await self._classify_video_with_gemini_legacy(
+            video_id, ad_copy, lp_data, meta_ad_id
+        )
+
+    async def _classify_video_with_analysis_service(
+        self,
+        meta_ad_id: str,
+        brand_id: UUID,
+        org_id: UUID,
+        ad_copy: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Classify video using VideoAnalysisService for deep analysis.
+
+        Performs comprehensive analysis and maps the result to classification fields.
+
+        Args:
+            meta_ad_id: Meta ad ID.
+            brand_id: Brand UUID.
+            org_id: Organization UUID.
+            ad_copy: Ad copy text for context.
+
+        Returns:
+            Dict with classification fields including video_analysis_id, or None on failure.
+        """
+        try:
+            logger.info(f"Using VideoAnalysisService for deep analysis of {meta_ad_id}")
+
+            # Perform deep video analysis
+            analysis_result = await self._video_analysis.deep_analyze_video(
+                meta_ad_id=meta_ad_id,
+                brand_id=brand_id,
+                organization_id=org_id,
+                ad_copy=ad_copy,
+            )
+
+            if not analysis_result:
+                logger.info(f"VideoAnalysisService returned None for {meta_ad_id}")
+                return None
+
+            # Check for error status
+            if analysis_result.status == "error":
+                logger.warning(
+                    f"VideoAnalysisService error for {meta_ad_id}: {analysis_result.error_message}"
+                )
+                return None
+
+            # Save the analysis result to database
+            video_analysis_id = await self._video_analysis.save_video_analysis(
+                analysis_result, org_id
+            )
+
+            if not video_analysis_id:
+                logger.warning(f"Failed to save video analysis for {meta_ad_id}")
+                # Continue with classification but without video_analysis_id
+
+            # Map VideoAnalysisResult fields to classification fields
+            classification = self._map_video_analysis_to_classification(
+                analysis_result, video_analysis_id
+            )
+
+            logger.info(
+                f"Deep video classification complete for {meta_ad_id}: "
+                f"awareness={classification.get('creative_awareness_level')}, "
+                f"duration={classification.get('video_duration_sec')}s, "
+                f"video_analysis_id={video_analysis_id}"
+            )
+
+            return classification
+
+        except Exception as e:
+            logger.error(f"VideoAnalysisService classification failed for {meta_ad_id}: {e}")
+            return None
+
+    def _map_video_analysis_to_classification(
+        self,
+        result,  # VideoAnalysisResult
+        video_analysis_id: Optional[UUID] = None,
+    ) -> Dict:
+        """Map VideoAnalysisResult fields to classification schema.
+
+        Args:
+            result: VideoAnalysisResult from deep analysis.
+            video_analysis_id: UUID of the saved analysis row.
+
+        Returns:
+            Dict with classification fields.
+        """
+        # Compute video_length_bucket from duration
+        video_length_bucket = None
+        if result.video_duration_sec is not None:
+            video_length_bucket = self._duration_to_bucket(result.video_duration_sec)
+
+        # Map format_type to creative_format
+        format_mapping = {
+            "ugc": "video_ugc",
+            "professional": "video_professional",
+            "testimonial": "video_testimonial",
+            "demo": "video_demo",
+            "animation": "video_professional",
+            "mixed": "video_ugc",
+        }
+        creative_format = format_mapping.get(result.format_type, "video_ugc")
+
+        # Build raw classification with all analysis data for reference
+        raw_classification = {
+            "full_transcript": result.full_transcript,
+            "transcript_segments": result.transcript_segments,
+            "text_overlays": result.text_overlays,
+            "text_overlay_confidence": result.text_overlay_confidence,
+            "hook_transcript_spoken": result.hook_transcript_spoken,
+            "hook_transcript_overlay": result.hook_transcript_overlay,
+            "hook_fingerprint": result.hook_fingerprint,
+            "hook_type": result.hook_type,
+            "hook_effectiveness_signals": result.hook_effectiveness_signals,
+            "hook_visual_description": result.hook_visual_description,
+            "hook_visual_elements": result.hook_visual_elements,
+            "hook_visual_type": result.hook_visual_type,
+            "storyboard": result.storyboard,
+            "benefits_shown": result.benefits_shown,
+            "features_demonstrated": result.features_demonstrated,
+            "pain_points_addressed": result.pain_points_addressed,
+            "angles_used": result.angles_used,
+            "jobs_to_be_done": result.jobs_to_be_done,
+            "claims_made": result.claims_made,
+            "awareness_level": result.awareness_level,
+            "awareness_confidence": result.awareness_confidence,
+            "target_persona": result.target_persona,
+            "emotional_drivers": result.emotional_drivers,
+            "production_quality": result.production_quality,
+            "format_type": result.format_type,
+            "validation_errors": result.validation_errors,
+            "input_hash": result.input_hash,
+            "prompt_version": result.prompt_version,
+        }
+
+        # Build hook_transcript combining spoken and overlay
+        hook_transcript = result.hook_transcript_spoken or ""
+        if result.hook_transcript_overlay:
+            hook_transcript = f"{hook_transcript} [{result.hook_transcript_overlay}]".strip()
+
+        return {
+            # Awareness level (from video analysis)
+            "creative_awareness_level": result.awareness_level,
+            "creative_awareness_confidence": result.awareness_confidence,
+            # Format
+            "creative_format": creative_format,
+            # Angle (use first angle if available, or summary)
+            "creative_angle": result.angles_used[0] if result.angles_used else None,
+            # Video metadata
+            "video_duration_sec": result.video_duration_sec,
+            "video_length_bucket": video_length_bucket,
+            # Hook
+            "hook_type": result.hook_type,
+            "hook_transcript": hook_transcript if hook_transcript else None,
+            # Benefits (for reference in raw)
+            "benefits_shown": result.benefits_shown,
+            # Link to deep analysis
+            "video_analysis_id": str(video_analysis_id) if video_analysis_id else None,
+            # Model info
+            "model_used": "gemini_video_deep",
+            "raw_classification": raw_classification,
+        }
+
+    async def _classify_video_with_gemini_legacy(
+        self,
+        video_id: str,
+        ad_copy: str,
+        lp_data: Optional[Dict] = None,
+        meta_ad_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Legacy video classification using direct Gemini Files API.
+
+        This is the fallback method when VideoAnalysisService is not available.
+        Focuses on the first 3-5 seconds for awareness level classification.
+
+        Args:
+            video_id: Meta video ID from AdCreative.
+            ad_copy: Ad copy text.
+            lp_data: Landing page data (optional, unused currently).
+            meta_ad_id: Meta ad ID for looking up video in storage.
 
         Returns:
             Dict with classification fields, or None on failure.
@@ -766,11 +990,6 @@ class ClassifierService:
 
         try:
             from google import genai
-
-            # Look up pre-downloaded video in meta_ad_assets
-            if not meta_ad_id:
-                logger.warning(f"No meta_ad_id provided for video classification (video_id={video_id})")
-                return None
 
             storage_path = await self._find_asset_in_storage(meta_ad_id, "video")
             if not storage_path:
@@ -787,13 +1006,13 @@ class ClassifierService:
 
             logger.info(f"Loaded video from storage for {meta_ad_id}: {len(video_content) / 1024 / 1024:.1f}MB")
 
-            # 3. Write to temp file
+            # Write to temp file
             temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
             temp_file.write(video_content)
             temp_file.close()
             temp_path = temp_file.name
 
-            # 4. Upload to Gemini Files API
+            # Upload to Gemini Files API
             api_key = os.getenv("GEMINI_API_KEY")
             if not api_key:
                 logger.warning("GEMINI_API_KEY not set — cannot classify video")
@@ -804,7 +1023,7 @@ class ClassifierService:
             gemini_file = client.files.upload(file=str(temp_path))
             logger.info(f"Uploaded to Gemini: {gemini_file.uri}")
 
-            # 5. Wait for processing (up to 120s, polling every 2s)
+            # Wait for processing (up to 120s, polling every 2s)
             max_wait = 120
             wait_time = 0
             while gemini_file.state.name == "PROCESSING" and wait_time < max_wait:
@@ -819,7 +1038,7 @@ class ClassifierService:
                 logger.warning(f"Gemini video processing timed out for {video_id}")
                 return None
 
-            # 6. Generate classification
+            # Generate classification
             prompt = VIDEO_CLASSIFICATION_PROMPT.format(
                 ad_copy=ad_copy or "(no copy available)"
             )
@@ -828,7 +1047,7 @@ class ClassifierService:
                 contents=[gemini_file, prompt],
             )
 
-            # 7. Parse response
+            # Parse response
             result_text = response.text.strip() if response.text else ""
             parsed = self._parse_gemini_response(result_text)
             if not parsed:
@@ -881,18 +1100,16 @@ class ClassifierService:
             duration_sec: Duration in seconds.
 
         Returns:
-            Bucket string like "0-15s", "15-30s", "30-60s", "60-180s", "180s+".
+            Bucket string: short_0_15, medium_15_30, long_30_60, very_long_60_plus.
         """
         if duration_sec <= 15:
-            return "0-15s"
+            return "short_0_15"
         elif duration_sec <= 30:
-            return "15-30s"
+            return "medium_15_30"
         elif duration_sec <= 60:
-            return "30-60s"
-        elif duration_sec <= 180:
-            return "60-180s"
+            return "long_30_60"
         else:
-            return "180s+"
+            return "very_long_60_plus"
 
     async def _classify_with_gemini(
         self,
