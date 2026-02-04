@@ -201,7 +201,9 @@ class ClassifierService:
             source = "existing_brand_ad_analysis"
 
         # 2. Try video classification if this is a video ad with budget
-        if not classification_data and is_video and video_id and video_budget_remaining > 0:
+        # Allow if we have meta_video_id OR has_video_in_storage (video file exists in assets)
+        has_video_in_storage = ad_data.get("has_video_in_storage", False)
+        if not classification_data and is_video and (video_id or has_video_in_storage) and video_budget_remaining > 0:
             logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
             video_result = await self._classify_video_with_gemini(
                 video_id, ad_copy, ad_data.get("lp_data"),
@@ -220,11 +222,11 @@ class ClassifierService:
                     f"Skipping video ad {meta_ad_id}: video classification budget exhausted. "
                     f"Rerun analysis or increase budget to classify remaining video ads."
                 )
-            elif not video_id:
-                skip_reason = "missing_video_id"
+            elif not video_id and not has_video_in_storage:
+                skip_reason = "missing_video_file"
                 logger.warning(
-                    f"Skipping video ad {meta_ad_id}: no meta_video_id in database. "
-                    f"Run 'Download Assets' to populate video metadata."
+                    f"Skipping video ad {meta_ad_id}: no video file in storage. "
+                    f"Run 'Download Assets' to download video files."
                 )
             else:
                 skip_reason = "video_classification_failed"
@@ -773,6 +775,24 @@ class ClassifierService:
                     )
         except Exception as e:
             logger.warning(f"Error fetching performance data for {meta_ad_id}: {e}")
+
+        # If is_video but no meta_video_id, check meta_ad_assets for downloaded video file
+        # This handles cases where video was downloaded but meta_video_id wasn't populated in Meta API
+        if result.get("is_video") and not result.get("meta_video_id"):
+            try:
+                asset_result = self.supabase.table("meta_ad_assets").select(
+                    "storage_path"
+                ).eq("meta_ad_id", meta_ad_id).eq(
+                    "asset_type", "video"
+                ).eq("status", "downloaded").limit(1).execute()
+
+                if asset_result.data:
+                    result["has_video_in_storage"] = True
+                    logger.info(
+                        f"Ad {meta_ad_id} has video file in storage despite missing meta_video_id"
+                    )
+            except Exception as e:
+                logger.warning(f"Error checking meta_ad_assets for {meta_ad_id}: {e}")
 
         # Note: ad_archive_id linkage to facebook_ads not implemented.
         # Ad copy falls back to ad_name below.
