@@ -315,7 +315,8 @@ class ChatRenderer:
     def render_congruence_check(result: CongruenceCheckResult) -> str:
         """Render congruence check results as markdown.
 
-        Shows misaligned ads with awareness levels and scores.
+        Shows misaligned ads with awareness levels and scores,
+        plus per-dimension breakdown for ads with deep analysis.
 
         Args:
             result: CongruenceCheckResult model.
@@ -346,6 +347,54 @@ class ChatRenderer:
             lines.append("")
         else:
             lines.append("All ads are well-aligned.")
+            lines.append("")
+
+        # Deep Analysis section for ads with congruence_components
+        if result.deep_analysis_ads:
+            count = len(result.deep_analysis_ads)
+            lines.append(f"### Deep Analysis Available ({count} ad{'s' if count > 1 else ''})")
+            lines.append("")
+
+            for ad in result.deep_analysis_ads:
+                ad_id = ad.get("meta_ad_id", "Unknown")
+                score = ad.get("congruence_score", 0)
+                components = ad.get("congruence_components", [])
+
+                lines.append(f"**Ad {ad_id}** (score: {score:.2f}):")
+
+                if components:
+                    for comp in components:
+                        dimension = comp.get("dimension", "unknown")
+                        assessment = comp.get("assessment", "unevaluated")
+                        explanation = comp.get("explanation", "")
+                        suggestion = comp.get("suggestion")
+
+                        # Choose icon based on assessment
+                        if assessment == "aligned":
+                            icon = "[OK]"
+                        elif assessment == "weak":
+                            icon = "[!]"
+                        elif assessment == "missing":
+                            icon = "[X]"
+                        else:
+                            icon = "[?]"
+
+                        # Format dimension name for display
+                        dim_display = dimension.replace("_", " ").title()
+
+                        # Build the line
+                        if explanation:
+                            lines.append(f"  {icon} {dim_display}: {assessment} - {explanation}")
+                        else:
+                            lines.append(f"  {icon} {dim_display}: {assessment}")
+
+                        # Add suggestion if present
+                        if suggestion and assessment in ("weak", "missing"):
+                            lines.append(f"      -> {suggestion}")
+                else:
+                    lines.append("  No dimension data available")
+
+                lines.append("")
 
         return "\n".join(lines)
 

@@ -67,6 +67,7 @@ class CongruenceChecker:
             )
 
         misaligned: List[Dict[str, Any]] = []
+        deep_analysis_ads: List[Dict[str, Any]] = []
         scores: List[float] = []
 
         for cls in classifications:
@@ -78,19 +79,32 @@ class CongruenceChecker:
 
             lp_level = cls.get("landing_page_awareness_level")
             score = self._compute_score(creative_level, copy_level, lp_level)
+            components = cls.get("congruence_components")
 
             if score is not None:
                 scores.append(score)
 
+                ad_data = {
+                    "meta_ad_id": cls.get("meta_ad_id", ""),
+                    "ad_name": cls.get("meta_ad_id", ""),
+                    "creative_level": creative_level,
+                    "copy_level": copy_level,
+                    "lp_level": lp_level or "N/A",
+                    "congruence_score": round(score, 3),
+                }
+
                 # Threshold for misalignment
                 if score < 0.75:
-                    misaligned.append({
+                    if components:
+                        ad_data["congruence_components"] = components
+                    misaligned.append(ad_data)
+
+                # Track ads with deep analysis (congruence_components present)
+                if components:
+                    deep_analysis_ads.append({
                         "meta_ad_id": cls.get("meta_ad_id", ""),
-                        "ad_name": cls.get("meta_ad_id", ""),
-                        "creative_level": creative_level,
-                        "copy_level": copy_level,
-                        "lp_level": lp_level or "N/A",
                         "congruence_score": round(score, 3),
+                        "congruence_components": components,
                     })
 
         avg_congruence = sum(scores) / len(scores) if scores else 0.0
@@ -99,6 +113,10 @@ class CongruenceChecker:
             brand_name=brand_name,
             checked_ads=len(classifications),
             misaligned_ads=sorted(misaligned, key=lambda x: x["congruence_score"]),
+            deep_analysis_ads=sorted(
+                deep_analysis_ads,
+                key=lambda x: x["congruence_score"]
+            ),
             average_congruence=round(avg_congruence, 3),
         )
 
@@ -153,7 +171,7 @@ class CongruenceChecker:
         try:
             result = self.supabase.table("ad_creative_classifications").select(
                 "meta_ad_id, creative_awareness_level, copy_awareness_level, "
-                "landing_page_awareness_level, congruence_score"
+                "landing_page_awareness_level, congruence_score, congruence_components"
             ).eq(
                 "brand_id", str(brand_id)
             ).order(

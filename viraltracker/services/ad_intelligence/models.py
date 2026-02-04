@@ -377,4 +377,5 @@ class CongruenceCheckResult(BaseModel):
     brand_name: str
     checked_ads: int = 0
     misaligned_ads: List[Dict[str, Any]] = Field(default_factory=list)
+    deep_analysis_ads: List[Dict[str, Any]] = Field(default_factory=list)
     average_congruence: float = 0.0
