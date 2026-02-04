@@ -573,7 +573,7 @@ class VideoAnalysisService:
                 ad_copy=ad_copy or "(no copy available)"
             )
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.5-pro",
                 contents=[gemini_file, prompt],
             )
 
@@ -661,7 +661,7 @@ class VideoAnalysisService:
                 video_id=asset.video_id,
                 creative_id=asset.creative_id,
                 raw_response=parsed,
-                model_used="gemini-2.5-flash",
+                model_used="gemini-2.5-pro",
             )
 
             logger.info(

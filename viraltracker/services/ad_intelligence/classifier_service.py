@@ -1238,7 +1238,7 @@ class ClassifierService:
                 ad_copy=ad_copy or "(no copy available)"
             )
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.5-pro",
                 contents=[gemini_file, prompt],
             )
 
