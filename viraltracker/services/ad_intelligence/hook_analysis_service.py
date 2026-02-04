@@ -652,7 +652,7 @@ class HookAnalysisService:
                 return []
 
             lp_result = self.supabase.table("brand_landing_pages").select(
-                "id, url, title"
+                "id, url, page_title"
             ).in_("id", lp_ids).execute()
 
             lp_lookup = {row["id"]: row for row in (lp_result.data or [])}
@@ -713,7 +713,7 @@ class HookAnalysisService:
                     lp_stats[lp_id] = {
                         "landing_page_id": lp_id,
                         "landing_page_url": lp_info.get("url"),
-                        "landing_page_title": lp_info.get("title"),
+                        "landing_page_title": lp_info.get("page_title"),
                         "hooks": {},  # fp -> {spend, value, type, visual_type}
                         "total_spend": 0.0,
                         "total_value": 0.0,
@@ -902,7 +902,7 @@ class HookAnalysisService:
             landing_pages = []
             if lp_ids:
                 lp_result = self.supabase.table("brand_landing_pages").select(
-                    "id, url, title"
+                    "id, url, page_title"
                 ).in_("id", lp_ids).execute()
                 landing_pages = lp_result.data or []
 
