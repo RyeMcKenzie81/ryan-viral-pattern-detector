@@ -63,6 +63,20 @@ self.classifier = ClassifierService(
 
 **Commit:** `f21c813`
 
+### 6. CTR Showing Impossible Values (>100%)
+**Problem:** CTR was displayed as impossible percentages (177%, 2307%, etc.). Meta returns `link_ctr` as a percentage value (e.g., 2.5 meaning 2.5%), but the UI was multiplying by 100 again, treating it as a decimal.
+
+**Fix:** Convert Meta's `link_ctr` to decimal (0-1 range) when aggregating, to match `hook_rate` format:
+```python
+# hook_analysis_service.py
+ctr = _safe_numeric(perf.get("link_ctr"))
+if ctr is not None:
+    # Meta returns link_ctr as percentage (e.g., 2.5 = 2.5%)
+    # Convert to decimal to match hook_rate format (0-1 range)
+    stats["ctr_sum"] += ctr / 100.0
+    stats["ctr_count"] += 1
+```
+
 ---
 
 ## Testing Results
@@ -90,6 +104,7 @@ self.classifier = ClassifierService(
 | `457d7b6` | `ad_intelligence_service.py` | Fix CongruenceAnalyzer init args |
 | `90e549a` | `hook_analysis_service.py`, UI page | Lower min_spend default to 0 |
 | `f21c813` | `hook_analysis_service.py` | Fix page_title column name |
+| TBD | `hook_analysis_service.py` | Fix CTR calculation (divide by 100) |
 
 ---
 
@@ -98,8 +113,8 @@ self.classifier = ClassifierService(
 | Metric | Count |
 |--------|-------|
 | Total video ads | 32 |
-| Analyzed with hooks | 17 |
-| Remaining | ~15 |
+| Analyzed with hooks | 23 |
+| Remaining | ~9 |
 | Hooks linked to LPs | 6 |
 | Image ads | 201 |
 

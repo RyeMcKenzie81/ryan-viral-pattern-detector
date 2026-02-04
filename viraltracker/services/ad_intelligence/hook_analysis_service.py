@@ -170,7 +170,9 @@ class HookAnalysisService:
 
                 ctr = _safe_numeric(perf.get("link_ctr"))
                 if ctr is not None:
-                    stats["ctr_sum"] += ctr
+                    # Meta returns link_ctr as percentage (e.g., 2.5 = 2.5%)
+                    # Convert to decimal to match hook_rate format (0-1 range)
+                    stats["ctr_sum"] += ctr / 100.0
                     stats["ctr_count"] += 1
 
                 stats["ad_spend_list"].append((ad_id, spend))
