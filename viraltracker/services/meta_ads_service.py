@@ -1281,20 +1281,22 @@ class MetaAdsService:
                 else:
                     images_not_downloadable += 1
 
-        # Calculate pending, capped at 0 (legacy assets may exceed current ad count)
+        # Total = current ads needing download (from performance)
+        # Downloaded may exceed total if ads changed classification since download
+        # For cleaner UX, pending = ads still needing download
         videos_pending = max(0, total_videos - videos_downloaded - videos_not_downloadable)
         images_pending = max(0, total_images - images_downloaded - images_not_downloadable)
 
         return {
             "videos": {
                 "total": total_videos,
-                "downloaded": videos_downloaded,
+                "downloaded": min(videos_downloaded, total_videos),  # Cap at total for clean display
                 "not_downloadable": videos_not_downloadable,
                 "pending": videos_pending,
             },
             "images": {
                 "total": total_images,
-                "downloaded": images_downloaded,
+                "downloaded": min(images_downloaded, total_images),  # Cap at total for clean display
                 "not_downloadable": images_not_downloadable,
                 "pending": images_pending,
             },
