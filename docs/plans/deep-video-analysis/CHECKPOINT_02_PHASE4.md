@@ -1,7 +1,7 @@
-# Checkpoint: Phase 4 Complete + Phase 4.5 Planning
+# Checkpoint: Phase 4 + 4.5 Complete
 
-**Date:** 2026-02-03
-**Status:** Phase 4 complete, Phase 4.5 planned
+**Date:** 2026-02-03 (updated 2026-02-04)
+**Status:** Phase 4 complete, Phase 4.5 complete and tested in production
 
 ---
 
@@ -257,10 +257,63 @@ if dest_result.data:
 
 ---
 
+## Production Testing Results (2026-02-04)
+
+### Phase 3: Destination URL Sync ✅
+```
+Destination URLs fetched: 7
+Stored in database: 7
+Matched to LPs: 7
+```
+
+### Phase 4: Classifier with LP Lookup ✅
+```
+Ad: 120239089970340742
+Destination: https://mywonderpaws.com/products/wonder-paws-collagen-3x...
+LP already exists: YES
+Landing Page ID: 3dbec166-e77d-44a5-8e86-8b37d6f88d8f
+LP Status: analyzed
+LP Title: Collagen Drops – Advanced Skin, Coat & Joint Suppo
+```
+
+### Phase 4.5: LP Auto-Scrape ✅
+```
+Ad: 120241392909170742
+Destination: https://mywonderpaws.com/pages/collagen-for-dogs-back-to-movement
+LP already exists: NO
+Classifying with scrape_missing_lp=True...
+
+Result:
+  Source: gemini_light
+  Landing Page ID: 11bf69a5-1163-42c6-b947-89345420b656
+  LP URL: https://www.mywonderpaws.com/pages/collagen-for-dogs-back-to-movement
+  LP Status: scraped
+  LP Title: Wonder Paws Collagen for Dogs - Mobility Support
+
+  SUCCESS: LP was auto-scraped and linked!
+```
+
+### Fixes Applied During Testing
+
+1. **FireCrawl metadata handling:**
+   - Issue: `'DocumentMetadata' object has no attribute 'get'`
+   - Fix: Use `getattr()` for title, convert object to dict for JSON storage
+
+2. **scrape_status constraint:**
+   - Issue: `violates check constraint "brand_landing_pages_scrape_status_check"`
+   - Fix: Changed from `'complete'` to `'scraped'` (allowed values: pending, scraped, analyzed, failed)
+
+### Commits
+- `90d697e` - Phase 4 integration
+- `a62a599` - Phase 4.5 implementation
+- `405d7c8` - Production fixes
+
+---
+
 ## Next Steps
 
-1. Update main plan to mark Phase 4 complete
-2. Add Phase 4.5 to plan with implementation steps
-3. Implement Phase 4.5
-4. Test and verify
-5. Continue to Phase 5 (Deep Congruence)
+1. ~~Update main plan to mark Phase 4 complete~~ ✅
+2. ~~Add Phase 4.5 to plan with implementation steps~~ ✅
+3. ~~Implement Phase 4.5~~ ✅
+4. ~~Test and verify in production~~ ✅
+5. **Continue to Phase 5 (Deep Congruence)**
