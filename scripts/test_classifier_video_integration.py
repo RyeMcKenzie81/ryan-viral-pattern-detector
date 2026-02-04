@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Test script for Phase 4: Classifier Video Integration.
+"""Test script for Phase 4 + 4.5: Classifier Video Integration + LP Auto-Scrape.
 
 Tests:
 1. Classify video ads using deep video analysis
 2. Verify video_analysis_id is populated
 3. Verify landing_page_id is populated where matched
+4. Test scrape_missing_lp=True for unmatched URLs
 """
 
 import asyncio
@@ -99,9 +100,9 @@ async def main():
             print(f"\n  Ad: {meta_ad_id}")
             print(f"  ERROR: {e}")
 
-    # Summary
+    # Summary for Phase 4
     print(f"\n{'='*60}")
-    print("SUMMARY")
+    print("PHASE 4 SUMMARY")
     print(f"{'='*60}")
 
     with_video_id = sum(1 for r in results if r.video_analysis_id)
@@ -110,6 +111,63 @@ async def main():
     print(f"Ads classified: {len(results)}")
     print(f"With video_analysis_id: {with_video_id}")
     print(f"With landing_page_id: {with_lp_id}")
+
+    # Phase 4.5: Test scrape_missing_lp
+    print(f"\n{'='*60}")
+    print("PHASE 4.5 TEST: scrape_missing_lp=True")
+    print(f"{'='*60}")
+
+    # Find an ad without LP match
+    ads_without_lp = [r for r in results if not r.landing_page_id]
+    if not ads_without_lp:
+        print("All ads already have landing_page_id - skipping auto-scrape test")
+    else:
+        # Pick first ad without LP
+        test_ad = ads_without_lp[0]
+        print(f"\nTesting with ad: {test_ad.meta_ad_id}")
+
+        # Create new run for this test
+        run_id_45 = uuid4()
+        run_record_45 = {
+            "id": str(run_id_45),
+            "organization_id": str(org_id),
+            "brand_id": str(brand_id),
+            "date_range_start": str(today - timedelta(days=30)),
+            "date_range_end": str(today),
+            "goal": "test_scrape_missing_lp",
+            "status": "running",
+        }
+        supabase.table("ad_intelligence_runs").insert(run_record_45).execute()
+
+        try:
+            result_45 = await classifier.classify_ad(
+                meta_ad_id=test_ad.meta_ad_id,
+                brand_id=brand_id,
+                org_id=org_id,
+                run_id=run_id_45,
+                video_budget_remaining=0,  # Skip video for speed
+                scrape_missing_lp=True,  # Enable LP scraping
+            )
+
+            print(f"  Source: {result_45.source}")
+            print(f"  Landing Page ID: {result_45.landing_page_id}")
+
+            if result_45.landing_page_id:
+                print("  SUCCESS: LP was scraped and linked!")
+                # Check the LP record
+                lp_check = supabase.table("brand_landing_pages").select(
+                    "url, scrape_status, page_title"
+                ).eq("id", str(result_45.landing_page_id)).limit(1).execute()
+                if lp_check.data:
+                    lp = lp_check.data[0]
+                    print(f"  LP URL: {lp.get('url', 'N/A')[:60]}...")
+                    print(f"  LP Status: {lp.get('scrape_status')}")
+                    print(f"  LP Title: {lp.get('page_title', 'N/A')[:50]}...")
+            else:
+                print("  No LP created (scrape may have failed or no destination URL)")
+
+        except Exception as e:
+            print(f"  ERROR: {e}")
 
 
 if __name__ == "__main__":

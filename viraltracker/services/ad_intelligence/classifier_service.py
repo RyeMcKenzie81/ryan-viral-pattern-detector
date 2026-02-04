@@ -130,6 +130,7 @@ class ClassifierService:
         run_id: UUID,
         force: bool = False,
         video_budget_remaining: int = 0,
+        scrape_missing_lp: bool = False,
     ) -> CreativeClassification:
         """Classify a single ad's creative, copy, and landing page awareness.
 
@@ -152,6 +153,9 @@ class ClassifierService:
             force: Force reclassification even if fresh.
             video_budget_remaining: How many video classifications are still
                 allowed in this run. 0 means skip video classification.
+            scrape_missing_lp: If True, create and scrape landing pages for
+                unmatched destination URLs. Slower but ensures LP data is
+                available for congruence analysis.
 
         Returns:
             CreativeClassification model.
@@ -159,7 +163,7 @@ class ClassifierService:
         assert run_id is not None, "run_id is required for classification"
 
         # Gather ad data (thumbnail, copy, landing page, video metadata)
-        ad_data = await self._fetch_ad_data(meta_ad_id, brand_id)
+        ad_data = await self._fetch_ad_data(meta_ad_id, brand_id, scrape_missing_lp)
         thumbnail_url = ad_data.get("thumbnail_url", "")
         ad_copy = ad_data.get("ad_copy", "")
         lp_id = ad_data.get("landing_page_id")
@@ -542,16 +546,128 @@ class ClassifierService:
             return row
         return None
 
+    async def _ensure_landing_page_exists(
+        self,
+        canonical_url: str,
+        destination_url: str,
+        brand_id: UUID,
+    ) -> Optional[Dict]:
+        """Ensure landing page exists, creating and scraping if needed.
+
+        If the landing page doesn't exist in brand_landing_pages, creates a new
+        record and scrapes it with FireCrawl.
+
+        Args:
+            canonical_url: Normalized URL for matching.
+            destination_url: Original URL from Meta API.
+            brand_id: Brand UUID.
+
+        Returns:
+            LP data dict with id, url, page_title, extracted_data, or None on failure.
+        """
+        from uuid import uuid4
+
+        # 1. Check if LP already exists
+        existing = self.supabase.table("brand_landing_pages").select(
+            "id, url, page_title, extracted_data"
+        ).eq("brand_id", str(brand_id)).eq(
+            "canonical_url", canonical_url
+        ).limit(1).execute()
+
+        if existing.data:
+            return existing.data[0]
+
+        # 2. Create pending LP record
+        lp_id = uuid4()
+        try:
+            self.supabase.table("brand_landing_pages").insert({
+                "id": str(lp_id),
+                "brand_id": str(brand_id),
+                "url": destination_url,
+                "canonical_url": canonical_url,
+                "scrape_status": "pending",
+            }).execute()
+        except Exception as e:
+            # Handle race condition - LP may have been created by another process
+            logger.warning(f"Failed to create LP record for {canonical_url}: {e}")
+            # Try to fetch the existing record
+            existing = self.supabase.table("brand_landing_pages").select(
+                "id, url, page_title, extracted_data"
+            ).eq("brand_id", str(brand_id)).eq(
+                "canonical_url", canonical_url
+            ).limit(1).execute()
+            if existing.data:
+                return existing.data[0]
+            return None
+
+        # 3. Scrape with FireCrawl
+        try:
+            from viraltracker.services.web_scraping_service import WebScrapingService
+            scraper = WebScrapingService()
+            scrape_result = await scraper.scrape_url_async(destination_url)
+
+            if not scrape_result.success:
+                # Mark as failed
+                self.supabase.table("brand_landing_pages").update({
+                    "scrape_status": "failed",
+                    "scrape_error": scrape_result.error or "Unknown error",
+                }).eq("id", str(lp_id)).execute()
+                logger.warning(f"Failed to scrape {destination_url}: {scrape_result.error}")
+                return None
+
+            # 4. Extract page title from metadata
+            page_title = None
+            if scrape_result.metadata:
+                page_title = scrape_result.metadata.get("title")
+
+            # 5. Update LP with scraped data
+            extracted_data = {
+                "markdown": scrape_result.markdown,
+                "links": scrape_result.links,
+                "metadata": scrape_result.metadata,
+            }
+
+            self.supabase.table("brand_landing_pages").update({
+                "scrape_status": "complete",
+                "page_title": page_title,
+                "extracted_data": extracted_data,
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", str(lp_id)).execute()
+
+            logger.info(f"Scraped and saved LP for {canonical_url}")
+
+            return {
+                "id": str(lp_id),
+                "url": destination_url,
+                "page_title": page_title,
+                "extracted_data": extracted_data,
+            }
+
+        except Exception as e:
+            logger.error(f"Error scraping {destination_url}: {e}")
+            # Mark as failed
+            try:
+                self.supabase.table("brand_landing_pages").update({
+                    "scrape_status": "failed",
+                    "scrape_error": str(e),
+                }).eq("id", str(lp_id)).execute()
+            except Exception:
+                pass
+            return None
+
     async def _fetch_ad_data(
         self,
         meta_ad_id: str,
         brand_id: UUID,
+        scrape_missing_lp: bool = False,
     ) -> Dict[str, Any]:
         """Fetch ad thumbnail, copy, video metadata, and landing page data.
 
         Args:
             meta_ad_id: Meta ad ID string.
             brand_id: Brand UUID.
+            scrape_missing_lp: If True, create and scrape landing pages for
+                unmatched destination URLs (slower but complete).
 
         Returns:
             Dict with thumbnail_url, ad_copy, landing_page_id, lp_data,
@@ -601,12 +717,14 @@ class ClassifierService:
         # Look up landing page from ad destination
         try:
             dest_result = self.supabase.table("meta_ad_destinations").select(
-                "canonical_url"
+                "canonical_url, destination_url"
             ).eq("meta_ad_id", meta_ad_id).eq("brand_id", str(brand_id)).limit(1).execute()
 
             if dest_result.data:
                 canonical_url = dest_result.data[0].get("canonical_url")
+                destination_url = dest_result.data[0].get("destination_url")
                 if canonical_url:
+                    # Try to find existing LP
                     lp_result = self.supabase.table("brand_landing_pages").select(
                         "id, url, page_title, extracted_data"
                     ).eq("brand_id", str(brand_id)).eq("canonical_url", canonical_url).limit(1).execute()
@@ -614,6 +732,15 @@ class ClassifierService:
                     if lp_result.data:
                         result["landing_page_id"] = lp_result.data[0]["id"]
                         result["lp_data"] = lp_result.data[0]
+                    elif scrape_missing_lp and destination_url:
+                        # No existing LP - create and scrape it
+                        logger.info(f"No LP match for {canonical_url}, scraping...")
+                        lp_data = await self._ensure_landing_page_exists(
+                            canonical_url, destination_url, brand_id
+                        )
+                        if lp_data:
+                            result["landing_page_id"] = lp_data["id"]
+                            result["lp_data"] = lp_data
         except Exception as e:
             logger.warning(f"Error looking up landing page for {meta_ad_id}: {e}")
 
