@@ -295,6 +295,64 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 12. Decouple Ad Classification from Chat Analysis
+
+**Priority**: High
+**Complexity**: Medium
+**Added**: 2026-02-04
+
+**Context**: Currently `/analyze_account` in chat classifies ALL ads synchronously before running diagnostics. For 242 ads, this takes 25+ minutes. Classification should happen in the background so chat analysis is instant.
+
+**Current flow (slow):**
+```
+User: "Analyze Wonder Paws"
+  → Classify 242 ads (25 min)
+  → Compute baselines
+  → Run diagnostics
+  → Generate recommendations
+  → Return results
+```
+
+**Target flow (fast):**
+```
+Background (scheduled/triggered):
+  → After Meta sync: Classify new/changed ads
+  → After asset download: Run video analysis
+  → After LP scrape: Run congruence analysis
+
+User: "Analyze Wonder Paws"
+  → Read pre-computed classifications (instant)
+  → Compute baselines
+  → Run diagnostics
+  → Generate recommendations
+  → Return results (seconds)
+```
+
+**What's needed**:
+1. **Scheduled classification job**: Run after Meta sync completes
+   - Only classify new ads or ads with changed inputs (use `input_hash`)
+   - Respect rate limits (max Gemini calls per run)
+
+2. **Event-driven triggers**:
+   - Meta sync complete → trigger classification
+   - Asset download complete → trigger video analysis
+   - LP scrape complete → trigger congruence analysis
+
+3. **Chat analysis refactor**:
+   - `analyze_account` should skip classification if recent data exists
+   - Add `force_reclassify` flag for manual override
+   - Show "data freshness" indicator (last classified timestamp)
+
+4. **Freshness thresholds**:
+   - Classifications valid for X hours (configurable)
+   - Stale data triggers background refresh, not blocking
+
+**Benefit**: Chat analysis goes from 25+ minutes to seconds. Users get instant insights.
+
+**Related**: Ties into #11 (Data Pipeline Infrastructure)
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._

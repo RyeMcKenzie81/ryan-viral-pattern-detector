@@ -211,7 +211,26 @@ class ClassifierService:
                 classification_data = video_result
                 source = "gemini_video"
 
-        # 3. Fallback to image+copy classification
+        # 2b. Skip video ads when budget exhausted (don't pollute data with copy-only)
+        if not classification_data and is_video and video_budget_remaining <= 0:
+            logger.warning(
+                f"Skipping video ad {meta_ad_id}: video classification budget exhausted. "
+                f"Rerun analysis or increase budget to classify remaining video ads."
+            )
+            # Return a minimal classification marking it as skipped
+            return CreativeClassification(
+                meta_ad_id=meta_ad_id,
+                brand_id=brand_id,
+                organization_id=org_id,
+                run_id=run_id,
+                source="skipped_video_budget_exhausted",
+                prompt_version=self.CURRENT_PROMPT_VERSION,
+                schema_version=self.CURRENT_SCHEMA_VERSION,
+                input_hash=current_hash,
+                raw_classification={"skip_reason": "video_budget_exhausted"},
+            )
+
+        # 3. Fallback to image+copy classification (for non-video ads only)
         if not classification_data:
             classification_data = await self._classify_with_gemini(
                 thumbnail_url, ad_copy, ad_data.get("lp_data"),
@@ -294,7 +313,7 @@ class ClassifierService:
         run_id: UUID,
         meta_ad_ids: List[str],
         max_new: int = 200,
-        max_video: int = 5,
+        max_video: int = 15,
     ) -> List[CreativeClassification]:
         """Classify a batch of ads, prioritizing by spend.
 
