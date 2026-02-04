@@ -271,6 +271,30 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
+### 11. Improve Data Pipeline Infrastructure
+
+**Priority**: Medium
+**Complexity**: Medium-High
+**Added**: 2026-02-04
+
+**Context**: The current data pipeline (Meta Ads sync, asset downloads, classification jobs) works but could be more robust, observable, and maintainable. As we scale to more brands and ads, the infrastructure needs improvement.
+
+**What's needed**:
+1. **Pipeline orchestration**: Consider using a proper workflow engine (Temporal, Prefect, or Airflow) instead of cron-based scheduler_worker
+2. **Better retry logic**: Exponential backoff, dead letter queues for failed jobs
+3. **Observability**: Pipeline-specific dashboards, SLOs, alerting on failures
+4. **Incremental processing**: Track high-water marks to avoid reprocessing
+5. **Data validation**: Schema validation between pipeline stages
+6. **Parallelization**: Process multiple brands/ads concurrently where possible
+
+**Current pain points**:
+- Scheduler worker polls every 60s, no event-driven triggers
+- Failures require manual intervention
+- Hard to see pipeline health at a glance
+- Asset downloads and classifications are sequential
+
+---
+
 ## Completed
 
 _Move items here when done, with completion date._
