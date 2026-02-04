@@ -139,6 +139,11 @@ class CreativeClassification(BaseModel):
     # Congruence
     congruence_score: Optional[float] = Field(None, ge=0, le=1)
     congruence_notes: Optional[str] = None
+    # Per-dimension congruence: [{dimension, assessment, explanation, suggestion}]
+    congruence_components: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # Deep video analysis link
+    video_analysis_id: Optional[UUID] = None
 
     # Versioning & provenance
     source: str = "gemini_light"

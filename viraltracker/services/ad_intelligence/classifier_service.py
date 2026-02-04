@@ -96,7 +96,13 @@ class ClassifierService:
     CURRENT_PROMPT_VERSION = "v2"
     CURRENT_SCHEMA_VERSION = "1.0"
 
-    def __init__(self, supabase_client, gemini_service=None, meta_ads_service=None):
+    def __init__(
+        self,
+        supabase_client,
+        gemini_service=None,
+        meta_ads_service=None,
+        video_analysis_service=None,
+    ):
         """Initialize with Supabase client and optional services.
 
         Args:
@@ -107,10 +113,14 @@ class ClassifierService:
                 recommended for production use).
             meta_ads_service: Optional MetaAdsService instance for fetching
                 video source URLs. Required for video classification.
+            video_analysis_service: Optional VideoAnalysisService for deep
+                video analysis. If provided, will be used for comprehensive
+                video analysis with transcripts, hooks, and storyboards.
         """
         self.supabase = supabase_client
         self._gemini = gemini_service
         self._meta_ads = meta_ads_service
+        self._video_analysis = video_analysis_service
 
     async def classify_ad(
         self,
@@ -222,6 +232,10 @@ class ClassifierService:
             "landing_page_id": str(lp_id) if lp_id else None,
             "congruence_score": classification_data.get("congruence_score"),
             "congruence_notes": classification_data.get("congruence_notes"),
+            # Deep video analysis link (Phase 2 - populated when VideoAnalysisService is used)
+            "video_analysis_id": classification_data.get("video_analysis_id"),
+            # Per-dimension congruence (Phase 5 - populated by CongruenceAnalyzer)
+            "congruence_components": classification_data.get("congruence_components", []),
             "source": source,
             "prompt_version": self.CURRENT_PROMPT_VERSION,
             "schema_version": self.CURRENT_SCHEMA_VERSION,
@@ -1190,6 +1204,8 @@ class ClassifierService:
             landing_page_id=UUID(row["landing_page_id"]) if row.get("landing_page_id") else None,
             congruence_score=_safe_numeric(row.get("congruence_score")),
             congruence_notes=row.get("congruence_notes"),
+            congruence_components=row.get("congruence_components", []),
+            video_analysis_id=UUID(row["video_analysis_id"]) if row.get("video_analysis_id") else None,
             source=row.get("source", "gemini_light"),
             prompt_version=row.get("prompt_version", "v1"),
             schema_version=row.get("schema_version", "1.0"),
@@ -1223,6 +1239,8 @@ class ClassifierService:
             creative_format=record.get("creative_format"),
             creative_angle=record.get("creative_angle"),
             video_duration_sec=record.get("video_duration_sec"),
+            congruence_components=record.get("congruence_components", []),
+            video_analysis_id=UUID(record["video_analysis_id"]) if record.get("video_analysis_id") else None,
             source=record.get("source", "gemini_light"),
             prompt_version=record.get("prompt_version", "v1"),
             schema_version=record.get("schema_version", "1.0"),
