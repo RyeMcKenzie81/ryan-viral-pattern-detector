@@ -72,6 +72,17 @@ User wants to streamline brand data ingestion — data is scattered and hard to 
 
 ## Current State
 
-- All syntax checks pass (`py_compile` on all 3 modified files)
-- Needs manual UI testing (see commit message for test plan)
-- Ready for commit and push
+- All code committed and pushed to `feat/veo-avatar-tool` (commit `75535e3`)
+- DB migration applied: `sql/2026-02-05_ad_classification_job_type.sql` (added `ad_classification` + `congruence_reanalysis` to CHECK constraint)
+- UI tested: Run Now button works, job gets created and picked up by worker
+
+### Known Issue: Classification errors on first run
+Ran ad_classification for Infi brand: 109 active ads, 40 classified, 69 errors. The 40 classified = the `max_new` cap (set to 40), so the classifier hit its cap and stopped — the "69 errors" may be misleading (could be ads skipped after cap, not actual errors). Need to check worker/cron logs for actual error details.
+
+**Next step:** Debug the 69 "errors" — share cron logs in new context window to see what `classify_batch` logged for each failed ad. Likely candidates:
+- Missing thumbnails/ad copy for some ads
+- Gemini API rate limiting
+- The cap logic in `classify_batch` — when `max_new` is reached, it `break`s out of the loop, so remaining ads aren't errors, they're just unprocessed. The `errors = total_active - classified` math is wrong in this case.
+
+### Likely Fix Needed
+In `_run_classification_for_brand()`, the "errors" count is `len(active_ids) - total_classified`. But `classify_batch` stops early when `max_new` is reached (it `break`s). So 109 - 40 = 69 "errors" is actually 69 **skipped** ads, not errors. The logging should distinguish between skipped-due-to-cap and actual errors.
