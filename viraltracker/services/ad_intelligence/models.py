@@ -354,8 +354,12 @@ class AccountAnalysisResult(BaseModel):
 
     # Baseline metrics by awareness level: {level: {cpm, ctr, cpa, cost_per_atc}}
     awareness_baselines: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
-    # Aggregate metrics by awareness level: {level: {spend, purchases, clicks, conversion_rate}}
+    # Aggregate metrics by awareness level: {level: {spend, purchases, clicks, conversion_rate, cpa}}
     awareness_aggregates: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
+    # Format breakdown: {"awareness|format": {spend, purchases, clicks, cpa}}
+    format_aggregates: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    # Auto-generated creative strategy insights
+    creative_insights: List[str] = Field(default_factory=list)
 
 
 class FatigueCheckResult(BaseModel):

@@ -342,7 +342,8 @@ class BaselineService:
         """Fetch performance data joined with classification info.
 
         Gets all performance rows in the date range, then joins with
-        the latest classification for each ad.
+        the latest classification for each ad. Uses pagination to ensure
+        all rows are fetched (Supabase default limit is 1000).
 
         Args:
             brand_id: Brand UUID.
@@ -352,20 +353,35 @@ class BaselineService:
         Returns:
             List of merged dicts (performance + classification).
         """
-        # Fetch performance data
-        perf_result = self.supabase.table("meta_ads_performance").select("*").eq(
-            "brand_id", str(brand_id)
-        ).gte(
-            "date", date_range_start.isoformat()
-        ).lte(
-            "date", date_range_end.isoformat()
-        ).execute()
+        # Fetch performance data with pagination
+        all_perf_data = []
+        offset = 0
+        page_size = 1000
 
-        if not perf_result.data:
+        while True:
+            perf_result = self.supabase.table("meta_ads_performance").select("*").eq(
+                "brand_id", str(brand_id)
+            ).gte(
+                "date", date_range_start.isoformat()
+            ).lte(
+                "date", date_range_end.isoformat()
+            ).range(offset, offset + page_size - 1).execute()
+
+            if not perf_result.data:
+                break
+
+            all_perf_data.extend(perf_result.data)
+
+            if len(perf_result.data) < page_size:
+                break
+
+            offset += page_size
+
+        if not all_perf_data:
             return []
 
         # Fetch latest classification for each ad
-        ad_ids = list(set(r.get("meta_ad_id") for r in perf_result.data if r.get("meta_ad_id")))
+        ad_ids = list(set(r.get("meta_ad_id") for r in all_perf_data if r.get("meta_ad_id")))
 
         cls_result = self.supabase.table("ad_creative_classifications").select(
             "meta_ad_id, creative_awareness_level, creative_format, video_length_bucket"
@@ -386,7 +402,7 @@ class BaselineService:
 
         # Merge performance with classification
         merged = []
-        for perf in perf_result.data:
+        for perf in all_perf_data:
             ad_id = perf.get("meta_ad_id")
             cls_data = cls_map.get(ad_id, {})
             combined = {**perf, **cls_data}

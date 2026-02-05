@@ -42,20 +42,23 @@ class ChatRenderer:
 
         # Awareness distribution with baseline and aggregate metrics
         if result.awareness_distribution:
-            lines.append("### Awareness Distribution")
+            lines.append("### Awareness Distribution & CPA Analysis")
             has_baselines = bool(result.awareness_baselines)
             has_aggregates = bool(result.awareness_aggregates)
 
             # Build header based on available data
             if has_baselines or has_aggregates:
-                header = "| Level | Ads | % |"
-                separator = "|-------|-----|---|"
+                header = "| Level | Ads |"
+                separator = "|-------|-----|"
                 if has_aggregates:
-                    header += " Spend | Purchases | Clicks | Conv % |"
-                    separator += "-------|-----------|--------|--------|"
+                    header += " Spend | Purchases | Agg CPA |"
+                    separator += "-------|-----------|---------|"
                 if has_baselines:
-                    header += " Med CPM | Med CTR | Med CPA |"
-                    separator += "---------|---------|---------|"
+                    header += " Med CPA |"
+                    separator += "---------|"
+                if has_aggregates and has_baselines:
+                    header += " Gap |"
+                    separator += "-----|"
                 lines.append(header)
                 lines.append(separator)
             else:
@@ -68,24 +71,34 @@ class ChatRenderer:
                 label = level.replace("_", " ").title()
 
                 if has_baselines or has_aggregates:
-                    row = f"| {label} | {count} | {pct:.0f}% |"
+                    row = f"| {label} | {count} |"
 
                     # Add aggregate metrics
+                    agg_cpa = None
                     if has_aggregates:
                         agg = result.awareness_aggregates.get(level, {})
                         spend = f"${agg.get('spend'):,.0f}" if agg.get('spend') is not None else "-"
                         purchases = str(int(agg.get('purchases', 0))) if agg.get('purchases') is not None else "-"
-                        clicks = str(int(agg.get('clicks', 0))) if agg.get('clicks') is not None else "-"
-                        conv = f"{agg.get('conversion_rate'):.1f}%" if agg.get('conversion_rate') is not None else "-"
-                        row += f" {spend} | {purchases} | {clicks} | {conv} |"
+                        agg_cpa = agg.get('cpa')
+                        agg_cpa_str = f"${agg_cpa:.2f}" if agg_cpa is not None else "-"
+                        row += f" {spend} | {purchases} | {agg_cpa_str} |"
 
                     # Add baseline metrics
+                    med_cpa = None
                     if has_baselines:
                         bl = result.awareness_baselines.get(level, {})
-                        cpm = f"${bl.get('cpm'):.2f}" if bl.get('cpm') is not None else "-"
-                        ctr = f"{bl.get('ctr'):.2f}%" if bl.get('ctr') is not None else "-"
-                        cpa = f"${bl.get('cpa'):.2f}" if bl.get('cpa') is not None else "-"
-                        row += f" {cpm} | {ctr} | {cpa} |"
+                        med_cpa = bl.get('cpa')
+                        med_cpa_str = f"${med_cpa:.2f}" if med_cpa is not None else "-"
+                        row += f" {med_cpa_str} |"
+
+                    # Add gap column
+                    if has_aggregates and has_baselines:
+                        if agg_cpa is not None and med_cpa is not None and med_cpa > 0:
+                            gap = agg_cpa - med_cpa
+                            gap_str = f"+${gap:.2f}" if gap >= 0 else f"-${abs(gap):.2f}"
+                        else:
+                            gap_str = "-"
+                        row += f" {gap_str} |"
 
                     lines.append(row)
                 else:
@@ -104,6 +117,37 @@ class ChatRenderer:
             ):
                 label = fmt.replace("_", " ").title()
                 lines.append(f"| {label} | {count} |")
+            lines.append("")
+
+        # Format breakdown by awareness level (CPA comparison)
+        if result.format_aggregates:
+            lines.append("### Format Performance by Awareness Level")
+            lines.append("| Awareness | Format | Spend | Purchases | Agg CPA |")
+            lines.append("|-----------|--------|-------|-----------|---------|")
+
+            # Sort by awareness level, then by CPA
+            sorted_items = sorted(
+                result.format_aggregates.items(),
+                key=lambda x: (x[0].split("|")[0], x[1].get("cpa") or 999999)
+            )
+
+            for key, metrics in sorted_items:
+                parts = key.split("|")
+                if len(parts) == 2:
+                    awareness, fmt = parts
+                    awareness_label = awareness.replace("_", " ").title()
+                    fmt_label = fmt.replace("_", " ").title()
+                    spend = f"${metrics.get('spend'):,.0f}" if metrics.get('spend') is not None else "-"
+                    purchases = str(int(metrics.get('purchases', 0))) if metrics.get('purchases') is not None else "-"
+                    cpa = f"${metrics.get('cpa'):.2f}" if metrics.get('cpa') is not None else "-"
+                    lines.append(f"| {awareness_label} | {fmt_label} | {spend} | {purchases} | {cpa} |")
+            lines.append("")
+
+        # Creative Strategy Insights
+        if result.creative_insights:
+            lines.append("### Creative Strategy Insights")
+            for i, insight in enumerate(result.creative_insights, 1):
+                lines.append(f"{i}. {insight}")
             lines.append("")
 
         # Health summary

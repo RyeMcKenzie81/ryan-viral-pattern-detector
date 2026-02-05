@@ -316,6 +316,24 @@ class AdIntelligenceService:
                 brand_id, run.date_range_start, run.date_range_end, classifications
             )
 
+            # Compute aggregate metrics by (awareness, format)
+            format_aggregates = await self._compute_format_aggregates(
+                brand_id, run.date_range_start, run.date_range_end, classifications
+            )
+
+            # Extract format-level baseline CPAs from baselines
+            format_baselines: Dict[str, float] = {}
+            for baseline in baselines:
+                if baseline.creative_format != "all" and baseline.awareness_level != "all":
+                    key = f"{baseline.awareness_level}|{baseline.creative_format}"
+                    if baseline.median_cost_per_purchase is not None:
+                        format_baselines[key] = baseline.median_cost_per_purchase
+
+            # Generate creative strategy insights
+            creative_insights = self._generate_creative_insights(
+                awareness_aggregates, awareness_baselines, format_aggregates, format_baselines
+            )
+
             # Complete run
             summary = {
                 "total_ads": len(active_ids),
@@ -343,6 +361,8 @@ class AdIntelligenceService:
                 recommendations=recs,
                 awareness_baselines=awareness_baselines,
                 awareness_aggregates=awareness_aggregates,
+                format_aggregates=format_aggregates,
+                creative_insights=creative_insights,
             )
 
         except Exception as e:
@@ -673,17 +693,20 @@ class AdIntelligenceService:
 
                 offset += page_size
 
-            # Compute conversion rate and format results
+            # Compute conversion rate, CPA, and format results
             result_dict: Dict[str, Dict[str, Optional[float]]] = {}
             for level, metrics in agg.items():
                 clicks = metrics["clicks"]
                 purchases = metrics["purchases"]
+                spend = metrics["spend"]
                 conv_rate = (purchases / clicks * 100) if clicks > 0 else None
+                cpa = (spend / purchases) if purchases > 0 else None
                 result_dict[level] = {
-                    "spend": round(metrics["spend"], 2),
-                    "purchases": int(metrics["purchases"]),
-                    "clicks": int(metrics["clicks"]),
+                    "spend": round(spend, 2),
+                    "purchases": int(purchases),
+                    "clicks": int(clicks),
                     "conversion_rate": round(conv_rate, 2) if conv_rate else None,
+                    "cpa": round(cpa, 2) if cpa else None,
                 }
 
             return result_dict
@@ -691,3 +714,214 @@ class AdIntelligenceService:
         except Exception as e:
             logger.warning(f"Error computing awareness aggregates: {e}")
             return {}
+
+    async def _compute_format_aggregates(
+        self,
+        brand_id: UUID,
+        date_range_start: date,
+        date_range_end: date,
+        classifications: List[CreativeClassification],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Compute aggregate metrics by (awareness level, creative format).
+
+        Groups performance data by awareness level and creative format to enable
+        format-level CPA comparisons within each awareness level.
+
+        Args:
+            brand_id: Brand UUID.
+            date_range_start: Start date.
+            date_range_end: End date.
+            classifications: List of classifications with awareness and format.
+
+        Returns:
+            Dict mapping "awareness|format" keys to {spend, purchases, clicks, cpa}.
+        """
+        # Build map of ad_id -> (awareness_level, format)
+        ad_classification: Dict[str, tuple] = {}
+        for clf in classifications:
+            if clf.creative_awareness_level and clf.creative_format:
+                awareness = clf.creative_awareness_level.value if hasattr(
+                    clf.creative_awareness_level, "value"
+                ) else clf.creative_awareness_level
+                fmt = clf.creative_format.value if hasattr(
+                    clf.creative_format, "value"
+                ) else clf.creative_format
+                ad_classification[clf.meta_ad_id] = (awareness, fmt)
+
+        if not ad_classification:
+            return {}
+
+        # Query performance data with pagination
+        try:
+            agg: Dict[str, Dict[str, float]] = {}
+            ad_ids = list(ad_classification.keys())
+            offset = 0
+            page_size = 1000
+
+            while True:
+                result = self.supabase.table("meta_ads_performance").select(
+                    "meta_ad_id, spend, purchases, link_clicks"
+                ).eq(
+                    "brand_id", str(brand_id)
+                ).gte(
+                    "date", date_range_start.isoformat()
+                ).lte(
+                    "date", date_range_end.isoformat()
+                ).in_(
+                    "meta_ad_id", ad_ids
+                ).range(offset, offset + page_size - 1).execute()
+
+                if not result.data:
+                    break
+
+                for row in result.data:
+                    ad_id = row.get("meta_ad_id")
+                    classification = ad_classification.get(ad_id)
+                    if not classification:
+                        continue
+
+                    awareness, fmt = classification
+                    key = f"{awareness}|{fmt}"
+
+                    if key not in agg:
+                        agg[key] = {"spend": 0.0, "purchases": 0, "clicks": 0}
+
+                    spend = _safe_numeric(row.get("spend"))
+                    purchases = _safe_numeric(row.get("purchases"))
+                    clicks = _safe_numeric(row.get("link_clicks"))
+
+                    if spend:
+                        agg[key]["spend"] += spend
+                    if purchases:
+                        agg[key]["purchases"] += purchases
+                    if clicks:
+                        agg[key]["clicks"] += clicks
+
+                if len(result.data) < page_size:
+                    break
+
+                offset += page_size
+
+            # Compute CPA and format results
+            result_dict: Dict[str, Dict[str, Any]] = {}
+            for key, metrics in agg.items():
+                purchases = metrics["purchases"]
+                spend = metrics["spend"]
+                cpa = (spend / purchases) if purchases > 0 else None
+                result_dict[key] = {
+                    "spend": round(spend, 2),
+                    "purchases": int(purchases),
+                    "clicks": int(metrics["clicks"]),
+                    "cpa": round(cpa, 2) if cpa else None,
+                }
+
+            return result_dict
+
+        except Exception as e:
+            logger.warning(f"Error computing format aggregates: {e}")
+            return {}
+
+    def _generate_creative_insights(
+        self,
+        awareness_aggregates: Dict[str, Dict[str, Any]],
+        awareness_baselines: Dict[str, Dict[str, Optional[float]]],
+        format_aggregates: Dict[str, Dict[str, Any]],
+        format_baselines: Dict[str, float],
+    ) -> List[str]:
+        """Generate creative strategy insights by comparing aggregate vs median CPA.
+
+        Identifies:
+        - High CPA gaps (aggregate >> median) → outlier ads dragging up costs
+        - Format performance differences within awareness levels
+        - Low-data areas needing more testing
+
+        Args:
+            awareness_aggregates: Aggregate metrics by awareness level.
+            awareness_baselines: Baseline (median) metrics by awareness level.
+            format_aggregates: Aggregate metrics by "awareness|format" key.
+            format_baselines: Baseline CPA by "awareness|format" key.
+
+        Returns:
+            List of insight strings for display.
+        """
+        insights: List[str] = []
+
+        # 1. High CPA gap analysis by awareness level
+        for level, agg in awareness_aggregates.items():
+            agg_cpa = agg.get("cpa")
+            baseline = awareness_baselines.get(level, {})
+            median_cpa = baseline.get("cpa")
+
+            if agg_cpa is not None and median_cpa is not None and median_cpa > 0:
+                gap = agg_cpa - median_cpa
+                gap_pct = (gap / median_cpa) * 100
+
+                if gap_pct > 50:
+                    level_display = level.replace("_", " ").title()
+                    insights.append(
+                        f"High CPA gap at {level_display}: +${gap:.2f} vs median "
+                        f"(${agg_cpa:.2f} actual vs ${median_cpa:.2f} median, +{gap_pct:.0f}%). "
+                        f"Outlier ads may be dragging up costs."
+                    )
+                elif gap_pct > 30:
+                    level_display = level.replace("_", " ").title()
+                    insights.append(
+                        f"Moderate CPA gap at {level_display}: +${gap:.2f} vs median "
+                        f"(${agg_cpa:.2f} actual vs ${median_cpa:.2f} median). "
+                        f"Consider pausing low performers."
+                    )
+
+        # 2. Format comparison within awareness levels
+        # Group format_aggregates by awareness level
+        awareness_formats: Dict[str, List[tuple]] = {}
+        for key, metrics in format_aggregates.items():
+            parts = key.split("|")
+            if len(parts) == 2:
+                awareness, fmt = parts
+                if awareness not in awareness_formats:
+                    awareness_formats[awareness] = []
+                cpa = metrics.get("cpa")
+                purchases = metrics.get("purchases", 0)
+                if cpa is not None and purchases >= 3:  # Min threshold
+                    awareness_formats[awareness].append((fmt, cpa, purchases))
+
+        for awareness, formats in awareness_formats.items():
+            if len(formats) < 2:
+                continue
+
+            # Sort by CPA ascending (best first)
+            formats_sorted = sorted(formats, key=lambda x: x[1])
+            best_fmt, best_cpa, best_purchases = formats_sorted[0]
+            worst_fmt, worst_cpa, worst_purchases = formats_sorted[-1]
+
+            # Only report if significant difference (>30%)
+            if worst_cpa > best_cpa * 1.3:
+                awareness_display = awareness.replace("_", " ").title()
+                best_display = best_fmt.replace("_", " ").title()
+                worst_display = worst_fmt.replace("_", " ").title()
+                insights.append(
+                    f"Format opportunity at {awareness_display}: {best_display} "
+                    f"(${best_cpa:.2f} CPA) outperforming {worst_display} "
+                    f"(${worst_cpa:.2f} CPA). Consider shifting budget."
+                )
+
+        # 3. Low-data areas needing more testing
+        for level, agg in awareness_aggregates.items():
+            purchases = agg.get("purchases", 0)
+            baseline = awareness_baselines.get(level, {})
+            median_cpa = baseline.get("cpa")
+
+            if purchases < 5 and purchases > 0:
+                level_display = level.replace("_", " ").title()
+                if median_cpa is None:
+                    insights.append(
+                        f"Low data at {level_display}: Only {purchases} purchases. "
+                        f"No baseline established - need more testing."
+                    )
+                else:
+                    insights.append(
+                        f"Low data at {level_display}: Only {purchases} purchases. "
+                        f"Results may not be statistically significant."
+                    )
+
+        return insights
