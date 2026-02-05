@@ -161,8 +161,9 @@ class CreativeClassification(BaseModel):
 class BatchClassificationResult(BaseModel):
     """Result of classify_batch() with breakdown of outcomes.
 
-    Distinguishes between cached reuse, new classifications, skipped-due-to-cap,
-    and actual errors so callers can report accurate counts.
+    Distinguishes between cached reuse, new classifications, skipped
+    (cap or missing media), and actual errors so callers can report
+    accurate counts.
     """
 
     classifications: List[CreativeClassification] = Field(default_factory=list)

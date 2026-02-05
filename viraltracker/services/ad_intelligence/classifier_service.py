@@ -410,7 +410,7 @@ class ClassifierService:
                         f"Classification cap reached ({max_new}). "
                         f"Skipping {remaining} remaining ads."
                     )
-                    skipped_count = remaining
+                    skipped_count += remaining
                     break
 
                 video_budget = max_video - video_classification_count
