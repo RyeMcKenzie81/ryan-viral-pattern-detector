@@ -74,6 +74,35 @@ def truncate_text(text: str, max_length: int = 50) -> str:
     return text[:max_length] + "..."
 
 
+def get_video_url_for_ad(meta_ad_id: str) -> Optional[str]:
+    """Get public video URL for an ad from Supabase storage.
+
+    Args:
+        meta_ad_id: The Meta ad ID.
+
+    Returns:
+        Public URL for the video, or None if not found.
+    """
+    try:
+        db = get_supabase_client()
+        result = db.table("meta_ad_assets").select(
+            "storage_path"
+        ).eq("meta_ad_id", meta_ad_id).eq("asset_type", "video").limit(1).execute()
+
+        if not result.data:
+            return None
+
+        storage_path = result.data[0]["storage_path"]
+        # Storage path format: bucket/path/to/file
+        parts = storage_path.split("/", 1)
+        bucket = parts[0]
+        path = parts[1] if len(parts) > 1 else storage_path
+
+        return db.storage.from_(bucket).get_public_url(path)
+    except Exception:
+        return None
+
+
 # =============================================================================
 # Render Functions - Overview Tab
 # =============================================================================
@@ -141,7 +170,11 @@ def render_top_hooks_table(hooks: List[Dict], sort_by: str):
             "Spend": hook.get("total_spend", 0),
             "ROAS": hook.get("avg_roas", 0),
             "Hook Rate": hook.get("avg_hook_rate", 0),
-            "CTR": hook.get("avg_ctr", 0),
+            "Purchases": hook.get("total_purchases", 0),
+            "ATCs": hook.get("total_add_to_carts", 0),
+            "CPA": hook.get("cpa"),
+            "CPATC": hook.get("avg_cost_per_atc"),
+            "Awareness": hook.get("awareness_level", "N/A"),
             "Fingerprint": hook.get("hook_fingerprint", "")[:16] + "...",
         })
 
@@ -152,10 +185,53 @@ def render_top_hooks_table(hooks: List[Dict], sort_by: str):
     df_display["Spend"] = df_display["Spend"].apply(lambda x: f"${x:,.0f}")
     df_display["ROAS"] = df_display["ROAS"].apply(lambda x: f"{x:.2f}x")
     df_display["Hook Rate"] = df_display["Hook Rate"].apply(lambda x: f"{x*100:.1f}%")
-    df_display["CTR"] = df_display["CTR"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["CPA"] = df_display["CPA"].apply(lambda x: f"${x:.2f}" if x else "N/A")
+    df_display["CPATC"] = df_display["CPATC"].apply(lambda x: f"${x:.2f}" if x else "N/A")
 
     st.subheader("Top Performing Hooks")
     st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+    # Hook details expanders with video playback
+    st.subheader("Hook Details")
+    for hook in hooks[:10]:
+        fp_short = hook.get("hook_fingerprint", "")[:12]
+        hook_type = hook.get("hook_type", "N/A")
+        spoken_preview = truncate_text(hook.get("hook_transcript_spoken", ""), 40)
+
+        with st.expander(f"{hook_type} - {spoken_preview} ({fp_short}...)"):
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.write(f"**Type:** {hook_type}")
+                st.write(f"**Visual:** {hook.get('hook_visual_type', 'N/A')}")
+                st.write(f"**Awareness:** {hook.get('awareness_level', 'N/A')}")
+                st.write(f"**Spoken:** {hook.get('hook_transcript_spoken', '')}")
+
+                # Metrics
+                st.write("---")
+                st.write(f"**Spend:** ${hook.get('total_spend', 0):,.2f}")
+                st.write(f"**ROAS:** {hook.get('avg_roas', 0):.2f}x")
+                st.write(f"**Purchases:** {hook.get('total_purchases', 0)}")
+                st.write(f"**Add to Carts:** {hook.get('total_add_to_carts', 0)}")
+                cpa = hook.get('cpa')
+                st.write(f"**CPA:** ${cpa:.2f}" if cpa else "**CPA:** N/A")
+                cpatc = hook.get('avg_cost_per_atc')
+                st.write(f"**Cost per ATC:** ${cpatc:.2f}" if cpatc else "**Cost per ATC:** N/A")
+
+            with col2:
+                # Show example ad videos
+                example_ads = hook.get("example_ad_ids", [])
+                if example_ads:
+                    st.write("**Example Videos:**")
+                    for ad_id in example_ads[:2]:
+                        st.caption(f"Ad: {ad_id}")
+                        video_url = get_video_url_for_ad(ad_id)
+                        if video_url:
+                            st.video(video_url)
+                        else:
+                            st.info("No video available")
+                else:
+                    st.info("No example ads")
 
 
 def render_insights_cards(insights: Dict):
@@ -283,6 +359,7 @@ def _render_quadrant_section(title: str, hooks: List[Dict], color: str, descript
         # Show table
         data = []
         for hook in hooks[:10]:
+            cpa = hook.get('cpa')
             data.append({
                 "Type": hook.get("hook_type", "N/A"),
                 "Visual": hook.get("hook_visual_type", "N/A"),
@@ -290,6 +367,8 @@ def _render_quadrant_section(title: str, hooks: List[Dict], color: str, descript
                 "Spend": f"${hook.get('total_spend', 0):,.0f}",
                 "ROAS": f"{hook.get('avg_roas', 0):.2f}x",
                 "Hook Rate": f"{hook.get('avg_hook_rate', 0)*100:.1f}%",
+                "Purchases": hook.get("total_purchases", 0),
+                "CPA": f"${cpa:.2f}" if cpa else "N/A",
                 "Ads": hook.get("ad_count", 0),
             })
 

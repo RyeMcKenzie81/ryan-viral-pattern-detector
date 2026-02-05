@@ -59,6 +59,42 @@ class HookAnalysisService:
         self.supabase = supabase_client
 
     # =========================================================================
+    # Helper Methods
+    # =========================================================================
+
+    def _get_awareness_for_ads(self, ad_ids: List[str]) -> Optional[str]:
+        """Get most common awareness level for a set of ads.
+
+        Args:
+            ad_ids: List of meta_ad_id strings.
+
+        Returns:
+            Most common awareness level, or None if no data.
+        """
+        if not ad_ids:
+            return None
+
+        try:
+            from collections import Counter
+
+            result = self.supabase.table("ad_creative_classifications").select(
+                "creative_awareness_level"
+            ).in_("meta_ad_id", ad_ids).execute()
+
+            levels = [
+                r["creative_awareness_level"]
+                for r in result.data
+                if r.get("creative_awareness_level")
+            ]
+            if not levels:
+                return None
+
+            return Counter(levels).most_common(1)[0][0]
+        except Exception as e:
+            logger.warning(f"Error getting awareness levels for ads: {e}")
+            return None
+
+    # =========================================================================
     # Core Aggregation Methods
     # =========================================================================
 
@@ -110,7 +146,8 @@ class HookAnalysisService:
             # Get performance data for the date range
             perf_result = self.supabase.table("meta_ads_performance").select(
                 "meta_ad_id, spend, impressions, video_views, "
-                "purchase_value, purchases, link_ctr, date"
+                "purchase_value, purchases, link_ctr, date, "
+                "add_to_carts, cost_per_add_to_cart"
             ).eq(
                 "brand_id", str(brand_id)
             ).gte(
@@ -153,6 +190,9 @@ class HookAnalysisService:
                         "total_video_views": 0,
                         "total_purchase_value": 0.0,
                         "total_purchases": 0,
+                        "total_add_to_carts": 0,
+                        "total_cost_per_atc_sum": 0.0,
+                        "cost_per_atc_count": 0,
                         "ctr_sum": 0.0,
                         "ctr_count": 0,
                         "ad_spend_list": [],  # For sorting example ads
@@ -167,6 +207,12 @@ class HookAnalysisService:
                 stats["total_video_views"] += _safe_numeric(perf.get("video_views")) or 0
                 stats["total_purchase_value"] += _safe_numeric(perf.get("purchase_value")) or 0.0
                 stats["total_purchases"] += int(_safe_numeric(perf.get("purchases")) or 0)
+                stats["total_add_to_carts"] += int(_safe_numeric(perf.get("add_to_carts")) or 0)
+
+                cost_per_atc = _safe_numeric(perf.get("cost_per_add_to_cart"))
+                if cost_per_atc:
+                    stats["total_cost_per_atc_sum"] += cost_per_atc
+                    stats["cost_per_atc_count"] += 1
 
                 ctr = _safe_numeric(perf.get("link_ctr"))
                 if ctr is not None:
@@ -205,6 +251,15 @@ class HookAnalysisService:
                 sorted_ads = sorted(stats["ad_spend_list"], key=lambda x: x[1], reverse=True)
                 example_ad_ids = [ad_id for ad_id, _ in sorted_ads[:3]]
 
+                # Compute avg cost per ATC
+                avg_cost_per_atc = (
+                    stats["total_cost_per_atc_sum"] / stats["cost_per_atc_count"]
+                    if stats["cost_per_atc_count"] > 0 else None
+                )
+
+                # Get awareness level for ads using this hook
+                awareness_level = self._get_awareness_for_ads(list(stats["ad_ids"]))
+
                 results.append({
                     "hook_fingerprint": fp,
                     "hook_type": stats["hook_type"],
@@ -220,6 +275,9 @@ class HookAnalysisService:
                     "avg_hook_rate": round(avg_hook_rate, 4),
                     "cpa": round(cpa, 2) if cpa else None,
                     "total_purchases": stats["total_purchases"],
+                    "total_add_to_carts": stats["total_add_to_carts"],
+                    "avg_cost_per_atc": round(avg_cost_per_atc, 2) if avg_cost_per_atc else None,
+                    "awareness_level": awareness_level,
                     "example_ad_ids": example_ad_ids,
                 })
 
