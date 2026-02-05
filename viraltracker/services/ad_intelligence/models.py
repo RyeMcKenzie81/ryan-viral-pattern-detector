@@ -352,11 +352,8 @@ class AccountAnalysisResult(BaseModel):
     critical_recommendations: int = 0
     recommendations: List[Recommendation] = Field(default_factory=list)
 
-    # Account-wide baseline metrics (from "all" cohort)
-    avg_cpm: Optional[float] = None
-    avg_ctr: Optional[float] = None  # Link CTR (link_clicks / impressions)
-    avg_cpa: Optional[float] = None  # Cost per purchase
-    avg_cost_per_atc: Optional[float] = None  # Cost per add to cart
+    # Baseline metrics by awareness level: {level: {cpm, ctr, cpa, cost_per_atc}}
+    awareness_baselines: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
 
 
 class FatigueCheckResult(BaseModel):

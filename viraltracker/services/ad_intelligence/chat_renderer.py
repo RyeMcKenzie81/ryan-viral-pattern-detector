@@ -40,31 +40,31 @@ class ChatRenderer:
             "",
         ]
 
-        # Baseline metrics
-        if result.avg_cpm or result.avg_ctr or result.avg_cpa or result.avg_cost_per_atc:
-            lines.append("### Baseline Metrics")
-            metrics_parts = []
-            if result.avg_cpm is not None:
-                metrics_parts.append(f"**CPM**: ${result.avg_cpm:.2f}")
-            if result.avg_ctr is not None:
-                metrics_parts.append(f"**Link CTR**: {result.avg_ctr:.2f}%")
-            if result.avg_cpa is not None:
-                metrics_parts.append(f"**CPA**: ${result.avg_cpa:.2f}")
-            if result.avg_cost_per_atc is not None:
-                metrics_parts.append(f"**Cost/ATC**: ${result.avg_cost_per_atc:.2f}")
-            lines.append(" | ".join(metrics_parts))
-            lines.append("")
-
-        # Awareness distribution
+        # Awareness distribution with baseline metrics
         if result.awareness_distribution:
             lines.append("### Awareness Distribution")
-            lines.append("| Level | Count | % |")
-            lines.append("|-------|-------|----|")
+            has_baselines = bool(result.awareness_baselines)
+            if has_baselines:
+                lines.append("| Level | Count | % | CPM | Link CTR | CPA | Cost/ATC |")
+                lines.append("|-------|-------|---|-----|----------|-----|----------|")
+            else:
+                lines.append("| Level | Count | % |")
+                lines.append("|-------|-------|---|")
+
             total = sum(result.awareness_distribution.values()) or 1
             for level, count in sorted(result.awareness_distribution.items()):
                 pct = (count / total) * 100
                 label = level.replace("_", " ").title()
-                lines.append(f"| {label} | {count} | {pct:.0f}% |")
+
+                if has_baselines:
+                    bl = result.awareness_baselines.get(level, {})
+                    cpm = f"${bl.get('cpm'):.2f}" if bl.get('cpm') is not None else "-"
+                    ctr = f"{bl.get('ctr'):.2f}%" if bl.get('ctr') is not None else "-"
+                    cpa = f"${bl.get('cpa'):.2f}" if bl.get('cpa') is not None else "-"
+                    cpatc = f"${bl.get('cost_per_atc'):.2f}" if bl.get('cost_per_atc') is not None else "-"
+                    lines.append(f"| {label} | {count} | {pct:.0f}% | {cpm} | {ctr} | {cpa} | {cpatc} |")
+                else:
+                    lines.append(f"| {label} | {count} | {pct:.0f}% |")
             lines.append("")
 
         # Format distribution
