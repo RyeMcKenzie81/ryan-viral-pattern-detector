@@ -22,7 +22,7 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
-from viraltracker.ui.utils import require_feature
+from viraltracker.ui.utils import require_feature, _get_brand_from_cookie, _save_brand_to_cookie
 require_feature("ad_scheduler", "Scheduler")
 
 # PST timezone for all scheduling
@@ -640,14 +640,29 @@ def render_schedule_list():
     brands = get_brands()
     brand_options = {"All Brands": None}
     brand_options.update({b['name']: b['id'] for b in brands})
+    brand_names = list(brand_options.keys())
+
+    # Try to restore brand filter from cookie
+    filter_index = 0
+    cookie_brand = _get_brand_from_cookie()
+    if cookie_brand:
+        for i, name in enumerate(brand_names):
+            if brand_options[name] == cookie_brand:
+                filter_index = i
+                break
 
     with col1:
         selected_brand = st.selectbox(
             "Filter by Brand",
-            options=list(brand_options.keys()),
+            options=brand_names,
+            index=filter_index,
             key="filter_brand"
         )
         brand_filter = brand_options[selected_brand]
+
+        # Save to cookie if a specific brand is selected
+        if brand_filter:
+            _save_brand_to_cookie(brand_filter)
 
     products = get_products(brand_filter)
     product_options = {"All Products": None}
@@ -777,22 +792,35 @@ def _render_template_scrape_form(existing_job, is_edit):
         return
 
     brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
 
-    default_brand = None
+    # Determine default: existing job > cookie > first brand
+    default_index = 0
     if existing_job:
-        for b in brands:
+        for i, b in enumerate(brands):
             if b['id'] == existing_job['brand_id']:
-                default_brand = b['name']
+                default_index = i
                 break
+    else:
+        # Try cookie for new jobs
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
 
     selected_brand_name = st.selectbox(
         "Brand",
-        options=list(brand_options.keys()),
-        index=list(brand_options.keys()).index(default_brand) if default_brand else 0,
+        options=brand_names,
+        index=default_index,
         help="Select the brand to associate scraped templates with",
         key="scrape_brand_selector"
     )
     selected_brand_id = brand_options[selected_brand_name]
+
+    # Save selection to cookie
+    _save_brand_to_cookie(selected_brand_id)
 
     st.divider()
 
