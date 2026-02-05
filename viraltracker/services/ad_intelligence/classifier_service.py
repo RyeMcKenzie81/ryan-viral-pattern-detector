@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from .helpers import _safe_numeric
-from .models import AwarenessLevel, CreativeClassification, CreativeFormat
+from .models import AwarenessLevel, BatchClassificationResult, CreativeClassification, CreativeFormat
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +332,7 @@ class ClassifierService:
         meta_ad_ids: List[str],
         max_new: int = 200,
         max_video: int = 15,
-    ) -> List[CreativeClassification]:
+    ) -> BatchClassificationResult:
         """Classify a batch of ads, prioritizing by spend.
 
         Sorts unclassified ads by spend descending. Caps new Gemini calls
@@ -348,17 +348,21 @@ class ClassifierService:
             max_video: Max video classifications per run (from RunConfig).
 
         Returns:
-            List of CreativeClassification models.
+            BatchClassificationResult with classifications list and
+            breakdown of new, cached, skipped, and error counts.
         """
         classifications: List[CreativeClassification] = []
-        new_classification_count = 0
+        new_count = 0
+        cached_count = 0
+        error_count = 0
         video_classification_count = 0
 
         # Sort ads by spend to prioritize high-spend ads
         spend_order = await self._get_ad_spend_order(brand_id, meta_ad_ids)
         sorted_ids = sorted(meta_ad_ids, key=lambda x: spend_order.get(x, 0), reverse=True)
 
-        for meta_ad_id in sorted_ids:
+        skipped_count = 0
+        for i, meta_ad_id in enumerate(sorted_ids):
             try:
                 # Check if already classified (fresh)
                 ad_data = await self._fetch_ad_data(meta_ad_id, brand_id)
@@ -377,14 +381,17 @@ class ClassifierService:
                 )
                 if existing:
                     classifications.append(self._row_to_model(existing))
+                    cached_count += 1
                     continue
 
-                # Need new classification
-                if new_classification_count >= max_new:
-                    logger.warning(
+                # Need new classification — check cap
+                if new_count >= max_new:
+                    remaining = len(sorted_ids) - i
+                    logger.info(
                         f"Classification cap reached ({max_new}). "
-                        f"Skipping {meta_ad_id} and remaining ads."
+                        f"Skipping {remaining} remaining ads."
                     )
+                    skipped_count = remaining
                     break
 
                 video_budget = max_video - video_classification_count
@@ -393,7 +400,7 @@ class ClassifierService:
                     video_budget_remaining=video_budget,
                 )
                 classifications.append(classification)
-                new_classification_count += 1
+                new_count += 1
 
                 # Track video classifications
                 if classification.source == "gemini_video":
@@ -401,14 +408,22 @@ class ClassifierService:
 
             except Exception as e:
                 logger.error(f"Error classifying ad {meta_ad_id}: {e}")
+                error_count += 1
                 continue
 
         logger.info(
-            f"Classified batch: {len(classifications)} total, "
-            f"{new_classification_count} new Gemini calls, "
-            f"{video_classification_count} video classifications"
+            f"Classified batch: {len(classifications)} total "
+            f"({cached_count} cached, {new_count} new, "
+            f"{video_classification_count} video), "
+            f"{skipped_count} skipped (cap), {error_count} errors"
         )
-        return classifications
+        return BatchClassificationResult(
+            classifications=classifications,
+            new_count=new_count,
+            cached_count=cached_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+        )
 
     async def get_latest_classification(
         self,

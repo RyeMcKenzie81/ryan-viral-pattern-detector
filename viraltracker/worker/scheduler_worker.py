@@ -1075,9 +1075,14 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                     days_back=params.get('classify_days_back', days_back),
                 )
                 logs.append(
-                    f"Classified: {classify_result['classified']} total, "
+                    f"Classified: {classify_result['classified']} "
+                    f"({classify_result['new']} new, {classify_result['cached']} cached), "
                     f"{classify_result['video']} video"
                 )
+                if classify_result['skipped'] > 0:
+                    logs.append(f"Skipped (cap): {classify_result['skipped']}")
+                if classify_result['errors'] > 0:
+                    logs.append(f"Classification errors: {classify_result['errors']}")
             except Exception as classify_err:
                 logs.append(f"Auto-classification error (non-fatal): {classify_err}")
                 logger.warning(f"Auto-classification failed for {brand_name}: {classify_err}")
@@ -2079,7 +2084,7 @@ async def _run_classification_for_brand(
 
     # Run classification (classify_batch logs new vs cached counts internally)
     try:
-        classifications = await classifier.classify_batch(
+        batch_result = await classifier.classify_batch(
             brand_id=brand_id,
             org_id=org_id,
             run_id=run.id,
@@ -2088,21 +2093,42 @@ async def _run_classification_for_brand(
             max_video=max_video,
         )
 
-        total_classified = len(classifications)
-        video_count = sum(1 for c in classifications if c.source == "gemini_video")
+        total_classified = len(batch_result.classifications)
+        video_count = sum(
+            1 for c in batch_result.classifications if c.source == "gemini_video"
+        )
 
         # Complete the run
         await intel_service._complete_run(run.id, "completed", {
             "total_ads": len(active_ids),
             "classified": total_classified,
+            "new": batch_result.new_count,
+            "cached": batch_result.cached_count,
             "video": video_count,
+            "skipped": batch_result.skipped_count,
+            "errors": batch_result.error_count,
         })
+
+        logs.append(
+            f"Classified {total_classified} ads "
+            f"({batch_result.new_count} new, {batch_result.cached_count} cached, "
+            f"{video_count} video)"
+        )
+        if batch_result.skipped_count > 0:
+            logs.append(
+                f"Skipped {batch_result.skipped_count} ads (max_new={max_new} cap reached)"
+            )
+        if batch_result.error_count > 0:
+            logs.append(f"Errors: {batch_result.error_count}")
 
         return {
             "total_active": len(active_ids),
             "classified": total_classified,
+            "new": batch_result.new_count,
+            "cached": batch_result.cached_count,
             "video": video_count,
-            "errors": len(active_ids) - total_classified,
+            "skipped": batch_result.skipped_count,
+            "errors": batch_result.error_count,
         }
 
     except Exception as e:
@@ -2163,8 +2189,10 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         logs.append("")
         logs.append("=== Summary ===")
         logs.append(f"Active ads: {result['total_active']}")
-        logs.append(f"Classified: {result['classified']}")
+        logs.append(f"Classified: {result['classified']} ({result['new']} new, {result['cached']} cached)")
         logs.append(f"Video classifications: {result['video']}")
+        if result['skipped'] > 0:
+            logs.append(f"Skipped (cap): {result['skipped']}")
         if result['errors'] > 0:
             logs.append(f"Errors: {result['errors']}")
 

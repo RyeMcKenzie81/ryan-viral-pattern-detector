@@ -158,6 +158,20 @@ class CreativeClassification(BaseModel):
     stale_after: Optional[datetime] = None
 
 
+class BatchClassificationResult(BaseModel):
+    """Result of classify_batch() with breakdown of outcomes.
+
+    Distinguishes between cached reuse, new classifications, skipped-due-to-cap,
+    and actual errors so callers can report accurate counts.
+    """
+
+    classifications: List[CreativeClassification] = Field(default_factory=list)
+    new_count: int = 0
+    cached_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+
+
 # =============================================================================
 # Layer 2: Baselines
 # =============================================================================

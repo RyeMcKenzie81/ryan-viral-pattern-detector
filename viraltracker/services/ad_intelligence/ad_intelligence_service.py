@@ -221,11 +221,12 @@ class AdIntelligenceService:
                 )
 
             # 2. Classify active ads
-            classifications = await self.classifier.classify_batch(
+            batch_result = await self.classifier.classify_batch(
                 brand_id, org_id, run.id, active_ids,
                 max_new=config.max_classifications_per_run,
                 max_video=config.max_video_classifications_per_run,
             )
+            classifications = batch_result.classifications
 
             # 3. Compute baselines
             baselines = await self.baselines.compute_baselines(
