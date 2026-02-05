@@ -195,7 +195,7 @@ class HookAnalysisService:
                         "cost_per_atc_count": 0,
                         "ctr_sum": 0.0,
                         "ctr_count": 0,
-                        "ad_spend_list": [],  # For sorting example ads
+                        "ad_spend_map": {},  # ad_id -> total spend (for sorting example ads)
                     }
 
                 stats = fingerprint_stats[fp]
@@ -221,7 +221,8 @@ class HookAnalysisService:
                     stats["ctr_sum"] += ctr / 100.0
                     stats["ctr_count"] += 1
 
-                stats["ad_spend_list"].append((ad_id, spend))
+                # Accumulate spend per ad for sorting example ads
+                stats["ad_spend_map"][ad_id] = stats["ad_spend_map"].get(ad_id, 0.0) + spend
 
             # Compute derived metrics and filter by min_spend
             results = []
@@ -247,8 +248,8 @@ class HookAnalysisService:
                     if stats["total_purchases"] > 0 else None
                 )
 
-                # Get top 3 example ads by spend
-                sorted_ads = sorted(stats["ad_spend_list"], key=lambda x: x[1], reverse=True)
+                # Get top 3 example ads by total spend (unique ads only)
+                sorted_ads = sorted(stats["ad_spend_map"].items(), key=lambda x: x[1], reverse=True)
                 example_ad_ids = [ad_id for ad_id, _ in sorted_ads[:3]]
 
                 # Compute avg cost per ATC
