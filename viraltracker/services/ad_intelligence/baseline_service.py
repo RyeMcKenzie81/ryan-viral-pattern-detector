@@ -95,8 +95,16 @@ class BaselineService:
                 brand_id, date_range_start, date_range_end
             )
             if existing:
-                logger.info(f"Returning {len(existing)} existing baselines for brand {brand_id}")
-                return existing
+                # Check if per-awareness roll-ups exist (format="all" but awareness != "all")
+                has_awareness_rollups = any(
+                    b.creative_format == "all" and b.awareness_level != "all"
+                    for b in existing
+                )
+                if has_awareness_rollups:
+                    logger.info(f"Returning {len(existing)} existing baselines for brand {brand_id}")
+                    return existing
+                else:
+                    logger.info(f"Existing baselines missing awareness roll-ups, recomputing for brand {brand_id}")
 
         # Fetch classified ads with performance data
         perf_data = await self._fetch_classified_performance(
