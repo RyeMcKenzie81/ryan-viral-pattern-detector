@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 # ORGANIZATION UTILITIES
 # ============================================================================
 
-# Cookie name for persisting workspace selection across refreshes
+# Cookie names for persisting selections across refreshes
 WORKSPACE_COOKIE_NAME = "viraltracker_workspace"
+BRAND_COOKIE_NAME = "viraltracker_brand"
 
 
 def _get_cookie_controller():
@@ -54,6 +55,42 @@ def _get_workspace_from_cookie() -> Optional[str]:
         return None
     except Exception as e:
         logger.debug(f"Failed to read workspace cookie: {e}")
+        return None
+
+
+def _save_brand_to_cookie(brand_id: str) -> None:
+    """
+    Save brand_id to browser cookie (30-day expiry).
+
+    Args:
+        brand_id: Brand ID to persist
+    """
+    try:
+        controller = _get_cookie_controller()
+        controller.set(
+            BRAND_COOKIE_NAME,
+            brand_id,
+            max_age=30 * 24 * 60 * 60,
+        )
+    except Exception as e:
+        logger.debug(f"Failed to save brand cookie: {e}")
+
+
+def _get_brand_from_cookie() -> Optional[str]:
+    """
+    Read brand_id from browser cookie.
+
+    Returns:
+        Brand ID string, or None if cookie absent/invalid.
+    """
+    try:
+        controller = _get_cookie_controller()
+        value = controller.get(BRAND_COOKIE_NAME)
+        if value and isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to read brand cookie: {e}")
         return None
 
 
@@ -430,11 +467,20 @@ def render_brand_selector(
     # Build options
     brand_options = {b['name']: b['id'] for b in brands}
     brand_names = list(brand_options.keys())
+    valid_brand_ids = set(brand_options.values())
 
-    # Find current index based on session state
+    # Find current index based on session state or cookie
     current_index = 0
-    if st.session_state.get('selected_brand_id'):
-        current_id = st.session_state.selected_brand_id
+    current_id = st.session_state.get('selected_brand_id')
+
+    # Try to restore from cookie if session state is empty
+    if not current_id:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand and cookie_brand in valid_brand_ids:
+            current_id = cookie_brand
+            st.session_state.selected_brand_id = current_id
+
+    if current_id:
         for i, name in enumerate(brand_names):
             if brand_options[name] == current_id:
                 current_index = i
@@ -460,9 +506,10 @@ def render_brand_selector(
             label_visibility="visible" if show_label else "collapsed"
         )
 
-    # Update session state
+    # Update session state and persist to cookie
     selected_id = brand_options[selected_name]
     st.session_state.selected_brand_id = selected_id
+    _save_brand_to_cookie(selected_id)
 
     if not include_product:
         return selected_id
