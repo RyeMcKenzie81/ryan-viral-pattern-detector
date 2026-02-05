@@ -35,7 +35,7 @@ This is the big test — runs the full 4-layer pipeline.
 **What to verify:**
 - [ ] `ad_intelligence_runs` table has a new row with `status = 'completed'`
 - [ ] `ad_creative_classifications` table has new rows for Wonder Paws ads
-  - Check `source` column: should be `existing_brand_ad_analysis` (for analyzed ads) or `gemini_light` (for new)
+  - Check `source` column: should be `existing_brand_ad_analysis`, `gemini_video`, `gemini_light_stored`, `gemini_light_thumbnail`, or a `skipped_*` variant
   - Check `input_hash` is populated
 - [ ] `ad_intelligence_baselines` table has new rows
   - Should have at least a brand-wide (`all`/`all`) baseline

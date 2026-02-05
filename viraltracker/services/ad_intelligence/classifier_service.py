@@ -1387,64 +1387,54 @@ class ClassifierService:
             Dict with classification fields including ``_media_source``
             (``"stored"`` or ``"thumbnail"``), or None if no image available.
         """
-        try:
-            if self._gemini is not None:
-                gemini = self._gemini
-            else:
-                from ...services.gemini_service import GeminiService
-                logger.warning("No shared GeminiService provided, creating new instance (no rate limiting)")
-                gemini = GeminiService()
-            prompt = CLASSIFICATION_PROMPT.format(ad_copy=ad_copy or "(no copy available)")
+        if self._gemini is not None:
+            gemini = self._gemini
+        else:
+            from ...services.gemini_service import GeminiService
+            logger.warning("No shared GeminiService provided, creating new instance (no rate limiting)")
+            gemini = GeminiService()
+        prompt = CLASSIFICATION_PROMPT.format(ad_copy=ad_copy or "(no copy available)")
 
-            image_bytes = None
-            media_source = None
+        image_bytes = None
+        media_source = None
 
-            # 1. Try stored image from meta_ad_assets (permanent copy)
-            if meta_ad_id:
-                storage_path = await self._find_asset_in_storage(meta_ad_id, "image")
-                if storage_path:
-                    image_bytes = await self._download_from_storage(storage_path)
-                    if image_bytes:
-                        media_source = "stored"
-                        logger.info(f"Using stored image for {meta_ad_id}")
+        # 1. Try stored image from meta_ad_assets (permanent copy)
+        if meta_ad_id:
+            storage_path = await self._find_asset_in_storage(meta_ad_id, "image")
+            if storage_path:
+                image_bytes = await self._download_from_storage(storage_path)
+                if image_bytes:
+                    media_source = "stored"
+                    logger.info(f"Using stored image for {meta_ad_id}")
 
-            # 2. Fall back to thumbnail_url (may be expired CDN link)
-            if not image_bytes and thumbnail_url:
-                import urllib.request
+        # 2. Fall back to thumbnail_url (may be expired CDN link)
+        if not image_bytes and thumbnail_url:
+            import urllib.request
 
-                try:
-                    with urllib.request.urlopen(thumbnail_url, timeout=10) as response:
-                        image_bytes = response.read()
-                    if image_bytes:
-                        media_source = "thumbnail"
-                except Exception as img_err:
-                    logger.warning(f"Failed to download thumbnail for {meta_ad_id}: {img_err}")
+            try:
+                with urllib.request.urlopen(thumbnail_url, timeout=10) as response:
+                    image_bytes = response.read()
+                if image_bytes:
+                    media_source = "thumbnail"
+            except Exception as img_err:
+                logger.warning(f"Failed to download thumbnail for {meta_ad_id}: {img_err}")
 
-            # 3. Skip if no image available (no copy-only fallback)
-            if not image_bytes:
-                logger.warning(f"No image available for {meta_ad_id or 'unknown'}, skipping classification.")
-                return None
+        # 3. Skip if no image available (no copy-only fallback)
+        if not image_bytes:
+            logger.warning(f"No image available for {meta_ad_id or 'unknown'}, skipping classification.")
+            return None
 
-            # 4. Classify with image
-            import base64
-            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-            result_text = await gemini.analyze_image(image_b64, prompt)
+        # 4. Classify with image
+        import base64
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        result_text = await gemini.analyze_image(image_b64, prompt)
 
-            # Parse JSON response
-            parsed = self._parse_gemini_response(result_text)
-            parsed["model_used"] = "gemini_light"
-            parsed["raw_classification"] = parsed.copy()
-            parsed["_media_source"] = media_source
-            return parsed
-
-        except Exception as e:
-            logger.error(f"Gemini classification failed: {e}")
-            return {
-                "creative_awareness_level": None,
-                "creative_format": None,
-                "model_used": "gemini_light_failed",
-                "raw_classification": {"error": str(e)},
-            }
+        # Parse JSON response
+        parsed = self._parse_gemini_response(result_text)
+        parsed["model_used"] = "gemini_light"
+        parsed["raw_classification"] = parsed.copy()
+        parsed["_media_source"] = media_source
+        return parsed
 
     def _parse_gemini_response(self, text: str) -> Dict:
         """Parse Gemini JSON response, handling markdown code blocks.
