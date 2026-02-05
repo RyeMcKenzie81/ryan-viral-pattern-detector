@@ -610,7 +610,7 @@ class AdIntelligenceService:
         # Query performance data for these ads
         try:
             result = self.supabase.table("meta_ads_performance").select(
-                "meta_ad_id, spend, purchases, clicks"
+                "meta_ad_id, spend, purchases, link_clicks"
             ).eq(
                 "brand_id", str(brand_id)
             ).gte(
@@ -634,7 +634,7 @@ class AdIntelligenceService:
 
                 spend = _safe_numeric(row.get("spend"))
                 purchases = _safe_numeric(row.get("purchases"))
-                clicks = _safe_numeric(row.get("clicks"))
+                clicks = _safe_numeric(row.get("link_clicks"))
 
                 if spend:
                     agg[level]["spend"] += spend
