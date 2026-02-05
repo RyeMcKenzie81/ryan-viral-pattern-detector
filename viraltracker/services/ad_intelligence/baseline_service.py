@@ -149,6 +149,30 @@ class BaselineService:
             if baseline:
                 baselines.append(baseline)
 
+        # Compute per-awareness-level roll-ups (all formats combined)
+        awareness_rollups: Dict[str, List[Dict]] = {}
+        for (awareness, fmt), rows in cohorts.items():
+            if awareness not in awareness_rollups:
+                awareness_rollups[awareness] = []
+            awareness_rollups[awareness].extend(rows)
+
+        for awareness, rows in awareness_rollups.items():
+            if len(rows) >= self._get_threshold(run_config, "baseline_min_sample_size", self.MIN_SAMPLE_SIZE):
+                awareness_baseline = self._compute_cohort_baseline(
+                    rows,
+                    brand_id=brand_id,
+                    org_id=org_id,
+                    run_id=run_id,
+                    awareness_level=awareness,
+                    creative_format="all",
+                    date_range_start=date_range_start,
+                    date_range_end=date_range_end,
+                    winsorize_pct=winsorize_pct,
+                    run_config=run_config,
+                )
+                if awareness_baseline:
+                    baselines.append(awareness_baseline)
+
         # Also compute brand-wide baseline
         all_rows = [r for rows in cohorts.values() for r in rows]
         if len(all_rows) >= self._get_threshold(run_config, "baseline_min_sample_size", self.MIN_SAMPLE_SIZE):
