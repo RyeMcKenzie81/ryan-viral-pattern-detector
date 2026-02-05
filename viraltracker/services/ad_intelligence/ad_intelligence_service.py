@@ -548,6 +548,8 @@ class AdIntelligenceService:
     ) -> float:
         """Get total spend for a brand in a date range.
 
+        Uses pagination to ensure all rows are counted (Supabase default limit is 1000).
+
         Args:
             brand_id: Brand UUID.
             date_range_start: Start date.
@@ -557,21 +559,34 @@ class AdIntelligenceService:
             Total spend as float.
         """
         try:
-            result = self.supabase.table("meta_ads_performance").select(
-                "spend"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).gte(
-                "date", date_range_start.isoformat()
-            ).lte(
-                "date", date_range_end.isoformat()
-            ).execute()
-
             total = 0.0
-            for row in result.data or []:
-                spend = _safe_numeric(row.get("spend"))
-                if spend:
-                    total += spend
+            offset = 0
+            page_size = 1000
+
+            while True:
+                result = self.supabase.table("meta_ads_performance").select(
+                    "spend"
+                ).eq(
+                    "brand_id", str(brand_id)
+                ).gte(
+                    "date", date_range_start.isoformat()
+                ).lte(
+                    "date", date_range_end.isoformat()
+                ).range(offset, offset + page_size - 1).execute()
+
+                if not result.data:
+                    break
+
+                for row in result.data:
+                    spend = _safe_numeric(row.get("spend"))
+                    if spend:
+                        total += spend
+
+                if len(result.data) < page_size:
+                    break
+
+                offset += page_size
+
             return round(total, 2)
         except Exception as e:
             logger.warning(f"Error fetching total spend: {e}")
@@ -585,6 +600,8 @@ class AdIntelligenceService:
         classifications: List[CreativeClassification],
     ) -> Dict[str, Dict[str, Optional[float]]]:
         """Compute aggregate metrics (totals) by awareness level.
+
+        Uses pagination to ensure all rows are counted (Supabase default limit is 1000).
 
         Args:
             brand_id: Brand UUID.
@@ -607,41 +624,54 @@ class AdIntelligenceService:
         if not ad_awareness:
             return {}
 
-        # Query performance data for these ads
+        # Query performance data for these ads with pagination
         try:
-            result = self.supabase.table("meta_ads_performance").select(
-                "meta_ad_id, spend, purchases, link_clicks"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).gte(
-                "date", date_range_start.isoformat()
-            ).lte(
-                "date", date_range_end.isoformat()
-            ).in_(
-                "meta_ad_id", list(ad_awareness.keys())
-            ).execute()
-
-            # Aggregate by awareness level
             agg: Dict[str, Dict[str, float]] = {}
-            for row in result.data or []:
-                ad_id = row.get("meta_ad_id")
-                level = ad_awareness.get(ad_id)
-                if not level:
-                    continue
+            ad_ids = list(ad_awareness.keys())
+            offset = 0
+            page_size = 1000
 
-                if level not in agg:
-                    agg[level] = {"spend": 0.0, "purchases": 0, "clicks": 0}
+            while True:
+                result = self.supabase.table("meta_ads_performance").select(
+                    "meta_ad_id, spend, purchases, link_clicks"
+                ).eq(
+                    "brand_id", str(brand_id)
+                ).gte(
+                    "date", date_range_start.isoformat()
+                ).lte(
+                    "date", date_range_end.isoformat()
+                ).in_(
+                    "meta_ad_id", ad_ids
+                ).range(offset, offset + page_size - 1).execute()
 
-                spend = _safe_numeric(row.get("spend"))
-                purchases = _safe_numeric(row.get("purchases"))
-                clicks = _safe_numeric(row.get("link_clicks"))
+                if not result.data:
+                    break
 
-                if spend:
-                    agg[level]["spend"] += spend
-                if purchases:
-                    agg[level]["purchases"] += purchases
-                if clicks:
-                    agg[level]["clicks"] += clicks
+                # Aggregate by awareness level
+                for row in result.data:
+                    ad_id = row.get("meta_ad_id")
+                    level = ad_awareness.get(ad_id)
+                    if not level:
+                        continue
+
+                    if level not in agg:
+                        agg[level] = {"spend": 0.0, "purchases": 0, "clicks": 0}
+
+                    spend = _safe_numeric(row.get("spend"))
+                    purchases = _safe_numeric(row.get("purchases"))
+                    clicks = _safe_numeric(row.get("link_clicks"))
+
+                    if spend:
+                        agg[level]["spend"] += spend
+                    if purchases:
+                        agg[level]["purchases"] += purchases
+                    if clicks:
+                        agg[level]["clicks"] += clicks
+
+                if len(result.data) < page_size:
+                    break
+
+                offset += page_size
 
             # Compute conversion rate and format results
             result_dict: Dict[str, Dict[str, Optional[float]]] = {}
