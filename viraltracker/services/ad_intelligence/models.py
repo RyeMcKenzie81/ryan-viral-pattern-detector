@@ -202,6 +202,7 @@ class BaselineSnapshot(BaseModel):
     p75_conversion_rate: Optional[float] = None
 
     median_cost_per_purchase: Optional[float] = None
+    median_cost_per_add_to_cart: Optional[float] = None
 
     # Video-specific
     median_hook_rate: Optional[float] = None
@@ -350,6 +351,12 @@ class AccountAnalysisResult(BaseModel):
     pending_recommendations: int = 0
     critical_recommendations: int = 0
     recommendations: List[Recommendation] = Field(default_factory=list)
+
+    # Account-wide baseline metrics (from "all" cohort)
+    avg_cpm: Optional[float] = None
+    avg_ctr: Optional[float] = None  # Link CTR (link_clicks / impressions)
+    avg_cpa: Optional[float] = None  # Cost per purchase
+    avg_cost_per_atc: Optional[float] = None  # Cost per add to cart
 
 
 class FatigueCheckResult(BaseModel):

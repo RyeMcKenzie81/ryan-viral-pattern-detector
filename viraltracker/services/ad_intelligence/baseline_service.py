@@ -450,6 +450,14 @@ class BaselineService:
             if cost_per is not None and cost_per > 0:
                 cpp_values.append(cost_per)
 
+        # Cost per add to cart
+        cpatc_values = []
+        for r in rows:
+            cpatc = _safe_numeric(r.get("cost_per_add_to_cart"))
+            if cpatc is not None and cpatc > 0:
+                cpatc_values.append(cpatc)
+        cpatc_values = self._winsorize(cpatc_values, winsorize_pct)
+
         roas_values = self._winsorize(roas_values, winsorize_pct)
         conv_rate_values = self._winsorize(conv_rate_values, winsorize_pct)
         cpp_values = self._winsorize(cpp_values, winsorize_pct)
@@ -499,6 +507,7 @@ class BaselineService:
             p25_conversion_rate=self._percentile(conv_rate_values, 25),
             p75_conversion_rate=self._percentile(conv_rate_values, 75),
             median_cost_per_purchase=self._percentile(cpp_values, 50),
+            median_cost_per_add_to_cart=self._percentile(cpatc_values, 50) if cpatc_values else None,
             median_hook_rate=self._percentile(hook_values, 50) if hook_values else None,
             median_hold_rate=self._percentile(hold_values, 50) if hold_values else None,
             median_completion_rate=self._percentile(completion_values, 50) if completion_values else None,
@@ -544,6 +553,7 @@ class BaselineService:
                 "p25_conversion_rate": baseline.p25_conversion_rate,
                 "p75_conversion_rate": baseline.p75_conversion_rate,
                 "median_cost_per_purchase": baseline.median_cost_per_purchase,
+                "median_cost_per_add_to_cart": baseline.median_cost_per_add_to_cart,
                 "median_hook_rate": baseline.median_hook_rate,
                 "median_hold_rate": baseline.median_hold_rate,
                 "median_completion_rate": baseline.median_completion_rate,

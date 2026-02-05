@@ -40,6 +40,21 @@ class ChatRenderer:
             "",
         ]
 
+        # Baseline metrics
+        if result.avg_cpm or result.avg_ctr or result.avg_cpa or result.avg_cost_per_atc:
+            lines.append("### Baseline Metrics")
+            metrics_parts = []
+            if result.avg_cpm is not None:
+                metrics_parts.append(f"**CPM**: ${result.avg_cpm:.2f}")
+            if result.avg_ctr is not None:
+                metrics_parts.append(f"**Link CTR**: {result.avg_ctr:.2f}%")
+            if result.avg_cpa is not None:
+                metrics_parts.append(f"**CPA**: ${result.avg_cpa:.2f}")
+            if result.avg_cost_per_atc is not None:
+                metrics_parts.append(f"**Cost/ATC**: ${result.avg_cost_per_atc:.2f}")
+            lines.append(" | ".join(metrics_parts))
+            lines.append("")
+
         # Awareness distribution
         if result.awareness_distribution:
             lines.append("### Awareness Distribution")

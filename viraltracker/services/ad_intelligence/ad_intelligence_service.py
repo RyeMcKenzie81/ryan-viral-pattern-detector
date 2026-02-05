@@ -300,6 +300,16 @@ class AdIntelligenceService:
             pending_recs = sum(1 for r in recs if r.status == RecommendationStatus.PENDING or r.status == "pending")
             critical_recs = sum(1 for r in recs if r.priority == "critical")
 
+            # Extract account-wide baseline metrics (from "all" cohort)
+            all_baseline = next(
+                (b for b in baselines if b.awareness_level == "all" and b.creative_format == "all"),
+                None
+            )
+            avg_cpm = all_baseline.median_cpm if all_baseline else None
+            avg_ctr = all_baseline.median_ctr if all_baseline else None
+            avg_cpa = all_baseline.median_cost_per_purchase if all_baseline else None
+            avg_cost_per_atc = all_baseline.median_cost_per_add_to_cart if all_baseline else None
+
             # Complete run
             summary = {
                 "total_ads": len(active_ids),
@@ -325,6 +335,10 @@ class AdIntelligenceService:
                 pending_recommendations=pending_recs,
                 critical_recommendations=critical_recs,
                 recommendations=recs,
+                avg_cpm=avg_cpm,
+                avg_ctr=avg_ctr,
+                avg_cpa=avg_cpa,
+                avg_cost_per_atc=avg_cost_per_atc,
             )
 
         except Exception as e:
