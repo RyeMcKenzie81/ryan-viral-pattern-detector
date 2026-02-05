@@ -295,42 +295,24 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
-### 12. Decouple Asset Downloads as Standalone Job
-
-**Priority**: Medium
-**Complexity**: Low
-**Added**: 2026-02-05
-
-**Context**: Asset downloads currently live inside `meta_sync` Step 4 and a manual UI button ("Download Assets" on Ad Performance page). They can't be scheduled independently, which means:
-- Classification depends on assets being downloaded, but there's no way to ensure that without running a full meta_sync
-- Users can't batch-download assets on a schedule
-- The meta_sync worker has a bug: passes `max_downloads=20` but service expects `max_videos=20, max_images=40`
-
-**What's needed**:
-1. Add `asset_download` to `scheduled_jobs` job_type CHECK constraint
-2. Create `execute_asset_download_job()` in scheduler_worker (same pattern as `execute_ad_classification_job`)
-3. Add `_render_asset_download_form()` in Ad Scheduler UI with brand selector, max_videos/max_images settings
-4. Fix the `max_downloads` bug in `execute_meta_sync_job()` Step 4
-
-**Service method already exists**: `MetaAdsService.download_new_ad_assets(brand_id, max_videos=20, max_images=40)`
-
-**Enables pipeline**: meta_sync → asset_download → classification (each independently schedulable)
-
----
-
-### 13. Fix meta_sync Asset Download Bug
-
-**Priority**: High
-**Complexity**: Trivial
-**Added**: 2026-02-05
-
-**Context**: In `scheduler_worker.py` line ~1052, `execute_meta_sync_job()` calls `download_new_ad_assets(brand_id=..., max_downloads=20)` but the service method signature is `download_new_ad_assets(brand_id, max_videos=20, max_images=40)`. The `max_downloads` kwarg is silently ignored, so the method uses its defaults (20 videos, 40 images). Not harmful but incorrect.
-
-**Fix**: Change `max_downloads=20` to `max_videos=20, max_images=40` (or make configurable via job params).
-
----
-
 ## Completed
+
+### ~~12~~. Decouple Asset Downloads as Standalone Job
+
+**Completed**: 2026-02-05
+**Branch**: `feat/veo-avatar-tool`
+
+Added `asset_download` as a standalone scheduled job type. Created `execute_asset_download_job()` in scheduler_worker, `_render_asset_download_form()` in Ad Scheduler UI, and DB migration for CHECK constraint. Also fixed the `max_downloads` kwarg bug in meta_sync Step 4 (item 13).
+
+---
+
+### ~~13~~. Fix meta_sync Asset Download Bug
+
+**Completed**: 2026-02-05 (fixed as part of item 12)
+
+Changed `max_downloads=20` to `max_videos`/`max_images` with configurable job params.
+
+---
 
 ### ~~12 (original)~~. Decouple Ad Classification from Chat Analysis
 

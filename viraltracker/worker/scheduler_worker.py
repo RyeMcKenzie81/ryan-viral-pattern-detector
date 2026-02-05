@@ -484,6 +484,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_congruence_reanalysis_job(job)
     elif job_type == 'ad_classification':
         return await execute_ad_classification_job(job)
+    elif job_type == 'asset_download':
+        return await execute_asset_download_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -1049,7 +1051,9 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         # Step 4: Download new ad assets (videos + images) to Supabase storage
         try:
             asset_counts = await service.download_new_ad_assets(
-                brand_id=UUID(brand_id), max_downloads=20
+                brand_id=UUID(brand_id),
+                max_videos=params.get('download_max_videos', 20),
+                max_images=params.get('download_max_images', 40),
             )
             total_assets = asset_counts.get("videos", 0) + asset_counts.get("images", 0)
             if total_assets > 0:
@@ -2216,6 +2220,97 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Ad classification job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
+    """Execute a standalone asset download job.
+
+    Downloads ad creatives (videos + images) from Meta CDN to Supabase
+    storage so they're available for classification and analysis.
+
+    Parameters (from job['parameters']):
+        max_videos: int - Max videos to download (default: 20)
+        max_images: int - Max images to download (default: 40)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting asset download job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from uuid import UUID
+        from viraltracker.services.meta_ads_service import MetaAdsService
+
+        max_videos = params.get('max_videos', 20)
+        max_images = params.get('max_images', 40)
+
+        logs.append(f"Downloading assets for brand: {brand_name}")
+        logs.append(f"Max videos: {max_videos}, Max images: {max_images}")
+
+        service = MetaAdsService()
+        asset_counts = await service.download_new_ad_assets(
+            brand_id=UUID(brand_id),
+            max_videos=max_videos,
+            max_images=max_images,
+        )
+
+        videos_downloaded = asset_counts.get("videos", 0)
+        images_downloaded = asset_counts.get("images", 0)
+        total = videos_downloaded + images_downloaded
+
+        logs.append("")
+        logs.append("=== Summary ===")
+        logs.append(f"Videos downloaded: {videos_downloaded}")
+        logs.append(f"Images downloaded: {images_downloaded}")
+        logs.append(f"Total: {total}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(
+            f"Completed asset download job: {job_name} - "
+            f"{videos_downloaded} videos, {images_downloaded} images"
+        )
+        return {"success": True, "videos": videos_downloaded, "images": images_downloaded}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Asset download job {job_name} failed: {error_msg}")
 
         update_job_run(run_id, {
             "status": "failed",
