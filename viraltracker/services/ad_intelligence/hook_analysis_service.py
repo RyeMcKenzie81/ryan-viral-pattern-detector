@@ -8,7 +8,7 @@ Provides comprehensive hook analysis for Phase 7 of Deep Video Analysis:
 - Detailed hook comparison and insights
 
 Key metrics:
-- Hook Rate = video_views / impressions (% viewers past first 3 seconds)
+- Hook Rate = video_views / impressions (3-second video views / impressions)
 - ROAS = purchase_value / spend
 - Supports configurable minimum spend threshold to filter noise
 """

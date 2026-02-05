@@ -592,8 +592,8 @@ class MetaAdsService:
             "purchase_value": self._extract_action_value(insight, "purchase"),
             # Costs
             "cost_per_add_to_cart": self._extract_cost(insight, "add_to_cart"),
-            # Video metrics
-            "video_views": self._extract_video_metric(insight, "video_play_actions"),
+            # Video metrics (video_view = true 3-second views from actions array)
+            "video_views": self._extract_action(insight, "video_view"),
             "video_avg_watch_time": self._extract_video_metric(insight, "video_avg_time_watched_actions"),
             "video_p25_watched": self._extract_video_metric(insight, "video_p25_watched_actions"),
             "video_p50_watched": self._extract_video_metric(insight, "video_p50_watched_actions"),

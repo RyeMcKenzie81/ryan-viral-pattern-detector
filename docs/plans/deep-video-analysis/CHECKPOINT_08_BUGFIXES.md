@@ -77,6 +77,35 @@ if ctr is not None:
     stats["ctr_count"] += 1
 ```
 
+### 7. Hook Rate Using Wrong Meta Field
+**Problem:** Hook rate was showing impossibly high values (70-100%) because we were using the wrong Meta API field:
+- **Wrong:** `video_play_actions` = "video started playing" (~100% with autoplay)
+- **Correct:** `actions` array with `action_type="video_view"` = true 3-second video views
+
+**Root Cause:** In `meta_ads_service.py`:
+```python
+# WRONG - this is just "video started" which is ~100% with autoplay
+"video_views": self._extract_video_metric(insight, "video_play_actions"),
+```
+
+**Fix:** Use the existing `_extract_action()` helper to get the correct 3-second views:
+```python
+# meta_ads_service.py line 596
+"video_views": self._extract_action(insight, "video_view"),
+```
+
+Also reverted `hook_analysis_service.py` to use `video_views` consistently (was temporarily changed to use `video_p25_watched` as a workaround).
+
+**Files Changed:**
+- `viraltracker/services/meta_ads_service.py` - Fixed extraction method
+- `viraltracker/services/ad_intelligence/hook_analysis_service.py` - Reverted to use video_views
+
+**Reference:** [GitHub facebook-java-business-sdk issue #128](https://github.com/facebook/facebook-java-business-sdk/issues/128) confirms `video_view` action type is for 3-second views.
+
+**Post-Fix Action Required:** Re-sync ad account performance data (90-day lookback) to repopulate `video_views` with correct values.
+
+**Commit:** `d37482d`
+
 ---
 
 ## Testing Results
@@ -104,7 +133,8 @@ if ctr is not None:
 | `457d7b6` | `ad_intelligence_service.py` | Fix CongruenceAnalyzer init args |
 | `90e549a` | `hook_analysis_service.py`, UI page | Lower min_spend default to 0 |
 | `f21c813` | `hook_analysis_service.py` | Fix page_title column name |
-| TBD | `hook_analysis_service.py` | Fix CTR calculation (divide by 100) |
+| `d37482d` | `hook_analysis_service.py` | Fix CTR calculation (divide by 100) |
+| TBD | `meta_ads_service.py`, `hook_analysis_service.py` | Fix video_views to use 3-second views from actions array |
 
 ---
 
@@ -122,6 +152,8 @@ if ctr is not None:
 
 ## Next Steps
 
-1. Run "Analyze Wonder Paws ad account" 1-2 more times to complete video analysis
-2. Test agent chat queries for hook insights
-3. Consider merging feature branch to main
+1. **Re-sync performance data** - Run ad account analysis with 90-day lookback to repopulate `video_views` with correct 3-second view counts
+2. **Verify data** - Check that `video_views` values are now lower than impressions (realistic hook rates: 10-40%)
+3. Run "Analyze Wonder Paws ad account" 1-2 more times to complete video analysis
+4. Test agent chat queries for hook insights
+5. Consider merging feature branch to main
