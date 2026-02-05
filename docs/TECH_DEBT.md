@@ -295,65 +295,58 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
-### 12. Decouple Ad Classification from Chat Analysis
+### 12. Decouple Asset Downloads as Standalone Job
 
-**Priority**: High
-**Complexity**: Medium
-**Added**: 2026-02-04
+**Priority**: Medium
+**Complexity**: Low
+**Added**: 2026-02-05
 
-**Context**: Currently `/analyze_account` in chat classifies ALL ads synchronously before running diagnostics. For 242 ads, this takes 25+ minutes. Classification should happen in the background so chat analysis is instant.
-
-**Current flow (slow):**
-```
-User: "Analyze Wonder Paws"
-  → Classify 242 ads (25 min)
-  → Compute baselines
-  → Run diagnostics
-  → Generate recommendations
-  → Return results
-```
-
-**Target flow (fast):**
-```
-Background (scheduled/triggered):
-  → After Meta sync: Classify new/changed ads
-  → After asset download: Run video analysis
-  → After LP scrape: Run congruence analysis
-
-User: "Analyze Wonder Paws"
-  → Read pre-computed classifications (instant)
-  → Compute baselines
-  → Run diagnostics
-  → Generate recommendations
-  → Return results (seconds)
-```
+**Context**: Asset downloads currently live inside `meta_sync` Step 4 and a manual UI button ("Download Assets" on Ad Performance page). They can't be scheduled independently, which means:
+- Classification depends on assets being downloaded, but there's no way to ensure that without running a full meta_sync
+- Users can't batch-download assets on a schedule
+- The meta_sync worker has a bug: passes `max_downloads=20` but service expects `max_videos=20, max_images=40`
 
 **What's needed**:
-1. **Scheduled classification job**: Run after Meta sync completes
-   - Only classify new ads or ads with changed inputs (use `input_hash`)
-   - Respect rate limits (max Gemini calls per run)
+1. Add `asset_download` to `scheduled_jobs` job_type CHECK constraint
+2. Create `execute_asset_download_job()` in scheduler_worker (same pattern as `execute_ad_classification_job`)
+3. Add `_render_asset_download_form()` in Ad Scheduler UI with brand selector, max_videos/max_images settings
+4. Fix the `max_downloads` bug in `execute_meta_sync_job()` Step 4
 
-2. **Event-driven triggers**:
-   - Meta sync complete → trigger classification
-   - Asset download complete → trigger video analysis
-   - LP scrape complete → trigger congruence analysis
+**Service method already exists**: `MetaAdsService.download_new_ad_assets(brand_id, max_videos=20, max_images=40)`
 
-3. **Chat analysis refactor**:
-   - `analyze_account` should skip classification if recent data exists
-   - Add `force_reclassify` flag for manual override
-   - Show "data freshness" indicator (last classified timestamp)
+**Enables pipeline**: meta_sync → asset_download → classification (each independently schedulable)
 
-4. **Freshness thresholds**:
-   - Classifications valid for X hours (configurable)
-   - Stale data triggers background refresh, not blocking
+---
 
-**Benefit**: Chat analysis goes from 25+ minutes to seconds. Users get instant insights.
+### 13. Fix meta_sync Asset Download Bug
 
-**Related**: Ties into #11 (Data Pipeline Infrastructure)
+**Priority**: High
+**Complexity**: Trivial
+**Added**: 2026-02-05
+
+**Context**: In `scheduler_worker.py` line ~1052, `execute_meta_sync_job()` calls `download_new_ad_assets(brand_id=..., max_downloads=20)` but the service method signature is `download_new_ad_assets(brand_id, max_videos=20, max_images=40)`. The `max_downloads` kwarg is silently ignored, so the method uses its defaults (20 videos, 40 images). Not harmful but incorrect.
+
+**Fix**: Change `max_downloads=20` to `max_videos=20, max_images=40` (or make configurable via job params).
 
 ---
 
 ## Completed
 
-_Move items here when done, with completion date._
+### ~~12 (original)~~. Decouple Ad Classification from Chat Analysis
+
+**Completed**: 2026-02-05
+**Branch**: `feat/veo-avatar-tool`
+
+Background `ad_classification` job type pre-computes classifications via scheduler. Existing dedup logic (`_find_existing_classification` by `input_hash` + `prompt_version`) means `full_analysis()` automatically reuses fresh cached results. Chat analysis goes from 25+ min to seconds.
+
+**What was built**:
+- `execute_ad_classification_job()` in scheduler_worker — standalone job handler
+- `_run_classification_for_brand()` — shared helper (used by standalone job + auto_classify chain)
+- `auto_classify` option in `meta_sync` job — non-fatal chaining after sync
+- `BatchClassificationResult` model — accurate new/cached/skipped/error breakdown
+- "Run Now" buttons for all scheduler job types (classification, template scrape, ad creation)
+- Ad Scheduler UI form for `ad_classification` with brand selector, max_new/max_video/days_back
+- Source granularity: `gemini_light_stored` vs `gemini_light_thumbnail` (tracks image provenance)
+- Skip pattern for image ads without available media (`skipped_missing_image`)
+- Removed copy-only fallback and garbage-dict error fallback
 
