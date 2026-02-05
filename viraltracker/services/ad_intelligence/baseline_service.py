@@ -15,9 +15,8 @@ from uuid import UUID
 
 from .helpers import (
     _safe_numeric,
-    compute_roas,
+    extract_conversion_value,
     extract_conversions,
-    extract_cost_per_conversion,
 )
 from .models import BaselineSnapshot, RunConfig
 
@@ -467,68 +466,111 @@ class BaselineService:
 
         unique_ads = len(set(r.get("meta_ad_id") for r in rows if r.get("meta_ad_id")))
 
-        # Extract metric arrays
-        def extract_values(rows: List[Dict], key: str) -> List[float]:
-            vals = []
-            for r in rows:
-                v = _safe_numeric(r.get(key))
-                if v is not None and v >= 0:
-                    vals.append(v)
-            return vals
-
-        ctr_values = self._winsorize(extract_values(rows, "link_ctr"), winsorize_pct)
-        cpc_values = self._winsorize(extract_values(rows, "link_cpc"), winsorize_pct)
-        cpm_values = self._winsorize(extract_values(rows, "cpm"), winsorize_pct)
-
-        # Conversion metrics via helpers
-        roas_values = []
-        conv_rate_values = []
-        cpp_values = []
+        # ------------------------------------------------------------------
+        # Aggregate raw counts per ad first, then compute derived ratios.
+        # This avoids inflated baselines from low-volume daily rows where
+        # e.g. 1 click + $80 spend yields link_cpc = $80.
+        # ------------------------------------------------------------------
+        ad_totals: Dict[str, Dict[str, float]] = {}
         for r in rows:
-            roas_val = compute_roas(r, run_config.value_field)
-            if roas_val is not None and roas_val >= 0:
-                roas_values.append(roas_val)
+            ad_id = r.get("meta_ad_id", "unknown")
+            if ad_id not in ad_totals:
+                ad_totals[ad_id] = {
+                    "spend": 0.0, "impressions": 0.0, "link_clicks": 0.0,
+                    "add_to_carts": 0.0, "conversions": 0.0,
+                    "conversion_value": 0.0,
+                    "video_views": 0.0, "video_p25": 0.0, "video_p100": 0.0,
+                    "frequency_sum": 0.0, "frequency_count": 0,
+                }
+            t = ad_totals[ad_id]
+            t["spend"] += _safe_numeric(r.get("spend")) or 0
+            t["impressions"] += _safe_numeric(r.get("impressions")) or 0
+            t["link_clicks"] += _safe_numeric(r.get("link_clicks")) or 0
+            t["video_views"] += _safe_numeric(r.get("video_views")) or 0
+            t["video_p25"] += _safe_numeric(r.get("video_p25_watched")) or 0
+            t["video_p100"] += _safe_numeric(r.get("video_p100_watched")) or 0
 
-            conversions = extract_conversions(r, run_config.primary_conversion_event)
-            clicks = _safe_numeric(r.get("link_clicks"))
-            if conversions is not None and clicks and clicks > 0:
-                conv_rate_values.append((conversions / clicks) * 100)
+            # Conversions & value — use helpers to parse JSONB actions
+            conv = extract_conversions(r, run_config.primary_conversion_event)
+            if conv is not None:
+                t["conversions"] += conv
+            conv_val = None
+            if run_config.value_field == "purchase_value":
+                conv_val = _safe_numeric(r.get("purchase_value"))
+            if conv_val is None:
+                conv_val = extract_conversion_value(r, run_config.value_field)
+            if conv_val is not None:
+                t["conversion_value"] += conv_val
 
-            cost_per = extract_cost_per_conversion(r, run_config.primary_conversion_event)
-            if cost_per is not None and cost_per > 0:
-                cpp_values.append(cost_per)
+            # Add-to-cart from raw_actions or pre-extracted column
+            atc = extract_conversions(r, "add_to_cart")
+            if atc is not None:
+                t["add_to_carts"] += atc
 
-        # Cost per add to cart
-        cpatc_values = []
-        for r in rows:
-            cpatc = _safe_numeric(r.get("cost_per_add_to_cart"))
-            if cpatc is not None and cpatc > 0:
-                cpatc_values.append(cpatc)
-        cpatc_values = self._winsorize(cpatc_values, winsorize_pct)
+            # Frequency — average across days (weighted equally per day)
+            freq = _safe_numeric(r.get("frequency"))
+            if freq is not None and freq >= 0:
+                t["frequency_sum"] += freq
+                t["frequency_count"] += 1
 
+        # Compute derived per-ad metrics from aggregated totals
+        cpc_values, cpm_values, ctr_values = [], [], []
+        roas_values, conv_rate_values, cpp_values, cpatc_values = [], [], [], []
+        hook_values, hold_values, completion_values = [], [], []
+        freq_values = []
+
+        for ad_id, t in ad_totals.items():
+            spend = t["spend"]
+            impressions = t["impressions"]
+            link_clicks = t["link_clicks"]
+
+            # CPC = total_spend / total_clicks
+            if link_clicks > 0:
+                cpc_values.append(spend / link_clicks)
+            # CPM = (total_spend / total_impressions) * 1000
+            if impressions > 0:
+                cpm_values.append((spend / impressions) * 1000)
+            # CTR = total_clicks / total_impressions
+            if impressions > 0:
+                ctr_values.append(link_clicks / impressions)
+
+            # ROAS = total_conversion_value / total_spend
+            if spend > 0 and t["conversion_value"] > 0:
+                roas_values.append(t["conversion_value"] / spend)
+
+            # Conversion rate = total_conversions / total_clicks * 100
+            if link_clicks > 0 and t["conversions"] > 0:
+                conv_rate_values.append((t["conversions"] / link_clicks) * 100)
+
+            # Cost per purchase = total_spend / total_conversions
+            if t["conversions"] > 0:
+                cpp_values.append(spend / t["conversions"])
+
+            # Cost per add-to-cart = total_spend / total_atc
+            if t["add_to_carts"] > 0:
+                cpatc_values.append(spend / t["add_to_carts"])
+
+            # Video metrics (already computed from raw counts, no change)
+            video_views = t["video_views"]
+            if video_views > 0 and impressions > 0:
+                hook_values.append(video_views / impressions)
+            if t["video_p25"] > 0 and video_views > 0:
+                hold_values.append(t["video_p25"] / video_views)
+            if t["video_p100"] > 0 and impressions > 0:
+                completion_values.append(t["video_p100"] / impressions)
+
+            # Frequency — average across daily rows for this ad
+            if t["frequency_count"] > 0:
+                freq_values.append(t["frequency_sum"] / t["frequency_count"])
+
+        # Winsorize all metric arrays
+        cpc_values = self._winsorize(cpc_values, winsorize_pct)
+        cpm_values = self._winsorize(cpm_values, winsorize_pct)
+        ctr_values = self._winsorize(ctr_values, winsorize_pct)
         roas_values = self._winsorize(roas_values, winsorize_pct)
         conv_rate_values = self._winsorize(conv_rate_values, winsorize_pct)
         cpp_values = self._winsorize(cpp_values, winsorize_pct)
-
-        # Video metrics
-        hook_values = []
-        hold_values = []
-        completion_values = []
-        for r in rows:
-            impr = _safe_numeric(r.get("impressions"))
-            video_views = _safe_numeric(r.get("video_views"))
-            p25 = _safe_numeric(r.get("video_p25_watched"))
-            p100 = _safe_numeric(r.get("video_p100_watched"))
-
-            if video_views is not None and impr and impr > 0:
-                hook_values.append(video_views / impr)
-            if p25 is not None and video_views and video_views > 0:
-                hold_values.append(p25 / video_views)
-            if p100 is not None and impr and impr > 0:
-                completion_values.append(p100 / impr)
-
-        # Frequency
-        freq_values = extract_values(rows, "frequency")
+        cpatc_values = self._winsorize(cpatc_values, winsorize_pct)
         freq_values = self._winsorize(freq_values, winsorize_pct)
 
         return BaselineSnapshot(

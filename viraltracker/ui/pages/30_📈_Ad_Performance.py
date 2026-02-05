@@ -349,6 +349,147 @@ def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
     except Exception:
         return None
 
+def _fetch_batch_deep_analysis(meta_ad_ids: List[str], brand_id: str) -> Dict[str, Dict]:
+    """Batch-fetch classification and video analysis for a list of ads.
+
+    Returns dict mapping meta_ad_id -> {classification: ..., video_analysis: ...}.
+    Fetches in two queries to avoid N+1.
+    """
+    if not meta_ad_ids or not brand_id:
+        return {}
+
+    db = get_supabase_client()
+    result_map: Dict[str, Dict] = {aid: {"classification": None, "video_analysis": None} for aid in meta_ad_ids}
+
+    try:
+        # Fetch latest classification per ad (ordered by classified_at DESC)
+        cls_result = db.table("ad_creative_classifications").select(
+            "meta_ad_id, creative_awareness_level, creative_format, "
+            "congruence_score, congruence_notes, congruence_components, "
+            "video_analysis_id, hook_type, creative_angle"
+        ).eq("brand_id", brand_id).in_("meta_ad_id", meta_ad_ids).order(
+            "classified_at", desc=True
+        ).execute()
+
+        # Keep only the latest classification per ad
+        seen_ads = set()
+        video_analysis_ids = []
+        for row in (cls_result.data or []):
+            aid = row.get("meta_ad_id")
+            if aid and aid not in seen_ads:
+                seen_ads.add(aid)
+                result_map[aid]["classification"] = row
+                va_id = row.get("video_analysis_id")
+                if va_id:
+                    video_analysis_ids.append(va_id)
+
+        # Batch-fetch video analyses if any exist
+        if video_analysis_ids:
+            va_result = db.table("ad_video_analysis").select(
+                "id, hook_transcript_spoken, hook_transcript_overlay, hook_type, "
+                "hook_visual_type, hook_visual_description, "
+                "full_transcript, storyboard, benefits_shown, features_demonstrated, "
+                "pain_points_addressed, angles_used, claims_made, "
+                "awareness_level, production_quality, format_type, video_duration_sec"
+            ).in_("id", video_analysis_ids).execute()
+
+            va_map = {row["id"]: row for row in (va_result.data or [])}
+            for aid, entry in result_map.items():
+                cls = entry.get("classification")
+                if cls and cls.get("video_analysis_id"):
+                    entry["video_analysis"] = va_map.get(cls["video_analysis_id"])
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to fetch deep analysis: {e}")
+
+    return result_map
+
+
+def _render_ad_deep_analysis(cls: Optional[Dict], va: Optional[Dict]):
+    """Render deep analysis section for an ad using pre-fetched data."""
+    if not cls:
+        st.caption("No classification data available")
+        return
+
+    # Classification summary row
+    cols = st.columns(4)
+    cols[0].metric("Awareness", (cls.get("creative_awareness_level") or "N/A").replace("_", " ").title())
+    cols[1].metric("Format", (cls.get("creative_format") or "N/A").replace("_", " ").title())
+    score = cls.get("congruence_score")
+    cols[2].metric("Congruence", f"{float(score):.2f}" if score is not None else "N/A")
+    cols[3].metric("Video Analysis", "Yes" if va else "No")
+
+    # Congruence components
+    components = cls.get("congruence_components") or []
+    if components and isinstance(components, list):
+        st.markdown("**Congruence Breakdown:**")
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            assessment = comp.get("assessment", "unknown")
+            icon = {"aligned": "✅", "weak": "⚠️", "missing": "❌"}.get(assessment, "❓")
+            dim = (comp.get("dimension") or "").replace("_", " ").title()
+            st.markdown(f"{icon} **{dim}**: {comp.get('explanation', '')}")
+            if comp.get("suggestion") and assessment != "aligned":
+                st.caption(f"  → {comp['suggestion']}")
+
+    if not va:
+        return
+
+    # Hook info
+    hook_spoken = va.get("hook_transcript_spoken")
+    hook_overlay = va.get("hook_transcript_overlay")
+    if hook_spoken or hook_overlay:
+        st.markdown("**Hook:**")
+        if hook_spoken:
+            st.markdown(f'  Spoken: *"{hook_spoken}"*')
+        if hook_overlay:
+            st.markdown(f'  Overlay: *"{hook_overlay}"*')
+        hook_type = va.get("hook_type") or ""
+        visual_type = va.get("hook_visual_type") or ""
+        if hook_type or visual_type:
+            parts = [p for p in [f"Type: {hook_type}" if hook_type else "", f"Visual: {visual_type}" if visual_type else ""] if p]
+            st.caption(" | ".join(parts))
+
+    # Benefits & angles
+    benefits = va.get("benefits_shown") or []
+    angles = va.get("angles_used") or []
+    if benefits or angles:
+        bcol, acol = st.columns(2)
+        if benefits:
+            bcol.markdown("**Benefits:** " + ", ".join(benefits))
+        if angles:
+            acol.markdown("**Angles:** " + ", ".join(angles))
+
+    # Claims
+    claims = va.get("claims_made") or []
+    if claims and isinstance(claims, list):
+        st.markdown("**Claims:**")
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            proof = "✅ Proof shown" if claim.get("proof_shown") else "❌ No proof"
+            st.markdown(f"  - {claim.get('claim', '')} ({proof})")
+
+    # Transcript (collapsed)
+    transcript = va.get("full_transcript")
+    if transcript:
+        with st.expander("Full Transcript", expanded=False):
+            st.text(transcript)
+
+    # Storyboard (collapsed)
+    storyboard = va.get("storyboard") or []
+    if storyboard and isinstance(storyboard, list):
+        with st.expander(f"Storyboard ({len(storyboard)} scenes)", expanded=False):
+            for scene in storyboard:
+                if not isinstance(scene, dict):
+                    continue
+                ts = scene.get("timestamp_sec", 0)
+                desc = scene.get("scene_description", "")
+                st.markdown(f"**{ts}s** — {desc}")
+
+
 def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
     """Aggregate performance metrics across all ads."""
     if not data:
@@ -913,8 +1054,8 @@ def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result
         except Exception as e:
             st.error(f"Failed to save: {e}")
 
-def render_top_performers(data: List[Dict]):
-    """Render top and worst performers section."""
+def render_top_performers(data: List[Dict], brand_id: Optional[str] = None):
+    """Render top and worst performers section with optional deep analysis."""
     import pandas as pd
 
     if not data:
@@ -964,11 +1105,23 @@ def render_top_performers(data: List[Dict]):
     else:
         filtered_data = data
 
+    # Pre-fetch deep analysis data for all candidate ads (avoids N+1 queries)
+    top_ads = get_top_performers(filtered_data, metric="roas", top_n=5)
+    worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
+
+    deep_analysis_map: Dict[str, Dict] = {}
+    if brand_id:
+        all_ad_ids = [
+            ad.get("meta_ad_id") for ad in (top_ads or []) + (worst_ads or [])
+            if ad.get("meta_ad_id")
+        ]
+        if all_ad_ids:
+            deep_analysis_map = _fetch_batch_deep_analysis(all_ad_ids, brand_id)
+
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("🏆 Top Performers (by ROAS)")
-        top_ads = get_top_performers(filtered_data, metric="roas", top_n=5)
 
         if top_ads:
             for i, ad in enumerate(top_ads, 1):
@@ -984,6 +1137,14 @@ def render_top_performers(data: List[Dict]):
                     st.markdown(f"**{i}. {status_emoji} {name}**")
                     st.caption(f"📁 {campaign} › {adset}")
                     st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
+
+                    # Deep analysis expander
+                    ad_id = ad.get("meta_ad_id")
+                    if ad_id and ad_id in deep_analysis_map:
+                        entry = deep_analysis_map[ad_id]
+                        if entry.get("classification"):
+                            with st.expander("Deep Analysis", expanded=False):
+                                _render_ad_deep_analysis(entry["classification"], entry.get("video_analysis"))
         else:
             st.info("No data for top performers")
 
@@ -991,42 +1152,26 @@ def render_top_performers(data: List[Dict]):
         if top_ads:
             st.markdown("---")
             st.caption("Select an ad to analyze its strategy:")
-            
+
             # Create a selection map
             options = {f"{ad.get('ad_name', 'Unknown')} (ROAS: {ad.get('roas', 0):.2f})": ad for ad in top_ads}
             selected_label = st.selectbox("Select Winner", options=list(options.keys()), key="top_perf_select")
-            
+
             if selected_label:
                 target_ad = options[selected_label]
-                st.write(f"DEBUG: Target Ad Keys: {list(target_ad.keys())}")
-                st.write(f"DEBUG: Target Ad Data (Sample): {str(target_ad)[:500]}")
-                if st.button(f"🔍 Analyze Strategy: {target_ad.get('ad_name')}"):
-                    # In a real scenario, we would stream the creative URL from the ad data.
-                    # Since existing data might not have the full creative bytes/url ready for immediate download without token,
-                    # We might need to ask user to confirm/provide if missing.
-                    # For this implementation, we will assume we scrape/fetch on the fly or just analyze COPY for now if creative missing.
-                    
+                if st.button(f"Analyze Strategy: {target_ad.get('ad_name')}"):
                     with st.spinner("Analyzing ad strategy..."):
-                        # Dummy call for MVP integration if URL missing, or use Ad Copy if available
-                        # In production this would fetch the actual creative.
                          try:
-                             # Try to fetch real body text from DB first
                              meta_ad_id = target_ad.get("meta_ad_id") or target_ad.get("ad_id")
                              body_text = fetch_real_ad_copy(str(meta_ad_id)) if meta_ad_id else None
-                             
-                             # Fallback to ad name if body text not found
                              final_copy = body_text if body_text else target_ad.get("ad_name", "")
-                             
-                             # Get Creative URL from ad data (image_url or thumbnail_url)
                              creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
-                             
-                             # If missing, try to fetch on-the-fly
+
                              if not creative_url:
                                  st.info("Fetching ad creative from Meta...")
                                  try:
                                      from viraltracker.services.meta_ads_service import MetaAdsService
                                      meta_service = MetaAdsService()
-                                     # Assuming we have meta_ad_id
                                      aid = target_ad.get("meta_ad_id")
                                      if aid:
                                          thumbs = asyncio.run(meta_service.fetch_ad_thumbnails([aid]))
@@ -1036,31 +1181,26 @@ def render_top_performers(data: List[Dict]):
                                  except Exception as e:
                                      st.warning(f"Could not fetch creative from Meta: {e}")
 
-                             # If not http, assume storage path (unless empty)
                              if creative_url and not creative_url.startswith("http"):
                                  signed = get_signed_url(creative_url)
-                                 if signed: 
-                                     st.write(f"DEBUG: Signed storage path '{creative_url}' -> '{signed[:20]}...'")
+                                 if signed:
                                      creative_url = signed
                                  else:
                                      st.warning(f"Could not sign URL for path: {creative_url}")
-                             
-                             st.write(f"DEBUG: Final Analysis URL: {creative_url}") # Debug for user
 
-                             # Try to convert ID to UUID for tracking, otherwise None
                              from uuid import UUID as PyUUID
                              ad_uuid = None
                              try:
                                  if meta_ad_id:
                                      ad_uuid = PyUUID(str(meta_ad_id))
-                             except:
-                                 pass # Not a UUID (likely a Meta numeric ID)
+                             except Exception:
+                                 pass
 
                              res = analyze_ad_creative(
                                  ad_copy=final_copy,
                                  headline=target_ad.get("headline", ""),
                                  creative_url=creative_url,
-                                 creative_type="image", # Default to image for now unless we detect video
+                                 creative_type="image",
                                  ad_id=ad_uuid
                              )
                              st.session_state.ad_analysis_result = res
@@ -1073,7 +1213,6 @@ def render_top_performers(data: List[Dict]):
     with col2:
 
         st.subheader("⚠️ Needs Attention (low ROAS)")
-        worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
 
         if worst_ads:
             for i, ad in enumerate(worst_ads, 1):
@@ -1088,6 +1227,14 @@ def render_top_performers(data: List[Dict]):
                 st.markdown(f"**{i}. {status_emoji} {name}**")
                 st.caption(f"📁 {campaign} › {adset}")
                 st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
+
+                # Deep analysis expander
+                ad_id = ad.get("meta_ad_id")
+                if ad_id and ad_id in deep_analysis_map:
+                    entry = deep_analysis_map[ad_id]
+                    if entry.get("classification"):
+                        with st.expander("Deep Analysis", expanded=False):
+                            _render_ad_deep_analysis(entry["classification"], entry.get("video_analysis"))
         else:
             st.info("No underperforming ads (or none with min $10 spend)")
 
@@ -2474,7 +2621,7 @@ with st.expander("📊 Charts & Analysis", expanded=False):
         render_time_series_charts(perf_data)
 
     with performers_tab:
-        render_top_performers(perf_data)
+        render_top_performers(perf_data, brand_id=brand_id)
 
 st.divider()
 

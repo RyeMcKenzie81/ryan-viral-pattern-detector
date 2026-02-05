@@ -173,23 +173,6 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
-### 8. Ad Intelligence - CPC Baseline Uses Per-Row Daily Values
-
-**Priority**: Medium
-**Complexity**: Low-Medium
-**Added**: 2026-02-02
-
-**Context**: The baseline service computes CPC baselines using per-row daily `link_cpc` from Meta. Days with 1 click and $80 spend produce $80 CPC, inflating the p75 (e.g., $79.58). The diagnostic engine correctly computes aggregate CPC = total_spend/total_clicks, which is much lower (~$2). This discrepancy causes misleading diagnostic output like "6 ads with CPC over $79.58" when actual CPC values are around $2.
-
-**What's needed**:
-1. Baseline service should compute CPC per-ad as aggregate `spend / clicks` instead of using per-row daily values
-2. Same treatment for other derived metrics that can be skewed by low-volume days
-3. Re-validate diagnostic thresholds after baseline fix
-
-**Related files**:
-- `viraltracker/services/ad_intelligence/baseline_service.py`
-- `viraltracker/services/ad_intelligence/diagnostic_engine.py`
-
 ---
 
 ### 9. Centralized Notification System
@@ -239,15 +222,14 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
-### 10. Deep Video Analysis - UI & Agent Visibility
+### 10. Deep Video Analysis - Agent Tool Visibility & Reporting
 
 **Priority**: Medium
 **Complexity**: Medium
 **Added**: 2026-02-04
+**Partially completed**: 2026-02-05 (UI integration done, agent tools & reporting remain)
 
-**Context**: The Deep Video Analysis feature (Phases 1-5) stores rich data in the database but has no UI or agent visibility:
-- `ad_video_analysis` - Full video analysis (transcripts, hooks, storyboards, benefits)
-- `ad_creative_classifications.congruence_components` - Per-dimension congruence (awareness, hook/headline, benefits, angle, claims)
+**Context**: The Deep Video Analysis feature now has UI visibility on the Ad Performance page (expandable per-ad sections showing classification, congruence components, hooks, transcript, storyboard, claims). Remaining work:
 
 **What's needed**:
 
@@ -256,14 +238,10 @@ This document tracks technical debt and planned future enhancements that aren't 
    - Or create new `/deep_congruence` tool for detailed analysis
    - Add hook analysis tool (`/hook_analysis` or `/top_hooks`)
 
-2. **UI additions**:
-   - Ad Performance page: Add expandable section showing congruence components per ad
-   - New "Hook Analysis" page or section showing top hooks by fingerprint, type, and visual type
-   - Video analysis detail view (transcript, storyboard, claims)
-
-3. **Reporting**:
+2. **Reporting**:
    - Congruence summary across brand (how many aligned vs weak vs missing)
    - Hook performance dashboard (which hooks convert best)
+   - Standalone "Hook Analysis" page
 
 **Reference**:
 - Plan: `~/.claude/plans/squishy-tinkering-snowflake.md`
@@ -296,6 +274,24 @@ This document tracks technical debt and planned future enhancements that aren't 
 ---
 
 ## Completed
+
+### ~~8~~. Fix CPC Baseline Per-Row Inflation
+
+**Completed**: 2026-02-05
+**Branch**: `feat/veo-avatar-tool`
+
+Refactored `_compute_cohort_baseline()` in `baseline_service.py` to aggregate raw counts per-ad before computing derived ratio metrics (CPC, CPM, CTR, cost-per-purchase, cost-per-ATC). Previously used per-row daily values which inflated baselines on low-volume days (e.g., 1 click + $80 spend = $80 CPC). Now computes `total_spend / total_clicks` per ad, matching the diagnostic engine's correct approach.
+
+---
+
+### ~~10 (partial)~~. Deep Video Analysis - UI Integration
+
+**Completed**: 2026-02-05
+**Branch**: `feat/veo-avatar-tool`
+
+Added expandable "Deep Analysis" sections to Ad Performance page for Top and Bottom performers. Shows classification data (awareness level, format, congruence score), per-dimension congruence components, hook analysis (spoken/overlay/visual), benefits, angles, claims, full transcript, and storyboard. Uses batch-fetch (2 queries for all ads) to avoid N+1.
+
+---
 
 ### ~~12~~. Decouple Asset Downloads as Standalone Job
 
