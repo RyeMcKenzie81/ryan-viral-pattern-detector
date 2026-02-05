@@ -354,6 +354,8 @@ class AccountAnalysisResult(BaseModel):
 
     # Baseline metrics by awareness level: {level: {cpm, ctr, cpa, cost_per_atc}}
     awareness_baselines: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
+    # Aggregate metrics by awareness level: {level: {spend, purchases, clicks, conversion_rate}}
+    awareness_aggregates: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
 
 
 class FatigueCheckResult(BaseModel):

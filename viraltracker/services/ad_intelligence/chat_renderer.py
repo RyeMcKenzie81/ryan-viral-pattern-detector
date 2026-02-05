@@ -40,29 +40,54 @@ class ChatRenderer:
             "",
         ]
 
-        # Awareness distribution with baseline metrics
+        # Awareness distribution with baseline and aggregate metrics
         if result.awareness_distribution:
             lines.append("### Awareness Distribution")
             has_baselines = bool(result.awareness_baselines)
-            if has_baselines:
-                lines.append("| Level | Count | % | CPM | Link CTR | CPA | Cost/ATC |")
-                lines.append("|-------|-------|---|-----|----------|-----|----------|")
+            has_aggregates = bool(result.awareness_aggregates)
+
+            # Build header based on available data
+            if has_baselines or has_aggregates:
+                header = "| Level | Ads | % |"
+                separator = "|-------|-----|---|"
+                if has_aggregates:
+                    header += " Spend | Purchases | Clicks | Conv % |"
+                    separator += "-------|-----------|--------|--------|"
+                if has_baselines:
+                    header += " Med CPM | Med CTR | Med CPA |"
+                    separator += "---------|---------|---------|"
+                lines.append(header)
+                lines.append(separator)
             else:
-                lines.append("| Level | Count | % |")
-                lines.append("|-------|-------|---|")
+                lines.append("| Level | Ads | % |")
+                lines.append("|-------|-----|---|")
 
             total = sum(result.awareness_distribution.values()) or 1
             for level, count in sorted(result.awareness_distribution.items()):
                 pct = (count / total) * 100
                 label = level.replace("_", " ").title()
 
-                if has_baselines:
-                    bl = result.awareness_baselines.get(level, {})
-                    cpm = f"${bl.get('cpm'):.2f}" if bl.get('cpm') is not None else "-"
-                    ctr = f"{bl.get('ctr'):.2f}%" if bl.get('ctr') is not None else "-"
-                    cpa = f"${bl.get('cpa'):.2f}" if bl.get('cpa') is not None else "-"
-                    cpatc = f"${bl.get('cost_per_atc'):.2f}" if bl.get('cost_per_atc') is not None else "-"
-                    lines.append(f"| {label} | {count} | {pct:.0f}% | {cpm} | {ctr} | {cpa} | {cpatc} |")
+                if has_baselines or has_aggregates:
+                    row = f"| {label} | {count} | {pct:.0f}% |"
+
+                    # Add aggregate metrics
+                    if has_aggregates:
+                        agg = result.awareness_aggregates.get(level, {})
+                        spend = f"${agg.get('spend'):,.0f}" if agg.get('spend') is not None else "-"
+                        purchases = str(int(agg.get('purchases', 0))) if agg.get('purchases') is not None else "-"
+                        clicks = str(int(agg.get('clicks', 0))) if agg.get('clicks') is not None else "-"
+                        conv = f"{agg.get('conversion_rate'):.1f}%" if agg.get('conversion_rate') is not None else "-"
+                        row += f" {spend} | {purchases} | {clicks} | {conv} |"
+
+                    # Add baseline metrics
+                    if has_baselines:
+                        bl = result.awareness_baselines.get(level, {})
+                        cpm = f"${bl.get('cpm'):.2f}" if bl.get('cpm') is not None else "-"
+                        ctr = f"{bl.get('ctr'):.2f}%" if bl.get('ctr') is not None else "-"
+                        cpa = f"${bl.get('cpa'):.2f}" if bl.get('cpa') is not None else "-"
+                        row += f" {cpm} | {ctr} | {cpa} |"
+
+                    lines.append(row)
                 else:
                     lines.append(f"| {label} | {count} | {pct:.0f}% |")
             lines.append("")

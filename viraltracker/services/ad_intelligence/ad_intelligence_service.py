@@ -311,6 +311,11 @@ class AdIntelligenceService:
                         "cost_per_atc": baseline.median_cost_per_add_to_cart,
                     }
 
+            # Compute aggregate metrics by awareness level
+            awareness_aggregates = await self._compute_awareness_aggregates(
+                brand_id, run.date_range_start, run.date_range_end, classifications
+            )
+
             # Complete run
             summary = {
                 "total_ads": len(active_ids),
@@ -337,6 +342,7 @@ class AdIntelligenceService:
                 critical_recommendations=critical_recs,
                 recommendations=recs,
                 awareness_baselines=awareness_baselines,
+                awareness_aggregates=awareness_aggregates,
             )
 
         except Exception as e:
@@ -570,3 +576,88 @@ class AdIntelligenceService:
         except Exception as e:
             logger.warning(f"Error fetching total spend: {e}")
             return 0.0
+
+    async def _compute_awareness_aggregates(
+        self,
+        brand_id: UUID,
+        date_range_start: date,
+        date_range_end: date,
+        classifications: List[CreativeClassification],
+    ) -> Dict[str, Dict[str, Optional[float]]]:
+        """Compute aggregate metrics (totals) by awareness level.
+
+        Args:
+            brand_id: Brand UUID.
+            date_range_start: Start date.
+            date_range_end: End date.
+            classifications: List of classifications to get awareness levels from.
+
+        Returns:
+            Dict mapping awareness level to {spend, purchases, clicks, conversion_rate}.
+        """
+        # Build map of ad_id -> awareness_level from classifications
+        ad_awareness: Dict[str, str] = {}
+        for clf in classifications:
+            if clf.creative_awareness_level:
+                level = clf.creative_awareness_level.value if hasattr(
+                    clf.creative_awareness_level, "value"
+                ) else clf.creative_awareness_level
+                ad_awareness[clf.meta_ad_id] = level
+
+        if not ad_awareness:
+            return {}
+
+        # Query performance data for these ads
+        try:
+            result = self.supabase.table("meta_ads_performance").select(
+                "meta_ad_id, spend, purchases, clicks"
+            ).eq(
+                "brand_id", str(brand_id)
+            ).gte(
+                "date", date_range_start.isoformat()
+            ).lte(
+                "date", date_range_end.isoformat()
+            ).in_(
+                "meta_ad_id", list(ad_awareness.keys())
+            ).execute()
+
+            # Aggregate by awareness level
+            agg: Dict[str, Dict[str, float]] = {}
+            for row in result.data or []:
+                ad_id = row.get("meta_ad_id")
+                level = ad_awareness.get(ad_id)
+                if not level:
+                    continue
+
+                if level not in agg:
+                    agg[level] = {"spend": 0.0, "purchases": 0, "clicks": 0}
+
+                spend = _safe_numeric(row.get("spend"))
+                purchases = _safe_numeric(row.get("purchases"))
+                clicks = _safe_numeric(row.get("clicks"))
+
+                if spend:
+                    agg[level]["spend"] += spend
+                if purchases:
+                    agg[level]["purchases"] += purchases
+                if clicks:
+                    agg[level]["clicks"] += clicks
+
+            # Compute conversion rate and format results
+            result_dict: Dict[str, Dict[str, Optional[float]]] = {}
+            for level, metrics in agg.items():
+                clicks = metrics["clicks"]
+                purchases = metrics["purchases"]
+                conv_rate = (purchases / clicks * 100) if clicks > 0 else None
+                result_dict[level] = {
+                    "spend": round(metrics["spend"], 2),
+                    "purchases": int(metrics["purchases"]),
+                    "clicks": int(metrics["clicks"]),
+                    "conversion_rate": round(conv_rate, 2) if conv_rate else None,
+                }
+
+            return result_dict
+
+        except Exception as e:
+            logger.warning(f"Error computing awareness aggregates: {e}")
+            return {}
