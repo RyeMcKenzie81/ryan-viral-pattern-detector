@@ -6,7 +6,10 @@ Produces immutable classification snapshots stored in ad_creative_classification
 Classification sources (in priority order):
 1. existing_brand_ad_analysis — Reuse existing Gemini analysis from brand research
 2. gemini_video — Video analysis via Gemini Files API (first 3-5 seconds)
-3. gemini_light — Lightweight Gemini classification from image + copy
+3. gemini_light_stored — Lightweight Gemini classification from stored image + copy
+4. gemini_light_thumbnail — Same, using CDN thumbnail (may expire)
+5. skipped_missing_image — No image available, ad skipped (no copy-only fallback)
+6. skipped_missing_video_file / skipped_video_budget_exhausted — Video skip variants
 
 Reclassification triggers:
 - force=True (explicit user request)
@@ -147,8 +150,9 @@ class ClassifierService:
         Fallback chain:
         1. existing_brand_ad_analysis — reuse full Gemini analysis
         2. gemini_video — download video → Gemini Files API (if video + budget)
-        3. gemini_light — image + copy classification
-        4. copy-only — if no thumbnail available
+        3. gemini_light_stored — image from storage + copy classification
+        4. gemini_light_thumbnail — image from CDN thumbnail + copy
+        5. skipped_missing_image — no image available, skip (no copy-only)
 
         Args:
             meta_ad_id: Meta ad ID string.
@@ -254,7 +258,22 @@ class ClassifierService:
                 thumbnail_url, ad_copy, ad_data.get("lp_data"),
                 meta_ad_id=meta_ad_id,
             )
-            source = "gemini_light"
+            if classification_data is not None:
+                media_source = classification_data.pop("_media_source", None)
+                source = f"gemini_light_{media_source}" if media_source else "gemini_light"
+            else:
+                # Skip — no image available for this ad
+                return CreativeClassification(
+                    meta_ad_id=meta_ad_id,
+                    brand_id=brand_id,
+                    organization_id=org_id,
+                    run_id=run_id,
+                    source="skipped_missing_image",
+                    prompt_version=self.CURRENT_PROMPT_VERSION,
+                    schema_version=self.CURRENT_SCHEMA_VERSION,
+                    input_hash=current_hash,
+                    raw_classification={"skip_reason": "missing_image"},
+                )
 
         # Build classification record
         now = datetime.now(timezone.utc)
@@ -400,11 +419,15 @@ class ClassifierService:
                     video_budget_remaining=video_budget,
                 )
                 classifications.append(classification)
-                new_count += 1
 
-                # Track video classifications
-                if classification.source == "gemini_video":
+                # Track skip vs new vs video
+                if classification.source and classification.source.startswith("skipped_"):
+                    skipped_count += 1
+                elif classification.source == "gemini_video":
+                    new_count += 1
                     video_classification_count += 1
+                else:
+                    new_count += 1
 
             except Exception as e:
                 logger.error(f"Error classifying ad {meta_ad_id}: {e}")
@@ -415,7 +438,7 @@ class ClassifierService:
             f"Classified batch: {len(classifications)} total "
             f"({cached_count} cached, {new_count} new, "
             f"{video_classification_count} video), "
-            f"{skipped_count} skipped (cap), {error_count} errors"
+            f"{skipped_count} skipped, {error_count} errors"
         )
         return BatchClassificationResult(
             classifications=classifications,
@@ -1347,12 +1370,12 @@ class ClassifierService:
         ad_copy: str,
         lp_data: Optional[Dict] = None,
         meta_ad_id: Optional[str] = None,
-    ) -> Dict:
+    ) -> Optional[Dict]:
         """Run lightweight Gemini classification on ad image + copy.
 
         Tries stored image from meta_ad_assets first (permanent, reliable),
-        then falls back to the thumbnail_url (may expire). If neither works,
-        classifies from copy only.
+        then falls back to the thumbnail_url (may expire). If neither source
+        provides an image, returns None to signal the caller to skip.
 
         Args:
             thumbnail_url: URL to ad thumbnail/image (fallback).
@@ -1361,7 +1384,8 @@ class ClassifierService:
             meta_ad_id: Meta ad ID for stored image lookup.
 
         Returns:
-            Dict with classification fields.
+            Dict with classification fields including ``_media_source``
+            (``"stored"`` or ``"thumbnail"``), or None if no image available.
         """
         try:
             if self._gemini is not None:
@@ -1373,6 +1397,7 @@ class ClassifierService:
             prompt = CLASSIFICATION_PROMPT.format(ad_copy=ad_copy or "(no copy available)")
 
             image_bytes = None
+            media_source = None
 
             # 1. Try stored image from meta_ad_assets (permanent copy)
             if meta_ad_id:
@@ -1380,6 +1405,7 @@ class ClassifierService:
                 if storage_path:
                     image_bytes = await self._download_from_storage(storage_path)
                     if image_bytes:
+                        media_source = "stored"
                         logger.info(f"Using stored image for {meta_ad_id}")
 
             # 2. Fall back to thumbnail_url (may be expired CDN link)
@@ -1389,22 +1415,26 @@ class ClassifierService:
                 try:
                     with urllib.request.urlopen(thumbnail_url, timeout=10) as response:
                         image_bytes = response.read()
+                    if image_bytes:
+                        media_source = "thumbnail"
                 except Exception as img_err:
                     logger.warning(f"Failed to download thumbnail for {meta_ad_id}: {img_err}")
 
-            # 3. Classify with image or copy-only
-            if image_bytes:
-                import base64
-                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                result_text = await gemini.analyze_image(image_b64, prompt)
-            else:
-                logger.warning(f"No image available for {meta_ad_id or 'unknown'}, classifying from copy only")
-                result_text = await gemini.analyze_text(text="", prompt=prompt)
+            # 3. Skip if no image available (no copy-only fallback)
+            if not image_bytes:
+                logger.warning(f"No image available for {meta_ad_id or 'unknown'}, skipping classification.")
+                return None
+
+            # 4. Classify with image
+            import base64
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            result_text = await gemini.analyze_image(image_b64, prompt)
 
             # Parse JSON response
             parsed = self._parse_gemini_response(result_text)
             parsed["model_used"] = "gemini_light"
             parsed["raw_classification"] = parsed.copy()
+            parsed["_media_source"] = media_source
             return parsed
 
         except Exception as e:

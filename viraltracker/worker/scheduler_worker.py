@@ -1080,7 +1080,7 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                     f"{classify_result['video']} video"
                 )
                 if classify_result['skipped'] > 0:
-                    logs.append(f"Skipped (cap): {classify_result['skipped']}")
+                    logs.append(f"Skipped (cap or missing media): {classify_result['skipped']}")
                 if classify_result['errors'] > 0:
                     logs.append(f"Classification errors: {classify_result['errors']}")
             except Exception as classify_err:
@@ -2116,7 +2116,7 @@ async def _run_classification_for_brand(
         )
         if batch_result.skipped_count > 0:
             logs.append(
-                f"Skipped {batch_result.skipped_count} ads (max_new={max_new} cap reached)"
+                f"Skipped {batch_result.skipped_count} ads (cap or missing media)"
             )
         if batch_result.error_count > 0:
             logs.append(f"Errors: {batch_result.error_count}")
