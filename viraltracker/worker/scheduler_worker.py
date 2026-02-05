@@ -7,6 +7,7 @@ This worker:
    - ad_creation: Execute ad creation workflow for each template
    - meta_sync: Sync Meta Ads performance data for a brand
    - scorecard: Generate weekly performance scorecard
+   - ad_classification: Pre-compute ad classifications in background
 3. Tracks template usage for the "unused" feature (ad_creation)
 4. Handles email/Slack exports
 5. Updates job run history
@@ -481,6 +482,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_template_approval_job(job)
     elif job_type == 'congruence_reanalysis':
         return await execute_congruence_reanalysis_job(job)
+    elif job_type == 'ad_classification':
+        return await execute_ad_classification_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -1057,6 +1060,27 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         except Exception as asset_err:
             logs.append(f"Asset download error (non-fatal): {asset_err}")
             logger.warning(f"Asset download failed for {brand_name}: {asset_err}")
+
+        # Step 5: Auto-classify ads if enabled
+        if params.get('auto_classify', False):
+            try:
+                from uuid import UUID
+                logs.append("")
+                logs.append("--- Auto-classification ---")
+                classify_result = await _run_classification_for_brand(
+                    brand_id=UUID(brand_id),
+                    logs=logs,
+                    max_new=params.get('classify_max_new', 200),
+                    max_video=params.get('classify_max_video', 15),
+                    days_back=params.get('classify_days_back', days_back),
+                )
+                logs.append(
+                    f"Classified: {classify_result['classified']} total, "
+                    f"{classify_result['video']} video"
+                )
+            except Exception as classify_err:
+                logs.append(f"Auto-classification error (non-fatal): {classify_err}")
+                logger.warning(f"Auto-classification failed for {brand_name}: {classify_err}")
 
         # Update job run as completed
         update_job_run(run_id, {
@@ -1954,6 +1978,216 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Congruence re-analysis job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Ad Classification Job Handler
+# ============================================================================
+
+async def _run_classification_for_brand(
+    brand_id: "UUID",
+    logs: List[str],
+    max_new: int = 200,
+    max_video: int = 15,
+    days_back: int = 30,
+) -> Dict[str, Any]:
+    """Shared helper: classify active ads for a brand.
+
+    Used by both the standalone ad_classification job and the auto_classify
+    chain in meta_sync. Initializes services, fetches active ads, creates
+    an ad_intelligence_runs record, and calls classify_batch().
+
+    Args:
+        brand_id: Brand UUID.
+        logs: Mutable log list to append progress messages.
+        max_new: Max new Gemini classification calls (default: 200).
+        max_video: Max video classification calls (default: 15).
+        days_back: Number of days to look back for active ads (default: 30).
+
+    Returns:
+        Dict with keys: total_active, classified, video, errors.
+    """
+    from uuid import UUID as _UUID
+    from datetime import date as _date
+    from viraltracker.services.gemini_service import GeminiService
+    from viraltracker.services.ad_intelligence.classifier_service import ClassifierService
+    from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+    from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
+    from viraltracker.services.ad_intelligence.helpers import get_active_ad_ids
+    from viraltracker.services.video_analysis_service import VideoAnalysisService
+
+    db = get_supabase_client()
+
+    # Look up organization_id from brands table
+    brand_result = db.table("brands").select("organization_id").eq(
+        "id", str(brand_id)
+    ).limit(1).execute()
+
+    if not brand_result.data:
+        raise ValueError(f"Brand {brand_id} not found")
+
+    org_id = _UUID(brand_result.data[0]["organization_id"])
+
+    # Initialize services
+    gemini_service = GeminiService()
+    video_analysis_service = VideoAnalysisService(db)
+    congruence_analyzer = CongruenceAnalyzer(gemini_service)
+    classifier = ClassifierService(
+        supabase_client=db,
+        gemini_service=gemini_service,
+        video_analysis_service=video_analysis_service,
+        congruence_analyzer=congruence_analyzer,
+    )
+
+    # Get active ad IDs
+    date_range_end = _date.today()
+    active_ids = await get_active_ad_ids(
+        db, brand_id, date_range_end, active_window_days=days_back
+    )
+
+    if not active_ids:
+        logs.append("No active ads found for classification")
+        return {
+            "total_active": 0,
+            "classified": 0,
+            "video": 0,
+            "errors": 0,
+        }
+
+    logs.append(f"Found {len(active_ids)} active ads")
+
+    # Create ad_intelligence_runs record for audit trail
+    intel_service = AdIntelligenceService(db, gemini_service=gemini_service)
+    run = await intel_service.create_classification_run(
+        brand_id=brand_id,
+        org_id=org_id,
+    )
+
+    logs.append(f"Classification run: {run.id}")
+
+    # Run classification (classify_batch logs new vs cached counts internally)
+    try:
+        classifications = await classifier.classify_batch(
+            brand_id=brand_id,
+            org_id=org_id,
+            run_id=run.id,
+            meta_ad_ids=active_ids,
+            max_new=max_new,
+            max_video=max_video,
+        )
+
+        total_classified = len(classifications)
+        video_count = sum(1 for c in classifications if c.source == "gemini_video")
+
+        # Complete the run
+        await intel_service._complete_run(run.id, "completed", {
+            "total_ads": len(active_ids),
+            "classified": total_classified,
+            "video": video_count,
+        })
+
+        return {
+            "total_active": len(active_ids),
+            "classified": total_classified,
+            "video": video_count,
+            "errors": len(active_ids) - total_classified,
+        }
+
+    except Exception as e:
+        await intel_service._complete_run(run.id, "failed", error_message=str(e))
+        raise
+
+
+async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
+    """Execute a standalone ad classification job.
+
+    Pre-computes classifications for active ads so that subsequent
+    full_analysis() calls find fresh cached results, making analysis
+    near-instant.
+
+    Parameters (from job['parameters']):
+        max_new: int - Max new Gemini classifications (default: 200)
+        max_video: int - Max video classifications (default: 15)
+        days_back: int - Days to look back for active ads (default: 30)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting ad classification job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from uuid import UUID
+
+        max_new = params.get('max_new', 200)
+        max_video = params.get('max_video', 15)
+        days_back = params.get('days_back', 30)
+
+        logs.append(f"Classifying ads for brand: {brand_name}")
+        logs.append(f"Max new: {max_new}, Max video: {max_video}, Days back: {days_back}")
+
+        result = await _run_classification_for_brand(
+            brand_id=UUID(brand_id),
+            logs=logs,
+            max_new=max_new,
+            max_video=max_video,
+            days_back=days_back,
+        )
+
+        logs.append("")
+        logs.append("=== Summary ===")
+        logs.append(f"Active ads: {result['total_active']}")
+        logs.append(f"Classified: {result['classified']}")
+        logs.append(f"Video classifications: {result['video']}")
+        if result['errors'] > 0:
+            logs.append(f"Errors: {result['errors']}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(
+            f"Completed ad classification job: {job_name} - "
+            f"{result['classified']} classified, {result['video']} video"
+        )
+        return {"success": True, **result}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Ad classification job {job_name} failed: {error_msg}")
 
         update_job_run(run_id, {
             "status": "failed",

@@ -715,6 +715,8 @@ def render_schedule_list():
                     type_badge = "📥 "
                 elif job_type == 'template_approval':
                     type_badge = "✅ "
+                elif job_type == 'ad_classification':
+                    type_badge = "🔬 "
                 st.markdown(f"### {status_emoji} {type_badge}{job['name']}")
 
                 # Show brand → product for ad_creation, just brand for others, system-wide for template_approval
@@ -1049,7 +1051,7 @@ def _render_template_scrape_form(existing_job, is_edit):
     # Submit Button
     # ========================================================================
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_scrape_schedule"):
@@ -1097,6 +1099,43 @@ def _render_template_scrape_form(existing_job, is_edit):
                     st.rerun()
 
     with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_scrape_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+            if not search_url:
+                st.error("Please enter a Facebook Ad Library search URL")
+                st.stop()
+
+            parameters = {
+                'search_url': search_url,
+                'max_ads': max_ads,
+                'images_only': images_only,
+                'auto_queue': auto_queue
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'template_scrape',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
         if st.button("Cancel", use_container_width=True, key="cancel_scrape_schedule"):
             st.session_state.scheduler_view = 'list'
             st.rerun()
@@ -1374,6 +1413,318 @@ def _render_template_approval_form(existing_job, is_edit):
 # View: Create/Edit Schedule
 # ============================================================================
 
+def _render_ad_classification_form(existing_job, is_edit):
+    """Render the ad classification job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job.get('brand_id'):
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand whose ads to classify",
+        key="classify_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    existing_params = (existing_job or {}).get('parameters') or {}
+
+    job_name = st.text_input(
+        "Job name",
+        value=existing_job['name'] if existing_job else f"Classify {selected_brand_name} Ads",
+        key="classify_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Classification Settings
+    # ========================================================================
+
+    st.subheader("3. Classification Settings")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        max_new = st.number_input(
+            "Max new classifications",
+            min_value=1,
+            max_value=500,
+            value=existing_params.get('max_new', 200),
+            help="Max new Gemini API calls per run (cached results are free)",
+            key="classify_max_new"
+        )
+    with col2:
+        max_video = st.number_input(
+            "Max video classifications",
+            min_value=0,
+            max_value=50,
+            value=existing_params.get('max_video', 15),
+            help="Max video analysis calls (slower/more expensive)",
+            key="classify_max_video"
+        )
+    with col3:
+        days_back = st.number_input(
+            "Days back",
+            min_value=1,
+            max_value=90,
+            value=existing_params.get('days_back', 30),
+            help="Look back window for active ads",
+            key="classify_days_back"
+        )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule
+    # ========================================================================
+
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job.get('schedule_type') == 'recurring' else 1,
+        format_func=lambda x: "Recurring" if x == 'recurring' else "One-time",
+        horizontal=True,
+        key="classify_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly'],
+                index=0,
+                format_func=lambda x: x.capitalize(),
+                key="classify_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="classify_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=3,  # 4 AM
+                    key="classify_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="classify_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="classify_ampm"
+                )
+
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date() + timedelta(days=1),
+                min_value=datetime.now(PST).date(),
+                key="classify_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=3,
+                    key="classify_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="classify_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="classify_onetime_ampm"
+                )
+
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Buttons
+    # ========================================================================
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_classify_schedule"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_new': max_new,
+                'max_video': max_video,
+                'days_back': days_back,
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'ad_classification',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_classify_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_new': max_new,
+                'max_video': max_video,
+                'days_back': days_back,
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'ad_classification',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
+        if st.button("Cancel", use_container_width=True, key="cancel_classify_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
 def render_create_schedule():
     """Render the create/edit schedule form."""
     is_edit = st.session_state.edit_job_id is not None
@@ -1405,12 +1756,13 @@ def render_create_schedule():
         st.subheader("Job Type")
         job_type = st.radio(
             "What type of job do you want to schedule?",
-            options=['ad_creation', 'template_scrape', 'template_approval'],
+            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification'],
             index=0,
             format_func=lambda x: {
                 'ad_creation': '🎨 Ad Creation - Generate ads from templates',
                 'template_scrape': '📥 Template Scrape - Scrape Facebook Ad Library for templates',
-                'template_approval': '✅ Template Approval - Batch AI analysis of pending queue items'
+                'template_approval': '✅ Template Approval - Batch AI analysis of pending queue items',
+                'ad_classification': '🔬 Ad Classification - Pre-compute ad awareness classifications'
             }.get(x, x),
             horizontal=True,
             key="job_type_selector"
@@ -1431,6 +1783,13 @@ def render_create_schedule():
     # ========================================================================
     if job_type == 'template_approval':
         _render_template_approval_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # AD CLASSIFICATION JOB FORM
+    # ========================================================================
+    if job_type == 'ad_classification':
+        _render_ad_classification_form(existing_job, is_edit)
         return
 
     # ========================================================================
@@ -2515,128 +2874,154 @@ def render_create_schedule():
     # Submit
     # ========================================================================
 
-    col1, col2, col3 = st.columns([2, 2, 4])
+    def _validate_ad_creation_form():
+        """Validate ad creation form and return errors list."""
+        errors = []
+        if not job_name:
+            errors.append("Job name is required")
+        if template_source == 'uploaded':
+            if template_mode == 'specific' and not template_ids:
+                errors.append("Select at least one template")
+            if template_mode == 'upload' and not st.session_state.sched_uploaded_files:
+                errors.append("Upload at least one template image")
+        else:
+            if not scraped_template_ids:
+                errors.append("Select at least one scraped template")
+        if export_destination in ['email', 'both'] and not export_email:
+            errors.append("Email address is required")
+        if content_source == 'plan' and not selected_plan_id:
+            errors.append("Select a belief plan for plan-based scheduling")
+        if content_source == 'angles' and not selected_angle_ids:
+            errors.append("Select at least one angle for angle-based scheduling")
+        if has_offer_variants and not offer_variant_id:
+            errors.append("Offer variant selection is required. This product has multiple landing pages.")
+        return errors
+
+    def _build_ad_creation_parameters():
+        """Build the parameters dict for an ad creation job."""
+        params = {
+            'num_variations': num_variations,
+            'content_source': content_source,
+            'color_mode': color_mode,
+            'image_selection_mode': image_selection_mode,
+            'export_destination': export_destination,
+            'export_email': export_email if export_destination in ['email', 'both'] else None,
+            'persona_id': persona_id,
+            'variant_id': variant_id,
+            'offer_variant_id': offer_variant_id,
+            'destination_url': destination_url,
+            'additional_instructions': additional_instructions if additional_instructions else None
+        }
+        if content_source == 'plan':
+            params['plan_id'] = selected_plan_id
+        elif content_source == 'angles':
+            params['angle_ids'] = selected_angle_ids
+            params['belief_persona_id'] = belief_persona_id
+            params['belief_jtbd_id'] = belief_jtbd_id
+        return params
+
+    def _build_ad_creation_job_data(params, sched_type, cron_expr, sched_at, next_run_at, max_runs_val):
+        """Build the full job_data dict for an ad creation job."""
+        return {
+            'product_id': selected_product_id,
+            'brand_id': selected_product.get('brand_id') or selected_product.get('brands', {}).get('id'),
+            'name': job_name,
+            'schedule_type': sched_type,
+            'cron_expression': cron_expr,
+            'scheduled_at': sched_at,
+            'next_run_at': next_run_at,
+            'max_runs': max_runs_val,
+            'template_source': template_source,
+            'template_mode': template_mode if template_source == 'uploaded' else None,
+            'template_count': template_count if template_source == 'uploaded' and template_mode == 'unused' else None,
+            'template_ids': template_ids if template_source == 'uploaded' and template_mode in ['specific', 'upload'] else None,
+            'scraped_template_ids': scraped_template_ids if template_source == 'scraped' else None,
+            'parameters': params
+        }
+
+    def _handle_template_upload():
+        """Handle upload mode - upload files first. Returns True on success."""
+        if template_source == 'uploaded' and template_mode == 'upload':
+            nonlocal template_ids, template_count
+            with st.spinner("Uploading templates..."):
+                uploaded_storage_names = upload_template_files(st.session_state.sched_uploaded_files)
+            if not uploaded_storage_names:
+                st.error("Failed to upload templates")
+                return False
+            template_ids = uploaded_storage_names
+            template_count = len(uploaded_storage_names)
+            st.success(f"Uploaded {template_count} template(s)")
+        return True
+
+    def _clear_ad_creation_state():
+        """Clear form state after successful submit."""
+        st.session_state.scheduler_view = 'list'
+        st.session_state.sched_selected_templates = []
+        st.session_state.sched_uploaded_files = []
+        st.session_state.sched_selected_angle_ids = []
+        st.session_state.sched_selected_scraped_templates = []
+
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("💾 Save Schedule", type="primary", use_container_width=True):
-            # Validation
-            errors = []
-            if not job_name:
-                errors.append("Job name is required")
-
-            # Template validation based on source
-            if template_source == 'uploaded':
-                if template_mode == 'specific' and not template_ids:
-                    errors.append("Select at least one template")
-                if template_mode == 'upload' and not st.session_state.sched_uploaded_files:
-                    errors.append("Upload at least one template image")
-            else:
-                # Scraped template source
-                if not scraped_template_ids:
-                    errors.append("Select at least one scraped template")
-
-            if export_destination in ['email', 'both'] and not export_email:
-                errors.append("Email address is required")
-
-            # Belief-first validations
-            if content_source == 'plan' and not selected_plan_id:
-                errors.append("Select a belief plan for plan-based scheduling")
-            if content_source == 'angles' and not selected_angle_ids:
-                errors.append("Select at least one angle for angle-based scheduling")
-
-            # Offer variant validation - REQUIRED when product has offer variants
-            if has_offer_variants and not offer_variant_id:
-                errors.append("Offer variant selection is required. This product has multiple landing pages.")
-
+            errors = _validate_ad_creation_form()
             if errors:
                 for error in errors:
                     st.error(error)
             else:
-                # Handle upload mode - upload files first (only for uploaded template source)
-                if template_source == 'uploaded' and template_mode == 'upload':
-                    with st.spinner("Uploading templates..."):
-                        uploaded_storage_names = upload_template_files(st.session_state.sched_uploaded_files)
+                if not _handle_template_upload():
+                    st.stop()
 
-                    if not uploaded_storage_names:
-                        st.error("Failed to upload templates")
-                        st.stop()
-
-                    template_ids = uploaded_storage_names
-                    template_count = len(uploaded_storage_names)
-                    st.success(f"✅ Uploaded {template_count} template(s)")
-
-                # Build job data
-                parameters = {
-                    'num_variations': num_variations,
-                    'content_source': content_source,
-                    'color_mode': color_mode,
-                    'image_selection_mode': image_selection_mode,
-                    'export_destination': export_destination,
-                    'export_email': export_email if export_destination in ['email', 'both'] else None,
-                    'persona_id': persona_id,
-                    'variant_id': variant_id,
-                    'offer_variant_id': offer_variant_id,
-                    'destination_url': destination_url,
-                    'additional_instructions': additional_instructions if additional_instructions else None
-                }
-
-                # Add belief-first parameters based on content_source
-                if content_source == 'plan':
-                    parameters['plan_id'] = selected_plan_id
-                elif content_source == 'angles':
-                    parameters['angle_ids'] = selected_angle_ids
-                    parameters['belief_persona_id'] = belief_persona_id
-                    parameters['belief_jtbd_id'] = belief_jtbd_id
-
+                parameters = _build_ad_creation_parameters()
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
-
-                job_data = {
-                    'product_id': selected_product_id,
-                    'brand_id': selected_product.get('brand_id') or selected_product.get('brands', {}).get('id'),
-                    'name': job_name,
-                    'schedule_type': schedule_type,
-                    'cron_expression': cron_expression,
-                    'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
-                    'next_run_at': next_run.isoformat() if next_run else None,
-                    'max_runs': max_runs,
-                    # Template source indicator
-                    'template_source': template_source,
-                    # For uploaded templates
-                    'template_mode': template_mode if template_source == 'uploaded' else None,
-                    'template_count': template_count if template_source == 'uploaded' and template_mode == 'unused' else None,
-                    'template_ids': template_ids if template_source == 'uploaded' and template_mode in ['specific', 'upload'] else None,
-                    # For scraped templates
-                    'scraped_template_ids': scraped_template_ids if template_source == 'scraped' else None,
-                    'parameters': parameters
-                }
+                job_data = _build_ad_creation_job_data(
+                    parameters, schedule_type, cron_expression,
+                    scheduled_at.isoformat() if scheduled_at else None,
+                    next_run.isoformat() if next_run else None,
+                    max_runs,
+                )
 
                 if is_edit:
                     if update_scheduled_job(st.session_state.edit_job_id, job_data):
                         st.success("Schedule updated!")
-                        st.session_state.scheduler_view = 'list'
-                        st.session_state.sched_selected_templates = []
-                        st.session_state.sched_uploaded_files = []
-                        st.session_state.sched_selected_angle_ids = []
-                        st.session_state.sched_selected_scraped_templates = []
+                        _clear_ad_creation_state()
                         st.rerun()
                 else:
                     job_id = create_scheduled_job(job_data)
                     if job_id:
                         st.success("Schedule created!")
-                        st.session_state.scheduler_view = 'list'
-                        st.session_state.sched_selected_templates = []
-                        st.session_state.sched_uploaded_files = []
-                        st.session_state.sched_selected_angle_ids = []
-                        st.session_state.sched_selected_scraped_templates = []
+                        _clear_ad_creation_state()
                         st.rerun()
 
     with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_ad_creation_now"):
+            errors = _validate_ad_creation_form()
+            if errors:
+                for error in errors:
+                    st.error(error)
+            else:
+                if not _handle_template_upload():
+                    st.stop()
+
+                parameters = _build_ad_creation_parameters()
+                run_now_time = datetime.now(PST) + timedelta(minutes=1)
+                job_data = _build_ad_creation_job_data(
+                    parameters, 'one_time', None,
+                    run_now_time.isoformat(),
+                    run_now_time.isoformat(),
+                    None,
+                )
+
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Job scheduled to run in ~1 minute!")
+                    _clear_ad_creation_state()
+                    st.rerun()
+
+    with col3:
         if st.button("Cancel", use_container_width=True):
-            st.session_state.scheduler_view = 'list'
-            st.session_state.sched_selected_templates = []
-            st.session_state.sched_uploaded_files = []
-            st.session_state.sched_selected_angle_ids = []
-            st.session_state.sched_selected_scraped_templates = []
+            _clear_ad_creation_state()
             st.rerun()
 
 
@@ -2674,6 +3059,8 @@ def render_schedule_detail():
             type_badge = "📥 "
         elif job_type == 'template_approval':
             type_badge = "✅ "
+        elif job_type == 'ad_classification':
+            type_badge = "🔬 "
         st.title(f"{status_emoji} {type_badge}{job['name']}")
         if job_type == 'ad_creation':
             st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")

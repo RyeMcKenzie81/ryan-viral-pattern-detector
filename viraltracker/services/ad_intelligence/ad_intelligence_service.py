@@ -486,6 +486,61 @@ class AdIntelligenceService:
             rec_id, RecommendationStatus.ACKNOWLEDGED, note=note, user_id=user_id
         )
 
+    async def create_classification_run(
+        self,
+        brand_id: UUID,
+        org_id: UUID,
+        triggered_by: Optional[str] = "scheduler_worker",
+    ) -> AnalysisRun:
+        """Create a lightweight run record for background classification.
+
+        Used by the scheduler worker to create an audit trail when
+        pre-computing classifications outside of full_analysis().
+
+        Args:
+            brand_id: Brand UUID.
+            org_id: Organization UUID.
+            triggered_by: Identifier of the caller (default: scheduler_worker).
+
+        Returns:
+            AnalysisRun model with populated ID.
+        """
+        config = RunConfig()
+        now = datetime.now(timezone.utc)
+        date_range_end = now.date()
+        date_range_start = date_range_end - timedelta(days=config.days_back)
+
+        record = {
+            "organization_id": str(org_id),
+            "brand_id": str(brand_id),
+            "date_range_start": date_range_start.isoformat(),
+            "date_range_end": date_range_end.isoformat(),
+            "goal": "background_classification",
+            "config": config.model_dump(),
+            "status": "running",
+        }
+
+        result = self.supabase.table("ad_intelligence_runs").insert(record).execute()
+
+        if not result.data:
+            raise RuntimeError("Failed to create classification run")
+
+        run_data = result.data[0]
+        run = AnalysisRun(
+            id=UUID(run_data["id"]),
+            organization_id=org_id,
+            brand_id=brand_id,
+            date_range_start=date_range_start,
+            date_range_end=date_range_end,
+            goal="background_classification",
+            config=config,
+            status="running",
+            created_at=run_data.get("created_at"),
+        )
+
+        logger.info(f"Created classification run {run.id} for brand {brand_id}")
+        return run
+
     async def search_brands(self, query: str) -> list:
         """Search brands by name (case-insensitive partial match).
 
