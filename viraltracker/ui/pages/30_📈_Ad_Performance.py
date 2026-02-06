@@ -1093,11 +1093,11 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None):
             )
             filtered_data = [
                 d for d in data
-                if d.get("ad_status", "").upper() == "ACTIVE"
+                if (d.get("ad_status") or "").upper() == "ACTIVE"
                 and d.get("meta_ad_id") in recent_ad_ids
             ]
         else:
-            filtered_data = [d for d in data if d.get("ad_status", "").upper() == "ACTIVE"]
+            filtered_data = [d for d in data if (d.get("ad_status") or "").upper() == "ACTIVE"]
 
         if not filtered_data:
             st.info("No currently active ads found. Check 'Include inactive ads' to see all ads.")
