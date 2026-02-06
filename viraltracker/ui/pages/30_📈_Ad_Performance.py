@@ -1305,13 +1305,14 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
         a["campaign_name"] = d.get("campaign_name", "")
         a["meta_adset_id"] = d.get("meta_adset_id", "")
         a["meta_campaign_id"] = d.get("meta_campaign_id", "")
+        a["meta_ad_account_id"] = d.get("meta_ad_account_id", "")
         a["spend"] += float(d.get("spend") or 0)
         a["impressions"] += int(d.get("impressions") or 0)
         a["link_clicks"] += int(d.get("link_clicks") or 0)
         a["add_to_carts"] += int(d.get("add_to_carts") or 0)
         a["purchases"] += int(d.get("purchases") or 0)
         a["purchase_value"] += float(d.get("purchase_value") or 0)
-        
+
         # Capture creative details (first non-empty value wins or overwrite)
         if d.get("image_url"): a["image_url"] = d.get("image_url")
         if d.get("thumbnail_url"): a["thumbnail_url"] = d.get("thumbnail_url")
@@ -1332,6 +1333,7 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
             "campaign_name": a["campaign_name"],
             "meta_adset_id": a["meta_adset_id"],
             "meta_campaign_id": a["meta_campaign_id"],
+            "meta_ad_account_id": a["meta_ad_account_id"],
             "spend": a["spend"],
             "impressions": a["impressions"],
             "link_clicks": a["link_clicks"],
