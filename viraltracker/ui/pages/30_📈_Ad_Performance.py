@@ -1134,10 +1134,11 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                 status_emoji = get_status_emoji(status) if status else ""
 
                 if roas > 0:
+                    safe_name = name.replace("[", "\\[").replace("]", "\\]")
                     meta_ad_id = ad.get("meta_ad_id")
                     if meta_ad_id and ad_account_id:
                         ads_mgr_url = f"https://www.facebook.com/adsmanager/manage/ads?act={ad_account_id}&selected_ad_ids={meta_ad_id}"
-                        st.markdown(f"**{i}. {status_emoji} {name}** [↗]({ads_mgr_url})")
+                        st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({ads_mgr_url})")
                     else:
                         st.markdown(f"**{i}. {status_emoji} {name}**")
                     st.caption(f"📁 {campaign} › {adset}")
@@ -1229,10 +1230,11 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                 status = ad.get("ad_status", "")
                 status_emoji = get_status_emoji(status) if status else ""
 
+                safe_name = name.replace("[", "\\[").replace("]", "\\]")
                 meta_ad_id = ad.get("meta_ad_id")
                 if meta_ad_id and ad_account_id:
                     ads_mgr_url = f"https://www.facebook.com/adsmanager/manage/ads?act={ad_account_id}&selected_ad_ids={meta_ad_id}"
-                    st.markdown(f"**{i}. {status_emoji} {name}** [↗]({ads_mgr_url})")
+                    st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({ads_mgr_url})")
                 else:
                     st.markdown(f"**{i}. {status_emoji} {name}**")
                 st.caption(f"📁 {campaign} › {adset}")
