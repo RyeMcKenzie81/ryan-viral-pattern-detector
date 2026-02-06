@@ -1140,7 +1140,7 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                     safe_name = name.replace("[", "\\[").replace("]", "\\]")
                     meta_ad_id = ad.get("meta_ad_id")
                     if meta_ad_id and ads_mgr_account:
-                        ads_mgr_url = f"https://www.facebook.com/adsmanager/manage/ads?act={ads_mgr_account}&selected_ad_ids={meta_ad_id}"
+                        ads_mgr_url = f"https://adsmanager.facebook.com/adsmanager/manage/ads?act={ads_mgr_account}&selected_ad_ids={meta_ad_id}"
                         st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({ads_mgr_url})")
                     else:
                         st.markdown(f"**{i}. {status_emoji} {name}**")
