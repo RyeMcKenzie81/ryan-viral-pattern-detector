@@ -1054,12 +1054,19 @@ def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result
         except Exception as e:
             st.error(f"Failed to save: {e}")
 
+def _ads_manager_url(ad: Dict) -> Optional[str]:
+    """Build Facebook Ads Manager URL for an ad using its own row data."""
+    meta_ad_id = ad.get("meta_ad_id")
+    account_id = ad.get("meta_ad_account_id")
+    if not meta_ad_id or not account_id:
+        return None
+    clean_account = account_id.replace("act_", "")
+    return f"https://adsmanager.facebook.com/adsmanager/manage/ads?act={clean_account}&selected_ad_ids={meta_ad_id}"
+
+
 def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_account_id: Optional[str] = None):
     """Render top and worst performers section with optional deep analysis."""
     import pandas as pd
-
-    # Strip "act_" prefix for Ads Manager URL (stored as "act_123", URL needs just "123")
-    ads_mgr_account = ad_account_id.replace("act_", "") if ad_account_id else None
 
     if not data:
         return
@@ -1138,10 +1145,9 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
 
                 if roas > 0:
                     safe_name = name.replace("[", "\\[").replace("]", "\\]")
-                    meta_ad_id = ad.get("meta_ad_id")
-                    if meta_ad_id and ads_mgr_account:
-                        ads_mgr_url = f"https://adsmanager.facebook.com/adsmanager/manage/ads?act={ads_mgr_account}&selected_ad_ids={meta_ad_id}"
-                        st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({ads_mgr_url})")
+                    mgr_url = _ads_manager_url(ad)
+                    if mgr_url:
+                        st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({mgr_url})")
                     else:
                         st.markdown(f"**{i}. {status_emoji} {name}**")
                     st.caption(f"📁 {campaign} › {adset}")
@@ -1234,10 +1240,9 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                 status_emoji = get_status_emoji(status) if status else ""
 
                 safe_name = name.replace("[", "\\[").replace("]", "\\]")
-                meta_ad_id = ad.get("meta_ad_id")
-                if meta_ad_id and ad_account_id:
-                    ads_mgr_url = f"https://www.facebook.com/adsmanager/manage/ads?act={ad_account_id}&selected_ad_ids={meta_ad_id}"
-                    st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({ads_mgr_url})")
+                mgr_url = _ads_manager_url(ad)
+                if mgr_url:
+                    st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({mgr_url})")
                 else:
                     st.markdown(f"**{i}. {status_emoji} {name}**")
                 st.caption(f"📁 {campaign} › {adset}")
