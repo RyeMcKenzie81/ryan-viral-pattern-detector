@@ -1708,6 +1708,8 @@ class MetaAdPerformance(BaseModel):
     ad_name: Optional[str] = Field(None, description="Ad name (for matching)")
     adset_name: Optional[str] = Field(None, description="Ad set name")
     ad_status: Optional[str] = Field(None, description="Ad status: ACTIVE, PAUSED, DELETED, etc.")
+    campaign_name: Optional[str] = Field(None, description="Campaign name")
+    thumbnail_url: Optional[str] = Field(None, description="Ad thumbnail URL from Meta")
     date: datetime = Field(..., description="Date of this performance snapshot")
 
     # Core metrics

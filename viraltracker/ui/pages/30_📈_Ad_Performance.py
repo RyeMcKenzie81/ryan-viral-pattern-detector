@@ -1071,49 +1071,85 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
     if not data:
         return
 
-    # Filter option - default to active only
-    include_inactive = st.checkbox(
-        "Include inactive ads",
-        value=False,
-        key="performers_include_inactive",
-        help="Show paused/deleted ads in rankings"
-    )
+    from datetime import datetime, timedelta
 
-    # Filter data to active ads only if checkbox not checked
+    # Filter options
+    filter_col1, filter_col2 = st.columns([1, 1])
+    with filter_col1:
+        include_inactive = st.checkbox(
+            "Include inactive ads",
+            value=False,
+            key="performers_include_inactive",
+            help="Show paused/deleted ads in rankings"
+        )
+    with filter_col2:
+        perf_window = st.selectbox(
+            "Performance window",
+            options=[7, 14, 30],
+            index=0,
+            key="performers_window_days",
+            help="Number of days to aggregate for rankings"
+        )
+
+    # Compute max_date_dt once for both window and active-ad filtering
+    all_dates = [d.get("date") for d in data if d.get("date")]
+    max_date_dt = None
+    if all_dates:
+        max_date = max(all_dates)
+        try:
+            max_date_dt = datetime.strptime(max_date, "%Y-%m-%d")
+        except Exception:
+            pass
+
+    # Apply performance window: only include rows within the selected window
+    window_cutoff = (max_date_dt - timedelta(days=perf_window)).strftime("%Y-%m-%d") if max_date_dt else None
+
+    windowed_data = [
+        d for d in data
+        if not window_cutoff or (d.get("date") and d.get("date") > window_cutoff)
+    ]
+
+    # Filter to active ads if checkbox not checked
     if not include_inactive:
-        # Get the most recent date in the data to determine "recent" activity
-        from datetime import datetime, timedelta
-        all_dates = [d.get("date") for d in data if d.get("date")]
-        if all_dates:
-            max_date = max(all_dates)
-            try:
-                max_date_dt = datetime.strptime(max_date, "%Y-%m-%d")
-                recent_cutoff = (max_date_dt - timedelta(days=3)).strftime("%Y-%m-%d")
-            except:
-                recent_cutoff = None
-        else:
-            recent_cutoff = None
+        # Determine active status PER AD using the latest row's ad_status.
+        # ad_status is only populated on the most recent sync day, so we
+        # resolve it once per ad and then include ALL rows for active ads.
+        ad_latest_status: dict = {}
+        for d in data:  # scan ALL data, not just windowed
+            aid = d.get("meta_ad_id")
+            if not aid:
+                continue
+            row_date = d.get("date", "")
+            row_status = d.get("ad_status")
+            if row_status and (aid not in ad_latest_status or row_date > ad_latest_status[aid][0]):
+                ad_latest_status[aid] = (row_date, row_status.upper())
 
-        # Filter to ads that are both ACTIVE status AND have recent data
-        # This excludes ads in ended campaigns that still show status=ACTIVE
-        if recent_cutoff:
-            recent_ad_ids = set(
-                d.get("meta_ad_id") for d in data
-                if d.get("date") and d.get("date") >= recent_cutoff
-            )
-            filtered_data = [
-                d for d in data
-                if (d.get("ad_status") or "").upper() == "ACTIVE"
-                and d.get("meta_ad_id") in recent_ad_ids
-            ]
-        else:
-            filtered_data = [d for d in data if (d.get("ad_status") or "").upper() == "ACTIVE"]
+        # Also check for recent activity (any data in last 3 days)
+        recent_cutoff = (max_date_dt - timedelta(days=3)).strftime("%Y-%m-%d") if max_date_dt else None
+
+        recent_ad_ids = set(
+            d.get("meta_ad_id") for d in data
+            if recent_cutoff and d.get("date") and d.get("date") >= recent_cutoff
+        ) if recent_cutoff else set(d.get("meta_ad_id") for d in data if d.get("meta_ad_id"))
+
+        # An ad is "active" if its latest status is ACTIVE (or has no status)
+        # AND it has recent data
+        active_ad_ids = set()
+        for aid in recent_ad_ids:
+            latest = ad_latest_status.get(aid)
+            if latest is None or latest[1] == "ACTIVE":
+                active_ad_ids.add(aid)
+
+        filtered_data = [
+            d for d in windowed_data
+            if d.get("meta_ad_id") in active_ad_ids
+        ]
 
         if not filtered_data:
             st.info("No currently active ads found. Check 'Include inactive ads' to see all ads.")
             return
     else:
-        filtered_data = data
+        filtered_data = windowed_data
 
     # Pre-fetch deep analysis data for all candidate ads (avoids N+1 queries)
     top_ads = get_top_performers(filtered_data, metric="roas", top_n=5)
@@ -1299,9 +1335,11 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
         if not aid:
             continue
         a = ads[aid]
-        a["ad_name"] = d.get("ad_name", "Unknown")
-        a["ad_status"] = d.get("ad_status", "")
-        a["adset_name"] = d.get("adset_name", "")
+        a["ad_name"] = d.get("ad_name") or a.get("ad_name", "Unknown")
+        # Guard ad_status — keep the first (most recent, data is date DESC) non-empty value
+        if not a.get("ad_status"):
+            a["ad_status"] = d.get("ad_status") or ""
+        a["adset_name"] = d.get("adset_name") or a.get("adset_name", "")
         a["campaign_name"] = d.get("campaign_name", "")
         a["meta_adset_id"] = d.get("meta_adset_id", "")
         a["meta_campaign_id"] = d.get("meta_campaign_id", "")
@@ -1313,11 +1351,8 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
         a["purchases"] += int(d.get("purchases") or 0)
         a["purchase_value"] += float(d.get("purchase_value") or 0)
 
-        # Capture creative details (first non-empty value wins or overwrite)
-        if d.get("image_url"): a["image_url"] = d.get("image_url")
+        # Capture creative details (first non-empty value wins)
         if d.get("thumbnail_url"): a["thumbnail_url"] = d.get("thumbnail_url")
-        if d.get("headline"): a["headline"] = d.get("headline")
-        if d.get("body"): a["body"] = d.get("body")
 
     result = []
     for aid, a in ads.items():
@@ -1343,10 +1378,7 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
             "add_to_carts": a["add_to_carts"],
             "purchases": a["purchases"],
             "roas": roas,
-            "image_url": a.get("image_url"),
             "thumbnail_url": a.get("thumbnail_url"),
-            "headline": a.get("headline"),
-            "body": a.get("body"),
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
