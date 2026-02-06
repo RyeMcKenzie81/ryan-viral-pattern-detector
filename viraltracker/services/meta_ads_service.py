@@ -24,6 +24,11 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Meta returns purchases under different action_type values depending on the
+# account setup.  "omni_purchase" is the omnichannel variant (website + app +
+# offline combined) and is the superset, so we check it first.
+PURCHASE_ACTION_TYPES = ["omni_purchase", "purchase"]
+
 
 class MetaAdsService:
     """
@@ -588,8 +593,8 @@ class MetaAdsService:
             "roas": self._extract_roas(insight),
             # Extract from actions array
             "add_to_carts": self._extract_action(insight, "add_to_cart"),
-            "purchases": self._extract_action(insight, "purchase"),
-            "purchase_value": self._extract_action_value(insight, "purchase"),
+            "purchases": self._extract_action_any(insight, PURCHASE_ACTION_TYPES),
+            "purchase_value": self._extract_action_value_any(insight, PURCHASE_ACTION_TYPES),
             # Costs
             "cost_per_add_to_cart": self._extract_cost(insight, "add_to_cart"),
             # Video metrics (video_view = true 3-second views from actions array)
@@ -662,6 +667,30 @@ class MetaAdsService:
         for action in action_values:
             if action.get("action_type") == action_type:
                 return self._parse_float(action.get("value"))
+        return None
+
+    def _extract_action_any(self, insight: Dict[str, Any], action_types: List[str]) -> Optional[int]:
+        """Extract count for the first matching action type from a list.
+
+        Tries each action_type in order and returns the first match.
+        Useful for purchase variants (omni_purchase, purchase).
+        """
+        for action_type in action_types:
+            result = self._extract_action(insight, action_type)
+            if result is not None:
+                return result
+        return None
+
+    def _extract_action_value_any(self, insight: Dict[str, Any], action_types: List[str]) -> Optional[float]:
+        """Extract value for the first matching action type from a list.
+
+        Tries each action_type in order and returns the first match.
+        Useful for purchase variants (omni_purchase, purchase).
+        """
+        for action_type in action_types:
+            result = self._extract_action_value(insight, action_type)
+            if result is not None:
+                return result
         return None
 
     def _extract_cost(self, insight: Dict[str, Any], action_type: str) -> Optional[float]:

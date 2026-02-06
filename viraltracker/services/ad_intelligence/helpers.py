@@ -16,6 +16,12 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
+# Meta returns purchases under "omni_purchase" (omnichannel: website + app +
+# offline) or plain "purchase" depending on the account.  When the caller asks
+# for "purchase" conversions we check both variants, preferring omni_purchase
+# since it is the superset.
+PURCHASE_VARIANTS = ["omni_purchase", "purchase"]
+
 
 # =============================================================================
 # Safe Numeric Coercion
@@ -59,13 +65,16 @@ def extract_conversions(perf_row: Dict, conversion_event: str) -> Optional[int]:
     Returns:
         Integer count or None if event not found.
     """
+    # For purchase events, check all variants (omni_purchase, purchase)
+    types_to_check = PURCHASE_VARIANTS if conversion_event == "purchase" else [conversion_event]
+
     # Try raw_actions JSONB array first (most flexible)
     actions = perf_row.get("raw_actions")
     if isinstance(actions, list):
         for action in actions:
             if not isinstance(action, dict):
                 continue
-            if action.get("action_type") == conversion_event:
+            if action.get("action_type") in types_to_check:
                 val = _safe_numeric(action.get("value"))
                 if val is not None:
                     return int(val)
@@ -105,12 +114,14 @@ def extract_conversion_value(perf_row: Dict, value_field: str) -> Optional[float
     # Meta stores action values in action_values array
     # value_field like "purchase_value" maps to action_type "purchase"
     action_type = value_field.replace("_value", "")
+    types_to_check = PURCHASE_VARIANTS if action_type == "purchase" else [action_type]
+
     actions = perf_row.get("raw_actions")
     if isinstance(actions, list):
         for action in actions:
             if not isinstance(action, dict):
                 continue
-            if action.get("action_type") == action_type:
+            if action.get("action_type") in types_to_check:
                 val = _safe_numeric(action.get("value"))
                 if val is not None:
                     return val
@@ -130,13 +141,16 @@ def extract_cost_per_conversion(perf_row: Dict, conversion_event: str) -> Option
     Returns:
         Float cost or None if not found.
     """
+    # For purchase events, check all variants (omni_purchase, purchase)
+    types_to_check = PURCHASE_VARIANTS if conversion_event == "purchase" else [conversion_event]
+
     # Try raw_costs JSONB array
     costs = perf_row.get("raw_costs")
     if isinstance(costs, list):
         for cost in costs:
             if not isinstance(cost, dict):
                 continue
-            if cost.get("action_type") == conversion_event:
+            if cost.get("action_type") in types_to_check:
                 val = _safe_numeric(cost.get("value"))
                 if val is not None:
                     return val
