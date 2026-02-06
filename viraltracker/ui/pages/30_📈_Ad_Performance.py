@@ -1201,7 +1201,10 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                     else:
                         st.markdown(f"**{i}. {status_emoji} {name}**")
                     st.caption(f"📁 {campaign} › {adset} · ID: {ad_id}")
-                    st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
+                    purchases = ad.get('purchases', 0)
+                    cpa = (spend / purchases) if purchases > 0 else 0
+                    cpa_str = f" · CPA: ${cpa:,.2f}" if purchases > 0 else ""
+                    st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {purchases}{cpa_str}")
 
                     # Deep analysis expander
                     if ad_id and ad_id in deep_analysis_map:
@@ -1296,7 +1299,10 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                 else:
                     st.markdown(f"**{i}. {status_emoji} {name}**")
                 st.caption(f"📁 {campaign} › {adset} · ID: {ad_id}")
-                st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
+                purchases = ad.get('purchases', 0)
+                cpa = (spend / purchases) if purchases > 0 else 0
+                cpa_str = f" · CPA: ${cpa:,.2f}" if purchases > 0 else ""
+                st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%{cpa_str}")
 
                 # Deep analysis expander
                 if ad_id and ad_id in deep_analysis_map:
