@@ -597,7 +597,7 @@ def aggregate_time_series(data: List[Dict]) -> Dict[str, List[Dict]]:
 
     return result
 
-def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -> List[Dict]:
+def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5, min_spend: float = 0.0) -> List[Dict]:
     """
     Get top N performing ads by a specified metric.
 
@@ -605,20 +605,24 @@ def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -
         data: Performance data list
         metric: Metric to sort by (roas, ctr, spend, purchases)
         top_n: Number of top performers to return
+        min_spend: Minimum spend threshold to be included
     """
     ads = aggregate_by_ad(data)
 
+    # Filter by minimum spend
+    ads_with_spend = [a for a in ads if a.get("spend", 0) >= min_spend]
+
     # Sort by metric (descending)
     if metric == "roas":
-        sorted_ads = sorted(ads, key=lambda x: x.get("roas", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("roas", 0), reverse=True)
     elif metric == "ctr":
-        sorted_ads = sorted(ads, key=lambda x: x.get("ctr", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("ctr", 0), reverse=True)
     elif metric == "spend":
-        sorted_ads = sorted(ads, key=lambda x: x.get("spend", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("spend", 0), reverse=True)
     elif metric == "purchases":
-        sorted_ads = sorted(ads, key=lambda x: x.get("purchases", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("purchases", 0), reverse=True)
     else:
-        sorted_ads = ads
+        sorted_ads = ads_with_spend
 
     return sorted_ads[:top_n]
 
@@ -1074,7 +1078,7 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
     from datetime import datetime, timedelta
 
     # Filter options
-    filter_col1, filter_col2 = st.columns([1, 1])
+    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1])
     with filter_col1:
         include_inactive = st.checkbox(
             "Include inactive ads",
@@ -1089,6 +1093,15 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
             index=0,
             key="performers_window_days",
             help="Number of days to aggregate for rankings"
+        )
+    with filter_col3:
+        min_spend = st.number_input(
+            "Min. spend ($)",
+            min_value=0.0,
+            value=10.0,
+            step=5.0,
+            key="performers_min_spend",
+            help="Only show ads that spent at least this amount in the window"
         )
 
     # Compute max_date_dt once for both window and active-ad filtering
@@ -1152,8 +1165,8 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
         filtered_data = windowed_data
 
     # Pre-fetch deep analysis data for all candidate ads (avoids N+1 queries)
-    top_ads = get_top_performers(filtered_data, metric="roas", top_n=5)
-    worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
+    top_ads = get_top_performers(filtered_data, metric="roas", top_n=5, min_spend=min_spend)
+    worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=min_spend)
 
     deep_analysis_map: Dict[str, Dict] = {}
     if brand_id:
@@ -1179,6 +1192,7 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                 status = ad.get("ad_status", "")
                 status_emoji = get_status_emoji(status) if status else ""
 
+                ad_id = ad.get("meta_ad_id", "")
                 if roas > 0:
                     safe_name = name.replace("[", "\\[").replace("]", "\\]")
                     mgr_url = _ads_manager_url(ad)
@@ -1186,11 +1200,10 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                         st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({mgr_url})")
                     else:
                         st.markdown(f"**{i}. {status_emoji} {name}**")
-                    st.caption(f"📁 {campaign} › {adset}")
+                    st.caption(f"📁 {campaign} › {adset} · ID: {ad_id}")
                     st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
 
                     # Deep analysis expander
-                    ad_id = ad.get("meta_ad_id")
                     if ad_id and ad_id in deep_analysis_map:
                         entry = deep_analysis_map[ad_id]
                         if entry.get("classification"):
@@ -1275,24 +1288,24 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_a
                 status = ad.get("ad_status", "")
                 status_emoji = get_status_emoji(status) if status else ""
 
+                ad_id = ad.get("meta_ad_id", "")
                 safe_name = name.replace("[", "\\[").replace("]", "\\]")
                 mgr_url = _ads_manager_url(ad)
                 if mgr_url:
                     st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({mgr_url})")
                 else:
                     st.markdown(f"**{i}. {status_emoji} {name}**")
-                st.caption(f"📁 {campaign} › {adset}")
+                st.caption(f"📁 {campaign} › {adset} · ID: {ad_id}")
                 st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
 
                 # Deep analysis expander
-                ad_id = ad.get("meta_ad_id")
                 if ad_id and ad_id in deep_analysis_map:
                     entry = deep_analysis_map[ad_id]
                     if entry.get("classification"):
                         with st.expander("Deep Analysis", expanded=False):
                             _render_ad_deep_analysis(entry["classification"], entry.get("video_analysis"))
         else:
-            st.info("No underperforming ads (or none with min $10 spend)")
+            st.info(f"No underperforming ads (or none with min ${min_spend:,.2f} spend)")
 
 def render_csv_export(data: List[Dict]):
     """Render CSV export button."""
