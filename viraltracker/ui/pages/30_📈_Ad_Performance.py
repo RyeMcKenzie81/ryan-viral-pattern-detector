@@ -1054,7 +1054,7 @@ def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result
         except Exception as e:
             st.error(f"Failed to save: {e}")
 
-def render_top_performers(data: List[Dict], brand_id: Optional[str] = None):
+def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_account_id: Optional[str] = None):
     """Render top and worst performers section with optional deep analysis."""
     import pandas as pd
 
@@ -1134,7 +1134,12 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None):
                 status_emoji = get_status_emoji(status) if status else ""
 
                 if roas > 0:
-                    st.markdown(f"**{i}. {status_emoji} {name}**")
+                    meta_ad_id = ad.get("meta_ad_id")
+                    if meta_ad_id and ad_account_id:
+                        ads_mgr_url = f"https://www.facebook.com/adsmanager/manage/ads?act={ad_account_id}&selected_ad_ids={meta_ad_id}"
+                        st.markdown(f"**{i}. {status_emoji} {name}** [↗]({ads_mgr_url})")
+                    else:
+                        st.markdown(f"**{i}. {status_emoji} {name}**")
                     st.caption(f"📁 {campaign} › {adset}")
                     st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
 
@@ -1224,7 +1229,12 @@ def render_top_performers(data: List[Dict], brand_id: Optional[str] = None):
                 status = ad.get("ad_status", "")
                 status_emoji = get_status_emoji(status) if status else ""
 
-                st.markdown(f"**{i}. {status_emoji} {name}**")
+                meta_ad_id = ad.get("meta_ad_id")
+                if meta_ad_id and ad_account_id:
+                    ads_mgr_url = f"https://www.facebook.com/adsmanager/manage/ads?act={ad_account_id}&selected_ad_ids={meta_ad_id}"
+                    st.markdown(f"**{i}. {status_emoji} {name}** [↗]({ads_mgr_url})")
+                else:
+                    st.markdown(f"**{i}. {status_emoji} {name}**")
                 st.caption(f"📁 {campaign} › {adset}")
                 st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
 
@@ -2621,7 +2631,7 @@ with st.expander("📊 Charts & Analysis", expanded=False):
         render_time_series_charts(perf_data)
 
     with performers_tab:
-        render_top_performers(perf_data, brand_id=brand_id)
+        render_top_performers(perf_data, brand_id=brand_id, ad_account_id=ad_account.get("meta_ad_account_id"))
 
 st.divider()
 
