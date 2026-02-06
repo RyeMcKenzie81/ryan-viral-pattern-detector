@@ -1,11 +1,9 @@
 """
 Tools Catalog - Auto-generated documentation for agent tools.
 
-This page automatically extracts all tools from agents and displays them
-organized by the data pipeline taxonomy:
+This page automatically extracts all tools from agents (including orchestrator)
+and displays them organized by the data pipeline taxonomy:
 - Routing → Ingestion → Filtration → Discovery → Analysis → Generation → Export
-
-The Routing category shows orchestrator tools that route queries to specialized agents.
 
 Benefits:
 - Zero-maintenance documentation (auto-updates when tools are added to agents)
@@ -14,7 +12,7 @@ Benefits:
 """
 
 import streamlit as st
-from viraltracker.agent.tool_collector import get_all_tools
+from viraltracker.agent.tool_collector import get_all_tools, get_tools_by_platform
 
 # Page config
 st.set_page_config(
@@ -77,7 +75,7 @@ st.divider()
 # Get Tools from Agents
 # ============================================================================
 
-# Fetch all tools from agents
+# Fetch all tools from agents (now includes orchestrator and audio_production)
 all_tools = get_all_tools()
 
 if not all_tools:
@@ -88,77 +86,7 @@ if not all_tools:
 categories = ["Routing", "Ingestion", "Filtration", "Discovery", "Analysis", "Generation", "Export"]
 tools_by_category = {cat: [] for cat in categories}
 
-# Add routing tools manually (orchestrator tools not in registry)
-# Using a simple dict structure instead of ToolMetadata since these are for display only
-from dataclasses import dataclass
-from typing import List
-
-@dataclass
-class RoutingToolDisplay:
-    """Simple data class for displaying routing tools (no callable function needed)"""
-    name: str
-    description: str
-    category: str
-    platform: str
-    api_path: str
-    rate_limit: str
-    use_cases: List[str]
-    examples: List[str]
-
-routing_tools = [
-    RoutingToolDisplay(
-        name="route_to_twitter_agent",
-        description="Route request to Twitter Agent for Twitter/X operations",
-        category="Routing",
-        platform="Orchestrator",
-        api_path="/agent/run",
-        rate_limit="N/A",
-        use_cases=["Twitter data operations", "Tweet scraping", "Engagement analysis"],
-        examples=["Find 100 tweets about AI", "Get top tweets from this week"]
-    ),
-    RoutingToolDisplay(
-        name="route_to_tiktok_agent",
-        description="Route request to TikTok Agent for TikTok operations",
-        category="Routing",
-        platform="Orchestrator",
-        api_path="/agent/run",
-        rate_limit="N/A",
-        use_cases=["TikTok video discovery", "Hashtag research", "User analysis"],
-        examples=["Find trending TikToks for #fitness", "Analyze TikTok user @username"]
-    ),
-    RoutingToolDisplay(
-        name="route_to_youtube_agent",
-        description="Route request to YouTube Agent for YouTube operations",
-        category="Routing",
-        platform="Orchestrator",
-        api_path="/agent/run",
-        rate_limit="N/A",
-        use_cases=["YouTube video search", "Shorts discovery"],
-        examples=["Search YouTube for viral cooking videos"]
-    ),
-    RoutingToolDisplay(
-        name="route_to_facebook_agent",
-        description="Route request to Facebook Agent for Facebook Ad Library operations",
-        category="Routing",
-        platform="Orchestrator",
-        api_path="/agent/run",
-        rate_limit="N/A",
-        use_cases=["Facebook ad research", "Competitor ad analysis"],
-        examples=["Search Facebook ads for competitor X"]
-    ),
-    RoutingToolDisplay(
-        name="route_to_analysis_agent",
-        description="Route request to Analysis Agent for statistical and AI analysis",
-        category="Routing",
-        platform="Orchestrator",
-        api_path="/agent/run",
-        rate_limit="N/A",
-        use_cases=["Outlier detection", "Hook analysis", "Cross-platform insights"],
-        examples=["Find viral outliers", "Analyze hooks from top tweets"]
-    )
-]
-tools_by_category["Routing"] = routing_tools
-
+# Categorize all tools (including orchestrator routing tools which are now auto-discovered)
 for tool_name, tool_meta in all_tools.items():
     category = tool_meta.category
     if category not in tools_by_category:
@@ -166,20 +94,21 @@ for tool_name, tool_meta in all_tools.items():
     tools_by_category[category].append(tool_meta)
 
 # Display statistics
-routing_tool_count = len(routing_tools)
-underlying_tool_count = len(all_tools)
-total_tools = routing_tool_count + underlying_tool_count
+total_tools = len(all_tools)
+routing_tools = len(tools_by_category.get("Routing", []))
+platform_tools = total_tools - routing_tools
+platforms = get_tools_by_platform()
 categories_with_tools = len([cat for cat, tools in tools_by_category.items() if tools])
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Total Tools", total_tools, help="Routing + Platform tools")
+    st.metric("Total Tools", total_tools, help="All tools across all agents")
 with col2:
-    st.metric("Routing Tools", routing_tool_count, help="Orchestrator routing tools")
+    st.metric("Routing Tools", routing_tools, help="Orchestrator routing tools")
 with col3:
-    st.metric("Platform Tools", underlying_tool_count, help="Specialized agent tools")
+    st.metric("Platform Tools", platform_tools, help="Specialized agent tools")
 with col4:
-    st.metric("Platforms", len(set(tool.platform for tool in all_tools.values())) + 1, help="Including Orchestrator")
+    st.metric("Platforms", len(platforms), help="Number of platforms/agents")
 
 st.divider()
 
@@ -192,6 +121,12 @@ st.subheader("Tools by Pipeline Stage")
 # Create tabs for each category that has tools
 tabs_to_create = [cat for cat in categories if tools_by_category[cat]]
 
+# Add "Unknown" category if there are uncategorized tools
+unknown_tools = [t for t in all_tools.values() if t.category not in categories]
+if unknown_tools:
+    tools_by_category["Other"] = unknown_tools
+    tabs_to_create.append("Other")
+
 if not tabs_to_create:
     st.info("No tools available yet.")
     st.stop()
@@ -200,7 +135,7 @@ tabs = st.tabs(tabs_to_create)
 
 for tab, category in zip(tabs, tabs_to_create):
     with tab:
-        tools = tools_by_category[category]
+        tools = tools_by_category.get(category, [])
 
         # Category header
         st.markdown(f"### {category} Tools")
@@ -219,8 +154,13 @@ for tab, category in zip(tabs, tabs_to_create):
             st.markdown("*Generate new content, reports, and insights*")
         elif category == "Export":
             st.markdown("*Save and share results in various formats*")
+        elif category == "Other":
+            st.markdown("*Other tools not yet categorized*")
 
         st.divider()
+
+        # Sort tools by name
+        tools = sorted(tools, key=lambda t: t.name)
 
         # Display each tool
         for tool in tools:
@@ -259,6 +199,27 @@ for tab, category in zip(tabs, tabs_to_create):
                 # Function signature (if available)
                 st.markdown("**Implementation:**")
                 st.code(f"Function: {tool.name}()", language="python")
+
+# ============================================================================
+# Tools by Platform
+# ============================================================================
+
+st.divider()
+st.subheader("Tools by Platform")
+
+# Show platform breakdown
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("**Platform Tool Counts:**")
+    for platform, tools in sorted(platforms.items()):
+        st.markdown(f"- **{platform}**: {len(tools)} tools")
+
+with col2:
+    st.markdown("**Category Distribution:**")
+    for cat in tabs_to_create:
+        count = len(tools_by_category.get(cat, []))
+        st.markdown(f"- **{cat}**: {count} tools")
 
 # ============================================================================
 # Footer

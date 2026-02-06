@@ -44,20 +44,18 @@ def get_product_url_service():
 
 
 def get_competitor_service():
-    """Get CompetitorService instance."""
+    """Get CompetitorService instance with tracking enabled."""
     from viraltracker.services.competitor_service import CompetitorService
-    return CompetitorService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = CompetitorService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_brands():
-    """Fetch all brands."""
-    try:
-        db = get_supabase_client()
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data or []
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
-        return []
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 
 def get_products_for_brand(brand_id: str):

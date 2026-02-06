@@ -7,6 +7,7 @@ Welcome to the ViralTracker documentation! Choose your path:
 ### For Developers
 - [Developer Guide](DEVELOPER_GUIDE.md) - Setup, contributing, testing
 - [Architecture Overview](ARCHITECTURE.md) - System design and patterns
+- [Multi-Tenant Auth](MULTI_TENANT_AUTH.md) - Organizations, feature flags, usage tracking, data isolation
 
 ### For AI-Assisted Development (Claude Code)
 - [Claude Code Guide](CLAUDE_CODE_GUIDE.md) - How to create agents, tools, and services
@@ -25,6 +26,7 @@ Welcome to the ViralTracker documentation! Choose your path:
 | Document | Purpose | Audience |
 |----------|---------|----------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design & patterns | Architects, Senior Devs |
+| [MULTI_TENANT_AUTH.md](MULTI_TENANT_AUTH.md) | Multi-tenant auth & authorization | All developers |
 | [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) | Dev setup & workflows | New contributors |
 | [CLAUDE_CODE_GUIDE.md](CLAUDE_CODE_GUIDE.md) | AI-assisted development | Claude Code, AI tools |
 | [CLI_GUIDE.md](CLI_GUIDE.md) | Command reference | End users |

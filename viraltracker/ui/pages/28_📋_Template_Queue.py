@@ -43,19 +43,29 @@ if 'reviewing_item_id' not in st.session_state:
     st.session_state.reviewing_item_id = None  # Item ID being reviewed (pending_details)
 if 'ai_suggestions' not in st.session_state:
     st.session_state.ai_suggestions = None  # AI suggestions for current review
-
+if 'bulk_review_items' not in st.session_state:
+    st.session_state.bulk_review_items = []  # List of {queue_id, suggestions} for bulk review
+if 'bulk_review_mode' not in st.session_state:
+    st.session_state.bulk_review_mode = False  # Whether we're in bulk review mode
+# Template Library filters
+if 'library_category_filter' not in st.session_state:
+    st.session_state.library_category_filter = "all"
+if 'library_awareness_filter' not in st.session_state:
+    st.session_state.library_awareness_filter = None
+if 'library_niche_filter' not in st.session_state:
+    st.session_state.library_niche_filter = "all"
+if 'library_sex_filter' not in st.session_state:
+    st.session_state.library_sex_filter = "all"
 
 def get_template_queue_service():
     """Get TemplateQueueService instance."""
     from viraltracker.services.template_queue_service import TemplateQueueService
     return TemplateQueueService()
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 # ============================================================================
 # Data Loading
@@ -67,18 +77,28 @@ def get_queue_stats() -> Dict[str, int]:
     service = get_template_queue_service()
     return service.get_queue_stats()
 
-
 def get_pending_items(limit: int = 20, offset: int = 0) -> List[Dict]:
     """Get pending queue items."""
     service = get_template_queue_service()
     return service.get_pending_queue(limit=limit, offset=offset)
 
-
-def get_approved_templates(limit: int = 50) -> List[Dict]:
-    """Get approved templates."""
+def get_approved_templates(
+    limit: int = 50,
+    category: str = None,
+    awareness_level: int = None,
+    industry_niche: str = None,
+    target_sex: str = None
+) -> List[Dict]:
+    """Get approved templates with optional filters."""
     service = get_template_queue_service()
-    return service.get_templates(active_only=True, limit=limit)
-
+    return service.get_templates(
+        category=category,
+        awareness_level=awareness_level,
+        industry_niche=industry_niche,
+        target_sex=target_sex,
+        active_only=True,
+        limit=limit
+    )
 
 def get_asset_url(storage_path: str) -> str:
     """Get public URL for asset."""
@@ -87,6 +107,71 @@ def get_asset_url(storage_path: str) -> str:
     service = get_template_queue_service()
     return service.get_asset_preview_url(storage_path)
 
+def get_template_categories() -> List[str]:
+    """Get unique template categories."""
+    try:
+        service = get_template_queue_service()
+        return service.get_template_categories()
+    except Exception:
+        return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
+                "ugc_style", "meme", "carousel_frame", "story_format", "other"]
+
+def get_awareness_levels() -> List[Dict]:
+    """Get awareness level filter options."""
+    try:
+        service = get_template_queue_service()
+        return service.get_awareness_levels()
+    except Exception:
+        return []
+
+def get_industry_niches() -> List[str]:
+    """Get industry niche filter options."""
+    try:
+        service = get_template_queue_service()
+        return service.get_industry_niches()
+    except Exception:
+        return []
+
+# ============================================================================
+# Element Detection
+# ============================================================================
+
+def get_template_element_service():
+    """Get TemplateElementService instance."""
+    from viraltracker.services.template_element_service import TemplateElementService
+    return TemplateElementService()
+
+def get_element_detection_stats() -> Dict[str, int]:
+    """Get element detection statistics."""
+    db = get_supabase_client()
+
+    # Total active templates
+    total = db.table("scraped_templates").select("id", count="exact").eq("is_active", True).execute()
+
+    # Analyzed templates (have element_detection_version)
+    analyzed = db.table("scraped_templates").select("id", count="exact").eq("is_active", True).not_.is_("element_detection_version", "null").execute()
+
+    return {
+        "total": total.count or 0,
+        "analyzed": analyzed.count or 0,
+        "pending": (total.count or 0) - (analyzed.count or 0)
+    }
+
+def get_unanalyzed_templates(limit: int = 10) -> List[Dict]:
+    """Get templates that haven't been analyzed yet."""
+    db = get_supabase_client()
+    result = db.table("scraped_templates").select(
+        "id, name, storage_path, category"
+    ).eq("is_active", True).is_("element_detection_version", "null").limit(limit).execute()
+    return result.data or []
+
+def get_analyzed_templates(limit: int = 10) -> List[Dict]:
+    """Get templates that have been analyzed."""
+    db = get_supabase_client()
+    result = db.table("scraped_templates").select(
+        "id, name, storage_path, category, template_elements, element_detection_version"
+    ).eq("is_active", True).not_.is_("element_detection_version", "null").order("element_detection_at", desc=True).limit(limit).execute()
+    return result.data or []
 
 # ============================================================================
 # Actions
@@ -111,7 +196,6 @@ def approve_item(queue_id: str, category: str, name: str, description: str = "")
         st.error(f"Failed to approve: {e}")
         return False
 
-
 def reject_item(queue_id: str, reason: str):
     """Reject a queue item."""
     from uuid import UUID
@@ -129,7 +213,6 @@ def reject_item(queue_id: str, reason: str):
         st.error(f"Failed to reject: {e}")
         return False
 
-
 def archive_item(queue_id: str):
     """Archive a queue item."""
     from uuid import UUID
@@ -145,7 +228,6 @@ def archive_item(queue_id: str):
     except Exception as e:
         st.error(f"Failed to archive: {e}")
         return False
-
 
 # ============================================================================
 # Two-Step Approval Actions
@@ -166,7 +248,6 @@ def start_ai_approval(queue_id: str):
     except Exception as e:
         st.error(f"AI analysis failed: {e}")
         return False
-
 
 def finalize_ai_approval(
     queue_id: str,
@@ -202,7 +283,6 @@ def finalize_ai_approval(
         st.error(f"Failed to finalize approval: {e}")
         return False
 
-
 def cancel_ai_approval(queue_id: str):
     """Cancel in-progress approval and return to pending."""
     from uuid import UUID
@@ -217,7 +297,6 @@ def cancel_ai_approval(queue_id: str):
         st.error(f"Failed to cancel: {e}")
         return False
 
-
 # ============================================================================
 # UI Components
 # ============================================================================
@@ -226,12 +305,14 @@ def render_stats():
     """Render queue statistics."""
     stats = get_queue_stats()
 
+    # Combine pending + pending_details for display (both are "in review")
+    pending_total = stats.get("pending", 0) + stats.get("pending_details", 0)
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Pending", stats.get("pending", 0))
+    col1.metric("Pending", pending_total)
     col2.metric("Approved", stats.get("approved", 0))
     col3.metric("Rejected", stats.get("rejected", 0))
     col4.metric("Total", stats.get("total", 0))
-
 
 def get_industry_options() -> List[str]:
     """Get list of industry/niche options."""
@@ -241,7 +322,6 @@ def get_industry_options() -> List[str]:
         "health_wellness", "beauty", "automotive", "travel", "education", "other"
     ]
 
-
 def get_sales_event_options() -> List[str]:
     """Get list of sales event options."""
     return [
@@ -249,7 +329,6 @@ def get_sales_event_options() -> List[str]:
         "valentines_day", "christmas", "new_year", "summer_sale",
         "labor_day", "memorial_day", "other"
     ]
-
 
 def get_awareness_level_options() -> List[tuple]:
     """Get awareness level options as (value, display_name) tuples."""
@@ -260,7 +339,6 @@ def get_awareness_level_options() -> List[tuple]:
         (4, "4 - Product Aware"),
         (5, "5 - Most Aware")
     ]
-
 
 def render_details_review():
     """Render the AI suggestions review form (step 2 of approval)."""
@@ -415,10 +493,146 @@ def render_details_review():
                 cancel_ai_approval(queue_id)
                 st.rerun()
 
+# ============================================================================
+# Bulk Review Functions
+# ============================================================================
+
+def get_asset_url_for_queue_id(queue_id: str) -> Optional[str]:
+    """Get preview URL for a queue item by its ID."""
+    service = get_template_queue_service()
+    item = service.get_pending_details_item(queue_id)
+    if item:
+        asset = item.get("scraped_ad_assets", {})
+        storage_path = asset.get("storage_path", "")
+        if storage_path:
+            return get_asset_url(storage_path)
+    return None
+
+def cancel_single_from_bulk(queue_id: str):
+    """Remove one item from bulk review and revert its status to pending."""
+    from uuid import UUID
+    service = get_template_queue_service()
+    service.cancel_approval(UUID(queue_id))
+
+def cancel_all_bulk_items():
+    """Cancel all pending_details items from bulk review."""
+    for item in st.session_state.bulk_review_items:
+        cancel_single_from_bulk(item["queue_id"])
+
+def render_bulk_review():
+    """Render bulk review screen showing all analyzed templates."""
+    items = st.session_state.bulk_review_items
+
+    if not items:
+        st.warning("No items to review.")
+        st.session_state.bulk_review_mode = False
+        st.rerun()
+        return
+
+    st.subheader(f"Review AI Suggestions ({len(items)} templates)")
+    st.caption("Review the AI-generated metadata. Remove any you don't want to approve, then click 'Confirm & Approve All'.")
+
+    # Action buttons at top
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Back to Queue", use_container_width=True):
+            # Cancel all pending_details items
+            cancel_all_bulk_items()
+            st.session_state.bulk_review_mode = False
+            st.session_state.bulk_review_items = []
+            st.cache_data.clear()
+            st.rerun()
+
+    with col2:
+        if st.button(
+            f"Confirm & Approve All ({len(items)} templates)",
+            type="primary",
+            use_container_width=True
+        ):
+            import asyncio
+            from uuid import UUID
+
+            service = get_template_queue_service()
+            result = service.finalize_bulk_approval(items)
+            st.success(f"Approved {result['approved']} templates!")
+
+            # Run element detection on newly created templates
+            template_ids = result.get("template_ids", [])
+            if template_ids:
+                with st.spinner(f"Running element detection on {len(template_ids)} templates..."):
+                    element_service = get_template_element_service()
+                    detection = asyncio.run(element_service.batch_analyze_templates(
+                        template_ids=[UUID(tid) for tid in template_ids],
+                        batch_size=10
+                    ))
+                    ok = len(detection["successful"])
+                    fail = len(detection["failed"])
+                    if ok:
+                        st.success(f"Element detection: {ok} templates analyzed")
+                    if fail:
+                        st.warning(f"Element detection: {fail} templates failed")
+
+            st.session_state.bulk_review_mode = False
+            st.session_state.bulk_review_items = []
+            st.cache_data.clear()
+            st.rerun()
+
+    st.divider()
+
+    # Show each item with Remove button
+    for i, item in enumerate(items):
+        suggestions = item.get("suggestions", {})
+        queue_id = item["queue_id"]
+
+        with st.container():
+            col1, col2, col3 = st.columns([1, 3, 1])
+
+            with col1:
+                # Preview image
+                url = get_asset_url_for_queue_id(queue_id)
+                if url:
+                    st.image(url, use_container_width=True)
+                else:
+                    st.write("No preview")
+
+            with col2:
+                st.markdown(f"**{suggestions.get('suggested_name', 'Unnamed Template')}**")
+                desc = suggestions.get('suggested_description', '')
+                if desc:
+                    st.caption(desc[:150] + "..." if len(desc) > 150 else desc)
+
+                # Show metadata
+                category = suggestions.get('format_type', 'N/A')
+                niche = suggestions.get('industry_niche', 'N/A')
+                awareness = suggestions.get('awareness_level', 'N/A')
+                target = suggestions.get('target_sex', 'N/A')
+
+                st.text(f"Category: {category} | Niche: {niche} | Awareness: {awareness} | Target: {target}")
+
+            with col3:
+                if st.button("Remove", key=f"remove_{queue_id}"):
+                    # Revert status and remove from list
+                    cancel_single_from_bulk(queue_id)
+                    st.session_state.bulk_review_items = [
+                        x for x in st.session_state.bulk_review_items
+                        if x["queue_id"] != queue_id
+                    ]
+                    st.cache_data.clear()
+                    st.rerun()
+
+            st.divider()
 
 def render_pending_queue():
     """Render pending items for review."""
-    # Check if we're in the middle of reviewing an item
+    import asyncio
+    from uuid import UUID
+
+    # Check if we're in bulk review mode
+    if st.session_state.bulk_review_mode:
+        render_bulk_review()
+        return
+
+    # Check if we're in the middle of reviewing a single item
     if st.session_state.reviewing_item_id:
         render_details_review()
         return
@@ -430,6 +644,8 @@ def render_pending_queue():
         return
 
     service = get_template_queue_service()
+
+    st.caption("Reject any templates you don't want, then click 'Approve All' to analyze the remaining templates.")
 
     for item in items:
         asset = item.get("scraped_ad_assets", {})
@@ -458,27 +674,38 @@ def render_pending_queue():
                 if ai_analysis and ai_analysis.get("analyzed"):
                     st.caption(f"Pre-Analysis: {ai_analysis.get('suggested_category', 'N/A')}")
 
-                st.markdown("**Quick Actions**")
-                st.caption("Click 'Approve' to run AI analysis and review suggested metadata.")
-
-                # Action buttons (not a form - for immediate action)
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    if st.button("Approve", key=f"approve_{item['id']}", type="primary"):
-                        if start_ai_approval(item["id"]):
-                            st.rerun()
-                with col_b:
-                    if st.button("Skip", key=f"skip_{item['id']}"):
-                        archive_item(item["id"])
-                        st.rerun()
-                with col_c:
-                    if st.button("Reject", key=f"reject_{item['id']}"):
-                        reject_item(item["id"], "Rejected via UI")
-                        st.rerun()
+                # Only Reject button - Approve All handles the rest
+                if st.button("Reject", key=f"reject_{item['id']}", type="secondary"):
+                    reject_item(item["id"], "Rejected via UI")
+                    st.rerun()
 
             st.divider()
 
+    # Approve All button
+    remaining_count = len(items)
+    st.divider()
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button(
+            f"Approve All & Run AI Analysis ({remaining_count} templates)",
+            type="primary",
+            use_container_width=True
+        ):
+            queue_ids = [UUID(item["id"]) for item in items]
+            with st.spinner(f"Running AI analysis on {remaining_count} templates... This may take a minute."):
+                results = asyncio.run(service.start_bulk_approval(queue_ids))
+
+            if results:
+                st.session_state.bulk_review_items = results
+                st.session_state.bulk_review_mode = True
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("No templates were analyzed successfully. Check the logs.")
+
     # Pagination
+    st.divider()
     col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
         if st.session_state.queue_page > 0:
@@ -491,14 +718,73 @@ def render_pending_queue():
                 st.session_state.queue_page += 1
                 st.rerun()
 
-
 def render_template_library():
-    """Render approved templates library."""
-    templates = get_approved_templates(limit=50)
+    """Render approved templates library with filters."""
+    # Filter row - 4 columns
+    filter_cols = st.columns(4)
+
+    # Category filter
+    with filter_cols[0]:
+        categories = ["all"] + get_template_categories()
+        selected_category = st.selectbox(
+            "Category",
+            options=categories,
+            index=categories.index(st.session_state.library_category_filter) if st.session_state.library_category_filter in categories else 0,
+            format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+            key="lib_filter_category"
+        )
+        st.session_state.library_category_filter = selected_category
+
+    # Awareness Level filter
+    with filter_cols[1]:
+        awareness_opts = [{"value": None, "label": "All"}] + get_awareness_levels()
+        selected_awareness = st.selectbox(
+            "Awareness Level",
+            options=[a["value"] for a in awareness_opts],
+            format_func=lambda x: next((a["label"] for a in awareness_opts if a["value"] == x), "All"),
+            key="lib_filter_awareness"
+        )
+        st.session_state.library_awareness_filter = selected_awareness
+
+    # Industry/Niche filter
+    with filter_cols[2]:
+        niches = ["all"] + get_industry_niches()
+        selected_niche = st.selectbox(
+            "Industry/Niche",
+            options=niches,
+            format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+            key="lib_filter_niche"
+        )
+        st.session_state.library_niche_filter = selected_niche
+
+    # Target Sex filter
+    with filter_cols[3]:
+        sex_options = ["all", "male", "female", "unisex"]
+        selected_sex = st.selectbox(
+            "Target Audience",
+            options=sex_options,
+            format_func=lambda x: x.title() if x != "all" else "All",
+            key="lib_filter_sex"
+        )
+        st.session_state.library_sex_filter = selected_sex
+
+    st.divider()
+
+    # Get templates with filters
+    templates = get_approved_templates(
+        limit=100,
+        category=selected_category if selected_category != "all" else None,
+        awareness_level=selected_awareness,
+        industry_niche=selected_niche if selected_niche != "all" else None,
+        target_sex=selected_sex if selected_sex != "all" else None
+    )
 
     if not templates:
-        st.info("No approved templates yet. Approve items from the pending queue.")
+        st.info("No templates match the current filters. Try adjusting your filters or approve items from the pending queue.")
         return
+
+    # Show count
+    st.caption(f"Showing {len(templates)} templates")
 
     # Group by category
     by_category = {}
@@ -522,10 +808,20 @@ def render_template_library():
 
                 st.caption(template.get("name", "Unnamed"))
 
+                # Show metadata badges
+                badges = []
+                if template.get("industry_niche") and template["industry_niche"] != "other":
+                    badges.append(template["industry_niche"].replace("_", " ").title())
+                if template.get("awareness_level"):
+                    badges.append(f"L{template['awareness_level']}")
+                if template.get("target_sex") and template["target_sex"] != "unisex":
+                    badges.append(template["target_sex"][:1].upper())
+                if badges:
+                    st.caption(" | ".join(badges))
+
                 times_used = template.get("times_used", 0)
                 if times_used > 0:
                     st.caption(f"Used {times_used}x")
-
 
 def render_ingestion_trigger():
     """Render template ingestion trigger form."""
@@ -629,6 +925,323 @@ def render_ingestion_trigger():
             st.session_state.ingestion_running = False
             st.error(f"Failed to run pipeline: {e}")
 
+# ============================================================================
+# Scheduled Scraping Tab
+# ============================================================================
+
+def get_scheduled_scrape_jobs():
+    """Fetch active template_scrape scheduled jobs."""
+    db = get_supabase_client()
+    try:
+        result = db.table("scheduled_jobs").select(
+            "id, name, brand_id, status, next_run_at, runs_completed, max_runs, parameters, brands(name)"
+        ).eq("job_type", "template_scrape").in_("status", ["active", "paused"]).order("created_at", desc=True).execute()
+
+        # Also fetch brand names
+        jobs = result.data or []
+        brand_ids = set(j.get('brand_id') for j in jobs if j.get('brand_id'))
+        if brand_ids:
+            brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids)).execute()
+            brand_map = {b['id']: b['name'] for b in (brands_result.data or [])}
+            for job in jobs:
+                job['brand_name'] = brand_map.get(job.get('brand_id'), 'Unknown')
+
+        return jobs
+    except Exception as e:
+        return []
+
+def get_recent_scrape_runs(job_id: str, limit: int = 5):
+    """Fetch recent runs for a scrape job."""
+    db = get_supabase_client()
+    try:
+        result = db.table("scheduled_job_runs").select(
+            "id, status, started_at, completed_at, logs"
+        ).eq("scheduled_job_id", job_id).order("started_at", desc=True).limit(limit).execute()
+        return result.data or []
+    except Exception as e:
+        return []
+
+def render_scheduled_scraping():
+    """Render the Scheduled Scraping tab."""
+    import pytz
+    PST = pytz.timezone('America/Los_Angeles')
+
+    st.subheader("Scheduled Template Scraping")
+    st.caption("View and manage automated Facebook Ad Library scraping jobs")
+
+    # Quick action to create new scrape schedule
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("➕ New Scrape Schedule", type="primary", use_container_width=True):
+            st.info("Go to **Ad Scheduler** page and select 'Template Scrape' job type to create a new scheduled scrape.")
+
+    st.divider()
+
+    # Fetch scheduled scrape jobs
+    jobs = get_scheduled_scrape_jobs()
+
+    if not jobs:
+        st.info("No scheduled scraping jobs found. Create one from the Ad Scheduler page.")
+        return
+
+    # Display jobs
+    for job in jobs:
+        status_emoji = {'active': '🟢', 'paused': '⏸️'}.get(job['status'], '❓')
+        params = job.get('parameters', {}) or {}
+
+        with st.expander(f"{status_emoji} {job['name']} ({job.get('brand_name', 'Unknown')})", expanded=False):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("**Settings**")
+                st.text(f"Max ads: {params.get('max_ads', 50)}")
+                st.text(f"Images only: {'Yes' if params.get('images_only', True) else 'No'}")
+                st.text(f"Auto queue: {'Yes' if params.get('auto_queue', True) else 'No'}")
+
+            with col2:
+                st.markdown("**Schedule**")
+                runs = f"{job.get('runs_completed', 0)}"
+                if job.get('max_runs'):
+                    runs += f" / {job['max_runs']}"
+                st.text(f"Runs: {runs}")
+
+                if job.get('next_run_at'):
+                    try:
+                        next_run = datetime.fromisoformat(job['next_run_at'].replace('Z', '+00:00'))
+                        st.text(f"Next: {next_run.strftime('%b %d, %I:%M %p')}")
+                    except:
+                        st.text("Next: Pending")
+
+            with col3:
+                st.markdown("**Search URL**")
+                search_url = params.get('search_url', '')
+                if search_url:
+                    st.caption(search_url[:60] + "..." if len(search_url) > 60 else search_url)
+                else:
+                    st.caption("No URL configured")
+
+            # Show recent runs
+            st.markdown("**Recent Runs**")
+            runs = get_recent_scrape_runs(job['id'], limit=3)
+            if runs:
+                for run in runs:
+                    run_status = run.get('status', 'unknown')
+                    run_emoji = {'completed': '✅', 'failed': '❌', 'running': '⏳'}.get(run_status, '❓')
+                    started = run.get('started_at', '')
+                    if started:
+                        try:
+                            started_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
+                            started_str = started_dt.strftime('%b %d, %I:%M %p')
+                        except:
+                            started_str = started[:16]
+                    else:
+                        started_str = "Unknown"
+
+                    # Try to extract summary from logs
+                    logs = run.get('logs', '')
+                    summary = ""
+                    if logs and "New ads:" in logs:
+                        for line in logs.split('\n'):
+                            if "New ads:" in line:
+                                summary = line.strip()
+                                break
+                    elif logs and "No ads found" in logs:
+                        summary = "No ads found"
+
+                    st.caption(f"{run_emoji} {started_str} - {summary if summary else run_status}")
+            else:
+                st.caption("No runs yet")
+
+def render_element_detection():
+    """Render Element Detection tab for analyzing template visual elements."""
+    import asyncio
+    from uuid import UUID
+
+    st.subheader("Template Element Detection")
+    st.caption("Analyze templates to detect visual elements (people, objects, logos) for asset matching")
+
+    # Initialize session state for this tab
+    if 'element_detection_running' not in st.session_state:
+        st.session_state.element_detection_running = False
+    if 'element_detection_result' not in st.session_state:
+        st.session_state.element_detection_result = None
+    if 'batch_detection_progress' not in st.session_state:
+        st.session_state.batch_detection_progress = None
+
+    # Stats
+    stats = get_element_detection_stats()
+    stat_cols = st.columns(3)
+    with stat_cols[0]:
+        st.metric("Total Templates", stats["total"])
+    with stat_cols[1]:
+        st.metric("Analyzed", stats["analyzed"])
+    with stat_cols[2]:
+        st.metric("Pending Analysis", stats["pending"])
+
+    st.divider()
+
+    # Two sections: Test Single and Batch Analyze
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Test Single Template")
+        st.caption("Analyze one template to verify detection is working")
+
+        unanalyzed = get_unanalyzed_templates(limit=5)
+
+        if unanalyzed:
+            # Show a few unanalyzed templates to pick from
+            template_options = {t["id"]: f"{t['name']} ({t['category']})" for t in unanalyzed}
+            selected_id = st.selectbox(
+                "Select template to analyze",
+                options=list(template_options.keys()),
+                format_func=lambda x: template_options[x],
+                key="single_template_select"
+            )
+
+            # Show preview
+            selected_template = next((t for t in unanalyzed if t["id"] == selected_id), None)
+            if selected_template and selected_template.get("storage_path"):
+                preview_url = get_asset_url(selected_template["storage_path"])
+                if preview_url:
+                    st.image(preview_url, width=200)
+
+            if st.button("🔍 Analyze This Template", type="primary", key="analyze_single"):
+                with st.spinner("Analyzing template elements..."):
+                    try:
+                        service = get_template_element_service()
+                        result = asyncio.run(service.analyze_template_elements(UUID(selected_id)))
+                        st.session_state.element_detection_result = result
+                        st.success("Analysis complete!")
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+
+            # Show result
+            if st.session_state.element_detection_result:
+                result = st.session_state.element_detection_result
+                st.markdown("**Detected Elements:**")
+
+                if result.get("people"):
+                    st.markdown(f"- **People:** {len(result['people'])} detected")
+                    for p in result["people"]:
+                        st.caption(f"  - {p.get('role', 'unknown')}: {p.get('description', 'N/A')}")
+
+                if result.get("objects"):
+                    st.markdown(f"- **Objects:** {len(result['objects'])} detected")
+                    for o in result["objects"]:
+                        st.caption(f"  - {o.get('type', 'unknown')}: {o.get('description', 'N/A')}")
+
+                if result.get("required_assets"):
+                    st.markdown(f"- **Required Assets:** `{result['required_assets']}`")
+
+                if result.get("optional_assets"):
+                    st.markdown(f"- **Optional Assets:** `{result['optional_assets']}`")
+        else:
+            st.success("All templates have been analyzed!")
+
+    with col2:
+        st.markdown("### Batch Analyze")
+        st.caption("Analyze all pending templates (may take several minutes)")
+
+        if stats["pending"] > 0:
+            st.info(f"**{stats['pending']} templates** need analysis")
+
+            batch_size = st.number_input(
+                "Batch size",
+                min_value=5,
+                max_value=50,
+                value=10,
+                help="Number of templates to process at once"
+            )
+
+            if st.button(f"🚀 Analyze All {stats['pending']} Templates", type="primary", key="batch_analyze"):
+                st.session_state.element_detection_running = True
+                st.rerun()
+
+            # Run batch outside button to show progress
+            if st.session_state.element_detection_running:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                try:
+                    service = get_template_element_service()
+
+                    # Get all unanalyzed template IDs
+                    db = get_supabase_client()
+                    all_pending = db.table("scraped_templates").select("id").eq(
+                        "is_active", True
+                    ).is_("element_detection_version", "null").execute()
+
+                    template_ids = [UUID(t["id"]) for t in (all_pending.data or [])]
+                    total = len(template_ids)
+
+                    if total > 0:
+                        successful = 0
+                        failed = 0
+
+                        for i, tid in enumerate(template_ids):
+                            status_text.text(f"Analyzing template {i+1}/{total}...")
+                            progress_bar.progress((i + 1) / total)
+
+                            try:
+                                asyncio.run(service.analyze_template_elements(tid))
+                                successful += 1
+                            except Exception as e:
+                                failed += 1
+                                st.warning(f"Failed on template {tid}: {e}")
+
+                        st.session_state.element_detection_running = False
+                        st.session_state.batch_detection_progress = {
+                            "successful": successful,
+                            "failed": failed
+                        }
+                        st.rerun()
+                    else:
+                        st.session_state.element_detection_running = False
+                        st.success("No templates to analyze!")
+
+                except Exception as e:
+                    st.session_state.element_detection_running = False
+                    st.error(f"Batch analysis failed: {e}")
+
+            # Show batch results
+            if st.session_state.batch_detection_progress:
+                progress = st.session_state.batch_detection_progress
+                st.success(f"Batch complete! {progress['successful']} analyzed, {progress['failed']} failed")
+        else:
+            st.success("All templates have been analyzed!")
+
+    # Show recently analyzed templates
+    st.divider()
+    st.markdown("### Recently Analyzed")
+    analyzed = get_analyzed_templates(limit=5)
+
+    if analyzed:
+        for t in analyzed:
+            with st.expander(f"{t['name']} ({t['category']})"):
+                cols = st.columns([1, 2])
+                with cols[0]:
+                    if t.get("storage_path"):
+                        preview_url = get_asset_url(t["storage_path"])
+                        if preview_url:
+                            st.image(preview_url, width=150)
+
+                with cols[1]:
+                    elements = t.get("template_elements", {})
+                    st.markdown(f"**Version:** {t.get('element_detection_version', 'N/A')}")
+
+                    if elements.get("required_assets"):
+                        st.markdown(f"**Required:** `{elements['required_assets']}`")
+
+                    if elements.get("people"):
+                        people_desc = ", ".join([p.get("role", "person") for p in elements["people"]])
+                        st.markdown(f"**People:** {people_desc}")
+
+                    if elements.get("objects"):
+                        obj_desc = ", ".join([o.get("type", "object") for o in elements["objects"]])
+                        st.markdown(f"**Objects:** {obj_desc}")
+    else:
+        st.info("No templates analyzed yet. Use the buttons above to start.")
 
 # ============================================================================
 # Main Page
@@ -642,7 +1255,7 @@ render_stats()
 st.divider()
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["Pending Review", "Template Library", "Ingest New"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pending Review", "Template Library", "Ingest New", "Scheduled Scraping", "Element Detection"])
 
 with tab1:
     render_pending_queue()
@@ -652,3 +1265,9 @@ with tab2:
 
 with tab3:
     render_ingestion_trigger()
+
+with tab4:
+    render_scheduled_scraping()
+
+with tab5:
+    render_element_detection()

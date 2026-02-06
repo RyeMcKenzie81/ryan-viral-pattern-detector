@@ -1,14 +1,410 @@
 """Shared UI utilities for Streamlit pages."""
 
+import logging
 import streamlit as st
 from typing import Optional, Tuple
 
+logger = logging.getLogger(__name__)
 
-def get_brands():
-    """Fetch brands from database."""
+
+# ============================================================================
+# ORGANIZATION UTILITIES
+# ============================================================================
+
+# Cookie names for persisting selections across refreshes
+WORKSPACE_COOKIE_NAME = "viraltracker_workspace"
+BRAND_COOKIE_NAME = "viraltracker_brand"
+
+
+def _get_cookie_controller():
+    """Get a CookieController instance for workspace persistence."""
+    from streamlit_cookies_controller import CookieController
+    return CookieController()
+
+
+def _save_workspace_to_cookie(org_id: str) -> None:
+    """
+    Save workspace org_id to browser cookie (30-day expiry).
+
+    Args:
+        org_id: Organization ID or "all" for superuser mode
+    """
+    try:
+        controller = _get_cookie_controller()
+        controller.set(
+            WORKSPACE_COOKIE_NAME,
+            org_id,
+            max_age=30 * 24 * 60 * 60,
+        )
+    except Exception as e:
+        logger.debug(f"Failed to save workspace cookie: {e}")
+
+
+def _get_workspace_from_cookie() -> Optional[str]:
+    """
+    Read workspace org_id from browser cookie.
+
+    Returns:
+        Organization ID string, or None if cookie absent/invalid.
+    """
+    try:
+        controller = _get_cookie_controller()
+        value = controller.get(WORKSPACE_COOKIE_NAME)
+        if value and isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to read workspace cookie: {e}")
+        return None
+
+
+def _save_brand_to_cookie(brand_id: str) -> None:
+    """
+    Save brand_id to browser cookie (30-day expiry).
+
+    Args:
+        brand_id: Brand ID to persist
+    """
+    try:
+        controller = _get_cookie_controller()
+        controller.set(
+            BRAND_COOKIE_NAME,
+            brand_id,
+            max_age=30 * 24 * 60 * 60,
+        )
+    except Exception as e:
+        logger.debug(f"Failed to save brand cookie: {e}")
+
+
+def _get_brand_from_cookie() -> Optional[str]:
+    """
+    Read brand_id from browser cookie.
+
+    Returns:
+        Brand ID string, or None if cookie absent/invalid.
+    """
+    try:
+        controller = _get_cookie_controller()
+        value = controller.get(BRAND_COOKIE_NAME)
+        if value and isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to read brand cookie: {e}")
+        return None
+
+
+def get_current_organization_id() -> Optional[str]:
+    """
+    Get current organization ID from session state.
+
+    Returns:
+        Organization ID string or None if not set.
+        Returns "all" for superuser mode (see all organizations).
+    """
+    return st.session_state.get("current_organization_id")
+
+
+def set_current_organization_id(org_id: str) -> None:
+    """
+    Set current organization ID in session state.
+
+    Args:
+        org_id: Organization ID to set, or "all" for superuser mode
+    """
+    st.session_state["current_organization_id"] = org_id
+
+
+def is_superuser(user_id: str) -> bool:
+    """
+    Check if user is a superuser.
+
+    Superusers can see data from all organizations.
+
+    Args:
+        user_id: User ID to check
+
+    Returns:
+        True if user is a superuser, False otherwise
+    """
     from viraltracker.core.database import get_supabase_client
+
+    try:
+        result = get_supabase_client().table("user_profiles").select(
+            "is_superuser"
+        ).eq("user_id", user_id).single().execute()
+        return result.data.get("is_superuser", False) if result.data else False
+    except Exception:
+        return False
+
+
+def _on_workspace_change() -> None:
+    """
+    Callback fired by the workspace selectbox *before* the page reruns.
+
+    Resolves the selected display name back to an org_id, updates session
+    state, clears stale brand/product state, persists to cookie, and
+    invalidates the navigation feature cache so the sidebar rebuilds for
+    the new workspace.
+    """
+    options_map = st.session_state.get("_org_options_map", {})
+    selected_name = st.session_state.get("_workspace_selectbox")
+    if not selected_name or not options_map:
+        return
+
+    selected_id = options_map.get(selected_name)
+    if not selected_id:
+        return
+
+    set_current_organization_id(selected_id)
+
+    # Clear brand/product — they belong to the old workspace
+    st.session_state.pop("selected_brand_id", None)
+    st.session_state.pop("selected_product_id", None)
+
+    # Persist to cookie
+    _save_workspace_to_cookie(selected_id)
+
+    # Invalidate the nav feature cache so pages rebuild for the new org
+    try:
+        from viraltracker.ui.nav import _get_org_features_cached
+        _get_org_features_cached.clear()
+    except Exception:
+        pass
+
+
+def render_organization_selector() -> Optional[str]:
+    """
+    Render the single workspace selector in the sidebar.
+
+    This must be called exactly ONCE per page render (in app.py).
+    Individual pages should NOT call this — use get_current_organization_id()
+    instead.
+
+    Uses a hardcoded widget key ("_workspace_selectbox") and an on_change
+    callback so the new org_id is available before the page script reruns.
+
+    Returns:
+        Selected organization ID, "all" for superuser mode, or None
+    """
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.services.organization_service import OrganizationService
+    from viraltracker.core.database import get_supabase_client
+
+    user_id = get_current_user_id()
+    if not user_id:
+        return None
+
+    service = OrganizationService(get_supabase_client())
+    orgs = service.get_user_organizations(user_id)
+
+    if not orgs:
+        st.sidebar.warning("No organizations found")
+        return None
+
+    # Build options dict
+    org_options = {o["organization"]["name"]: o["organization"]["id"] for o in orgs}
+
+    # Superusers get "All Organizations" option
+    user_is_superuser = is_superuser(user_id)
+    if user_is_superuser:
+        org_options = {"All Organizations": "all", **org_options}
+
+    # Single org (non-superuser) — auto-select, no widget needed
+    if len(org_options) == 1:
+        org_id = list(org_options.values())[0]
+        set_current_organization_id(org_id)
+        return org_id
+
+    # Store the name→id map so the on_change callback can resolve it
+    st.session_state["_org_options_map"] = org_options
+
+    # Determine which name to pre-select
+    current_org_id = get_current_organization_id()
+    current_name = next(
+        (name for name, oid in org_options.items() if oid == current_org_id),
+        list(org_options.keys())[0],
+    )
+
+    names = list(org_options.keys())
+
+    st.sidebar.selectbox(
+        "Workspace",
+        names,
+        index=names.index(current_name),
+        key="_workspace_selectbox",
+        on_change=_on_workspace_change,
+    )
+
+    # Ensure session state is in sync (covers first render / cookie restore)
+    selected_name = st.session_state.get("_workspace_selectbox", current_name)
+    selected_id = org_options.get(selected_name, list(org_options.values())[0])
+    set_current_organization_id(selected_id)
+    return selected_id
+
+
+# ============================================================================
+# FEATURE ACCESS UTILITIES
+# ============================================================================
+
+def has_feature(feature_key: str, organization_id: Optional[str] = None) -> bool:
+    """
+    Check if current organization has a feature enabled.
+
+    Args:
+        feature_key: Feature to check (use FeatureKey constants)
+        organization_id: Org ID to check, or None to use current session org
+
+    Returns:
+        True if feature is enabled
+    """
+    from viraltracker.services.feature_service import FeatureService
+    from viraltracker.core.database import get_supabase_client
+
+    if organization_id is None:
+        organization_id = get_current_organization_id()
+
+    if not organization_id:
+        return False
+
+    service = FeatureService(get_supabase_client())
+    return service.has_feature(organization_id, feature_key)
+
+
+def _auto_init_organization() -> Optional[str]:
+    """
+    Auto-initialize the current organization from user memberships.
+
+    Checks the workspace cookie first so the selection persists across
+    page refreshes.  Falls back to the user's first org if the cookie
+    is empty or contains a stale value.
+
+    Returns:
+        Organization ID if resolved, None if unable to determine
+    """
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.services.organization_service import OrganizationService
+    from viraltracker.core.database import get_supabase_client
+
+    user_id = get_current_user_id()
+    if not user_id:
+        return None
+
+    try:
+        service = OrganizationService(get_supabase_client())
+        orgs = service.get_user_organizations(user_id)
+
+        if not orgs:
+            return None
+
+        valid_org_ids = {o["organization"]["id"] for o in orgs}
+
+        # 1. Try restoring from cookie
+        cookie_org = _get_workspace_from_cookie()
+        if cookie_org:
+            if cookie_org == "all" and is_superuser(user_id):
+                set_current_organization_id("all")
+                return "all"
+            if cookie_org in valid_org_ids:
+                set_current_organization_id(cookie_org)
+                return cookie_org
+            # Cookie value is stale / belongs to a different user — ignore
+
+        # 2. Single org — auto-select
+        if len(orgs) == 1:
+            org_id = orgs[0]["organization"]["id"]
+            set_current_organization_id(org_id)
+            return org_id
+
+        # 3. Multiple orgs — use first specific org
+        org_id = orgs[0]["organization"]["id"]
+        set_current_organization_id(org_id)
+        return org_id
+
+    except Exception:
+        return None
+
+
+def require_feature(feature_key: str, feature_name: str = None) -> bool:
+    """
+    Require a feature to be enabled for the current organization.
+
+    Call this at the top of a page (after require_auth) to gate access.
+    Shows an error message and stops page execution if feature is disabled.
+    Auto-initializes the organization from user memberships if not yet set.
+
+    Args:
+        feature_key: Feature to require (use FeatureKey constants)
+        feature_name: Human-readable name for error message (optional)
+
+    Returns:
+        True if feature is enabled (page can continue)
+
+    Usage:
+        from viraltracker.ui.utils import require_feature
+        from viraltracker.services.feature_service import FeatureKey
+
+        require_feature(FeatureKey.VEO_AVATARS, "Veo Avatars")
+    """
+    org_id = get_current_organization_id()
+
+    # Auto-initialize org if not set (e.g., first page visit in session)
+    if not org_id:
+        org_id = _auto_init_organization()
+
+    # Superuser "all" mode - need to check the actual org, not bypass
+    # If org is "all", try to resolve to the actual org for feature checking
+    if org_id == "all":
+        # Superusers in "all" mode bypass feature gating by design
+        return True
+
+    if not org_id:
+        st.error("Please select an organization first.")
+        st.stop()
+        return False
+
+    if has_feature(feature_key, org_id):
+        return True
+
+    # Feature not enabled - show error
+    display_name = feature_name or feature_key.replace("_", " ").title()
+    st.error(f"**{display_name}** is not enabled for your organization.")
+    st.info("Contact your administrator to enable this feature.")
+    st.stop()
+    return False
+
+
+# ============================================================================
+# BRAND UTILITIES
+# ============================================================================
+
+def get_brands(organization_id: Optional[str] = None):
+    """
+    Fetch brands from database, filtered by organization.
+
+    Args:
+        organization_id: Organization ID to filter by.
+            - If None, uses current org from session state
+            - If "all", returns all brands (superuser mode)
+            - Otherwise filters to specific org
+
+    Returns:
+        List of brand dicts with id and name
+    """
+    from viraltracker.core.database import get_supabase_client
+
+    # Use current org from session if not provided
+    if organization_id is None:
+        organization_id = get_current_organization_id()
+
     db = get_supabase_client()
-    result = db.table("brands").select("id, name").order("name").execute()
+    query = db.table("brands").select("id, name, organization_id")
+
+    # Filter by org unless "all" (superuser mode)
+    if organization_id and organization_id != "all":
+        query = query.eq("organization_id", organization_id)
+
+    result = query.order("name").execute()
     return result.data or []
 
 
@@ -33,6 +429,7 @@ def render_brand_selector(
     """
     Render a brand selector that persists across pages.
 
+    Automatically renders organization selector in sidebar first.
     Uses st.session_state.selected_brand_id to maintain selection
     when switching between pages in the same browser session.
 
@@ -48,7 +445,18 @@ def render_brand_selector(
         If include_product=False: Selected brand ID as string, or None
         If include_product=True: Tuple of (brand_id, product_id) or (None, None)
     """
-    brands = get_brands()
+    # Use the org already set by app.py's single workspace selector.
+    # Do NOT render a duplicate org selector here.
+    org_id = get_current_organization_id()
+    if not org_id:
+        org_id = _auto_init_organization()
+    if not org_id:
+        if include_product:
+            return None, None
+        return None
+
+    # Get brands filtered by organization
+    brands = get_brands(org_id)
 
     if not brands:
         st.warning("No brands found. Create a brand first.")
@@ -59,11 +467,20 @@ def render_brand_selector(
     # Build options
     brand_options = {b['name']: b['id'] for b in brands}
     brand_names = list(brand_options.keys())
+    valid_brand_ids = set(brand_options.values())
 
-    # Find current index based on session state
+    # Find current index based on session state or cookie
     current_index = 0
-    if st.session_state.get('selected_brand_id'):
-        current_id = st.session_state.selected_brand_id
+    current_id = st.session_state.get('selected_brand_id')
+
+    # Try to restore from cookie if session state is empty
+    if not current_id:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand and cookie_brand in valid_brand_ids:
+            current_id = cookie_brand
+            st.session_state.selected_brand_id = current_id
+
+    if current_id:
         for i, name in enumerate(brand_names):
             if brand_options[name] == current_id:
                 current_index = i
@@ -89,9 +506,10 @@ def render_brand_selector(
             label_visibility="visible" if show_label else "collapsed"
         )
 
-    # Update session state
+    # Update session state and persist to cookie
     selected_id = brand_options[selected_name]
     st.session_state.selected_brand_id = selected_id
+    _save_brand_to_cookie(selected_id)
 
     if not include_product:
         return selected_id
@@ -373,3 +791,42 @@ def render_belief_first_aggregation(aggregation: dict, entity_name: str = "Brand
                         status = issue.get("status", "")
                         priority = issue.get("priority", "medium")
                         st.markdown(f"- **{layer}**: {status} (Priority: {priority})")
+
+
+# ============================================================================
+# USAGE TRACKING UTILITIES
+# ============================================================================
+
+def setup_tracking_context(service: object) -> None:
+    """
+    Set up usage tracking context on a service instance.
+
+    Call this after creating a service instance that supports usage tracking.
+    Services with a `set_tracking_context` method will have their tracking
+    context configured from the current session state.
+
+    Args:
+        service: Service instance with set_tracking_context method
+
+    Example:
+        service = ScriptService(...)
+        setup_tracking_context(service)
+        # Now service calls will be tracked
+    """
+    # Check if service supports tracking
+    if not hasattr(service, "set_tracking_context"):
+        return
+
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.core.database import get_supabase_client
+
+    user_id = get_current_user_id()
+    org_id = get_current_organization_id()
+
+    # Skip if no org context (e.g., not logged in)
+    if not org_id:
+        return
+
+    tracker = UsageTracker(get_supabase_client())
+    service.set_tracking_context(tracker, user_id, org_id)

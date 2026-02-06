@@ -15,10 +15,6 @@ import json
 from datetime import datetime
 from uuid import UUID
 
-# Apply nest_asyncio for Streamlit compatibility (allows nested event loops)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Brand Manager",
@@ -38,23 +34,24 @@ if 'analyzing_image' not in st.session_state:
 if 'scraping_ads' not in st.session_state:
     st.session_state.scraping_ads = False
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_brands():
-    """Fetch all brands."""
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_current_organization_id
     try:
         db = get_supabase_client()
-        result = db.table("brands").select("*").order("name").execute()
-        return result.data
+        query = db.table("brands").select("*")
+        org_id = get_current_organization_id()
+        if org_id and org_id != "all":
+            query = query.eq("organization_id", org_id)
+        return query.order("name").execute().data or []
     except Exception as e:
         st.error(f"Failed to fetch brands: {e}")
         return []
-
 
 def get_products_for_brand(brand_id: str):
     """Fetch all products for a brand with images and variants from product_images table."""
@@ -92,7 +89,6 @@ def get_products_for_brand(brand_id: str):
         st.error(f"Failed to fetch products: {e}")
         return []
 
-
 def get_variants_for_product(product_id: str):
     """Fetch all variants for a product."""
     try:
@@ -104,7 +100,6 @@ def get_variants_for_product(product_id: str):
     except Exception as e:
         st.error(f"Failed to fetch variants: {e}")
         return []
-
 
 def create_variant(product_id: str, name: str, variant_type: str = "flavor",
                    description: str = None, is_default: bool = False) -> bool:
@@ -135,7 +130,6 @@ def create_variant(product_id: str, name: str, variant_type: str = "flavor",
         st.error(f"Failed to create variant: {e}")
         return False
 
-
 def update_variant(variant_id: str, updates: dict) -> bool:
     """Update a product variant."""
     try:
@@ -145,7 +139,6 @@ def update_variant(variant_id: str, updates: dict) -> bool:
     except Exception as e:
         st.error(f"Failed to update variant: {e}")
         return False
-
 
 def delete_variant(variant_id: str) -> bool:
     """Delete a product variant."""
@@ -157,7 +150,6 @@ def delete_variant(variant_id: str) -> bool:
         st.error(f"Failed to delete variant: {e}")
         return False
 
-
 def get_hooks_count(product_id: str) -> int:
     """Get count of hooks for a product."""
     try:
@@ -166,7 +158,6 @@ def get_hooks_count(product_id: str) -> int:
         return result.count or 0
     except:
         return 0
-
 
 def get_ad_runs_stats(product_id: str) -> dict:
     """Get ad run statistics for a product."""
@@ -188,7 +179,6 @@ def get_ad_runs_stats(product_id: str) -> dict:
     except:
         return {"runs": 0, "ads": 0, "approved": 0}
 
-
 def get_offer_variants_for_product(product_id: str) -> list:
     """Get offer variants (landing page angles) for a product."""
     try:
@@ -200,7 +190,6 @@ def get_offer_variants_for_product(product_id: str) -> list:
     except Exception as e:
         st.error(f"Failed to fetch offer variants: {e}")
         return []
-
 
 def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -> bool:
     """Sync a URL to brand_landing_pages for scraping/analysis.
@@ -228,7 +217,6 @@ def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -
         logging.warning(f"Failed to sync URL to landing pages: {e}")
         return False
 
-
 def get_offer_variant_images(offer_variant_id: str) -> list:
     """Get images associated with an offer variant via junction table."""
     try:
@@ -240,7 +228,6 @@ def get_offer_variant_images(offer_variant_id: str) -> list:
         return result.data or []
     except Exception:
         return []
-
 
 def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str, url: str) -> dict:
     """Scrape images from landing page and associate with offer variant.
@@ -331,7 +318,6 @@ def scrape_and_save_offer_variant_images(product_id: str, offer_variant_id: str,
     except Exception as e:
         return {"success": False, "error": str(e), "new_count": 0, "total_count": 0}
 
-
 def get_amazon_analysis_for_product(product_id: str) -> dict:
     """Get Amazon review analysis for a product."""
     try:
@@ -343,7 +329,6 @@ def get_amazon_analysis_for_product(product_id: str) -> dict:
     except Exception as e:
         st.error(f"Failed to fetch Amazon analysis: {e}")
         return {}
-
 
 def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     """Get signed URL for storage path."""
@@ -361,7 +346,6 @@ def get_signed_url(storage_path: str, expiry: int = 3600) -> str:
     except:
         return ""
 
-
 async def analyze_image(image_path: str) -> dict:
     """Run image analysis using the agent tool."""
     from pydantic_ai import RunContext
@@ -373,7 +357,6 @@ async def analyze_image(image_path: str) -> dict:
     ctx = RunContext(deps=deps, model=None, usage=RunUsage())
 
     return await analyze_product_image(ctx=ctx, image_storage_path=image_path)
-
 
 def save_product_social_proof(product_id: str, review_platforms: dict, media_features: list, awards_certifications: list):
     """Save social proof data for a product."""
@@ -389,6 +372,15 @@ def save_product_social_proof(product_id: str, review_platforms: dict, media_fea
         st.error(f"Failed to save social proof: {e}")
         return False
 
+def save_product_details(product_id: str, updates: dict) -> bool:
+    """Save product detail fields (target_audience, benefits, etc.)."""
+    try:
+        db = get_supabase_client()
+        db.table("products").update(updates).eq("id", product_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save product details: {e}")
+        return False
 
 def save_image_analysis(image_id: str, analysis: dict):
     """Save analysis to product_images table."""
@@ -405,7 +397,6 @@ def save_image_analysis(image_id: str, analysis: dict):
         st.error(f"Failed to save analysis: {e}")
         return False
 
-
 def save_image_notes(image_id: str, notes: str):
     """Save notes for an image."""
     try:
@@ -418,6 +409,154 @@ def save_image_notes(image_id: str, notes: str):
         st.error(f"Failed to save notes: {e}")
         return False
 
+def resize_image_if_needed(file_bytes: bytes, max_size: int = 2000) -> tuple[bytes, str]:
+    """
+    Resize image if larger than max_size pixels on longest side.
+    Also converts to JPEG for better compression.
+
+    Args:
+        file_bytes: Original image bytes
+        max_size: Maximum dimension in pixels
+
+    Returns:
+        Tuple of (processed_bytes, content_type)
+    """
+    from PIL import Image
+    import io
+
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+
+        # Convert RGBA to RGB for JPEG compatibility
+        if img.mode in ('RGBA', 'P'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            background.paste(img, mask=img.split()[3] if len(img.split()) == 4 else None)
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # Resize if needed
+        width, height = img.size
+        if max(width, height) > max_size:
+            if width > height:
+                new_width = max_size
+                new_height = int(height * (max_size / width))
+            else:
+                new_height = max_size
+                new_width = int(width * (max_size / height))
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+
+        # Save as JPEG with good quality
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=85, optimize=True)
+        return output.getvalue(), 'image/jpeg'
+
+    except Exception:
+        # If PIL fails, return original bytes
+        return file_bytes, 'image/jpeg'
+
+def upload_product_images(product_id: str, files: list, progress_placeholder=None) -> int:
+    """
+    Upload multiple images for a product with progress feedback.
+
+    Args:
+        product_id: UUID of the product
+        files: List of UploadedFile objects from st.file_uploader
+        progress_placeholder: Streamlit placeholder for progress updates
+
+    Returns:
+        Number of successfully uploaded images
+    """
+    import uuid
+    db = get_supabase_client()
+    uploaded_count = 0
+    total_files = len(files)
+
+    for idx, file in enumerate(files):
+        try:
+            # Update progress
+            if progress_placeholder:
+                progress_placeholder.progress(
+                    (idx) / total_files,
+                    text=f"Uploading {file.name} ({idx + 1}/{total_files})..."
+                )
+
+            # Generate unique filename (always use .jpg since we convert)
+            unique_filename = f"{uuid.uuid4()}.jpg"
+            storage_path = f"product-images/{product_id}/{unique_filename}"
+
+            # Read and resize image
+            file_bytes = file.read()
+            original_size = len(file_bytes)
+            processed_bytes, content_type = resize_image_if_needed(file_bytes)
+            new_size = len(processed_bytes)
+
+            # Upload to Supabase storage
+            db.storage.from_("product-images").upload(
+                f"{product_id}/{unique_filename}",
+                processed_bytes,
+                {"content-type": content_type, "upsert": "true"}
+            )
+
+            # Create database record (only columns that exist in the table)
+            db.table("product_images").insert({
+                "product_id": product_id,
+                "storage_path": storage_path,
+                "is_main": False
+            }).execute()
+
+            uploaded_count += 1
+
+        except Exception as e:
+            st.error(f"Failed to upload {file.name}: {e}")
+
+    # Complete progress
+    if progress_placeholder:
+        progress_placeholder.progress(1.0, text="Upload complete!")
+
+    return uploaded_count
+
+def set_main_image(product_id: str, image_id: str) -> bool:
+    """Set an image as the main/hero image for a product."""
+    try:
+        db = get_supabase_client()
+        # First, unset all other main images for this product
+        db.table("product_images").update({
+            "is_main": False
+        }).eq("product_id", product_id).execute()
+
+        # Then set this one as main
+        db.table("product_images").update({
+            "is_main": True
+        }).eq("id", image_id).execute()
+
+        return True
+    except Exception as e:
+        st.error(f"Failed to set main image: {e}")
+        return False
+
+def delete_product_image(image_id: str, storage_path: str) -> bool:
+    """Delete a product image from storage and database."""
+    try:
+        db = get_supabase_client()
+
+        # Delete from storage
+        if storage_path:
+            # Extract the path without bucket name
+            path = storage_path.replace("product-images/", "")
+            try:
+                db.storage.from_("product-images").remove([path])
+            except:
+                pass  # Storage deletion is best-effort
+
+        # Delete from database
+        db.table("product_images").delete().eq("id", image_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete image: {e}")
+        return False
 
 def save_brand_code(brand_id: str, brand_code: str) -> bool:
     """Save brand_code for a brand (used in ad filenames)."""
@@ -431,7 +570,6 @@ def save_brand_code(brand_id: str, brand_code: str) -> bool:
         st.error(f"Failed to save brand code: {e}")
         return False
 
-
 def save_product_code(product_id: str, product_code: str) -> bool:
     """Save product_code for a product (used in ad filenames)."""
     try:
@@ -444,6 +582,154 @@ def save_product_code(product_id: str, product_code: str) -> bool:
         st.error(f"Failed to save product code: {e}")
         return False
 
+# ============================================================================
+# BRAND ASSET FUNCTIONS (Logos, etc.)
+# ============================================================================
+
+def get_brand_assets(brand_id: str, asset_type: str = None) -> list:
+    """Fetch brand assets (logos, etc.) for a brand."""
+    try:
+        db = get_supabase_client()
+        query = db.table("brand_assets").select("*").eq("brand_id", brand_id)
+        if asset_type:
+            query = query.eq("asset_type", asset_type)
+        result = query.order("is_primary", desc=True).order("sort_order").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch brand assets: {e}")
+        return []
+
+def upload_brand_logo(brand_id: str, file, asset_type: str = "logo") -> dict:
+    """
+    Upload a brand logo to storage and create database record.
+
+    Args:
+        brand_id: UUID of the brand
+        file: UploadedFile object from st.file_uploader
+        asset_type: Type of asset (logo, logo_white, logo_dark, etc.)
+
+    Returns:
+        Dict with success status and message/asset_id
+    """
+    import uuid as uuid_module
+    try:
+        db = get_supabase_client()
+
+        # Generate unique filename (always use .png to preserve transparency)
+        unique_filename = f"{uuid_module.uuid4()}.png"
+        storage_path = f"brand-assets/{brand_id}/{unique_filename}"
+
+        # Read file
+        file_bytes = file.read()
+
+        # Process logo (keep transparency for logos - different from product images)
+        processed_bytes, content_type = process_logo_image(file_bytes)
+
+        # Upload to Supabase storage
+        db.storage.from_("brand-assets").upload(
+            f"{brand_id}/{unique_filename}",
+            processed_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+
+        # Check if this is the first logo (make it primary)
+        existing_logos = get_brand_assets(brand_id, asset_type="logo")
+        is_primary = len(existing_logos) == 0
+
+        # Create database record
+        result = db.table("brand_assets").insert({
+            "brand_id": brand_id,
+            "storage_path": storage_path,
+            "asset_type": asset_type,
+            "filename": file.name,
+            "is_primary": is_primary
+        }).execute()
+
+        return {"success": True, "asset_id": result.data[0]["id"]}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+def process_logo_image(file_bytes: bytes, max_size: int = 1000) -> tuple[bytes, str]:
+    """
+    Process logo image: resize if needed but preserve transparency.
+
+    Args:
+        file_bytes: Original image bytes
+        max_size: Maximum dimension in pixels
+
+    Returns:
+        Tuple of (processed_bytes, content_type)
+    """
+    from PIL import Image
+    import io
+
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+
+        # Keep original mode to preserve transparency
+        original_mode = img.mode
+
+        # Resize if needed
+        width, height = img.size
+        if max(width, height) > max_size:
+            ratio = max_size / max(width, height)
+            new_size = (int(width * ratio), int(height * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+        # Save with transparency if present
+        output = io.BytesIO()
+        if original_mode in ('RGBA', 'P', 'LA'):
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            img.save(output, format='PNG', optimize=True)
+            return output.getvalue(), "image/png"
+        else:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.save(output, format='JPEG', quality=90, optimize=True)
+            return output.getvalue(), "image/jpeg"
+
+    except Exception as e:
+        return file_bytes, "image/png"
+
+def delete_brand_asset(asset_id: str, storage_path: str) -> bool:
+    """Delete a brand asset from storage and database."""
+    try:
+        db = get_supabase_client()
+
+        # Delete from storage
+        if storage_path:
+            path = storage_path.replace("brand-assets/", "")
+            try:
+                db.storage.from_("brand-assets").remove([path])
+            except:
+                pass  # Storage deletion is best-effort
+
+        # Delete from database
+        db.table("brand_assets").delete().eq("id", asset_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete asset: {e}")
+        return False
+
+def set_primary_brand_logo(brand_id: str, asset_id: str) -> bool:
+    """Set a logo as the primary logo for a brand."""
+    try:
+        db = get_supabase_client()
+        # First, unset all other primary logos for this brand
+        db.table("brand_assets").update({
+            "is_primary": False
+        }).eq("brand_id", brand_id).eq("asset_type", "logo").execute()
+
+        # Then set this one as primary
+        db.table("brand_assets").update({
+            "is_primary": True
+        }).eq("id", asset_id).execute()
+
+        return True
+    except Exception as e:
+        st.error(f"Failed to set primary logo: {e}")
+        return False
 
 def get_brand_ads_for_grouping(brand_id: str) -> list:
     """Fetch brand's scraped ads for URL grouping."""
@@ -461,7 +747,6 @@ def get_brand_ads_for_grouping(brand_id: str) -> list:
                 ad['copy'] = ad['ad_body']
             ads.append(ad)
     return ads
-
 
 def render_offer_variant_discovery(brand_id: str, product_id: str, product_name: str):
     """Render offer variant discovery UI for a product."""
@@ -518,7 +803,6 @@ def render_offer_variant_discovery(brand_id: str, product_id: str, product_name:
     url_groups = st.session_state.get(session_key, [])
     if url_groups:
         render_url_groups_for_brand(url_groups, product_id, brand_id, session_key)
-
 
 def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str, session_key: str):
     """Display URL groups with checkboxes and merge capability."""
@@ -696,7 +980,6 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                         st.session_state[session_key][i].pop('merged_into_variant', None)
                         st.rerun()
 
-
 def _analyze_merged_groups_for_brand(
     url_groups: list,
     group_indices: list,
@@ -807,7 +1090,6 @@ def _analyze_merged_groups_for_brand(
         status_text.empty()
         st.error(f"Merged analysis failed: {e}")
 
-
 def _infer_merged_variant_name_brand(urls: list, synthesis: dict) -> str:
     """Infer variant name from merged URLs."""
     url_parts = [url.lower().split("/")[-1].replace("-", " ") for url in urls]
@@ -831,12 +1113,10 @@ def _infer_merged_variant_name_brand(urls: list, synthesis: dict) -> str:
 
     return "Merged Ad Analysis Variant"
 
-
 def format_color_swatch(hex_color: str, name: str = None) -> str:
     """Create HTML for a color swatch."""
     label = f" {name}" if name else ""
     return f'<span style="display:inline-block;width:20px;height:20px;background:{hex_color};border:1px solid #ccc;border-radius:3px;vertical-align:middle;margin-right:5px;"></span><code>{hex_color}</code>{label}'
-
 
 def scrape_facebook_ads(ad_library_url: str, brand_id: str, max_ads: int = 100) -> dict:
     """
@@ -877,7 +1157,6 @@ def scrape_facebook_ads(ad_library_url: str, brand_id: str, max_ads: int = 100) 
 
     except Exception as e:
         return {"success": False, "count": 0, "message": str(e)}
-
 
 # ============================================================================
 # MAIN UI
@@ -975,6 +1254,83 @@ with st.container():
                 st.markdown(f"Secondary: **{brand_fonts['secondary']}**")
         else:
             st.caption("No brand fonts configured")
+
+    # Brand Logos Section
+    st.markdown("")  # Spacer
+    st.markdown("**Brand Logos**")
+    st.caption("Upload brand logos for use in ad generation and smart editing")
+
+    # Fetch existing logos
+    brand_logos = get_brand_assets(selected_brand_id, asset_type="logo")
+
+    if brand_logos:
+        # Display existing logos in a grid
+        logo_cols = st.columns(4)
+        for idx, logo in enumerate(brand_logos):
+            col = logo_cols[idx % 4]
+            with col:
+                # Get signed URL for logo
+                try:
+                    db = get_supabase_client()
+                    storage_path = logo['storage_path']
+                    path = storage_path.replace("brand-assets/", "")
+                    signed_url = db.storage.from_("brand-assets").create_signed_url(path, 3600)
+                    url = signed_url.get('signedURL') or signed_url.get('signedUrl')
+
+                    if url:
+                        st.image(url, use_container_width=True)
+                    else:
+                        st.warning("Could not load image")
+                except Exception as e:
+                    st.warning(f"Image error: {e}")
+
+                # Show primary badge and filename
+                label = ""
+                if logo.get('is_primary'):
+                    label = "⭐ Primary"
+                elif logo.get('asset_type'):
+                    label = logo['asset_type'].replace('_', ' ').title()
+
+                if label:
+                    st.caption(label)
+
+                # Action buttons
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if not logo.get('is_primary'):
+                        if st.button("⭐", key=f"set_primary_logo_{logo['id']}", help="Set as primary"):
+                            if set_primary_brand_logo(selected_brand_id, logo['id']):
+                                st.rerun()
+                with btn_col2:
+                    if st.button("🗑️", key=f"delete_logo_{logo['id']}", help="Delete"):
+                        if delete_brand_asset(logo['id'], logo.get('storage_path')):
+                            st.success("Logo deleted")
+                            st.rerun()
+    else:
+        st.info("No logos uploaded yet")
+
+    # Upload new logo
+    uploaded_logo = st.file_uploader(
+        "Upload Logo",
+        type=["png", "jpg", "jpeg", "webp"],
+        key="upload_brand_logo",
+        help="PNG with transparency recommended"
+    )
+
+    if uploaded_logo:
+        # Preview
+        st.image(uploaded_logo, width=150, caption="Preview")
+
+        upload_col1, upload_col2 = st.columns([1, 3])
+        with upload_col1:
+            if st.button("Upload Logo", key="confirm_upload_logo", type="primary"):
+                with st.spinner("Uploading..."):
+                    result = upload_brand_logo(selected_brand_id, uploaded_logo, "logo")
+                    if result["success"]:
+                        st.success("Logo uploaded!")
+                        st.rerun()
+                    else:
+                        st.error(f"Upload failed: {result['message']}")
 
     # Brand Guidelines
     if selected_brand.get('brand_guidelines'):
@@ -1172,6 +1528,9 @@ else:
                         else:
                             st.caption("None configured")
 
+                        st.markdown("**Brand Voice Notes**")
+                        st.caption(product.get('brand_voice_notes', 'Not specified'))
+
                     with col_d2:
                         st.markdown("**USPs**")
                         usps = product.get('unique_selling_points', [])
@@ -1186,6 +1545,108 @@ else:
 
                         st.markdown("**Founders**")
                         st.caption(product.get('founders', 'Not specified'))
+
+                        st.markdown("**Key Ingredients**")
+                        ingredients = product.get('key_ingredients', [])
+                        if ingredients:
+                            for ing in ingredients[:5]:
+                                st.caption(f"• {ing}")
+                        else:
+                            st.caption("None configured")
+
+                    # Edit Details toggle
+                    edit_details_key = f"edit_details_{product_id}"
+                    if edit_details_key not in st.session_state:
+                        st.session_state[edit_details_key] = False
+
+                    if st.button("✏️ Edit Details", key=f"btn_edit_details_{product_id}"):
+                        st.session_state[edit_details_key] = not st.session_state[edit_details_key]
+                        st.rerun()
+
+                    if st.session_state[edit_details_key]:
+                        with st.form(key=f"form_details_{product_id}"):
+                            st.markdown("#### Edit Product Details")
+
+                            det_col1, det_col2 = st.columns(2)
+
+                            with det_col1:
+                                edit_current_offer = st.text_input(
+                                    "Current Offer",
+                                    value=product.get('current_offer', '') or '',
+                                    placeholder='e.g. "Up to 30% off"',
+                                    key=f"det_offer_{product_id}"
+                                )
+
+                                edit_target_audience = st.text_area(
+                                    "Target Audience",
+                                    value=product.get('target_audience', '') or '',
+                                    height=80,
+                                    key=f"det_audience_{product_id}"
+                                )
+
+                                current_benefits = product.get('benefits', []) or []
+                                edit_benefits = st.text_area(
+                                    "Benefits (one per line)",
+                                    value="\n".join(current_benefits) if current_benefits else "",
+                                    height=120,
+                                    key=f"det_benefits_{product_id}"
+                                )
+
+                                edit_brand_voice = st.text_area(
+                                    "Brand Voice Notes",
+                                    value=product.get('brand_voice_notes', '') or '',
+                                    height=80,
+                                    placeholder="Tone/style guidance for ad generation",
+                                    key=f"det_voice_{product_id}"
+                                )
+
+                            with det_col2:
+                                current_usps = product.get('unique_selling_points', []) or []
+                                edit_usps = st.text_area(
+                                    "USPs (one per line)",
+                                    value="\n".join(current_usps) if current_usps else "",
+                                    height=120,
+                                    key=f"det_usps_{product_id}"
+                                )
+
+                                current_ingredients = product.get('key_ingredients', []) or []
+                                edit_ingredients = st.text_area(
+                                    "Key Ingredients (one per line)",
+                                    value="\n".join(current_ingredients) if current_ingredients else "",
+                                    height=100,
+                                    key=f"det_ingredients_{product_id}"
+                                )
+
+                                edit_founders = st.text_input(
+                                    "Founders",
+                                    value=product.get('founders', '') or '',
+                                    key=f"det_founders_{product_id}"
+                                )
+
+                            det_save_col, det_cancel_col = st.columns(2)
+                            with det_save_col:
+                                det_submitted = st.form_submit_button("💾 Save", type="primary")
+                            with det_cancel_col:
+                                det_cancelled = st.form_submit_button("Cancel")
+
+                            if det_submitted:
+                                updates = {
+                                    "current_offer": edit_current_offer or None,
+                                    "target_audience": edit_target_audience or None,
+                                    "benefits": [b.strip() for b in edit_benefits.split("\n") if b.strip()] or None,
+                                    "unique_selling_points": [u.strip() for u in edit_usps.split("\n") if u.strip()] or None,
+                                    "key_ingredients": [i.strip() for i in edit_ingredients.split("\n") if i.strip()] or None,
+                                    "founders": edit_founders or None,
+                                    "brand_voice_notes": edit_brand_voice or None,
+                                }
+                                if save_product_details(product_id, updates):
+                                    st.success("Product details saved!")
+                                    st.session_state[edit_details_key] = False
+                                    st.rerun()
+
+                            if det_cancelled:
+                                st.session_state[edit_details_key] = False
+                                st.rerun()
 
                     # Social Proof section (full width)
                     st.markdown("---")
@@ -1294,12 +1755,241 @@ else:
                                 st.session_state[edit_key] = False
                                 st.rerun()
 
+                    # Compliance section (prohibited claims, disclaimers, banned terms)
+                    st.markdown("---")
+                    st.markdown("**⚖️ Compliance** (legal/safety fields for ad generation)")
+
+                    col_c1, col_c2, col_c3 = st.columns(3)
+
+                    with col_c1:
+                        st.markdown("**Prohibited Claims**")
+                        prohibited = product.get('prohibited_claims', [])
+                        if prohibited:
+                            for p in prohibited[:5]:
+                                st.caption(f"• {p}")
+                        else:
+                            st.caption("None configured")
+
+                    with col_c2:
+                        st.markdown("**Required Disclaimers**")
+                        disclaimers = product.get('required_disclaimers', '')
+                        st.caption(disclaimers if disclaimers else "None configured")
+
+                    with col_c3:
+                        st.markdown("**Banned Terms**")
+                        banned = product.get('banned_terms', [])
+                        if banned:
+                            for bt in banned[:5]:
+                                st.caption(f"• {bt}")
+                        else:
+                            st.caption("None configured")
+
+                    # Edit Compliance toggle
+                    edit_compliance_key = f"edit_compliance_{product_id}"
+                    if edit_compliance_key not in st.session_state:
+                        st.session_state[edit_compliance_key] = False
+
+                    if st.button("✏️ Edit Compliance", key=f"btn_edit_compliance_{product_id}"):
+                        st.session_state[edit_compliance_key] = not st.session_state[edit_compliance_key]
+                        st.rerun()
+
+                    if st.session_state[edit_compliance_key]:
+                        with st.form(key=f"form_compliance_{product_id}"):
+                            st.markdown("#### Edit Compliance Fields")
+
+                            current_prohibited = product.get('prohibited_claims', []) or []
+                            edit_prohibited = st.text_area(
+                                "Prohibited Claims (one per line)",
+                                value="\n".join(current_prohibited) if current_prohibited else "",
+                                height=100,
+                                placeholder="e.g. 'Cures disease X'\n'FDA approved'",
+                                key=f"comp_prohibited_{product_id}"
+                            )
+
+                            edit_disclaimers = st.text_area(
+                                "Required Disclaimers",
+                                value=product.get('required_disclaimers', '') or '',
+                                height=80,
+                                placeholder="e.g. 'These statements have not been evaluated by the FDA.'",
+                                key=f"comp_disclaimers_{product_id}"
+                            )
+
+                            current_banned = product.get('banned_terms', []) or []
+                            edit_banned = st.text_area(
+                                "Banned Terms (one per line)",
+                                value="\n".join(current_banned) if current_banned else "",
+                                height=80,
+                                placeholder="e.g. competitor names, trademarked terms",
+                                key=f"comp_banned_{product_id}"
+                            )
+
+                            comp_save_col, comp_cancel_col = st.columns(2)
+                            with comp_save_col:
+                                comp_submitted = st.form_submit_button("💾 Save", type="primary")
+                            with comp_cancel_col:
+                                comp_cancelled = st.form_submit_button("Cancel")
+
+                            if comp_submitted:
+                                comp_updates = {
+                                    "prohibited_claims": [p.strip() for p in edit_prohibited.split("\n") if p.strip()] or None,
+                                    "required_disclaimers": edit_disclaimers or None,
+                                    "banned_terms": [t.strip() for t in edit_banned.split("\n") if t.strip()] or None,
+                                }
+                                if save_product_details(product_id, comp_updates):
+                                    st.success("Compliance fields saved!")
+                                    st.session_state[edit_compliance_key] = False
+                                    st.rerun()
+
+                            if comp_cancelled:
+                                st.session_state[edit_compliance_key] = False
+                                st.rerun()
+
                 with tab_offers:
-                    # Offer Variants = Landing page angles with pain points/benefits
+                    # ========================================
+                    # Add New Offer Variant Section
+                    # ========================================
+                    with st.expander("➕ **Add New Offer Variant**", expanded=False):
+                        st.markdown("Add a new landing page angle by entering the URL. We'll scrape and analyze it automatically.")
+
+                        # Session state for new variant form
+                        new_ov_key = f"new_ov_{product_id}"
+                        if f"{new_ov_key}_analysis" not in st.session_state:
+                            st.session_state[f"{new_ov_key}_analysis"] = None
+                        if f"{new_ov_key}_url" not in st.session_state:
+                            st.session_state[f"{new_ov_key}_url"] = ""
+
+                        # URL Input
+                        new_ov_url = st.text_input(
+                            "Landing Page URL",
+                            value=st.session_state[f"{new_ov_key}_url"],
+                            placeholder="https://example.com/offer-page",
+                            key=f"{new_ov_key}_url_input"
+                        )
+                        st.session_state[f"{new_ov_key}_url"] = new_ov_url
+
+                        # Analyze button
+                        if new_ov_url and st.button("🔍 Analyze Landing Page", key=f"{new_ov_key}_analyze"):
+                            with st.spinner("Scraping and analyzing landing page..."):
+                                from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                ov_service = ProductOfferVariantService()
+                                analysis = ov_service.analyze_landing_page(new_ov_url)
+                                st.session_state[f"{new_ov_key}_analysis"] = analysis
+                                if analysis.get('success'):
+                                    st.success("Analysis complete! Review and edit the extracted data below.")
+                                else:
+                                    st.error(f"Analysis failed: {analysis.get('error', 'Unknown error')}")
+                                st.rerun()
+
+                        # Show form if analysis is available
+                        analysis = st.session_state[f"{new_ov_key}_analysis"]
+                        if analysis and analysis.get('success'):
+                            st.markdown("---")
+                            st.markdown("**Review Extracted Data**")
+
+                            # Editable fields pre-filled with analysis results
+                            new_ov_name = st.text_input(
+                                "Variant Name",
+                                value=analysis.get('name', ''),
+                                key=f"{new_ov_key}_name",
+                                help="Short name for this offer angle"
+                            )
+
+                            new_ov_target = st.text_area(
+                                "Target Audience",
+                                value=analysis.get('target_audience', ''),
+                                key=f"{new_ov_key}_target",
+                                height=80
+                            )
+
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                pain_points_text = "\n".join(analysis.get('pain_points', []))
+                                new_ov_pain = st.text_area(
+                                    "Pain Points (one per line)",
+                                    value=pain_points_text,
+                                    key=f"{new_ov_key}_pain",
+                                    height=120
+                                )
+
+                                benefits_text = "\n".join(analysis.get('benefits', []))
+                                new_ov_benefits = st.text_area(
+                                    "Benefits (one per line)",
+                                    value=benefits_text,
+                                    key=f"{new_ov_key}_benefits",
+                                    height=120
+                                )
+
+                            with col2:
+                                desires_text = "\n".join(analysis.get('desires_goals', []))
+                                new_ov_desires = st.text_area(
+                                    "Desires/Goals (one per line)",
+                                    value=desires_text,
+                                    key=f"{new_ov_key}_desires",
+                                    height=120
+                                )
+
+                                new_ov_disclaimers = st.text_area(
+                                    "Required Disclaimers",
+                                    value="",
+                                    key=f"{new_ov_key}_disclaimers",
+                                    height=120,
+                                    help="Legal disclaimers required for this offer"
+                                )
+
+                            new_ov_default = st.checkbox(
+                                "Set as default variant for this product",
+                                value=False,
+                                key=f"{new_ov_key}_default"
+                            )
+
+                            # Create button
+                            if st.button("✅ Create Offer Variant", key=f"{new_ov_key}_create", type="primary"):
+                                if not new_ov_name:
+                                    st.error("Please enter a variant name")
+                                else:
+                                    with st.spinner("Creating offer variant..."):
+                                        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                        ov_service = ProductOfferVariantService()
+
+                                        # Parse text areas into lists
+                                        pain_list = [p.strip() for p in new_ov_pain.split('\n') if p.strip()]
+                                        benefits_list = [b.strip() for b in new_ov_benefits.split('\n') if b.strip()]
+                                        desires_list = [d.strip() for d in new_ov_desires.split('\n') if d.strip()]
+
+                                        try:
+                                            variant_id = ov_service.create_offer_variant(
+                                                product_id=UUID(product_id),
+                                                name=new_ov_name,
+                                                landing_page_url=new_ov_url,
+                                                pain_points=pain_list,
+                                                desires_goals=desires_list,
+                                                benefits=benefits_list,
+                                                target_audience=new_ov_target,
+                                                required_disclaimers=new_ov_disclaimers if new_ov_disclaimers else None,
+                                                is_default=new_ov_default
+                                            )
+
+                                            # Also sync to brand research URL patterns
+                                            sync_url_to_landing_pages(selected_brand_id, new_ov_url, product_id)
+
+                                            # Clear the form state
+                                            st.session_state[f"{new_ov_key}_analysis"] = None
+                                            st.session_state[f"{new_ov_key}_url"] = ""
+
+                                            st.success(f"✅ Created offer variant: **{new_ov_name}**")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Failed to create variant: {e}")
+
+                    st.markdown("---")
+
+                    # ========================================
+                    # Existing Offer Variants
+                    # ========================================
                     offer_variants = get_offer_variants_for_product(product_id)
 
                     if not offer_variants:
-                        st.info("No offer variants imported. These are created during brand onboarding from Amazon analysis or ad library scraping.")
+                        st.info("No offer variants yet. Use the form above to add a landing page angle.")
                     else:
                         st.markdown(f"**{len(offer_variants)} offer variant(s)** (landing page angles)")
 
@@ -1665,23 +2355,52 @@ else:
                 with tab_images:
                     images = product.get('product_images', [])
 
-                    if not images:
-                        st.info("No images uploaded for this product.")
-                    else:
-                        # Analyze All button - only for images (not PDFs)
-                        analyzable_images = [i for i in images if i.get('is_image', True) and not i.get('is_pdf')]
-                        unanalyzed = [i for i in analyzable_images if not i.get('analyzed_at')]
-                        if unanalyzed:
-                            if st.button(f"🔍 Analyze All ({len(unanalyzed)} unanalyzed)", key=f"analyze_all_{product_id}"):
-                                st.info("Analyzing images... This may take a minute.")
-                                for img in unanalyzed:
-                                    try:
-                                        analysis = asyncio.run(analyze_image(img['storage_path']))
-                                        save_image_analysis(img['id'], analysis)
-                                    except Exception as e:
-                                        st.error(f"Failed to analyze {img['storage_path']}: {e}")
-                                st.success("Analysis complete!")
+                    # Image Upload Section
+                    st.markdown("**Upload Product Images**")
+                    uploaded_files = st.file_uploader(
+                        "Choose images",
+                        type=['png', 'jpg', 'jpeg', 'webp', 'gif'],
+                        accept_multiple_files=True,
+                        key=f"upload_images_{product_id}",
+                        help="Upload product photos for use in ad generation"
+                    )
+
+                    if uploaded_files:
+                        if st.button(f"📤 Upload {len(uploaded_files)} Image(s)", type="primary", key=f"do_upload_{product_id}"):
+                            progress_bar = st.progress(0, text="Starting upload...")
+                            count = upload_product_images(product_id, uploaded_files, progress_bar)
+                            if count > 0:
+                                st.success(f"Uploaded {count} image(s)!")
+                                st.cache_data.clear()
                                 st.rerun()
+
+                    st.divider()
+
+                    if not images:
+                        st.info("No images uploaded for this product yet.")
+                    else:
+                        # Action buttons row
+                        col_actions1, col_actions2 = st.columns(2)
+                        with col_actions1:
+                            # Analyze All button - only for images (not PDFs)
+                            analyzable_images = [i for i in images if i.get('is_image', True) and not i.get('is_pdf')]
+                            unanalyzed = [i for i in analyzable_images if not i.get('analyzed_at')]
+                            if unanalyzed:
+                                if st.button(f"🔍 Analyze All ({len(unanalyzed)} unanalyzed)", key=f"analyze_all_{product_id}"):
+                                    st.info("Analyzing images... This may take a minute.")
+                                    for img in unanalyzed:
+                                        try:
+                                            analysis = asyncio.run(analyze_image(img['storage_path']))
+                                            save_image_analysis(img['id'], analysis)
+                                        except Exception as e:
+                                            st.error(f"Failed to analyze {img['storage_path']}: {e}")
+                                    st.success("Analysis complete!")
+                                    st.rerun()
+
+                        # Show main image indicator
+                        main_image = next((i for i in images if i.get('is_main')), None)
+                        if main_image:
+                            st.caption(f"⭐ Main image: {main_image.get('filename', 'Set')}")
 
                         # Image/file grid
                         cols = st.columns(4)
@@ -1689,6 +2408,11 @@ else:
                             with cols[idx % 4]:
                                 is_pdf = img.get('is_pdf', False)
                                 is_image = img.get('is_image', True)
+                                is_main = img.get('is_main', False)
+
+                                # Main image badge
+                                if is_main:
+                                    st.markdown("⭐ **Main Image**")
 
                                 # Display thumbnail or PDF badge
                                 if is_pdf:
@@ -1731,6 +2455,21 @@ else:
                                                     st.error(f"Failed: {e}")
                                 elif is_pdf:
                                     st.caption("📋 PDF - Gemini analysis coming soon")
+
+                                # Action buttons: Set Main | Delete
+                                btn_col1, btn_col2 = st.columns(2)
+                                with btn_col1:
+                                    if not is_main and is_image and not is_pdf:
+                                        if st.button("⭐", key=f"main_{img['id']}", help="Set as main image"):
+                                            if set_main_image(product_id, img['id']):
+                                                st.success("Set as main!")
+                                                st.rerun()
+                                with btn_col2:
+                                    if st.button("🗑️", key=f"del_img_{img['id']}", help="Delete image"):
+                                        if delete_product_image(img['id'], img.get('storage_path', '')):
+                                            st.success("Deleted!")
+                                            st.cache_data.clear()
+                                            st.rerun()
 
                                 # Notes input (for all file types)
                                 current_notes = img.get('notes', '') or ''

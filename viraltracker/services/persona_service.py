@@ -26,13 +26,246 @@ import asyncio
 
 
 from ..core.database import get_supabase_client
+from .agent_tracking import run_agent_with_tracking
+from .usage_tracker import UsageTracker
 from .models import (
     Persona4D, PersonaSummary, PersonaType, SourceType,
     Demographics, TransformationMap, SocialRelations, DomainSentiment,
     DesireInstance, CopyBrief, ProductPersonaLink
 )
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Pydantic Models for Structured AI Output
+# ============================================================================
+
+class DesireItemResponse(BaseModel):
+    """A single desire item from AI."""
+    text: str
+    source: str = "ai_generated"
+
+
+class DesiresResponse(BaseModel):
+    """Desires section from AI response."""
+    care_protection: List[DesireItemResponse] = Field(default_factory=list)
+    social_approval: List[DesireItemResponse] = Field(default_factory=list)
+    freedom_from_fear: List[DesireItemResponse] = Field(default_factory=list)
+    self_actualization: List[DesireItemResponse] = Field(default_factory=list)
+
+
+class DemographicsResponse(BaseModel):
+    """Demographics from AI response."""
+    age_range: str = ""
+    gender: str = ""
+    location: str = ""
+    income_level: str = ""
+    education: str = ""
+    occupation: str = ""
+    family_status: str = ""
+
+
+class TransformationMapResponse(BaseModel):
+    """Before/after transformation from AI response."""
+    before: List[str] = Field(default_factory=list)
+    after: List[str] = Field(default_factory=list)
+
+
+class SocialRelationsResponse(BaseModel):
+    """Social relations from AI response."""
+    want_to_impress: List[str] = Field(default_factory=list)
+    fear_judged_by: List[str] = Field(default_factory=list)
+    influence_decisions: List[str] = Field(default_factory=list)
+    admire: List[str] = Field(default_factory=list)
+    envy: List[str] = Field(default_factory=list)
+    love_loyalty: List[str] = Field(default_factory=list)
+    dislike_animosity: List[str] = Field(default_factory=list)
+    compared_to: List[str] = Field(default_factory=list)
+    want_to_belong: List[str] = Field(default_factory=list)
+    distance_from: List[str] = Field(default_factory=list)
+
+
+class DomainPainPointsResponse(BaseModel):
+    """Pain points by domain from AI response."""
+    emotional: List[str] = Field(default_factory=list)
+    social: List[str] = Field(default_factory=list)
+    functional: List[str] = Field(default_factory=list)
+
+
+class DomainOutcomesResponse(BaseModel):
+    """Outcomes/JTBD by domain from AI response."""
+    emotional: List[str] = Field(default_factory=list)
+    social: List[str] = Field(default_factory=list)
+    functional: List[str] = Field(default_factory=list)
+
+
+class DomainObjectionsResponse(BaseModel):
+    """Buying objections by domain from AI response."""
+    emotional: List[str] = Field(default_factory=list)
+    social: List[str] = Field(default_factory=list)
+    functional: List[str] = Field(default_factory=list)
+
+
+class PersonaAIResponse(BaseModel):
+    """
+    Structured output model for AI persona generation.
+    Using Pydantic model as result_type eliminates JSON parsing errors.
+    """
+    name: str = Field(description="Descriptive persona name")
+    snapshot: str = Field(description="2-3 sentence big picture description")
+
+    demographics: DemographicsResponse = Field(default_factory=DemographicsResponse)
+    transformation_map: TransformationMapResponse = Field(default_factory=TransformationMapResponse)
+    desires: DesiresResponse = Field(default_factory=DesiresResponse)
+
+    self_narratives: List[str] = Field(default_factory=list)
+    current_self_image: str = ""
+    desired_self_image: str = ""
+    identity_artifacts: List[str] = Field(default_factory=list)
+
+    social_relations: SocialRelationsResponse = Field(default_factory=SocialRelationsResponse)
+
+    worldview: str = ""
+    core_values: List[str] = Field(default_factory=list)
+    allergies: Dict[str, str] = Field(default_factory=dict)
+
+    pain_points: DomainPainPointsResponse = Field(default_factory=DomainPainPointsResponse)
+    outcomes_jtbd: DomainOutcomesResponse = Field(default_factory=DomainOutcomesResponse)
+
+    failed_solutions: List[str] = Field(default_factory=list)
+    buying_objections: DomainObjectionsResponse = Field(default_factory=DomainObjectionsResponse)
+    familiar_promises: List[str] = Field(default_factory=list)
+
+    activation_events: List[str] = Field(default_factory=list)
+    decision_process: str = ""
+    current_workarounds: List[str] = Field(default_factory=list)
+
+    emotional_risks: List[str] = Field(default_factory=list)
+    barriers_to_behavior: List[str] = Field(default_factory=list)
+
+
+class AmazonTestimonialQuote(BaseModel):
+    """A single Amazon testimonial quote."""
+    quote: str
+    author: Optional[str] = None
+    rating: Optional[int] = None
+
+
+class AmazonTestimonialsResponse(BaseModel):
+    """Amazon testimonials organized by category."""
+    transformation: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    pain_points: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    desired_features: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    past_failures: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    buying_objections: List[AmazonTestimonialQuote] = Field(default_factory=list)
+    familiar_promises: List[AmazonTestimonialQuote] = Field(default_factory=list)
+
+
+class SynthesisPersonaResponse(PersonaAIResponse):
+    """Persona from synthesis — extends PersonaAIResponse with synthesis-specific fields."""
+    confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    forces_of_good: List[str] = Field(default_factory=list)
+    forces_of_evil: List[str] = Field(default_factory=list)
+    amazon_testimonials: AmazonTestimonialsResponse = Field(default_factory=AmazonTestimonialsResponse)
+    pain_symptoms: List[str] = Field(default_factory=list)
+    purchasing_habits: str = ""
+
+
+class SynthesisResponse(BaseModel):
+    """Top-level response from persona synthesis."""
+    segment_analysis: str = ""
+    personas: List[SynthesisPersonaResponse] = Field(default_factory=list)
+
+
+def repair_json(json_str: str) -> str:
+    """
+    Attempt to repair common JSON syntax errors from LLM output.
+
+    Handles:
+    - Trailing commas before ] or }
+    - Missing commas between elements
+    - Unescaped quotes in strings
+    """
+    import re
+
+    # Remove trailing commas before ] or }
+    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+
+    # Try to fix missing commas between string values
+    # Pattern: "value" "next_key" -> "value", "next_key"
+    json_str = re.sub(r'"\s*\n\s*"', '",\n"', json_str)
+
+    # Pattern: } { or ] { -> }, { or ], {
+    json_str = re.sub(r'}\s*{', '}, {', json_str)
+    json_str = re.sub(r']\s*{', '], {', json_str)
+
+    # Pattern: } [ -> }, [
+    json_str = re.sub(r'}\s*\[', '}, [', json_str)
+
+    # Pattern: ] [ -> ], [
+    json_str = re.sub(r']\s*\[', '], [', json_str)
+
+    # Pattern: "value" [ or "value" { -> "value": [ or "value": {
+    # This catches cases where : was forgotten
+    json_str = re.sub(r'"\s+(\[{)', r'": \1', json_str)
+
+    return json_str
+
+
+def parse_llm_json(response_text: str) -> dict:
+    """
+    Parse JSON from LLM response with repair attempts.
+
+    Args:
+        response_text: Raw LLM response that should contain JSON
+
+    Returns:
+        Parsed JSON as dict
+
+    Raises:
+        ValueError: If JSON cannot be parsed after repair attempts
+    """
+    # Clean markdown code blocks
+    clean_response = response_text.strip()
+    if clean_response.startswith("```"):
+        lines = clean_response.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        clean_response = "\n".join(lines)
+    clean_response = clean_response.strip()
+
+    # First attempt: parse as-is
+    try:
+        return json.loads(clean_response)
+    except json.JSONDecodeError as first_error:
+        logger.warning(f"Initial JSON parse failed: {first_error}")
+
+    # Second attempt: repair and parse
+    try:
+        repaired = repair_json(clean_response)
+        return json.loads(repaired)
+    except json.JSONDecodeError as second_error:
+        logger.warning(f"Repaired JSON parse also failed: {second_error}")
+
+    # Third attempt: try to extract JSON object from response
+    # Sometimes LLMs add text before/after the JSON
+    try:
+        # Find the first { and last }
+        start_idx = clean_response.find('{')
+        end_idx = clean_response.rfind('}')
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_subset = clean_response[start_idx:end_idx + 1]
+            repaired_subset = repair_json(json_subset)
+            return json.loads(repaired_subset)
+    except json.JSONDecodeError:
+        pass
+
+    # All attempts failed
+    raise ValueError(f"Could not parse JSON after repair attempts. Original error: {first_error}")
 
 
 # AI Prompt for generating 4D persona from product data
@@ -68,8 +301,8 @@ Return JSON with this structure:
   }},
 
   "transformation_map": {{
-    "before": ["Current frustration 1", "Current limitation 2", "..."],
-    "after": ["Desired outcome 1", "Desired state 2", "..."]
+    "before": ["Current frustration 1", "Current limitation 2"],
+    "after": ["Desired outcome 1", "Desired state 2"]
   }},
 
   "desires": {{
@@ -85,17 +318,16 @@ Return JSON with this structure:
   }},
 
   "self_narratives": [
-    "Because I am a responsible pet owner, I research everything before buying",
-    "I'm the kind of person who only wants the best for my family"
+    "Because I am a responsible pet owner, I research everything before buying"
   ],
   "current_self_image": "How they see themselves now",
   "desired_self_image": "How they want to be seen/who they want to become",
   "identity_artifacts": ["Brands/products associated with their desired identity"],
 
   "social_relations": {{
-    "want_to_impress": ["Their vet", "Other pet owners at the dog park"],
-    "fear_judged_by": ["Other pet parents who might think they're not caring enough"],
-    "influence_decisions": ["Pet influencers", "Facebook pet groups"]
+    "want_to_impress": ["Their vet", "Other pet owners"],
+    "fear_judged_by": ["Other pet parents"],
+    "influence_decisions": ["Pet influencers", "Facebook groups"]
   }},
 
   "worldview": "Their general interpretation of reality",
@@ -106,34 +338,34 @@ Return JSON with this structure:
   }},
 
   "pain_points": {{
-    "emotional": ["Worry about pet's health", "Guilt when can't afford premium"],
-    "social": ["Embarrassment at vet visits", "Judgment from other owners"],
-    "functional": ["Hard to find products that actually work"]
+    "emotional": ["Worry about health", "Guilt"],
+    "social": ["Embarrassment", "Judgment"],
+    "functional": ["Hard to find products that work"]
   }},
 
   "outcomes_jtbd": {{
-    "emotional": ["Feel confident they're doing the right thing"],
-    "social": ["Be seen as a great pet parent"],
-    "functional": ["Healthy, happy pet with good dental health"]
+    "emotional": ["Feel confident"],
+    "social": ["Be seen as great parent"],
+    "functional": ["Healthy pet"]
   }},
 
   "failed_solutions": ["What they've tried before that didn't work"],
   "buying_objections": {{
-    "emotional": ["What if it doesn't work and I wasted money?"],
+    "emotional": ["What if it doesn't work?"],
     "social": ["What if people think I'm being duped?"],
-    "functional": ["Will my pet actually like it?"]
+    "functional": ["Will my pet like it?"]
   }},
   "familiar_promises": ["Claims they've heard before and are skeptical of"],
 
-  "activation_events": ["What triggers them to buy NOW - e.g., vet visit, bad breath noticed"],
+  "activation_events": ["What triggers them to buy NOW"],
   "decision_process": "How they typically make purchase decisions",
-  "current_workarounds": ["What they're doing instead of buying the ideal solution"],
+  "current_workarounds": ["What they're doing instead"],
 
-  "emotional_risks": ["Fear of wasting money", "Fear of looking foolish"],
-  "barriers_to_behavior": ["Price concerns", "Uncertainty about effectiveness"]
+  "emotional_risks": ["Fear of wasting money"],
+  "barriers_to_behavior": ["Price concerns"]
 }}
 
-Return ONLY valid JSON, no other text."""
+IMPORTANT: Return ONLY valid JSON, no markdown code blocks, no other text."""
 
 
 class PersonaService:
@@ -141,7 +373,29 @@ class PersonaService:
 
     def __init__(self, supabase: Optional[Client] = None):
         self.supabase = supabase or get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("PersonaService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # =========================================================================
     # CRUD Operations
@@ -564,9 +818,9 @@ class PersonaService:
         # Gather ad insights from existing analyses
         ad_insights = await self._gather_ad_insights(resolved_brand_id, product_id)
 
-        # Pydantic AI Agent (Creative)
+        # Pydantic AI Agent
         agent = Agent(
-            model=Config.get_model("creative"),
+            model=Config.get_model("persona"),
             system_prompt="You are an expert persona creator. Return ONLY valid JSON."
         )
 
@@ -576,30 +830,25 @@ class PersonaService:
             ad_insights=json.dumps(ad_insights, indent=2) if ad_insights else "No ad analyses available yet."
         )
 
-        result = await agent.run(prompt)
+        result = await run_agent_with_tracking(
+            agent,
+            prompt,
+            tracker=self._tracker,
+            user_id=self._user_id,
+            organization_id=self._org_id,
+            tool_name="persona_service",
+            operation="generate_persona_from_product"
+        )
 
-        response_text = result.output
-
-        # Parse response
-        clean_response = response_text.strip()
-        if clean_response.startswith("```"):
-            lines = clean_response.split("\n")
-            # Remove first and last lines if they're ```
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean_response = "\n".join(lines)
-        clean_response = clean_response.strip()
-
-        persona_data = json.loads(clean_response)
+        # Parse response with robust JSON repair
+        persona_data = parse_llm_json(result.output)
 
         # Build Persona4D model from AI response
         persona = self._build_persona_from_ai_response(
             persona_data,
             product_id=product_id,
             brand_id=brand_id or UUID(product.get("brand_id")) if product.get("brand_id") else None,
-            raw_response=response_text
+            raw_response=result.output
         )
 
         logger.info(f"Generated persona for product {product_id}: {persona.name}")
@@ -861,26 +1110,24 @@ Return ONLY valid JSON, no other text."""
         # Call Claude for synthesis
         # Pydantic AI Agent (Creative)
         agent = Agent(
-            model=Config.get_model("creative"),
+            model=Config.get_model("persona"),
             system_prompt="You are an expert persona synthesizer. Return ONLY valid JSON."
         )
 
-        result = await agent.run(prompt)
+        result = await run_agent_with_tracking(
+            agent,
+            prompt,
+            tracker=self._tracker,
+            user_id=self._user_id,
+            organization_id=self._org_id,
+            tool_name="persona_service",
+            operation="synthesize_competitor_persona"
+        )
 
         response_text = result.output
 
-        # Parse response
-        clean_response = response_text.strip()
-        if clean_response.startswith("```"):
-            lines = clean_response.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean_response = "\n".join(lines)
-        clean_response = clean_response.strip()
-
-        persona_data = json.loads(clean_response)
+        # Parse response with robust JSON repair
+        persona_data = parse_llm_json(response_text)
 
         # Build Persona4D from response
         persona = self._build_persona_from_ai_response(
@@ -895,6 +1142,121 @@ Return ONLY valid JSON, no other text."""
         logger.info(f"Synthesized competitor persona for {level_desc}: {persona.name}")
         return persona
 
+    def _build_persona_from_structured_response(
+        self,
+        ai_response: PersonaAIResponse,
+        product_id: Optional[UUID] = None,
+        brand_id: Optional[UUID] = None
+    ) -> Persona4D:
+        """Build a Persona4D from structured AI response (no JSON parsing needed)."""
+
+        # Convert demographics
+        demographics = Demographics(
+            age_range=ai_response.demographics.age_range,
+            gender=ai_response.demographics.gender,
+            location=ai_response.demographics.location,
+            income_level=ai_response.demographics.income_level,
+            education=ai_response.demographics.education,
+            occupation=ai_response.demographics.occupation,
+            family_status=ai_response.demographics.family_status
+        )
+
+        # Convert transformation map
+        transformation_map = TransformationMap(
+            before=ai_response.transformation_map.before,
+            after=ai_response.transformation_map.after
+        )
+
+        # Convert desires - structured response already has proper types
+        desires = {}
+        if ai_response.desires.care_protection:
+            desires["care_protection"] = [
+                DesireInstance(text=d.text, source=d.source)
+                for d in ai_response.desires.care_protection
+            ]
+        if ai_response.desires.social_approval:
+            desires["social_approval"] = [
+                DesireInstance(text=d.text, source=d.source)
+                for d in ai_response.desires.social_approval
+            ]
+        if ai_response.desires.freedom_from_fear:
+            desires["freedom_from_fear"] = [
+                DesireInstance(text=d.text, source=d.source)
+                for d in ai_response.desires.freedom_from_fear
+            ]
+
+        # Convert social relations
+        social_relations = SocialRelations(
+            want_to_impress=ai_response.social_relations.want_to_impress,
+            fear_judged_by=ai_response.social_relations.fear_judged_by,
+            influence_decisions=ai_response.social_relations.influence_decisions
+        )
+
+        # Convert domain sentiments
+        pain_points = DomainSentiment(
+            emotional=ai_response.pain_points.emotional,
+            social=ai_response.pain_points.social,
+            functional=ai_response.pain_points.functional
+        )
+        outcomes_jtbd = DomainSentiment(
+            emotional=ai_response.outcomes_jtbd.emotional,
+            social=ai_response.outcomes_jtbd.social,
+            functional=ai_response.outcomes_jtbd.functional
+        )
+        buying_objections = DomainSentiment(
+            emotional=ai_response.buying_objections.emotional,
+            social=ai_response.buying_objections.social,
+            functional=ai_response.buying_objections.functional
+        )
+
+        return Persona4D(
+            name=ai_response.name,
+            persona_type=PersonaType.PRODUCT_SPECIFIC if product_id else PersonaType.OWN_BRAND,
+            brand_id=brand_id,
+            product_id=product_id,
+
+            # Basics
+            snapshot=ai_response.snapshot,
+            demographics=demographics,
+
+            # Psychographic
+            transformation_map=transformation_map,
+            desires=desires,
+
+            # Identity
+            self_narratives=ai_response.self_narratives,
+            current_self_image=ai_response.current_self_image,
+            desired_self_image=ai_response.desired_self_image,
+            identity_artifacts=ai_response.identity_artifacts,
+
+            # Social
+            social_relations=social_relations,
+
+            # Worldview
+            worldview=ai_response.worldview,
+            core_values=ai_response.core_values,
+            allergies=ai_response.allergies,
+
+            # Domain Sentiment
+            outcomes_jtbd=outcomes_jtbd,
+            pain_points=pain_points,
+            failed_solutions=ai_response.failed_solutions,
+            buying_objections=buying_objections,
+            familiar_promises=ai_response.familiar_promises,
+
+            # Purchase Behavior
+            activation_events=ai_response.activation_events,
+            decision_process=ai_response.decision_process,
+            current_workarounds=ai_response.current_workarounds,
+
+            # 3D Objections
+            emotional_risks=ai_response.emotional_risks,
+            barriers_to_behavior=ai_response.barriers_to_behavior,
+
+            # Meta
+            source_type=SourceType.AI_GENERATED
+        )
+
     def _build_persona_from_ai_response(
         self,
         data: Dict[str, Any],
@@ -904,7 +1266,7 @@ Return ONLY valid JSON, no other text."""
         competitor_product_id: Optional[UUID] = None,
         raw_response: str = ""
     ) -> Persona4D:
-        """Build a Persona4D from AI-generated JSON data."""
+        """Build a Persona4D from AI-generated JSON data (used for competitor personas)."""
 
         # Parse demographics
         demographics = Demographics(**(data.get("demographics", {})))

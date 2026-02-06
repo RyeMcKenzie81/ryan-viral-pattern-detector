@@ -14,13 +14,11 @@ Part of the Client Onboarding Pipeline.
 
 import streamlit as st
 import asyncio
-import nest_asyncio
 import time
 from datetime import datetime
 from uuid import UUID
 
 # Allow nested event loops (needed for Pydantic AI agent.run_sync() in async context)
-nest_asyncio.apply()
 
 # Page config (must be first)
 st.set_page_config(
@@ -40,11 +38,9 @@ if "onboarding_session_id" not in st.session_state:
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = 0
 
-
 # ============================================
 # SERVICE INITIALIZATION
 # ============================================
-
 
 def get_onboarding_service():
     """Get ClientOnboardingService instance."""
@@ -52,27 +48,25 @@ def get_onboarding_service():
 
     return ClientOnboardingService()
 
-
 def get_web_scraping_service():
     """Get WebScrapingService instance."""
     from viraltracker.services.web_scraping_service import WebScrapingService
 
     return WebScrapingService()
 
-
 def get_amazon_service():
-    """Get AmazonReviewService instance."""
+    """Get AmazonReviewService instance with tracking enabled."""
     from viraltracker.services.amazon_review_service import AmazonReviewService
-
-    return AmazonReviewService()
-
+    from viraltracker.ui.utils import setup_tracking_context
+    service = AmazonReviewService()
+    setup_tracking_context(service)
+    return service
 
 def get_ad_analysis_service():
     """Get AdAnalysisService instance."""
     from viraltracker.services.ad_analysis_service import AdAnalysisService
 
     return AdAnalysisService()
-
 
 def get_group_resume_status(group: dict, max_ads: int = 50) -> dict:
     """
@@ -115,11 +109,9 @@ def get_group_resume_status(group: dict, max_ads: int = 50) -> dict:
     except Exception:
         return {"already_analyzed": 0, "remaining": len(ads), "total": len(ads), "has_resume": False}
 
-
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
-
 
 def render_completeness_bar(score: float):
     """Render a colored progress bar showing completeness."""
@@ -142,16 +134,13 @@ def render_completeness_bar(score: float):
         unsafe_allow_html=True,
     )
 
-
 def field_status_icon(filled: bool) -> str:
     """Return status icon for field."""
     return "✅" if filled else "❌"
 
-
 # ============================================
 # SESSION SELECTOR
 # ============================================
-
 
 def render_session_selector():
     """Render session selection/creation UI."""
@@ -207,11 +196,9 @@ def render_session_selector():
                 else:
                     st.warning("Please enter a session name")
 
-
 # ============================================
 # SIDEBAR - PROGRESS & ACTIONS
 # ============================================
-
 
 def render_sidebar(session: dict):
     """Render sidebar with progress, sections, and actions."""
@@ -355,11 +342,9 @@ def render_sidebar(session: dict):
                 service.update_status(UUID(session["id"]), new_status)
                 st.rerun()
 
-
 # ============================================
 # TAB 1: BRAND BASICS
 # ============================================
-
 
 def render_brand_basics_tab(session: dict):
     """Render Brand Basics section."""
@@ -489,11 +474,9 @@ def render_brand_basics_tab(session: dict):
         st.success("Saved!")
         st.rerun()
 
-
 # ============================================
 # TAB 2: FACEBOOK/META
 # ============================================
-
 
 def render_facebook_tab(session: dict):
     """Render Facebook/Meta section with ad analysis for offer variants."""
@@ -763,7 +746,6 @@ def render_facebook_tab(session: dict):
                         service.update_section(UUID(session["id"]), "facebook_meta", data)
                         st.rerun()
 
-
 def _analyze_ad_group_and_create_variant(session: dict, fb_data: dict, group_idx: int, service):
     """Analyze an ad group and create an offer variant from the results."""
     from viraltracker.services.ad_analysis_service import AdGroup
@@ -870,7 +852,6 @@ def _analyze_ad_group_and_create_variant(session: dict, fb_data: dict, group_idx
         st.error(f"Analysis failed: {e}")
         import traceback
         st.code(traceback.format_exc())
-
 
 def _analyze_merged_groups(session: dict, fb_data: dict, group_indices: list, service):
     """Analyze multiple URL groups together and create a single merged variant."""
@@ -1003,7 +984,6 @@ def _analyze_merged_groups(session: dict, fb_data: dict, group_indices: list, se
         import traceback
         st.code(traceback.format_exc())
 
-
 def _infer_merged_variant_name(urls: list, synthesis: dict) -> str:
     """Infer a good variant name from merged URLs and synthesis data."""
     # Look for common patterns in URLs
@@ -1032,7 +1012,6 @@ def _infer_merged_variant_name(urls: list, synthesis: dict) -> str:
         return f"{synthesis['benefits'][0][:30]} Angle"
 
     return "Merged Ad Analysis Variant"
-
 
 def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, service):
     """Analyze Amazon listing and pre-fill product/variant data."""
@@ -1173,11 +1152,9 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
             import traceback
             st.code(traceback.format_exc())
 
-
 # ============================================
 # TAB 3: PRODUCTS
 # ============================================
-
 
 def render_products_tab(session: dict):
     """Render Products section - per-product data collection."""
@@ -1708,11 +1685,9 @@ def render_products_tab(session: dict):
     else:
         st.info("No products added yet. Add at least one product to advertise.")
 
-
 # ============================================
 # TAB 4: COMPETITORS
 # ============================================
-
 
 def _analyze_competitor_amazon(session: dict, competitors: list, comp_idx: int, service):
     """Analyze competitor's Amazon listing to extract product info and messaging."""
@@ -1770,7 +1745,6 @@ def _analyze_competitor_amazon(session: dict, competitors: list, comp_idx: int, 
             import traceback
             st.code(traceback.format_exc())
 
-
 def _scrape_competitor_ads(session: dict, competitors: list, comp_idx: int, service):
     """Scrape competitor's Facebook ads from their Ad Library URL."""
     from datetime import datetime
@@ -1826,7 +1800,6 @@ def _scrape_competitor_ads(session: dict, competitors: list, comp_idx: int, serv
             st.error(f"Ad scrape failed: {e}")
             import traceback
             st.code(traceback.format_exc())
-
 
 def _analyze_competitor_ad_group(
     session: dict, competitors: list, comp_idx: int, grp_idx: int, service
@@ -1904,7 +1877,6 @@ def _analyze_competitor_ad_group(
             st.error(f"Ad analysis failed: {e}")
             import traceback
             st.code(traceback.format_exc())
-
 
 def render_competitors_tab(session: dict):
     """Render Competitors section."""
@@ -2142,11 +2114,9 @@ def render_competitors_tab(session: dict):
     else:
         st.info("No competitors added yet.")
 
-
 # ============================================
 # TAB 5: TARGET AUDIENCE
 # ============================================
-
 
 def render_target_audience_tab(session: dict):
     """Render Target Audience section."""
@@ -2239,7 +2209,6 @@ def render_target_audience_tab(session: dict):
         service.update_section(UUID(session["id"]), "target_audience", data)
         st.success("Saved!")
         st.rerun()
-
 
 # ============================================
 # MAIN PAGE

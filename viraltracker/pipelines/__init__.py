@@ -53,6 +53,21 @@ from .reddit_sentiment import (
     SaveNode,
 )
 
+# Ad Creation Pipeline imports
+from .ad_creation.orchestrator import (
+    ad_creation_graph,
+    run_ad_creation,
+    InitializeNode as AdInitializeNode,
+    FetchContextNode as AdFetchContextNode,
+    AnalyzeTemplateNode as AdAnalyzeTemplateNode,
+    SelectContentNode as AdSelectContentNode,
+    SelectImagesNode as AdSelectImagesNode,
+    GenerateAdsNode as AdGenerateAdsNode,
+    ReviewAdsNode as AdReviewAdsNode,
+    CompileResultsNode as AdCompileResultsNode,
+)
+from .ad_creation.state import AdCreationPipelineState
+
 # Content Pipeline imports
 from ..services.content_pipeline.orchestrator import (
     content_pipeline_graph_mvp1,
@@ -125,6 +140,20 @@ GRAPH_REGISTRY = {
         "node_classes": [TopicDiscoveryNode, TopicEvaluationNode, TopicSelectionNode],
         "callers": [{"type": "ui", "page": "41_📝_Content_Pipeline.py"}],
     },
+    "ad_creation": {
+        "graph": ad_creation_graph,
+        "start_node": AdInitializeNode,
+        "run_function": "run_ad_creation",
+        "description": "Complete ad creation workflow: analyze template, select content, generate images, dual AI review",
+        "nodes": ["InitializeNode", "FetchContextNode", "AnalyzeTemplateNode",
+                  "SelectContentNode", "SelectImagesNode", "GenerateAdsNode",
+                  "ReviewAdsNode", "CompileResultsNode"],
+        "node_classes": [AdInitializeNode, AdFetchContextNode, AdAnalyzeTemplateNode,
+                         AdSelectContentNode, AdSelectImagesNode, AdGenerateAdsNode,
+                         AdReviewAdsNode, AdCompileResultsNode],
+        "callers": [{"type": "ui", "page": "21_🎨_Ad_Creator.py"},
+                    {"type": "worker", "module": "scheduler_worker.py"}],
+    },
     "content_pipeline_mvp2": {
         "graph": content_pipeline_graph_mvp2,
         "start_node": TopicDiscoveryNode,
@@ -181,6 +210,18 @@ __all__ = [
     "TopSelectionNode",
     "CategorizeNode",
     "SaveNode",
+    # Ad Creation Pipeline
+    "ad_creation_graph",
+    "run_ad_creation",
+    "AdCreationPipelineState",
+    "AdInitializeNode",
+    "AdFetchContextNode",
+    "AdAnalyzeTemplateNode",
+    "AdSelectContentNode",
+    "AdSelectImagesNode",
+    "AdGenerateAdsNode",
+    "AdReviewAdsNode",
+    "AdCompileResultsNode",
     # Content Pipeline
     "content_pipeline_graph_mvp1",
     "content_pipeline_graph_mvp2",

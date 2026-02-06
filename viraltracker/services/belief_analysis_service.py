@@ -16,6 +16,8 @@ from datetime import datetime
 
 from pydantic_ai import Agent
 from viraltracker.core.config import Config
+from viraltracker.services.agent_tracking import run_agent_with_tracking
+from viraltracker.services.usage_tracker import UsageTracker
 from viraltracker.services.models import (
     ProductContext,
     MessageClassification,
@@ -237,6 +239,28 @@ class BeliefAnalysisService:
             llm_service: LLM service for prompts (Sonnet/Opus)
         """
         self.llm_service = llm_service
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # =========================================================================
     # MESSAGE PARSING
@@ -684,7 +708,15 @@ Be thorough - even a single hook implies an entire belief structure. Fill in wha
                 system_prompt=DRAFT_CANVAS_SYSTEM_PROMPT
             )
 
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="belief_analysis_service",
+                operation="draft_canvas"
+            )
             content = result.output
 
             # Parse JSON from response with robust handling

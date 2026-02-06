@@ -571,7 +571,9 @@ class AdCreationService:
         belief_plan_id: Optional[UUID] = None,
         meta_headline: Optional[str] = None,
         meta_primary_text: Optional[str] = None,
-        template_name: Optional[str] = None
+        template_name: Optional[str] = None,
+        # Regeneration lineage
+        regenerate_parent_id: Optional[UUID] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -598,6 +600,7 @@ class AdCreationService:
             meta_headline: Headline for Meta ad placement (below image)
             meta_primary_text: Primary text for Meta ad placement (above image)
             template_name: Name of template for display
+            regenerate_parent_id: Source ad UUID when regenerated from rejected ad
 
         Returns:
             UUID of generated ad record
@@ -653,6 +656,8 @@ class AdCreationService:
             data["meta_primary_text"] = meta_primary_text
         if template_name is not None:
             data["template_name"] = template_name
+        if regenerate_parent_id is not None:
+            data["regenerate_parent_id"] = str(regenerate_parent_id)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])
@@ -1547,4 +1552,663 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         except Exception as e:
             logger.error(f"Failed to get template for plan {plan_id}: {e}")
             return None
+
+    # ============================================
+    # SMART AD EDITING
+    # ============================================
+
+    # Quick edit presets for common modifications
+    EDIT_PRESETS = {
+        "text_larger": "Make all text 20% larger and more prominent",
+        "more_contrast": "Increase contrast between text and background for better readability",
+        "brighter": "Make the overall image 15% brighter",
+        "warmer": "Shift the color palette to warmer tones (more orange/red)",
+        "cooler": "Shift the color palette to cooler tones (more blue/green)",
+        "bolder_cta": "Make the call-to-action button or text more prominent and eye-catching",
+        "cleaner_layout": "Simplify the layout and reduce visual clutter while keeping all elements",
+    }
+
+    async def create_edited_ad(
+        self,
+        source_ad_id: UUID,
+        edit_prompt: str,
+        temperature: float = 0.3,
+        preserve_text: bool = True,
+        preserve_colors: bool = True,
+        reference_image_ids: Optional[List[UUID]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create an edited version of an existing ad using Gemini.
+
+        Takes an existing generated ad and creates a modified version based on
+        the edit instructions. The edited ad goes through the same review process
+        as newly generated ads.
+
+        Args:
+            source_ad_id: UUID of the source ad to edit
+            edit_prompt: Instructions for what to change (e.g., "make the headline larger")
+            temperature: Generation temperature (0.0-1.0). Lower = more faithful to original.
+                         Default 0.3 for faithful edits.
+            preserve_text: If True, explicitly instruct to keep text identical unless changing it
+            preserve_colors: If True, explicitly instruct to keep colors identical unless changing them
+            reference_image_ids: Optional list of product_images UUIDs to include as references
+                                 (e.g., correct logo, specific product shots)
+
+        Returns:
+            Dict with edited ad info:
+            {
+                "ad_id": str,
+                "storage_path": str,
+                "edit_prompt": str,
+                "generation_time_ms": int,
+                "source_ad_id": str
+            }
+
+        Raises:
+            ValueError: If source ad not found
+            Exception: If generation fails
+        """
+        from .gemini_service import GeminiService
+        import uuid as uuid_module
+        import time
+
+        logger.info(f"Creating edited ad from source {source_ad_id}")
+        start_time = time.time()
+
+        # Get source ad data
+        result = self.supabase.table("generated_ads").select(
+            "id, storage_path, prompt_spec, prompt_text, hook_text, hook_id, "
+            "ad_run_id, angle_id, template_id, belief_plan_id, "
+            "meta_headline, meta_primary_text, template_name, "
+            "ad_runs(product_id)"
+        ).eq("id", str(source_ad_id)).execute()
+
+        if not result.data:
+            raise ValueError(f"Source ad not found: {source_ad_id}")
+
+        source_ad = result.data[0]
+        ad_run_id = source_ad.get("ad_run_id")
+        hook_text = source_ad.get("hook_text", "")
+        original_spec = source_ad.get("prompt_spec", {})
+
+        # Get product_id from ad_run
+        product_id = None
+        if source_ad.get("ad_runs") and source_ad["ad_runs"].get("product_id"):
+            product_id = UUID(source_ad["ad_runs"]["product_id"])
+
+        # Get source image
+        source_image_base64 = await self.get_image_as_base64(source_ad["storage_path"])
+
+        # Build preservation instructions
+        preservation_rules = []
+        if preserve_text:
+            preservation_rules.append(
+                "- Keep ALL text EXACTLY the same (same words, fonts, sizes, positions) "
+                "unless the edit specifically asks to change text"
+            )
+        if preserve_colors:
+            preservation_rules.append(
+                "- Keep ALL colors EXACTLY the same unless the edit specifically asks to change colors"
+            )
+
+        preservation_text = "\n".join(preservation_rules) if preservation_rules else ""
+
+        # Get canvas dimensions from original spec
+        canvas = original_spec.get("canvas", {})
+        if isinstance(canvas, dict):
+            dimensions = canvas.get("dimensions", "1080x1080")
+        else:
+            dimensions = "1080x1080"
+
+        # Build the edit prompt
+        full_prompt = f"""Edit this Facebook ad image according to the following instructions.
+
+**EDIT INSTRUCTIONS:**
+{edit_prompt}
+
+**PRESERVATION RULES (CRITICAL):**
+{preservation_text}
+- The hook text is: "{hook_text}" - preserve this exactly unless told to change it
+- Maintain the same overall composition and visual hierarchy
+- Keep the product image(s) exactly the same - do not modify products
+- Output at the same dimensions: {dimensions}px
+
+**REFERENCE IMAGE:**
+The attached image is the original ad to edit. Make ONLY the requested changes.
+
+This is a SMART EDIT - be precise and targeted. Change only what is requested."""
+
+        # Build reference images list (source ad first)
+        all_reference_images = [source_image_base64]
+
+        # Fetch additional reference images if provided
+        reference_image_descriptions = []
+        if reference_image_ids:
+            for img_id in reference_image_ids:
+                try:
+                    img_data = None
+                    img_type = "reference"
+                    img_desc = ""
+
+                    # First try product_images table
+                    img_result = self.supabase.table("product_images").select(
+                        "storage_path, is_main, image_analysis"
+                    ).eq("id", str(img_id)).execute()
+
+                    if img_result.data:
+                        img_data = img_result.data[0]
+                        img_type = "main product" if img_data.get("is_main") else "product image"
+                        # Get description from analysis if available
+                        analysis = img_data.get("image_analysis") or {}
+                        if analysis.get("best_use_cases"):
+                            img_desc = analysis["best_use_cases"][0] if analysis["best_use_cases"] else ""
+                    else:
+                        # Try brand_assets table
+                        logo_result = self.supabase.table("brand_assets").select(
+                            "storage_path, asset_type, is_primary, filename"
+                        ).eq("id", str(img_id)).execute()
+
+                        if logo_result.data:
+                            img_data = logo_result.data[0]
+                            asset_type = img_data.get("asset_type", "logo")
+                            if img_data.get("is_primary"):
+                                img_type = "primary brand logo"
+                            else:
+                                img_type = f"brand {asset_type.replace('_', ' ')}"
+                            img_desc = "Use this as the correct brand logo"
+
+                    if img_data:
+                        img_path = img_data["storage_path"]
+
+                        # Get image as base64
+                        img_base64 = await self.get_image_as_base64(img_path)
+                        all_reference_images.append(img_base64)
+
+                        # Track description for prompt
+                        desc = f"Reference {len(all_reference_images)}: {img_type}"
+                        if img_desc:
+                            desc += f" ({img_desc})"
+                        reference_image_descriptions.append(desc)
+
+                        logger.info(f"Added reference image: {img_id} ({img_type})")
+                    else:
+                        logger.warning(f"Reference image {img_id} not found in product_images or brand_assets")
+                except Exception as e:
+                    logger.warning(f"Failed to load reference image {img_id}: {e}")
+
+        # If we have additional reference images, update the prompt
+        if reference_image_descriptions:
+            ref_images_text = "\n".join(f"- {desc}" for desc in reference_image_descriptions)
+            full_prompt += f"""
+
+**ADDITIONAL REFERENCE IMAGES PROVIDED:**
+{ref_images_text}
+
+Use these reference images to ensure accurate reproduction of elements like logos,
+product shots, or brand assets. The FIRST image is the ad to edit, subsequent
+images are reference materials to use."""
+
+        # Generate edited image
+        gemini_service = GeminiService()
+        generation_result = await gemini_service.generate_image(
+            prompt=full_prompt,
+            reference_images=all_reference_images,
+            return_metadata=True,
+            temperature=temperature
+        )
+
+        generated_image_base64 = generation_result["image_base64"]
+        generation_time_ms = generation_result.get("generation_time_ms", 0)
+        model_used = generation_result.get("model_used", "models/gemini-3-pro-image-preview")
+
+        # Generate new ad ID
+        new_ad_id = uuid_module.uuid4()
+
+        # Build storage path
+        if product_id:
+            brand_code, product_code = await self.get_brand_product_codes(product_id)
+            format_code = self.get_format_code(dimensions)
+            filename = self.generate_ad_filename(
+                brand_code=brand_code,
+                product_code=product_code,
+                ad_run_id=ad_run_id,
+                ad_id=new_ad_id,
+                format_code=format_code
+            )
+            storage_filename = f"{ad_run_id}/{filename}"
+        else:
+            storage_filename = f"{ad_run_id}/edit_{new_ad_id.hex[:8]}.png"
+
+        # Upload to storage
+        image_data = base64.b64decode(generated_image_base64)
+        self.supabase.storage.from_("generated-ads").upload(
+            storage_filename,
+            image_data,
+            {"content-type": "image/png"}
+        )
+
+        full_storage_path = f"generated-ads/{storage_filename}"
+
+        # Create updated prompt spec for the edit
+        edit_spec = original_spec.copy() if original_spec else {}
+        edit_spec["edit_instructions"] = edit_prompt
+
+        # Get next prompt_index for this run (edits get higher indices)
+        index_result = self.supabase.table("generated_ads").select(
+            "prompt_index"
+        ).eq("ad_run_id", str(ad_run_id)).order("prompt_index", desc=True).limit(1).execute()
+
+        next_index = 1
+        if index_result.data and index_result.data[0].get("prompt_index"):
+            next_index = index_result.data[0]["prompt_index"] + 1
+
+        # Save to database
+        data = {
+            "id": str(new_ad_id),
+            "ad_run_id": str(ad_run_id),
+            "prompt_index": next_index,
+            "prompt_text": full_prompt,
+            "prompt_spec": edit_spec,
+            "hook_text": hook_text,
+            "storage_path": full_storage_path,
+            "final_status": "pending",  # Will go through review
+            "model_used": model_used,
+            "generation_time_ms": int((time.time() - start_time) * 1000),
+            # Edit-specific fields
+            "edit_parent_id": str(source_ad_id),
+            "edit_prompt": edit_prompt,
+            "edit_temperature": temperature,
+            "is_edit": True
+        }
+
+        # Copy over hook_id if present
+        if source_ad.get("hook_id"):
+            data["hook_id"] = source_ad["hook_id"]
+
+        # Copy belief plan metadata if present
+        if source_ad.get("angle_id"):
+            data["angle_id"] = source_ad["angle_id"]
+        if source_ad.get("template_id"):
+            data["template_id"] = source_ad["template_id"]
+        if source_ad.get("belief_plan_id"):
+            data["belief_plan_id"] = source_ad["belief_plan_id"]
+        if source_ad.get("meta_headline"):
+            data["meta_headline"] = source_ad["meta_headline"]
+        if source_ad.get("meta_primary_text"):
+            data["meta_primary_text"] = source_ad["meta_primary_text"]
+        if source_ad.get("template_name"):
+            data["template_name"] = source_ad["template_name"]
+
+        self.supabase.table("generated_ads").insert(data).execute()
+
+        logger.info(f"Created edited ad {new_ad_id} from source {source_ad_id} ({generation_time_ms}ms)")
+
+        return {
+            "ad_id": str(new_ad_id),
+            "storage_path": full_storage_path,
+            "edit_prompt": edit_prompt,
+            "generation_time_ms": generation_time_ms,
+            "source_ad_id": str(source_ad_id)
+        }
+
+    async def regenerate_ad(self, source_ad_id: UUID) -> Dict[str, Any]:
+        """
+        Regenerate a rejected/flagged ad with the same hook and parameters.
+
+        Creates a brand-new image using the same hook, runs dual review,
+        and saves as a new ad in the same ad_run. The original rejected
+        ad remains in the database for reference.
+
+        Args:
+            source_ad_id: UUID of the rejected/flagged ad to regenerate
+
+        Returns:
+            Dict with new ad info:
+            {
+                "ad_id": str,
+                "storage_path": str,
+                "final_status": str,
+                "claude_review": dict,
+                "gemini_review": dict,
+                "reviewers_agree": bool,
+                "source_ad_id": str,
+                "generation_time_ms": int
+            }
+
+        Raises:
+            ValueError: If source ad not found or not rejected/flagged
+        """
+        from .gemini_service import GeminiService
+        from ..pipelines.ad_creation.services.generation_service import AdGenerationService
+        from ..pipelines.ad_creation.services.review_service import AdReviewService
+        import uuid as uuid_module
+        import time
+
+        logger.info(f"Regenerating ad from source {source_ad_id}")
+        start_time = time.time()
+
+        # 1. Fetch source ad with ad_run data
+        result = self.supabase.table("generated_ads").select(
+            "id, ad_run_id, hook_id, hook_text, prompt_spec, prompt_text, "
+            "storage_path, final_status, "
+            "angle_id, template_id, belief_plan_id, "
+            "meta_headline, meta_primary_text, template_name"
+        ).eq("id", str(source_ad_id)).execute()
+
+        if not result.data:
+            raise ValueError(f"Source ad not found: {source_ad_id}")
+
+        source_ad = result.data[0]
+        ad_run_id = source_ad["ad_run_id"]
+
+        # Verify the ad is rejected or flagged
+        if source_ad["final_status"] not in ("rejected", "flagged"):
+            raise ValueError(
+                f"Can only regenerate rejected/flagged ads, "
+                f"got status: {source_ad['final_status']}"
+            )
+
+        # 2. Fetch ad_run for reference ad and product context
+        run_result = self.supabase.table("ad_runs").select(
+            "reference_ad_storage_path, product_id, parameters, ad_analysis, "
+            "selected_hooks, selected_product_images"
+        ).eq("id", str(ad_run_id)).execute()
+
+        if not run_result.data:
+            raise ValueError(f"Ad run not found: {ad_run_id}")
+
+        ad_run = run_result.data[0]
+        product_id = UUID(ad_run["product_id"])
+        parameters = ad_run.get("parameters") or {}
+        ad_analysis = ad_run.get("ad_analysis") or {}
+        reference_ad_path = ad_run.get("reference_ad_storage_path", "")
+
+        # 3. Get product data
+        product = await self.get_product(product_id)
+        product_dict = product.model_dump() if hasattr(product, 'model_dump') else dict(product)
+
+        # 4. Get ad brief instructions
+        brand_id = product_dict.get("brand_id")
+        ad_brief_instructions = ""
+        if brand_id:
+            template = await self.get_ad_brief_template(UUID(brand_id))
+            if template:
+                ad_brief_instructions = template.get("instructions", "") if isinstance(template, dict) else getattr(template, "instructions", "")
+
+        # 5. Build hook data matching generate_prompt's expected format
+        hook_text = source_ad.get("hook_text", "")
+        hook_id = source_ad.get("hook_id")
+        selected_hook = {
+            "adapted_text": hook_text,
+            "hook_id": hook_id or str(uuid_module.uuid4()),
+        }
+
+        # 6. Get product image paths from the ad_run
+        product_image_paths = ad_run.get("selected_product_images") or []
+
+        # 7. Generate prompt
+        generation_service = AdGenerationService()
+        color_mode = parameters.get("color_mode", "original")
+        brand_colors = parameters.get("brand_colors")
+        brand_fonts = parameters.get("brand_fonts")
+
+        prompt = generation_service.generate_prompt(
+            prompt_index=1,
+            selected_hook=selected_hook,
+            product=product_dict,
+            ad_analysis=ad_analysis,
+            ad_brief_instructions=ad_brief_instructions,
+            reference_ad_path=reference_ad_path,
+            product_image_paths=product_image_paths,
+            color_mode=color_mode,
+            brand_colors=brand_colors,
+            brand_fonts=brand_fonts,
+            num_variations=1,
+        )
+
+        # 8. Execute generation
+        gemini_service = GeminiService()
+        generated_ad = await generation_service.execute_generation(
+            nano_banana_prompt=prompt,
+            ad_creation_service=self,
+            gemini_service=gemini_service,
+        )
+
+        # 9. Upload new image
+        new_ad_id = uuid_module.uuid4()
+        canvas_size = None
+        json_prompt = prompt.get('json_prompt', {})
+        if isinstance(json_prompt, dict):
+            style = json_prompt.get('style', {})
+            canvas_size = style.get('canvas_size', '1080x1080px')
+
+        storage_path, _ = await self.upload_generated_ad(
+            ad_run_id=UUID(ad_run_id),
+            prompt_index=1,
+            image_base64=generated_ad['image_base64'],
+            product_id=product_id,
+            ad_id=new_ad_id,
+            canvas_size=canvas_size,
+        )
+
+        # 10. Dual review
+        review_service = AdReviewService()
+
+        claude_review = None
+        try:
+            claude_review = await review_service.review_ad_claude(
+                storage_path=storage_path,
+                product_name=product_dict.get('name', ''),
+                hook_text=hook_text,
+                ad_analysis=ad_analysis,
+                ad_creation_service=self,
+            )
+        except Exception as e:
+            logger.warning(f"Claude review failed for regenerated ad: {e}")
+            claude_review = review_service.make_failed_review("claude", str(e))
+
+        gemini_review = None
+        try:
+            gemini_review = await review_service.review_ad_gemini(
+                storage_path=storage_path,
+                product_name=product_dict.get('name', ''),
+                hook_text=hook_text,
+                ad_analysis=ad_analysis,
+                ad_creation_service=self,
+                gemini_service=gemini_service,
+            )
+        except Exception as e:
+            logger.warning(f"Gemini review failed for regenerated ad: {e}")
+            gemini_review = review_service.make_failed_review("gemini", str(e))
+
+        final_status, reviewers_agree = review_service.apply_dual_review_logic(
+            claude_review, gemini_review
+        )
+
+        # 11. Get next prompt_index for this run
+        index_result = self.supabase.table("generated_ads").select(
+            "prompt_index"
+        ).eq("ad_run_id", str(ad_run_id)).order(
+            "prompt_index", desc=True
+        ).limit(1).execute()
+
+        next_index = 1
+        if index_result.data and index_result.data[0].get("prompt_index"):
+            next_index = index_result.data[0]["prompt_index"] + 1
+
+        # 12. Save to database
+        data = {
+            "id": str(new_ad_id),
+            "ad_run_id": str(ad_run_id),
+            "prompt_index": next_index,
+            "prompt_text": prompt.get('full_prompt', ''),
+            "prompt_spec": prompt.get('json_prompt', {}),
+            "hook_text": hook_text,
+            "storage_path": storage_path,
+            "claude_review": claude_review,
+            "gemini_review": gemini_review,
+            "reviewers_agree": reviewers_agree,
+            "final_status": final_status,
+            "model_used": generated_ad.get('model_used'),
+            "model_requested": generated_ad.get('model_requested'),
+            "generation_time_ms": generated_ad.get('generation_time_ms'),
+            "generation_retries": generated_ad.get('generation_retries', 0),
+            "regenerate_parent_id": str(source_ad_id),
+        }
+
+        # Copy hook_id if present
+        if hook_id:
+            data["hook_id"] = hook_id
+
+        # Copy belief plan metadata
+        for field in ("angle_id", "template_id", "belief_plan_id",
+                      "meta_headline", "meta_primary_text", "template_name"):
+            if source_ad.get(field):
+                data[field] = source_ad[field]
+
+        self.supabase.table("generated_ads").insert(data).execute()
+
+        total_time_ms = int((time.time() - start_time) * 1000)
+        logger.info(
+            f"Regenerated ad {new_ad_id} from source {source_ad_id} "
+            f"(status={final_status}, {total_time_ms}ms)"
+        )
+
+        return {
+            "ad_id": str(new_ad_id),
+            "storage_path": storage_path,
+            "final_status": final_status,
+            "claude_review": claude_review,
+            "gemini_review": gemini_review,
+            "reviewers_agree": reviewers_agree,
+            "source_ad_id": str(source_ad_id),
+            "generation_time_ms": total_time_ms,
+        }
+
+    async def get_edit_history(self, ad_id: UUID) -> List[Dict]:
+        """
+        Get the edit history chain for an ad.
+
+        Returns a list of ads in the edit chain, from the original
+        to the most recent edit.
+
+        Args:
+            ad_id: UUID of any ad in the chain (original or edit)
+
+        Returns:
+            List of ad records in chronological order (oldest first)
+        """
+        # First, find the root (original) ad by walking up the chain
+        current_id = str(ad_id)
+        visited = set()
+
+        while True:
+            if current_id in visited:
+                logger.warning(f"Circular reference detected in edit chain for {ad_id}")
+                break
+            visited.add(current_id)
+
+            result = self.supabase.table("generated_ads").select(
+                "id, edit_parent_id"
+            ).eq("id", current_id).execute()
+
+            if not result.data:
+                break
+
+            parent_id = result.data[0].get("edit_parent_id")
+            if not parent_id:
+                # This is the root
+                break
+            current_id = parent_id
+
+        root_id = current_id
+
+        # Now walk down from root to get full history
+        history = []
+        current_id = root_id
+
+        while current_id:
+            result = self.supabase.table("generated_ads").select(
+                "id, storage_path, edit_prompt, edit_temperature, is_edit, "
+                "created_at, final_status, hook_text"
+            ).eq("id", current_id).execute()
+
+            if not result.data:
+                break
+
+            history.append(result.data[0])
+
+            # Find child (edited version)
+            child_result = self.supabase.table("generated_ads").select(
+                "id"
+            ).eq("edit_parent_id", current_id).order("created_at").limit(1).execute()
+
+            if child_result.data:
+                current_id = child_result.data[0]["id"]
+            else:
+                current_id = None
+
+        return history
+
+    async def get_editable_ads(
+        self,
+        product_id: Optional[UUID] = None,
+        brand_id: Optional[UUID] = None,
+        status: str = "approved",
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Get ads that can be edited.
+
+        Returns approved ads (non-variants) that can be used as source for edits.
+
+        Args:
+            product_id: Filter by product UUID
+            brand_id: Filter by brand UUID
+            status: Filter by status (default: "approved")
+            limit: Maximum results
+
+        Returns:
+            List of ad records with product/brand info
+        """
+        # Build query - exclude variants (parent_ad_id is null)
+        query = self.supabase.table("generated_ads").select(
+            "id, storage_path, hook_text, final_status, created_at, is_edit, "
+            "ad_run_id, ad_runs(product_id, products(id, name, brand_id, brands(id, name)))"
+        ).eq("final_status", status).is_("parent_ad_id", "null")
+
+        # Apply filters
+        if product_id:
+            # Need to filter via ad_runs
+            runs_result = self.supabase.table("ad_runs").select("id").eq(
+                "product_id", str(product_id)
+            ).execute()
+            run_ids = [r["id"] for r in runs_result.data] if runs_result.data else []
+            if run_ids:
+                query = query.in_("ad_run_id", run_ids)
+            else:
+                return []  # No runs for this product
+
+        if brand_id:
+            # Get products for brand, then runs for products
+            products_result = self.supabase.table("products").select("id").eq(
+                "brand_id", str(brand_id)
+            ).execute()
+            product_ids = [p["id"] for p in products_result.data] if products_result.data else []
+            if product_ids:
+                runs_result = self.supabase.table("ad_runs").select("id").in_(
+                    "product_id", product_ids
+                ).execute()
+                run_ids = [r["id"] for r in runs_result.data] if runs_result.data else []
+                if run_ids:
+                    query = query.in_("ad_run_id", run_ids)
+                else:
+                    return []
+            else:
+                return []
+
+        query = query.order("created_at", desc=True).limit(limit)
+        result = query.execute()
+
+        return result.data or []
 

@@ -76,7 +76,6 @@ with st.expander("Configuration", expanded=True):
         else:
             st.success("✅ Standard model ($0.10/s)")
 
-
 # Main Interface
 col1, col2 = st.columns([2, 1])
 

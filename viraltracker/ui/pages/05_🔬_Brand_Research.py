@@ -18,8 +18,6 @@ from uuid import UUID
 from typing import Optional, Dict, Any, List
 
 # Fix for nested event loops in Streamlit
-import nest_asyncio
-nest_asyncio.apply()
 
 # Page config
 st.set_page_config(
@@ -31,6 +29,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("brand_research", "Brand Research")
 
 # Initialize session state
 if 'analysis_running' not in st.session_state:
@@ -40,36 +40,33 @@ if 'suggested_personas' not in st.session_state:
 if 'review_mode' not in st.session_state:
     st.session_state.review_mode = False
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_brand_research_service():
     """Get BrandResearchService instance."""
     from viraltracker.services.brand_research_service import BrandResearchService
     return BrandResearchService()
 
-
 def get_persona_service():
-    """Get PersonaService instance."""
+    """Get PersonaService instance with tracking enabled."""
     from viraltracker.services.persona_service import PersonaService
-    return PersonaService()
-
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PersonaService()
+    setup_tracking_context(service)
+    return service
 
 def get_angle_candidate_service():
     """Get AngleCandidateService instance."""
     from viraltracker.services.angle_candidate_service import AngleCandidateService
     return AngleCandidateService()
 
-
 def get_ad_scraping_service():
     """Get AdScrapingService instance."""
     from viraltracker.services.ad_scraping_service import AdScrapingService
     return AdScrapingService()
-
 
 def check_asset_health(brand_id: str, asset_type: str = "image") -> Dict:
     """Check health of assets for a brand.
@@ -83,7 +80,6 @@ def check_asset_health(brand_id: str, asset_type: str = "image") -> Dict:
     """
     service = get_brand_research_service()
     return service.check_asset_health(brand_id, asset_type)
-
 
 def refresh_expired_assets_sync(brand_id: str) -> Dict:
     """Re-scrape expired/failed assets (sync wrapper).
@@ -101,7 +97,6 @@ def refresh_expired_assets_sync(brand_id: str) -> Dict:
         return await service.refresh_expired_assets(UUID(brand_id))
 
     return run_async(_refresh())
-
 
 def extract_brand_research_candidates(
     brand_id: str,
@@ -141,17 +136,10 @@ def extract_brand_research_candidates(
 
     return stats
 
-
 def get_brands():
-    """Fetch all brands."""
-    try:
-        db = get_supabase_client()
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
-        return []
-
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 def get_products_for_brand(brand_id: str):
     """Fetch products for a brand."""
@@ -164,7 +152,6 @@ def get_products_for_brand(brand_id: str):
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
         return []
-
 
 def get_ad_ids_for_product(brand_id: str, product_id: str) -> List[str]:
     """Get ad IDs that link to a specific product's URLs.
@@ -223,7 +210,6 @@ def get_ad_ids_for_product(brand_id: str, product_id: str) -> List[str]:
         st.error(f"Failed to get ads for product: {e}")
         return []
 
-
 def get_ad_count_for_brand(brand_id: str, product_id: Optional[str] = None) -> int:
     """Get count of ads linked to a brand, optionally filtered by product."""
     try:
@@ -239,7 +225,6 @@ def get_ad_count_for_brand(brand_id: str, product_id: Optional[str] = None) -> i
         return result.count or 0
     except Exception:
         return 0
-
 
 def get_asset_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
     """Get counts of video/image assets for a brand, optionally filtered by product."""
@@ -282,7 +267,6 @@ def get_asset_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -
     except Exception as e:
         st.error(f"Failed to get asset stats: {e}")
         return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
-
 
 def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
     """Get counts of completed analyses for a brand, optionally filtered by product."""
@@ -339,11 +323,9 @@ def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None
         st.error(f"Failed to get analysis stats: {e}")
         return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "amazon_reviews": 0, "total": 0}
 
-
 def run_async(coro):
     """Run async function in Streamlit context."""
     return asyncio.run(coro)
-
 
 def download_assets_sync(brand_id: str, limit: int = 50, product_id: Optional[str] = None) -> Dict[str, int]:
     """Download assets for brand (sync wrapper)."""
@@ -361,7 +343,6 @@ def download_assets_sync(brand_id: str, limit: int = 50, product_id: Optional[st
         return await service.download_assets_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_download())
-
 
 def analyze_videos_sync(brand_id: str, limit: int = 10, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze videos for brand (sync wrapper).
@@ -384,7 +365,6 @@ def analyze_videos_sync(brand_id: str, limit: int = 10, product_id: Optional[str
 
     return run_async(_analyze())
 
-
 def analyze_images_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze images for brand (sync wrapper).
 
@@ -405,7 +385,6 @@ def analyze_images_sync(brand_id: str, limit: int = 20, product_id: Optional[str
         return await service.analyze_images_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_analyze())
-
 
 def get_image_assets_for_brand(brand_id: str, only_unanalyzed: bool = True, limit: int = 50) -> List[Dict]:
     """Get image assets for a brand."""
@@ -447,7 +426,6 @@ def get_image_assets_for_brand(brand_id: str, only_unanalyzed: bool = True, limi
         st.error(f"Failed to get image assets: {e}")
         return []
 
-
 def analyze_copy_sync(brand_id: str, limit: int = 50, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze ad copy for brand (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
@@ -464,7 +442,6 @@ def analyze_copy_sync(brand_id: str, limit: int = 50, product_id: Optional[str] 
         return await service.analyze_copy_batch(UUID(brand_id), limit=limit, ad_ids=ad_ids)
 
     return run_async(_analyze())
-
 
 def scrape_landing_pages_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> Dict:
     """Scrape landing pages for brand (sync wrapper).
@@ -484,7 +461,6 @@ def scrape_landing_pages_sync(brand_id: str, limit: int = 20, product_id: Option
 
     return run_async(_scrape())
 
-
 def analyze_landing_pages_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze landing pages for brand (sync wrapper).
 
@@ -503,13 +479,11 @@ def analyze_landing_pages_sync(brand_id: str, limit: int = 20, product_id: Optio
 
     return run_async(_analyze())
 
-
 def get_landing_page_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
     """Get landing page statistics for a brand, optionally filtered by product."""
     from viraltracker.services.brand_research_service import BrandResearchService
     service = BrandResearchService()
     return service.get_landing_page_stats(UUID(brand_id), UUID(product_id) if product_id else None)
-
 
 def synthesize_personas_sync(brand_id: str) -> List[Dict]:
     """Synthesize personas from analyses (sync wrapper)."""
@@ -521,7 +495,6 @@ def synthesize_personas_sync(brand_id: str) -> List[Dict]:
 
     return run_async(_synthesize())
 
-
 def render_brand_product_selector():
     """Render brand and product selector using shared utility."""
     from viraltracker.ui.utils import render_brand_selector as shared_brand_selector
@@ -531,7 +504,6 @@ def render_brand_product_selector():
         key="research_brand_selector",
         product_key="research_product_selector"
     )
-
 
 def render_stats_section(brand_id: str, product_id: Optional[str] = None):
     """Render statistics about the brand's data, optionally filtered by product."""
@@ -586,7 +558,6 @@ def render_stats_section(brand_id: str, product_id: Optional[str] = None):
     with col6:
         st.metric("Total Analyses", analysis_stats["total"])
 
-
 def render_download_section(brand_id: str, product_id: Optional[str] = None):
     """Render asset download section."""
     st.subheader("1. Download Assets")
@@ -638,7 +609,6 @@ def render_download_section(brand_id: str, product_id: Optional[str] = None):
 
             st.session_state.analysis_running = False
             st.rerun()
-
 
 def render_analysis_section(brand_id: str, product_id: Optional[str] = None):
     """Render analysis controls."""
@@ -763,7 +733,6 @@ def render_analysis_section(brand_id: str, product_id: Optional[str] = None):
             st.session_state.analysis_running = False
             st.rerun()
 
-
 def add_manual_landing_page(brand_id: str, url: str, product_id: Optional[str] = None) -> bool:
     """Add a manual landing page URL for a brand.
 
@@ -791,7 +760,6 @@ def add_manual_landing_page(brand_id: str, url: str, product_id: Optional[str] =
     except Exception as e:
         st.error(f"Failed to add landing page: {e}")
         return False
-
 
 def scrape_single_landing_page(brand_id: str, url: str, product_id: Optional[str] = None) -> bool:
     """Scrape a single landing page URL.
@@ -873,7 +841,6 @@ def scrape_single_landing_page(brand_id: str, url: str, product_id: Optional[str
             return False
 
     return run_async(_scrape())
-
 
 def render_landing_page_section(brand_id: str, product_id: Optional[str] = None):
     """Render landing page scraping and analysis section."""
@@ -1018,7 +985,6 @@ def render_landing_page_section(brand_id: str, product_id: Optional[str] = None)
     st.divider()
     _render_belief_first_section(brand_id, product_id, successfully_scraped)
 
-
 def _render_belief_first_section(brand_id: str, product_id: Optional[str], scraped_count: int):
     """Render the belief-first landing page analysis sub-section."""
     from viraltracker.ui.utils import render_belief_first_analysis, render_belief_first_aggregation
@@ -1122,7 +1088,6 @@ def _render_belief_first_section(brand_id: str, product_id: Optional[str], scrap
                 else:
                     st.info("Click 'Generate Summary' to see aggregated analysis.")
 
-
 def get_belief_first_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
     """Get belief-first analysis stats for a brand."""
     from viraltracker.services.brand_research_service import BrandResearchService
@@ -1131,7 +1096,6 @@ def get_belief_first_stats(brand_id: str, product_id: Optional[str] = None) -> D
         UUID(brand_id),
         UUID(product_id) if product_id else None
     )
-
 
 def run_belief_first_analysis_sync(brand_id: str, limit: int, product_id: Optional[str] = None) -> List:
     """Run belief-first analysis synchronously."""
@@ -1144,7 +1108,6 @@ def run_belief_first_analysis_sync(brand_id: str, limit: int, product_id: Option
         product_id=UUID(product_id) if product_id else None
     ))
 
-
 def aggregate_belief_first_sync(brand_id: str, product_id: Optional[str] = None) -> Dict:
     """Aggregate belief-first analysis synchronously."""
     from viraltracker.services.brand_research_service import BrandResearchService
@@ -1153,7 +1116,6 @@ def aggregate_belief_first_sync(brand_id: str, product_id: Optional[str] = None)
         UUID(brand_id),
         UUID(product_id) if product_id else None
     )
-
 
 def get_landing_pages_with_belief_first(brand_id: str, product_id: Optional[str] = None) -> List:
     """Get landing pages that have belief-first analysis."""
@@ -1170,19 +1132,19 @@ def get_landing_pages_with_belief_first(brand_id: str, product_id: Optional[str]
     result = query.order("belief_first_analyzed_at", desc=True).execute()
     return result.data or []
 
-
 def get_landing_pages_for_brand(brand_id: str) -> list:
     """Get landing pages for a brand."""
     from viraltracker.services.brand_research_service import BrandResearchService
     service = BrandResearchService()
     return service.get_landing_pages_for_brand(UUID(brand_id))
 
-
 def get_amazon_review_service():
-    """Get AmazonReviewService instance."""
+    """Get AmazonReviewService instance with tracking enabled."""
     from viraltracker.services.amazon_review_service import AmazonReviewService
-    return AmazonReviewService()
-
+    from viraltracker.ui.utils import setup_tracking_context
+    service = AmazonReviewService()
+    setup_tracking_context(service)
+    return service
 
 def get_amazon_review_stats(brand_id: str, product_id: Optional[str] = None) -> Dict[str, Any]:
     """Get Amazon review statistics for a brand/product."""
@@ -1232,7 +1194,6 @@ def get_amazon_review_stats(brand_id: str, product_id: Optional[str] = None) -> 
     except Exception as e:
         st.error(f"Failed to get Amazon stats: {e}")
         return {"has_amazon_url": False, "reviews_scraped": 0, "has_analysis": False}
-
 
 def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None):
     """Render Amazon review analysis section with 7 themed tabs."""
@@ -1387,7 +1348,6 @@ def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None
         except Exception as e:
             st.error(f"Failed to load analysis: {e}")
 
-
 def render_angle_extraction_section(brand_id: str, product_id: Optional[str] = None):
     """Render angle pipeline extraction section."""
     st.subheader("5. Extract to Angle Pipeline")
@@ -1471,7 +1431,6 @@ def render_angle_extraction_section(brand_id: str, product_id: Optional[str] = N
     else:
         st.info("Select at least one source to extract.")
 
-
 def get_offer_variants_for_product(product_id: str) -> List[Dict]:
     """Get offer variants for a product."""
     try:
@@ -1482,7 +1441,6 @@ def get_offer_variants_for_product(product_id: str) -> List[Dict]:
         st.error(f"Failed to get offer variants: {e}")
         return []
 
-
 def synthesize_from_offer_variant_sync(offer_variant_id: str) -> List[Dict]:
     """Synthesize personas from offer variant (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
@@ -1492,7 +1450,6 @@ def synthesize_from_offer_variant_sync(offer_variant_id: str) -> List[Dict]:
         return await service.synthesize_from_offer_variant(UUID(offer_variant_id))
 
     return run_async(_synthesize())
-
 
 def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
     """Render persona synthesis section."""
@@ -1594,7 +1551,6 @@ def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
 
                     st.session_state.analysis_running = False
                     st.rerun()
-
 
 def render_persona_review():
     """Render persona review and approval interface."""
@@ -1928,7 +1884,6 @@ def render_persona_review():
                     st.session_state.suggested_personas.pop(i)
                     st.rerun()
 
-
 def render_existing_personas(brand_id: str, product_id: Optional[str] = None):
     """Render existing 4D personas for the brand/product."""
     db = get_supabase_client()
@@ -1992,7 +1947,6 @@ def render_existing_personas(brand_id: str, product_id: Optional[str] = None):
 
             st.caption(f"Created: {persona['created_at'][:10]}")
             st.markdown(f"[View/Edit in Personas Page →](/Personas)")
-
 
 def render_existing_analyses(brand_id: str):
     """Render summary of existing analyses."""
@@ -2061,7 +2015,6 @@ def render_existing_analyses(brand_id: str):
                 st.divider()
         else:
             st.info("No copy analyses yet")
-
 
 # Main page
 st.title("Brand Research")

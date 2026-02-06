@@ -30,7 +30,6 @@ from viraltracker.ui.auth import require_auth
 from viraltracker.services.comic_video.models import MOOD_EFFECT_PRESETS, PanelMood, EffectType, TransitionType, CameraEasing
 require_auth()
 
-
 def get_mood_effects(mood_str: str) -> Dict[str, bool]:
     """Get which effects a mood preset enables.
 
@@ -73,18 +72,15 @@ if 'comic_aspect_ratio' not in st.session_state:
 if 'render_all_progress' not in st.session_state:
     st.session_state.render_all_progress = None
 
-
 def get_service():
     """Get ComicVideoService instance."""
     from viraltracker.services.comic_video import ComicVideoService
     return ComicVideoService()
 
-
 def get_supabase():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 # ============================================================================
 # Async Helpers
@@ -95,66 +91,55 @@ async def create_project(title: str, grid_url: str, comic_json: dict):
     service = get_service()
     return await service.create_project(title, grid_url, comic_json)
 
-
 async def get_project(project_id: str):
     """Get project by ID."""
     service = get_service()
     return await service.get_project(project_id)
-
 
 async def list_projects(limit: int = 10):
     """List recent projects."""
     service = get_service()
     return await service.list_projects(limit=limit)
 
-
 async def parse_layout(project_id: str):
     """Parse layout from comic JSON."""
     service = get_service()
     return await service.parse_layout(project_id)
-
 
 async def generate_all_audio(project_id: str, voice_id: str = None):
     """Generate audio for all panels."""
     service = get_service()
     return await service.generate_all_audio(project_id, voice_id=voice_id)
 
-
 async def regenerate_audio(project_id: str, panel_number: int, voice_id: str = None):
     """Regenerate audio for a panel."""
     service = get_service()
     return await service.regenerate_panel_audio(project_id, panel_number, voice_id=voice_id)
-
 
 async def generate_instructions(project_id: str):
     """Generate camera/effects instructions."""
     service = get_service()
     return await service.generate_all_instructions(project_id)
 
-
 async def render_preview(project_id: str, panel_number: int):
     """Render panel preview video."""
     service = get_service()
     return await service.render_panel_preview(project_id, panel_number)
-
 
 async def approve_panel(project_id: str, panel_number: int):
     """Approve panel audio + video."""
     service = get_service()
     await service.approve_panel(project_id, panel_number)
 
-
 async def render_final(project_id: str):
     """Render final video."""
     service = get_service()
     return await service.render_final_video(project_id)
 
-
 async def get_summary(project_id: str):
     """Get project summary."""
     service = get_service()
     return await service.get_project_summary(project_id)
-
 
 async def get_audio_list(project_id: str):
     """Get all panel audio."""
@@ -162,20 +147,17 @@ async def get_audio_list(project_id: str):
     service = ComicAudioService()
     return await service.get_all_panel_audio(project_id)
 
-
 async def get_instructions(project_id: str):
     """Get all panel instructions."""
     from viraltracker.services.comic_video import ComicDirectorService
     service = ComicDirectorService()
     return await service.get_all_instructions(project_id)
 
-
 async def get_signed_url(storage_path: str):
     """Get signed URL for file playback."""
     from viraltracker.services.comic_video import ComicAudioService
     service = ComicAudioService()
     return await service.get_audio_url(storage_path)
-
 
 async def render_all_panels(project_id: str, aspect_ratio: str, force_rerender: bool = False):
     """Render all panel previews."""
@@ -184,13 +166,11 @@ async def render_all_panels(project_id: str, aspect_ratio: str, force_rerender: 
     ratio = AspectRatio.from_string(aspect_ratio)
     return await service.render_all_panels(project_id, aspect_ratio=ratio, force_rerender=force_rerender)
 
-
 async def get_multi_speaker_audio(project_id: str, panel_number: int):
     """Get multi-speaker audio for a panel."""
     from viraltracker.services.comic_video import ComicAudioService
     service = ComicAudioService()
     return await service.get_multi_speaker_audio(project_id, panel_number)
-
 
 async def generate_multi_speaker_audio(project_id: str, panel_number: int, panel: dict):
     """Generate multi-speaker audio for a panel."""
@@ -198,13 +178,11 @@ async def generate_multi_speaker_audio(project_id: str, panel_number: int, panel
     service = ComicAudioService()
     return await service.generate_multi_speaker_audio(project_id, panel_number, panel)
 
-
 async def update_segment_pause(project_id: str, panel_number: int, segment_index: int, pause_ms: int):
     """Update pause duration for a segment."""
     from viraltracker.services.comic_video import ComicAudioService
     service = ComicAudioService()
     await service.update_segment_pause(project_id, panel_number, segment_index, pause_ms)
-
 
 async def regenerate_combined_audio(project_id: str, panel_number: int):
     """Regenerate combined audio with updated pauses."""
@@ -212,24 +190,20 @@ async def regenerate_combined_audio(project_id: str, panel_number: int):
     service = ComicAudioService()
     return await service.regenerate_combined_audio(project_id, panel_number)
 
-
 def check_panel_has_segments(panel: dict) -> bool:
     """Check if a panel has multi-speaker segments."""
     segments = panel.get("segments", [])
     return len(segments) > 1
-
 
 async def approve_all_panels(project_id: str):
     """Approve all panels at once."""
     service = get_service()
     return await service.approve_all_panels(project_id)
 
-
 async def update_project_aspect_ratio(project_id: str, aspect_ratio: str):
     """Update project aspect ratio."""
     service = get_service()
     return await service.update_aspect_ratio(project_id, aspect_ratio)
-
 
 async def save_panel_overrides(project_id: str, panel_number: int, overrides: dict):
     """Save panel overrides."""
@@ -239,13 +213,11 @@ async def save_panel_overrides(project_id: str, panel_number: int, overrides: di
     panel_overrides = PanelOverrides(panel_number=panel_number, **overrides)
     return await service.save_overrides(project_id, panel_number, panel_overrides)
 
-
 async def clear_panel_overrides(project_id: str, panel_number: int):
     """Clear panel overrides (reset to auto)."""
     from viraltracker.services.comic_video import ComicDirectorService
     service = ComicDirectorService()
     return await service.clear_overrides(project_id, panel_number)
-
 
 async def upload_to_storage(file_bytes: bytes, filename: str, project_id: str):
     """Upload file to Supabase storage."""
@@ -265,7 +237,6 @@ async def upload_to_storage(file_bytes: bytes, filename: str, project_id: str):
             raise
 
     return f"{bucket}/{path}"
-
 
 # ============================================================================
 # UI Components
@@ -310,7 +281,6 @@ def render_sidebar():
 
     except Exception as e:
         st.sidebar.error(f"Error loading projects: {e}")
-
 
 def render_upload_step():
     """Render upload/create project step."""
@@ -393,7 +363,6 @@ def render_upload_step():
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
-
 def render_audio_step():
     """Render audio generation step."""
     project_id = st.session_state.comic_project_id
@@ -475,7 +444,6 @@ def render_audio_step():
 
     except Exception as e:
         st.error(f"Error: {e}")
-
 
 def render_review_step():
     """Render parallel audio+video review step."""
@@ -898,7 +866,6 @@ def render_review_step():
         import traceback
         st.code(traceback.format_exc())
 
-
 # ============================================================================
 # Main
 # ============================================================================
@@ -915,7 +882,6 @@ def main():
         render_audio_step()
     else:
         render_review_step()
-
 
 if __name__ == "__main__":
     main()

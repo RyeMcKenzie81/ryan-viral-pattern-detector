@@ -47,15 +47,16 @@ class GeminiService:
     - Exponential backoff on rate limit errors
     - JSON response parsing with validation
     - Structured hook analysis
+    - Usage tracking for billing (optional)
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.0-flash-exp"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
         """
         Initialize Gemini service.
 
         Args:
             api_key: Gemini API key (if None, uses Config.GEMINI_API_KEY)
-            model: Gemini model to use (default: gemini-2.0-flash-exp for speed/cost)
+            model: Gemini model to use (default: gemini-2.5-flash for speed/cost)
 
         Raises:
             ValueError: If API key not found
@@ -74,7 +75,106 @@ class GeminiService:
         self._requests_per_minute = 9  # Default: 9 req/min for safety (under 10 req/min free tier)
         self._min_delay = 60.0 / self._requests_per_minute
 
+        # Usage tracking (optional)
+        self._usage_tracker = None
+        self._user_id = None
+        self._organization_id = None
+        self._limit_service = None
+
         logger.info(f"GeminiService initialized with model: {model}, rate limit: {self._requests_per_minute} req/min")
+
+    def set_tracking_context(
+        self,
+        usage_tracker,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None
+    ) -> None:
+        """
+        Set usage tracking context.
+
+        Call this to enable usage tracking for all subsequent API calls.
+
+        Args:
+            usage_tracker: UsageTracker instance
+            user_id: User ID for tracking
+            organization_id: Organization ID for billing
+        """
+        self._usage_tracker = usage_tracker
+        self._user_id = user_id
+        self._organization_id = organization_id
+        # Set up limit enforcement
+        self._limit_service = None
+        if organization_id and organization_id != "all":
+            try:
+                from .usage_limit_service import UsageLimitService
+                from ..core.database import get_supabase_client
+                self._limit_service = UsageLimitService(get_supabase_client())
+            except Exception:
+                pass
+        logger.debug(f"Usage tracking enabled for org: {organization_id}")
+
+    def _track_usage(
+        self,
+        operation: str,
+        model: str,
+        response=None,
+        units: float = None,
+        unit_type: str = None,
+        duration_ms: int = None,
+        metadata: dict = None
+    ) -> None:
+        """
+        Track API usage (fire-and-forget, never fails).
+
+        Args:
+            operation: Operation name (e.g., 'generate_image', 'analyze_image')
+            model: Model used
+            response: API response (for extracting token counts)
+            units: Unit count for non-token APIs
+            unit_type: Unit type (e.g., 'image_generation')
+            duration_ms: Call duration in milliseconds
+            metadata: Additional context
+        """
+        if not self._usage_tracker or not self._organization_id:
+            return
+
+        try:
+            from .usage_tracker import UsageRecord
+
+            # Extract token counts from response if available
+            input_tokens = 0
+            output_tokens = 0
+            if response and hasattr(response, 'usage_metadata') and response.usage_metadata:
+                um = response.usage_metadata
+                input_tokens = getattr(um, 'prompt_token_count', 0) or 0
+                output_tokens = getattr(um, 'candidates_token_count', 0) or 0
+
+            record = UsageRecord(
+                provider="google",
+                model=model,
+                tool_name="gemini_service",
+                operation=operation,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                units=units,
+                unit_type=unit_type,
+                duration_ms=duration_ms,
+                request_metadata=metadata,
+            )
+
+            self._usage_tracker.track(
+                user_id=self._user_id,
+                organization_id=self._organization_id,
+                record=record
+            )
+
+        except Exception as e:
+            logger.warning(f"Usage tracking failed (non-fatal): {e}")
+
+    def _check_usage_limit(self) -> None:
+        """Check usage limit before an API call. Raises UsageLimitExceeded if over."""
+        if self._limit_service and self._organization_id:
+            self._limit_service.enforce_limit(self._organization_id, "monthly_cost")
 
     def set_rate_limit(self, requests_per_minute: int) -> None:
         """
@@ -99,14 +199,16 @@ class GeminiService:
         Args:
             tweet_text: Tweet content to analyze
             tweet_id: Optional tweet ID for reference
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             HookAnalysis with AI classifications and explanations
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
+        self._check_usage_limit()
+
         # Wait for rate limit
         await self._rate_limit()
 
@@ -126,33 +228,66 @@ class GeminiService:
                     contents=[prompt]
                 )
 
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="analyze_hook",
+                    model=self.model_name,
+                    response=response,
+                )
+
                 # Parse response
                 analysis = self._parse_response(tweet_text, response.text, tweet_id)
                 return analysis
 
             except Exception as e:
-                error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     if retry_count <= max_retries:
                         # Exponential backoff: 15s, 30s, 60s
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error(f"Max retries exceeded for tweet: {tweet_text[:50]}...")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 else:
-                    # Non-rate-limit error - don't retry
                     logger.error(f"Error analyzing tweet: {e}")
                     raise
 
         # Should never reach here, but just in case
         raise last_error or Exception("Unknown error during hook analysis")
+
+    @staticmethod
+    def _is_retryable_error(error: Exception) -> bool:
+        """Check if an error is retryable (rate limit or transient server error).
+
+        Retries on:
+        - 429 / quota / rate limit errors
+        - 500, 502, 503 transient server errors
+        - google.genai.errors.ServerError (catches all server-side failures)
+        """
+        # Check exception type first (most reliable)
+        error_type = type(error).__name__
+        if error_type == "ServerError":
+            return True
+
+        error_str = str(error)
+        error_lower = error_str.lower()
+
+        # Rate limit errors (existing)
+        if "429" in error_str or "quota" in error_lower or "rate" in error_lower:
+            return True
+
+        # Transient server errors (new)
+        if "500 INTERNAL" in error_str or "502" in error_str or "503" in error_str:
+            return True
+        if "service unavailable" in error_lower or "bad gateway" in error_lower:
+            return True
+
+        return False
 
     async def _rate_limit(self) -> None:
         """Enforce rate limiting between API calls"""
@@ -282,61 +417,60 @@ IMPORTANT:
         max_retries: int = 3
     ) -> str:
         """
-        Generate long-form content from analyzed hooks.
+        Generate long-form content from analyzed hooks using Claude Opus 4.5.
+
+        Uses Claude Opus 4.5 for high-quality creative writing (threads/articles).
 
         Args:
             hook_analyses: List of HookAnalysis objects to use as inspiration
             content_type: Type of content to generate ('thread' or 'article')
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on errors
 
         Returns:
             Generated content as string
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If generation fails after retries
         """
-        # Wait for rate limit
-        await self._rate_limit()
+        from pydantic_ai import Agent
+        from ..core.config import Config
 
         # Build prompt
         prompt = self._build_content_prompt(hook_analyses, content_type)
 
-        # Call API with retries
+        # Use Claude Opus 4.5 for creative writing
+        agent = Agent(
+            model=Config.CREATIVE_MODEL,
+            system_prompt="You are an expert content strategist and writer. Generate engaging, high-quality content."
+        )
+
         retry_count = 0
         last_error = None
 
         while retry_count <= max_retries:
             try:
-                logger.debug(f"Generating {content_type} content from {len(hook_analyses)} hooks...")
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=[prompt]
-                )
-                return response.text
+                logger.debug(f"Generating {content_type} content from {len(hook_analyses)} hooks using Claude Opus 4.5...")
+                result = await agent.run(prompt)
+                return result.data
 
             except Exception as e:
                 error_str = str(e)
                 last_error = e
+                retry_count += 1
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
-                    retry_count += 1
-                    if retry_count <= max_retries:
-                        retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    else:
-                        logger.error("Max retries exceeded for content generation")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                if retry_count <= max_retries:
+                    retry_delay = 15 * (2 ** (retry_count - 1))
+                    logger.warning(f"Content generation error. Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
+                    await asyncio.sleep(retry_delay)
+                    continue
                 else:
-                    logger.error(f"Error generating content: {e}")
+                    logger.error(f"Max retries exceeded for content generation: {e}")
                     raise
 
         raise last_error or Exception("Unknown error during content generation")
 
     def _build_content_prompt(self, hook_analyses: list, content_type: str) -> str:
-        """Build content generation prompt for Gemini"""
+        """Build content generation prompt for thread/article generation."""
         # Extract key information from hook analyses
         hooks_summary = []
         for i, analysis in enumerate(hook_analyses[:5], 1):  # Limit to top 5
@@ -421,7 +555,7 @@ Generate the article now:"""
         Args:
             prompt: Text prompt for image generation
             reference_images: Optional list of base64-encoded reference images (up to 14)
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
             return_metadata: If True, return dict with image and generation metadata
             temperature: Generation temperature (0.0-1.0). Lower = more deterministic. Default 0.4.
             image_size: Output resolution - "1K", "2K", or "4K". Default "2K" for better text quality.
@@ -436,8 +570,10 @@ Generate the article now:"""
                 - retries: Number of retries needed
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
+        self._check_usage_limit()
+
         import time
 
         # Track metadata
@@ -535,6 +671,16 @@ Generate the article now:"""
                                    f"model_requested={model_requested}, model_used={model_used}, "
                                    f"time={generation_time_ms}ms, retries={total_retries}")
 
+                        # Track usage (fire-and-forget)
+                        self._track_usage(
+                            operation="generate_image",
+                            model=model_used or model_requested,
+                            response=response,
+                            units=1.0,
+                            unit_type="image_generation",
+                            duration_ms=generation_time_ms,
+                        )
+
                         if return_metadata:
                             return {
                                 "image_base64": image_base64,
@@ -549,21 +695,19 @@ Generate the article now:"""
                 raise Exception("No image found in Gemini response")
 
             except Exception as e:
-                error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     total_retries += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error("Max retries exceeded for image generation")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 else:
                     logger.error(f"Error generating image: {e}")
                     raise
@@ -582,14 +726,16 @@ Generate the article now:"""
         Args:
             image_data: Base64-encoded image data
             prompt: Analysis prompt/question about the image
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             JSON string with analysis results
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
+        self._check_usage_limit()
+
         # Wait for rate limit
         await self._rate_limit()
 
@@ -660,23 +806,31 @@ Generate the article now:"""
                     raise Exception("Gemini response has no content parts")
 
                 logger.debug(f"Image analysis complete")
+
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="analyze_image",
+                    model=self.model_name,
+                    response=response,
+                    duration_ms=int((time.time() - self._last_call_time) * 1000) if self._last_call_time else None,
+                )
+
                 return response.text
 
             except Exception as e:
                 error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Rate limit hit. Retry {retry_count}/{max_retries} after {retry_delay}s...")
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error("Max retries exceeded for image analysis")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 # Check for whichOneof error (protobuf error when response is malformed)
                 elif "whichOneof" in error_str:
                     logger.error(f"Gemini returned malformed response (whichOneof error). This usually means the image triggered content safety filters or the response was empty.")
@@ -699,13 +853,13 @@ Generate the article now:"""
         Args:
             image_data: Base64-encoded image data
             prompt: Review prompt/criteria
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             JSON string with review results
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
         # Reuse analyze_image logic - review is a type of analysis
         return await self.analyze_image(image_data, prompt, max_retries)
@@ -725,14 +879,16 @@ Generate the article now:"""
         Args:
             text: Text content to analyze
             prompt: Analysis instructions/question
-            max_retries: Maximum retries on rate limit errors
+            max_retries: Maximum retries on rate limit or server errors
 
         Returns:
             AI analysis result as string
 
         Raises:
-            Exception: If all retries fail or non-rate-limit error occurs
+            Exception: If all retries fail or non-retryable error occurs
         """
+        self._check_usage_limit()
+
         import asyncio
 
         # Wait for rate limit
@@ -779,26 +935,29 @@ Generate the article now:"""
                     raise Exception("Gemini response has no content parts")
 
                 logger.info(f"Text analysis completed successfully")
+
+                # Track usage (fire-and-forget)
+                self._track_usage(
+                    operation="analyze_text",
+                    model=self.model_name,
+                    response=response,
+                )
+
                 return response.text
 
             except Exception as e:
-                error_str = str(e)
                 last_error = e
 
-                # Check if it's a rate limit error
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if self._is_retryable_error(e):
                     retry_count += 1
                     if retry_count <= max_retries:
                         retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(
-                            f"Rate limit hit during text analysis. "
-                            f"Retry {retry_count}/{max_retries} after {retry_delay}s..."
-                        )
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
                         logger.error(f"Max retries exceeded for text analysis")
-                        raise Exception(f"Rate limit exceeded after {max_retries} retries: {e}")
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
                 else:
                     logger.error(f"Error analyzing text: {e}")
                     raise

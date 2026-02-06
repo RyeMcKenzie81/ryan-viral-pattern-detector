@@ -25,7 +25,8 @@ st.set_page_config(
 # Auth
 from viraltracker.ui.auth import require_auth
 require_auth()
-
+from viraltracker.ui.utils import require_feature
+require_feature("reddit_research", "Reddit Research")
 
 # ============================================
 # SESSION STATE
@@ -56,7 +57,6 @@ def init_session_state():
 
 init_session_state()
 
-
 # ============================================
 # SERVICES
 # ============================================
@@ -66,13 +66,10 @@ def get_supabase():
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_brands():
-    """Fetch all brands."""
-    db = get_supabase()
-    result = db.table("brands").select("id, name").order("name").execute()
-    return result.data or []
-
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 def get_personas_for_brand(brand_id: str):
     """Fetch personas for a brand."""
@@ -81,7 +78,6 @@ def get_personas_for_brand(brand_id: str):
         "id, name"
     ).eq("brand_id", brand_id).order("name").execute()
     return result.data or []
-
 
 def get_recent_runs(limit: int = 10):
     """Fetch recent pipeline runs."""
@@ -92,7 +88,6 @@ def get_recent_runs(limit: int = 10):
     ).order("created_at", desc=True).limit(limit).execute()
     return result.data or []
 
-
 def get_run_quotes(run_id: str):
     """Fetch quotes for a run grouped by category."""
     db = get_supabase()
@@ -102,7 +97,6 @@ def get_run_quotes(run_id: str):
     ).eq("run_id", run_id).order("sentiment_category").execute()
     return result.data or []
 
-
 def get_products_for_brand(brand_id: str):
     """Fetch products for a brand."""
     db = get_supabase()
@@ -111,12 +105,10 @@ def get_products_for_brand(brand_id: str):
     ).eq("brand_id", brand_id).order("name").execute()
     return result.data or []
 
-
 def get_angle_candidate_service():
     """Get AngleCandidateService instance."""
     from viraltracker.services.angle_candidate_service import AngleCandidateService
     return AngleCandidateService()
-
 
 def extract_candidates_from_run(run_id: str, product_id: str, brand_id: Optional[str] = None) -> Dict:
     """Extract angle candidates from a Reddit run's quotes.
@@ -136,7 +128,6 @@ def extract_candidates_from_run(run_id: str, product_id: str, brand_id: Optional
         product_id=UUID(product_id),
         brand_id=UUID(brand_id) if brand_id else None,
     )
-
 
 # ============================================
 # UI COMPONENTS
@@ -205,7 +196,6 @@ def render_search_config():
             help="What specific area are you researching?"
         )
 
-
 def render_filter_config():
     """Render filtering configuration."""
     with st.expander("Advanced Filters", expanded=False):
@@ -258,7 +248,6 @@ def render_filter_config():
                 help="Keep top X% of posts for extraction"
             )
 
-
 def render_brand_association():
     """Render optional brand/persona association."""
     st.subheader("Brand Association (Optional)")
@@ -305,7 +294,6 @@ def render_brand_association():
             st.info("Select a brand to enable persona sync")
 
     return brand_id, persona_id
-
 
 def render_run_button(brand_id: Optional[str], persona_id: Optional[str]):
     """Render the run button and execute pipeline."""
@@ -384,7 +372,6 @@ def render_run_button(brand_id: Optional[str], persona_id: Optional[str]):
         st.session_state.reddit_running = False
         st.rerun()
 
-
 def render_results():
     """Render pipeline results."""
     if not st.session_state.reddit_results:
@@ -459,7 +446,6 @@ def render_results():
 
         # Angle Pipeline Extraction Section
         render_candidate_extraction(run_id, results)
-
 
 def render_candidate_extraction(run_id: str, results: Dict):
     """Render UI for extracting angle candidates from quotes."""
@@ -551,7 +537,6 @@ def render_candidate_extraction(run_id: str, results: Dict):
     else:
         st.info("No extractable quotes found (pain points, desired outcomes, objections, failed solutions).")
 
-
 def render_history():
     """Render historical runs."""
     st.subheader("Previous Runs")
@@ -609,7 +594,6 @@ def render_history():
                 }
                 st.rerun()
 
-
 # ============================================
 # MAIN
 # ============================================
@@ -620,6 +604,8 @@ def main():
         "Extract customer insights and quotes from Reddit discussions. "
         "Results can be synced to persona fields for belief-first planning."
     )
+
+    # Organization context (selector rendered once in app.py sidebar)
 
     # Search config
     render_search_config()
@@ -646,7 +632,6 @@ def main():
 
     # History
     render_history()
-
 
 if __name__ == "__main__":
     main()

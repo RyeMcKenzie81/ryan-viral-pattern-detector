@@ -30,6 +30,8 @@ import asyncio
 from supabase import Client
 
 from ..core.database import get_supabase_client
+from .agent_tracking import run_agent_with_tracking
+from .usage_tracker import UsageTracker
 from .models import (
     BeliefOffer,
     BeliefSubLayer,
@@ -59,7 +61,29 @@ class PlanningService:
         Initialize PlanningService.
         """
         self.supabase: Client = get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("PlanningService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # ============================================
     # STORAGE HELPERS
@@ -930,7 +954,15 @@ Return ONLY the JSON array, no other text."""
         )
 
         try:
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="planning_service",
+                operation="suggest_offers"
+            )
             content = result.output.strip()
 
             # Clean markdown if present
@@ -996,7 +1028,15 @@ Return ONLY the JSON array, no other text."""
         )
 
         try:
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="planning_service",
+                operation="suggest_jtbd"
+            )
             content = result.output.strip()
 
             if content.startswith("```"):
@@ -1075,7 +1115,15 @@ Return ONLY the JSON array, no other text."""
         )
 
         try:
-            result = await agent.run(prompt)
+            result = await run_agent_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="planning_service",
+                operation="suggest_angles"
+            )
             content = result.output.strip()
 
             if content.startswith("```"):

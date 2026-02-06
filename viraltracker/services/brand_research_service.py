@@ -30,6 +30,8 @@ import asyncio
 
 from ..core.config import Config
 from ..core.observability import get_logfire
+from .persona_service import parse_llm_json, SynthesisResponse
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 logfire = get_logfire()
@@ -2279,15 +2281,18 @@ class BrandResearchService:
                 logger.error("Synthesis response text is empty")
                 raise ValueError("Model returned empty text")
 
-            # Strip markdown code fences if present
-            if response_text.startswith('```'):
-                first_newline = response_text.find('\n')
-                last_fence = response_text.rfind('```')
-                if first_newline != -1 and last_fence > first_newline:
-                    response_text = response_text[first_newline + 1:last_fence].strip()
+            # Robust JSON parsing (handles missing fences, repairs common errors)
+            parsed = parse_llm_json(response_text)
 
-            result = json.loads(response_text)
-            personas = result.get("personas", [])
+            # Pydantic validation with defaults for missing fields
+            try:
+                synthesis = SynthesisResponse.model_validate(parsed)
+                personas = [p.model_dump() for p in synthesis.personas]
+            except ValidationError as e:
+                logger.warning(f"Synthesis response failed schema validation, using raw parse: {e}")
+                personas = parsed.get("personas", [])
+                if not personas:
+                    raise ValueError(f"Response failed validation and has no personas: {e}")
 
             logger.info(f"Synthesized {len(personas)} personas for brand: {brand_id}")
 
@@ -2296,10 +2301,10 @@ class BrandResearchService:
 
             return personas
 
-        except json.JSONDecodeError as e:
+        except ValueError as e:
             logger.error(f"Failed to parse synthesis response: {e}")
             logger.error(f"Response preview: {response_text[:500] if 'response_text' in dir() and response_text else 'EMPTY'}")
-            raise ValueError(f"Invalid JSON response: {e}")
+            raise
         except Exception as e:
             logger.error(f"Persona synthesis failed: {type(e).__name__}: {e}")
             import traceback
@@ -2827,15 +2832,18 @@ class BrandResearchService:
                 logger.error("Synthesis response text is empty")
                 raise ValueError("Model returned empty text")
 
-            # Strip markdown code fences if present
-            if response_text.startswith('```'):
-                first_newline = response_text.find('\n')
-                last_fence = response_text.rfind('```')
-                if first_newline != -1 and last_fence > first_newline:
-                    response_text = response_text[first_newline + 1:last_fence].strip()
+            # Robust JSON parsing (handles missing fences, repairs common errors)
+            parsed = parse_llm_json(response_text)
 
-            result = json.loads(response_text)
-            personas = result.get("personas", [])
+            # Pydantic validation with defaults for missing fields
+            try:
+                synthesis = SynthesisResponse.model_validate(parsed)
+                personas = [p.model_dump() for p in synthesis.personas]
+            except ValidationError as e:
+                logger.warning(f"Synthesis response failed schema validation, using raw parse: {e}")
+                personas = parsed.get("personas", [])
+                if not personas:
+                    raise ValueError(f"Response failed validation and has no personas: {e}")
 
             logger.info(f"Synthesized {len(personas)} personas from offer variant: {offer_variant_id}")
 
@@ -2845,9 +2853,9 @@ class BrandResearchService:
 
             return personas
 
-        except json.JSONDecodeError as e:
+        except ValueError as e:
             logger.error(f"Failed to parse synthesis response: {e}")
-            raise ValueError(f"Invalid JSON response: {e}")
+            raise
         except Exception as e:
             logger.error(f"Offer variant synthesis failed: {type(e).__name__}: {e}")
             import traceback

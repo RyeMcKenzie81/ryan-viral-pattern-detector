@@ -29,6 +29,8 @@ from supabase import Client
 
 from ..core.database import get_supabase_client
 from .models import CopyScaffold, AngleCopySet
+from .agent_tracking import run_agent_sync_with_tracking
+from .usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +93,29 @@ class CopyScaffoldService:
         Initialize CopyScaffoldService.
         """
         self.supabase: Client = get_supabase_client()
+        # Usage tracking context
+        self._tracker: Optional[UsageTracker] = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
         logger.info("CopyScaffoldService initialized")
+
+    def set_tracking_context(
+        self,
+        tracker: UsageTracker,
+        user_id: Optional[str],
+        org_id: str
+    ) -> None:
+        """
+        Set the tracking context for usage billing.
+
+        Args:
+            tracker: UsageTracker instance
+            user_id: User ID for billing
+            org_id: Organization ID for billing
+        """
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
 
     # ============================================
     # SCAFFOLD RETRIEVAL
@@ -635,7 +659,15 @@ IMPORTANT: Every headline MUST be 40 characters or less. Count carefully."""
         )
 
         try:
-            result = agent.run_sync(prompt)
+            result = run_agent_sync_with_tracking(
+                agent,
+                prompt,
+                tracker=self._tracker,
+                user_id=self._user_id,
+                organization_id=self._org_id,
+                tool_name="copy_scaffold_service",
+                operation="generate_copy"
+            )
             content = result.output
 
             # Parse JSON from response

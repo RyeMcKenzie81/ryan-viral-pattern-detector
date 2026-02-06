@@ -9,6 +9,7 @@ query and routes it to the appropriate specialized agent:
 - Facebook Agent: Facebook Ad Library operations
 - Analysis Agent: Statistical analysis and AI-powered insights
 - Ad Creation Agent: Facebook ad creative generation
+- Ad Intelligence Agent: Ad account analysis and optimization
 """
 
 import logging
@@ -22,7 +23,8 @@ from .agents import (
     youtube_agent,
     facebook_agent,
     analysis_agent,
-    ad_creation_agent
+    ad_creation_agent,
+    ad_intelligence_agent
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,15 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Generating ad creatives with Gemini Nano Banana
    - Dual AI review (Claude + Gemini) with OR logic
    - Sequential generation of 5 ad variations
+
+7. **Ad Intelligence Agent** - For ad account analysis and optimization:
+   - Full account analysis (classify → baseline → diagnose → recommend)
+   - Recommendation management (view, acknowledge, act on, ignore)
+   - Fatigue detection (frequency + CTR trend analysis)
+   - Coverage gap analysis (awareness level × creative format inventory)
+   - Congruence checking (creative-copy-landing page alignment)
+   - Responds to: /analyze_account, /recommend, /fatigue_check, /coverage_gaps, /congruence_check
+   - Also responds to: "analyze my ad account", "which ads should I kill", "check for fatigued ads"
 
 **Your Responsibilities:**
 - Understand the user's intent
@@ -157,6 +168,55 @@ async def route_to_ad_creation_agent(
     return result.output
 
 @orchestrator.tool
+async def route_to_ad_intelligence_agent(
+    ctx: RunContext[AgentDependencies],
+    query: str
+) -> str:
+    """Route request to Ad Intelligence Agent for ad account analysis and optimization.
+
+    This agent analyzes Meta ad account performance using a 4-layer model:
+    1. Classification - Classify ads by awareness level and creative format
+    2. Baselines - Compute contextual cohort benchmarks (p25/median/p75)
+    3. Diagnostics - Rules-based health assessment with 12 diagnostic rules
+    4. Recommendations - Actionable suggestions with evidence
+
+    Also supports standalone analyses: fatigue detection, coverage gaps, congruence checking.
+
+    Route here when users ask about:
+    - Ad account analysis or optimization
+    - Which ads to kill or scale
+    - Ad fatigue or frequency issues
+    - Coverage gaps or missing awareness levels
+    - Creative-copy-landing page alignment
+    - Ad recommendations or what to do next
+    """
+    # Inject cached brand context for follow-up queries
+    cached_brand_id = ctx.deps.result_cache.custom.get("ad_intelligence_brand_id")
+    cached_brand_name = ctx.deps.result_cache.custom.get("ad_intelligence_brand_name")
+    cached_run_id = ctx.deps.result_cache.custom.get("ad_intelligence_run_id")
+    if cached_brand_id and cached_brand_name:
+        context_prefix = (
+            f"[Context: The user is currently working with brand '{cached_brand_name}' "
+            f"(brand_id: {cached_brand_id})."
+        )
+        if cached_run_id:
+            context_prefix += f" The latest analysis run_id is {cached_run_id}."
+        context_prefix += " Use this brand unless the user specifies a different one.]\n\n"
+        query = context_prefix + query
+
+    # Clear stale side-channel result before sub-agent runs
+    ctx.deps.result_cache.custom.pop("ad_intelligence_result", None)
+
+    logger.info(f"Routing to Ad Intelligence Agent: {query}")
+    result = await ad_intelligence_agent.run(query, deps=ctx.deps)
+
+    # Return raw ChatRenderer markdown, bypassing sub-agent LLM paraphrase
+    cached = ctx.deps.result_cache.custom.get("ad_intelligence_result")
+    if cached and "rendered_markdown" in cached:
+        return cached["rendered_markdown"]
+    return result.output
+
+@orchestrator.tool
 async def resolve_product_name(
     ctx: RunContext[AgentDependencies],
     product_name: str
@@ -219,4 +279,4 @@ async def resolve_product_name(
             "count": 0
         })
 
-logger.info("Orchestrator Agent initialized with 7 tools (6 routing + 1 utility)")
+logger.info("Orchestrator Agent initialized with 8 tools (7 routing + 1 utility)")

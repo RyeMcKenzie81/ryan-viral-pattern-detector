@@ -19,6 +19,8 @@ class Config:
     # Supabase
     SUPABASE_URL: str = os.getenv('SUPABASE_URL', '')
     SUPABASE_SERVICE_KEY: str = os.getenv('SUPABASE_SERVICE_KEY', '')
+    # SUPABASE_KEY is the anon key (RLS enforced), used for UI auth
+    SUPABASE_ANON_KEY: str = os.getenv('SUPABASE_ANON_KEY', '') or os.getenv('SUPABASE_KEY', '')
 
     # Apify
     APIFY_TOKEN: str = os.getenv('APIFY_TOKEN', '')
@@ -80,6 +82,81 @@ class Config:
         return getattr(cls, key, default)
 
     # ========================================================================
+    # Usage Tracking - Cost Configuration
+    # ========================================================================
+
+    # Token costs per 1M tokens (input_cost, output_cost)
+    TOKEN_COSTS: Dict[str, tuple] = {
+        # Anthropic
+        "claude-opus-4-5-20251101": (15.00, 75.00),
+        "claude-opus-4-5": (15.00, 75.00),  # Alias
+        "claude-sonnet-4-5-20250929": (3.00, 15.00),
+        "claude-sonnet-4-20250514": (3.00, 15.00),
+        "claude-sonnet-4": (3.00, 15.00),  # Alias
+        # OpenAI
+        "gpt-4o": (2.50, 10.00),
+        "gpt-4o-mini": (0.15, 0.60),
+        "gpt-5.2-2025-12-11": (5.00, 15.00),
+        # Google Gemini
+        "gemini-2.0-flash": (0.10, 0.40),
+        "gemini-2.5-flash": (0.15, 0.60),
+        "gemini-2.5-pro": (1.25, 5.00),
+        "gemini-3-pro": (1.25, 5.00),
+        "gemini-3-flash": (0.15, 0.60),
+        "models/gemini-2.0-flash": (0.10, 0.40),
+        "models/gemini-2.5-pro": (1.25, 5.00),
+        "models/gemini-3-pro-image-preview": (1.25, 5.00),
+        "models/gemini-3-flash-preview": (0.15, 0.60),
+    }
+
+    # Unit costs for non-token APIs
+    UNIT_COSTS: Dict[str, float] = {
+        # Image generation (per image)
+        "google_image_generation": 0.02,
+        "openai_image_generation": 0.04,
+        # Video generation (per second)
+        "google_veo_seconds": 0.05,
+        "sora_video_seconds": 0.10,
+        # Audio/TTS (per character)
+        "elevenlabs_characters": 0.00003,
+    }
+
+    @classmethod
+    def get_token_cost(cls, model: str) -> tuple:
+        """
+        Get token costs for a model.
+
+        Args:
+            model: Model identifier
+
+        Returns:
+            Tuple of (input_cost_per_1m, output_cost_per_1m) or (0, 0) if unknown
+        """
+        # Try exact match first
+        if model in cls.TOKEN_COSTS:
+            return cls.TOKEN_COSTS[model]
+
+        # Try partial match (for model strings with prefixes like "google-gla:")
+        for key, cost in cls.TOKEN_COSTS.items():
+            if key in model or model in key:
+                return cost
+
+        return (0.0, 0.0)
+
+    @classmethod
+    def get_unit_cost(cls, unit_type: str) -> float:
+        """
+        Get cost per unit for non-token APIs.
+
+        Args:
+            unit_type: Unit type key (e.g., "google_image_generation")
+
+        Returns:
+            Cost per unit or 0 if unknown
+        """
+        return cls.UNIT_COSTS.get(unit_type, 0.0)
+
+    # ========================================================================
     # Model Configuration
     # ========================================================================
     
@@ -92,10 +169,11 @@ class Config:
     # Future capability-based models (User defined)
     # Pydantic AI requires 'google-gla:' prefix for models/ string format
     # BUT standard google-genai client fails with it.
-    CREATIVE_MODEL = "google-gla:models/gemini-3-pro-image-preview"
+    CREATIVE_MODEL = "claude-opus-4-5-20251101"  # Opus 4.5 for copy/creative writing
+    AD_AGENT_MODEL = "google-gla:models/gemini-3-pro-image-preview"  # Gemini 3 Pro for main ad agent
     # Using widely available model for vision to fix 404 error
-    VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview" 
-    VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11" 
+    VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview"
+    VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11"
     BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 
     @classmethod
@@ -137,24 +215,19 @@ class Config:
             "VISION_BACKUP": cls.VISION_BACKUP_MODEL,
             "BASIC": cls.BASIC_MODEL,
             
-            # Specific Agent Mappings (inheriting from capabilities where appropriate)
-            # We treat these as independent defaults unless we add recursive logic
-            # But to ensure AD_CREATION follows CREATIVE dynamically if not set:
-            "AD_CREATION": cls.CREATIVE_MODEL, 
+            # Specific Agent Mappings
+            "AD_CREATION": cls.AD_AGENT_MODEL,  # Gemini 3 Pro for main ad agent
+            "AD_AGENT": cls.AD_AGENT_MODEL,     # Alias
 
             # Service & Pipeline Mappings
             "REDDIT": cls.BASIC_MODEL,        # Basic sentiment analysis
             "COMIC": cls.COMPLEX_MODEL,       # Claude Opus 4.5 for comic scripts
             "SCRIPT": cls.COMPLEX_MODEL,      # Claude Opus 4.5 for scripts
-            "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Creative writing
+            "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Opus 4.5 for creative writing
             "PLANNING": cls.COMPLEX_MODEL,    # Complex reasoning
+            "PERSONA": cls.CREATIVE_MODEL,    # Opus 4.5 for persona generation
         }
         
-        # Special case for inheritance if needed, otherwise it just uses the string value
-        if key_upper == "AD_CREATION" and not env_model:
-             # Recursively get CREATIVE to pick up its overrides
-             return cls.get_model("CREATIVE")
-
         if key_upper in mappings:
             return mappings[key_upper]
             

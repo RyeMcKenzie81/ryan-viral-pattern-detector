@@ -26,12 +26,10 @@ st.set_page_config(
     layout="wide"
 )
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_handoff_service():
     """Get EditorHandoffService instance."""
@@ -47,7 +45,6 @@ def get_handoff_service():
         asset_service=None  # Will use direct URLs
     )
 
-
 def get_audio_url(storage_path: str) -> Optional[str]:
     """Get signed URL for audio file."""
     if not storage_path:
@@ -58,7 +55,6 @@ def get_audio_url(storage_path: str) -> Optional[str]:
         return asyncio.run(audio_service.get_audio_url(storage_path))
     except Exception:
         return None
-
 
 def get_asset_url(storage_path_or_url: str) -> Optional[str]:
     """Get URL for asset (handles both storage paths and signed URLs)."""
@@ -79,7 +75,6 @@ def get_asset_url(storage_path_or_url: str) -> Optional[str]:
         return result.get("signedURL", "")
     except Exception:
         return None
-
 
 def render_handoff_page(handoff_id: str):
     """Render the handoff page for a specific handoff ID."""
@@ -159,7 +154,6 @@ def render_handoff_page(handoff_id: str):
 
     for beat in package.beats:
         render_beat_card(beat)
-
 
 def render_beat_card(beat):
     """Render a single beat card with all its content."""
@@ -327,7 +321,6 @@ def render_beat_card(beat):
 
         st.divider()
 
-
 def get_all_handoffs() -> List[Dict[str, Any]]:
     """Fetch all handoffs from the database, ordered by creation date."""
     try:
@@ -339,7 +332,6 @@ def get_all_handoffs() -> List[Dict[str, Any]]:
     except Exception as e:
         st.error(f"Failed to load handoffs: {e}")
         return []
-
 
 def render_handoff_list():
     """Render a list of all available handoffs."""
@@ -386,7 +378,6 @@ def render_handoff_list():
 
     return selected_id
 
-
 def render_no_handoff_page():
     """Render page when no handoff ID is provided."""
     st.title("🎬 Editor Handoff")
@@ -420,7 +411,6 @@ def render_no_handoff_page():
         st.query_params["id"] = selected_id
         st.rerun()
 
-
 def main():
     """Main page entry point."""
     # Get handoff ID from query params
@@ -431,7 +421,6 @@ def main():
         render_handoff_page(handoff_id)
     else:
         render_no_handoff_page()
-
 
 if __name__ == "__main__":
     main()

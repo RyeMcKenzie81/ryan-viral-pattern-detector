@@ -53,6 +53,55 @@ class DocService:
         else:
             self.openai = OpenAI(api_key=api_key)
 
+        # Usage tracking (optional)
+        self._usage_tracker = None
+        self._user_id = None
+        self._organization_id = None
+
+    def set_tracking_context(
+        self,
+        usage_tracker,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None
+    ) -> None:
+        """
+        Set usage tracking context.
+
+        Args:
+            usage_tracker: UsageTracker instance
+            user_id: User ID for tracking
+            organization_id: Organization ID for billing
+        """
+        self._usage_tracker = usage_tracker
+        self._user_id = user_id
+        self._organization_id = organization_id
+        logger.debug(f"DocService usage tracking enabled for org: {organization_id}")
+
+    def _track_usage(self, operation: str, input_tokens: int) -> None:
+        """Track embedding API usage (fire-and-forget)."""
+        if not self._usage_tracker or not self._organization_id:
+            return
+
+        try:
+            from ..usage_tracker import UsageRecord
+
+            record = UsageRecord(
+                provider="openai",
+                model=self.EMBEDDING_MODEL,
+                tool_name="knowledge_base",
+                operation=operation,
+                input_tokens=input_tokens,
+                output_tokens=0,  # Embeddings don't have output tokens
+            )
+
+            self._usage_tracker.track(
+                user_id=self._user_id,
+                organization_id=self._organization_id,
+                record=record
+            )
+        except Exception as e:
+            logger.warning(f"Usage tracking failed (non-fatal): {e}")
+
     def _ensure_openai(self):
         """Raise error if OpenAI client not configured."""
         if not self.openai:
@@ -80,6 +129,10 @@ class DocService:
             input=text,
             model=self.EMBEDDING_MODEL
         )
+
+        # Track usage (estimate tokens as ~4 chars per token)
+        self._track_usage("embed", len(text) // 4)
+
         return response.data[0].embedding
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -98,6 +151,11 @@ class DocService:
             input=texts,
             model=self.EMBEDDING_MODEL
         )
+
+        # Track usage (estimate tokens as ~4 chars per token)
+        total_chars = sum(len(t) for t in texts)
+        self._track_usage("embed_batch", total_chars // 4)
+
         return [item.embedding for item in response.data]
 
     # =========================================================================

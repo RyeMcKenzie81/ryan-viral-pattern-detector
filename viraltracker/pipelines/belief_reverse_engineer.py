@@ -1441,6 +1441,14 @@ async def run_belief_reverse_engineer(
 
     deps = AgentDependencies.create()
 
+    # Set up usage tracking on services that support it
+    try:
+        from ..ui.utils import setup_tracking_context
+        setup_tracking_context(deps.belief_analysis)
+        setup_tracking_context(deps.reddit_sentiment)
+    except Exception:
+        pass  # Non-fatal: tracking context may not be available outside UI
+
     # Build initial state
     state = BeliefReverseEngineerState(
         product_id=product_id,

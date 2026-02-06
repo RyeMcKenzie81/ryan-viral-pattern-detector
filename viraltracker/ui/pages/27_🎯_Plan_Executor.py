@@ -29,12 +29,10 @@ def get_supabase_client():
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_ad_creation_service():
     """Get AdCreationService instance."""
     from viraltracker.services.ad_creation_service import AdCreationService
     return AdCreationService()
-
 
 # ============================================
 # SESSION STATE
@@ -51,22 +49,15 @@ if 'executor_current_run_id' not in st.session_state:
 if 'executor_last_result' not in st.session_state:
     st.session_state.executor_last_result = None
 
-
 # ============================================
 # DATA FETCHING
 # ============================================
 
 @st.cache_data(ttl=30)
 def fetch_brands():
-    """Fetch all brands."""
-    db = get_supabase_client()
-    try:
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data or []
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
-        return []
-
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 @st.cache_data(ttl=30)
 def fetch_products_for_brand(brand_id: str):
@@ -78,7 +69,6 @@ def fetch_products_for_brand(brand_id: str):
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
         return []
-
 
 @st.cache_data(ttl=30)
 def fetch_plans_for_product(product_id: str):
@@ -92,7 +82,6 @@ def fetch_plans_for_product(product_id: str):
     except Exception as e:
         st.error(f"Failed to fetch plans: {e}")
         return []
-
 
 def get_plan_details(plan_id: str):
     """Get full plan details including angles and templates."""
@@ -151,7 +140,6 @@ def get_plan_details(plan_id: str):
         st.error(f"Failed to fetch plan details: {e}")
         return None
 
-
 def get_pipeline_runs(plan_id: str):
     """Get execution runs for a plan."""
     db = get_supabase_client()
@@ -163,7 +151,6 @@ def get_pipeline_runs(plan_id: str):
     except Exception as e:
         st.error(f"Failed to fetch runs: {e}")
         return []
-
 
 # ============================================
 # EXECUTION
@@ -188,7 +175,6 @@ def run_execution(plan_id: str, variations: int, canvas_size: str, execution_pha
         execution_phase=execution_phase
     ))
 
-
 def get_latest_run(plan_id: str):
     """Get the most recent pipeline run for a plan."""
     db = get_supabase_client()
@@ -199,7 +185,6 @@ def get_latest_run(plan_id: str):
         return result.data[0] if result.data else None
     except Exception:
         return None
-
 
 def render_live_progress(plan_id: str) -> bool:
     """
@@ -261,7 +246,6 @@ def render_live_progress(plan_id: str) -> bool:
     
     return True  # Active run exists
 
-
 def get_public_url(storage_path: str) -> str:
     """Get public URL for a storage path."""
     db = get_supabase_client()
@@ -282,7 +266,6 @@ def get_public_url(storage_path: str) -> str:
         return result
     except Exception:
         return ""
-
 
 # ============================================
 # UI COMPONENTS
@@ -340,7 +323,6 @@ def render_plan_summary(details: dict):
             st.write(f"- **{tmpl.get('name', 'Unknown')}**")
             st.caption(f"  Anchor text: \"{anchor}\"")
 
-
 def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
     """Render the execution configuration form."""
     st.subheader("Execution Settings")
@@ -387,7 +369,6 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
                     st.session_state.executor_running = False
                     st.session_state.executor_last_result = result
 
-
                     if result.get("status") == "complete":
                         st.success(f"Execution complete! Generated {result.get('total_generated', 0)} ads.")
                         st.write(f"- Approved: {result.get('approved', 0)}")
@@ -414,7 +395,6 @@ def render_execution_form(plan_id: str, num_angles: int, num_templates: int):
         st.divider()
         render_results_by_angle(st.session_state.executor_last_result)
 
-
 def update_ad_status(ad_id: str, new_status: str) -> bool:
     """Update the final_status of a generated ad."""
     db = get_supabase_client()
@@ -426,7 +406,6 @@ def update_ad_status(ad_id: str, new_status: str) -> bool:
     except Exception as e:
         st.error(f"Failed to update status: {e}")
         return False
-
 
 def load_ads_for_plan(plan_id: str) -> dict:
     """Load generated ads from database grouped by angle, plus plan context."""
@@ -497,7 +476,6 @@ def load_ads_for_plan(plan_id: str) -> dict:
         st.error(f"Failed to load ads: {e}")
         return {"ads_by_angle": {}, "persona": {}, "jtbd": {}}
 
-
 def render_run_history(plan_id: str):
     """Render history of execution runs for this plan."""
     runs = get_pipeline_runs(plan_id)
@@ -553,7 +531,6 @@ def render_run_history(plan_id: str):
                             "jtbd": result_data.get("jtbd", {})
                         }
                         st.rerun()
-
 
 def render_results_by_angle(result: dict):
     """Render generated ads grouped by angle with their copy scaffolds."""
@@ -692,7 +669,6 @@ def render_results_by_angle(result: dict):
                                 key=f"primary_{ad.get('ad_id', i)}_{angle_id}",
                                 disabled=True
                             )
-
 
 # ============================================
 # MAIN PAGE

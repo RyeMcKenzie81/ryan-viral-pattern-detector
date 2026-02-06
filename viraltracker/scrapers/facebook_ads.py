@@ -223,7 +223,9 @@ class FacebookAdsScraper:
         if count is not None:
             actor_input["count"] = count
 
-        logger.info(f"Starting Ad Library search (count={count}, details={scrape_details})")
+        # Log full actor input for debugging
+        logger.info(f"Starting Ad Library search with actor_input: {json.dumps(actor_input)}")
+        logger.info(f"Full search URL: {search_url}")
 
         run = self.apify_client.actor(self.apify_actor_id).call(run_input=actor_input)
 

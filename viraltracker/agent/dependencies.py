@@ -37,6 +37,9 @@ from ..services.content_pipeline.services.sora_service import SoraService
 from ..services.reddit_sentiment_service import RedditSentimentService
 from ..services.product_context_service import ProductContextService
 from ..services.belief_analysis_service import BeliefAnalysisService
+from ..services.usage_tracker import UsageTracker
+from ..services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+from ..services.meta_ads_service import MetaAdsService
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +128,8 @@ class AgentDependencies(BaseModel):
     product_context: ProductContextService
     belief_analysis: BeliefAnalysisService
     sora: SoraService
+    ad_intelligence: AdIntelligenceService
+    meta_ads: MetaAdsService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -136,9 +141,19 @@ class AgentDependencies(BaseModel):
         gemini_api_key: Optional[str] = None,
         gemini_model: str = "models/gemini-3-pro-image-preview",
         rate_limit_rpm: int = 9,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ) -> "AgentDependencies":
         """
         Factory method to create AgentDependencies with initialized services.
+
+        Args:
+            project_name: Project name for context
+            gemini_api_key: Optional Gemini API key (uses env var if not provided)
+            gemini_model: Gemini model to use
+            rate_limit_rpm: Rate limit for Gemini API
+            user_id: Optional user ID for usage tracking
+            organization_id: Optional organization ID for usage tracking/billing
         """
         logger.info(f"Initializing agent dependencies for project: {project_name}")
 
@@ -150,6 +165,16 @@ class AgentDependencies(BaseModel):
         gemini = GeminiService(api_key=gemini_api_key, model=gemini_model)
         gemini.set_rate_limit(rate_limit_rpm)
         logger.info(f"GeminiService initialized (model: {gemini_model}, rate limit: {rate_limit_rpm} req/min)")
+
+        # Set up usage tracking if organization_id is provided
+        if organization_id:
+            try:
+                supabase_client = get_supabase_client()
+                usage_tracker = UsageTracker(supabase_client)
+                gemini.set_tracking_context(usage_tracker, user_id, organization_id)
+                logger.info(f"GeminiService usage tracking enabled (org: {organization_id})")
+            except Exception as e:
+                logger.warning(f"Failed to set up usage tracking: {e}")
 
         # Initialize StatsService (no initialization needed, static methods)
         stats = StatsService()
@@ -226,6 +251,13 @@ class AgentDependencies(BaseModel):
             try:
                 supabase = get_supabase_client()
                 docs = DocService(supabase=supabase)
+
+                # Set up usage tracking for DocService if org context available
+                if organization_id and organization_id != "all":
+                    docs.set_tracking_context(
+                        UsageTracker(supabase), user_id, organization_id
+                    )
+
                 logger.info("DocService initialized (knowledge base enabled)")
             except Exception as e:
                 logger.warning(f"DocService initialization failed: {e}")
@@ -233,9 +265,11 @@ class AgentDependencies(BaseModel):
             logger.info("DocService skipped (OPENAI_API_KEY not set)")
 
         # Initialize ContentPipelineService for content pipeline workflow
+        # Pass gemini service with tracking context for AI operations
         content_pipeline = ContentPipelineService(
             supabase_client=supabase,
-            docs_service=docs
+            docs_service=docs,
+            gemini_service=gemini  # Inherits tracking context from above
         )
         logger.info("ContentPipelineService initialized")
 
@@ -254,6 +288,18 @@ class AgentDependencies(BaseModel):
         # Initialize SoraService
         sora = SoraService()
         logger.info("SoraService initialized")
+
+        # Initialize MetaAdsService for Meta Ads API operations
+        meta_ads = MetaAdsService()
+        logger.info("MetaAdsService initialized")
+
+        # Initialize AdIntelligenceService for ad account analysis
+        if supabase is None:
+            supabase = get_supabase_client()
+        ad_intelligence = AdIntelligenceService(
+            supabase, gemini_service=gemini, meta_ads_service=meta_ads
+        )
+        logger.info("AdIntelligenceService initialized")
 
         return cls(
             twitter=twitter,
@@ -280,6 +326,8 @@ class AgentDependencies(BaseModel):
             product_context=product_context,
             belief_analysis=belief_analysis,
             sora=sora,
+            ad_intelligence=ad_intelligence,
+            meta_ads=meta_ads,
             docs=docs,
             project_name=project_name
         )

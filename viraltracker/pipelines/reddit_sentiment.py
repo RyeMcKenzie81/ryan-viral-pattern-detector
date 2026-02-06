@@ -685,6 +685,13 @@ async def run_reddit_sentiment(
 
     deps = AgentDependencies.create()
 
+    # Set up usage tracking on tracked services
+    try:
+        from ..ui.utils import setup_tracking_context
+        setup_tracking_context(deps.reddit_sentiment)
+    except Exception:
+        pass  # Non-fatal: tracking context may not be available outside UI
+
     state = RedditSentimentState(
         search_queries=search_queries,
         brand_id=brand_id,
@@ -757,6 +764,13 @@ async def run_reddit_sentiment_from_apify(
     from ..agent.dependencies import AgentDependencies
 
     deps = AgentDependencies.create()
+
+    # Set up usage tracking on tracked services
+    try:
+        from ..ui.utils import setup_tracking_context
+        setup_tracking_context(deps.reddit_sentiment)
+    except Exception:
+        pass  # Non-fatal: tracking context may not be available outside UI
 
     from ..services.models import RedditScrapeConfig
 

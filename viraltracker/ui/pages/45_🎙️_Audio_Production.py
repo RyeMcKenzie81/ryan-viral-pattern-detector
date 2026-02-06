@@ -38,12 +38,10 @@ if 'export_zip' not in st.session_state:
 if 'export_filename' not in st.session_state:
     st.session_state.export_filename = None
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 # ============================================================================
 # Async Helpers
@@ -64,20 +62,17 @@ async def run_audio_workflow(els_content: str, project_name: str = "trash-panda"
 
     return await complete_audio_workflow(ctx, els_content, project_name)
 
-
 async def load_session(session_id: str):
     """Load a production session."""
     from viraltracker.services.audio_production_service import AudioProductionService
     service = AudioProductionService()
     return await service.get_session(session_id)
 
-
 async def load_recent_sessions():
     """Load recent sessions for sidebar."""
     from viraltracker.services.audio_production_service import AudioProductionService
     service = AudioProductionService()
     return await service.get_recent_sessions()
-
 
 async def regenerate_beat(session_id, beat_id, direction, pace, stability, style):
     """Regenerate a beat with new settings."""
@@ -99,13 +94,11 @@ async def regenerate_beat(session_id, beat_id, direction, pace, stability, style
         style=style
     )
 
-
 async def select_take_async(session_id, beat_id, take_id):
     """Select a take."""
     from viraltracker.services.audio_production_service import AudioProductionService
     service = AudioProductionService()
     await service.select_take(session_id, beat_id, take_id)
-
 
 async def export_session(session_id):
     """Export selected takes."""
@@ -113,13 +106,11 @@ async def export_session(session_id):
     service = AudioProductionService()
     return await service.export_selected_takes(session_id)
 
-
 async def load_voice_profiles():
     """Load voice profiles."""
     from viraltracker.services.audio_production_service import AudioProductionService
     service = AudioProductionService()
     return await service.get_all_voice_profiles()
-
 
 async def get_audio_url(storage_path: str) -> str:
     """Get a signed URL for audio playback."""
@@ -127,13 +118,11 @@ async def get_audio_url(storage_path: str) -> str:
     service = AudioProductionService()
     return await service.get_audio_url(storage_path)
 
-
 async def download_audio_data(storage_path: str) -> bytes:
     """Download audio data from storage."""
     from viraltracker.services.audio_production_service import AudioProductionService
     service = AudioProductionService()
     return await service.download_audio(storage_path)
-
 
 # ============================================================================
 # UI Components
@@ -182,7 +171,6 @@ def render_sidebar():
                 st.caption(f"stability={p.stability}, style={p.style}, speed={p.speed}")
         except Exception as e:
             st.caption(f"Error: {e}")
-
 
 def render_new_session():
     """Render new session creation UI."""
@@ -284,7 +272,6 @@ Your script here.
                 st.session_state.audio_workflow_running = False
                 st.error(f"Workflow failed: {str(e)}")
 
-
 def render_session_editor():
     """Render session editing interface."""
     try:
@@ -382,7 +369,6 @@ def render_session_editor():
     # Beat list
     for bwt in session.beats:
         render_beat_row(session.session_id, bwt)
-
 
 def render_beat_row(session_id: str, bwt):
     """Render a single beat with audio player."""
@@ -510,7 +496,6 @@ def render_beat_row(session_id: str, bwt):
                         st.rerun()
 
         st.divider()
-
 
 # ============================================================================
 # Main

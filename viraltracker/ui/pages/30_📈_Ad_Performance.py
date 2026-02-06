@@ -39,14 +39,11 @@ if "ad_analysis_result" not in st.session_state:
 if "analyzing_ad" not in st.session_state:
     st.session_state.analyzing_ad = False
 
-
 # Session state for linking
 if "ad_perf_match_suggestions" not in st.session_state:
     st.session_state.ad_perf_match_suggestions = None  # List of match suggestions
 if "ad_perf_linking_ad" not in st.session_state:
     st.session_state.ad_perf_linking_ad = None  # Meta ad being manually linked
-
-
 
 # =============================================================================
 # Helper Functions
@@ -57,24 +54,20 @@ def get_supabase_client():
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_meta_ads_service():
     """Get MetaAdsService instance (lazy import to avoid init issues)."""
     from viraltracker.services.meta_ads_service import MetaAdsService
     return MetaAdsService()
-
 
 def get_brand_research_service():
     """Get BrandResearchService instance."""
     from viraltracker.services.brand_research_service import BrandResearchService
     return BrandResearchService()
 
-
 def get_angle_candidate_service():
     """Get AngleCandidateService instance."""
     from viraltracker.services.angle_candidate_service import AngleCandidateService
     return AngleCandidateService()
-
 
 def get_products_for_brand(brand_id: str) -> List[Dict]:
     """Get products for a brand."""
@@ -86,7 +79,6 @@ def get_products_for_brand(brand_id: str) -> List[Dict]:
         return result.data or []
     except Exception:
         return []
-
 
 def save_ad_analysis_as_candidate(
     product_id: str,
@@ -118,7 +110,6 @@ def save_ad_analysis_as_candidate(
         source_ad_id=meta_ad_id,
         brand_id=UUID(brand_id),
     )
-
 
 def fetch_real_ad_copy(meta_ad_id: str) -> Optional[str]:
     """
@@ -160,11 +151,6 @@ def fetch_real_ad_copy(meta_ad_id: str) -> Optional[str]:
         # Fail silently and fall back to ad name
         return None
 
-
-
-
-
-
 def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
     """Get the Meta ad account linked to a brand."""
     try:
@@ -176,7 +162,6 @@ def get_brand_ad_account(brand_id: str) -> Optional[Dict]:
     except Exception as e:
         st.error(f"Failed to fetch ad account: {e}")
         return None
-
 
 def get_performance_data(
     brand_id: str,
@@ -204,7 +189,6 @@ def get_performance_data(
         st.error(f"Failed to fetch performance data: {e}")
         return []
 
-
 def get_linked_ads(brand_id: str) -> List[Dict]:
     """Get ads that are linked between ViralTracker and Meta."""
     try:
@@ -217,7 +201,6 @@ def get_linked_ads(brand_id: str) -> List[Dict]:
         st.error(f"Failed to fetch linked ads: {e}")
         return []
 
-
 def get_linked_meta_ad_ids() -> set:
     """Get set of Meta ad IDs that are already linked."""
     try:
@@ -226,7 +209,6 @@ def get_linked_meta_ad_ids() -> set:
         return set(r["meta_ad_id"] for r in (result.data or []))
     except Exception:
         return set()
-
 
 def get_generated_ads_for_linking(brand_id: str, limit: int = 100) -> List[Dict]:
     """Get generated ads for manual linking picker."""
@@ -258,18 +240,15 @@ def get_generated_ads_for_linking(brand_id: str, limit: int = 100) -> List[Dict]
         st.error(f"Failed to fetch generated ads: {e}")
         return []
 
-
 async def find_auto_matches(brand_id: str) -> List[Dict]:
     """Find auto-match suggestions using MetaAdsService."""
     service = get_meta_ads_service()
     return await service.auto_match_ads(brand_id=UUID(brand_id))
 
-
 async def fetch_missing_thumbnails(brand_id: str) -> int:
     """Fetch thumbnails for ads that don't have them."""
     service = get_meta_ads_service()
     return await service.update_missing_thumbnails(brand_id=UUID(brand_id), limit=50)
-
 
 def create_ad_link(
     generated_ad_id: str,
@@ -297,7 +276,6 @@ def create_ad_link(
         st.error(f"Failed to create link: {e}")
         return False
 
-
 def delete_ad_link(meta_ad_id: str) -> bool:
     """Remove a link between generated ad and Meta ad."""
     try:
@@ -307,7 +285,6 @@ def delete_ad_link(meta_ad_id: str) -> bool:
     except Exception as e:
         st.error(f"Failed to remove link: {e}")
         return False
-
 
 def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
     """
@@ -352,7 +329,6 @@ def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
         st.error(f"Failed to get legacy ads: {e}")
         return []
 
-
 def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
     """Get a signed URL for a storage path."""
     if not storage_path:
@@ -372,6 +348,146 @@ def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
         return result.get("signedURL")
     except Exception:
         return None
+
+def _fetch_batch_deep_analysis(meta_ad_ids: List[str], brand_id: str) -> Dict[str, Dict]:
+    """Batch-fetch classification and video analysis for a list of ads.
+
+    Returns dict mapping meta_ad_id -> {classification: ..., video_analysis: ...}.
+    Fetches in two queries to avoid N+1.
+    """
+    if not meta_ad_ids or not brand_id:
+        return {}
+
+    db = get_supabase_client()
+    result_map: Dict[str, Dict] = {aid: {"classification": None, "video_analysis": None} for aid in meta_ad_ids}
+
+    try:
+        # Fetch latest classification per ad (ordered by classified_at DESC)
+        cls_result = db.table("ad_creative_classifications").select(
+            "meta_ad_id, creative_awareness_level, creative_format, "
+            "congruence_score, congruence_notes, congruence_components, "
+            "video_analysis_id, hook_type, creative_angle"
+        ).eq("brand_id", brand_id).in_("meta_ad_id", meta_ad_ids).order(
+            "classified_at", desc=True
+        ).execute()
+
+        # Keep only the latest classification per ad
+        seen_ads = set()
+        video_analysis_ids = []
+        for row in (cls_result.data or []):
+            aid = row.get("meta_ad_id")
+            if aid and aid not in seen_ads:
+                seen_ads.add(aid)
+                result_map[aid]["classification"] = row
+                va_id = row.get("video_analysis_id")
+                if va_id:
+                    video_analysis_ids.append(va_id)
+
+        # Batch-fetch video analyses if any exist
+        if video_analysis_ids:
+            va_result = db.table("ad_video_analysis").select(
+                "id, hook_transcript_spoken, hook_transcript_overlay, hook_type, "
+                "hook_visual_type, hook_visual_description, "
+                "full_transcript, storyboard, benefits_shown, features_demonstrated, "
+                "pain_points_addressed, angles_used, claims_made, "
+                "awareness_level, production_quality, format_type, video_duration_sec"
+            ).in_("id", video_analysis_ids).execute()
+
+            va_map = {row["id"]: row for row in (va_result.data or [])}
+            for aid, entry in result_map.items():
+                cls = entry.get("classification")
+                if cls and cls.get("video_analysis_id"):
+                    entry["video_analysis"] = va_map.get(cls["video_analysis_id"])
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to fetch deep analysis: {e}")
+
+    return result_map
+
+
+def _render_ad_deep_analysis(cls: Optional[Dict], va: Optional[Dict]):
+    """Render deep analysis section for an ad using pre-fetched data."""
+    if not cls:
+        st.caption("No classification data available")
+        return
+
+    # Classification summary row
+    cols = st.columns(4)
+    cols[0].metric("Awareness", (cls.get("creative_awareness_level") or "N/A").replace("_", " ").title())
+    cols[1].metric("Format", (cls.get("creative_format") or "N/A").replace("_", " ").title())
+    score = cls.get("congruence_score")
+    cols[2].metric("Congruence", f"{float(score):.2f}" if score is not None else "N/A")
+    cols[3].metric("Video Analysis", "Yes" if va else "No")
+
+    # Congruence components
+    components = cls.get("congruence_components") or []
+    if components and isinstance(components, list):
+        st.markdown("**Congruence Breakdown:**")
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            assessment = comp.get("assessment", "unknown")
+            icon = {"aligned": "✅", "weak": "⚠️", "missing": "❌"}.get(assessment, "❓")
+            dim = (comp.get("dimension") or "").replace("_", " ").title()
+            st.markdown(f"{icon} **{dim}**: {comp.get('explanation', '')}")
+            if comp.get("suggestion") and assessment != "aligned":
+                st.caption(f"  → {comp['suggestion']}")
+
+    if not va:
+        return
+
+    # Hook info
+    hook_spoken = va.get("hook_transcript_spoken")
+    hook_overlay = va.get("hook_transcript_overlay")
+    if hook_spoken or hook_overlay:
+        st.markdown("**Hook:**")
+        if hook_spoken:
+            st.markdown(f'  Spoken: *"{hook_spoken}"*')
+        if hook_overlay:
+            st.markdown(f'  Overlay: *"{hook_overlay}"*')
+        hook_type = va.get("hook_type") or ""
+        visual_type = va.get("hook_visual_type") or ""
+        if hook_type or visual_type:
+            parts = [p for p in [f"Type: {hook_type}" if hook_type else "", f"Visual: {visual_type}" if visual_type else ""] if p]
+            st.caption(" | ".join(parts))
+
+    # Benefits & angles
+    benefits = va.get("benefits_shown") or []
+    angles = va.get("angles_used") or []
+    if benefits or angles:
+        bcol, acol = st.columns(2)
+        if benefits:
+            bcol.markdown("**Benefits:** " + ", ".join(benefits))
+        if angles:
+            acol.markdown("**Angles:** " + ", ".join(angles))
+
+    # Claims
+    claims = va.get("claims_made") or []
+    if claims and isinstance(claims, list):
+        st.markdown("**Claims:**")
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            proof = "✅ Proof shown" if claim.get("proof_shown") else "❌ No proof"
+            st.markdown(f"  - {claim.get('claim', '')} ({proof})")
+
+    # Transcript (collapsed)
+    transcript = va.get("full_transcript")
+    if transcript:
+        with st.expander("Full Transcript", expanded=False):
+            st.text(transcript)
+
+    # Storyboard (collapsed)
+    storyboard = va.get("storyboard") or []
+    if storyboard and isinstance(storyboard, list):
+        with st.expander(f"Storyboard ({len(storyboard)} scenes)", expanded=False):
+            for scene in storyboard:
+                if not isinstance(scene, dict):
+                    continue
+                ts = scene.get("timestamp_sec", 0)
+                desc = scene.get("scene_description", "")
+                st.markdown(f"**{ts}s** — {desc}")
 
 
 def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
@@ -427,7 +543,6 @@ def aggregate_metrics(data: List[Dict]) -> Dict[str, Any]:
         "adset_count": len(unique_adsets)
     }
 
-
 def aggregate_time_series(data: List[Dict]) -> Dict[str, List[Dict]]:
     """
     Aggregate performance data by date for time-series charts.
@@ -482,8 +597,7 @@ def aggregate_time_series(data: List[Dict]) -> Dict[str, List[Dict]]:
 
     return result
 
-
-def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -> List[Dict]:
+def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5, min_spend: float = 0.0) -> List[Dict]:
     """
     Get top N performing ads by a specified metric.
 
@@ -491,23 +605,26 @@ def get_top_performers(data: List[Dict], metric: str = "roas", top_n: int = 5) -
         data: Performance data list
         metric: Metric to sort by (roas, ctr, spend, purchases)
         top_n: Number of top performers to return
+        min_spend: Minimum spend threshold to be included
     """
     ads = aggregate_by_ad(data)
 
+    # Filter by minimum spend
+    ads_with_spend = [a for a in ads if a.get("spend", 0) >= min_spend]
+
     # Sort by metric (descending)
     if metric == "roas":
-        sorted_ads = sorted(ads, key=lambda x: x.get("roas", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("roas", 0), reverse=True)
     elif metric == "ctr":
-        sorted_ads = sorted(ads, key=lambda x: x.get("ctr", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("ctr", 0), reverse=True)
     elif metric == "spend":
-        sorted_ads = sorted(ads, key=lambda x: x.get("spend", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("spend", 0), reverse=True)
     elif metric == "purchases":
-        sorted_ads = sorted(ads, key=lambda x: x.get("purchases", 0), reverse=True)
+        sorted_ads = sorted(ads_with_spend, key=lambda x: x.get("purchases", 0), reverse=True)
     else:
-        sorted_ads = ads
+        sorted_ads = ads_with_spend
 
     return sorted_ads[:top_n]
-
 
 def get_worst_performers(data: List[Dict], metric: str = "roas", bottom_n: int = 5, min_spend: float = 10.0) -> List[Dict]:
     """
@@ -533,7 +650,6 @@ def get_worst_performers(data: List[Dict], metric: str = "roas", bottom_n: int =
         sorted_ads = ads_with_spend
 
     return sorted_ads[:bottom_n]
-
 
 def export_to_csv(data: List[Dict]) -> str:
     """
@@ -580,7 +696,6 @@ def export_to_csv(data: List[Dict]) -> str:
 
     return output.getvalue()
 
-
 async def sync_ads_from_meta(
     brand_id: str,
     ad_account_id: str,
@@ -607,7 +722,6 @@ async def sync_ads_from_meta(
     )
 
     return count
-
 
 def analyze_ad_creative(
     creative_file: Optional[Any] = None,
@@ -704,8 +818,6 @@ def analyze_ad_creative(
     }
     return result
 
-
-
 # =============================================================================
 # UI Components
 # =============================================================================
@@ -787,7 +899,6 @@ def render_metric_cards(metrics: Dict[str, Any]):
             help="Total purchase revenue"
         )
 
-
 def render_time_series_charts(data: List[Dict]):
     """Render time-series charts for key metrics."""
     import pandas as pd
@@ -833,7 +944,6 @@ def render_time_series_charts(data: List[Dict]):
 
         st.subheader(f"{metric} Over Time")
         st.line_chart(chart_df, height=250)
-
 
 def render_analysis_result(result: Dict):
     """Render the ad analysis result with 'Create Plan' and 'Save as Candidate' actions."""
@@ -900,7 +1010,6 @@ def render_analysis_result(result: Dict):
 
         st.json(result)
 
-
 def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result: Dict):
     """Render UI for saving analysis as an angle candidate."""
     # Get brand from shared selector
@@ -949,65 +1058,129 @@ def _render_save_candidate_ui(angle: str, belief: str, hooks: List[Dict], result
         except Exception as e:
             st.error(f"Failed to save: {e}")
 
+def _ads_manager_url(ad: Dict) -> Optional[str]:
+    """Build Facebook Ads Manager URL for an ad using its own row data."""
+    meta_ad_id = ad.get("meta_ad_id")
+    account_id = ad.get("meta_ad_account_id")
+    if not meta_ad_id or not account_id:
+        return None
+    clean_account = account_id.replace("act_", "")
+    return f"https://adsmanager.facebook.com/adsmanager/manage/ads?act={clean_account}&selected_ad_ids={meta_ad_id}"
 
 
-
-def render_top_performers(data: List[Dict]):
-    """Render top and worst performers section."""
+def render_top_performers(data: List[Dict], brand_id: Optional[str] = None, ad_account_id: Optional[str] = None):
+    """Render top and worst performers section with optional deep analysis."""
     import pandas as pd
 
     if not data:
         return
 
-    # Filter option - default to active only
-    include_inactive = st.checkbox(
-        "Include inactive ads",
-        value=False,
-        key="performers_include_inactive",
-        help="Show paused/deleted ads in rankings"
-    )
+    from datetime import datetime, timedelta
 
-    # Filter data to active ads only if checkbox not checked
+    # Filter options
+    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1])
+    with filter_col1:
+        include_inactive = st.checkbox(
+            "Include inactive ads",
+            value=False,
+            key="performers_include_inactive",
+            help="Show paused/deleted ads in rankings"
+        )
+    with filter_col2:
+        perf_window = st.selectbox(
+            "Performance window",
+            options=[7, 14, 30],
+            index=0,
+            key="performers_window_days",
+            help="Number of days to aggregate for rankings"
+        )
+    with filter_col3:
+        min_spend = st.number_input(
+            "Min. spend ($)",
+            min_value=0.0,
+            value=10.0,
+            step=5.0,
+            key="performers_min_spend",
+            help="Only show ads that spent at least this amount in the window"
+        )
+
+    # Compute max_date_dt once for both window and active-ad filtering
+    all_dates = [d.get("date") for d in data if d.get("date")]
+    max_date_dt = None
+    if all_dates:
+        max_date = max(all_dates)
+        try:
+            max_date_dt = datetime.strptime(max_date, "%Y-%m-%d")
+        except Exception:
+            pass
+
+    # Apply performance window: only include rows within the selected window
+    window_cutoff = (max_date_dt - timedelta(days=perf_window)).strftime("%Y-%m-%d") if max_date_dt else None
+
+    windowed_data = [
+        d for d in data
+        if not window_cutoff or (d.get("date") and d.get("date") > window_cutoff)
+    ]
+
+    # Filter to active ads if checkbox not checked
     if not include_inactive:
-        # Get the most recent date in the data to determine "recent" activity
-        from datetime import datetime, timedelta
-        all_dates = [d.get("date") for d in data if d.get("date")]
-        if all_dates:
-            max_date = max(all_dates)
-            try:
-                max_date_dt = datetime.strptime(max_date, "%Y-%m-%d")
-                recent_cutoff = (max_date_dt - timedelta(days=3)).strftime("%Y-%m-%d")
-            except:
-                recent_cutoff = None
-        else:
-            recent_cutoff = None
+        # Determine active status PER AD using the latest row's ad_status.
+        # ad_status is only populated on the most recent sync day, so we
+        # resolve it once per ad and then include ALL rows for active ads.
+        ad_latest_status: dict = {}
+        for d in data:  # scan ALL data, not just windowed
+            aid = d.get("meta_ad_id")
+            if not aid:
+                continue
+            row_date = d.get("date", "")
+            row_status = d.get("ad_status")
+            if row_status and (aid not in ad_latest_status or row_date > ad_latest_status[aid][0]):
+                ad_latest_status[aid] = (row_date, row_status.upper())
 
-        # Filter to ads that are both ACTIVE status AND have recent data
-        # This excludes ads in ended campaigns that still show status=ACTIVE
-        if recent_cutoff:
-            recent_ad_ids = set(
-                d.get("meta_ad_id") for d in data
-                if d.get("date") and d.get("date") >= recent_cutoff
-            )
-            filtered_data = [
-                d for d in data
-                if d.get("ad_status", "").upper() == "ACTIVE"
-                and d.get("meta_ad_id") in recent_ad_ids
-            ]
-        else:
-            filtered_data = [d for d in data if d.get("ad_status", "").upper() == "ACTIVE"]
+        # Also check for recent activity (any data in last 3 days)
+        recent_cutoff = (max_date_dt - timedelta(days=3)).strftime("%Y-%m-%d") if max_date_dt else None
+
+        recent_ad_ids = set(
+            d.get("meta_ad_id") for d in data
+            if recent_cutoff and d.get("date") and d.get("date") >= recent_cutoff
+        ) if recent_cutoff else set(d.get("meta_ad_id") for d in data if d.get("meta_ad_id"))
+
+        # An ad is "active" if its latest status is ACTIVE (or has no status)
+        # AND it has recent data
+        active_ad_ids = set()
+        for aid in recent_ad_ids:
+            latest = ad_latest_status.get(aid)
+            if latest is None or latest[1] == "ACTIVE":
+                active_ad_ids.add(aid)
+
+        filtered_data = [
+            d for d in windowed_data
+            if d.get("meta_ad_id") in active_ad_ids
+        ]
 
         if not filtered_data:
             st.info("No currently active ads found. Check 'Include inactive ads' to see all ads.")
             return
     else:
-        filtered_data = data
+        filtered_data = windowed_data
+
+    # Pre-fetch deep analysis data for all candidate ads (avoids N+1 queries)
+    top_ads = get_top_performers(filtered_data, metric="roas", top_n=5, min_spend=min_spend)
+    worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=min_spend)
+
+    deep_analysis_map: Dict[str, Dict] = {}
+    if brand_id:
+        all_ad_ids = [
+            ad.get("meta_ad_id") for ad in (top_ads or []) + (worst_ads or [])
+            if ad.get("meta_ad_id")
+        ]
+        if all_ad_ids:
+            deep_analysis_map = _fetch_batch_deep_analysis(all_ad_ids, brand_id)
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("🏆 Top Performers (by ROAS)")
-        top_ads = get_top_performers(filtered_data, metric="roas", top_n=5)
 
         if top_ads:
             for i, ad in enumerate(top_ads, 1):
@@ -1019,10 +1192,26 @@ def render_top_performers(data: List[Dict]):
                 status = ad.get("ad_status", "")
                 status_emoji = get_status_emoji(status) if status else ""
 
+                ad_id = ad.get("meta_ad_id", "")
                 if roas > 0:
-                    st.markdown(f"**{i}. {status_emoji} {name}**")
-                    st.caption(f"📁 {campaign} › {adset}")
-                    st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {ad.get('purchases', 0)}")
+                    safe_name = name.replace("[", "\\[").replace("]", "\\]")
+                    mgr_url = _ads_manager_url(ad)
+                    if mgr_url:
+                        st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({mgr_url})")
+                    else:
+                        st.markdown(f"**{i}. {status_emoji} {name}**")
+                    st.caption(f"📁 {campaign} › {adset} · ID: {ad_id}")
+                    purchases = ad.get('purchases', 0)
+                    cpa = (spend / purchases) if purchases > 0 else 0
+                    cpa_str = f" · CPA: ${cpa:,.2f}" if purchases > 0 else ""
+                    st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · Purchases: {purchases}{cpa_str}")
+
+                    # Deep analysis expander
+                    if ad_id and ad_id in deep_analysis_map:
+                        entry = deep_analysis_map[ad_id]
+                        if entry.get("classification"):
+                            with st.expander("Deep Analysis", expanded=False):
+                                _render_ad_deep_analysis(entry["classification"], entry.get("video_analysis"))
         else:
             st.info("No data for top performers")
 
@@ -1030,42 +1219,26 @@ def render_top_performers(data: List[Dict]):
         if top_ads:
             st.markdown("---")
             st.caption("Select an ad to analyze its strategy:")
-            
+
             # Create a selection map
             options = {f"{ad.get('ad_name', 'Unknown')} (ROAS: {ad.get('roas', 0):.2f})": ad for ad in top_ads}
             selected_label = st.selectbox("Select Winner", options=list(options.keys()), key="top_perf_select")
-            
+
             if selected_label:
                 target_ad = options[selected_label]
-                st.write(f"DEBUG: Target Ad Keys: {list(target_ad.keys())}")
-                st.write(f"DEBUG: Target Ad Data (Sample): {str(target_ad)[:500]}")
-                if st.button(f"🔍 Analyze Strategy: {target_ad.get('ad_name')}"):
-                    # In a real scenario, we would stream the creative URL from the ad data.
-                    # Since existing data might not have the full creative bytes/url ready for immediate download without token,
-                    # We might need to ask user to confirm/provide if missing.
-                    # For this implementation, we will assume we scrape/fetch on the fly or just analyze COPY for now if creative missing.
-                    
+                if st.button(f"Analyze Strategy: {target_ad.get('ad_name')}"):
                     with st.spinner("Analyzing ad strategy..."):
-                        # Dummy call for MVP integration if URL missing, or use Ad Copy if available
-                        # In production this would fetch the actual creative.
                          try:
-                             # Try to fetch real body text from DB first
                              meta_ad_id = target_ad.get("meta_ad_id") or target_ad.get("ad_id")
                              body_text = fetch_real_ad_copy(str(meta_ad_id)) if meta_ad_id else None
-                             
-                             # Fallback to ad name if body text not found
                              final_copy = body_text if body_text else target_ad.get("ad_name", "")
-                             
-                             # Get Creative URL from ad data (image_url or thumbnail_url)
                              creative_url = target_ad.get("image_url") or target_ad.get("thumbnail_url")
-                             
-                             # If missing, try to fetch on-the-fly
+
                              if not creative_url:
                                  st.info("Fetching ad creative from Meta...")
                                  try:
                                      from viraltracker.services.meta_ads_service import MetaAdsService
                                      meta_service = MetaAdsService()
-                                     # Assuming we have meta_ad_id
                                      aid = target_ad.get("meta_ad_id")
                                      if aid:
                                          thumbs = asyncio.run(meta_service.fetch_ad_thumbnails([aid]))
@@ -1075,31 +1248,26 @@ def render_top_performers(data: List[Dict]):
                                  except Exception as e:
                                      st.warning(f"Could not fetch creative from Meta: {e}")
 
-                             # If not http, assume storage path (unless empty)
                              if creative_url and not creative_url.startswith("http"):
                                  signed = get_signed_url(creative_url)
-                                 if signed: 
-                                     st.write(f"DEBUG: Signed storage path '{creative_url}' -> '{signed[:20]}...'")
+                                 if signed:
                                      creative_url = signed
                                  else:
                                      st.warning(f"Could not sign URL for path: {creative_url}")
-                             
-                             st.write(f"DEBUG: Final Analysis URL: {creative_url}") # Debug for user
 
-                             # Try to convert ID to UUID for tracking, otherwise None
                              from uuid import UUID as PyUUID
                              ad_uuid = None
                              try:
                                  if meta_ad_id:
                                      ad_uuid = PyUUID(str(meta_ad_id))
-                             except:
-                                 pass # Not a UUID (likely a Meta numeric ID)
+                             except Exception:
+                                 pass
 
                              res = analyze_ad_creative(
                                  ad_copy=final_copy,
                                  headline=target_ad.get("headline", ""),
                                  creative_url=creative_url,
-                                 creative_type="image", # Default to image for now unless we detect video
+                                 creative_type="image",
                                  ad_id=ad_uuid
                              )
                              st.session_state.ad_analysis_result = res
@@ -1112,7 +1280,6 @@ def render_top_performers(data: List[Dict]):
     with col2:
 
         st.subheader("⚠️ Needs Attention (low ROAS)")
-        worst_ads = get_worst_performers(filtered_data, metric="roas", bottom_n=5, min_spend=10.0)
 
         if worst_ads:
             for i, ad in enumerate(worst_ads, 1):
@@ -1124,12 +1291,27 @@ def render_top_performers(data: List[Dict]):
                 status = ad.get("ad_status", "")
                 status_emoji = get_status_emoji(status) if status else ""
 
-                st.markdown(f"**{i}. {status_emoji} {name}**")
-                st.caption(f"📁 {campaign} › {adset}")
-                st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%")
-        else:
-            st.info("No underperforming ads (or none with min $10 spend)")
+                ad_id = ad.get("meta_ad_id", "")
+                safe_name = name.replace("[", "\\[").replace("]", "\\]")
+                mgr_url = _ads_manager_url(ad)
+                if mgr_url:
+                    st.markdown(f"**{i}. {status_emoji} {safe_name}** [↗]({mgr_url})")
+                else:
+                    st.markdown(f"**{i}. {status_emoji} {name}**")
+                st.caption(f"📁 {campaign} › {adset} · ID: {ad_id}")
+                purchases = ad.get('purchases', 0)
+                cpa = (spend / purchases) if purchases > 0 else 0
+                cpa_str = f" · CPA: ${cpa:,.2f}" if purchases > 0 else ""
+                st.caption(f"ROAS: **{roas:.2f}x** · Spend: ${spend:,.2f} · CTR: {ad.get('ctr', 0):.2f}%{cpa_str}")
 
+                # Deep analysis expander
+                if ad_id and ad_id in deep_analysis_map:
+                    entry = deep_analysis_map[ad_id]
+                    if entry.get("classification"):
+                        with st.expander("Deep Analysis", expanded=False):
+                            _render_ad_deep_analysis(entry["classification"], entry.get("video_analysis"))
+        else:
+            st.info(f"No underperforming ads (or none with min ${min_spend:,.2f} spend)")
 
 def render_csv_export(data: List[Dict]):
     """Render CSV export button."""
@@ -1147,7 +1329,6 @@ def render_csv_export(data: List[Dict]):
             help="Download performance data as CSV"
         )
 
-
 def get_status_emoji(status: str) -> str:
     """Get emoji for ad status."""
     status_map = {
@@ -1159,7 +1340,6 @@ def get_status_emoji(status: str) -> str:
         "DISAPPROVED": "❌",
     }
     return status_map.get(status.upper() if status else "", "⚫")
-
 
 def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by ad (across all dates in range)."""
@@ -1174,24 +1354,24 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
         if not aid:
             continue
         a = ads[aid]
-        a["ad_name"] = d.get("ad_name", "Unknown")
-        a["ad_status"] = d.get("ad_status", "")
-        a["adset_name"] = d.get("adset_name", "")
+        a["ad_name"] = d.get("ad_name") or a.get("ad_name", "Unknown")
+        # Guard ad_status — keep the first (most recent, data is date DESC) non-empty value
+        if not a.get("ad_status"):
+            a["ad_status"] = d.get("ad_status") or ""
+        a["adset_name"] = d.get("adset_name") or a.get("adset_name", "")
         a["campaign_name"] = d.get("campaign_name", "")
         a["meta_adset_id"] = d.get("meta_adset_id", "")
         a["meta_campaign_id"] = d.get("meta_campaign_id", "")
+        a["meta_ad_account_id"] = d.get("meta_ad_account_id", "")
         a["spend"] += float(d.get("spend") or 0)
         a["impressions"] += int(d.get("impressions") or 0)
         a["link_clicks"] += int(d.get("link_clicks") or 0)
         a["add_to_carts"] += int(d.get("add_to_carts") or 0)
         a["purchases"] += int(d.get("purchases") or 0)
         a["purchase_value"] += float(d.get("purchase_value") or 0)
-        
-        # Capture creative details (first non-empty value wins or overwrite)
-        if d.get("image_url"): a["image_url"] = d.get("image_url")
+
+        # Capture creative details (first non-empty value wins)
         if d.get("thumbnail_url"): a["thumbnail_url"] = d.get("thumbnail_url")
-        if d.get("headline"): a["headline"] = d.get("headline")
-        if d.get("body"): a["body"] = d.get("body")
 
     result = []
     for aid, a in ads.items():
@@ -1207,6 +1387,7 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
             "campaign_name": a["campaign_name"],
             "meta_adset_id": a["meta_adset_id"],
             "meta_campaign_id": a["meta_campaign_id"],
+            "meta_ad_account_id": a["meta_ad_account_id"],
             "spend": a["spend"],
             "impressions": a["impressions"],
             "link_clicks": a["link_clicks"],
@@ -1216,14 +1397,10 @@ def aggregate_by_ad(data: List[Dict]) -> List[Dict]:
             "add_to_carts": a["add_to_carts"],
             "purchases": a["purchases"],
             "roas": roas,
-            "image_url": a.get("image_url"),
             "thumbnail_url": a.get("thumbnail_url"),
-            "headline": a.get("headline"),
-            "body": a.get("body"),
         })
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
-
 
 def render_ads_table(data: List[Dict], show_link_button: bool = False):
     """Render ads performance table with aggregated data."""
@@ -1270,7 +1447,6 @@ def render_ads_table(data: List[Dict], show_link_button: bool = False):
             "ROAS": st.column_config.TextColumn("ROAS", width="small"),
         }
     )
-
 
 def derive_delivery_status(ad_statuses: set) -> str:
     """
@@ -1323,7 +1499,6 @@ def derive_delivery_status(ad_statuses: set) -> str:
             return check.replace("_", " ").title()
 
     return "Off"
-
 
 def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by campaign."""
@@ -1407,7 +1582,6 @@ def aggregate_by_campaign(data: List[Dict]) -> List[Dict]:
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
 
-
 def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
     """Aggregate performance data by ad set."""
     from collections import defaultdict
@@ -1490,7 +1664,6 @@ def aggregate_by_adset(data: List[Dict]) -> List[Dict]:
 
     return sorted(result, key=lambda x: x["spend"], reverse=True)
 
-
 def render_campaigns_table(data: List[Dict]):
     """Render campaigns summary table."""
     import pandas as pd
@@ -1518,7 +1691,6 @@ def render_campaigns_table(data: List[Dict]):
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
-
 
 def render_adsets_table(data: List[Dict]):
     """Render ad sets summary table."""
@@ -1548,7 +1720,6 @@ def render_adsets_table(data: List[Dict]):
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-
 def render_filter_bar():
     """Render filter bar showing active filters with clear buttons."""
     selected_campaign = st.session_state.ad_perf_selected_campaign
@@ -1571,7 +1742,6 @@ def render_filter_bar():
             st.session_state.ad_perf_selected_campaign = None
             st.session_state.ad_perf_selected_adset = None
             st.rerun()
-
 
 def render_campaigns_table_fb(data: List[Dict]):
     """Render campaigns table with clickable names using AG Grid."""
@@ -1690,7 +1860,6 @@ def render_campaigns_table_fb(data: List[Dict]):
     **Totals ({len(campaigns)}):** Spend **${total_spend:,.2f}** · Impr **{total_impr:,}** ·
     Clicks **{total_clicks:,}** · CTR **{total_ctr:.1f}%** · ATC **{total_atc:,}** · Purchases **{total_purch:,}**
     """)
-
 
 def render_adsets_table_fb(data: List[Dict]):
     """Render ad sets table with clickable names using AG Grid."""
@@ -1816,7 +1985,6 @@ def render_adsets_table_fb(data: List[Dict]):
     Clicks **{total_clicks:,}** · CTR **{total_ctr:.1f}%** · ATC **{total_atc:,}** · Purchases **{total_purch:,}**
     """)
 
-
 def render_ads_table_fb(data: List[Dict]):
     """Render ads table Facebook-style with totals."""
     import pandas as pd
@@ -1890,7 +2058,6 @@ def render_ads_table_fb(data: List[Dict]):
     ATC: **{totals['ATC']:,}** · Purchases: **{totals['Purchases']:,}**
     """)
 
-
 def render_sync_section(brand_id: str, ad_account: Dict):
     """Render the sync controls section."""
     st.subheader("Sync Data from Meta")
@@ -1932,7 +2099,6 @@ def render_sync_section(brand_id: str, ad_account: Dict):
 
     # Scheduling section
     render_sync_scheduling(brand_id)
-
 
 def render_sync_scheduling(brand_id: str):
     """Render the automated sync scheduling UI."""
@@ -2052,7 +2218,6 @@ def render_sync_scheduling(brand_id: str):
             except Exception as e:
                 st.error(f"Failed to create schedule: {e}")
 
-
 def render_setup_instructions(brand_id: str):
     """Render setup instructions and form when no ad account is linked."""
     st.warning("No Meta Ad Account linked to this brand.")
@@ -2114,7 +2279,6 @@ def render_setup_instructions(brand_id: str):
     **Note:** You also need `META_GRAPH_API_TOKEN` set in your environment.
     Get a token from [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
     """)
-
 
 # =============================================================================
 # Linking UI Components
@@ -2213,7 +2377,6 @@ def render_match_suggestions(suggestions: List[Dict], ad_account_id: str):
 
             st.divider()
 
-
 def render_manual_link_modal(meta_ad: Dict, brand_id: str, ad_account_id: str):
     """Render modal for manually linking a Meta ad to a generated ad."""
     st.subheader("🔗 Link to Generated Ad")
@@ -2268,7 +2431,6 @@ def render_manual_link_modal(meta_ad: Dict, brand_id: str, ad_account_id: str):
                 st.success("✓ Ad linked successfully!")
                 st.session_state.ad_perf_linking_ad = None
                 st.rerun()
-
 
 def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
     """Render the Linked ads tab with performance data."""
@@ -2332,7 +2494,6 @@ def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
     total_spend = sum(a["spend"] for a in ads)
     total_purchases = sum(a["purchases"] for a in ads)
     st.markdown(f"**{len(ads)} linked ads** · Spend: **${total_spend:,.2f}** · Purchases: **{total_purchases:,}**")
-
 
 def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id: str):
     """Render ads table with link/unlink buttons."""
@@ -2459,7 +2620,6 @@ def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id
     active_count = sum(1 for a in ads if a.get("ad_status", "").upper() == "ACTIVE")
     st.markdown(f"**{len(ads)} ads** ({active_count} active) · Spend: **${total_spend:,.2f}** · Impr: **{total_impr:,}** · Clicks: **{total_clicks:,}**")
 
-
 # =============================================================================
 # Main Page
 # =============================================================================
@@ -2534,7 +2694,7 @@ with st.expander("📊 Charts & Analysis", expanded=False):
         render_time_series_charts(perf_data)
 
     with performers_tab:
-        render_top_performers(perf_data)
+        render_top_performers(perf_data, brand_id=brand_id, ad_account_id=ad_account.get("meta_ad_account_id"))
 
 st.divider()
 
@@ -2627,7 +2787,7 @@ elif selected_tab == "🔗 Linked":
 
     # Find Matches button
 
-    col1, col2, col3 = st.columns([1, 1, 3])
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
     with col1:
         if st.button("🔍 Find Matches", type="primary", use_container_width=True):
             with st.spinner("Fetching thumbnails and scanning for matches..."):
@@ -2655,9 +2815,49 @@ elif selected_tab == "🔗 Linked":
             st.rerun()
 
     with col3:
-        # Show last fetch result
-        if "ad_perf_last_thumb_count" in st.session_state:
-            st.caption(f"Last fetch: {st.session_state.ad_perf_last_thumb_count} thumbnails")
+        if st.button("📥 Download Assets", use_container_width=True):
+            with st.spinner("Downloading ad assets from Meta..."):
+                try:
+                    from viraltracker.services.meta_ads_service import MetaAdsService
+                    service = MetaAdsService()
+                    counts = asyncio.run(service.download_new_ad_assets(
+                        brand_id=UUID(brand_id), max_videos=20, max_images=40
+                    ))
+                    st.session_state.ad_perf_assets_downloaded = counts
+                    # Clear cached stats so they refresh
+                    st.session_state.pop("ad_perf_asset_stats", None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to download assets: {e}")
+
+    with col4:
+        # Fetch asset stats if not cached or brand changed
+        cached = st.session_state.get("ad_perf_asset_stats")
+        if not cached or cached.get("_brand_id") != brand_id:
+            try:
+                from viraltracker.services.meta_ads_service import MetaAdsService
+                service = MetaAdsService()
+                stats_data = asyncio.run(
+                    service.get_asset_download_stats(UUID(brand_id))
+                )
+                stats_data["_brand_id"] = brand_id
+                st.session_state.ad_perf_asset_stats = stats_data
+            except Exception:
+                st.session_state.ad_perf_asset_stats = None
+
+        stats = st.session_state.get("ad_perf_asset_stats")
+        if stats:
+            v = stats["videos"]
+            i = stats["images"]
+            # Show downloaded/total and pending
+            st.caption(
+                f"Videos: {v['downloaded']}/{v['total']} "
+                f"({v['pending']} pending)"
+            )
+            st.caption(
+                f"Images: {i['downloaded']}/{i['total']} "
+                f"({i['pending']} pending)"
+            )
 
     # Debug panel
     if st.session_state.get("ad_perf_debug_thumbs"):
@@ -3143,10 +3343,8 @@ elif selected_tab == "🔗 Linked":
         else:
             st.success("✅ All legacy ads are linked!")
 
-
 elif selected_tab == "🧪 Manual Analysis":
     render_manual_analysis_tab()
-
 
 # Footer with data info
 if perf_data:

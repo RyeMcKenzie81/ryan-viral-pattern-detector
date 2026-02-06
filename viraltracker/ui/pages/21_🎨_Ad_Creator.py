@@ -15,10 +15,9 @@ import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
+from uuid import UUID
 
 # Handle Streamlit's event loop for async operations
-import nest_asyncio
-nest_asyncio.apply()
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +31,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("ad_creator", "Ad Creator")
 
 # Initialize session state
 if 'workflow_running' not in st.session_state:
@@ -91,14 +92,53 @@ if 'match_template_structure' not in st.session_state:
 if 'additional_instructions' not in st.session_state:
     st.session_state.additional_instructions = ""
 if 'selected_templates_for_generation' not in st.session_state:
-    st.session_state.selected_templates_for_generation = []
+    st.session_state.selected_templates_for_generation = []  # List of {source, id, name, storage_path, bucket}
+if 'multi_template_progress' not in st.session_state:
+    st.session_state.multi_template_progress = None  # {current: int, total: int, results: []}
+if 'multi_template_results' not in st.session_state:
+    st.session_state.multi_template_results = None  # Final batch results
+# Auto-retry rejected ads
+if 'auto_retry_rejected' not in st.session_state:
+    st.session_state.auto_retry_rejected = False
+# Template recommendation filter state
+if 'template_rec_filter' not in st.session_state:
+    st.session_state.template_rec_filter = "all"  # all, recommended, unused_recommended
 
+def toggle_template_selection(template_info: dict):
+    """Toggle a template in the selection list.
+
+    Args:
+        template_info: Dict with {source, id, name, storage_path, bucket}
+    """
+    current_selections = st.session_state.selected_templates_for_generation
+
+    # Check if already selected by id
+    existing_idx = next(
+        (i for i, t in enumerate(current_selections) if t['id'] == template_info['id']),
+        None
+    )
+
+    if existing_idx is not None:
+        # Remove from selection
+        current_selections.pop(existing_idx)
+    else:
+        # Add to selection
+        current_selections.append(template_info)
+
+    st.session_state.selected_templates_for_generation = current_selections
+
+def is_template_selected(template_id: str) -> bool:
+    """Check if a template is currently selected."""
+    return any(t['id'] == template_id for t in st.session_state.selected_templates_for_generation)
+
+def clear_template_selections():
+    """Clear all template selections."""
+    st.session_state.selected_templates_for_generation = []
 
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
-
 
 def get_personas_for_product(product_id: str):
     """Get personas linked to a product for the persona selector."""
@@ -111,7 +151,6 @@ def get_personas_for_product(product_id: str):
         st.warning(f"Could not load personas: {e}")
         return []
 
-
 def get_variants_for_product(product_id: str):
     """Get variants for a product for the variant selector."""
     try:
@@ -123,7 +162,6 @@ def get_variants_for_product(product_id: str):
     except Exception as e:
         return []
 
-
 def get_offer_variants_for_product(product_id: str):
     """Get offer variants (landing page angles) for a product."""
     try:
@@ -134,19 +172,42 @@ def get_offer_variants_for_product(product_id: str):
     except Exception as e:
         return []
 
-
 def get_products():
-    """Fetch all products from database with brand info."""
+    """Fetch products from database filtered by current organization."""
+    from viraltracker.ui.utils import get_current_organization_id
+
     try:
         db = get_supabase_client()
-        result = db.table("products").select(
-            "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts)"
-        ).order("name").execute()
+        org_id = get_current_organization_id()
+
+        # Base query with brand info
+        query = db.table("products").select(
+            "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts, organization_id)"
+        )
+
+        # No org selected = no products (security)
+        if not org_id:
+            return []
+
+        # Superuser "all" mode = all products
+        if org_id == "all":
+            result = query.order("name").execute()
+            return result.data
+
+        # Filter by organization
+        brand_result = db.table("brands").select("id").eq("organization_id", org_id).execute()
+        brand_ids = [b["id"] for b in (brand_result.data or [])]
+
+        if not brand_ids:
+            return []
+
+        # Filter products by those brands
+        query = query.in_("brand_id", brand_ids)
+        result = query.order("name").execute()
         return result.data
     except Exception as e:
         st.error(f"Failed to fetch products: {e}")
         return []
-
 
 def get_brand_colors(brand_id: str) -> dict:
     """Get brand colors for a specific brand."""
@@ -158,7 +219,6 @@ def get_brand_colors(brand_id: str) -> dict:
         return {}
     except Exception as e:
         return {}
-
 
 def get_product_images(product_id: str) -> list:
     """Get all images for a product with analysis data from product_images table.
@@ -186,7 +246,6 @@ def get_product_images(product_id: str) -> list:
     except Exception as e:
         st.error(f"Error loading images: {e}")
         return []
-
 
 def get_existing_templates():
     """Get existing reference ad templates from storage, deduplicated by original filename."""
@@ -225,7 +284,6 @@ def get_existing_templates():
         st.warning(f"Could not load existing templates: {e}")
         return []
 
-
 def get_scraped_templates(
     category: str = None,
     awareness_level: int = None,
@@ -260,7 +318,6 @@ def get_scraped_templates(
         st.warning(f"Could not load scraped templates: {e}")
         return []
 
-
 def get_template_categories():
     """Get list of template categories."""
     try:
@@ -271,7 +328,6 @@ def get_template_categories():
         return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
                 "ugc_style", "meme", "carousel_frame", "story_format", "other"]
 
-
 def get_awareness_levels():
     """Get awareness level filter options."""
     try:
@@ -280,7 +336,6 @@ def get_awareness_levels():
     except Exception:
         return []
 
-
 def get_industry_niches():
     """Get industry niche filter options."""
     try:
@@ -288,7 +343,6 @@ def get_industry_niches():
         return TemplateQueueService().get_industry_niches()
     except Exception:
         return []
-
 
 def get_scraped_template_url(storage_path: str) -> str:
     """Get public URL for scraped template asset."""
@@ -299,6 +353,45 @@ def get_scraped_template_url(storage_path: str) -> str:
     except Exception:
         return ""
 
+def get_template_asset_match(template_id: str, product_id: str) -> dict:
+    """Get asset match info for a template.
+
+    Args:
+        template_id: UUID string of the template
+        product_id: UUID string of the product
+
+    Returns:
+        Dict with asset_match_score, missing_assets, warnings, detection_status
+    """
+    try:
+        from viraltracker.services.template_element_service import TemplateElementService
+        from uuid import UUID
+        service = TemplateElementService()
+        return service.match_assets_to_template(UUID(template_id), UUID(product_id))
+    except Exception as e:
+        logger.debug(f"Asset match check failed: {e}")
+        return {"asset_match_score": 1.0, "detection_status": "error"}
+
+def get_asset_badge_html(score: float, detection_status: str = "analyzed") -> str:
+    """Generate HTML badge for asset match score.
+
+    Args:
+        score: Asset match score 0.0-1.0
+        detection_status: Status of element detection
+
+    Returns:
+        HTML string for badge
+    """
+    if detection_status == "not_analyzed":
+        return ""  # No badge if not analyzed
+
+    if score >= 1.0:
+        return '<span style="background:#28a745;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">All assets</span>'
+    elif score >= 0.5:
+        pct = int(score * 100)
+        return f'<span style="background:#ffc107;color:black;padding:1px 4px;border-radius:3px;font-size:9px;">{pct}% assets</span>'
+    else:
+        return '<span style="background:#dc3545;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">Missing assets</span>'
 
 def record_template_usage(template_id: str, ad_run_id: str = None):
     """Record that a scraped template was used."""
@@ -313,7 +406,6 @@ def record_template_usage(template_id: str, ad_run_id: str = None):
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Failed to record template usage: {e}")
-
 
 def get_signed_url(storage_path: str) -> str:
     """Get a signed URL for a storage path."""
@@ -332,7 +424,6 @@ def get_signed_url(storage_path: str) -> str:
         return result.get('signedURL', '')
     except Exception as e:
         return ""
-
 
 def get_ad_run_details(ad_run_id: str):
     """Fetch ad run details including generated ads."""
@@ -355,6 +446,11 @@ def get_ad_run_details(ad_run_id: str):
         st.error(f"Failed to fetch ad run: {e}")
         return None
 
+async def regenerate_ad_async(ad_id: str) -> dict:
+    """Regenerate a rejected/flagged ad using AdCreationService."""
+    from viraltracker.services.ad_creation_service import AdCreationService
+    service = AdCreationService()
+    return await service.regenerate_ad(source_ad_id=UUID(ad_id))
 
 async def run_workflow(
     product_id: str,
@@ -377,7 +473,8 @@ async def run_workflow(
     angle_data: dict = None,
     match_template_structure: bool = False,
     offer_variant_id: str = None,
-    image_resolution: str = "2K"
+    image_resolution: str = "2K",
+    auto_retry_rejected: bool = False,
 ):
     """Run the ad creation workflow with optional export.
 
@@ -403,29 +500,25 @@ async def run_workflow(
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
         offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
         image_resolution: Output resolution "1K", "2K", or "4K". Default "2K".
+        auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
     """
-    from pydantic_ai import RunContext
-    from pydantic_ai.usage import RunUsage
-    from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+    from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
     from viraltracker.agent.dependencies import AgentDependencies
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
 
-    # Create dependencies
-    deps = AgentDependencies.create(project_name="default")
-
-    # Create RunContext
-    ctx = RunContext(
-        deps=deps,
-        model=None,
-        usage=RunUsage()
+    # Create dependencies with usage tracking context
+    deps = AgentDependencies.create(
+        project_name="default",
+        user_id=get_current_user_id(),
+        organization_id=get_current_organization_id()
     )
 
     # Run workflow
-    result = await complete_ad_workflow(
-        ctx=ctx,
+    result = await run_ad_creation(
         product_id=product_id,
         reference_ad_base64=reference_ad_base64,
         reference_ad_filename=filename,
-        project_id="",
         num_variations=num_variations,
         content_source=content_source,
         color_mode=color_mode,
@@ -438,7 +531,9 @@ async def run_workflow(
         angle_data=angle_data,
         match_template_structure=match_template_structure,
         offer_variant_id=offer_variant_id,
-        image_resolution=image_resolution
+        image_resolution=image_resolution,
+        auto_retry_rejected=auto_retry_rejected,
+        deps=deps,
     )
 
     # Handle exports if configured
@@ -455,6 +550,131 @@ async def run_workflow(
 
     return result
 
+async def run_batch_workflow(
+    templates: list,
+    product_id: str,
+    num_variations: int,
+    content_source: str = "hooks",
+    color_mode: str = "original",
+    brand_colors: dict = None,
+    image_selection_mode: str = "auto",
+    selected_image_paths: list = None,
+    export_destination: str = "none",
+    export_email: str = None,
+    export_slack_webhook: str = None,
+    product_name: str = None,
+    brand_name: str = None,
+    persona_id: str = None,
+    variant_id: str = None,
+    additional_instructions: str = None,
+    angle_data: dict = None,
+    match_template_structure: bool = False,
+    offer_variant_id: str = None,
+    auto_retry_rejected: bool = False,
+    progress_callback=None
+) -> dict:
+    """Run ad creation workflow for multiple templates sequentially.
+
+    Args:
+        templates: List of template dicts with {source, id, name, storage_path, bucket}
+        product_id: UUID of the product
+        num_variations: Number of ad variations to generate per template
+        content_source: "hooks", "recreate_template", or "belief_first"
+        color_mode: "original", "complementary", or "brand"
+        brand_colors: Brand color data when color_mode is "brand"
+        image_selection_mode: "auto" or "manual"
+        selected_image_paths: List of storage paths when mode is "manual"
+        export_destination: "none", "email", "slack", or "both"
+        export_email: Email address for email export
+        export_slack_webhook: Slack webhook URL
+        product_name: Product name for export context
+        brand_name: Brand name for export context
+        persona_id: Optional persona UUID
+        variant_id: Optional variant UUID
+        additional_instructions: Optional run-specific instructions
+        angle_data: Dict with angle info for belief_first mode
+        match_template_structure: If True with belief_first, analyze template
+        offer_variant_id: Optional offer variant UUID
+        auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
+        progress_callback: Optional callback function(current, total, template_name)
+
+    Returns:
+        Dict with batch results: {successful: [], failed: [], total: int}
+    """
+    from viraltracker.core.database import get_supabase_client
+
+    results = {
+        'successful': [],
+        'failed': [],
+        'total': len(templates)
+    }
+
+    db = get_supabase_client()
+
+    for idx, template in enumerate(templates):
+        template_name = template.get('name', 'Unknown')
+        template_id = template.get('id', '')
+
+        # Call progress callback if provided
+        if progress_callback:
+            progress_callback(idx + 1, len(templates), template_name)
+
+        try:
+            # Download template image from storage
+            bucket = template.get('bucket', 'reference-ads')
+            storage_path = template.get('storage_path', '')
+
+            template_data = db.storage.from_(bucket).download(storage_path)
+            reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
+
+            # Run workflow for this template
+            result = await run_workflow(
+                product_id=product_id,
+                reference_ad_base64=reference_ad_base64,
+                filename=template_name,
+                num_variations=num_variations,
+                content_source=content_source,
+                color_mode=color_mode,
+                brand_colors=brand_colors,
+                image_selection_mode=image_selection_mode,
+                selected_image_paths=selected_image_paths,
+                export_destination=export_destination,
+                export_email=export_email,
+                export_slack_webhook=export_slack_webhook,
+                product_name=product_name,
+                brand_name=brand_name,
+                persona_id=persona_id,
+                variant_id=variant_id,
+                additional_instructions=additional_instructions,
+                angle_data=angle_data,
+                match_template_structure=match_template_structure,
+                offer_variant_id=offer_variant_id,
+                auto_retry_rejected=auto_retry_rejected,
+            )
+
+            # Record template usage if scraped template
+            if template.get('source') == 'scraped' and result:
+                ad_run_id = result.get('ad_run_id')
+                if ad_run_id:
+                    record_template_usage(template_id=template_id, ad_run_id=ad_run_id)
+
+            results['successful'].append({
+                'template_id': template_id,
+                'template_name': template_name,
+                'ad_run_id': result.get('ad_run_id'),
+                'approved_count': result.get('approved_count', 0),
+                'generated_count': len(result.get('generated_ads', []))
+            })
+
+        except Exception as e:
+            logger.error(f"Batch workflow failed for template {template_name}: {e}")
+            results['failed'].append({
+                'template_id': template_id,
+                'template_name': template_name,
+                'error': str(e)
+            })
+
+    return results
 
 async def handle_export(
     result: dict,
@@ -548,7 +768,6 @@ async def handle_export(
         except Exception as e:
             logger.error(f"Slack export failed: {str(e)}")
 
-
 # ============================================================================
 # Main UI
 # ============================================================================
@@ -556,10 +775,75 @@ async def handle_export(
 st.title("🎨 Ad Creator")
 st.markdown("**Generate Facebook ad variations with AI-powered dual review**")
 
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id
+org_id = get_current_organization_id()
+if not org_id:
+    st.warning("Please select a workspace to continue.")
+    st.stop()
+
 st.divider()
 
-# Check if we have a completed workflow to display
-if st.session_state.workflow_result:
+# Check if we have batch results to display
+if st.session_state.multi_template_results:
+    batch_results = st.session_state.multi_template_results
+    successful = batch_results.get('successful', [])
+    failed = batch_results.get('failed', [])
+    total = batch_results.get('total', 0)
+
+    # Batch summary header
+    if failed:
+        st.warning(f"⚠️ Batch Processing Complete: {len(successful)}/{total} templates succeeded")
+    else:
+        st.success(f"✅ Batch Processing Complete: All {total} templates processed successfully!")
+
+    # Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Templates Processed", total)
+    with col2:
+        st.metric("Successful", len(successful))
+    with col3:
+        total_ads = sum(r.get('generated_count', 0) for r in successful)
+        st.metric("Total Ads Generated", total_ads)
+    with col4:
+        total_approved = sum(r.get('approved_count', 0) for r in successful)
+        st.metric("Total Approved", total_approved)
+
+    st.divider()
+
+    # Successful runs
+    if successful:
+        st.subheader("✅ Successful Runs")
+        for run in successful:
+            run_id = run.get('ad_run_id', '')[:8] if run.get('ad_run_id') else 'N/A'
+            template_name = run.get('template_name', 'Unknown')
+            gen_count = run.get('generated_count', 0)
+            approved = run.get('approved_count', 0)
+            st.markdown(f"- **{template_name}**: {gen_count} ads generated, {approved} approved | Run ID: `{run_id}`")
+
+    # Failed runs
+    if failed:
+        st.subheader("❌ Failed Runs")
+        for run in failed:
+            template_name = run.get('template_name', 'Unknown')
+            error = run.get('error', 'Unknown error')
+            st.error(f"**{template_name}**: {error}")
+
+    st.divider()
+
+    # Actions
+    col_action1, col_action2 = st.columns(2)
+    with col_action1:
+        if st.button("🔄 Create More Ads", type="primary", key="batch_more_ads"):
+            st.session_state.multi_template_results = None
+            st.rerun()
+    with col_action2:
+        if st.button("📊 View in Ad History", key="batch_view_history"):
+            st.switch_page("pages/22_📊_Ad_History.py")
+
+# Check if we have a completed single workflow to display
+elif st.session_state.workflow_result:
     result = st.session_state.workflow_result
 
     # Success header
@@ -612,13 +896,56 @@ if st.session_state.workflow_result:
                         claude = ad.get('claude_review') or {}
                         gemini = ad.get('gemini_review') or {}
 
-                        st.markdown(f"**Claude:** {claude.get('status', 'N/A')}")
-                        if claude.get('reasoning'):
-                            st.caption(claude.get('reasoning', '')[:200])
+                        for label, review in [("Claude", claude), ("Gemini", gemini)]:
+                            rev_status = review.get('status', 'N/A')
+                            st.markdown(f"**{label}:** {rev_status}")
 
-                        st.markdown(f"**Gemini:** {gemini.get('status', 'N/A')}")
-                        if gemini.get('reasoning'):
-                            st.caption(gemini.get('reasoning', '')[:200])
+                            # Scores
+                            scores = []
+                            for key, name in [('product_accuracy', 'Product'), ('text_accuracy', 'Text'),
+                                              ('layout_accuracy', 'Layout'), ('overall_quality', 'Overall')]:
+                                val = review.get(key)
+                                if val is not None:
+                                    scores.append(f"{name}: {val}")
+                            if scores:
+                                st.caption(" · ".join(scores))
+
+                            # Summary notes
+                            if review.get('notes'):
+                                st.caption(review['notes'])
+
+                            # Issue lists (only shown when present)
+                            for key, heading in [('product_issues', 'Product Issues'),
+                                                 ('text_issues', 'Text Issues'),
+                                                 ('ai_artifacts', 'AI Artifacts')]:
+                                items = review.get(key, [])
+                                if items:
+                                    st.markdown(f"_{heading}:_ " + ", ".join(items))
+
+                            if label == "Claude":
+                                st.markdown("---")
+
+                    # Rerun button for rejected/flagged ads
+                    ad_uuid = ad.get('ad_uuid')
+                    if status in ('rejected', 'flagged') and ad_uuid:
+                        if st.button(
+                            "🔄 Rerun",
+                            key=f"rerun_creator_{ad_uuid}",
+                            help="Regenerate with same hook and re-review"
+                        ):
+                            with st.spinner("Regenerating ad..."):
+                                try:
+                                    rerun_result = asyncio.run(
+                                        regenerate_ad_async(ad_uuid)
+                                    )
+                                    new_status = rerun_result.get('final_status', 'unknown')
+                                    st.success(
+                                        f"Regenerated! New ad: "
+                                        f"{rerun_result['ad_id'][:8]} ({new_status})"
+                                    )
+                                except Exception as e:
+                                    st.error(f"Regeneration failed: {e}")
+                            st.rerun()
 
     st.divider()
 
@@ -690,6 +1017,7 @@ else:
     )
     st.session_state.selected_product_name = selected_product_name
     selected_product_id = product_options[selected_product_name]
+    st.session_state.selected_product = selected_product_id  # For asset badge matching
 
     # Show product details
     selected_product = next((p for p in products if p['id'] == selected_product_id), None)
@@ -705,8 +1033,10 @@ else:
         st.caption("Select the belief angle to use for ad generation")
 
         from viraltracker.services.planning_service import PlanningService
+        from viraltracker.ui.utils import setup_tracking_context
         from uuid import UUID
         planning_service = PlanningService()
+        setup_tracking_context(planning_service)
 
         # A) Offer (Optional)
         offers = planning_service.get_offers_for_product(UUID(selected_product_id))
@@ -1194,15 +1524,27 @@ else:
             visible_count = min(st.session_state.templates_visible, total_templates)
             visible_templates = templates[:visible_count]
 
-            st.caption(f"Showing {visible_count} of {total_templates} templates")
+            # Selection count and clear button
+            selected_count = len([t for t in st.session_state.selected_templates_for_generation if t.get('source') == 'uploaded'])
+            header_cols = st.columns([3, 1])
+            with header_cols[0]:
+                st.caption(f"Showing {visible_count} of {total_templates} templates | **{selected_count} selected**")
+            with header_cols[1]:
+                if selected_count > 0:
+                    if st.button("Clear Selection", key="clear_uploaded_selection", use_container_width=True):
+                        st.session_state.selected_templates_for_generation = [
+                            t for t in st.session_state.selected_templates_for_generation if t.get('source') != 'uploaded'
+                        ]
+                        st.rerun()
 
-            # Thumbnail grid - 5 columns
+            # Thumbnail grid - 5 columns with checkboxes
             cols = st.columns(5)
             for idx, template in enumerate(visible_templates):
                 with cols[idx % 5]:
                     storage_name = template['storage_name']
                     display_name = template['name']
-                    is_selected = st.session_state.selected_template_storage == storage_name
+                    template_id = f"uploaded_{storage_name}"  # Unique ID for uploaded templates
+                    is_selected = is_template_selected(template_id)
 
                     # Get signed URL for thumbnail
                     thumb_url = get_signed_url(f"reference-ads/{storage_name}")
@@ -1224,45 +1566,80 @@ else:
                             unsafe_allow_html=True
                         )
 
-                    # Select button
-                    if st.button(
-                        "✓ Selected" if is_selected else "Select",
-                        key=f"tpl_{idx}",
-                        type="primary" if is_selected else "secondary",
-                        use_container_width=True
+                    # Checkbox for multi-select
+                    if st.checkbox(
+                        display_name[:15] + "..." if len(display_name) > 15 else display_name,
+                        value=is_selected,
+                        key=f"tpl_cb_{idx}",
+                        help=display_name
                     ):
-                        st.session_state.selected_template = display_name
-                        st.session_state.selected_template_storage = storage_name
-                        st.rerun()
+                        if not is_selected:
+                            # Add to selection
+                            toggle_template_selection({
+                                'source': 'uploaded',
+                                'id': template_id,
+                                'name': display_name,
+                                'storage_path': storage_name,
+                                'bucket': 'reference-ads'
+                            })
+                            st.rerun()
+                    else:
+                        if is_selected:
+                            # Remove from selection
+                            toggle_template_selection({
+                                'source': 'uploaded',
+                                'id': template_id,
+                                'name': display_name,
+                                'storage_path': storage_name,
+                                'bucket': 'reference-ads'
+                            })
+                            st.rerun()
 
             # Load more button
             if visible_count < total_templates:
                 remaining = total_templates - visible_count
-                if st.button(f"Load More ({remaining} more)", use_container_width=True):
+                if st.button(f"Load More ({remaining} more)", use_container_width=True, key="load_more_uploaded"):
                     st.session_state.templates_visible += 30
                     st.rerun()
-
-            # Show selected template preview
-            if st.session_state.selected_template_storage:
-                st.markdown("---")
-                st.markdown(f"**Selected:** {st.session_state.selected_template}")
-
-                try:
-                    db = get_supabase_client()
-                    template_data = db.storage.from_("reference-ads").download(
-                        st.session_state.selected_template_storage
-                    )
-                    reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                    reference_filename = st.session_state.selected_template
-
-                    # Larger preview
-                    st.image(template_data, caption="Selected Template", width=300)
-                except Exception as e:
-                    st.error(f"Failed to load template: {e}")
         else:
             st.warning("No uploaded templates found. Upload a reference ad first, or use Scraped Template Library.")
 
     elif reference_source == "Scraped Template Library":
+        # Recommendation filter row (product-specific)
+        rec_filter_col1, rec_filter_col2, rec_filter_col3 = st.columns([2, 2, 4])
+        with rec_filter_col1:
+            rec_filter_options = ["All Templates", "Recommended", "Unused Recommended"]
+            rec_filter = st.selectbox(
+                "Filter by Recommendation",
+                options=rec_filter_options,
+                index=rec_filter_options.index(
+                    {"all": "All Templates", "recommended": "Recommended", "unused_recommended": "Unused Recommended"}.get(
+                        st.session_state.template_rec_filter, "All Templates"
+                    )
+                ),
+                key="template_rec_filter_select",
+                help="Filter to show only templates recommended for this product"
+            )
+            st.session_state.template_rec_filter = {
+                "All Templates": "all",
+                "Recommended": "recommended",
+                "Unused Recommended": "unused_recommended"
+            }.get(rec_filter, "all")
+
+        with rec_filter_col2:
+            # Show recommendation counts if product is selected
+            if selected_product_id and st.session_state.template_rec_filter != "all":
+                try:
+                    from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                    rec_service = TemplateRecommendationService()
+                    counts = rec_service.get_recommendation_count(UUID(selected_product_id))
+                    if st.session_state.template_rec_filter == "recommended":
+                        st.caption(f"{counts['total']} recommended templates")
+                    else:
+                        st.caption(f"{counts['unused']} unused recommendations")
+                except Exception:
+                    pass
+
         # Filter row - 4 columns
         filter_cols = st.columns(4)
 
@@ -1314,14 +1691,42 @@ else:
             awareness_level=selected_awareness,
             industry_niche=selected_niche if selected_niche != "all" else None,
             target_sex=selected_sex if selected_sex != "all" else None,
-            limit=50
+            limit=100  # Fetch more since we may filter
         )
 
-        if scraped_templates:
-            st.caption(f"Showing {len(scraped_templates)} templates" +
-                      (f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""))
+        # Apply recommendation filter
+        if st.session_state.template_rec_filter != "all" and selected_product_id:
+            try:
+                from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                rec_service = TemplateRecommendationService()
+                unused_only = st.session_state.template_rec_filter == "unused_recommended"
+                recommended_ids = rec_service.get_recommended_template_ids(
+                    UUID(selected_product_id), unused_only=unused_only
+                )
+                recommended_id_strs = {str(rid) for rid in recommended_ids}
+                scraped_templates = [
+                    t for t in scraped_templates
+                    if t.get('id') in recommended_id_strs
+                ]
+            except Exception as e:
+                logger.warning(f"Failed to filter by recommendations: {e}")
 
-            # Thumbnail grid - 5 columns
+        if scraped_templates:
+            # Selection count and clear button
+            selected_count = len([t for t in st.session_state.selected_templates_for_generation if t.get('source') == 'scraped'])
+            header_cols = st.columns([3, 1])
+            with header_cols[0]:
+                category_label = f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""
+                st.caption(f"Showing {len(scraped_templates)} templates{category_label} | **{selected_count} selected**")
+            with header_cols[1]:
+                if selected_count > 0:
+                    if st.button("Clear Selection", key="clear_scraped_selection", use_container_width=True):
+                        st.session_state.selected_templates_for_generation = [
+                            t for t in st.session_state.selected_templates_for_generation if t.get('source') != 'scraped'
+                        ]
+                        st.rerun()
+
+            # Thumbnail grid - 5 columns with checkboxes
             cols = st.columns(5)
             for idx, template in enumerate(scraped_templates):
                 with cols[idx % 5]:
@@ -1331,7 +1736,7 @@ else:
                     category = template.get('category', 'other')
                     times_used = template.get('times_used', 0) or 0
 
-                    is_selected = st.session_state.selected_scraped_template == template_id
+                    is_selected = is_template_selected(template_id)
 
                     # Get preview URL
                     thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
@@ -1358,48 +1763,97 @@ else:
                     if times_used > 0:
                         st.caption(f"Used {times_used}x")
 
-                    # Select button
-                    if st.button(
-                        "✓ Selected" if is_selected else "Select",
-                        key=f"scraped_tpl_{idx}",
-                        type="primary" if is_selected else "secondary",
-                        use_container_width=True
+                    # Show asset match badge if product is selected
+                    if st.session_state.selected_product:
+                        asset_match = get_template_asset_match(template_id, st.session_state.selected_product)
+                        badge_html = get_asset_badge_html(
+                            asset_match.get("asset_match_score", 1.0),
+                            asset_match.get("detection_status", "unknown")
+                        )
+                        if badge_html:
+                            st.markdown(badge_html, unsafe_allow_html=True)
+                            # Show warnings on hover/tooltip via expander if missing
+                            warnings = asset_match.get("warnings", [])
+                            if warnings:
+                                with st.expander("View missing assets", expanded=False):
+                                    for w in warnings:
+                                        st.caption(f"- {w}")
+
+                    # Parse bucket and path for storage
+                    parts = storage_path.split("/", 1) if storage_path else ["", ""]
+                    bucket = parts[0] if len(parts) == 2 else "scraped-assets"
+                    path = parts[1] if len(parts) == 2 else storage_path
+
+                    # Checkbox for multi-select
+                    if st.checkbox(
+                        template_name[:15] + "..." if len(template_name) > 15 else template_name,
+                        value=is_selected,
+                        key=f"scraped_tpl_cb_{idx}",
+                        help=template_name
                     ):
-                        st.session_state.selected_scraped_template = template_id
-                        st.rerun()
-
-            # Show selected template preview and load its data
-            if st.session_state.selected_scraped_template:
-                # Find selected template in list
-                selected_tpl = next(
-                    (t for t in scraped_templates if t.get('id') == st.session_state.selected_scraped_template),
-                    None
-                )
-                if selected_tpl:
-                    st.markdown("---")
-                    st.markdown(f"**Selected:** {selected_tpl.get('name', 'Unnamed')}")
-
-                    storage_path = selected_tpl.get('storage_path', '')
-                    if storage_path:
-                        try:
-                            # Download the template image
-                            db = get_supabase_client()
-                            parts = storage_path.split("/", 1)
-                            if len(parts) == 2:
-                                bucket, path = parts
-                                template_data = db.storage.from_(bucket).download(path)
-                                reference_ad_base64 = base64.b64encode(template_data).decode('utf-8')
-                                reference_filename = selected_tpl.get('name', 'template.jpg')
-                                selected_scraped_template_id = st.session_state.selected_scraped_template
-
-                                # Larger preview
-                                st.image(template_data, caption="Selected Template", width=300)
-                        except Exception as e:
-                            st.error(f"Failed to load template: {e}")
+                        if not is_selected:
+                            # Add to selection
+                            toggle_template_selection({
+                                'source': 'scraped',
+                                'id': template_id,
+                                'name': template_name,
+                                'storage_path': path,
+                                'bucket': bucket
+                            })
+                            st.rerun()
+                    else:
+                        if is_selected:
+                            # Remove from selection
+                            toggle_template_selection({
+                                'source': 'scraped',
+                                'id': template_id,
+                                'name': template_name,
+                                'storage_path': path,
+                                'bucket': bucket
+                            })
+                            st.rerun()
         else:
             st.info("No scraped templates found. Use the Template Queue to approve templates from competitor ads.")
             if st.button("Go to Template Queue →"):
                 st.switch_page("pages/16_📋_Template_Queue.py")
+
+    # ============================================================================
+    # Selected Templates Preview (Multi-select mode)
+    # ============================================================================
+    selected_templates = st.session_state.selected_templates_for_generation
+    if selected_templates:
+        st.divider()
+        st.subheader(f"📋 Selected Templates ({len(selected_templates)})")
+        st.caption("These templates will be processed sequentially with the same settings.")
+
+        # Show selected templates in a compact row with remove buttons
+        preview_cols = st.columns(min(len(selected_templates), 6))
+        for idx, tpl in enumerate(selected_templates[:6]):  # Show max 6 in row
+            with preview_cols[idx]:
+                # Get thumbnail URL
+                if tpl.get('source') == 'uploaded':
+                    thumb_url = get_signed_url(f"reference-ads/{tpl['storage_path']}")
+                else:
+                    thumb_url = get_scraped_template_url(f"{tpl['bucket']}/{tpl['storage_path']}")
+
+                if thumb_url:
+                    st.image(thumb_url, use_container_width=True)
+                st.caption(tpl['name'][:20] + "..." if len(tpl['name']) > 20 else tpl['name'])
+
+                if st.button("✕ Remove", key=f"remove_tpl_{idx}", use_container_width=True):
+                    st.session_state.selected_templates_for_generation = [
+                        t for t in st.session_state.selected_templates_for_generation if t['id'] != tpl['id']
+                    ]
+                    st.rerun()
+
+        # Show overflow count if more than 6
+        if len(selected_templates) > 6:
+            st.caption(f"...and {len(selected_templates) - 6} more templates")
+
+        # Clear all button
+        if st.button("🗑️ Clear All Selections", use_container_width=False):
+            clear_template_selections()
+            st.rerun()
 
     st.divider()
 
@@ -1557,6 +2011,15 @@ else:
             secondary = colors.get('secondary_name', colors.get('secondary', ''))
             st.info(f"💡 Using official brand colors: **{primary}** and **{secondary}**")
 
+        # Auto-retry rejected ads
+        auto_retry = st.checkbox(
+            "Auto-retry rejected ads",
+            value=st.session_state.auto_retry_rejected,
+            help="Automatically regenerate ads that fail review (up to 1 retry per ad)",
+            disabled=st.session_state.workflow_running
+        )
+        st.session_state.auto_retry_rejected = auto_retry
+
         st.divider()
 
         # Image resolution selection
@@ -1577,7 +2040,14 @@ else:
 
         # Submit button - disabled while workflow is running
         is_running = st.session_state.workflow_running
-        button_text = "⏳ Generating... Please wait" if is_running else "🚀 Generate Ad Variations"
+        batch_count = len(st.session_state.selected_templates_for_generation)
+
+        if is_running:
+            button_text = "⏳ Generating... Please wait"
+        elif batch_count > 0:
+            button_text = f"🚀 Generate Ads for {batch_count} Templates"
+        else:
+            button_text = "🚀 Generate Ad Variations"
 
         submitted = st.form_submit_button(
             button_text,
@@ -1590,8 +2060,12 @@ else:
             # Validate form
             validation_error = None
 
-            if not reference_ad_base64:
-                validation_error = "Please upload or select a reference ad"
+            # Check for either single upload OR multi-select templates
+            has_single_template = bool(reference_ad_base64)
+            has_batch_templates = len(st.session_state.selected_templates_for_generation) > 0
+
+            if not has_single_template and not has_batch_templates:
+                validation_error = "Please upload a reference ad or select templates from the library"
             elif image_selection_mode == "manual" and not selected_image_paths:
                 validation_error = "Please select at least one product image or switch to Auto-Select mode"
             elif export_destination in ["email", "both"] and not export_email:
@@ -1614,8 +2088,233 @@ else:
                 st.rerun()  # Rerun to show disabled button immediately
 
     # Run workflow outside form
-    if st.session_state.workflow_running and reference_ad_base64:
-        # Show progress info
+    batch_templates = st.session_state.selected_templates_for_generation
+    is_batch_mode = len(batch_templates) > 0 and st.session_state.workflow_running
+    is_single_mode = reference_ad_base64 and st.session_state.workflow_running and not is_batch_mode
+
+    # Pre-flight usage limit check (before any workflow processing)
+    if is_batch_mode or is_single_mode:
+        from viraltracker.ui.utils import get_current_organization_id
+        _org_id = get_current_organization_id()
+        if _org_id and _org_id != "all":
+            try:
+                from datetime import datetime as _dt
+                _db = get_supabase_client()
+
+                # 1. Check if a monthly_cost limit exists and is enabled
+                _limit_result = _db.table("usage_limits").select("*").eq(
+                    "organization_id", _org_id
+                ).eq("limit_type", "monthly_cost").eq("enabled", True).execute()
+
+                if _limit_result.data:
+                    _limit_value = float(_limit_result.data[0]["limit_value"])
+
+                    # 2. Get current month's total cost directly from token_usage
+                    _now = _dt.now()
+                    _period_start = _now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                    _usage_result = _db.table("token_usage").select("cost_usd").eq(
+                        "organization_id", _org_id
+                    ).gte("created_at", _period_start.isoformat()).execute()
+
+                    _rows = _usage_result.data or []
+                    _current_cost = sum(float(r.get("cost_usd", 0) or 0) for r in _rows)
+
+                    logger.info(
+                        f"Usage limit check: org={_org_id}, "
+                        f"limit=${_limit_value:.2f}, usage=${_current_cost:.2f}, "
+                        f"rows={len(_rows)}, exceeded={_current_cost >= _limit_value}"
+                    )
+
+                    # 3. Block if over limit
+                    if _current_cost >= _limit_value:
+                        st.session_state.workflow_running = False
+                        st.error(
+                            f"**Monthly cost limit exceeded:** ${_current_cost:.2f} spent "
+                            f"of ${_limit_value:.2f} limit."
+                        )
+                        st.info("Contact your administrator to increase limits.")
+                        st.stop()
+
+            except Exception as _e:
+                # Show error visibly so we can debug - don't silently fail
+                logger.error(f"Usage limit check error: {_e}")
+                st.warning(f"Usage limit check error: {_e}")
+
+    if is_batch_mode:
+        # BATCH MODE: Process multiple templates
+        persona_msg = ""
+        if st.session_state.selected_persona_id and personas:
+            selected_persona = next((p for p in personas if p['id'] == st.session_state.selected_persona_id), None)
+            if selected_persona:
+                persona_msg = f" targeting **{selected_persona['name']}**"
+
+        st.info(f"🎨 **Batch Mode**: Processing {len(batch_templates)} templates × {num_variations} variations each{persona_msg}")
+        st.warning("⏳ **Please wait** - This may take several minutes. Do not refresh the page.")
+
+        # Progress container
+        progress_placeholder = st.empty()
+        status_placeholder = st.empty()
+
+        try:
+            # Get common params
+            brand_colors_data = None
+            if color_mode == "brand" and selected_product:
+                brand_colors_data = selected_product.get('brands', {}).get('brand_colors')
+
+            img_mode = st.session_state.image_selection_mode
+            img_paths = st.session_state.selected_image_paths if img_mode == "manual" else None
+            exp_dest = st.session_state.export_destination
+            exp_email = st.session_state.export_email if exp_dest in ["email", "both"] else None
+            exp_slack = st.session_state.export_slack_webhook if exp_dest in ["slack", "both"] else None
+            prod_name = selected_product.get('name', 'Product') if selected_product else 'Product'
+            brand_info = selected_product.get('brands', {}) if selected_product else {}
+            brd_name = brand_info.get('name', 'Brand') if brand_info else 'Brand'
+            persona_id = st.session_state.selected_persona_id
+            variant_id = st.session_state.selected_variant_id
+            add_instructions = st.session_state.additional_instructions
+            angle_data = st.session_state.selected_angle_data if content_source == "belief_first" else None
+            match_template = st.session_state.match_template_structure if content_source == "belief_first" else False
+            offer_variant_id = st.session_state.selected_offer_variant_id
+
+            # Progress tracking state
+            progress_state = {'current': 0, 'total': len(batch_templates), 'template_name': ''}
+
+            def update_progress(current, total, template_name):
+                progress_state['current'] = current
+                progress_state['total'] = total
+                progress_state['template_name'] = template_name
+
+            # Show initial progress
+            progress_placeholder.progress(0, text=f"Starting batch processing...")
+
+            # Run batch workflow — iterate in main thread so Streamlit
+            # can flush progress updates to the browser between templates.
+            # Reset the global Supabase client to avoid stale TCP connections
+            # from previous asyncio.run() event loops.
+            from viraltracker.core.database import reset_supabase_client
+            reset_supabase_client()
+            db = get_supabase_client()
+            batch_results = {
+                'successful': [],
+                'failed': [],
+                'total': len(batch_templates)
+            }
+
+            for idx, template in enumerate(batch_templates):
+                template_name = template.get('name', 'Unknown')
+                template_id = template.get('id', '')
+
+                # Update progress UI (main thread — flushes to browser)
+                progress = (idx) / len(batch_templates)
+                progress_placeholder.progress(progress, text=f"Processing template {idx + 1}/{len(batch_templates)}: {template_name}")
+                status_placeholder.caption(f"📄 Currently processing: **{template_name}**")
+
+                try:
+                    # Download template image (refresh client if connection is stale)
+                    bucket = template.get('bucket', 'reference-ads')
+                    storage_path = template.get('storage_path', '')
+                    try:
+                        template_data = db.storage.from_(bucket).download(storage_path)
+                    except Exception:
+                        # Connection may be stale after asyncio.run() — reset and retry
+                        reset_supabase_client()
+                        db = get_supabase_client()
+                        template_data = db.storage.from_(bucket).download(storage_path)
+                    ref_base64 = base64.b64encode(template_data).decode('utf-8')
+
+                    # Run workflow for this template (own asyncio.run)
+                    result = asyncio.run(run_workflow(
+                        product_id=selected_product_id,
+                        reference_ad_base64=ref_base64,
+                        filename=template_name,
+                        num_variations=num_variations,
+                        content_source=content_source,
+                        color_mode=color_mode,
+                        brand_colors=brand_colors_data,
+                        image_selection_mode=img_mode,
+                        selected_image_paths=img_paths,
+                        export_destination=exp_dest,
+                        export_email=exp_email,
+                        export_slack_webhook=exp_slack,
+                        product_name=prod_name,
+                        brand_name=brd_name,
+                        persona_id=persona_id,
+                        variant_id=variant_id,
+                        additional_instructions=add_instructions,
+                        angle_data=angle_data,
+                        match_template_structure=match_template,
+                        offer_variant_id=offer_variant_id,
+                        auto_retry_rejected=st.session_state.auto_retry_rejected,
+                    ))
+
+                    # Record template usage if scraped
+                    if template.get('source') == 'scraped' and result:
+                        ad_run_id = result.get('ad_run_id')
+                        if ad_run_id:
+                            record_template_usage(template_id=template_id, ad_run_id=ad_run_id)
+                        # Mark recommendation as used (non-critical)
+                        try:
+                            from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                            rec_service = TemplateRecommendationService()
+                            rec_service.mark_as_used(UUID(selected_product_id), UUID(template_id))
+                        except Exception:
+                            pass  # Non-critical
+
+                    batch_results['successful'].append({
+                        'template_id': template_id,
+                        'template_name': template_name,
+                        'ad_run_id': result.get('ad_run_id'),
+                        'approved_count': result.get('approved_count', 0),
+                        'generated_count': len(result.get('generated_ads', []))
+                    })
+
+                except Exception as e:
+                    # Stop entire batch if usage limit exceeded
+                    from viraltracker.services.usage_limit_service import UsageLimitExceeded
+                    if isinstance(e, UsageLimitExceeded):
+                        batch_results['failed'].append({
+                            'template_id': template_id,
+                            'template_name': template_name,
+                            'error': str(e)
+                        })
+                        batch_results['limit_exceeded'] = str(e)
+                        break
+
+                    logger.error(f"Batch workflow failed for template {template_name}: {e}")
+                    batch_results['failed'].append({
+                        'template_id': template_id,
+                        'template_name': template_name,
+                        'error': str(e)
+                    })
+
+            # Complete progress
+            progress_placeholder.progress(1.0, text="Batch processing complete!")
+            status_placeholder.empty()
+
+            # Check for usage limit exceeded
+            if batch_results.get('limit_exceeded'):
+                st.session_state.workflow_running = False
+                st.session_state.workflow_error = batch_results['limit_exceeded']
+                st.error(f"Usage limit reached: {batch_results['limit_exceeded']}")
+                st.info("Contact your administrator to increase limits.")
+                st.stop()
+
+            # Store batch results and clear selections
+            st.session_state.multi_template_results = batch_results
+            st.session_state.workflow_result = None  # Clear single result
+            st.session_state.selected_templates_for_generation = []  # Clear selections
+            st.session_state.workflow_error = None
+            st.session_state.workflow_running = False
+            st.rerun()
+
+        except Exception as e:
+            st.session_state.workflow_running = False
+            st.session_state.workflow_error = str(e)
+            st.error(f"Batch workflow failed: {str(e)}")
+            st.info("💡 Check the sidebar for recent runs - some ads may have been generated before the error.")
+
+    elif is_single_mode:
+        # SINGLE MODE: Process one uploaded template (original behavior)
         persona_msg = ""
         if st.session_state.selected_persona_id and personas:
             selected_persona = next((p for p in personas if p['id'] == st.session_state.selected_persona_id), None)
@@ -1682,7 +2381,8 @@ else:
                 angle_data=angle_data,
                 match_template_structure=match_template,
                 offer_variant_id=offer_variant_id,
-                image_resolution=image_resolution
+                image_resolution=image_resolution,
+                auto_retry_rejected=st.session_state.auto_retry_rejected,
             ))
 
             # Record template usage if a scraped template was used
@@ -1692,6 +2392,16 @@ else:
                     template_id=st.session_state.selected_scraped_template,
                     ad_run_id=ad_run_id
                 )
+                # Mark recommendation as used (non-critical)
+                try:
+                    from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                    rec_service = TemplateRecommendationService()
+                    rec_service.mark_as_used(
+                        UUID(selected_product_id),
+                        UUID(st.session_state.selected_scraped_template)
+                    )
+                except Exception:
+                    pass  # Non-critical, don't fail the workflow
 
             # Success - store result and show
             st.session_state.workflow_result = result
@@ -1702,10 +2412,151 @@ else:
         except Exception as e:
             st.session_state.workflow_running = False
             st.session_state.workflow_error = str(e)
-            st.error(f"Workflow failed: {str(e)}")
 
-            # Show link to check database directly
-            st.info("💡 Check the sidebar for recent runs - some ads may have been generated before the error.")
+            from viraltracker.services.usage_limit_service import UsageLimitExceeded
+            if isinstance(e, UsageLimitExceeded):
+                st.error(f"Usage limit reached: {e}")
+                st.info("Contact your administrator to increase limits.")
+            else:
+                st.error(f"Workflow failed: {str(e)}")
+                st.info("💡 Check the sidebar for recent runs - some ads may have been generated before the error.")
+
+# ============================================================================
+# Smart Edit Section (collapsible)
+# ============================================================================
+
+with st.expander("✏️ Smart Edit - Edit Existing Ads", expanded=False):
+    st.caption("Make targeted edits to approved ads with AI assistance")
+
+    # Initialize smart edit state
+    if 'smart_edit_product_filter' not in st.session_state:
+        st.session_state.smart_edit_product_filter = None
+    if 'smart_edit_selected_ad' not in st.session_state:
+        st.session_state.smart_edit_selected_ad = None
+    if 'smart_edit_result' not in st.session_state:
+        st.session_state.smart_edit_result = None
+
+    # Product filter (optional - use selected product by default)
+    smart_edit_product = st.session_state.selected_product
+
+    if smart_edit_product:
+        # Get approved ads for this product
+        try:
+            from viraltracker.services.ad_creation_service import AdCreationService
+            ad_service = AdCreationService()
+            editable_ads = asyncio.get_event_loop().run_until_complete(
+                ad_service.get_editable_ads(product_id=UUID(smart_edit_product), limit=20)
+            )
+
+            if editable_ads:
+                st.markdown(f"**{len(editable_ads)} approved ads available for editing**")
+
+                # Display ads in a grid
+                edit_cols = st.columns(4)
+                for idx, ad in enumerate(editable_ads[:8]):  # Show max 8
+                    with edit_cols[idx % 4]:
+                        # Get thumbnail URL
+                        storage_path = ad.get('storage_path', '')
+                        if storage_path:
+                            thumb_url = get_signed_url(storage_path)
+                            if thumb_url:
+                                st.image(thumb_url, use_container_width=True)
+
+                        hook = ad.get('hook_text', '')[:30] + "..." if ad.get('hook_text') else "No hook"
+                        st.caption(hook)
+
+                        is_edit = ad.get('is_edit', False)
+                        edit_label = " (edit)" if is_edit else ""
+                        if st.button(f"Edit{edit_label}", key=f"smart_edit_select_{idx}"):
+                            st.session_state.smart_edit_selected_ad = ad
+                            st.rerun()
+
+                # Selected ad edit panel
+                if st.session_state.smart_edit_selected_ad:
+                    st.divider()
+                    selected_ad = st.session_state.smart_edit_selected_ad
+
+                    st.markdown("**Edit Selected Ad**")
+
+                    # Show selected ad thumbnail
+                    sel_cols = st.columns([1, 2])
+                    with sel_cols[0]:
+                        sel_url = get_signed_url(selected_ad.get('storage_path', ''))
+                        if sel_url:
+                            st.image(sel_url, width=150)
+
+                    with sel_cols[1]:
+                        # Edit prompt
+                        edit_prompt = st.text_area(
+                            "What would you like to change?",
+                            placeholder="e.g., Make the headline larger, add more contrast...",
+                            key="smart_edit_prompt",
+                            height=80
+                        )
+
+                        # Quick presets
+                        presets = ad_service.EDIT_PRESETS
+                        preset_options = [""] + list(presets.keys())
+                        selected_preset = st.selectbox(
+                            "Or choose a preset",
+                            options=preset_options,
+                            format_func=lambda x: x.replace("_", " ").title() if x else "Select preset...",
+                            key="smart_edit_preset"
+                        )
+
+                        final_prompt = presets.get(selected_preset, "") if selected_preset else edit_prompt
+
+                        # Options
+                        opt_cols = st.columns(2)
+                        with opt_cols[0]:
+                            preserve_text = st.checkbox("Keep text identical", value=True, key="se_preserve_text")
+                        with opt_cols[1]:
+                            preserve_colors = st.checkbox("Keep colors identical", value=True, key="se_preserve_colors")
+
+                        temperature = st.slider("Faithfulness", 0.1, 0.8, 0.3, 0.1,
+                                              help="Lower = more faithful to original",
+                                              key="se_temperature")
+
+                        # Generate button
+                        btn_cols = st.columns(2)
+                        with btn_cols[0]:
+                            if st.button("🎨 Generate Edit", disabled=not final_prompt, type="primary",
+                                        key="se_generate"):
+                                with st.spinner("Creating edited ad..."):
+                                    try:
+                                        result = asyncio.get_event_loop().run_until_complete(
+                                            ad_service.create_edited_ad(
+                                                source_ad_id=UUID(selected_ad['id']),
+                                                edit_prompt=final_prompt,
+                                                temperature=temperature,
+                                                preserve_text=preserve_text,
+                                                preserve_colors=preserve_colors
+                                            )
+                                        )
+                                        st.session_state.smart_edit_result = result
+                                        st.success(f"Edit created! ID: {result['ad_id'][:8]}")
+                                    except Exception as e:
+                                        st.error(f"Edit failed: {e}")
+
+                        with btn_cols[1]:
+                            if st.button("Cancel", key="se_cancel"):
+                                st.session_state.smart_edit_selected_ad = None
+                                st.session_state.smart_edit_result = None
+                                st.rerun()
+
+                        # Show result
+                        if st.session_state.smart_edit_result:
+                            result = st.session_state.smart_edit_result
+                            st.caption(f"Generation time: {result.get('generation_time_ms', 0)}ms")
+                            result_url = get_signed_url(result.get('storage_path', ''))
+                            if result_url:
+                                st.image(result_url, caption="Edited Ad", width=200)
+            else:
+                st.info("No approved ads found for this product. Generate some ads first!")
+        except Exception as e:
+            st.warning(f"Could not load editable ads: {e}")
+    else:
+        st.info("Select a product above to browse ads for editing.")
 
 # ============================================================================
 # Sidebar - Recent Runs

@@ -1,7 +1,7 @@
 """
-Streamlit Authentication Module
+Streamlit Authentication Module - Supabase Auth
 
-Provides password protection for Streamlit pages with persistent cookie sessions.
+Provides Supabase-based authentication for Streamlit pages with persistent cookie sessions.
 
 Usage:
     from viraltracker.ui.auth import require_auth
@@ -16,19 +16,18 @@ To make a page PUBLIC (no auth required):
     2. Or use: require_auth(public=True) to skip auth for that page
 
 Environment Variables:
-    STREAMLIT_PASSWORD: Required. The password users must enter.
-    STREAMLIT_COOKIE_KEY: Optional. Secret key for signing cookies (auto-generated if not set).
-    STREAMLIT_COOKIE_EXPIRY_DAYS: Optional. How long sessions last (default: 30 days).
+    SUPABASE_URL: Required. Supabase project URL.
+    SUPABASE_ANON_KEY: Required. Supabase anon key (for RLS-enforced auth).
 """
 
 import os
 import streamlit as st
-import hashlib
-import hmac
 import time
-import base64
 import json
-from typing import Optional
+import logging
+from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Configuration
@@ -36,135 +35,343 @@ from typing import Optional
 
 # Pages that don't require authentication (add filenames here)
 # Example: ["Client_Gallery.py", "Public_Report.py"]
-PUBLIC_PAGES = []
+PUBLIC_PAGES = ["66_🌐_Public_Gallery.py"]
 
 # Cookie settings
-COOKIE_NAME = "viraltracker_auth"
-COOKIE_EXPIRY_DAYS = int(os.getenv("STREAMLIT_COOKIE_EXPIRY_DAYS", "90"))
+COOKIE_NAME = "viraltracker_session"
+COOKIE_EXPIRY_DAYS = 30
 
-def _get_cookie_key() -> str:
-    """Get or generate the cookie signing key."""
-    key = os.getenv("STREAMLIT_COOKIE_KEY")
-    if not key:
-        # Generate a key from the password (stable across restarts)
-        password = os.getenv("STREAMLIT_PASSWORD", "")
-        key = hashlib.sha256(f"viraltracker_cookie_{password}".encode()).hexdigest()
-    return key
-
-
-def _get_password() -> Optional[str]:
-    """Get the configured password."""
-    return os.getenv("STREAMLIT_PASSWORD")
+# Session state keys
+USER_KEY = "_supabase_user"
+SESSION_KEY = "_supabase_session"
+AUTHENTICATED_KEY = "_authenticated"
+_COOKIES_CHECKED_KEY = "_cookies_checked"
 
 
 # ============================================================================
-# Cookie Management (using query params as fallback, localStorage preferred)
+# Supabase Client
 # ============================================================================
 
-def _sign_token(data: dict) -> str:
-    """Create a signed token from data."""
-    payload = json.dumps(data, sort_keys=True)
-    signature = hmac.new(
-        _get_cookie_key().encode(),
-        payload.encode(),
-        hashlib.sha256
-    ).hexdigest()
-
-    token_data = {"payload": payload, "sig": signature}
-    return base64.urlsafe_b64encode(json.dumps(token_data).encode()).decode()
+def _get_auth_client():
+    """Get Supabase client configured for auth (uses anon key)."""
+    from viraltracker.core.database import get_anon_client
+    return get_anon_client()
 
 
-def _verify_token(token: str) -> Optional[dict]:
-    """Verify and decode a signed token."""
+# ============================================================================
+# Cookie Management
+# ============================================================================
+
+def _get_cookie_controller():
+    """Get the cookie controller instance."""
+    from streamlit_cookies_controller import CookieController
+    return CookieController()
+
+
+def _save_session_to_cookie(session_data: Dict[str, Any]) -> None:
+    """
+    Save Supabase session data to browser cookie.
+
+    Args:
+        session_data: Dict containing access_token, refresh_token, expires_at
+    """
     try:
-        token_data = json.loads(base64.urlsafe_b64decode(token.encode()).decode())
-        payload = token_data["payload"]
-        signature = token_data["sig"]
+        controller = _get_cookie_controller()
+        cookie_value = json.dumps({
+            "access_token": session_data.get("access_token"),
+            "refresh_token": session_data.get("refresh_token"),
+            "expires_at": session_data.get("expires_at"),
+        })
+        controller.set(
+            COOKIE_NAME,
+            cookie_value,
+            max_age=COOKIE_EXPIRY_DAYS * 24 * 60 * 60
+        )
+        logger.debug("Session saved to cookie")
+    except Exception as e:
+        logger.warning(f"Failed to save session cookie: {e}")
 
-        expected_sig = hmac.new(
-            _get_cookie_key().encode(),
-            payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
 
-        if not hmac.compare_digest(signature, expected_sig):
+def _get_session_from_cookie() -> Optional[Dict[str, Any]]:
+    """
+    Get session data from browser cookie.
+
+    Returns:
+        Session data dict or None if not found/invalid
+    """
+    try:
+        controller = _get_cookie_controller()
+        cookie_value = controller.get(COOKIE_NAME)
+        if not cookie_value:
             return None
 
-        data = json.loads(payload)
-
-        # Check expiry
-        if data.get("exp", 0) < time.time():
-            return None
-
-        return data
-    except Exception:
+        # Parse the cookie value
+        if isinstance(cookie_value, str):
+            return json.loads(cookie_value)
+        return cookie_value
+    except Exception as e:
+        logger.debug(f"Failed to get session from cookie: {e}")
         return None
 
 
-def _create_auth_token() -> str:
-    """Create a new auth token."""
-    expiry = time.time() + (COOKIE_EXPIRY_DAYS * 24 * 60 * 60)
-    return _sign_token({"auth": True, "exp": expiry})
+def _clear_session_cookie() -> None:
+    """Clear the session cookie."""
+    try:
+        controller = _get_cookie_controller()
+        controller.remove(COOKIE_NAME)
+        logger.debug("Session cookie cleared")
+    except Exception as e:
+        logger.warning(f"Failed to clear session cookie: {e}")
 
 
-def _get_stored_token() -> Optional[str]:
-    """Get token from session state (set by JavaScript from localStorage)."""
-    return st.session_state.get("_auth_token_from_storage")
+# ============================================================================
+# Session Management
+# ============================================================================
+
+def _init_session_state() -> None:
+    """Initialize auth-related session state."""
+    if USER_KEY not in st.session_state:
+        st.session_state[USER_KEY] = None
+    if SESSION_KEY not in st.session_state:
+        st.session_state[SESSION_KEY] = None
+    if AUTHENTICATED_KEY not in st.session_state:
+        st.session_state[AUTHENTICATED_KEY] = False
 
 
-def _inject_cookie_scripts(token: Optional[str] = None):
-    """Inject JavaScript to handle localStorage for persistent auth."""
-
-    if token:
-        # Set token in localStorage
-        js = f"""
-        <script>
-            localStorage.setItem('{COOKIE_NAME}', '{token}');
-        </script>
-        """
-        st.markdown(js, unsafe_allow_html=True)
-
-    # Always inject script to read token and send to Streamlit
-    # This uses a hidden form to communicate back
-    js_read = f"""
-    <script>
-        (function() {{
-            const token = localStorage.getItem('{COOKIE_NAME}');
-            if (token && !window._authTokenSent) {{
-                window._authTokenSent = true;
-                // Store in a way Streamlit can access
-                const event = new CustomEvent('streamlit:setComponentValue', {{
-                    detail: {{ value: token }}
-                }});
-
-                // Use query params as a fallback mechanism
-                const url = new URL(window.location.href);
-                if (!url.searchParams.has('_auth')) {{
-                    url.searchParams.set('_auth', token);
-                    // Only redirect if we have a token and it's not already in URL
-                    if (token && window.location.search.indexOf('_auth=') === -1) {{
-                        window.location.href = url.toString();
-                    }}
-                }}
-            }}
-        }})();
-    </script>
+def _restore_session() -> bool:
     """
-    st.markdown(js_read, unsafe_allow_html=True)
+    Try to restore session from cookie.
 
-
-def _clear_auth():
-    """Clear authentication."""
-    js = f"""
-    <script>
-        localStorage.removeItem('{COOKIE_NAME}');
-        const url = new URL(window.location.href);
-        url.searchParams.delete('_auth');
-        window.location.href = url.toString();
-    </script>
+    Returns:
+        True if session was restored successfully, False otherwise
     """
-    st.markdown(js, unsafe_allow_html=True)
-    st.session_state["_authenticated"] = False
+    session_data = _get_session_from_cookie()
+    if not session_data:
+        return False
+
+    access_token = session_data.get("access_token")
+    refresh_token = session_data.get("refresh_token")
+    expires_at = session_data.get("expires_at", 0)
+
+    if not access_token or not refresh_token:
+        return False
+
+    # Check if token is expired (with 5 min buffer)
+    current_time = time.time()
+    if expires_at and expires_at < current_time + 300:
+        # Token is expired or about to expire, try to refresh
+        return _refresh_session(refresh_token)
+
+    # Token is still valid, try to get user
+    try:
+        client = _get_auth_client()
+        # Set the session on the client
+        response = client.auth.set_session(access_token, refresh_token)
+
+        if response and response.user:
+            st.session_state[USER_KEY] = response.user
+            st.session_state[SESSION_KEY] = response.session
+            st.session_state[AUTHENTICATED_KEY] = True
+            logger.debug(f"Session restored for user: {response.user.email}")
+            return True
+    except Exception as e:
+        logger.debug(f"Failed to restore session: {e}")
+        # Try to refresh the session
+        return _refresh_session(refresh_token)
+
+    return False
+
+
+def _refresh_session(refresh_token: str) -> bool:
+    """
+    Refresh the session using the refresh token.
+
+    Args:
+        refresh_token: The refresh token
+
+    Returns:
+        True if refresh successful, False otherwise
+    """
+    try:
+        client = _get_auth_client()
+        response = client.auth.refresh_session(refresh_token)
+
+        if response and response.session:
+            session = response.session
+            st.session_state[USER_KEY] = response.user
+            st.session_state[SESSION_KEY] = session
+            st.session_state[AUTHENTICATED_KEY] = True
+
+            # Save new tokens to cookie
+            _save_session_to_cookie({
+                "access_token": session.access_token,
+                "refresh_token": session.refresh_token,
+                "expires_at": session.expires_at,
+            })
+            logger.debug("Session refreshed successfully")
+            return True
+    except Exception as e:
+        logger.debug(f"Failed to refresh session: {e}")
+
+    return False
+
+
+# ============================================================================
+# Authentication Operations
+# ============================================================================
+
+def sign_in(email: str, password: str) -> tuple[bool, Optional[str]]:
+    """
+    Sign in with email and password.
+
+    Args:
+        email: User email
+        password: User password
+
+    Returns:
+        Tuple of (success, error_message)
+    """
+    try:
+        client = _get_auth_client()
+        response = client.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+
+        if response and response.session:
+            session = response.session
+            st.session_state[USER_KEY] = response.user
+            st.session_state[SESSION_KEY] = session
+            st.session_state[AUTHENTICATED_KEY] = True
+
+            # Save to cookie
+            _save_session_to_cookie({
+                "access_token": session.access_token,
+                "refresh_token": session.refresh_token,
+                "expires_at": session.expires_at,
+            })
+            logger.info(f"User signed in: {response.user.email}")
+            return True, None
+    except Exception as e:
+        error_msg = str(e)
+        # Parse common error messages
+        if "Invalid login credentials" in error_msg:
+            return False, "Invalid email or password"
+        if "Email not confirmed" in error_msg:
+            return False, "Please check your email to confirm your account"
+        logger.warning(f"Sign in failed: {e}")
+        return False, f"Sign in failed: {error_msg}"
+
+    return False, "Sign in failed"
+
+
+def sign_up(email: str, password: str) -> tuple[bool, Optional[str]]:
+    """
+    Sign up with email and password.
+
+    Args:
+        email: User email
+        password: User password
+
+    Returns:
+        Tuple of (success, error_message)
+    """
+    try:
+        client = _get_auth_client()
+        response = client.auth.sign_up({
+            "email": email,
+            "password": password
+        })
+
+        if response and response.user:
+            # Check if email confirmation is required
+            if response.session:
+                # Auto-confirmed, sign them in
+                session = response.session
+                st.session_state[USER_KEY] = response.user
+                st.session_state[SESSION_KEY] = session
+                st.session_state[AUTHENTICATED_KEY] = True
+
+                _save_session_to_cookie({
+                    "access_token": session.access_token,
+                    "refresh_token": session.refresh_token,
+                    "expires_at": session.expires_at,
+                })
+                logger.info(f"User signed up and auto-confirmed: {response.user.email}")
+                return True, None
+            else:
+                # Email confirmation required
+                logger.info(f"User signed up, awaiting confirmation: {response.user.email}")
+                return True, "Please check your email to confirm your account"
+    except Exception as e:
+        error_msg = str(e)
+        if "already registered" in error_msg.lower():
+            return False, "This email is already registered. Try signing in instead."
+        if "password" in error_msg.lower() and "6" in error_msg:
+            return False, "Password must be at least 6 characters"
+        logger.warning(f"Sign up failed: {e}")
+        return False, f"Sign up failed: {error_msg}"
+
+    return False, "Sign up failed"
+
+
+def sign_out() -> None:
+    """Sign out the current user."""
+    try:
+        client = _get_auth_client()
+        client.auth.sign_out()
+    except Exception as e:
+        logger.debug(f"Sign out API call failed (may be expected): {e}")
+
+    # Clear session state
+    st.session_state[USER_KEY] = None
+    st.session_state[SESSION_KEY] = None
+    st.session_state[AUTHENTICATED_KEY] = False
+
+    # Clear cookie
+    _clear_session_cookie()
+    logger.info("User signed out")
+
+
+# ============================================================================
+# UI Components
+# ============================================================================
+
+def _show_login_form() -> None:
+    """Display the login form."""
+    st.markdown("### Welcome to ViralTracker")
+    st.markdown("Sign in to access your dashboard.")
+
+    with st.form("login_form", clear_on_submit=False):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+
+        if submitted:
+            if not email or not password:
+                st.error("Please enter both email and password")
+            else:
+                with st.spinner("Signing in..."):
+                    success, error = sign_in(email, password)
+                if success:
+                    st.success("Signed in successfully!")
+                    st.rerun()
+                else:
+                    st.error(error or "Sign in failed")
+
+    # Stop execution - don't render rest of page
+    st.stop()
+
+
+def _add_logout_button() -> None:
+    """Add logout button and user info to sidebar."""
+    user = st.session_state.get(USER_KEY)
+    with st.sidebar:
+        if user:
+            st.markdown(f"**{user.email}**")
+        if st.button("Sign Out", key="_logout_btn"):
+            sign_out()
+            st.rerun()
 
 
 # ============================================================================
@@ -205,75 +412,22 @@ def require_auth(public: bool = False) -> bool:
     except Exception:
         pass
 
-    # Check if auth is disabled (no password set)
-    password = _get_password()
-    if not password:
-        # No password configured - allow access but show warning
-        st.sidebar.warning("Auth disabled (STREAMLIT_PASSWORD not set)")
-        return True
+    # Initialize session state
+    _init_session_state()
 
-    # Check session state first (fastest)
-    if st.session_state.get("_authenticated"):
+    # Check if already authenticated in session
+    if st.session_state.get(AUTHENTICATED_KEY):
         _add_logout_button()
         return True
 
-    # Check for token in query params (from localStorage redirect)
-    query_params = st.query_params
-    token = query_params.get("_auth")
-
-    if token:
-        token_data = _verify_token(token)
-        if token_data and token_data.get("auth"):
-            st.session_state["_authenticated"] = True
-            _add_logout_button()
-            return True
-
-    # Inject script to check localStorage and redirect if token exists
-    _inject_cookie_scripts()
+    # Try to restore session from cookie
+    if _restore_session():
+        _add_logout_button()
+        return True
 
     # Show login form
-    _show_login_form(password)
+    _show_login_form()
     return False
-
-
-def _show_login_form(correct_password: str):
-    """Display the login form."""
-    st.markdown("### Login Required")
-    st.markdown("Enter the password to access this application.")
-
-    with st.form("login_form"):
-        password_input = st.text_input("Password", type="password")
-        remember = st.checkbox("Remember me for 90 days", value=True)
-        submitted = st.form_submit_button("Login", type="primary")
-
-        if submitted:
-            if password_input == correct_password:
-                st.session_state["_authenticated"] = True
-
-                if remember:
-                    # Create token and store in localStorage
-                    token = _create_auth_token()
-                    _inject_cookie_scripts(token)
-
-                    # Also add to URL for immediate access
-                    st.query_params["_auth"] = token
-
-                st.rerun()
-            else:
-                st.error("Incorrect password")
-
-    # Stop execution - don't render rest of page
-    st.stop()
-
-
-def _add_logout_button():
-    """Add logout button to sidebar."""
-    with st.sidebar:
-        if st.button("Logout", key="_logout_btn"):
-            _clear_auth()
-            st.session_state["_authenticated"] = False
-            st.query_params.clear()
-            st.rerun()
 
 
 def is_authenticated() -> bool:
@@ -285,17 +439,67 @@ def is_authenticated() -> bool:
     Returns:
         True if authenticated, False otherwise.
     """
-    if st.session_state.get("_authenticated"):
+    _init_session_state()
+
+    if st.session_state.get(AUTHENTICATED_KEY):
         return True
 
-    password = _get_password()
-    if not password:
-        return True  # No auth configured
+    # Try to restore from cookie (silent)
+    return _restore_session()
 
-    token = st.query_params.get("_auth")
-    if token:
-        token_data = _verify_token(token)
-        if token_data and token_data.get("auth"):
-            return True
 
-    return False
+def are_cookies_ready() -> bool:
+    """
+    Check if the CookieController iframe has loaded and sent back browser cookies.
+
+    On first render after a page refresh, CookieController.getAll() returns {}
+    because the iframe JS hasn't loaded yet. This function detects that state
+    and returns False, allowing the caller to show a loading state instead of
+    the login page (which would change the URL).
+
+    The CookieController is still instantiated (iframe rendered), so it will
+    load and trigger a Streamlit rerun with actual cookie data.
+    """
+    # If already authenticated in this session, cookies are irrelevant
+    if st.session_state.get(AUTHENTICATED_KEY):
+        return True
+
+    # Instantiate controller so iframe is rendered in the DOM
+    controller = _get_cookie_controller()
+    all_cookies = controller.getAll()
+
+    # Non-empty dict means iframe has loaded with real cookies
+    if all_cookies:
+        return True
+
+    # Empty dict — either iframe not loaded OR user has no cookies.
+    # Use a flag to distinguish: first render (no flag) vs second render (flag set).
+    if not st.session_state.get(_COOKIES_CHECKED_KEY):
+        st.session_state[_COOKIES_CHECKED_KEY] = True
+        return False  # First render — wait for iframe
+
+    # Flag exists: we've waited one cycle. Proceed with auth check.
+    return True
+
+
+def get_current_user():
+    """
+    Get the currently authenticated user.
+
+    Returns:
+        User object or None if not authenticated
+    """
+    return st.session_state.get(USER_KEY)
+
+
+def get_current_user_id() -> Optional[str]:
+    """
+    Get the currently authenticated user's ID.
+
+    Returns:
+        User ID string or None if not authenticated
+    """
+    user = get_current_user()
+    if user:
+        return user.id
+    return None

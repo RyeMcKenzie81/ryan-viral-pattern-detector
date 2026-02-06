@@ -1,5 +1,5 @@
 """
-Ad Scheduler - Schedule automated ad generation jobs.
+Scheduler - Schedule automated jobs (ad creation, template scraping, approvals, etc.).
 
 This page allows users to:
 - View all scheduled jobs with filtering by brand/product
@@ -14,7 +14,7 @@ import pytz
 
 # Page config
 st.set_page_config(
-    page_title="Ad Scheduler",
+    page_title="Scheduler",
     page_icon="📅",
     layout="wide"
 )
@@ -22,6 +22,8 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+from viraltracker.ui.utils import require_feature, _get_brand_from_cookie, _save_brand_to_cookie
+require_feature("ad_scheduler", "Scheduler")
 
 # PST timezone for all scheduling
 PST = pytz.timezone('America/Los_Angeles')
@@ -65,6 +67,16 @@ if 'sched_selected_angle_ids' not in st.session_state:
 if 'sched_selected_offer_variant_id' not in st.session_state:
     st.session_state.sched_selected_offer_variant_id = None
 
+# Scraped template library state
+if 'sched_template_source' not in st.session_state:
+    st.session_state.sched_template_source = 'uploaded'  # 'uploaded' or 'scraped'
+if 'sched_selected_scraped_templates' not in st.session_state:
+    st.session_state.sched_selected_scraped_templates = []  # List of {id, name, storage_path, bucket}
+if 'sched_scraped_category' not in st.session_state:
+    st.session_state.sched_scraped_category = 'all'
+if 'sched_scraped_rec_filter' not in st.session_state:
+    st.session_state.sched_scraped_rec_filter = 'all'  # all, recommended, unused_recommended
+
 
 # ============================================================================
 # Database Functions
@@ -77,14 +89,9 @@ def get_supabase_client():
 
 
 def get_brands():
-    """Fetch all brands."""
-    try:
-        db = get_supabase_client()
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data or []
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
-        return []
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 
 def get_products(brand_id: str = None):
@@ -179,8 +186,10 @@ def get_plan_details(plan_id: str):
     """Get full plan details including angles and templates."""
     try:
         from viraltracker.services.planning_service import PlanningService
+        from viraltracker.ui.utils import setup_tracking_context
         from uuid import UUID
         service = PlanningService()
+        setup_tracking_context(service)
         return service.get_plan(UUID(plan_id))
     except Exception as e:
         return None
@@ -304,6 +313,154 @@ def get_signed_url(storage_path: str) -> str:
         return result.get('signedURL', '')
     except Exception as e:
         return ""
+
+
+# ============================================================================
+# Scraped Template Library Functions
+# ============================================================================
+
+def get_scraped_templates(
+    category: str = None,
+    awareness_level: int = None,
+    industry_niche: str = None,
+    target_sex: str = None,
+    limit: int = 100
+):
+    """Get approved scraped templates from database.
+
+    Args:
+        category: Optional category filter (testimonial, quote_card, etc.)
+        awareness_level: Optional awareness level (1-5)
+        industry_niche: Optional industry/niche filter
+        target_sex: Optional target sex filter (male/female/unisex)
+        limit: Maximum templates to return
+
+    Returns:
+        List of template records with storage paths
+    """
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_templates(
+            category=category if category != "all" else None,
+            awareness_level=awareness_level,
+            industry_niche=industry_niche if industry_niche != "all" else None,
+            target_sex=target_sex if target_sex != "all" else None,
+            active_only=True,
+            limit=limit
+        )
+    except Exception as e:
+        st.warning(f"Could not load scraped templates: {e}")
+        return []
+
+
+def get_template_categories():
+    """Get list of template categories."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return ["all"] + service.get_template_categories()
+    except Exception:
+        return ["all", "testimonial", "quote_card", "before_after", "product_showcase",
+                "ugc_style", "meme", "carousel_frame", "story_format", "other"]
+
+
+def get_awareness_levels():
+    """Get awareness level filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_awareness_levels()
+    except Exception:
+        return []
+
+
+def get_industry_niches():
+    """Get industry niche filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_industry_niches()
+    except Exception:
+        return []
+
+
+def get_scraped_template_url(storage_path: str) -> str:
+    """Get public URL for scraped template asset."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_asset_preview_url(storage_path)
+    except Exception:
+        return ""
+
+
+def get_template_asset_match(template_id: str, product_id: str) -> dict:
+    """Get asset match info for a template.
+
+    Args:
+        template_id: UUID string of the template
+        product_id: UUID string of the product
+
+    Returns:
+        Dict with asset_match_score, missing_assets, warnings, detection_status
+    """
+    try:
+        from viraltracker.services.template_element_service import TemplateElementService
+        from uuid import UUID
+        service = TemplateElementService()
+        return service.match_assets_to_template(UUID(template_id), UUID(product_id))
+    except Exception:
+        return {"asset_match_score": 1.0, "detection_status": "error"}
+
+
+def get_asset_badge_html(score: float, detection_status: str = "analyzed") -> str:
+    """Generate HTML badge for asset match score.
+
+    Args:
+        score: Asset match score 0.0-1.0
+        detection_status: Status of element detection
+
+    Returns:
+        HTML string for badge
+    """
+    if detection_status == "not_analyzed":
+        return ""  # No badge if not analyzed
+
+    if score >= 1.0:
+        return '<span style="background:#28a745;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">All assets</span>'
+    elif score >= 0.5:
+        pct = int(score * 100)
+        return f'<span style="background:#ffc107;color:black;padding:1px 4px;border-radius:3px;font-size:9px;">{pct}% assets</span>'
+    else:
+        return '<span style="background:#dc3545;color:white;padding:1px 4px;border-radius:3px;font-size:9px;">Missing assets</span>'
+
+
+def toggle_scraped_template_selection(template_info: dict):
+    """Toggle a scraped template in the selection list.
+
+    Args:
+        template_info: Dict with {id, name, storage_path, bucket}
+    """
+    current_selections = st.session_state.sched_selected_scraped_templates
+
+    # Check if already selected by id
+    existing_idx = next(
+        (i for i, t in enumerate(current_selections) if t['id'] == template_info['id']),
+        None
+    )
+
+    if existing_idx is not None:
+        # Remove from selection
+        current_selections.pop(existing_idx)
+    else:
+        # Add to selection
+        current_selections.append(template_info)
+
+    st.session_state.sched_selected_scraped_templates = current_selections
+
+
+def is_scraped_template_selected(template_id: str) -> bool:
+    """Check if a scraped template is currently selected."""
+    return any(t['id'] == template_id for t in st.session_state.sched_selected_scraped_templates)
 
 
 def upload_template_files(files: list) -> list:
@@ -461,7 +618,7 @@ def calculate_next_run(schedule_type: str, cron: str = None, scheduled_at: datet
 
 def render_schedule_list():
     """Render the schedule list view."""
-    st.title("📅 Ad Scheduler")
+    st.title("📅 Scheduler")
     st.markdown("**Automate ad generation with scheduled jobs**")
 
     # Action buttons
@@ -483,14 +640,29 @@ def render_schedule_list():
     brands = get_brands()
     brand_options = {"All Brands": None}
     brand_options.update({b['name']: b['id'] for b in brands})
+    brand_names = list(brand_options.keys())
+
+    # Try to restore brand filter from cookie
+    filter_index = 0
+    cookie_brand = _get_brand_from_cookie()
+    if cookie_brand:
+        for i, name in enumerate(brand_names):
+            if brand_options[name] == cookie_brand:
+                filter_index = i
+                break
 
     with col1:
         selected_brand = st.selectbox(
             "Filter by Brand",
-            options=list(brand_options.keys()),
+            options=brand_names,
+            index=filter_index,
             key="filter_brand"
         )
         brand_filter = brand_options[selected_brand]
+
+        # Save to cookie if a specific brand is selected
+        if brand_filter:
+            _save_brand_to_cookie(brand_filter)
 
     products = get_products(brand_filter)
     product_options = {"All Products": None}
@@ -539,11 +711,21 @@ def render_schedule_list():
                     type_badge = "🔄 "
                 elif job_type == 'scorecard':
                     type_badge = "📊 "
+                elif job_type == 'template_scrape':
+                    type_badge = "📥 "
+                elif job_type == 'template_approval':
+                    type_badge = "✅ "
+                elif job_type == 'ad_classification':
+                    type_badge = "🔬 "
+                elif job_type == 'asset_download':
+                    type_badge = "📦 "
                 st.markdown(f"### {status_emoji} {type_badge}{job['name']}")
 
-                # Show brand → product for ad_creation, just brand for others
+                # Show brand → product for ad_creation, just brand for others, system-wide for template_approval
                 if job_type == 'ad_creation':
                     st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+                elif job_type == 'template_approval':
+                    st.caption("System-wide")
                 else:
                     st.caption(f"{brand_info.get('name', 'Unknown')}")
 
@@ -563,19 +745,28 @@ def render_schedule_list():
 
                 # Show template info for ad_creation jobs, parameters for others
                 if job_type == 'ad_creation':
-                    template_mode = job.get('template_mode', 'unused')
-                    if template_mode == 'unused':
-                        template_info = f"{job.get('template_count', '?')} templates"
+                    template_source = job.get('template_source', 'uploaded')
+                    if template_source == 'scraped':
+                        scraped_ids = job.get('scraped_template_ids') or []
+                        st.caption(f"Source: Scraped Library ({len(scraped_ids)} templates)")
                     else:
-                        template_ids = job.get('template_ids') or []
-                        template_info = f"{len(template_ids)} templates"
-                    st.caption(f"Mode: {template_mode} ({template_info})")
+                        template_mode = job.get('template_mode', 'unused')
+                        if template_mode == 'unused':
+                            template_info = f"{job.get('template_count', '?')} templates"
+                        else:
+                            template_ids = job.get('template_ids') or []
+                            template_info = f"{len(template_ids)} templates"
+                        st.caption(f"Mode: {template_mode} ({template_info})")
                 elif job_type == 'meta_sync':
                     params = job.get('parameters', {}) or {}
                     st.caption(f"Syncs last {params.get('days_back', 7)} days")
                 elif job_type == 'scorecard':
                     params = job.get('parameters', {}) or {}
                     st.caption(f"Analyzes last {params.get('days_back', 7)} days")
+                elif job_type == 'template_scrape':
+                    params = job.get('parameters', {}) or {}
+                    max_ads = params.get('max_ads', 50)
+                    st.caption(f"Scrapes up to {max_ads} ads")
 
             with col4:
                 if st.button("View", key=f"view_{job['id']}", use_container_width=True):
@@ -587,8 +778,1255 @@ def render_schedule_list():
 
 
 # ============================================================================
+# Template Scrape Job Form
+# ============================================================================
+
+def _render_template_scrape_form(existing_job, is_edit):
+    """Render the template scrape job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    # Determine default: existing job > cookie > first brand
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job['brand_id']:
+                default_index = i
+                break
+    else:
+        # Try cookie for new jobs
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand to associate scraped templates with",
+        key="scrape_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+
+    # Save selection to cookie
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    existing_params = existing_job.get('parameters', {}) if existing_job else {}
+
+    job_name = st.text_input(
+        "Name for this scrape schedule",
+        value=existing_job.get('name', '') if existing_job else "",
+        placeholder="e.g., Weekly Competitor Scrape - Supplements",
+        help="A descriptive name to identify this scheduled scrape job",
+        key="scrape_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Scrape Settings
+    # ========================================================================
+
+    st.subheader("3. Scrape Settings")
+
+    search_url = st.text_input(
+        "Facebook Ad Library Search URL",
+        value=existing_params.get('search_url', ''),
+        placeholder="https://www.facebook.com/ads/library/?...",
+        help="The Facebook Ad Library search URL to scrape. Go to facebook.com/ads/library, set your filters, and copy the URL.",
+        key="scrape_search_url"
+    )
+
+    if search_url and not search_url.startswith('https://www.facebook.com/ads/library'):
+        st.warning("URL should start with https://www.facebook.com/ads/library")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        max_ads = st.number_input(
+            "Max Ads per Scrape",
+            min_value=10,
+            max_value=500,
+            value=existing_params.get('max_ads', 50),
+            help="Maximum number of ads to scrape each run",
+            key="scrape_max_ads"
+        )
+
+    with col2:
+        images_only = st.checkbox(
+            "Images Only (skip video ads)",
+            value=existing_params.get('images_only', True),
+            help="When enabled, only image ads will be scraped. Video ads will be skipped.",
+            key="scrape_images_only"
+        )
+
+    auto_queue = st.checkbox(
+        "Auto-add to Review Queue",
+        value=existing_params.get('auto_queue', True),
+        help="Automatically add new scraped ads to the template review queue",
+        key="scrape_auto_queue"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule Configuration
+    # ========================================================================
+
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job['schedule_type'] == 'recurring' else 1,
+        format_func=lambda x: "🔄 Recurring" if x == 'recurring' else "1️⃣ One-time",
+        horizontal=True,
+        key="scrape_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly', 'monthly'],
+                index=1,  # Default to weekly
+                format_func=lambda x: x.capitalize(),
+                key="scrape_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,  # Monday
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="scrape_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=5,  # 6
+                    key="scrape_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="scrape_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="scrape_ampm"
+                )
+
+            # Convert to 24-hour format
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        # One-time schedule
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date() + timedelta(days=1),
+                min_value=datetime.now(PST).date(),
+                key="scrape_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=5,  # 6
+                    key="scrape_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="scrape_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="scrape_onetime_ampm"
+                )
+
+            # Convert to 24-hour format
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    # Run limits (only for recurring schedules)
+    max_runs = None
+    if schedule_type == 'recurring':
+        st.markdown("**Run Limits**")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            limit_runs = st.checkbox(
+                "Limit number of runs",
+                value=existing_job.get('max_runs') is not None if existing_job else False,
+                key="scrape_limit_runs"
+            )
+
+        with col2:
+            if limit_runs:
+                max_runs = st.number_input(
+                    "Maximum runs",
+                    min_value=1,
+                    max_value=100,
+                    value=existing_job.get('max_runs', 12) if existing_job else 12,
+                    key="scrape_max_runs"
+                )
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Button
+    # ========================================================================
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_scrape_schedule"):
+            # Validation
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+            if not search_url:
+                st.error("Please enter a Facebook Ad Library search URL")
+                st.stop()
+
+            # Build parameters
+            parameters = {
+                'search_url': search_url,
+                'max_ads': max_ads,
+                'images_only': images_only,
+                'auto_queue': auto_queue
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'template_scrape',
+                'product_id': None,  # Template scrape doesn't need product
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': max_runs,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_scrape_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+            if not search_url:
+                st.error("Please enter a Facebook Ad Library search URL")
+                st.stop()
+
+            parameters = {
+                'search_url': search_url,
+                'max_ads': max_ads,
+                'images_only': images_only,
+                'auto_queue': auto_queue
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'template_scrape',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
+        if st.button("Cancel", use_container_width=True, key="cancel_scrape_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
+def _render_template_approval_form(existing_job, is_edit):
+    """Render the template approval job creation form."""
+
+    # ========================================================================
+    # Section 1: Job Name
+    # ========================================================================
+
+    st.subheader("1. Job Name")
+
+    existing_params = existing_job.get('parameters', {}) if existing_job else {}
+
+    job_name = st.text_input(
+        "Name for this approval schedule",
+        value=existing_job.get('name', '') if existing_job else "Daily Template Queue Approval",
+        placeholder="e.g., Daily Template Queue Approval",
+        help="A descriptive name to identify this scheduled approval job",
+        key="approval_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Approval Settings
+    # ========================================================================
+
+    st.subheader("2. Approval Settings")
+
+    batch_size = st.number_input(
+        "Items per Run",
+        min_value=10,
+        max_value=500,
+        value=existing_params.get('batch_size', 100),
+        help="Maximum number of pending items to process each run. ~10 items/minute with API rate limits.",
+        key="approval_batch_size"
+    )
+
+    st.caption(f"Estimated processing time: ~{batch_size // 9 + 1} minutes per run (at 9 items/minute)")
+
+    auto_approve = st.checkbox(
+        "Auto-approve with AI suggestions",
+        value=existing_params.get('auto_approve', True),
+        help="Automatically approve items using AI-generated metadata. If unchecked, items will be analyzed but left for manual review.",
+        key="approval_auto_approve"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Schedule Configuration
+    # ========================================================================
+
+    st.subheader("3. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job['schedule_type'] == 'recurring' else 1,
+        format_func=lambda x: "🔄 Recurring" if x == 'recurring' else "1️⃣ One-time",
+        horizontal=True,
+        key="approval_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly'],
+                index=0,  # Default to daily
+                format_func=lambda x: x.capitalize(),
+                key="approval_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,  # Monday
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="approval_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=2,  # 3 AM default
+                    key="approval_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="approval_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="approval_ampm"
+                )
+
+            # Convert to 24-hour format
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        # One-time schedule
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date(),
+                min_value=datetime.now(PST).date(),
+                key="approval_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=2,  # 3
+                    key="approval_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="approval_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,  # AM
+                    key="approval_onetime_ampm"
+                )
+
+            # Convert to 24-hour format
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Buttons
+    # ========================================================================
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_approval_schedule"):
+            # Validation
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            # Build parameters
+            parameters = {
+                'batch_size': batch_size,
+                'auto_approve': auto_approve
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'template_approval',
+                'product_id': None,
+                'brand_id': None,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_approval_now"):
+            # Validation
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            # Build parameters
+            parameters = {
+                'batch_size': batch_size,
+                'auto_approve': auto_approve
+            }
+
+            # Run in 1 minute from now
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'template_approval',
+                'product_id': None,
+                'brand_id': None,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success(f"Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
+        if st.button("Cancel", use_container_width=True, key="cancel_approval_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
+# ============================================================================
 # View: Create/Edit Schedule
 # ============================================================================
+
+def _render_ad_classification_form(existing_job, is_edit):
+    """Render the ad classification job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job.get('brand_id'):
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand whose ads to classify",
+        key="classify_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    existing_params = (existing_job or {}).get('parameters') or {}
+
+    job_name = st.text_input(
+        "Job name",
+        value=existing_job['name'] if existing_job else f"Classify {selected_brand_name} Ads",
+        key="classify_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Classification Settings
+    # ========================================================================
+
+    st.subheader("3. Classification Settings")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        max_new = st.number_input(
+            "Max new classifications",
+            min_value=1,
+            max_value=500,
+            value=existing_params.get('max_new', 200),
+            help="Max new Gemini API calls per run (cached results are free)",
+            key="classify_max_new"
+        )
+    with col2:
+        max_video = st.number_input(
+            "Max video classifications",
+            min_value=0,
+            max_value=50,
+            value=existing_params.get('max_video', 15),
+            help="Max video analysis calls (slower/more expensive)",
+            key="classify_max_video"
+        )
+    with col3:
+        days_back = st.number_input(
+            "Days back",
+            min_value=1,
+            max_value=90,
+            value=existing_params.get('days_back', 30),
+            help="Look back window for active ads",
+            key="classify_days_back"
+        )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule
+    # ========================================================================
+
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job.get('schedule_type') == 'recurring' else 1,
+        format_func=lambda x: "Recurring" if x == 'recurring' else "One-time",
+        horizontal=True,
+        key="classify_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly'],
+                index=0,
+                format_func=lambda x: x.capitalize(),
+                key="classify_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="classify_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=3,  # 4 AM
+                    key="classify_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="classify_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="classify_ampm"
+                )
+
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date() + timedelta(days=1),
+                min_value=datetime.now(PST).date(),
+                key="classify_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=3,
+                    key="classify_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="classify_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="classify_onetime_ampm"
+                )
+
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Buttons
+    # ========================================================================
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_classify_schedule"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_new': max_new,
+                'max_video': max_video,
+                'days_back': days_back,
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'ad_classification',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_classify_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_new': max_new,
+                'max_video': max_video,
+                'days_back': days_back,
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'ad_classification',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
+        if st.button("Cancel", use_container_width=True, key="cancel_classify_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
+def _render_asset_download_form(existing_job, is_edit):
+    """Render the asset download job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job.get('brand_id'):
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand whose ad assets to download",
+        key="download_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    existing_params = (existing_job or {}).get('parameters') or {}
+
+    job_name = st.text_input(
+        "Job name",
+        value=existing_job['name'] if existing_job else f"Download {selected_brand_name} Assets",
+        key="download_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Download Settings
+    # ========================================================================
+
+    st.subheader("3. Download Settings")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        max_videos = st.number_input(
+            "Max videos per run",
+            min_value=0,
+            max_value=100,
+            value=existing_params.get('max_videos', 20),
+            help="Max video files to download from Meta CDN per run",
+            key="download_max_videos"
+        )
+    with col2:
+        max_images = st.number_input(
+            "Max images per run",
+            min_value=0,
+            max_value=200,
+            value=existing_params.get('max_images', 40),
+            help="Max image files to download from Meta CDN per run",
+            key="download_max_images"
+        )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule
+    # ========================================================================
+
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job.get('schedule_type') == 'recurring' else 1,
+        format_func=lambda x: "Recurring" if x == 'recurring' else "One-time",
+        horizontal=True,
+        key="download_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly'],
+                index=0,
+                format_func=lambda x: x.capitalize(),
+                key="download_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="download_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=3,  # 4 AM
+                    key="download_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="download_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="download_ampm"
+                )
+
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date() + timedelta(days=1),
+                min_value=datetime.now(PST).date(),
+                key="download_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=3,
+                    key="download_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="download_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="download_onetime_ampm"
+                )
+
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Buttons
+    # ========================================================================
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_download_schedule"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_videos': max_videos,
+                'max_images': max_images,
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'asset_download',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_download_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_videos': max_videos,
+                'max_images': max_images,
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'asset_download',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
+        if st.button("Cancel", use_container_width=True, key="cancel_download_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
 
 def render_create_schedule():
     """Render the create/edit schedule form."""
@@ -611,6 +2049,62 @@ def render_create_schedule():
             st.error("Job not found")
             return
 
+    # ========================================================================
+    # Job Type Selection (only when creating new, not editing)
+    # ========================================================================
+
+    existing_job_type = existing_job.get('job_type', 'ad_creation') if existing_job else 'ad_creation'
+
+    if not is_edit:
+        st.subheader("Job Type")
+        job_type = st.radio(
+            "What type of job do you want to schedule?",
+            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download'],
+            index=0,
+            format_func=lambda x: {
+                'ad_creation': '🎨 Ad Creation - Generate ads from templates',
+                'template_scrape': '📥 Template Scrape - Scrape Facebook Ad Library for templates',
+                'template_approval': '✅ Template Approval - Batch AI analysis of pending queue items',
+                'ad_classification': '🔬 Ad Classification - Pre-compute ad awareness classifications',
+                'asset_download': '📦 Asset Download - Download ad images & videos from Meta',
+            }.get(x, x),
+            horizontal=True,
+            key="job_type_selector"
+        )
+        st.divider()
+    else:
+        job_type = existing_job_type
+
+    # ========================================================================
+    # TEMPLATE SCRAPE JOB FORM
+    # ========================================================================
+    if job_type == 'template_scrape':
+        _render_template_scrape_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # TEMPLATE APPROVAL JOB FORM
+    # ========================================================================
+    if job_type == 'template_approval':
+        _render_template_approval_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # AD CLASSIFICATION JOB FORM
+    # ========================================================================
+    if job_type == 'ad_classification':
+        _render_ad_classification_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # ASSET DOWNLOAD JOB FORM
+    # ========================================================================
+    if job_type == 'asset_download':
+        _render_asset_download_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # AD CREATION JOB FORM (original form)
     # ========================================================================
     # Section 1: Product Selection
     # ========================================================================
@@ -825,130 +2319,376 @@ def render_create_schedule():
 
     st.subheader("4. Templates")
 
-    # Determine default index for template mode
-    mode_options = ['unused', 'specific', 'upload']
+    # Template source toggle
+    existing_template_source = 'uploaded'
     if existing_job:
-        existing_mode = existing_job.get('template_mode', 'unused')
-        default_index = mode_options.index(existing_mode) if existing_mode in mode_options else 0
-    else:
-        default_index = 0
+        existing_template_source = existing_job.get('template_source', 'uploaded')
 
-    template_mode = st.radio(
-        "Template Selection Mode",
-        options=mode_options,
-        index=default_index,
+    template_source = st.radio(
+        "Template Source",
+        options=['uploaded', 'scraped'],
+        index=0 if existing_template_source == 'uploaded' else 1,
         format_func=lambda x: {
-            'unused': '🔄 Use Unused Templates - Auto-select templates not yet used for this product',
-            'specific': '📋 Specific Templates - Choose from existing templates',
-            'upload': '📤 Upload New - Upload reference ads for this run'
+            'uploaded': '📤 Uploaded Templates - Use templates from reference-ads storage',
+            'scraped': '📚 Scraped Template Library - Use curated templates with recommendations'
         }.get(x, x),
-        horizontal=False
+        horizontal=True,
+        key="template_source_radio"
     )
-    st.session_state.sched_template_mode = template_mode
+    st.session_state.sched_template_source = template_source
 
-    if template_mode == 'unused':
-        # Show count of unused templates
-        all_templates = get_existing_templates()
-        used_templates = get_used_templates(selected_product_id)
-        unused_count = len([t for t in all_templates if t['storage_name'] not in used_templates])
+    st.divider()
 
-        st.info(f"📊 {unused_count} unused templates available for this product")
+    # Initialize template variables
+    template_mode = None
+    template_count = 0
+    template_ids = None
+    scraped_template_ids = []
 
-        template_count = st.slider(
-            "Templates per run",
-            min_value=1,
-            max_value=min(20, unused_count) if unused_count > 0 else 1,
-            value=min(5, unused_count) if unused_count > 0 else 1,
-            help="Number of templates to use in each scheduled run"
+    if template_source == 'uploaded':
+        # Original uploaded template UI
+        # Determine default index for template mode
+        mode_options = ['unused', 'specific', 'upload']
+        if existing_job and existing_job.get('template_source', 'uploaded') == 'uploaded':
+            existing_mode = existing_job.get('template_mode', 'unused')
+            default_index = mode_options.index(existing_mode) if existing_mode in mode_options else 0
+        else:
+            default_index = 0
+
+        template_mode = st.radio(
+            "Template Selection Mode",
+            options=mode_options,
+            index=default_index,
+            format_func=lambda x: {
+                'unused': '🔄 Use Unused Templates - Auto-select templates not yet used for this product',
+                'specific': '📋 Specific Templates - Choose from existing templates',
+                'upload': '📤 Upload New - Upload reference ads for this run'
+            }.get(x, x),
+            horizontal=False
         )
-        template_ids = None
+        st.session_state.sched_template_mode = template_mode
 
-    elif template_mode == 'specific':
-        # Specific template selection
-        templates = get_existing_templates()
+        if template_mode == 'unused':
+            # Show count of unused templates
+            all_templates = get_existing_templates()
+            used_templates = get_used_templates(selected_product_id)
+            unused_count = len([t for t in all_templates if t['storage_name'] not in used_templates])
 
-        if templates:
-            st.markdown("**Select templates to use:**")
+            st.info(f"📊 {unused_count} unused templates available for this product")
 
-            # Initialize selection from existing job
-            if existing_job and existing_job.get('template_ids'):
-                if not st.session_state.sched_selected_templates:
-                    st.session_state.sched_selected_templates = existing_job['template_ids']
+            template_count = st.slider(
+                "Templates per run",
+                min_value=1,
+                max_value=min(20, unused_count) if unused_count > 0 else 1,
+                value=min(5, unused_count) if unused_count > 0 else 1,
+                help="Number of templates to use in each scheduled run"
+            )
+            template_ids = None
 
-            visible_count = min(st.session_state.sched_templates_visible, len(templates))
-            visible_templates = templates[:visible_count]
+        elif template_mode == 'specific':
+            # Specific template selection
+            templates = get_existing_templates()
 
+            if templates:
+                st.markdown("**Select templates to use:**")
+
+                # Initialize selection from existing job
+                if existing_job and existing_job.get('template_ids'):
+                    if not st.session_state.sched_selected_templates:
+                        st.session_state.sched_selected_templates = existing_job['template_ids']
+
+                visible_count = min(st.session_state.sched_templates_visible, len(templates))
+                visible_templates = templates[:visible_count]
+
+                cols = st.columns(5)
+                for idx, template in enumerate(visible_templates):
+                    with cols[idx % 5]:
+                        storage_name = template['storage_name']
+                        is_selected = storage_name in st.session_state.sched_selected_templates
+
+                        thumb_url = get_signed_url(f"reference-ads/{storage_name}")
+                        if thumb_url:
+                            border = "3px solid #00ff00" if is_selected else "1px solid #333"
+                            st.markdown(
+                                f'<div style="border:{border};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                                f'<img src="{thumb_url}" style="width:100%;border-radius:2px;"/></div>',
+                                unsafe_allow_html=True
+                            )
+
+                        if st.checkbox(
+                            "✓" if is_selected else "Select",
+                            value=is_selected,
+                            key=f"tpl_select_{idx}"
+                        ):
+                            if storage_name not in st.session_state.sched_selected_templates:
+                                st.session_state.sched_selected_templates.append(storage_name)
+                        else:
+                            if storage_name in st.session_state.sched_selected_templates:
+                                st.session_state.sched_selected_templates.remove(storage_name)
+
+                if visible_count < len(templates):
+                    if st.button(f"Load More ({len(templates) - visible_count} more)"):
+                        st.session_state.sched_templates_visible += 30
+                        st.rerun()
+
+                st.markdown(f"**Selected:** {len(st.session_state.sched_selected_templates)} templates")
+                template_ids = st.session_state.sched_selected_templates
+                template_count = len(template_ids)
+            else:
+                st.warning("No templates available")
+                template_ids = []
+                template_count = 0
+
+        elif template_mode == 'upload':
+            # Upload new templates mode
+            st.markdown("**Upload reference ad templates:**")
+
+            uploaded_files = st.file_uploader(
+                "Upload reference ad images",
+                type=['jpg', 'jpeg', 'png', 'webp'],
+                accept_multiple_files=True,
+                help="Upload one or more reference ads to use for this scheduled run",
+                key="sched_file_uploader"
+            )
+
+            if uploaded_files:
+                # Preview uploaded files in grid
+                num_cols = min(5, len(uploaded_files))
+                cols = st.columns(num_cols)
+                for idx, file in enumerate(uploaded_files):
+                    with cols[idx % num_cols]:
+                        st.image(file, use_container_width=True)
+                        st.caption(file.name[:20] + "..." if len(file.name) > 20 else file.name)
+
+                st.success(f"📤 {len(uploaded_files)} template(s) ready to upload")
+
+                # Store files in session state for upload on save
+                st.session_state.sched_uploaded_files = uploaded_files
+                template_count = len(uploaded_files)
+                template_ids = None  # Will be populated on save after upload
+            else:
+                st.info("Upload one or more reference ad images to use for this scheduled run")
+                st.session_state.sched_uploaded_files = []
+                template_count = 0
+                template_ids = None
+
+    else:
+        # Scraped Template Library
+        from uuid import UUID
+
+        # Recommendation filter row
+        rec_filter_col1, rec_filter_col2 = st.columns([2, 1])
+
+        with rec_filter_col1:
+            rec_filter = st.selectbox(
+                "Show Templates",
+                options=["All Templates", "Recommended", "Unused Recommended"],
+                index={"all": 0, "recommended": 1, "unused_recommended": 2}.get(
+                    st.session_state.sched_scraped_rec_filter, 0
+                ),
+                key="sched_rec_filter_select",
+                help="Filter to show only templates recommended for this product"
+            )
+            st.session_state.sched_scraped_rec_filter = {
+                "All Templates": "all",
+                "Recommended": "recommended",
+                "Unused Recommended": "unused_recommended"
+            }.get(rec_filter, "all")
+
+        with rec_filter_col2:
+            # Show recommendation counts if product is selected
+            if selected_product_id and st.session_state.sched_scraped_rec_filter != "all":
+                try:
+                    from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                    rec_service = TemplateRecommendationService()
+                    counts = rec_service.get_recommendation_count(UUID(selected_product_id))
+                    if st.session_state.sched_scraped_rec_filter == "recommended":
+                        st.caption(f"{counts['total']} recommended templates")
+                    else:
+                        st.caption(f"{counts['unused']} unused recommendations")
+                except Exception:
+                    pass
+
+        # Filter row - 4 columns
+        filter_cols = st.columns(4)
+
+        # Category filter
+        with filter_cols[0]:
+            categories = get_template_categories()
+            selected_category = st.selectbox(
+                "Category",
+                options=categories,
+                index=categories.index(st.session_state.sched_scraped_category) if st.session_state.sched_scraped_category in categories else 0,
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+                key="sched_filter_category"
+            )
+            st.session_state.sched_scraped_category = selected_category
+
+        # Awareness Level filter
+        with filter_cols[1]:
+            awareness_opts = [{"value": None, "label": "All"}] + get_awareness_levels()
+            selected_awareness = st.selectbox(
+                "Awareness Level",
+                options=[a["value"] for a in awareness_opts],
+                format_func=lambda x: next((a["label"] for a in awareness_opts if a["value"] == x), "All"),
+                key="sched_filter_awareness"
+            )
+
+        # Industry/Niche filter
+        with filter_cols[2]:
+            niches = ["all"] + get_industry_niches()
+            selected_niche = st.selectbox(
+                "Industry/Niche",
+                options=niches,
+                format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+                key="sched_filter_niche"
+            )
+
+        # Target Sex filter
+        with filter_cols[3]:
+            sex_options = ["all", "male", "female", "unisex"]
+            selected_sex = st.selectbox(
+                "Target Audience",
+                options=sex_options,
+                format_func=lambda x: x.title() if x != "all" else "All",
+                key="sched_filter_sex"
+            )
+
+        # Get scraped templates with all filters
+        scraped_templates_list = get_scraped_templates(
+            category=selected_category if selected_category != "all" else None,
+            awareness_level=selected_awareness,
+            industry_niche=selected_niche if selected_niche != "all" else None,
+            target_sex=selected_sex if selected_sex != "all" else None,
+            limit=100  # Fetch more since we may filter
+        )
+
+        # Apply recommendation filter
+        if st.session_state.sched_scraped_rec_filter != "all" and selected_product_id:
+            try:
+                from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+                rec_service = TemplateRecommendationService()
+                unused_only = st.session_state.sched_scraped_rec_filter == "unused_recommended"
+                recommended_ids = rec_service.get_recommended_template_ids(
+                    UUID(selected_product_id), unused_only=unused_only
+                )
+                recommended_id_strs = {str(rid) for rid in recommended_ids}
+                scraped_templates_list = [
+                    t for t in scraped_templates_list
+                    if t.get('id') in recommended_id_strs
+                ]
+            except Exception:
+                pass
+
+        # Initialize selection from existing job
+        if existing_job and existing_job.get('scraped_template_ids'):
+            if not st.session_state.sched_selected_scraped_templates:
+                # Fetch template details for display
+                existing_ids = existing_job['scraped_template_ids']
+                st.session_state.sched_selected_scraped_templates = [
+                    {'id': tid, 'name': 'Template', 'storage_path': '', 'bucket': 'scraped-assets'}
+                    for tid in existing_ids
+                ]
+
+        if scraped_templates_list:
+            # Selection count and clear button
+            selected_count = len(st.session_state.sched_selected_scraped_templates)
+            header_cols = st.columns([3, 1])
+            with header_cols[0]:
+                category_label = f" in '{selected_category.replace('_', ' ').title()}'" if selected_category != "all" else ""
+                st.caption(f"Showing {len(scraped_templates_list)} templates{category_label} | **{selected_count} selected**")
+            with header_cols[1]:
+                if selected_count > 0:
+                    if st.button("Clear Selection", key="sched_clear_scraped_selection", use_container_width=True):
+                        st.session_state.sched_selected_scraped_templates = []
+                        st.rerun()
+
+            # Thumbnail grid - 5 columns with checkboxes
             cols = st.columns(5)
-            for idx, template in enumerate(visible_templates):
+            for idx, template in enumerate(scraped_templates_list):
                 with cols[idx % 5]:
-                    storage_name = template['storage_name']
-                    is_selected = storage_name in st.session_state.sched_selected_templates
+                    template_id = template.get('id', '')
+                    template_name = template.get('name', 'Unnamed')
+                    storage_path = template.get('storage_path', '')
+                    category = template.get('category', 'other')
+                    times_used = template.get('times_used', 0) or 0
 
-                    thumb_url = get_signed_url(f"reference-ads/{storage_name}")
+                    is_selected = is_scraped_template_selected(template_id)
+
+                    # Get preview URL
+                    thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+
+                    # Show thumbnail with selection border
                     if thumb_url:
-                        border = "3px solid #00ff00" if is_selected else "1px solid #333"
+                        border_style = "3px solid #00ff00" if is_selected else "1px solid #333"
                         st.markdown(
-                            f'<div style="border:{border};border-radius:4px;padding:2px;margin-bottom:4px;">'
-                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;"/></div>',
+                            f'<div style="border:{border_style};border-radius:4px;padding:2px;margin-bottom:4px;">'
+                            f'<img src="{thumb_url}" style="width:100%;border-radius:2px;" title="{template_name}"/>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f'<div style="height:80px;background:#333;border-radius:4px;'
+                            f'display:flex;align-items:center;justify-content:center;font-size:10px;">'
+                            f'{template_name[:10]}...</div>',
                             unsafe_allow_html=True
                         )
 
+                    # Show template info
+                    st.caption(f"📁 {category.replace('_', ' ').title()}")
+                    if times_used > 0:
+                        st.caption(f"Used {times_used}x")
+
+                    # Show asset match badge if product is selected
+                    if selected_product_id:
+                        asset_match = get_template_asset_match(template_id, selected_product_id)
+                        badge_html = get_asset_badge_html(
+                            asset_match.get("asset_match_score", 1.0),
+                            asset_match.get("detection_status", "unknown")
+                        )
+                        if badge_html:
+                            st.markdown(badge_html, unsafe_allow_html=True)
+
+                    # Parse bucket and path for storage
+                    parts = storage_path.split("/", 1) if storage_path else ["", ""]
+                    bucket = parts[0] if len(parts) == 2 else "scraped-assets"
+                    path = parts[1] if len(parts) == 2 else storage_path
+
+                    # Checkbox for multi-select
                     if st.checkbox(
-                        "✓" if is_selected else "Select",
+                        template_name[:15] + "..." if len(template_name) > 15 else template_name,
                         value=is_selected,
-                        key=f"tpl_select_{idx}"
+                        key=f"sched_scraped_tpl_cb_{idx}",
+                        help=template_name
                     ):
-                        if storage_name not in st.session_state.sched_selected_templates:
-                            st.session_state.sched_selected_templates.append(storage_name)
+                        if not is_selected:
+                            # Add to selection
+                            toggle_scraped_template_selection({
+                                'id': template_id,
+                                'name': template_name,
+                                'storage_path': path,
+                                'bucket': bucket
+                            })
+                            st.rerun()
                     else:
-                        if storage_name in st.session_state.sched_selected_templates:
-                            st.session_state.sched_selected_templates.remove(storage_name)
+                        if is_selected:
+                            # Remove from selection
+                            toggle_scraped_template_selection({
+                                'id': template_id,
+                                'name': template_name,
+                                'storage_path': path,
+                                'bucket': bucket
+                            })
+                            st.rerun()
 
-            if visible_count < len(templates):
-                if st.button(f"Load More ({len(templates) - visible_count} more)"):
-                    st.session_state.sched_templates_visible += 30
-                    st.rerun()
-
-            st.markdown(f"**Selected:** {len(st.session_state.sched_selected_templates)} templates")
-            template_ids = st.session_state.sched_selected_templates
-            template_count = len(template_ids)
+            # Set scraped_template_ids from selection
+            scraped_template_ids = [t['id'] for t in st.session_state.sched_selected_scraped_templates]
+            template_count = len(scraped_template_ids)
         else:
-            st.warning("No templates available")
-            template_ids = []
+            st.info("No scraped templates found. Use the Template Queue to approve templates from competitor ads.")
+            scraped_template_ids = []
             template_count = 0
-
-    elif template_mode == 'upload':
-        # Upload new templates mode
-        st.markdown("**Upload reference ad templates:**")
-
-        uploaded_files = st.file_uploader(
-            "Upload reference ad images",
-            type=['jpg', 'jpeg', 'png', 'webp'],
-            accept_multiple_files=True,
-            help="Upload one or more reference ads to use for this scheduled run",
-            key="sched_file_uploader"
-        )
-
-        if uploaded_files:
-            # Preview uploaded files in grid
-            num_cols = min(5, len(uploaded_files))
-            cols = st.columns(num_cols)
-            for idx, file in enumerate(uploaded_files):
-                with cols[idx % num_cols]:
-                    st.image(file, use_container_width=True)
-                    st.caption(file.name[:20] + "..." if len(file.name) > 20 else file.name)
-
-            st.success(f"📤 {len(uploaded_files)} template(s) ready to upload")
-
-            # Store files in session state for upload on save
-            st.session_state.sched_uploaded_files = uploaded_files
-            template_count = len(uploaded_files)
-            template_ids = None  # Will be populated on save after upload
-        else:
-            st.info("Upload one or more reference ad images to use for this scheduled run")
-            st.session_state.sched_uploaded_files = []
-            template_count = 0
-            template_ids = None
 
     st.divider()
 
@@ -1455,113 +3195,155 @@ def render_create_schedule():
     # Submit
     # ========================================================================
 
-    col1, col2, col3 = st.columns([2, 2, 4])
-
-    with col1:
-        if st.button("💾 Save Schedule", type="primary", use_container_width=True):
-            # Validation
-            errors = []
-            if not job_name:
-                errors.append("Job name is required")
+    def _validate_ad_creation_form():
+        """Validate ad creation form and return errors list."""
+        errors = []
+        if not job_name:
+            errors.append("Job name is required")
+        if template_source == 'uploaded':
             if template_mode == 'specific' and not template_ids:
                 errors.append("Select at least one template")
             if template_mode == 'upload' and not st.session_state.sched_uploaded_files:
                 errors.append("Upload at least one template image")
-            if export_destination in ['email', 'both'] and not export_email:
-                errors.append("Email address is required")
+        else:
+            if not scraped_template_ids:
+                errors.append("Select at least one scraped template")
+        if export_destination in ['email', 'both'] and not export_email:
+            errors.append("Email address is required")
+        if content_source == 'plan' and not selected_plan_id:
+            errors.append("Select a belief plan for plan-based scheduling")
+        if content_source == 'angles' and not selected_angle_ids:
+            errors.append("Select at least one angle for angle-based scheduling")
+        if has_offer_variants and not offer_variant_id:
+            errors.append("Offer variant selection is required. This product has multiple landing pages.")
+        return errors
 
-            # Belief-first validations
-            if content_source == 'plan' and not selected_plan_id:
-                errors.append("Select a belief plan for plan-based scheduling")
-            if content_source == 'angles' and not selected_angle_ids:
-                errors.append("Select at least one angle for angle-based scheduling")
+    def _build_ad_creation_parameters():
+        """Build the parameters dict for an ad creation job."""
+        params = {
+            'num_variations': num_variations,
+            'content_source': content_source,
+            'color_mode': color_mode,
+            'image_selection_mode': image_selection_mode,
+            'export_destination': export_destination,
+            'export_email': export_email if export_destination in ['email', 'both'] else None,
+            'persona_id': persona_id,
+            'variant_id': variant_id,
+            'offer_variant_id': offer_variant_id,
+            'destination_url': destination_url,
+            'additional_instructions': additional_instructions if additional_instructions else None,
+            'image_resolution': image_resolution
+        }
+        if content_source == 'plan':
+            params['plan_id'] = selected_plan_id
+        elif content_source == 'angles':
+            params['angle_ids'] = selected_angle_ids
+            params['belief_persona_id'] = belief_persona_id
+            params['belief_jtbd_id'] = belief_jtbd_id
+        return params
 
-            # Offer variant validation - REQUIRED when product has offer variants
-            if has_offer_variants and not offer_variant_id:
-                errors.append("Offer variant selection is required. This product has multiple landing pages.")
+    def _build_ad_creation_job_data(params, sched_type, cron_expr, sched_at, next_run_at, max_runs_val):
+        """Build the full job_data dict for an ad creation job."""
+        return {
+            'product_id': selected_product_id,
+            'brand_id': selected_product.get('brand_id') or selected_product.get('brands', {}).get('id'),
+            'name': job_name,
+            'schedule_type': sched_type,
+            'cron_expression': cron_expr,
+            'scheduled_at': sched_at,
+            'next_run_at': next_run_at,
+            'max_runs': max_runs_val,
+            'template_source': template_source,
+            'template_mode': template_mode if template_source == 'uploaded' else None,
+            'template_count': template_count if template_source == 'uploaded' and template_mode == 'unused' else None,
+            'template_ids': template_ids if template_source == 'uploaded' and template_mode in ['specific', 'upload'] else None,
+            'scraped_template_ids': scraped_template_ids if template_source == 'scraped' else None,
+            'parameters': params
+        }
 
+    def _handle_template_upload():
+        """Handle upload mode - upload files first. Returns True on success."""
+        if template_source == 'uploaded' and template_mode == 'upload':
+            nonlocal template_ids, template_count
+            with st.spinner("Uploading templates..."):
+                uploaded_storage_names = upload_template_files(st.session_state.sched_uploaded_files)
+            if not uploaded_storage_names:
+                st.error("Failed to upload templates")
+                return False
+            template_ids = uploaded_storage_names
+            template_count = len(uploaded_storage_names)
+            st.success(f"Uploaded {template_count} template(s)")
+        return True
+
+    def _clear_ad_creation_state():
+        """Clear form state after successful submit."""
+        st.session_state.scheduler_view = 'list'
+        st.session_state.sched_selected_templates = []
+        st.session_state.sched_uploaded_files = []
+        st.session_state.sched_selected_angle_ids = []
+        st.session_state.sched_selected_scraped_templates = []
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True):
+            errors = _validate_ad_creation_form()
             if errors:
                 for error in errors:
                     st.error(error)
             else:
-                # Handle upload mode - upload files first
-                if template_mode == 'upload':
-                    with st.spinner("Uploading templates..."):
-                        uploaded_storage_names = upload_template_files(st.session_state.sched_uploaded_files)
+                if not _handle_template_upload():
+                    st.stop()
 
-                    if not uploaded_storage_names:
-                        st.error("Failed to upload templates")
-                        st.stop()
-
-                    template_ids = uploaded_storage_names
-                    template_count = len(uploaded_storage_names)
-                    st.success(f"✅ Uploaded {template_count} template(s)")
-                # Build job data
-                parameters = {
-                    'num_variations': num_variations,
-                    'content_source': content_source,
-                    'color_mode': color_mode,
-                    'image_selection_mode': image_selection_mode,
-                    'export_destination': export_destination,
-                    'export_email': export_email if export_destination in ['email', 'both'] else None,
-                    'persona_id': persona_id,
-                    'variant_id': variant_id,
-                    'offer_variant_id': offer_variant_id,
-                    'destination_url': destination_url,
-                    'additional_instructions': additional_instructions if additional_instructions else None,
-                    'image_resolution': image_resolution
-                }
-
-                # Add belief-first parameters based on content_source
-                if content_source == 'plan':
-                    parameters['plan_id'] = selected_plan_id
-                elif content_source == 'angles':
-                    parameters['angle_ids'] = selected_angle_ids
-                    parameters['belief_persona_id'] = belief_persona_id
-                    parameters['belief_jtbd_id'] = belief_jtbd_id
-
+                parameters = _build_ad_creation_parameters()
                 next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
-
-                job_data = {
-                    'product_id': selected_product_id,
-                    'brand_id': selected_product.get('brand_id') or selected_product.get('brands', {}).get('id'),
-                    'name': job_name,
-                    'schedule_type': schedule_type,
-                    'cron_expression': cron_expression,
-                    'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
-                    'next_run_at': next_run.isoformat() if next_run else None,
-                    'max_runs': max_runs,
-                    'template_mode': template_mode,
-                    'template_count': template_count if template_mode == 'unused' else None,
-                    # Both 'specific' and 'upload' modes use template_ids
-                    'template_ids': template_ids if template_mode in ['specific', 'upload'] else None,
-                    'parameters': parameters
-                }
+                job_data = _build_ad_creation_job_data(
+                    parameters, schedule_type, cron_expression,
+                    scheduled_at.isoformat() if scheduled_at else None,
+                    next_run.isoformat() if next_run else None,
+                    max_runs,
+                )
 
                 if is_edit:
                     if update_scheduled_job(st.session_state.edit_job_id, job_data):
                         st.success("Schedule updated!")
-                        st.session_state.scheduler_view = 'list'
-                        st.session_state.sched_selected_templates = []
-                        st.session_state.sched_uploaded_files = []
-                        st.session_state.sched_selected_angle_ids = []
+                        _clear_ad_creation_state()
                         st.rerun()
                 else:
                     job_id = create_scheduled_job(job_data)
                     if job_id:
                         st.success("Schedule created!")
-                        st.session_state.scheduler_view = 'list'
-                        st.session_state.sched_selected_templates = []
-                        st.session_state.sched_uploaded_files = []
-                        st.session_state.sched_selected_angle_ids = []
+                        _clear_ad_creation_state()
                         st.rerun()
 
     with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_ad_creation_now"):
+            errors = _validate_ad_creation_form()
+            if errors:
+                for error in errors:
+                    st.error(error)
+            else:
+                if not _handle_template_upload():
+                    st.stop()
+
+                parameters = _build_ad_creation_parameters()
+                run_now_time = datetime.now(PST) + timedelta(minutes=1)
+                job_data = _build_ad_creation_job_data(
+                    parameters, 'one_time', None,
+                    run_now_time.isoformat(),
+                    run_now_time.isoformat(),
+                    None,
+                )
+
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Job scheduled to run in ~1 minute!")
+                    _clear_ad_creation_state()
+                    st.rerun()
+
+    with col3:
         if st.button("Cancel", use_container_width=True):
-            st.session_state.scheduler_view = 'list'
-            st.session_state.sched_selected_templates = []
-            st.session_state.sched_uploaded_files = []
-            st.session_state.sched_selected_angle_ids = []
+            _clear_ad_creation_state()
             st.rerun()
 
 
@@ -1595,9 +3377,19 @@ def render_schedule_detail():
             type_badge = "🔄 "
         elif job_type == 'scorecard':
             type_badge = "📊 "
+        elif job_type == 'template_scrape':
+            type_badge = "📥 "
+        elif job_type == 'template_approval':
+            type_badge = "✅ "
+        elif job_type == 'ad_classification':
+            type_badge = "🔬 "
+        elif job_type == 'asset_download':
+            type_badge = "📦 "
         st.title(f"{status_emoji} {type_badge}{job['name']}")
         if job_type == 'ad_creation':
             st.caption(f"{brand_info.get('name', 'Unknown')} → {product_info.get('name', 'Unknown')}")
+        elif job_type == 'template_approval':
+            st.caption("System-wide template queue processing")
         else:
             st.caption(f"{brand_info.get('name', 'Unknown')}")
 
@@ -1667,14 +3459,21 @@ def render_schedule_detail():
     with col2:
         if job_type == 'ad_creation':
             st.markdown("### Templates")
-            template_mode = job.get('template_mode') or 'unused'
-            st.markdown(f"**Mode:** {template_mode.capitalize()}")
+            template_source = job.get('template_source', 'uploaded')
+            st.markdown(f"**Source:** {'Scraped Library' if template_source == 'scraped' else 'Uploaded'}")
 
-            if template_mode == 'unused':
-                st.markdown(f"**Per Run:** {job.get('template_count', 'N/A')} templates")
+            if template_source == 'scraped':
+                scraped_ids = job.get('scraped_template_ids') or []
+                st.markdown(f"**Selected:** {len(scraped_ids)} templates")
             else:
-                template_ids = job.get('template_ids') or []
-                st.markdown(f"**Selected:** {len(template_ids)} templates")
+                template_mode = job.get('template_mode') or 'unused'
+                st.markdown(f"**Mode:** {template_mode.capitalize()}")
+
+                if template_mode == 'unused':
+                    st.markdown(f"**Per Run:** {job.get('template_count', 'N/A')} templates")
+                else:
+                    template_ids = job.get('template_ids') or []
+                    st.markdown(f"**Selected:** {len(template_ids)} templates")
         elif job_type == 'meta_sync':
             st.markdown("### Sync Settings")
             params = job.get('parameters', {}) or {}
@@ -1686,6 +3485,16 @@ def render_schedule_detail():
             st.markdown(f"**Min Spend:** ${params.get('min_spend', 10.0)}")
             if params.get('export_email'):
                 st.markdown(f"**Email:** {params['export_email']}")
+        elif job_type == 'template_scrape':
+            st.markdown("### Scrape Settings")
+            params = job.get('parameters', {}) or {}
+            st.markdown(f"**Max Ads:** {params.get('max_ads', 50)}")
+            st.markdown(f"**Images Only:** {'Yes' if params.get('images_only', True) else 'No'}")
+            st.markdown(f"**Auto Queue:** {'Yes' if params.get('auto_queue', True) else 'No'}")
+            search_url = params.get('search_url', '')
+            if search_url:
+                st.markdown(f"**Search URL:**")
+                st.caption(search_url[:80] + "..." if len(search_url) > 80 else search_url)
 
     st.divider()
 
@@ -1799,6 +3608,8 @@ def render_schedule_detail():
 # ============================================================================
 # Main Router
 # ============================================================================
+
+# Organization context (selector rendered once in app.py sidebar)
 
 # Initialize confirm_delete state
 if 'confirm_delete' not in st.session_state:

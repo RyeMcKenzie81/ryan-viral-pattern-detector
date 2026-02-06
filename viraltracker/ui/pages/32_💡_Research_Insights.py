@@ -23,6 +23,11 @@ st.set_page_config(
     layout="wide"
 )
 
+from viraltracker.ui.auth import require_auth
+require_auth()
+from viraltracker.ui.utils import require_feature
+require_feature("research_insights", "Research Insights")
+
 # ============================================
 # SERVICE INITIALIZATION
 # ============================================
@@ -35,9 +40,12 @@ def get_angle_candidate_service():
 
 
 def get_planning_service():
-    """Get PlanningService instance."""
+    """Get PlanningService instance with tracking enabled."""
     from viraltracker.services.planning_service import PlanningService
-    return PlanningService()
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PlanningService()
+    setup_tracking_context(service)
+    return service
 
 
 def get_supabase_client():

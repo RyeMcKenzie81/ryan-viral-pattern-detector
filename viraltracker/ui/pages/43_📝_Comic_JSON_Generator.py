@@ -23,6 +23,17 @@ st.set_page_config(
     layout="wide"
 )
 
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
+# Organization context (selector rendered once in app.py sidebar)
+from viraltracker.ui.utils import get_current_organization_id
+org_id = get_current_organization_id()
+if not org_id:
+    st.warning("Please select a workspace to continue.")
+    st.stop()
+
 # Initialize session state
 if "comic_json_result" not in st.session_state:
     st.session_state.comic_json_result = None
@@ -31,12 +42,27 @@ if "comic_analysis" not in st.session_state:
 if "script_analysis" not in st.session_state:
     st.session_state.script_analysis = None
 
-
 def get_gemini_service():
-    """Get Gemini service for vision analysis."""
+    """Get Gemini service for vision analysis with usage tracking."""
     from viraltracker.services.gemini_service import GeminiService
-    return GeminiService()
+    from viraltracker.services.usage_tracker import UsageTracker
+    from viraltracker.core.database import get_supabase_client
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
 
+    service = GeminiService()
+
+    # Set up usage tracking if org context available
+    org_id = get_current_organization_id()
+    if org_id and org_id != "all":
+        try:
+            db = get_supabase_client()
+            tracker = UsageTracker(db)
+            service.set_tracking_context(tracker, get_current_user_id(), org_id)
+        except Exception as e:
+            logger.warning(f"Failed to set up usage tracking: {e}")
+
+    return service
 
 async def analyze_comic_layout(image_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
@@ -109,7 +135,6 @@ Be precise about the grid layout - this is critical for video generation."""
     except Exception as e:
         logger.error(f"Comic analysis failed: {e}")
         return {"error": str(e)}
-
 
 async def analyze_script(script_text: str, panel_count: int) -> Dict[str, Any]:
     """
@@ -185,7 +210,6 @@ Rules:
         logger.error(f"Script analysis failed: {e}")
         return {"error": str(e)}
 
-
 def merge_analyses(comic_analysis: Dict, script_analysis: Dict) -> Dict[str, Any]:
     """
     Merge comic layout analysis with script analysis into final JSON.
@@ -239,7 +263,6 @@ def merge_analyses(comic_analysis: Dict, script_analysis: Dict) -> Dict[str, Any
 
     return result
 
-
 def render_json_editor(json_data: Dict) -> Dict:
     """Render an editable JSON view."""
     json_str = json.dumps(json_data, indent=2)
@@ -255,7 +278,6 @@ def render_json_editor(json_data: Dict) -> Dict:
     except json.JSONDecodeError:
         st.error("Invalid JSON - please fix syntax errors")
         return json_data
-
 
 # Main UI
 st.title("📝 Comic JSON Generator")

@@ -1,11 +1,13 @@
 """
-Agent Catalog - Comprehensive documentation for the PydanticAI agent architecture.
+Agent Catalog - Auto-generated documentation for the PydanticAI agent architecture.
 
-This page documents the orchestrator pattern with:
-- 1 Orchestrator Agent with 6 routing tools
-- 6 Specialized Agents (Twitter, TikTok, YouTube, Facebook, Analysis, Ad Creation)
-- Total: 33 underlying tools + 6 routing tools = 39 tools
-- All agents use claude-sonnet-4-5-20250929
+This page automatically extracts all agents and displays them with their tools.
+The orchestrator pattern routes queries to specialized platform agents.
+
+Benefits:
+- Zero-maintenance documentation (auto-updates when agents are added)
+- Single source of truth (agent definitions)
+- No hardcoded data - everything extracted from agents
 """
 
 import streamlit as st
@@ -61,7 +63,7 @@ with col2:
 │      ORCHESTRATOR AGENT                         │
 │   - Analyzes intent                             │
 │   - Routes to specialized agent                 │
-│   - 5 routing tools                             │
+│   - Coordinates multi-step workflows            │
 └──────────────────┬──────────────────────────────┘
                    │
        ┌───────────┼───────────┬─────────┬────────┐
@@ -69,11 +71,34 @@ with col2:
        ▼           ▼           ▼         ▼        ▼
    ┌────────┐ ┌────────┐ ┌────────┐ ┌──────┐ ┌─────────┐
    │Twitter │ │TikTok  │ │YouTube │ │ FB   │ │Analysis │
-   │8 tools │ │5 tools │ │1 tool  │ │2 tool│ │3 tools  │
+   │ Agent  │ │ Agent  │ │ Agent  │ │Agent │ │  Agent  │
    └────────┘ └────────┘ └────────┘ └──────┘ └─────────┘
     """, language=None)
 
 st.divider()
+
+# ============================================================================
+# Get Agents from Collector
+# ============================================================================
+
+try:
+    from viraltracker.agent.agent_collector import (
+        get_all_agents,
+        get_agent_stats
+    )
+
+    # Get agents and stats
+    all_agents = get_all_agents()
+    stats = get_agent_stats()
+
+except Exception as e:
+    st.error(f"Error loading agents: {e}")
+    st.info("Agents could not be loaded. This may be due to import errors.")
+    st.stop()
+
+if not all_agents:
+    st.warning("No agents found.")
+    st.stop()
 
 # ============================================================================
 # Metrics
@@ -82,15 +107,69 @@ st.divider()
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("Total Agents", "7", help="1 Orchestrator + 6 Specialized")
+    st.metric("Total Agents", stats['total_agents'], help="1 Orchestrator + Specialists")
 with col2:
-    st.metric("Routing Tools", "6", help="Orchestrator routing tools")
+    st.metric("Routing Tools", stats['routing_tools'], help="Orchestrator routing tools")
 with col3:
-    st.metric("Platform Tools", "33", help="Specialized agent tools")
+    st.metric("Platform Tools", stats['platform_tools'], help="Specialized agent tools")
 with col4:
-    st.metric("Total Tools", "39", help="Routing + Platform tools")
+    st.metric("Total Tools", stats['total_tools'], help="Routing + Platform tools")
 
 st.divider()
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def render_tool_list(tools, expanded=False):
+    """Render a list of tools as expandable items."""
+    for tool in tools:
+        with st.expander(f"🔧 `{tool.name}`", expanded=expanded):
+            st.markdown(f"**Description:** {tool.description}")
+            st.markdown(f"**Category:** `{tool.category}`")
+
+
+def render_agent(agent_info):
+    """Render an agent with all its details."""
+    # Header
+    st.markdown(f"### {agent_info.display_name}")
+    st.markdown(f"**Role:** {agent_info.role}")
+    st.markdown(f"**Model:** `{agent_info.model}`")
+    st.markdown(f"**Module:** `{agent_info.module_path}`")
+
+    st.divider()
+
+    # Description from system prompt
+    if agent_info.system_prompt:
+        # Extract key sections from system prompt
+        prompt_lines = agent_info.system_prompt.split('\n')
+        summary_lines = []
+        in_section = False
+
+        for line in prompt_lines[:30]:  # First 30 lines max
+            line = line.strip()
+            if line.startswith('**') or line.startswith('Your role') or line.startswith('This agent'):
+                in_section = True
+            if in_section and line:
+                summary_lines.append(line)
+            if len(summary_lines) > 10:
+                break
+
+        if summary_lines:
+            st.markdown('\n'.join(summary_lines[:10]))
+    else:
+        st.markdown(agent_info.description)
+
+    st.divider()
+
+    # Tools section
+    st.markdown(f"#### Tools ({agent_info.tool_count})")
+
+    if agent_info.tools:
+        render_tool_list(agent_info.tools)
+    else:
+        st.info("No tools registered for this agent")
+
 
 # ============================================================================
 # Agent Details
@@ -99,327 +178,28 @@ st.divider()
 st.subheader("Agent Details")
 
 # Create tabs for each agent
-tabs = st.tabs([
-    "Orchestrator",
-    "Twitter Agent",
-    "TikTok Agent",
-    "YouTube Agent",
-    "Facebook Agent",
-    "Analysis Agent",
-    "Ad Creation Agent"
-])
+# Order: Orchestrator first, then specialists alphabetically
+agent_order = ['orchestrator'] + sorted(
+    [name for name in all_agents.keys() if name != 'orchestrator']
+)
 
-# Orchestrator Agent
-with tabs[0]:
-    st.markdown("### Orchestrator Agent")
-    st.markdown("**Role:** Intelligent request routing and coordination")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.orchestrator`")
+# Create tab names
+tab_names = []
+for agent_name in agent_order:
+    if agent_name in all_agents:
+        agent = all_agents[agent_name]
+        tab_names.append(agent.display_name)
 
-    st.divider()
+if not tab_names:
+    st.info("No agents available.")
+    st.stop()
 
-    st.markdown("""
-    The orchestrator is the main entry point for all agent requests. It analyzes user queries
-    and routes them to the appropriate specialized agent.
+tabs = st.tabs(tab_names)
 
-    **Responsibilities:**
-    - Understand user intent from natural language
-    - Identify platform and task requirements
-    - Route to the most appropriate specialized agent
-    - Pass relevant context and parameters
-    - Coordinate multi-step workflows
-    - Summarize results from specialized agents
-
-    **Routing Logic:**
-    - Keywords: "Twitter", "tweet", "X" → Twitter Agent
-    - Keywords: "TikTok", "video", "hashtag" → TikTok Agent
-    - Keywords: "YouTube", "shorts" → YouTube Agent
-    - Keywords: "Facebook", "ad", "Meta" → Facebook Agent
-    - Keywords: "analyze", "outliers", "statistics" → Analysis Agent
-    """)
-
-    st.divider()
-
-    st.markdown("#### Routing Tools (5)")
-
-    tools = [
-        {
-            "name": "route_to_twitter_agent",
-            "description": "Route request to Twitter Agent for Twitter/X operations",
-            "parameters": "query: str",
-            "returns": "str (result from Twitter Agent)"
-        },
-        {
-            "name": "route_to_tiktok_agent",
-            "description": "Route request to TikTok Agent for TikTok operations",
-            "parameters": "query: str",
-            "returns": "str (result from TikTok Agent)"
-        },
-        {
-            "name": "route_to_youtube_agent",
-            "description": "Route request to YouTube Agent for YouTube operations",
-            "parameters": "query: str",
-            "returns": "str (result from YouTube Agent)"
-        },
-        {
-            "name": "route_to_facebook_agent",
-            "description": "Route request to Facebook Agent for Facebook Ad Library operations",
-            "parameters": "query: str",
-            "returns": "str (result from Facebook Agent)"
-        },
-        {
-            "name": "route_to_analysis_agent",
-            "description": "Route request to Analysis Agent for statistical and AI analysis",
-            "parameters": "query: str",
-            "returns": "str (result from Analysis Agent)"
-        }
-    ]
-
-    for tool in tools:
-        with st.expander(f"📌 `{tool['name']}`", expanded=False):
-            st.markdown(f"**Description:** {tool['description']}")
-            st.markdown(f"**Parameters:** `{tool['parameters']}`")
-            st.markdown(f"**Returns:** `{tool['returns']}`")
-
-# Twitter Agent
-with tabs[1]:
-    st.markdown("### Twitter Agent")
-    st.markdown("**Role:** Twitter/X platform specialist")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.agents.twitter_agent`")
-
-    st.divider()
-
-    st.markdown("""
-    Handles all Twitter/X data operations including searching, scraping, analysis, and content generation.
-
-    **Capabilities:**
-    - Search and scrape tweets by keyword
-    - Find viral tweets with high engagement
-    - Identify comment opportunities
-    - Analyze search term performance
-    - Generate content from viral hooks
-    - Export data to various formats
-
-    **Services Used:**
-    - `TwitterService` - Database queries
-    - `ScrapingService` - Apify scraping
-    - `GeminiService` - AI analysis
-    - `StatsService` - Engagement calculations
-    """)
-
-    st.divider()
-
-    st.markdown("#### Tools (8)")
-
-    twitter_tools = [
-        ("search_twitter_tool", "Search and scrape tweets by keyword using Apify"),
-        ("get_top_tweets_tool", "Get top tweets from database by engagement metrics"),
-        ("export_tweets_tool", "Export tweets to CSV/JSON format"),
-        ("find_comment_opportunities_tool", "Find viral tweets suitable for commenting"),
-        ("export_comments_tool", "Export comment opportunities to file"),
-        ("analyze_search_term_tool", "Analyze keyword performance and trends"),
-        ("generate_content_tool", "Generate content from viral hooks using AI"),
-        ("verify_scrape_tool", "Verify scraping results and data quality")
-    ]
-
-    for tool_name, description in twitter_tools:
-        with st.expander(f"🔧 `{tool_name}`", expanded=False):
-            st.markdown(f"**Description:** {description}")
-            st.markdown(f"**Platform:** Twitter/X")
-
-# TikTok Agent
-with tabs[2]:
-    st.markdown("### TikTok Agent")
-    st.markdown("**Role:** TikTok platform specialist")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.agents.tiktok_agent`")
-
-    st.divider()
-
-    st.markdown("""
-    Handles TikTok video discovery, analysis, and user research.
-
-    **Capabilities:**
-    - Search TikTok by keyword or hashtag
-    - Scrape user accounts and profiles
-    - Analyze individual videos
-    - Batch analyze multiple videos
-    - Track trending content
-    """)
-
-    st.divider()
-
-    st.markdown("#### Tools (5)")
-
-    tiktok_tools = [
-        ("search_tiktok_tool", "Search TikTok videos by keyword or hashtag"),
-        ("scrape_user_tool", "Scrape TikTok user account and videos"),
-        ("analyze_video_tool", "Analyze single TikTok video"),
-        ("batch_analyze_videos_tool", "Analyze multiple videos in batch"),
-        ("export_tiktok_tool", "Export TikTok data to file")
-    ]
-
-    for tool_name, description in tiktok_tools:
-        with st.expander(f"🔧 `{tool_name}`", expanded=False):
-            st.markdown(f"**Description:** {description}")
-            st.markdown(f"**Platform:** TikTok")
-
-# YouTube Agent
-with tabs[3]:
-    st.markdown("### YouTube Agent")
-    st.markdown("**Role:** YouTube platform specialist")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.agents.youtube_agent`")
-
-    st.divider()
-
-    st.markdown("""
-    Handles YouTube video search and discovery, including Shorts.
-
-    **Capabilities:**
-    - Search YouTube videos by keyword
-    - Find trending Shorts
-    - Video metadata extraction
-    """)
-
-    st.divider()
-
-    st.markdown("#### Tools (1)")
-
-    youtube_tools = [
-        ("search_youtube_tool", "Search YouTube videos and Shorts by keyword")
-    ]
-
-    for tool_name, description in youtube_tools:
-        with st.expander(f"🔧 `{tool_name}`", expanded=False):
-            st.markdown(f"**Description:** {description}")
-            st.markdown(f"**Platform:** YouTube")
-
-# Facebook Agent
-with tabs[4]:
-    st.markdown("### Facebook Agent")
-    st.markdown("**Role:** Facebook Ad Library specialist")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.agents.facebook_agent`")
-
-    st.divider()
-
-    st.markdown("""
-    Handles Facebook Ad Library operations for competitive research.
-
-    **Capabilities:**
-    - Search ads by URL
-    - Scrape ads from specific pages
-    - Track ad creative and copy
-    - Monitor competitor advertising
-    """)
-
-    st.divider()
-
-    st.markdown("#### Tools (2)")
-
-    facebook_tools = [
-        ("search_ads_tool", "Search Facebook Ad Library by URL"),
-        ("scrape_page_ads_tool", "Scrape all ads from a specific Facebook page")
-    ]
-
-    for tool_name, description in facebook_tools:
-        with st.expander(f"🔧 `{tool_name}`", expanded=False):
-            st.markdown(f"**Description:** {description}")
-            st.markdown(f"**Platform:** Facebook")
-
-# Analysis Agent
-with tabs[5]:
-    st.markdown("### Analysis Agent")
-    st.markdown("**Role:** Advanced analytics and AI-powered insights")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.agents.analysis_agent`")
-
-    st.divider()
-
-    st.markdown("""
-    Handles cross-platform analysis, statistical outlier detection, and AI-powered insights.
-
-    **Capabilities:**
-    - Find viral outliers using statistical methods
-    - Analyze tweet hooks with AI
-    - Export comprehensive analysis reports
-    - Cross-platform trend analysis
-
-    **Services Used:**
-    - `StatsService` - Z-score and percentile calculations
-    - `GeminiService` - AI hook analysis
-    - `TwitterService` - Data retrieval
-    """)
-
-    st.divider()
-
-    st.markdown("#### Tools (3)")
-
-    analysis_tools = [
-        ("find_outliers_tool", "Find viral outliers using Z-score or percentile methods"),
-        ("analyze_hooks_tool", "AI-powered analysis of viral hooks and content patterns"),
-        ("export_analysis_tool", "Export analysis results to JSON/CSV with full metadata")
-    ]
-
-    for tool_name, description in analysis_tools:
-        with st.expander(f"🔧 `{tool_name}`", expanded=False):
-            st.markdown(f"**Description:** {description}")
-            st.markdown(f"**Platform:** Cross-platform")
-
-# Ad Creation Agent
-with tabs[6]:
-    st.markdown("### Ad Creation Agent")
-    st.markdown("**Role:** Facebook ad creative generation specialist")
-    st.markdown("**Model:** `claude-sonnet-4-5-20250929`")
-    st.markdown("**Module:** `viraltracker.agent.agents.ad_creation_agent`")
-
-    st.divider()
-
-    st.markdown("""
-    Handles end-to-end Facebook ad creative generation with AI-powered dual review system.
-
-    **Capabilities:**
-    - Generate 5 ad variations from reference ad
-    - AI vision analysis of reference ads (Claude)
-    - Smart hook and product image selection
-    - Dual AI review (Claude + Gemini)
-    - Automated quality control workflow
-    - Complete tracking and storage
-
-    **Services Used:**
-    - `SupabaseService` - Product/hooks retrieval & storage
-    - `ClaudeService` - Vision analysis & quality review
-    - `GeminiService` - Image generation & secondary review
-    - `StorageService` - Image upload/download
-    """)
-
-    st.divider()
-
-    st.markdown("#### Tools (14)")
-
-    ad_creation_tools = [
-        ("get_product_with_images", "Fetch product details and images from Supabase"),
-        ("get_hooks_for_product", "Retrieve viral hooks based on product category"),
-        ("get_ad_brief_template", "Get structured ad brief template"),
-        ("upload_reference_ad", "Upload reference ad to Supabase Storage"),
-        ("analyze_reference_ad", "Claude vision analysis of reference ad"),
-        ("select_hooks", "Smart hook selection for ad variations"),
-        ("select_product_images", "Choose best product images for ads"),
-        ("generate_nano_banana_prompt", "Create Gemini image generation prompt"),
-        ("execute_nano_banana", "Generate ad image using Gemini AI"),
-        ("save_generated_ad", "Save generated ad to database with metadata"),
-        ("review_ad_claude", "Claude AI quality review of generated ad"),
-        ("review_ad_gemini", "Gemini AI quality review of generated ad"),
-        ("create_ad_run", "Create workflow run tracker in database"),
-        ("complete_ad_workflow", "Master orchestrator for 5-ad workflow")
-    ]
-
-    for tool_name, description in ad_creation_tools:
-        with st.expander(f"🔧 `{tool_name}`", expanded=False):
-            st.markdown(f"**Description:** {description}")
-            st.markdown(f"**Platform:** Facebook Ads")
+for tab, agent_name in zip(tabs, agent_order):
+    if agent_name in all_agents:
+        with tab:
+            render_agent(all_agents[agent_name])
 
 # ============================================================================
 # Workflow Examples
@@ -463,46 +243,79 @@ with col1:
 
 with col2:
     st.markdown("""
-    **Example 3: Outlier Detection**
+    **Example 3: Create Facebook Ads**
 
     ```
-    User: "Find viral outliers from last week"
+    User: "Create 5 ads for Wonder Paws"
 
     Flow:
     1. Orchestrator receives query
-    2. Identifies "outliers" → routes to Analysis Agent
-    3. Analysis Agent calls find_outliers_tool
-    4. Returns statistical outliers with Z-scores
+    2. Routes to Ad Creation Agent
+    3. Agent analyzes reference ad (Claude vision)
+    4. Selects hooks and product images
+    5. Generates 5 ad variations (Gemini)
+    6. Dual AI review (Claude + Gemini)
+    7. Returns approved ads
     ```
     """)
 
     st.markdown("""
-    **Example 4: Multi-Platform Research**
+    **Example 4: Generate Audio**
 
     ```
-    User: "Find content about Bitcoin on Twitter and TikTok"
+    User: "Generate audio from this ELS script"
 
     Flow:
     1. Orchestrator receives query
-    2. Routes to Twitter Agent for tweets
-    3. Routes to TikTok Agent for videos
-    4. Coordinates results from both agents
-    5. Returns unified insights
+    2. Routes to Audio Production Agent
+    3. Validates ELS script format
+    4. Parses into structured beats
+    5. Generates audio via ElevenLabs
+    6. Adds pauses via FFmpeg
+    7. Exports final audio
     ```
     """)
+
+# ============================================================================
+# Agent Summary Table
+# ============================================================================
+
+st.divider()
+
+st.subheader("Agent Summary")
+
+# Create summary table
+summary_data = []
+for agent_name in agent_order:
+    if agent_name in all_agents:
+        agent = all_agents[agent_name]
+        summary_data.append({
+            'Agent': agent.display_name,
+            'Role': agent.role,
+            'Tools': agent.tool_count,
+            'Model': agent.model.split('/')[-1] if '/' in agent.model else agent.model
+        })
+
+if summary_data:
+    import pandas as pd
+    df = pd.DataFrame(summary_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ============================================================================
 # Footer
 # ============================================================================
 
 st.markdown("---")
-st.caption("""
+st.caption(f"""
+**Auto-Generated Catalog**
+This page automatically extracts agent information from definitions.
+When new agents are added, they appear here automatically.
+
 **Architecture Benefits:**
-- Clear separation of concerns (1 orchestrator, 6 specialists)
+- Clear separation of concerns (1 orchestrator, {stats['specialist_count']} specialists)
 - Automatic intelligent routing based on intent
 - Scalable pattern - easy to add new agents
-- Consistent model across all agents (Claude Sonnet 4.5)
 - Inter-agent communication via ResultCache
 
-**Total Capability:** 39 tools across 7 agents covering Twitter, TikTok, YouTube, Facebook, cross-platform analysis, and AI-powered ad creation.
+**Total Capability:** {stats['total_tools']} tools across {stats['total_agents']} agents
 """)

@@ -7,6 +7,21 @@
 Before making changes, review these docs:
 - `/docs/architecture.md` - System design and layered architecture
 - `/docs/claude_code_guide.md` - Tool development patterns and best practices
+- `/docs/MULTI_TENANT_AUTH.md` - Multi-tenant auth system (organizations, features, usage tracking)
+
+## Multi-Tenancy Awareness (CRITICAL)
+
+ViralTracker is a multi-tenant application. **Before building any feature**, evaluate:
+
+1. **Data isolation**: Does this query/write data? → Filter by `organization_id`
+2. **Feature gating**: Does this add a new page? → Register in `FeatureKey`, add to `nav.py`, add to Admin
+3. **Usage tracking**: Does this call an AI/API? → Wire up `UsageTracker` and enforce limits
+4. **Session context**: Does this need org/user context? → Use `get_current_organization_id()`, `render_brand_selector()`
+5. **Superuser handling**: Does this filter data? → Handle `"all"` org mode for superusers
+
+See [docs/MULTI_TENANT_AUTH.md](docs/MULTI_TENANT_AUTH.md) for full reference.
+
+---
 
 ## Tech Debt & Future Work
 
@@ -54,6 +69,21 @@ For every task, follow this workflow:
   - `/docs/README.md`
   - Any checkpoint files in `/docs/archive/`
 - Documentation should always reflect current system state
+
+### 7. Post-Plan Review (REQUIRED after plan implementation)
+
+After completing any plan implementation (from `/plan-workflow` or `docs/plans/`), run the post-plan review before considering the work done:
+
+1. **Read the review specs** — load all three files from `agents/review/`:
+   - `post_plan_review_orchestrator.md` — consolidated review process
+   - `graph_invariants_checker.md` — code correctness checks (G1-G6 general, P1-P8 for graphs/pipelines)
+   - `test_evals_gatekeeper.md` — test/eval coverage checks (T1-T4 general, A1-A5 for graphs/pipelines)
+2. **Run Graph Invariants Checker** against all changed files
+3. **Run Test/Evals Gatekeeper** against all changed files
+4. **Produce the consolidated report** — PASS/FAIL verdict, plan-to-code-to-coverage map, minimum fix set
+5. **Fix and rerun** until verdict is PASS
+
+This can also be triggered manually via `/post-plan-review`.
 
 ---
 
@@ -394,6 +424,7 @@ Pages are organized by feature area with numbered prefixes:
 - [ ] No debug code or unused imports
 - [ ] Error handling appropriate
 - [ ] **Validation consistent across all layers** (see below)
+- [ ] **Post-plan review PASS** (if implementing a plan — see step 7 above)
 - [ ] Changes committed with descriptive message
 - [ ] Changes pushed to GitHub
 

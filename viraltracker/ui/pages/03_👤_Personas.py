@@ -17,10 +17,6 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
 
-# Apply nest_asyncio at module load for Streamlit compatibility
-import nest_asyncio
-nest_asyncio.apply()
-
 # Page config
 st.set_page_config(
     page_title="Persona Builder",
@@ -42,29 +38,23 @@ if 'editing_persona' not in st.session_state:
 if 'generating_persona' not in st.session_state:
     st.session_state.generating_persona = False
 
-
 def get_supabase_client():
     """Get Supabase client."""
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
 
-
 def get_persona_service():
-    """Get PersonaService instance."""
+    """Get PersonaService instance with tracking enabled."""
     from viraltracker.services.persona_service import PersonaService
-    return PersonaService()
-
+    from viraltracker.ui.utils import setup_tracking_context
+    service = PersonaService()
+    setup_tracking_context(service)
+    return service
 
 def get_brands():
-    """Fetch all brands."""
-    try:
-        db = get_supabase_client()
-        result = db.table("brands").select("id, name").order("name").execute()
-        return result.data
-    except Exception as e:
-        st.error(f"Failed to fetch brands: {e}")
-        return []
-
+    """Fetch brands filtered by current organization."""
+    from viraltracker.ui.utils import get_brands as get_org_brands
+    return get_org_brands()
 
 def get_products_for_brand(brand_id: str):
     """Fetch all products for a brand."""
@@ -78,7 +68,6 @@ def get_products_for_brand(brand_id: str):
         st.error(f"Failed to fetch products: {e}")
         return []
 
-
 def get_personas_for_brand(brand_id: str):
     """Fetch all personas for a brand."""
     try:
@@ -90,7 +79,6 @@ def get_personas_for_brand(brand_id: str):
     except Exception as e:
         st.error(f"Failed to fetch personas: {e}")
         return []
-
 
 def get_product_persona_links(product_id: str):
     """Get personas linked to a product."""
@@ -104,7 +92,6 @@ def get_product_persona_links(product_id: str):
         st.error(f"Failed to fetch product personas: {e}")
         return []
 
-
 def generate_persona_for_product_sync(product_id: str, brand_id: str, offer_variant_id: str = None):
     """Generate a persona using AI (sync wrapper for Streamlit)."""
     service = get_persona_service()
@@ -117,7 +104,6 @@ def generate_persona_for_product_sync(product_id: str, brand_id: str, offer_vari
         )
     )
 
-
 def get_offer_variants_for_product(product_id: str):
     """Fetch all offer variants for a product."""
     try:
@@ -129,7 +115,6 @@ def get_offer_variants_for_product(product_id: str):
     except Exception as e:
         st.error(f"Failed to fetch offer variants: {e}")
         return []
-
 
 def save_persona(persona_data: Dict[str, Any]) -> Optional[str]:
     """Save a new persona to the database."""
@@ -153,7 +138,6 @@ def save_persona(persona_data: Dict[str, Any]) -> Optional[str]:
         st.error(f"Failed to save persona: {e}")
         return None
 
-
 def link_persona_to_product(persona_id: str, product_id: str, is_primary: bool = False):
     """Link a persona to a product."""
     try:
@@ -167,7 +151,6 @@ def link_persona_to_product(persona_id: str, product_id: str, is_primary: bool =
     except Exception as e:
         st.error(f"Failed to link persona: {e}")
         return False
-
 
 def render_persona_card(persona: Dict[str, Any], show_actions: bool = True):
     """Render a persona summary card."""
@@ -207,7 +190,6 @@ def render_persona_card(persona: Dict[str, Any], show_actions: bool = True):
                 if st.button("View/Edit", key=f"edit_{persona['id']}"):
                     st.session_state.selected_persona_id = persona['id']
                     st.rerun()
-
 
 def render_dimension_editor(dimension_name: str, fields: List[Dict], data: Dict[str, Any]) -> Dict[str, Any]:
     """Render an editor for a persona dimension."""
@@ -275,7 +257,6 @@ def render_dimension_editor(dimension_name: str, fields: List[Dict], data: Dict[
                 st.warning(f"Invalid JSON in {field_label}")
 
     return updated_data
-
 
 def render_persona_editor(persona_id: str):
     """Render the full persona editor."""
@@ -731,7 +712,6 @@ def render_persona_editor(persona_id: str):
             except Exception as e:
                 st.error(f"Failed to export: {e}")
 
-
 def render_persona_list():
     """Render the main persona list view."""
     st.title("4D Persona Builder")
@@ -795,7 +775,6 @@ def render_persona_list():
         else:
             st.info("No personas created yet. Click 'Create New Persona' to get started.")
 
-
 def render_new_persona_form():
     """Render form for creating a new persona."""
     st.title("Create New Persona")
@@ -845,7 +824,6 @@ def render_new_persona_form():
                 st.session_state.editing_persona = None
                 st.session_state.selected_persona_id = persona_id
                 st.rerun()
-
 
 def render_ai_generation():
     """Render AI persona generation interface."""
@@ -964,7 +942,6 @@ def render_ai_generation():
                 except Exception as e:
                     st.session_state._generating = False
                     st.error(f"Generation failed: {e}")
-
 
 # Main routing
 if st.session_state.generating_persona:

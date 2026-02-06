@@ -7,6 +7,7 @@ This worker:
    - ad_creation: Execute ad creation workflow for each template
    - meta_sync: Sync Meta Ads performance data for a brand
    - scorecard: Generate weekly performance scorecard
+   - ad_classification: Pre-compute ad classifications in background
 3. Tracks template usage for the "unused" feature (ad_creation)
 4. Handles email/Slack exports
 5. Updates job run history
@@ -19,7 +20,7 @@ import logging
 import signal
 import sys
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import pytz
 import base64
 
@@ -209,15 +210,97 @@ def record_template_usage(product_id: str, template_storage_name: str, ad_run_id
         logger.error(f"Failed to record template usage: {e}")
 
 
-def get_template_base64(storage_name: str) -> Optional[str]:
-    """Download template and return as base64."""
+def get_template_base64(template: Union[str, Dict]) -> Optional[str]:
+    """Download template and return as base64.
+
+    Args:
+        template: Either storage_name (str) for uploaded templates,
+                  or dict with {id, storage_path, bucket} for scraped templates
+
+    Returns:
+        Base64 encoded image data, or None on failure
+    """
     try:
         db = get_supabase_client()
-        data = db.storage.from_("reference-ads").download(storage_name)
+
+        if isinstance(template, dict):
+            # Scraped template - get storage info from dict
+            storage_path = template.get('storage_path', '')
+            bucket = template.get('bucket', 'scraped-assets')
+
+            # If storage_path contains bucket prefix, parse it
+            if '/' in storage_path and not bucket:
+                parts = storage_path.split('/', 1)
+                bucket = parts[0]
+                storage_path = parts[1]
+
+            data = db.storage.from_(bucket).download(storage_path)
+        else:
+            # Uploaded template - reference-ads bucket
+            data = db.storage.from_("reference-ads").download(template)
+
         return base64.b64encode(data).decode('utf-8')
     except Exception as e:
-        logger.error(f"Failed to download template {storage_name}: {e}")
+        template_ref = template.get('id', template) if isinstance(template, dict) else template
+        logger.error(f"Failed to download template {template_ref}: {e}")
         return None
+
+
+def get_scraped_templates_for_job(template_ids: List[str]) -> List[Dict]:
+    """Fetch scraped templates by ID and return with storage info.
+
+    Args:
+        template_ids: List of template UUID strings
+
+    Returns:
+        List of dicts with {id, name, storage_path, bucket}
+    """
+    if not template_ids:
+        return []
+
+    try:
+        db = get_supabase_client()
+        result = db.table("scraped_templates").select(
+            "id, name, storage_path"
+        ).in_("id", template_ids).execute()
+
+        templates = []
+        for t in (result.data or []):
+            storage_path = t.get('storage_path', '')
+            # Parse bucket and path from storage_path (format: "bucket/path/to/file.jpg")
+            parts = storage_path.split('/', 1) if storage_path else ['scraped-assets', '']
+            bucket = parts[0] if len(parts) == 2 else 'scraped-assets'
+            path = parts[1] if len(parts) == 2 else storage_path
+
+            templates.append({
+                'id': t['id'],
+                'name': t.get('name', 'Template'),
+                'storage_path': path,
+                'bucket': bucket,
+                'full_storage_path': storage_path
+            })
+
+        return templates
+    except Exception as e:
+        logger.error(f"Failed to fetch scraped templates: {e}")
+        return []
+
+
+def mark_recommendation_as_used(product_id: str, template_id: str):
+    """Mark a template recommendation as used for a product.
+
+    Args:
+        product_id: Product UUID string
+        template_id: Template UUID string
+    """
+    try:
+        from viraltracker.services.template_recommendation_service import TemplateRecommendationService
+        from uuid import UUID
+        rec_service = TemplateRecommendationService()
+        rec_service.mark_as_used(UUID(product_id), UUID(template_id))
+    except Exception as e:
+        # Non-critical - log and continue
+        logger.debug(f"Failed to mark recommendation as used: {e}")
 
 
 def get_belief_plan(plan_id: str) -> Optional[Dict]:
@@ -393,6 +476,16 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_meta_sync_job(job)
     elif job_type == 'scorecard':
         return await execute_scorecard_job(job)
+    elif job_type == 'template_scrape':
+        return await execute_template_scrape_job(job)
+    elif job_type == 'template_approval':
+        return await execute_template_approval_job(job)
+    elif job_type == 'congruence_reanalysis':
+        return await execute_congruence_reanalysis_job(job)
+    elif job_type == 'ad_classification':
+        return await execute_ad_classification_job(job)
+    elif job_type == 'asset_download':
+        return await execute_asset_download_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -450,8 +543,18 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         content_source = params.get('content_source', 'hooks')
         logs.append(f"Content source: {content_source}")
 
+        # Determine template source (default to 'uploaded' for backward compatibility)
+        template_source = job.get('template_source', 'uploaded')
+        is_scraped_source = template_source == 'scraped'
+        logs.append(f"Template source: {template_source}")
+
         # Get templates to use
-        if job.get('template_mode') == 'unused':
+        if is_scraped_source:
+            # Scraped template library
+            scraped_template_ids = job.get('scraped_template_ids') or []
+            templates = get_scraped_templates_for_job(scraped_template_ids)
+            logs.append(f"Loaded {len(templates)} scraped templates from library")
+        elif job.get('template_mode') == 'unused':
             template_count = job.get('template_count', 5)
             templates = get_unused_templates(product_id, template_count)
             logs.append(f"Selected {len(templates)} unused templates")
@@ -463,9 +566,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             raise Exception("No templates available for this job")
 
         # Import dependencies
-        from pydantic_ai import RunContext
-        from pydantic_ai.usage import RunUsage
-        from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
+        from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
         from viraltracker.agent.dependencies import AgentDependencies
 
         # Create dependencies
@@ -533,27 +634,28 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                 belief_statement = angle.get('belief_statement', '')
                 logs.append(f"\n--- Angle {angle_idx + 1}/{len(angles_to_process)}: {angle_name} ---")
 
-                for template_idx, template_storage_name in enumerate(templates):
+                for template_idx, template in enumerate(templates):
                     if shutdown_requested:
                         break
 
                     if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
                         break
 
-                    logs.append(f"  Template {template_idx + 1}/{len(templates)}: {template_storage_name}")
+                    # Get template reference for logging (handle both dict and str)
+                    if is_scraped_source:
+                        template_ref = template.get('name', template.get('id', 'Unknown'))
+                        template_id = template.get('id')
+                    else:
+                        template_ref = template
+                        template_id = None
+
+                    logs.append(f"  Template {template_idx + 1}/{len(templates)}: {template_ref}")
 
                     # Download template
-                    template_base64 = get_template_base64(template_storage_name)
+                    template_base64 = get_template_base64(template)
                     if not template_base64:
                         logs.append(f"    Failed to download template")
                         continue
-
-                    # Create RunContext
-                    ctx = RunContext(
-                        deps=deps,
-                        model=None,
-                        usage=RunUsage()
-                    )
 
                     # Build additional instructions with angle and offer variant context
                     angle_instructions = f"ANGLE: {angle_name}\nBELIEF: {belief_statement}"
@@ -565,33 +667,36 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                     # Run ad creation workflow with angle-specific content
                     try:
-                        result = await complete_ad_workflow(
-                            ctx=ctx,
+                        result = await run_ad_creation(
                             product_id=product_id,
                             reference_ad_base64=template_base64,
-                            reference_ad_filename=template_storage_name,
-                            project_id="",
+                            reference_ad_filename=template_ref,
                             num_variations=params.get('num_variations', 5),
                             content_source='hooks',  # Use hooks mode but with angle as context
                             color_mode=params.get('color_mode', 'original'),
                             brand_colors=brand_colors_data,
                             image_selection_mode=params.get('image_selection_mode', 'auto'),
-                            selected_image_paths=None,
                             persona_id=params.get('persona_id') or params.get('belief_persona_id'),
                             variant_id=params.get('variant_id'),
                             additional_instructions=full_instructions,
-                            image_resolution=params.get('image_resolution', '2K')
+                            image_resolution=params.get('image_resolution', '2K'),
+                            deps=deps,
                         )
 
                         if result and result.get('ad_run_id'):
                             ad_run_id = result['ad_run_id']
                             ad_run_ids.append(ad_run_id)
-                            templates_used.append(template_storage_name)
+                            templates_used.append(template_ref)
                             if angle_id and angle_id not in angles_used:
                                 angles_used.append(angle_id)
 
-                            # Record template usage
-                            record_template_usage(product_id, template_storage_name, ad_run_id)
+                            # Record template usage based on source
+                            if is_scraped_source and template_id:
+                                # Mark recommendation as used for scraped templates
+                                mark_recommendation_as_used(product_id, template_id)
+                            else:
+                                # Record in product_template_usage for uploaded templates
+                                record_template_usage(product_id, template_ref, ad_run_id)
 
                             approved = result.get('approved_count', 0)
                             rejected = result.get('rejected_count', 0)
@@ -613,11 +718,11 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                     except Exception as e:
                         logs.append(f"    Error: {str(e)}")
-                        logger.error(f"Error processing angle {angle_name} + template {template_storage_name}: {e}")
+                        logger.error(f"Error processing angle {angle_name} + template {template_ref}: {e}")
 
         else:
             # Traditional mode (hooks, recreate_template): Loop through templates only
-            for idx, template_storage_name in enumerate(templates):
+            for idx, template in enumerate(templates):
                 if shutdown_requested:
                     logs.append("Shutdown requested, stopping job execution")
                     break
@@ -626,21 +731,22 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
                     break
 
-                logs.append(f"Processing template {idx + 1}/{len(templates)}: {template_storage_name}")
+                # Get template reference for logging (handle both dict and str)
+                if is_scraped_source:
+                    template_ref = template.get('name', template.get('id', 'Unknown'))
+                    template_id = template.get('id')
+                else:
+                    template_ref = template
+                    template_id = None
+
+                logs.append(f"Processing template {idx + 1}/{len(templates)}: {template_ref}")
                 logger.info(f"Job {job_name}: Processing template {idx + 1}/{len(templates)}")
 
                 # Download template
-                template_base64 = get_template_base64(template_storage_name)
+                template_base64 = get_template_base64(template)
                 if not template_base64:
-                    logs.append(f"  Failed to download template: {template_storage_name}")
+                    logs.append(f"  Failed to download template: {template_ref}")
                     continue
-
-                # Create RunContext
-                ctx = RunContext(
-                    deps=deps,
-                    model=None,
-                    usage=RunUsage()
-                )
 
                 # Build combined additional instructions with offer variant context
                 combined_instructions = ""
@@ -654,31 +760,34 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                 # Run ad creation workflow
                 try:
-                    result = await complete_ad_workflow(
-                        ctx=ctx,
+                    result = await run_ad_creation(
                         product_id=product_id,
                         reference_ad_base64=template_base64,
-                        reference_ad_filename=template_storage_name,
-                        project_id="",
+                        reference_ad_filename=template_ref,
                         num_variations=params.get('num_variations', 5),
                         content_source=content_source,
                         color_mode=params.get('color_mode', 'original'),
                         brand_colors=brand_colors_data,
                         image_selection_mode=params.get('image_selection_mode', 'auto'),
-                        selected_image_paths=None,
                         persona_id=params.get('persona_id'),
                         variant_id=params.get('variant_id'),
                         additional_instructions=combined_instructions if combined_instructions else None,
-                        image_resolution=params.get('image_resolution', '2K')
+                        image_resolution=params.get('image_resolution', '2K'),
+                        deps=deps,
                     )
 
                     if result and result.get('ad_run_id'):
                         ad_run_id = result['ad_run_id']
                         ad_run_ids.append(ad_run_id)
-                        templates_used.append(template_storage_name)
+                        templates_used.append(template_ref)
 
-                        # Record template usage
-                        record_template_usage(product_id, template_storage_name, ad_run_id)
+                        # Record template usage based on source
+                        if is_scraped_source and template_id:
+                            # Mark recommendation as used for scraped templates
+                            mark_recommendation_as_used(product_id, template_id)
+                        else:
+                            # Record in product_template_usage for uploaded templates
+                            record_template_usage(product_id, template_ref, ad_run_id)
 
                         approved = result.get('approved_count', 0)
                         rejected = result.get('rejected_count', 0)
@@ -702,7 +811,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
                 except Exception as e:
                     logs.append(f"  Error: {str(e)}")
-                    logger.error(f"Error processing template {template_storage_name}: {e}")
+                    logger.error(f"Error processing template {template_ref}: {e}")
 
         logs.append(f"\n=== Summary: {ads_generated} ads generated, {len(ad_run_ids)} runs created ===")
 
@@ -769,6 +878,9 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             "templates_used": templates_used,
             "logs": "\n".join(logs)
         })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
 
         return {"success": False, "error": error_msg}
 
@@ -927,6 +1039,60 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             ads_synced = len(set(i.get('ad_id') for i in insights if i.get('ad_id')))
             logs.append(f"Synced {ads_synced} ads, {rows_inserted} data rows")
 
+        # Step 3: Update missing thumbnails (populates meta_video_id + is_video)
+        try:
+            thumbs_updated = await service.update_missing_thumbnails(
+                brand_id=UUID(brand_id), limit=100
+            )
+            if thumbs_updated > 0:
+                logs.append(f"Updated {thumbs_updated} missing thumbnails")
+        except Exception as thumb_err:
+            logs.append(f"Thumbnail update error (non-fatal): {thumb_err}")
+            logger.warning(f"Thumbnail update failed for {brand_name}: {thumb_err}")
+
+        # Step 4: Download new ad assets (videos + images) to Supabase storage
+        try:
+            asset_counts = await service.download_new_ad_assets(
+                brand_id=UUID(brand_id),
+                max_videos=params.get('download_max_videos', 20),
+                max_images=params.get('download_max_images', 40),
+            )
+            total_assets = asset_counts.get("videos", 0) + asset_counts.get("images", 0)
+            if total_assets > 0:
+                logs.append(
+                    f"Downloaded {asset_counts['videos']} videos, "
+                    f"{asset_counts['images']} images to storage"
+                )
+        except Exception as asset_err:
+            logs.append(f"Asset download error (non-fatal): {asset_err}")
+            logger.warning(f"Asset download failed for {brand_name}: {asset_err}")
+
+        # Step 5: Auto-classify ads if enabled
+        if params.get('auto_classify', False):
+            try:
+                from uuid import UUID
+                logs.append("")
+                logs.append("--- Auto-classification ---")
+                classify_result = await _run_classification_for_brand(
+                    brand_id=UUID(brand_id),
+                    logs=logs,
+                    max_new=params.get('classify_max_new', 200),
+                    max_video=params.get('classify_max_video', 15),
+                    days_back=params.get('classify_days_back', days_back),
+                )
+                logs.append(
+                    f"Classified: {classify_result['classified']} "
+                    f"({classify_result['new']} new, {classify_result['cached']} cached), "
+                    f"{classify_result['video']} video"
+                )
+                if classify_result['skipped'] > 0:
+                    logs.append(f"Skipped (cap or missing media): {classify_result['skipped']}")
+                if classify_result['errors'] > 0:
+                    logs.append(f"Classification errors: {classify_result['errors']}")
+            except Exception as classify_err:
+                logs.append(f"Auto-classification error (non-fatal): {classify_err}")
+                logger.warning(f"Auto-classification failed for {brand_name}: {classify_err}")
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
@@ -969,6 +1135,9 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             "error_message": error_msg,
             "logs": "\n".join(logs)
         })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
 
         return {"success": False, "error": error_msg}
 
@@ -1185,6 +1354,976 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
             "logs": "\n".join(logs)
         })
 
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Template Scrape Job Handler
+# ============================================================================
+
+async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a template scraping job.
+
+    Scrapes Facebook Ad Library for competitor/industry ads and stores them
+    with longevity tracking. Optionally queues new ads for template review.
+
+    This is thin orchestration - all business logic is in services:
+    - FacebookService.search_ads() - scraping logic
+    - AdScrapingService.save_facebook_ad_with_tracking() - storage + dedup + longevity
+    - AdScrapingService.scrape_and_store_assets() - asset handling
+    - TemplateQueueService.add_to_queue() - queue management
+
+    Parameters (from job['parameters']):
+        search_url: str - Facebook Ad Library search URL (required)
+        max_ads: int - Max ads per scrape (default: 50)
+        images_only: bool - Skip video ads (default: True)
+        auto_queue: bool - Auto-add to review queue (default: True)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting template scrape job: {job_name} (ID: {job_id}) for brand {brand_name}")
+    logger.info(f"Job parameters: {params}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        search_url = params.get('search_url')
+        if not search_url:
+            raise ValueError("search_url is required for template_scrape jobs")
+
+        max_ads = params.get('max_ads', 50)
+        images_only = params.get('images_only', True)
+        auto_queue = params.get('auto_queue', True)
+
+        logs.append(f"Scraping templates for brand: {brand_name}")
+        logs.append(f"Search URL: {search_url}")
+        logs.append(f"Max ads: {max_ads}, Images only: {images_only}, Auto queue: {auto_queue}")
+
+        # Also log full URL to console for debugging
+        logger.info(f"Template scrape URL (full): {search_url}")
+
+        # Import services
+        from viraltracker.services.facebook_service import FacebookService
+        from viraltracker.services.ad_scraping_service import AdScrapingService
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        from uuid import UUID
+
+        facebook_service = FacebookService()
+        scraping_service = AdScrapingService()
+        queue_service = TemplateQueueService()
+
+        # Step 1: Scrape ads from Facebook Ad Library
+        logs.append(f"Scraping Facebook Ad Library...")
+        ads = await facebook_service.search_ads(
+            search_url=search_url,
+            project="scheduled_scrape",
+            count=max_ads,
+            save_to_db=False  # We'll save manually with tracking
+        )
+
+        if not ads:
+            logs.append("No ads found at the specified URL")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            # Still calculate next run
+            _update_job_next_run(job, job_id)
+            return {"success": True, "new_ads": 0, "updated_ads": 0, "message": "No ads found"}
+
+        logs.append(f"Scraped {len(ads)} ads from Facebook Ad Library")
+
+        # Step 2: Process each ad with longevity tracking
+        new_count = 0
+        updated_count = 0
+        queued_count = 0
+        skipped_videos = 0
+        failed_saves = 0
+
+        # Log first ad for debugging
+        if ads:
+            first_ad = ads[0]
+            logger.info(f"First ad sample - ad_archive_id: {first_ad.ad_archive_id}, page_name: {first_ad.page_name}")
+            logs.append(f"First ad: {first_ad.page_name} (archive_id: {first_ad.ad_archive_id[:20]}...)")
+
+        for ad in ads:
+            try:
+                # Build dict manually to match template_ingestion pattern exactly
+                ad_dict = {
+                    "id": ad.id,
+                    "ad_archive_id": ad.ad_archive_id,
+                    "page_id": ad.page_id,
+                    "page_name": ad.page_name,
+                    "is_active": ad.is_active,
+                    "start_date": ad.start_date.isoformat() if ad.start_date else None,
+                    "end_date": ad.end_date.isoformat() if ad.end_date else None,
+                    "currency": ad.currency,
+                    "spend": ad.spend,
+                    "impressions": ad.impressions,
+                    "reach_estimate": ad.reach_estimate,
+                    "snapshot": ad.snapshot,
+                    "categories": ad.categories,
+                    "publisher_platform": ad.publisher_platform,
+                    "political_countries": ad.political_countries,
+                    "entity_type": ad.entity_type,
+                }
+
+                # Skip video ads if images_only is True
+                if images_only:
+                    snapshot = ad_dict.get('snapshot', {})
+                    if isinstance(snapshot, str):
+                        import json
+                        try:
+                            snapshot = json.loads(snapshot)
+                        except:
+                            snapshot = {}
+                    # Check for video indicators
+                    has_video = bool(
+                        snapshot.get('video_hd_url') or
+                        snapshot.get('video_sd_url') or
+                        snapshot.get('videos')
+                    )
+                    has_image = bool(
+                        snapshot.get('original_image_url') or
+                        snapshot.get('resized_image_url') or
+                        snapshot.get('images') or
+                        snapshot.get('cards')
+                    )
+                    if has_video and not has_image:
+                        skipped_videos += 1
+                        continue
+
+                # Save ad using same method as template_ingestion
+                # Note: Not passing brand_id to match working pattern
+                result = scraping_service.save_facebook_ad_with_tracking(
+                    ad_data=ad_dict,
+                    scrape_source="scheduled_scrape"
+                )
+
+                if not result or result.get('error'):
+                    failed_saves += 1
+                    ad_archive_id = ad_dict.get('ad_archive_id', 'missing')
+                    error_msg = result.get('error', 'Unknown error') if result else 'None returned'
+                    logger.warning(f"save_facebook_ad_with_tracking failed for ad_archive_id: {ad_archive_id}: {error_msg}")
+                    # Log first few failures with error details
+                    if failed_saves <= 3:
+                        logs.append(f"Save failed: {error_msg[:50]}...")
+                    continue
+
+                ad_id = result['ad_id']
+                is_new = result['is_new']
+
+                if is_new:
+                    new_count += 1
+                    # Download and store assets for new ads
+                    snapshot = ad_dict.get('snapshot', {})
+                    if isinstance(snapshot, str):
+                        import json
+                        try:
+                            snapshot = json.loads(snapshot)
+                        except:
+                            snapshot = {}
+
+                    if snapshot:
+                        asset_result = await scraping_service.scrape_and_store_assets(
+                            facebook_ad_id=ad_id,
+                            snapshot=snapshot,
+                            brand_id=UUID(brand_id) if brand_id else None,
+                            scrape_source="scheduled_scrape"
+                        )
+
+                        # Queue for review if auto_queue enabled and we got assets
+                        if auto_queue:
+                            asset_ids = asset_result.get('images', []) + asset_result.get('videos', [])
+                            if asset_ids:
+                                try:
+                                    queued = await queue_service.add_to_queue(
+                                        asset_ids=asset_ids,
+                                        run_ai_analysis=False  # Skip AI analysis for scheduled scrapes
+                                    )
+                                    queued_count += queued
+                                except Exception as qe:
+                                    logger.warning(f"Failed to queue assets: {qe}")
+                else:
+                    updated_count += 1
+                    # Longevity tracking already updated by save_facebook_ad_with_tracking
+
+            except Exception as e:
+                logger.warning(f"Error processing ad {ad_dict.get('ad_archive_id', 'unknown')}: {e}")
+                logs.append(f"Error processing ad: {e}")
+                continue
+
+        # Summary
+        logs.append(f"")
+        logs.append(f"=== Summary ===")
+        logs.append(f"New ads: {new_count}")
+        logs.append(f"Updated ads: {updated_count}")
+        if skipped_videos > 0:
+            logs.append(f"Skipped videos: {skipped_videos}")
+        if failed_saves > 0:
+            logs.append(f"Failed to save: {failed_saves}")
+        if auto_queue:
+            logs.append(f"Queued for review: {queued_count}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job: increment runs_completed, calculate next_run
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed template scrape job: {job_name} - {new_count} new, {updated_count} updated")
+        return {
+            "success": True,
+            "new_ads": new_count,
+            "updated_ads": updated_count,
+            "queued": queued_count
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Template scrape job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+def _reschedule_after_failure(job: Dict, job_id: str):
+    """Reschedule a recurring job after a failed run.
+
+    When a job fails, next_run_at has already been cleared (to prevent
+    duplicate execution). This must be recalculated so the job runs again
+    on its next scheduled time. Does NOT increment runs_completed.
+    """
+    if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+        next_run = calculate_next_run(job['cron_expression'])
+        if next_run:
+            update_job(job_id, {"next_run_at": next_run.isoformat()})
+            logger.info(f"Job {job_id} failed but rescheduled for {next_run}")
+        else:
+            logger.error(f"Job {job_id} failed and could not calculate next run")
+    # One-time jobs that fail stay with next_run_at=None (won't re-run)
+
+
+def _update_job_next_run(job: Dict, job_id: str):
+    """Helper to update job runs_completed and next_run_at."""
+    runs_completed = job.get('runs_completed', 0) + 1
+    max_runs = job.get('max_runs')
+
+    job_updates = {"runs_completed": runs_completed}
+
+    if max_runs and runs_completed >= max_runs:
+        job_updates["status"] = "completed"
+        job_updates["next_run_at"] = None
+    elif job['schedule_type'] == 'recurring':
+        next_run = calculate_next_run(job['cron_expression'])
+        if next_run:
+            job_updates["next_run_at"] = next_run.isoformat()
+    else:
+        job_updates["status"] = "completed"
+        job_updates["next_run_at"] = None
+
+    update_job(job_id, job_updates)
+
+
+# ============================================================================
+# Template Approval Job Handler
+# ============================================================================
+
+async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a batch template approval job.
+
+    Processes pending template queue items with AI analysis in batches,
+    respecting API rate limits. Items are processed with auto-approval
+    using AI suggestions.
+
+    Parameters (from job['parameters']):
+        batch_size: int - Items to process per run (default: 100)
+        auto_approve: bool - Auto-accept AI suggestions (default: True)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting template approval job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        batch_size = params.get('batch_size', 100)
+        auto_approve = params.get('auto_approve', True)
+
+        logs.append(f"Batch size: {batch_size}, Auto-approve: {auto_approve}")
+
+        # Import services
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        from uuid import UUID
+
+        queue_service = TemplateQueueService()
+
+        # Get pending queue items (status='pending')
+        db = get_supabase_client()
+        pending_result = db.table("template_queue").select(
+            "id"
+        ).eq("status", "pending").limit(batch_size).execute()
+
+        pending_items = pending_result.data or []
+
+        if not pending_items:
+            logs.append("No pending items in queue")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "approved": 0, "message": "No pending items"}
+
+        logs.append(f"Found {len(pending_items)} pending items to process")
+
+        # Convert to UUIDs
+        queue_ids = [UUID(item['id']) for item in pending_items]
+
+        # Step 1: Run AI analysis on all items
+        logs.append(f"Running AI analysis on {len(queue_ids)} items...")
+        logger.info(f"Running AI analysis on {len(queue_ids)} items")
+
+        try:
+            analyzed_items = await queue_service.start_bulk_approval(queue_ids)
+            logs.append(f"AI analysis completed: {len(analyzed_items)} successful")
+        except Exception as e:
+            logs.append(f"AI analysis failed: {e}")
+            raise
+
+        if not analyzed_items:
+            logs.append("No items were successfully analyzed")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "approved": 0, "message": "No items analyzed"}
+
+        # Step 2: Finalize approvals (auto-approve with AI suggestions)
+        detected_ok = 0
+        detected_fail = 0
+        if auto_approve:
+            logs.append(f"Auto-approving {len(analyzed_items)} items...")
+            result = queue_service.finalize_bulk_approval(
+                items=analyzed_items,
+                reviewed_by="scheduler_worker"
+            )
+            approved_count = result["approved"]
+            template_ids = result["template_ids"]
+            logs.append(f"Approved: {approved_count} items")
+
+            # Step 3: Element detection on newly created templates
+            if template_ids:
+                logs.append(f"Running element detection on {len(template_ids)} templates...")
+                try:
+                    from viraltracker.services.template_element_service import TemplateElementService
+                    element_service = TemplateElementService()
+                    detection = await element_service.batch_analyze_templates(
+                        template_ids=[UUID(tid) for tid in template_ids],
+                        batch_size=10
+                    )
+                    detected_ok = len(detection["successful"])
+                    detected_fail = len(detection["failed"])
+                    logs.append(f"Element detection: {detected_ok} OK, {detected_fail} failed")
+                except Exception as e:
+                    logs.append(f"Element detection failed: {e}")
+                    logger.error(f"Element detection failed in template approval job: {e}")
+        else:
+            # Leave in pending_details for manual review
+            approved_count = 0
+            logs.append(f"Left {len(analyzed_items)} items in pending_details for manual review")
+
+        # Summary
+        logs.append(f"")
+        logs.append(f"=== Summary ===")
+        logs.append(f"Processed: {len(queue_ids)}")
+        logs.append(f"Analyzed: {len(analyzed_items)}")
+        logs.append(f"Approved: {approved_count}")
+        if detected_ok or detected_fail:
+            logs.append(f"Element detection: {detected_ok} OK, {detected_fail} failed")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed template approval job: {job_name} - {approved_count} approved, {detected_ok} detected")
+        return {
+            "success": True,
+            "processed": len(queue_ids),
+            "analyzed": len(analyzed_items),
+            "approved": approved_count,
+            "element_detection": {"successful": detected_ok, "failed": detected_fail}
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Template approval job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Congruence Re-analysis Job Handler
+# ============================================================================
+
+async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
+    """
+    Execute a congruence re-analysis job.
+
+    Finds ads with video analysis + landing page data but missing congruence
+    components, and re-runs classification with force=True to generate
+    the per-dimension congruence analysis.
+
+    Parameters (from job['parameters']):
+        batch_size: int - Max ads to fetch per run (default: 50)
+        max_gemini_calls: int - Max Gemini API calls per run (default: 20)
+        brand_id: Optional[str] - Specific brand to process (None = all brands)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting congruence re-analysis job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Get parameters
+        batch_size = params.get('batch_size', 50)
+        max_gemini_calls = params.get('max_gemini_calls', 20)
+        target_brand_id = params.get('brand_id')
+
+        logs.append(f"Batch size: {batch_size}, Max Gemini calls: {max_gemini_calls}")
+        if target_brand_id:
+            logs.append(f"Target brand: {target_brand_id}")
+        else:
+            logs.append("Processing all brands")
+
+        # Import services
+        from viraltracker.services.ad_intelligence.congruence_insights_service import CongruenceInsightsService
+        from viraltracker.services.ad_intelligence.classifier_service import ClassifierService
+        from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
+        from viraltracker.services.video_analysis_service import VideoAnalysisService
+        from viraltracker.services.gemini_service import GeminiService
+        from uuid import UUID
+
+        db = get_supabase_client()
+
+        # Initialize services
+        insights_service = CongruenceInsightsService(db)
+        gemini_service = GeminiService()
+        congruence_analyzer = CongruenceAnalyzer(gemini_service)
+        video_analysis_service = VideoAnalysisService()
+
+        # Initialize classifier with congruence analyzer
+        classifier = ClassifierService(
+            supabase_client=db,
+            gemini_service=gemini_service,
+            video_analysis_service=video_analysis_service,
+            congruence_analyzer=congruence_analyzer,
+        )
+
+        # Get eligible ads
+        brand_uuid = UUID(target_brand_id) if target_brand_id else None
+        eligible_ads = insights_service.get_eligible_for_reanalysis(
+            brand_id=brand_uuid,
+            limit=batch_size,
+        )
+
+        if not eligible_ads:
+            logs.append("No eligible ads found for re-analysis")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "analyzed": 0, "message": "No eligible ads"}
+
+        logs.append(f"Found {len(eligible_ads)} eligible ads")
+
+        # Process ads
+        analyzed_count = 0
+        error_count = 0
+        gemini_calls = 0
+
+        for ad in eligible_ads:
+            if gemini_calls >= max_gemini_calls:
+                logs.append(f"Reached max Gemini calls ({max_gemini_calls}), stopping")
+                break
+
+            meta_ad_id = ad.get("meta_ad_id")
+            ad_brand_id = ad.get("brand_id")
+            ad_org_id = ad.get("organization_id")
+
+            try:
+                # Create a dummy run_id for classification (we reuse the job run id)
+                classification_run_id = UUID(run_id)
+
+                # Re-classify with force=True to trigger congruence analysis
+                result = await classifier.classify_ad(
+                    meta_ad_id=meta_ad_id,
+                    brand_id=UUID(ad_brand_id),
+                    org_id=UUID(ad_org_id),
+                    run_id=classification_run_id,
+                    force=True,  # Force re-analysis
+                    scrape_missing_lp=False,  # LP already exists
+                )
+
+                gemini_calls += 1
+
+                # Check if congruence was populated
+                if result and result.congruence_components:
+                    analyzed_count += 1
+                    logs.append(f"  ✓ {meta_ad_id}: congruence analyzed ({len(result.congruence_components)} components)")
+                else:
+                    logs.append(f"  - {meta_ad_id}: classified but no congruence components")
+
+            except Exception as e:
+                error_count += 1
+                logs.append(f"  ✗ {meta_ad_id}: {str(e)[:50]}")
+                logger.warning(f"Error re-analyzing ad {meta_ad_id}: {e}")
+
+        # Summary
+        logs.append(f"")
+        logs.append(f"=== Summary ===")
+        logs.append(f"Analyzed: {analyzed_count}")
+        logs.append(f"Errors: {error_count}")
+        logs.append(f"Gemini calls: {gemini_calls}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed congruence re-analysis job: {job_name} - {analyzed_count} analyzed")
+        return {
+            "success": True,
+            "analyzed": analyzed_count,
+            "errors": error_count,
+            "gemini_calls": gemini_calls,
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Congruence re-analysis job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Ad Classification Job Handler
+# ============================================================================
+
+async def _run_classification_for_brand(
+    brand_id: "UUID",
+    logs: List[str],
+    max_new: int = 200,
+    max_video: int = 15,
+    days_back: int = 30,
+) -> Dict[str, Any]:
+    """Shared helper: classify active ads for a brand.
+
+    Used by both the standalone ad_classification job and the auto_classify
+    chain in meta_sync. Initializes services, fetches active ads, creates
+    an ad_intelligence_runs record, and calls classify_batch().
+
+    Args:
+        brand_id: Brand UUID.
+        logs: Mutable log list to append progress messages.
+        max_new: Max new Gemini classification calls (default: 200).
+        max_video: Max video classification calls (default: 15).
+        days_back: Number of days to look back for active ads (default: 30).
+
+    Returns:
+        Dict with keys: total_active, classified, video, errors.
+    """
+    from uuid import UUID as _UUID
+    from datetime import date as _date
+    from viraltracker.services.gemini_service import GeminiService
+    from viraltracker.services.ad_intelligence.classifier_service import ClassifierService
+    from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+    from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
+    from viraltracker.services.ad_intelligence.helpers import get_active_ad_ids
+    from viraltracker.services.video_analysis_service import VideoAnalysisService
+
+    db = get_supabase_client()
+
+    # Look up organization_id from brands table
+    brand_result = db.table("brands").select("organization_id").eq(
+        "id", str(brand_id)
+    ).limit(1).execute()
+
+    if not brand_result.data:
+        raise ValueError(f"Brand {brand_id} not found")
+
+    org_id = _UUID(brand_result.data[0]["organization_id"])
+
+    # Initialize services
+    gemini_service = GeminiService()
+    video_analysis_service = VideoAnalysisService(db)
+    congruence_analyzer = CongruenceAnalyzer(gemini_service)
+    classifier = ClassifierService(
+        supabase_client=db,
+        gemini_service=gemini_service,
+        video_analysis_service=video_analysis_service,
+        congruence_analyzer=congruence_analyzer,
+    )
+
+    # Get active ad IDs
+    date_range_end = _date.today()
+    active_ids = await get_active_ad_ids(
+        db, brand_id, date_range_end, active_window_days=days_back
+    )
+
+    if not active_ids:
+        logs.append("No active ads found for classification")
+        return {
+            "total_active": 0,
+            "classified": 0,
+            "video": 0,
+            "errors": 0,
+        }
+
+    logs.append(f"Found {len(active_ids)} active ads")
+
+    # Create ad_intelligence_runs record for audit trail
+    intel_service = AdIntelligenceService(db, gemini_service=gemini_service)
+    run = await intel_service.create_classification_run(
+        brand_id=brand_id,
+        org_id=org_id,
+    )
+
+    logs.append(f"Classification run: {run.id}")
+
+    # Run classification (classify_batch logs new vs cached counts internally)
+    try:
+        batch_result = await classifier.classify_batch(
+            brand_id=brand_id,
+            org_id=org_id,
+            run_id=run.id,
+            meta_ad_ids=active_ids,
+            max_new=max_new,
+            max_video=max_video,
+        )
+
+        total_classified = len(batch_result.classifications)
+        video_count = sum(
+            1 for c in batch_result.classifications if c.source == "gemini_video"
+        )
+
+        # Complete the run
+        await intel_service._complete_run(run.id, "completed", {
+            "total_ads": len(active_ids),
+            "classified": total_classified,
+            "new": batch_result.new_count,
+            "cached": batch_result.cached_count,
+            "video": video_count,
+            "skipped": batch_result.skipped_count,
+            "errors": batch_result.error_count,
+        })
+
+        logs.append(
+            f"Classified {total_classified} ads "
+            f"({batch_result.new_count} new, {batch_result.cached_count} cached, "
+            f"{video_count} video)"
+        )
+        if batch_result.skipped_count > 0:
+            logs.append(
+                f"Skipped {batch_result.skipped_count} ads (cap or missing media)"
+            )
+        if batch_result.error_count > 0:
+            logs.append(f"Errors: {batch_result.error_count}")
+
+        return {
+            "total_active": len(active_ids),
+            "classified": total_classified,
+            "new": batch_result.new_count,
+            "cached": batch_result.cached_count,
+            "video": video_count,
+            "skipped": batch_result.skipped_count,
+            "errors": batch_result.error_count,
+        }
+
+    except Exception as e:
+        await intel_service._complete_run(run.id, "failed", error_message=str(e))
+        raise
+
+
+async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
+    """Execute a standalone ad classification job.
+
+    Pre-computes classifications for active ads so that subsequent
+    full_analysis() calls find fresh cached results, making analysis
+    near-instant.
+
+    Parameters (from job['parameters']):
+        max_new: int - Max new Gemini classifications (default: 200)
+        max_video: int - Max video classifications (default: 15)
+        days_back: int - Days to look back for active ads (default: 30)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting ad classification job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from uuid import UUID
+
+        max_new = params.get('max_new', 200)
+        max_video = params.get('max_video', 15)
+        days_back = params.get('days_back', 30)
+
+        logs.append(f"Classifying ads for brand: {brand_name}")
+        logs.append(f"Max new: {max_new}, Max video: {max_video}, Days back: {days_back}")
+
+        result = await _run_classification_for_brand(
+            brand_id=UUID(brand_id),
+            logs=logs,
+            max_new=max_new,
+            max_video=max_video,
+            days_back=days_back,
+        )
+
+        logs.append("")
+        logs.append("=== Summary ===")
+        logs.append(f"Active ads: {result['total_active']}")
+        logs.append(f"Classified: {result['classified']} ({result['new']} new, {result['cached']} cached)")
+        logs.append(f"Video classifications: {result['video']}")
+        if result['skipped'] > 0:
+            logs.append(f"Skipped (cap): {result['skipped']}")
+        if result['errors'] > 0:
+            logs.append(f"Errors: {result['errors']}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(
+            f"Completed ad classification job: {job_name} - "
+            f"{result['classified']} classified, {result['video']} video"
+        )
+        return {"success": True, **result}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Ad classification job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
+        return {"success": False, "error": error_msg}
+
+
+async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
+    """Execute a standalone asset download job.
+
+    Downloads ad creatives (videos + images) from Meta CDN to Supabase
+    storage so they're available for classification and analysis.
+
+    Parameters (from job['parameters']):
+        max_videos: int - Max videos to download (default: 20)
+        max_images: int - Max images to download (default: 40)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting asset download job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from uuid import UUID
+        from viraltracker.services.meta_ads_service import MetaAdsService
+
+        max_videos = params.get('max_videos', 20)
+        max_images = params.get('max_images', 40)
+
+        logs.append(f"Downloading assets for brand: {brand_name}")
+        logs.append(f"Max videos: {max_videos}, Max images: {max_images}")
+
+        service = MetaAdsService()
+        asset_counts = await service.download_new_ad_assets(
+            brand_id=UUID(brand_id),
+            max_videos=max_videos,
+            max_images=max_images,
+        )
+
+        videos_downloaded = asset_counts.get("videos", 0)
+        images_downloaded = asset_counts.get("images", 0)
+        total = videos_downloaded + images_downloaded
+
+        logs.append("")
+        logs.append("=== Summary ===")
+        logs.append(f"Videos downloaded: {videos_downloaded}")
+        logs.append(f"Images downloaded: {images_downloaded}")
+        logs.append(f"Total: {total}")
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(
+            f"Completed asset download job: {job_name} - "
+            f"{videos_downloaded} videos, {images_downloaded} images"
+        )
+        return {"success": True, "videos": videos_downloaded, "images": images_downloaded}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Asset download job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id)
+
         return {"success": False, "error": error_msg}
 
 
@@ -1230,7 +2369,7 @@ async def run_scheduler():
 def main():
     """Entry point for the scheduler worker."""
     logger.info("=" * 60)
-    logger.info("Ad Scheduler Worker")
+    logger.info("Scheduler Worker")
     logger.info("=" * 60)
 
     try:
