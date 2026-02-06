@@ -70,6 +70,21 @@ For every task, follow this workflow:
   - Any checkpoint files in `/docs/archive/`
 - Documentation should always reflect current system state
 
+### 7. Post-Plan Review (REQUIRED after plan implementation)
+
+After completing any plan implementation (from `/plan-workflow` or `docs/plans/`), run the post-plan review before considering the work done:
+
+1. **Read the review specs** — load all three files from `agents/review/`:
+   - `post_plan_review_orchestrator.md` — consolidated review process
+   - `graph_invariants_checker.md` — code correctness checks (G1-G6 general, P1-P8 for graphs/pipelines)
+   - `test_evals_gatekeeper.md` — test/eval coverage checks (T1-T4 general, A1-A5 for graphs/pipelines)
+2. **Run Graph Invariants Checker** against all changed files
+3. **Run Test/Evals Gatekeeper** against all changed files
+4. **Produce the consolidated report** — PASS/FAIL verdict, plan-to-code-to-coverage map, minimum fix set
+5. **Fix and rerun** until verdict is PASS
+
+This can also be triggered manually via `/post-plan-review`.
+
 ---
 
 ## Third-Party Tool Research (CRITICAL)
@@ -409,6 +424,7 @@ Pages are organized by feature area with numbered prefixes:
 - [ ] No debug code or unused imports
 - [ ] Error handling appropriate
 - [ ] **Validation consistent across all layers** (see below)
+- [ ] **Post-plan review PASS** (if implementing a plan — see step 7 above)
 - [ ] Changes committed with descriptive message
 - [ ] Changes pushed to GitHub
 
