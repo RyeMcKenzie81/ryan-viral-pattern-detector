@@ -1972,6 +1972,7 @@ images are reference materials to use."""
             nano_banana_prompt=prompt,
             ad_creation_service=self,
             gemini_service=gemini_service,
+            image_resolution=parameters.get("image_resolution", "2K"),
         )
 
         # 9. Upload new image

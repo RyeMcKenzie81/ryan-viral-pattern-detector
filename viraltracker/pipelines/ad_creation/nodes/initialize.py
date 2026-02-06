@@ -63,7 +63,8 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
                 "persona_id": ctx.state.persona_id,
                 "variant_id": ctx.state.variant_id,
                 "additional_instructions": ctx.state.additional_instructions,
-                "offer_variant_id": ctx.state.offer_variant_id
+                "offer_variant_id": ctx.state.offer_variant_id,
+                "image_resolution": ctx.state.image_resolution
             }
 
             # Create ad run with temporary path
