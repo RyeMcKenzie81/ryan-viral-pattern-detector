@@ -473,7 +473,6 @@ async def run_workflow(
     angle_data: dict = None,
     match_template_structure: bool = False,
     offer_variant_id: str = None,
-    image_resolution: str = "2K",
     auto_retry_rejected: bool = False,
 ):
     """Run the ad creation workflow with optional export.
@@ -499,7 +498,6 @@ async def run_workflow(
         angle_data: Dict with angle info for belief_first mode {id, name, belief_statement, explanation}
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
         offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
-        image_resolution: Output resolution "1K", "2K", or "4K". Default "2K".
         auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
     """
     from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
@@ -531,7 +529,6 @@ async def run_workflow(
         angle_data=angle_data,
         match_template_structure=match_template_structure,
         offer_variant_id=offer_variant_id,
-        image_resolution=image_resolution,
         auto_retry_rejected=auto_retry_rejected,
         deps=deps,
     )
@@ -2381,7 +2378,6 @@ else:
                 angle_data=angle_data,
                 match_template_structure=match_template,
                 offer_variant_id=offer_variant_id,
-                image_resolution=image_resolution,
                 auto_retry_rejected=st.session_state.auto_retry_rejected,
             ))
 
