@@ -67,6 +67,7 @@ async def run_ad_creation(
     additional_instructions: Optional[str] = None,
     angle_data: Optional[Dict[str, Any]] = None,
     match_template_structure: bool = False,
+    image_resolution: str = "2K",
     auto_retry_rejected: bool = False,
     max_retry_attempts: int = 1,
     deps: Optional[Any] = None,
@@ -140,6 +141,7 @@ async def run_ad_creation(
         additional_instructions=additional_instructions,
         angle_data=angle_data,
         match_template_structure=match_template_structure,
+        image_resolution=image_resolution,
         auto_retry_rejected=auto_retry_rejected,
         max_retry_attempts=max_retry_attempts,
     )

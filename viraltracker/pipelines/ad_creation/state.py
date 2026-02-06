@@ -39,6 +39,7 @@ class AdCreationPipelineState:
     additional_instructions: Optional[str] = None
     angle_data: Optional[Dict[str, Any]] = None
     match_template_structure: bool = False
+    image_resolution: str = "2K"  # "1K", "2K", or "4K" — passed to Gemini generate_image()
     project_id: Optional[str] = None
     auto_retry_rejected: bool = False
     max_retry_attempts: int = 1  # per rejected ad

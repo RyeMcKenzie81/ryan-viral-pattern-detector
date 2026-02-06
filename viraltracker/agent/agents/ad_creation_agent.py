@@ -411,7 +411,8 @@ async def complete_ad_workflow(
     additional_instructions: Optional[str] = None,
     angle_data: Optional[Dict] = None,
     match_template_structure: bool = False,
-    offer_variant_id: Optional[str] = None
+    offer_variant_id: Optional[str] = None,
+    image_resolution: str = "2K"
 ) -> Dict:
     """
     Execute complete ad creation workflow from start to finish.
@@ -522,6 +523,7 @@ async def complete_ad_workflow(
         additional_instructions=additional_instructions,
         angle_data=angle_data,
         match_template_structure=match_template_structure,
+        image_resolution=image_resolution,
         deps=ctx.deps,
     )
 

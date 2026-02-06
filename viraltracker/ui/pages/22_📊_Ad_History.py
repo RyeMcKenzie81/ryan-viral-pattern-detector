@@ -324,6 +324,7 @@ async def retry_ad_run(run: dict) -> dict:
         angle_data=params.get('angle_data'),
         match_template_structure=params.get('match_template_structure', False),
         offer_variant_id=params.get('offer_variant_id'),
+        image_resolution=params.get('image_resolution', '2K'),
         deps=deps,
     )
 

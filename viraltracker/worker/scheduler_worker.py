@@ -679,6 +679,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                             persona_id=params.get('persona_id') or params.get('belief_persona_id'),
                             variant_id=params.get('variant_id'),
                             additional_instructions=full_instructions,
+                            image_resolution=params.get('image_resolution', '2K'),
                             deps=deps,
                         )
 
@@ -771,6 +772,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                         persona_id=params.get('persona_id'),
                         variant_id=params.get('variant_id'),
                         additional_instructions=combined_instructions if combined_instructions else None,
+                        image_resolution=params.get('image_resolution', '2K'),
                         deps=deps,
                     )
 

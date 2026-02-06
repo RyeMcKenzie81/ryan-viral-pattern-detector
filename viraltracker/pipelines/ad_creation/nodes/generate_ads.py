@@ -86,6 +86,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                     nano_banana_prompt=prompt,
                     ad_creation_service=ctx.deps.ad_creation,
                     gemini_service=ctx.deps.gemini,
+                    image_resolution=ctx.state.image_resolution,
                 )
 
                 # Upload image with structured naming

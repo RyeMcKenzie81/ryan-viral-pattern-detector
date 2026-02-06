@@ -474,6 +474,7 @@ async def run_workflow(
     match_template_structure: bool = False,
     offer_variant_id: str = None,
     auto_retry_rejected: bool = False,
+    image_resolution: str = "2K",
 ):
     """Run the ad creation workflow with optional export.
 
@@ -499,6 +500,7 @@ async def run_workflow(
         match_template_structure: If True with belief_first, analyze template and adapt belief to match
         offer_variant_id: Optional offer variant UUID for landing page congruent ad copy
         auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
+        image_resolution: Gemini image size - "1K", "2K", or "4K" (default: "2K")
     """
     from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
     from viraltracker.agent.dependencies import AgentDependencies
@@ -530,6 +532,7 @@ async def run_workflow(
         match_template_structure=match_template_structure,
         offer_variant_id=offer_variant_id,
         auto_retry_rejected=auto_retry_rejected,
+        image_resolution=image_resolution,
         deps=deps,
     )
 
@@ -568,6 +571,7 @@ async def run_batch_workflow(
     match_template_structure: bool = False,
     offer_variant_id: str = None,
     auto_retry_rejected: bool = False,
+    image_resolution: str = "2K",
     progress_callback=None
 ) -> dict:
     """Run ad creation workflow for multiple templates sequentially.
@@ -647,6 +651,7 @@ async def run_batch_workflow(
                 match_template_structure=match_template_structure,
                 offer_variant_id=offer_variant_id,
                 auto_retry_rejected=auto_retry_rejected,
+                image_resolution=image_resolution,
             )
 
             # Record template usage if scraped template
@@ -2172,6 +2177,7 @@ else:
             angle_data = st.session_state.selected_angle_data if content_source == "belief_first" else None
             match_template = st.session_state.match_template_structure if content_source == "belief_first" else False
             offer_variant_id = st.session_state.selected_offer_variant_id
+            image_resolution = st.session_state.get('image_resolution', '2K')
 
             # Progress tracking state
             progress_state = {'current': 0, 'total': len(batch_templates), 'template_name': ''}
@@ -2242,6 +2248,7 @@ else:
                         match_template_structure=match_template,
                         offer_variant_id=offer_variant_id,
                         auto_retry_rejected=st.session_state.auto_retry_rejected,
+                        image_resolution=image_resolution,
                     ))
 
                     # Record template usage if scraped
@@ -2379,6 +2386,7 @@ else:
                 match_template_structure=match_template,
                 offer_variant_id=offer_variant_id,
                 auto_retry_rejected=st.session_state.auto_retry_rejected,
+                image_resolution=image_resolution,
             ))
 
             # Record template usage if a scraped template was used

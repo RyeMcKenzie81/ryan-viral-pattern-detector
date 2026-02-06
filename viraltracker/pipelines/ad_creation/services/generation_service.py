@@ -284,6 +284,7 @@ class AdGenerationService:
         *,
         ad_creation_service: Any,
         gemini_service: Any,
+        image_resolution: str = "2K",
     ) -> Dict[str, Any]:
         """
         Execute Gemini image generation from a constructed prompt.
@@ -324,6 +325,7 @@ class AdGenerationService:
         generation_result = await gemini_service.generate_image(
             prompt=nano_banana_prompt['full_prompt'],
             reference_images=reference_images,
+            image_size=image_resolution,
             return_metadata=True
         )
 
