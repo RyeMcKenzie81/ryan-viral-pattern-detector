@@ -834,6 +834,13 @@ if 'rerun_result' not in st.session_state:
 
 PAGE_SIZE = 25
 
+# Show rerun result from previous run
+if st.session_state.rerun_result:
+    result = st.session_state.rerun_result
+    new_status = result.get('final_status', 'unknown')
+    st.success(f"Regenerated! New ad: {result['ad_id'][:8]} ({new_status})")
+    st.session_state.rerun_result = None
+
 # Organization context (selector rendered once in app.py sidebar)
 from viraltracker.ui.utils import get_current_organization_id, get_brands as get_org_brands
 org_id = get_current_organization_id()
@@ -1157,14 +1164,11 @@ else:
                                                     )
                                                     new_status = rerun_result.get('final_status', 'unknown')
                                                     st.session_state.rerun_result = rerun_result
-                                                    st.success(
-                                                        f"Regenerated! New ad: {rerun_result['ad_id'][:8]} "
-                                                        f"({new_status})"
-                                                    )
+                                                    st.session_state.rerun_generating = False
+                                                    st.rerun()
                                                 except Exception as e:
+                                                    st.session_state.rerun_generating = False
                                                     st.error(f"Regeneration failed: {e}")
-                                            st.session_state.rerun_generating = False
-                                            st.rerun()
 
                                     # Performance data (if linked to Meta)
                                     ad_id = ad.get('id')

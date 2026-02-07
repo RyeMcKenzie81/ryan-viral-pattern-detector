@@ -1931,7 +1931,7 @@ images are reference materials to use."""
         brand_id = product_dict.get("brand_id")
         ad_brief_instructions = ""
         if brand_id:
-            template = await self.get_ad_brief_template(UUID(brand_id))
+            template = await self.get_ad_brief_template(UUID(str(brand_id)))
             if template:
                 ad_brief_instructions = template.get("instructions", "") if isinstance(template, dict) else getattr(template, "instructions", "")
 
