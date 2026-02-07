@@ -856,13 +856,30 @@ def render_freshness_banner(brand_id: str, page_key: str):
 
     service = DatasetFreshnessService()
 
+    stale = []
+    fresh = []
+
     for req in requirements:
-        if service.check_is_fresh(brand_id, req["dataset_key"], req["max_age_hours"]):
+        freshness = service.get_freshness(brand_id, req["dataset_key"])
+        is_fresh = service.check_is_fresh(brand_id, req["dataset_key"], req["max_age_hours"])
+
+        if is_fresh:
+            # Build age string for fresh datasets
+            try:
+                last_success = datetime.fromisoformat(freshness["last_success_at"])
+                age_hours = (datetime.now(timezone.utc) - last_success).total_seconds() / 3600
+                if age_hours < 1:
+                    age_str = f"{int(age_hours * 60)}m ago"
+                elif age_hours < 48:
+                    age_str = f"{age_hours:.0f}h ago"
+                else:
+                    age_str = f"{age_hours / 24:.0f}d ago"
+            except (ValueError, TypeError):
+                age_str = "recently"
+            fresh.append(f"**{req['label']}** synced {age_str}")
             continue
 
-        freshness = service.get_freshness(brand_id, req["dataset_key"])
-
-        # Build "last success" string
+        # Build "last success" string for stale datasets
         if freshness and freshness.get("last_success_at"):
             try:
                 last_success = datetime.fromisoformat(freshness["last_success_at"])
@@ -886,7 +903,17 @@ def render_freshness_banner(brand_id: str, page_key: str):
             err = freshness.get("error_message", "unknown error")
             status_str = f" (last attempt failed: {err})"
 
-        st.warning(
+        stale.append(
             f"**{req['label']}** — last success: {success_str}{status_str}. "
             f"{req['fix_action']}."
         )
+
+    # Show fresh status as a compact success line
+    if fresh and not stale:
+        st.success("Data fresh: " + " · ".join(fresh))
+    elif fresh and stale:
+        st.info("Data fresh: " + " · ".join(fresh))
+
+    # Show stale warnings
+    for msg in stale:
+        st.warning(msg)
