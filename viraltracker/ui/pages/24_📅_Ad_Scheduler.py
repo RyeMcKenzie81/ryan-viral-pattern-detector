@@ -209,6 +209,9 @@ def get_scheduled_jobs(brand_id: str = None, product_id: str = None, status: str
             query = query.eq("product_id", product_id)
         if status:
             query = query.eq("status", status)
+        else:
+            # "All" excludes archived jobs
+            query = query.in_("status", ["active", "paused", "completed"])
         result = query.order("created_at", desc=True).execute()
         jobs = result.data or []
 
@@ -682,6 +685,7 @@ def render_schedule_list():
             options=["All", "Active", "Paused", "Completed"],
             key="filter_status"
         )
+        # "All" excludes archived jobs (completed one-time manual runs)
         status_value = status_filter.lower() if status_filter != "All" else None
 
     st.divider()

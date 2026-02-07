@@ -332,6 +332,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         system.append(st.Page("pages/65_📜_History.py", title="History", icon="📜"))
     if visible(SK_SYSTEM, "client_onboarding"):
         system.append(st.Page("pages/06_🚀_Client_Onboarding.py", title="Client Onboarding", icon="🚀"))
+    if visible(SK_SYSTEM, "pipeline_manager"):
+        system.append(st.Page("pages/62_🔧_Pipeline_Manager.py", title="Pipeline Manager", icon="🔧", url_path="pipeline-manager"))
     if visible(SK_SYSTEM, "pipeline_visualizer"):
         system.append(st.Page("pages/67_📊_Pipeline_Visualizer.py", title="Pipeline Visualizer", icon="📊"))
     if has_section(SK_SYSTEM):

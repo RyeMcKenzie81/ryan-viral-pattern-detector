@@ -830,3 +830,63 @@ def setup_tracking_context(service: object) -> None:
 
     tracker = UsageTracker(get_supabase_client())
     service.set_tracking_context(tracker, user_id, org_id)
+
+
+# ============================================================================
+# DATASET FRESHNESS BANNER
+# ============================================================================
+
+def render_freshness_banner(brand_id: str, page_key: str):
+    """Show data freshness warnings with actionable guidance.
+
+    Checks each dataset required by the page and displays a warning banner
+    for any that are stale, failed, or never synced.
+
+    Args:
+        brand_id: Brand UUID string
+        page_key: Key from DATASET_REQUIREMENTS (e.g. 'ad_performance')
+    """
+    from viraltracker.ui.dataset_requirements import DATASET_REQUIREMENTS
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    from datetime import datetime, timezone
+
+    requirements = DATASET_REQUIREMENTS.get(page_key, [])
+    if not requirements:
+        return
+
+    service = DatasetFreshnessService()
+
+    for req in requirements:
+        if service.check_is_fresh(brand_id, req["dataset_key"], req["max_age_hours"]):
+            continue
+
+        freshness = service.get_freshness(brand_id, req["dataset_key"])
+
+        # Build "last success" string
+        if freshness and freshness.get("last_success_at"):
+            try:
+                last_success = datetime.fromisoformat(freshness["last_success_at"])
+                age_hours = (datetime.now(timezone.utc) - last_success).total_seconds() / 3600
+                if age_hours < 1:
+                    success_str = f"{int(age_hours * 60)}m ago"
+                elif age_hours < 48:
+                    success_str = f"{age_hours:.0f}h ago"
+                else:
+                    success_str = f"{age_hours / 24:.0f}d ago"
+            except (ValueError, TypeError):
+                success_str = "unknown"
+        else:
+            success_str = "never"
+
+        # Build status context
+        status_str = ""
+        if freshness and freshness.get("last_status") == "running":
+            status_str = " (sync currently running)"
+        elif freshness and freshness.get("last_status") == "failed":
+            err = freshness.get("error_message", "unknown error")
+            status_str = f" (last attempt failed: {err})"
+
+        st.warning(
+            f"**{req['label']}** — last success: {success_str}{status_str}. "
+            f"{req['fix_action']}."
+        )

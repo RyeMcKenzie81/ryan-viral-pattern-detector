@@ -1,0 +1,748 @@
+"""
+Pipeline Manager - Centralized data pipeline health, scheduling, and monitoring.
+
+Tabs:
+1. Health Overview - Dataset freshness per brand with color-coded status
+2. Schedules - Brand-scoped scheduling with cadence presets
+3. Active Jobs - All scheduled jobs across brands
+4. Run History - Recent job runs with logs
+5. Freshness Matrix - Brand x dataset grid view
+"""
+
+import streamlit as st
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+import pytz
+
+# Page config (must be first)
+st.set_page_config(
+    page_title="Pipeline Manager",
+    page_icon="🔧",
+    layout="wide"
+)
+
+# Authentication
+from viraltracker.ui.auth import require_auth
+require_auth()
+
+PST = pytz.timezone("America/Los_Angeles")
+
+# Known job types and their display info
+JOB_TYPE_INFO = {
+    "meta_sync": {"emoji": "🔄", "label": "Meta Sync", "default_params": {"days_back": 7}},
+    "template_scrape": {"emoji": "📥", "label": "Template Scrape", "default_params": {"max_ads": 50}},
+    "ad_classification": {"emoji": "🏷️", "label": "Ad Classification", "default_params": {"max_new": 200}},
+    "asset_download": {"emoji": "📦", "label": "Asset Download", "default_params": {"max_videos": 20, "max_images": 40}},
+    "scorecard": {"emoji": "📊", "label": "Scorecard", "default_params": {"days_back": 7}},
+    "template_approval": {"emoji": "✅", "label": "Template Approval", "default_params": {"max_templates": 50}},
+    "congruence_reanalysis": {"emoji": "🔍", "label": "Congruence Reanalysis", "default_params": {}},
+    "ad_creation": {"emoji": "🎨", "label": "Ad Creation", "default_params": {}},
+}
+
+CADENCE_PRESETS = {
+    "On-demand only": None,
+    "Twice daily": "0 6,18 * * *",
+    "Daily": "0 6 * * *",
+    "Weekly": "0 6 * * 1",
+    "Monthly": "0 6 1 * *",
+}
+
+# Dataset keys and their labels
+DATASET_LABELS = {
+    "meta_ads_performance": "Ad Performance",
+    "ad_thumbnails": "Thumbnails",
+    "ad_assets": "Ad Assets",
+    "ad_classifications": "Classifications",
+    "templates_scraped": "Templates Scraped",
+    "templates_evaluated": "Templates Evaluated",
+    "competitor_ads": "Competitor Ads",
+    "reddit_data": "Reddit Data",
+    "landing_pages": "Landing Pages",
+}
+
+
+# ============================================================================
+# Database Helpers
+# ============================================================================
+
+def get_supabase_client():
+    from viraltracker.core.database import get_supabase_client
+    return get_supabase_client()
+
+
+def get_brands() -> List[Dict]:
+    """Fetch all brands."""
+    try:
+        db = get_supabase_client()
+        result = db.table("brands").select("id, name").order("name").execute()
+        return result.data or []
+    except Exception as e:
+        st.error(f"Failed to fetch brands: {e}")
+        return []
+
+
+def get_dataset_statuses(brand_id: Optional[str] = None) -> List[Dict]:
+    """Fetch dataset_status rows, optionally filtered by brand."""
+    try:
+        db = get_supabase_client()
+        query = db.table("dataset_status").select("*")
+        if brand_id:
+            query = query.eq("brand_id", brand_id)
+        result = query.order("dataset_key").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def get_scheduled_jobs_all(status_filter: Optional[str] = None) -> List[Dict]:
+    """Fetch scheduled jobs with brand info."""
+    try:
+        db = get_supabase_client()
+        query = db.table("scheduled_jobs").select(
+            "*, products(name, brands(name))"
+        )
+        if status_filter:
+            query = query.eq("status", status_filter)
+        else:
+            query = query.in_("status", ["active", "paused", "completed"])
+
+        result = query.order("created_at", desc=True).execute()
+        jobs = result.data or []
+
+        # Fetch brand names for jobs without products
+        brand_ids_needed = set()
+        for job in jobs:
+            if not job.get("products") and job.get("brand_id"):
+                brand_ids_needed.add(job["brand_id"])
+
+        if brand_ids_needed:
+            brands_result = db.table("brands").select("id, name").in_(
+                "id", list(brand_ids_needed)
+            ).execute()
+            brand_map = {b["id"]: b["name"] for b in (brands_result.data or [])}
+            for job in jobs:
+                if not job.get("products") and job.get("brand_id"):
+                    job["_brand_name"] = brand_map.get(job["brand_id"], "Unknown")
+                elif job.get("products"):
+                    brand_info = job["products"].get("brands", {}) or {}
+                    job["_brand_name"] = brand_info.get("name", "Unknown")
+                else:
+                    job["_brand_name"] = "Unknown"
+
+        return jobs
+    except Exception as e:
+        st.error(f"Failed to fetch jobs: {e}")
+        return []
+
+
+def get_job_runs(
+    limit: int = 50,
+    brand_id: Optional[str] = None,
+    job_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> List[Dict]:
+    """Fetch recent job runs with job details."""
+    try:
+        db = get_supabase_client()
+        query = db.table("scheduled_job_runs").select(
+            "id, scheduled_job_id, status, started_at, completed_at, "
+            "error_message, logs, "
+            "scheduled_jobs(name, job_type, brand_id)"
+        )
+        if status:
+            query = query.eq("status", status)
+        result = query.order("started_at", desc=True).limit(limit).execute()
+        runs = result.data or []
+
+        # Apply brand/job_type filters (post-query since they're on joined table)
+        if brand_id:
+            runs = [r for r in runs if (r.get("scheduled_jobs") or {}).get("brand_id") == brand_id]
+        if job_type:
+            runs = [r for r in runs if (r.get("scheduled_jobs") or {}).get("job_type") == job_type]
+
+        return runs
+    except Exception:
+        return []
+
+
+# ============================================================================
+# Formatting Helpers
+# ============================================================================
+
+def format_age(dt_str: Optional[str]) -> str:
+    """Format a datetime string as a human-readable age."""
+    if not dt_str:
+        return "never"
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - dt
+        hours = age.total_seconds() / 3600
+        if hours < 1:
+            return f"{int(hours * 60)}m ago"
+        elif hours < 48:
+            return f"{hours:.0f}h ago"
+        else:
+            return f"{hours / 24:.0f}d ago"
+    except (ValueError, TypeError):
+        return "unknown"
+
+
+def freshness_color(dt_str: Optional[str], max_age_hours: float = 24) -> str:
+    """Return a status color based on freshness."""
+    if not dt_str:
+        return "🔴"
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+        if hours <= max_age_hours:
+            return "🟢"
+        elif hours <= max_age_hours * 2:
+            return "🟡"
+        else:
+            return "🔴"
+    except (ValueError, TypeError):
+        return "🔴"
+
+
+def format_datetime_pst(dt_str: Optional[str]) -> str:
+    """Format datetime string to PST display."""
+    if not dt_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = PST.localize(dt)
+        else:
+            dt = dt.astimezone(PST)
+        return dt.strftime("%b %d, %I:%M %p")
+    except (ValueError, TypeError):
+        return dt_str
+
+
+# ============================================================================
+# Tab 1: Health Overview
+# ============================================================================
+
+def render_health_overview():
+    """Show dataset freshness per brand with color-coded status."""
+    st.subheader("Dataset Health by Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.info("No brands found.")
+        return
+
+    brand_filter = st.selectbox(
+        "Select Brand",
+        options=["All Brands"] + [b["name"] for b in brands],
+        key="health_brand_filter",
+    )
+
+    if brand_filter == "All Brands":
+        selected_brands = brands
+    else:
+        selected_brands = [b for b in brands if b["name"] == brand_filter]
+
+    for brand in selected_brands:
+        statuses = get_dataset_statuses(brand["id"])
+        status_map = {s["dataset_key"]: s for s in statuses}
+
+        with st.expander(f"**{brand['name']}**", expanded=(len(selected_brands) == 1)):
+            if not statuses:
+                st.caption("No dataset status records yet. Run a sync to populate.")
+                # Show Run Now for meta_sync
+                if st.button("🔄 Run Meta Sync", key=f"run_meta_{brand['id']}"):
+                    from viraltracker.services.pipeline_helpers import queue_one_time_job
+                    job_id = queue_one_time_job(brand["id"], "meta_sync", parameters={"days_back": 7})
+                    if job_id:
+                        st.success("Meta sync queued!")
+                    else:
+                        st.error("Failed to queue job.")
+                continue
+
+            cols = st.columns(min(len(statuses), 4))
+            for i, (dk, label) in enumerate(DATASET_LABELS.items()):
+                status = status_map.get(dk)
+                col = cols[i % len(cols)]
+                with col:
+                    if status:
+                        color = freshness_color(status.get("last_success_at"))
+                        last_success = format_age(status.get("last_success_at"))
+                        st.markdown(f"{color} **{label}**")
+                        st.caption(f"Last success: {last_success}")
+
+                        if status.get("last_status") == "running":
+                            st.caption("⏳ Currently running")
+                        elif status.get("last_status") == "failed":
+                            err = status.get("error_message", "")
+                            st.caption(f"❌ Last attempt failed")
+                            if err:
+                                st.caption(f"Error: {err[:100]}")
+
+                        if status.get("records_affected"):
+                            st.caption(f"Records: {status['records_affected']}")
+                    else:
+                        st.markdown(f"⚪ **{label}**")
+                        st.caption("No data")
+
+            # Run Now buttons
+            st.markdown("---")
+            run_cols = st.columns(4)
+            schedulable_types = ["meta_sync", "template_scrape", "ad_classification", "asset_download"]
+            for i, jt in enumerate(schedulable_types):
+                info = JOB_TYPE_INFO.get(jt, {})
+                with run_cols[i]:
+                    if st.button(
+                        f"{info.get('emoji', '▶️')} Run {info.get('label', jt)}",
+                        key=f"run_{jt}_{brand['id']}",
+                    ):
+                        from viraltracker.services.pipeline_helpers import queue_one_time_job
+                        job_id = queue_one_time_job(
+                            brand["id"], jt, parameters=info.get("default_params", {})
+                        )
+                        if job_id:
+                            st.success(f"{info.get('label', jt)} queued!")
+                        else:
+                            st.error("Failed to queue job.")
+
+
+# ============================================================================
+# Tab 2: Schedules
+# ============================================================================
+
+def render_schedules():
+    """Brand-scoped scheduling with cadence presets."""
+    st.subheader("Recurring Schedules")
+
+    from viraltracker.ui.utils import render_brand_selector
+    brand_id = render_brand_selector(key="pipeline_schedules_brand")
+    if not brand_id:
+        st.info("Select a brand to manage schedules.")
+        return
+
+    # Fetch existing recurring jobs for this brand
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_jobs").select("*").eq(
+            "brand_id", brand_id
+        ).eq("schedule_type", "recurring").in_(
+            "status", ["active", "paused"]
+        ).execute()
+        existing_jobs = {j["job_type"]: j for j in (result.data or [])}
+    except Exception:
+        existing_jobs = {}
+
+    # Schedulable job types (exclude ad_creation which has its own scheduler)
+    schedulable_types = [
+        "meta_sync", "template_scrape", "ad_classification",
+        "asset_download", "scorecard", "template_approval",
+        "congruence_reanalysis",
+    ]
+
+    for jt in schedulable_types:
+        info = JOB_TYPE_INFO.get(jt, {"emoji": "❓", "label": jt, "default_params": {}})
+        existing = existing_jobs.get(jt)
+
+        with st.expander(
+            f"{info['emoji']} **{info['label']}** — "
+            f"{'🟢 Active' if existing and existing.get('status') == 'active' else '⏸️ Paused' if existing else '⚪ Not configured'}",
+            expanded=False,
+        ):
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Cadence selector
+                current_cron = existing.get("cron_expression", "") if existing else ""
+                # Determine current preset
+                current_preset = "On-demand only"
+                for preset_name, preset_cron in CADENCE_PRESETS.items():
+                    if preset_cron and preset_cron == current_cron:
+                        current_preset = preset_name
+                        break
+                else:
+                    if current_cron and existing:
+                        current_preset = "Advanced"
+
+                preset_options = list(CADENCE_PRESETS.keys()) + ["Advanced"]
+                preset_idx = preset_options.index(current_preset) if current_preset in preset_options else 0
+
+                cadence = st.selectbox(
+                    "Cadence",
+                    options=preset_options,
+                    index=preset_idx,
+                    key=f"cadence_{jt}",
+                )
+
+                if cadence == "Advanced":
+                    cron_expr = st.text_input(
+                        "Cron Expression",
+                        value=current_cron,
+                        key=f"cron_{jt}",
+                        help="Standard cron format: minute hour day-of-month month day-of-week",
+                    )
+                else:
+                    cron_expr = CADENCE_PRESETS.get(cadence)
+
+                # Show next run preview
+                if cron_expr:
+                    try:
+                        from viraltracker.worker.scheduler_worker import calculate_next_run
+                        next_run = calculate_next_run(cron_expr)
+                        if next_run:
+                            st.caption(f"Next run: {next_run.strftime('%b %d at %I:%M %p PST')}")
+                        else:
+                            st.warning("Invalid cron expression")
+                    except Exception:
+                        st.caption("Could not preview next run")
+
+            with col2:
+                # Status toggle
+                enabled = st.checkbox(
+                    "Enabled",
+                    value=existing.get("status") == "active" if existing else False,
+                    key=f"enabled_{jt}",
+                )
+
+                # Parameters
+                params = existing.get("parameters", info["default_params"]) if existing else info["default_params"]
+                if params:
+                    st.markdown("**Parameters:**")
+                    for pk, pv in params.items():
+                        st.caption(f"{pk}: {pv}")
+
+            # Action buttons
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("💾 Save Schedule", key=f"save_{jt}"):
+                    if cadence == "On-demand only":
+                        # Pause or don't create
+                        if existing:
+                            db = get_supabase_client()
+                            db.table("scheduled_jobs").update(
+                                {"status": "paused"}
+                            ).eq("id", existing["id"]).execute()
+                            st.success(f"{info['label']} paused.")
+                            st.rerun()
+                        else:
+                            st.info("No schedule to save (on-demand only).")
+                    elif cron_expr:
+                        from viraltracker.services.pipeline_helpers import ensure_recurring_job
+                        job_id = ensure_recurring_job(
+                            brand_id=brand_id,
+                            job_type=jt,
+                            cron_expression=cron_expr,
+                            parameters=params,
+                            enabled=enabled,
+                        )
+                        if job_id:
+                            st.success(f"{info['label']} schedule saved!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to save schedule.")
+                    else:
+                        st.warning("Select a cadence first.")
+
+            with btn_col2:
+                if st.button("▶️ Run Now", key=f"runnow_{jt}"):
+                    from viraltracker.services.pipeline_helpers import queue_one_time_job
+                    job_id = queue_one_time_job(
+                        brand_id=brand_id,
+                        job_type=jt,
+                        parameters=params,
+                    )
+                    if job_id:
+                        st.success(f"{info['label']} queued for immediate run!")
+                    else:
+                        st.error("Failed to queue job.")
+
+
+# ============================================================================
+# Tab 3: Active Jobs
+# ============================================================================
+
+def render_active_jobs():
+    """Show all scheduled jobs across brands."""
+    st.subheader("Active & Paused Jobs")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        status_options = ["All Active", "Active", "Paused", "Completed"]
+        status_sel = st.selectbox("Status", options=status_options, key="jobs_status_filter")
+    with col2:
+        type_options = ["All Types"] + list(JOB_TYPE_INFO.keys())
+        type_sel = st.selectbox(
+            "Job Type",
+            options=type_options,
+            format_func=lambda x: JOB_TYPE_INFO.get(x, {}).get("label", x) if x != "All Types" else x,
+            key="jobs_type_filter",
+        )
+
+    status_val = None
+    if status_sel == "Active":
+        status_val = "active"
+    elif status_sel == "Paused":
+        status_val = "paused"
+    elif status_sel == "Completed":
+        status_val = "completed"
+
+    jobs = get_scheduled_jobs_all(status_filter=status_val)
+
+    if type_sel != "All Types":
+        jobs = [j for j in jobs if j.get("job_type") == type_sel]
+
+    if not jobs:
+        st.info("No jobs found for the selected filters.")
+        return
+
+    st.markdown(f"**{len(jobs)} job(s)**")
+
+    for job in jobs:
+        jt = job.get("job_type", "ad_creation")
+        info = JOB_TYPE_INFO.get(jt, {"emoji": "❓", "label": jt})
+        status = job.get("status", "active")
+        status_emoji = {"active": "🟢", "paused": "⏸️", "completed": "✅"}.get(status, "❓")
+        brand_name = job.get("_brand_name", "Unknown")
+
+        with st.container():
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+
+            with col1:
+                st.markdown(f"{status_emoji} {info['emoji']} **{job['name']}**")
+                st.caption(f"{brand_name} · {info['label']}")
+
+            with col2:
+                if job.get("next_run_at"):
+                    st.markdown(f"Next: **{format_datetime_pst(job['next_run_at'])}**")
+                else:
+                    st.markdown("Next: **—**")
+                if job.get("cron_expression"):
+                    st.caption(f"Cron: {job['cron_expression']}")
+
+            with col3:
+                runs = f"{job.get('runs_completed', 0)}"
+                if job.get("max_runs"):
+                    runs += f"/{job['max_runs']}"
+                st.markdown(f"Runs: **{runs}**")
+                if job.get("last_error"):
+                    st.caption(f"⚠️ {job['last_error'][:60]}")
+
+            with col4:
+                if status == "active":
+                    if st.button("⏸️", key=f"pause_{job['id']}", help="Pause"):
+                        db = get_supabase_client()
+                        db.table("scheduled_jobs").update(
+                            {"status": "paused"}
+                        ).eq("id", job["id"]).execute()
+                        st.rerun()
+                elif status == "paused":
+                    if st.button("▶️", key=f"resume_{job['id']}", help="Resume"):
+                        db = get_supabase_client()
+                        from viraltracker.worker.scheduler_worker import calculate_next_run
+                        updates = {"status": "active"}
+                        if job.get("cron_expression"):
+                            next_run = calculate_next_run(job["cron_expression"])
+                            if next_run:
+                                updates["next_run_at"] = next_run.isoformat()
+                        db.table("scheduled_jobs").update(updates).eq("id", job["id"]).execute()
+                        st.rerun()
+
+            st.divider()
+
+
+# ============================================================================
+# Tab 4: Run History
+# ============================================================================
+
+def render_run_history():
+    """Show recent job runs with expandable logs."""
+    st.subheader("Recent Job Runs")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        brands = get_brands()
+        brand_options = {"All": None}
+        brand_options.update({b["name"]: b["id"] for b in brands})
+        brand_sel = st.selectbox("Brand", options=list(brand_options.keys()), key="runs_brand")
+        brand_val = brand_options[brand_sel]
+
+    with col2:
+        type_options = {"All Types": None}
+        type_options.update({v["label"]: k for k, v in JOB_TYPE_INFO.items()})
+        type_sel = st.selectbox("Job Type", options=list(type_options.keys()), key="runs_type")
+        type_val = type_options[type_sel]
+
+    with col3:
+        status_options = {"All": None, "Completed": "completed", "Failed": "failed", "Running": "running"}
+        status_sel = st.selectbox("Status", options=list(status_options.keys()), key="runs_status")
+        status_val = status_options[status_sel]
+
+    runs = get_job_runs(
+        limit=50,
+        brand_id=brand_val,
+        job_type=type_val,
+        status=status_val,
+    )
+
+    if not runs:
+        st.info("No runs found for the selected filters.")
+        return
+
+    st.markdown(f"**{len(runs)} run(s)**")
+
+    for run in runs:
+        job_info = run.get("scheduled_jobs") or {}
+        job_name = job_info.get("name", "Unknown")
+        jt = job_info.get("job_type", "ad_creation")
+        info = JOB_TYPE_INFO.get(jt, {"emoji": "❓", "label": jt})
+
+        run_status = run.get("status", "unknown")
+        status_emoji = {
+            "completed": "✅",
+            "failed": "❌",
+            "running": "⏳",
+            "pending": "⏱️",
+        }.get(run_status, "❓")
+
+        started = format_datetime_pst(run.get("started_at"))
+        completed = format_datetime_pst(run.get("completed_at"))
+
+        # Calculate duration
+        duration_str = ""
+        if run.get("started_at") and run.get("completed_at"):
+            try:
+                s = datetime.fromisoformat(run["started_at"].replace("Z", "+00:00"))
+                c = datetime.fromisoformat(run["completed_at"].replace("Z", "+00:00"))
+                dur = (c - s).total_seconds()
+                if dur < 60:
+                    duration_str = f"{dur:.0f}s"
+                else:
+                    duration_str = f"{dur / 60:.1f}m"
+            except (ValueError, TypeError):
+                pass
+
+        with st.container():
+            col1, col2, col3 = st.columns([3, 2, 1])
+
+            with col1:
+                st.markdown(f"{status_emoji} {info['emoji']} **{job_name}**")
+                st.caption(f"Started: {started}")
+
+            with col2:
+                if completed != "—":
+                    st.caption(f"Completed: {completed}")
+                if duration_str:
+                    st.caption(f"Duration: {duration_str}")
+
+            with col3:
+                if run.get("error_message"):
+                    st.caption(f"❌ {run['error_message'][:60]}")
+
+            # Expandable logs
+            if run.get("logs"):
+                with st.expander("📋 Logs", expanded=False):
+                    st.code(run["logs"], language="text")
+
+            st.divider()
+
+
+# ============================================================================
+# Tab 5: Freshness Matrix
+# ============================================================================
+
+def render_freshness_matrix():
+    """Brand x dataset grid view of freshness."""
+    st.subheader("Dataset Freshness Matrix")
+
+    brands = get_brands()
+    if not brands:
+        st.info("No brands found.")
+        return
+
+    all_statuses = get_dataset_statuses()
+
+    # Build matrix: brand_id -> dataset_key -> status
+    matrix = {}
+    for s in all_statuses:
+        bid = s["brand_id"]
+        if bid not in matrix:
+            matrix[bid] = {}
+        matrix[bid][s["dataset_key"]] = s
+
+    # Determine which dataset keys exist
+    all_keys = sorted(set(s["dataset_key"] for s in all_statuses))
+    if not all_keys:
+        st.info("No dataset status records yet. Run some sync jobs to populate.")
+        return
+
+    # Header row
+    header_cols = st.columns([2] + [1] * len(all_keys))
+    with header_cols[0]:
+        st.markdown("**Brand**")
+    for i, dk in enumerate(all_keys):
+        with header_cols[i + 1]:
+            label = DATASET_LABELS.get(dk, dk.replace("_", " ").title())
+            st.markdown(f"**{label}**")
+
+    st.divider()
+
+    # Data rows
+    for brand in brands:
+        brand_statuses = matrix.get(brand["id"], {})
+        if not brand_statuses:
+            continue
+
+        row_cols = st.columns([2] + [1] * len(all_keys))
+        with row_cols[0]:
+            st.markdown(brand["name"])
+
+        for i, dk in enumerate(all_keys):
+            with row_cols[i + 1]:
+                status = brand_statuses.get(dk)
+                if status:
+                    color = freshness_color(status.get("last_success_at"))
+                    age = format_age(status.get("last_success_at"))
+                    last_status = status.get("last_status", "")
+
+                    if last_status == "running":
+                        st.markdown(f"⏳ {age}")
+                    elif last_status == "failed":
+                        st.markdown(f"{color} {age} ❌")
+                    else:
+                        st.markdown(f"{color} {age}")
+                else:
+                    st.markdown("⚪ —")
+
+
+# ============================================================================
+# Main Page
+# ============================================================================
+
+st.title("🔧 Pipeline Manager")
+st.markdown("Centralized data pipeline health, scheduling, and monitoring.")
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🏥 Health Overview",
+    "📅 Schedules",
+    "📋 Active Jobs",
+    "📜 Run History",
+    "📊 Freshness Matrix",
+])
+
+with tab1:
+    render_health_overview()
+
+with tab2:
+    render_schedules()
+
+with tab3:
+    render_active_jobs()
+
+with tab4:
+    render_run_history()
+
+with tab5:
+    render_freshness_matrix()

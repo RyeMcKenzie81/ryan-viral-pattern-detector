@@ -2083,19 +2083,43 @@ def render_sync_section(brand_id: str, ad_account: Dict):
         st.write("")  # Spacer
         sync_clicked = st.button("🔄 Sync Ads", type="primary", use_container_width=True)
 
+    legacy_mode = st.checkbox("Run sync directly (legacy)", value=False, key="sync_legacy_mode",
+                              help="Runs the sync in-process instead of queuing to the background worker")
+
     if sync_clicked:
-        with st.spinner(f"Syncing ads from {ad_account['meta_ad_account_id']}..."):
-            try:
-                count = asyncio.run(sync_ads_from_meta(
-                    brand_id=brand_id,
-                    ad_account_id=ad_account['meta_ad_account_id'],
-                    date_start=sync_start.strftime("%Y-%m-%d"),
-                    date_end=sync_end.strftime("%Y-%m-%d")
-                ))
-                st.success(f"Synced {count} ad performance records!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Sync failed: {e}")
+        if legacy_mode:
+            # Legacy: run sync directly (blocks UI)
+            from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+            freshness = DatasetFreshnessService()
+            freshness.record_start(brand_id, "meta_ads_performance")
+
+            with st.spinner(f"Syncing ads from {ad_account['meta_ad_account_id']}..."):
+                try:
+                    count = asyncio.run(sync_ads_from_meta(
+                        brand_id=brand_id,
+                        ad_account_id=ad_account['meta_ad_account_id'],
+                        date_start=sync_start.strftime("%Y-%m-%d"),
+                        date_end=sync_end.strftime("%Y-%m-%d")
+                    ))
+                    freshness.record_success(brand_id, "meta_ads_performance", records_affected=count)
+                    st.success(f"Synced {count} ad performance records!")
+                    st.rerun()
+                except Exception as e:
+                    freshness.record_failure(brand_id, "meta_ads_performance", str(e))
+                    st.error(f"Sync failed: {e}")
+        else:
+            # Queue to background worker
+            from viraltracker.services.pipeline_helpers import queue_one_time_job
+            days_back = (sync_end - sync_start).days
+            job_id = queue_one_time_job(
+                brand_id=brand_id,
+                job_type="meta_sync",
+                parameters={"days_back": days_back},
+            )
+            if job_id:
+                st.success("Meta sync queued! It will start within 60 seconds.")
+            else:
+                st.error("Failed to queue sync job. Please try the legacy mode.")
 
     # Scheduling section
     render_sync_scheduling(brand_id)
@@ -2642,6 +2666,10 @@ if not ad_account:
     st.stop()
 
 st.caption(f"Connected: **{ad_account.get('account_name', ad_account['meta_ad_account_id'])}**")
+
+# Data freshness banner
+from viraltracker.ui.utils import render_freshness_banner
+render_freshness_banner(brand_id, "ad_performance")
 
 st.divider()
 

@@ -100,19 +100,56 @@ def get_due_jobs() -> List[Dict]:
 
 
 def create_job_run(job_id: str) -> Optional[str]:
-    """Create a new job run record. Returns run ID."""
+    """Create a new job run record. Returns run ID.
+
+    Automatically determines attempt_number:
+    - If the last run for this job failed, increment its attempt_number
+    - Otherwise, start at attempt_number=1
+    """
     try:
         db = get_supabase_client()
+
+        # Determine attempt number
+        attempt_number = 1
+        try:
+            last_run = db.table("scheduled_job_runs").select(
+                "status, attempt_number"
+            ).eq("scheduled_job_id", job_id).order(
+                "started_at", desc=True
+            ).limit(1).execute()
+            if last_run.data and last_run.data[0].get("status") == "failed":
+                attempt_number = (last_run.data[0].get("attempt_number") or 1) + 1
+        except Exception:
+            pass  # Default to 1 if query fails
+
         result = db.table("scheduled_job_runs").insert({
             "scheduled_job_id": job_id,
             "status": "running",
-            "started_at": datetime.now(PST).isoformat()
+            "started_at": datetime.now(PST).isoformat(),
+            "attempt_number": attempt_number,
         }).execute()
 
-        return result.data[0]['id'] if result.data else None
+        run_data = result.data[0] if result.data else None
+        if run_data:
+            return run_data['id']
+        return None
     except Exception as e:
         logger.error(f"Failed to create job run: {e}")
         return None
+
+
+def get_run_attempt_number(run_id: str) -> int:
+    """Get the attempt_number for a run. Returns 1 if unknown."""
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_job_runs").select(
+            "attempt_number"
+        ).eq("id", run_id).limit(1).execute()
+        if result.data:
+            return result.data[0].get("attempt_number", 1) or 1
+        return 1
+    except Exception:
+        return 1
 
 
 def update_job_run(run_id: str, updates: Dict):
@@ -131,6 +168,51 @@ def update_job(job_id: str, updates: Dict):
         db.table("scheduled_jobs").update(updates).eq("id", job_id).execute()
     except Exception as e:
         logger.error(f"Failed to update job {job_id}: {e}")
+
+
+def recover_stuck_runs(stuck_threshold_minutes: int = 30):
+    """Find runs stuck in 'running' state for too long and mark them failed.
+
+    Called at the start of each poll cycle. Marks stuck runs as failed and
+    reschedules their parent jobs via _reschedule_after_failure.
+
+    Args:
+        stuck_threshold_minutes: How long a run can be 'running' before recovery.
+    """
+    try:
+        db = get_supabase_client()
+        cutoff = (datetime.now(PST) - timedelta(minutes=stuck_threshold_minutes)).isoformat()
+
+        stuck = db.table("scheduled_job_runs").select(
+            "id, scheduled_job_id, started_at, attempt_number"
+        ).eq("status", "running").lt("started_at", cutoff).execute()
+
+        for run in (stuck.data or []):
+            logger.warning(f"Recovering stuck run {run['id']} (started {run['started_at']})")
+
+            # Mark run as failed
+            db.table("scheduled_job_runs").update({
+                "status": "failed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "error_message": f"Run stuck for >{stuck_threshold_minutes}m, marked failed by recovery sweep",
+            }).eq("id", run["id"]).execute()
+
+            # Reschedule the parent job
+            try:
+                job_result = db.table("scheduled_jobs").select("*").eq(
+                    "id", run["scheduled_job_id"]
+                ).limit(1).execute()
+                if job_result.data:
+                    _reschedule_after_failure(
+                        job_result.data[0],
+                        run["scheduled_job_id"],
+                        run.get("attempt_number", 1),
+                    )
+            except Exception as e:
+                logger.error(f"Failed to reschedule after stuck run recovery: {e}")
+
+    except Exception as e:
+        logger.error(f"Error in recover_stuck_runs: {e}")
 
 
 def get_unused_templates(product_id: str, count: int) -> List[str]:
@@ -880,7 +962,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -1000,6 +1082,10 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
     logs = []
 
     try:
@@ -1016,7 +1102,9 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
 
         logs.append(f"Fetching insights for last {days_back} days...")
 
-        # Step 1: Fetch insights from Meta API
+        # Step 1-2: Fetch insights + save to DB
+        freshness.record_start(brand_id, "meta_ads_performance", run_id=run_id)
+
         insights = await service.get_ad_insights(
             brand_id=UUID(brand_id),
             days_back=days_back
@@ -1029,28 +1117,32 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         else:
             logs.append(f"Fetched {len(insights)} insight records")
 
-            # Step 2: Save to database
             rows_inserted = await service.sync_performance_to_db(
                 insights=insights,
                 brand_id=UUID(brand_id)
             )
 
-            # Count unique ads
             ads_synced = len(set(i.get('ad_id') for i in insights if i.get('ad_id')))
             logs.append(f"Synced {ads_synced} ads, {rows_inserted} data rows")
 
-        # Step 3: Update missing thumbnails (populates meta_video_id + is_video)
+        freshness.record_success(brand_id, "meta_ads_performance", records_affected=rows_inserted, run_id=run_id)
+
+        # Step 3: Update missing thumbnails (NON-FATAL)
+        freshness.record_start(brand_id, "ad_thumbnails", run_id=run_id)
         try:
             thumbs_updated = await service.update_missing_thumbnails(
                 brand_id=UUID(brand_id), limit=100
             )
             if thumbs_updated > 0:
                 logs.append(f"Updated {thumbs_updated} missing thumbnails")
+            freshness.record_success(brand_id, "ad_thumbnails", records_affected=thumbs_updated, run_id=run_id)
         except Exception as thumb_err:
+            freshness.record_failure(brand_id, "ad_thumbnails", str(thumb_err), run_id=run_id)
             logs.append(f"Thumbnail update error (non-fatal): {thumb_err}")
             logger.warning(f"Thumbnail update failed for {brand_name}: {thumb_err}")
 
-        # Step 4: Download new ad assets (videos + images) to Supabase storage
+        # Step 4: Download new ad assets (NON-FATAL)
+        freshness.record_start(brand_id, "ad_assets", run_id=run_id)
         try:
             asset_counts = await service.download_new_ad_assets(
                 brand_id=UUID(brand_id),
@@ -1063,12 +1155,15 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                     f"Downloaded {asset_counts['videos']} videos, "
                     f"{asset_counts['images']} images to storage"
                 )
+            freshness.record_success(brand_id, "ad_assets", records_affected=total_assets, run_id=run_id)
         except Exception as asset_err:
+            freshness.record_failure(brand_id, "ad_assets", str(asset_err), run_id=run_id)
             logs.append(f"Asset download error (non-fatal): {asset_err}")
             logger.warning(f"Asset download failed for {brand_name}: {asset_err}")
 
-        # Step 5: Auto-classify ads if enabled
+        # Step 5: Auto-classify ads if enabled (NON-FATAL)
         if params.get('auto_classify', False):
+            freshness.record_start(brand_id, "ad_classifications", run_id=run_id)
             try:
                 from uuid import UUID
                 logs.append("")
@@ -1089,7 +1184,9 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                     logs.append(f"Skipped (cap or missing media): {classify_result['skipped']}")
                 if classify_result['errors'] > 0:
                     logs.append(f"Classification errors: {classify_result['errors']}")
+                freshness.record_success(brand_id, "ad_classifications", records_affected=classify_result.get('classified', 0), run_id=run_id)
             except Exception as classify_err:
+                freshness.record_failure(brand_id, "ad_classifications", str(classify_err), run_id=run_id)
                 logs.append(f"Auto-classification error (non-fatal): {classify_err}")
                 logger.warning(f"Auto-classification failed for {brand_name}: {classify_err}")
 
@@ -1129,6 +1226,9 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Meta sync job {job_name} failed: {error_msg}")
 
+        # Record freshness failure for performance data (step 1-2 is the fatal path)
+        freshness.record_failure(brand_id, "meta_ads_performance", error_msg, run_id=run_id)
+
         update_job_run(run_id, {
             "status": "failed",
             "completed_at": datetime.now(PST).isoformat(),
@@ -1137,7 +1237,7 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -1355,7 +1455,7 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -1616,26 +1716,48 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
 
-def _reschedule_after_failure(job: Dict, job_id: str):
-    """Reschedule a recurring job after a failed run.
+def _reschedule_after_failure(job: Dict, job_id: str, run_attempt_number: int = 1):
+    """Reschedule a job after a failed run, with retry support.
 
-    When a job fails, next_run_at has already been cleared (to prevent
-    duplicate execution). This must be recalculated so the job runs again
-    on its next scheduled time. Does NOT increment runs_completed.
+    Retries with exponential backoff (5m, 10m, 20m, capped at 60m) up to
+    max_retries. After retries exhausted, falls back to the regular cron
+    schedule for recurring jobs. One-time jobs that exhaust retries stay dead.
+
+    Args:
+        job: The scheduled_jobs row dict
+        job_id: Job UUID string
+        run_attempt_number: The attempt_number from the failed run
     """
-    if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
-        next_run = calculate_next_run(job['cron_expression'])
-        if next_run:
-            update_job(job_id, {"next_run_at": next_run.isoformat()})
-            logger.info(f"Job {job_id} failed but rescheduled for {next_run}")
+    max_retries = job.get('max_retries', 3)
+
+    if run_attempt_number < max_retries:
+        # Retry with exponential backoff: 5min, 10min, 20min, capped at 60min
+        backoff_minutes = min(5 * (2 ** (run_attempt_number - 1)), 60)
+        retry_at = datetime.now(PST) + timedelta(minutes=backoff_minutes)
+
+        update_job(job_id, {
+            "next_run_at": retry_at.isoformat(),
+            "last_error": f"Attempt {run_attempt_number} failed, retrying at {retry_at.strftime('%I:%M %p')}",
+        })
+        logger.info(f"Job {job_id}: attempt {run_attempt_number} failed, retry in {backoff_minutes}m")
+    else:
+        # Retries exhausted — fall back to normal schedule (or stay dead for one-time)
+        job_updates = {"last_error": f"All {max_retries} attempts failed"}
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                job_updates["next_run_at"] = next_run.isoformat()
+                logger.info(f"Job {job_id}: retries exhausted, rescheduled for {next_run}")
+            else:
+                logger.error(f"Job {job_id}: retries exhausted, could not calculate next run")
         else:
-            logger.error(f"Job {job_id} failed and could not calculate next run")
-    # One-time jobs that fail stay with next_run_at=None (won't re-run)
+            logger.warning(f"Job {job_id}: one-time job retries exhausted, staying dead")
+        update_job(job_id, job_updates)
 
 
 def _update_job_next_run(job: Dict, job_id: str):
@@ -1643,7 +1765,7 @@ def _update_job_next_run(job: Dict, job_id: str):
     runs_completed = job.get('runs_completed', 0) + 1
     max_runs = job.get('max_runs')
 
-    job_updates = {"runs_completed": runs_completed}
+    job_updates = {"runs_completed": runs_completed, "last_error": None}
 
     if max_runs and runs_completed >= max_runs:
         job_updates["status"] = "completed"
@@ -1655,6 +1777,10 @@ def _update_job_next_run(job: Dict, job_id: str):
     else:
         job_updates["status"] = "completed"
         job_updates["next_run_at"] = None
+
+    # Auto-archive completed one-time manual jobs to prevent table clutter
+    if job.get('schedule_type') == 'one_time' and job.get('trigger_source') == 'manual':
+        job_updates["status"] = "archived"
 
     update_job(job_id, job_updates)
 
@@ -1824,7 +1950,7 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -1998,7 +2124,7 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -2231,7 +2357,7 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -2322,7 +2448,7 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
-        _reschedule_after_failure(job, job_id)
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
 
@@ -2338,6 +2464,9 @@ async def run_scheduler():
 
     while not shutdown_requested:
         try:
+            # Recover any stuck runs before checking for new work
+            recover_stuck_runs()
+
             # Check for due jobs
             due_jobs = get_due_jobs()
 

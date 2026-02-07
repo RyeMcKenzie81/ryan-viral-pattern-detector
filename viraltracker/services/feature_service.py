@@ -94,6 +94,7 @@ class FeatureKey:
     HISTORY = "history"
     CLIENT_ONBOARDING = "client_onboarding"
     PIPELINE_VISUALIZER = "pipeline_visualizer"
+    PIPELINE_MANAGER = "pipeline_manager"
     USAGE_DASHBOARD = "usage_dashboard"
     ADMIN = "admin"
 

@@ -442,6 +442,7 @@ with tab_features:
                 (FeatureKey.HISTORY, "History"),
                 (FeatureKey.CLIENT_ONBOARDING, "Client Onboarding"),
                 (FeatureKey.PIPELINE_VISUALIZER, "Pipeline Visualizer"),
+                (FeatureKey.PIPELINE_MANAGER, "Pipeline Manager"),
                 (FeatureKey.ADMIN, "Admin"),
             ],
         },
