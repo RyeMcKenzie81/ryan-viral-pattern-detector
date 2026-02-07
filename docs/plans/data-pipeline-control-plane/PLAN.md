@@ -66,6 +66,7 @@ This plan extends the existing infrastructure rather than replacing it.
 | 2 | Brand Research | Asset downloads → `queue_one_time_job('asset_download')` |
 | 3 | Competitor Research | Competitor scrape → queued job (new job type needed) |
 | 4 | Reddit Research | Reddit pipeline → queued job (new job type needed) |
+| 5 | Amazon Reviews | Review ingestion → queued job (new `amazon_review_scrape` job type needed) |
 
 ## Files
 
