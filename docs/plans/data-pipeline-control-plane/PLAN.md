@@ -59,14 +59,17 @@ This plan extends the existing infrastructure rather than replacing it.
 - ~~Wire freshness into remaining 7 job handlers~~ — 6 of 7 done (template_approval skipped: cross-brand, no brand_id)
 - ~~Add freshness banners to more pages~~ — hook_analysis + congruence_insights done; template_queue + template_evaluation deferred (no brand selector)
 
+### Completed (Checkpoint 004)
+- ~~Template Queue manual scrape → `queue_one_time_job('template_scrape')`~~ — brand selector added to Ingest New tab, legacy toggle included
+
 ### Deferred
 - **template_approval freshness** — cross-brand job, needs admin-level tracking or per-item brand derivation
-- **template_queue / template_evaluation banners** — pages have no brand selector; add when brand context is introduced
+- **template_queue / template_evaluation banners** — Ingest New tab now has brand selector; freshness banner can be added in future
 
 ### Future Page Migrations
 | Priority | Page | What Changes |
 |---|---|---|
-| 1 | Template Queue | Manual scrape → `queue_one_time_job('template_scrape')` |
+| ~~1~~ | ~~Template Queue~~ | ~~Manual scrape → `queue_one_time_job('template_scrape')`~~ **DONE (Checkpoint 004)** |
 | 2 | Brand Research | Asset downloads → `queue_one_time_job('asset_download')` |
 | 3 | Competitor Research | Competitor scrape → queued job (new job type needed) |
 | 4 | Reddit Research | Reddit pipeline → queued job (new job type needed) |

@@ -39,6 +39,8 @@ if 'ingestion_images_only' not in st.session_state:
     st.session_state.ingestion_images_only = True
 if 'ingestion_result' not in st.session_state:
     st.session_state.ingestion_result = None  # Store last result for display
+if 'ingest_legacy_mode' not in st.session_state:
+    st.session_state.ingest_legacy_mode = False
 if 'reviewing_item_id' not in st.session_state:
     st.session_state.reviewing_item_id = None  # Item ID being reviewed (pending_details)
 if 'ai_suggestions' not in st.session_state:
@@ -825,28 +827,38 @@ def render_template_library():
 
 def render_ingestion_trigger():
     """Render template ingestion trigger form."""
+    from viraltracker.ui.utils import render_brand_selector
+
     st.subheader("Ingest New Templates")
+
+    # Brand selector — needed to associate scrape job with a brand
+    brand_id = render_brand_selector(key="ingest_brand_selector")
+    if not brand_id:
+        st.info("Select a brand above to start template ingestion.")
+        return
 
     # Display last result if exists
     if st.session_state.ingestion_result:
         result = st.session_state.ingestion_result
         status = result.get("status")
 
-        if status == "awaiting_approval":
+        if status == "queued":
+            st.success("Template scrape queued! It will start within 60 seconds. Check Pipeline Manager for progress.")
+        elif status == "awaiting_approval":
             st.success(
-                f"✅ Queued {result.get('queued_count', 0)} templates for review! "
+                f"Queued {result.get('queued_count', 0)} templates for review! "
                 f"({result.get('ads_scraped', 0)} ads scraped, {result.get('assets_downloaded', 0)} assets)"
             )
         elif status == "error":
             st.error(f"Pipeline error: {result.get('error')}")
         elif status == "no_ads":
             msg = result.get("message", "No ads found at that URL.")
-            st.warning(f"⚠️ {msg}")
+            st.warning(msg)
         elif status == "no_new_ads":
             st.info("These ads were already scraped. Check the Pending Review tab.")
         elif status == "no_assets":
             msg = result.get("message", "No images/videos could be downloaded.")
-            st.warning(f"⚠️ {msg}")
+            st.warning(msg)
         else:
             st.warning(f"Status: {status} - {result.get('message', '')}")
 
@@ -881,7 +893,7 @@ def render_ingestion_trigger():
                 disabled=is_running
             )
 
-        button_text = "⏳ Scraping... Please wait" if is_running else "🚀 Start Ingestion"
+        button_text = "⏳ Scraping... Please wait" if is_running else "Start Ingestion"
         submit = st.form_submit_button(button_text, type="primary", disabled=is_running)
 
         if submit and not is_running:
@@ -895,35 +907,142 @@ def render_ingestion_trigger():
                 st.session_state.ingestion_running = True
                 st.rerun()
 
+    legacy_mode = st.checkbox("Run scrape directly (legacy)", value=False, key="ingest_legacy_mode",
+                              help="Runs the scrape in-process instead of queuing to the background worker")
+
     # Run ingestion outside form when triggered
     if is_running:
-        st.info("🔄 Scraping ads from Facebook Ad Library... This may take 1-3 minutes.")
-        st.warning("⏳ **Please wait** - Do not refresh the page.")
+        if legacy_mode:
+            # Legacy: run template ingestion in-process (blocks UI)
+            st.info("Scraping ads from Facebook Ad Library... This may take 1-3 minutes.")
+            st.warning("**Please wait** - Do not refresh the page.")
 
-        try:
-            import asyncio
-            from viraltracker.pipelines import run_template_ingestion
+            try:
+                import asyncio
+                from viraltracker.pipelines import run_template_ingestion
 
-            result = asyncio.run(run_template_ingestion(
-                ad_library_url=st.session_state.ingestion_url,
-                max_ads=st.session_state.ingestion_max_ads,
-                images_only=st.session_state.ingestion_images_only
-            ))
+                result = asyncio.run(run_template_ingestion(
+                    ad_library_url=st.session_state.ingestion_url,
+                    max_ads=st.session_state.ingestion_max_ads,
+                    images_only=st.session_state.ingestion_images_only
+                ))
+
+                st.session_state.ingestion_running = False
+                st.session_state.ingestion_result = result
+                st.cache_data.clear()
+
+                if result.get("status") == "awaiting_approval":
+                    st.session_state.ingestion_url = ""
+
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.ingestion_running = False
+                st.error(f"Failed to run pipeline: {e}")
+        else:
+            # Queue to background worker
+            from viraltracker.services.pipeline_helpers import queue_one_time_job
+
+            job_id = queue_one_time_job(
+                brand_id=brand_id,
+                job_type="template_scrape",
+                parameters={
+                    "search_url": st.session_state.ingestion_url,
+                    "max_ads": st.session_state.ingestion_max_ads,
+                    "images_only": st.session_state.ingestion_images_only,
+                    "auto_queue": True,
+                },
+            )
 
             st.session_state.ingestion_running = False
 
-            # Store result for persistent display
-            st.session_state.ingestion_result = result
+            if job_id:
+                st.session_state.ingestion_result = {"status": "queued"}
+                st.session_state.ingestion_url = ""
+            else:
+                st.session_state.ingestion_result = {
+                    "status": "error",
+                    "error": "Failed to queue scrape job. Please try legacy mode."
+                }
+
             st.cache_data.clear()
-
-            if result.get("status") == "awaiting_approval":
-                st.session_state.ingestion_url = ""  # Clear URL after success
-
             st.rerun()
 
-        except Exception as e:
-            st.session_state.ingestion_running = False
-            st.error(f"Failed to run pipeline: {e}")
+    # Recent manual scrape runs (non-legacy only)
+    if not legacy_mode:
+        render_recent_manual_scrapes(brand_id)
+
+
+def render_recent_manual_scrapes(brand_id: str):
+    """Show recent one-time template_scrape runs for this brand."""
+    db = get_supabase_client()
+    try:
+        jobs_result = db.table("scheduled_jobs").select(
+            "id, status, created_at"
+        ).eq("brand_id", brand_id).eq(
+            "job_type", "template_scrape"
+        ).eq("schedule_type", "one_time").order(
+            "created_at", desc=True
+        ).limit(5).execute()
+
+        jobs = jobs_result.data or []
+        if not jobs:
+            return
+
+        st.divider()
+        st.caption("**Recent Manual Scrapes**")
+
+        for job in jobs:
+            job_id = job["id"]
+            job_status = job.get("status", "unknown")
+
+            # Fetch latest run for this job
+            run_result = db.table("scheduled_job_runs").select(
+                "status, started_at, completed_at, logs"
+            ).eq("scheduled_job_id", job_id).order(
+                "started_at", desc=True
+            ).limit(1).execute()
+
+            run = run_result.data[0] if run_result.data else None
+
+            if run:
+                run_status = run.get("status", "unknown")
+                status_emoji = {"completed": "done", "failed": "failed", "running": "running"}.get(run_status, run_status)
+                started = run.get("started_at", "")
+                if started:
+                    try:
+                        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        started_str = started_dt.strftime("%b %d, %I:%M %p")
+                    except Exception:
+                        started_str = started[:16]
+                else:
+                    started_str = "Pending"
+
+                # Extract summary from logs
+                logs = run.get("logs", "") or ""
+                summary = ""
+                for line in logs.split("\n"):
+                    if "New ads:" in line:
+                        summary = line.strip()
+                        break
+                    elif "No ads found" in line:
+                        summary = "No ads found"
+                        break
+
+                display = f"{started_str} — {status_emoji}"
+                if summary:
+                    display += f" — {summary}"
+                st.caption(display)
+            else:
+                # Job exists but no run yet (queued, waiting for worker)
+                if job_status == "active":
+                    st.caption("Queued — waiting for worker pickup...")
+                elif job_status == "archived":
+                    st.caption("Archived (no run data)")
+
+    except Exception:
+        pass  # Non-critical UI section — don't break the page
+
 
 # ============================================================================
 # Scheduled Scraping Tab
