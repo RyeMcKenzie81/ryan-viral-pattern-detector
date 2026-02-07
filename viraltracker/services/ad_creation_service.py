@@ -1925,7 +1925,7 @@ images are reference materials to use."""
 
         # 3. Get product data
         product = await self.get_product(product_id)
-        product_dict = product.model_dump() if hasattr(product, 'model_dump') else dict(product)
+        product_dict = product.model_dump(mode='json') if hasattr(product, 'model_dump') else dict(product)
 
         # 4. Get ad brief instructions
         brand_id = product_dict.get("brand_id")
