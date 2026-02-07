@@ -39,6 +39,8 @@ if 'suggested_personas' not in st.session_state:
     st.session_state.suggested_personas = []
 if 'review_mode' not in st.session_state:
     st.session_state.review_mode = False
+if 'download_legacy_mode' not in st.session_state:
+    st.session_state.download_legacy_mode = False
 
 def get_supabase_client():
     """Get Supabase client."""
@@ -563,52 +565,154 @@ def render_download_section(brand_id: str, product_id: Optional[str] = None):
     st.subheader("1. Download Assets")
     st.markdown("Download video and image assets from linked ads to storage.")
 
-    col1, col2 = st.columns([2, 1])
+    legacy_mode = st.checkbox(
+        "Run download directly (legacy)", value=False, key="download_legacy_mode",
+        help="Runs the download in-process instead of queuing to the background worker"
+    )
 
-    with col1:
-        limit = st.slider("Max ads to process", 10, 100, 50, key="download_limit")
+    if legacy_mode:
+        # Legacy mode: original in-process behavior with BrandResearchService
+        col1, col2 = st.columns([2, 1])
 
-    with col2:
-        if st.button("Download Assets", type="primary", disabled=st.session_state.analysis_running):
-            st.session_state.analysis_running = True
+        with col1:
+            limit = st.slider("Max ads to process", 10, 100, 50, key="download_limit")
 
-            with st.spinner("Downloading assets from ad snapshots..."):
-                try:
-                    result = download_assets_sync(brand_id, limit, product_id=product_id)
+        with col2:
+            if st.button("Download Assets", type="primary", disabled=st.session_state.analysis_running):
+                st.session_state.analysis_running = True
 
-                    # Check for early exit reasons
-                    reason = result.get('reason')
-                    if reason == 'no_ads_linked':
-                        st.error("No ads linked to this brand. Link ads first from the Facebook Ads page.")
-                    elif reason == 'no_ads_for_product':
-                        st.warning("No ads found for the selected product. Check URL mappings.")
-                    elif reason == 'all_have_assets':
-                        st.success(f"All {result.get('total_ads', 0)} ads already have assets downloaded.")
-                    elif result['videos_downloaded'] > 0 or result['images_downloaded'] > 0:
-                        st.success(
-                            f"Downloaded {result['videos_downloaded']} videos, "
-                            f"{result['images_downloaded']} images from {result['ads_processed']} ads"
-                        )
-                    else:
-                        st.warning(
-                            f"No assets downloaded. Processed {result['ads_processed']} ads."
-                        )
-                        # Show additional details
-                        skipped = result.get('ads_skipped_no_urls', 0)
-                        errors = result.get('errors', 0)
-                        if skipped > 0 or errors > 0:
-                            details = []
-                            if skipped > 0:
-                                details.append(f"{skipped} ads had no asset URLs (may need fresh scrape)")
-                            if errors > 0:
-                                details.append(f"{errors} download errors (CDN URLs may have expired)")
-                            st.info(" | ".join(details))
+                with st.spinner("Downloading assets from ad snapshots..."):
+                    try:
+                        result = download_assets_sync(brand_id, limit, product_id=product_id)
 
-                except Exception as e:
-                    st.error(f"Download failed: {e}")
+                        # Check for early exit reasons
+                        reason = result.get('reason')
+                        if reason == 'no_ads_linked':
+                            st.error("No ads linked to this brand. Link ads first from the Facebook Ads page.")
+                        elif reason == 'no_ads_for_product':
+                            st.warning("No ads found for the selected product. Check URL mappings.")
+                        elif reason == 'all_have_assets':
+                            st.success(f"All {result.get('total_ads', 0)} ads already have assets downloaded.")
+                        elif result['videos_downloaded'] > 0 or result['images_downloaded'] > 0:
+                            st.success(
+                                f"Downloaded {result['videos_downloaded']} videos, "
+                                f"{result['images_downloaded']} images from {result['ads_processed']} ads"
+                            )
+                        else:
+                            st.warning(
+                                f"No assets downloaded. Processed {result['ads_processed']} ads."
+                            )
+                            skipped = result.get('ads_skipped_no_urls', 0)
+                            errors = result.get('errors', 0)
+                            if skipped > 0 or errors > 0:
+                                details = []
+                                if skipped > 0:
+                                    details.append(f"{skipped} ads had no asset URLs (may need fresh scrape)")
+                                if errors > 0:
+                                    details.append(f"{errors} download errors (CDN URLs may have expired)")
+                                st.info(" | ".join(details))
 
-            st.session_state.analysis_running = False
-            st.rerun()
+                    except Exception as e:
+                        st.error(f"Download failed: {e}")
+
+                st.session_state.analysis_running = False
+                st.rerun()
+    else:
+        # Queued mode: queue to background worker via asset_download job
+        col1, col2, col3 = st.columns([1, 1, 1])
+
+        with col1:
+            max_videos = st.slider("Max videos", 5, 100, 20, key="download_max_videos")
+        with col2:
+            max_images = st.slider("Max images", 10, 200, 40, key="download_max_images")
+        with col3:
+            st.write("")  # Spacer
+            if st.button("Download Assets", type="primary", disabled=st.session_state.analysis_running):
+                from viraltracker.services.pipeline_helpers import queue_one_time_job
+
+                job_id = queue_one_time_job(
+                    brand_id=brand_id,
+                    job_type="asset_download",
+                    parameters={
+                        "max_videos": max_videos,
+                        "max_images": max_images,
+                    },
+                )
+                if job_id:
+                    st.success("Asset download queued! It will start within 60 seconds.")
+                else:
+                    st.error("Failed to queue download job. Please try legacy mode.")
+
+        # Recent manual download runs
+        render_recent_asset_downloads(brand_id)
+
+
+def render_recent_asset_downloads(brand_id: str):
+    """Show recent one-time asset_download runs for this brand."""
+    db = get_supabase_client()
+    try:
+        jobs_result = db.table("scheduled_jobs").select(
+            "id, status, created_at"
+        ).eq("brand_id", brand_id).eq(
+            "job_type", "asset_download"
+        ).eq("schedule_type", "one_time").order(
+            "created_at", desc=True
+        ).limit(5).execute()
+
+        jobs = jobs_result.data or []
+        if not jobs:
+            return
+
+        st.divider()
+        st.caption("**Recent Asset Downloads**")
+
+        for job in jobs:
+            job_id = job["id"]
+            job_status = job.get("status", "unknown")
+
+            # Fetch latest run for this job
+            run_result = db.table("scheduled_job_runs").select(
+                "status, started_at, completed_at, logs"
+            ).eq("scheduled_job_id", job_id).order(
+                "started_at", desc=True
+            ).limit(1).execute()
+
+            run = run_result.data[0] if run_result.data else None
+
+            if run:
+                run_status = run.get("status", "unknown")
+                status_emoji = {"completed": "done", "failed": "failed", "running": "running"}.get(run_status, run_status)
+                started = run.get("started_at", "")
+                if started:
+                    try:
+                        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        started_str = started_dt.strftime("%b %d, %I:%M %p")
+                    except Exception:
+                        started_str = started[:16]
+                else:
+                    started_str = "Pending"
+
+                # Extract summary from logs
+                logs = run.get("logs", "") or ""
+                summary = ""
+                for line in logs.split("\n"):
+                    if "Videos downloaded:" in line or "Total:" in line:
+                        summary = line.strip()
+                        break
+
+                display = f"{started_str} — {status_emoji}"
+                if summary:
+                    display += f" — {summary}"
+                st.caption(display)
+            else:
+                # Job exists but no run yet (queued, waiting for worker)
+                if job_status == "active":
+                    st.caption("Queued — waiting for worker pickup...")
+                elif job_status == "archived":
+                    st.caption("Archived (no run data)")
+
+    except Exception:
+        pass  # Non-critical UI section — don't break the page
 
 def render_analysis_section(brand_id: str, product_id: Optional[str] = None):
     """Render analysis controls."""
