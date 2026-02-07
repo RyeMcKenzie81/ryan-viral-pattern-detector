@@ -55,9 +55,13 @@ This plan extends the existing infrastructure rather than replacing it.
 
 ## Remaining Work
 
-### Next Steps (wire more handlers)
-- Wire freshness into remaining 7 job handlers (ad_creation, scorecard, template_scrape, template_approval, congruence_reanalysis, ad_classification, asset_download)
-- Add freshness banners to more pages (hook_analysis, template_queue, template_evaluation, congruence_insights)
+### Completed (Checkpoint 003)
+- ~~Wire freshness into remaining 7 job handlers~~ — 6 of 7 done (template_approval skipped: cross-brand, no brand_id)
+- ~~Add freshness banners to more pages~~ — hook_analysis + congruence_insights done; template_queue + template_evaluation deferred (no brand selector)
+
+### Deferred
+- **template_approval freshness** — cross-brand job, needs admin-level tracking or per-item brand derivation
+- **template_queue / template_evaluation banners** — pages have no brand selector; add when brand context is introduced
 
 ### Future Page Migrations
 | Priority | Page | What Changes |

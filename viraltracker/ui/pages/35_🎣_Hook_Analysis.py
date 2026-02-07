@@ -721,6 +721,10 @@ brand_id = render_brand_selector(key="hook_analysis_brand_selector")
 if not brand_id:
     st.stop()
 
+# Data freshness banner
+from viraltracker.ui.utils import render_freshness_banner
+render_freshness_banner(brand_id, "hook_analysis")
+
 # Global filters row
 st.subheader("Filters")
 col1, col2, col3 = st.columns(3)

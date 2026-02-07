@@ -357,6 +357,10 @@ brand_id = render_brand_selector(key="congruence_insights_brand_selector")
 if not brand_id:
     st.stop()
 
+# Data freshness banner
+from viraltracker.ui.utils import render_freshness_banner
+render_freshness_banner(brand_id, "congruence_insights")
+
 # Get summary data
 service = get_congruence_insights_service()
 summary = service.get_dimension_summary(UUID(brand_id), date_range_days=30)

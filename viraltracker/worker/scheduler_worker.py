@@ -600,6 +600,11 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     angles_used = []
     ads_generated = 0
 
+    # Dataset freshness tracking (brand_id comes from product's brand join)
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+    brand_id = brand_info.get('id')
+
     # Build offer variant context if specified
     offer_variant_context = ""
     offer_variant_id = params.get('offer_variant_id')
@@ -621,6 +626,9 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             logs.append(f"Warning: Offer variant {offer_variant_id} not found")
 
     try:
+        if brand_id:
+            freshness.record_start(brand_id, "ad_creations", run_id=run_id)
+
         # Determine content source mode
         content_source = params.get('content_source', 'hooks')
         logs.append(f"Content source: {content_source}")
@@ -897,6 +905,9 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
         logs.append(f"\n=== Summary: {ads_generated} ads generated, {len(ad_run_ids)} runs created ===")
 
+        if brand_id:
+            freshness.record_success(brand_id, "ad_creations", records_affected=ads_generated, run_id=run_id)
+
         # Job completed successfully
         job_run_data = {
             "status": "completed",
@@ -951,6 +962,9 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Job {job_name} failed: {error_msg}")
+
+        if brand_id:
+            freshness.record_failure(brand_id, "ad_creations", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",
@@ -1276,9 +1290,15 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
     logs = []
 
     try:
+        freshness.record_start(brand_id, "scorecard", run_id=run_id)
+
         days_back = params.get('days_back', 7)
         min_spend = params.get('min_spend', 10.0)
         export_email = params.get('export_email')
@@ -1413,6 +1433,8 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
                 logs.append(f"Failed to send email: {e}")
                 logger.error(f"Scorecard email failed: {e}")
 
+        freshness.record_success(brand_id, "scorecard", records_affected=len(ads_analyzed), run_id=run_id)
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
@@ -1446,6 +1468,8 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Scorecard job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "scorecard", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",
@@ -1502,9 +1526,15 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
     logs = []
 
     try:
+        freshness.record_start(brand_id, "templates_scraped", run_id=run_id)
+
         # Get parameters
         search_url = params.get('search_url')
         if not search_url:
@@ -1685,6 +1715,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         if auto_queue:
             logs.append(f"Queued for review: {queued_count}")
 
+        freshness.record_success(brand_id, "templates_scraped", records_affected=new_count, run_id=run_id)
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
@@ -1707,6 +1739,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Template scrape job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "templates_scraped", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",
@@ -1987,6 +2021,10 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
+    # Dataset freshness tracking (only when brand-scoped)
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
     logs = []
 
     try:
@@ -1994,6 +2032,9 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         batch_size = params.get('batch_size', 50)
         max_gemini_calls = params.get('max_gemini_calls', 20)
         target_brand_id = params.get('brand_id')
+
+        if target_brand_id:
+            freshness.record_start(target_brand_id, "congruence_analysis", run_id=run_id)
 
         logs.append(f"Batch size: {batch_size}, Max Gemini calls: {max_gemini_calls}")
         if target_brand_id:
@@ -2093,6 +2134,9 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Errors: {error_count}")
         logs.append(f"Gemini calls: {gemini_calls}")
 
+        if target_brand_id:
+            freshness.record_success(target_brand_id, "congruence_analysis", records_affected=analyzed_count, run_id=run_id)
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
@@ -2115,6 +2159,9 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Congruence re-analysis job {job_name} failed: {error_msg}")
+
+        if target_brand_id:
+            freshness.record_failure(target_brand_id, "congruence_analysis", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",
@@ -2298,10 +2345,16 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
     logs = []
 
     try:
         from uuid import UUID
+
+        freshness.record_start(brand_id, "ad_classifications", run_id=run_id)
 
         max_new = params.get('max_new', 200)
         max_video = params.get('max_video', 15)
@@ -2328,6 +2381,8 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         if result['errors'] > 0:
             logs.append(f"Errors: {result['errors']}")
 
+        freshness.record_success(brand_id, "ad_classifications", records_affected=result.get('classified', 0), run_id=run_id)
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
@@ -2348,6 +2403,8 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Ad classification job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "ad_classifications", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",
@@ -2390,11 +2447,17 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
     logs = []
 
     try:
         from uuid import UUID
         from viraltracker.services.meta_ads_service import MetaAdsService
+
+        freshness.record_start(brand_id, "ad_assets", run_id=run_id)
 
         max_videos = params.get('max_videos', 20)
         max_images = params.get('max_images', 40)
@@ -2419,6 +2482,8 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Images downloaded: {images_downloaded}")
         logs.append(f"Total: {total}")
 
+        freshness.record_success(brand_id, "ad_assets", records_affected=total, run_id=run_id)
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
@@ -2439,6 +2504,8 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Asset download job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "ad_assets", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",
