@@ -249,7 +249,32 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
-### 11. Improve Data Pipeline Infrastructure
+### 11. Audit `model_dump()` Calls for JSON Serialization Safety
+
+**Priority**: Medium
+**Complexity**: Low
+**Added**: 2026-02-06
+
+**Context**: A production bug in `regenerate_ad()` was caused by `product.model_dump()` preserving UUID objects that leaked into a Supabase JSONB column insert, raising `TypeError: Object of type UUID is not JSON serializable`. The fix was `model_dump(mode='json')` which serializes UUIDs to strings, datetimes to ISO strings, etc.
+
+There are 70+ `model_dump()` calls across the codebase. Any that feed into JSONB columns, JSON serialization, or API responses should use `mode='json'`.
+
+**What's needed**:
+1. Audit all `model_dump()` calls — identify which ones flow into:
+   - Supabase JSONB column inserts
+   - `json.dumps()` / JSON serialization contexts
+   - API response payloads
+2. Change those to `model_dump(mode='json')`
+3. Leave internal Python-to-Python calls as-is (they benefit from preserving native types)
+
+**Known risky call**:
+- `viraltracker/pipelines/ad_creation/nodes/fetch_context.py:55` — `product.model_dump()` in the ad creation pipeline (same pattern as the bug that was fixed)
+
+**Reference**: `docs/archive/CHECKPOINT_2026-02-06_regenerate-ad-uuid-fix.md`
+
+---
+
+### 13. Improve Data Pipeline Infrastructure
 
 **Priority**: Medium
 **Complexity**: Medium-High
@@ -327,4 +352,17 @@ Background `ad_classification` job type pre-computes classifications via schedul
 - Source granularity: `gemini_light_stored` vs `gemini_light_thumbnail` (tracks image provenance)
 - Skip pattern for image ads without available media (`skipped_missing_image`)
 - Removed copy-only fallback and garbage-dict error fallback
+
+---
+
+### ~~14~~. Fix Ad Regeneration UUID Serialization Error
+
+**Completed**: 2026-02-06
+**Branch**: `main`
+**Commits**: `a9cc789`, `d3eb5d8`
+
+`regenerate_ad()` failed with `TypeError: Object of type UUID is not JSON serializable` when inserting prompt spec into Supabase JSONB column. Root cause: `product.model_dump()` preserves UUID objects. Fixed with `model_dump(mode='json')`. Also fixed error message visibility in Ad History — `st.rerun()` was hiding errors by reloading the page immediately after `st.error()`.
+
+**Files**: `ad_creation_service.py` (line 1928), `22_📊_Ad_History.py` (rerun handler)
+**Checkpoint**: `docs/archive/CHECKPOINT_2026-02-06_regenerate-ad-uuid-fix.md`
 
