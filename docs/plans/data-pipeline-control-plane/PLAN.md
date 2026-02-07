@@ -65,6 +65,9 @@ This plan extends the existing infrastructure rather than replacing it.
 ### Completed (Checkpoint 005)
 - ~~Brand Research asset download → `queue_one_time_job('asset_download')`~~ — legacy toggle included, recent runs display added
 
+### Completed (Checkpoint 006)
+- ~~Competitor Research ad scrape → `queue_one_time_job('competitor_scrape')`~~ — new job type + handler, legacy toggle, recent runs display, Pipeline Manager registration
+
 ### Deferred
 - **template_approval freshness** — cross-brand job, needs admin-level tracking or per-item brand derivation
 - **template_queue / template_evaluation banners** — Ingest New tab now has brand selector; freshness banner can be added in future
@@ -74,7 +77,7 @@ This plan extends the existing infrastructure rather than replacing it.
 |---|---|---|
 | ~~1~~ | ~~Template Queue~~ | ~~Manual scrape → `queue_one_time_job('template_scrape')`~~ **DONE (Checkpoint 004)** |
 | ~~2~~ | ~~Brand Research~~ | ~~Asset downloads → `queue_one_time_job('asset_download')`~~ **DONE (Checkpoint 005)** |
-| 3 | Competitor Research | Competitor scrape → queued job (new job type needed) |
+| ~~3~~ | ~~Competitor Research~~ | ~~Competitor scrape → queued job (new job type needed)~~ **DONE (Checkpoint 006)** |
 | 4 | Reddit Research | Reddit pipeline → queued job (new job type needed) |
 | 5 | Amazon Reviews | Review ingestion → queued job (new `amazon_review_scrape` job type needed) |
 

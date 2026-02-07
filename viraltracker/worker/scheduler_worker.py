@@ -568,6 +568,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_ad_classification_job(job)
     elif job_type == 'asset_download':
         return await execute_asset_download_job(job)
+    elif job_type == 'competitor_scrape':
+        return await execute_competitor_scrape_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -2506,6 +2508,128 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Asset download job {job_name} failed: {error_msg}")
 
         freshness.record_failure(brand_id, "ad_assets", error_msg, run_id=run_id)
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
+
+
+async def execute_competitor_scrape_job(job: Dict) -> Dict[str, Any]:
+    """Execute a competitor ad scrape job.
+
+    Scrapes ads from Facebook Ad Library for a competitor and saves them
+    to the competitor_ads table.
+
+    Parameters (from job['parameters']):
+        competitor_id: str - Competitor UUID to link ads to
+        ad_library_url: str - Facebook Ad Library URL to scrape
+        max_ads: int - Max ads to scrape (default: 500)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting competitor scrape job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
+    logs = []
+
+    try:
+        from uuid import UUID
+        from viraltracker.scrapers.facebook_ads import FacebookAdsScraper
+        from viraltracker.services.competitor_service import CompetitorService
+
+        freshness.record_start(brand_id, "competitor_ads", run_id=run_id)
+
+        competitor_id = params.get('competitor_id')
+        ad_library_url = params.get('ad_library_url')
+        max_ads = params.get('max_ads', 500)
+
+        if not competitor_id or not ad_library_url:
+            raise ValueError("competitor_id and ad_library_url are required parameters")
+
+        logs.append(f"Scraping competitor ads for brand: {brand_name}")
+        logs.append(f"Ad Library URL: {ad_library_url}")
+        logs.append(f"Max ads: {max_ads}")
+
+        # Scrape ads from Ad Library
+        scraper = FacebookAdsScraper()
+        df = scraper.search_ad_library(
+            search_url=ad_library_url,
+            count=max_ads,
+            scrape_details=False,
+            timeout=900  # 15 min timeout for large scrapes
+        )
+
+        ads_found = len(df)
+        logs.append(f"Ads found: {ads_found}")
+
+        saved = 0
+        if ads_found > 0:
+            # Convert DataFrame to list of dicts and save
+            ads_data = df.to_dict('records')
+            service = CompetitorService()
+            stats = service.save_competitor_ads_batch(
+                competitor_id=UUID(competitor_id),
+                brand_id=UUID(brand_id),
+                ads=ads_data,
+                scrape_source="ad_library_search"
+            )
+            saved = stats.get("saved", 0)
+            failed = stats.get("failed", 0)
+            logs.append(f"Saved: {saved}, Failed: {failed}")
+        else:
+            logs.append("No ads found at this URL")
+
+        logs.append("")
+        logs.append("=== Summary ===")
+        logs.append(f"Ads found: {ads_found}")
+        logs.append(f"Ads saved: {saved}")
+
+        freshness.record_success(brand_id, "competitor_ads", records_affected=saved, run_id=run_id)
+
+        # Update job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        # Update job scheduling
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed competitor scrape job: {job_name} - {saved} ads saved")
+        return {"success": True, "ads_found": ads_found, "ads_saved": saved}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Competitor scrape job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "competitor_ads", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",

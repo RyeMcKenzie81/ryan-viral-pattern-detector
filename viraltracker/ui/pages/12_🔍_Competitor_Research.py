@@ -35,6 +35,8 @@ if 'research_competitor_id' not in st.session_state:
     st.session_state.research_competitor_id = None
 if 'research_competitor_product_id' not in st.session_state:
     st.session_state.research_competitor_product_id = None
+if 'scrape_legacy_mode' not in st.session_state:
+    st.session_state.scrape_legacy_mode = False
 
 def get_supabase_client():
     """Get Supabase client."""
@@ -185,6 +187,79 @@ def scrape_competitor_facebook_ads(
 
     except Exception as e:
         return {"success": False, "saved": 0, "failed": 0, "message": str(e)}
+
+
+def render_recent_competitor_scrapes(brand_id: str, competitor_id: str):
+    """Show recent one-time competitor_scrape runs for this brand/competitor."""
+    db = get_supabase_client()
+    try:
+        # Get recent one-time competitor_scrape jobs for this brand
+        jobs_result = db.table("scheduled_jobs").select(
+            "id, status, created_at, parameters"
+        ).eq("brand_id", brand_id).eq(
+            "job_type", "competitor_scrape"
+        ).eq("schedule_type", "one_time").order(
+            "created_at", desc=True
+        ).limit(5).execute()
+
+        # Filter to jobs for this specific competitor
+        jobs = [
+            j for j in (jobs_result.data or [])
+            if (j.get("parameters") or {}).get("competitor_id") == competitor_id
+        ]
+        if not jobs:
+            return
+
+        st.divider()
+        st.caption("**Recent Competitor Scrapes**")
+
+        for job in jobs:
+            job_id = job["id"]
+            job_status = job.get("status", "unknown")
+
+            # Fetch latest run for this job
+            run_result = db.table("scheduled_job_runs").select(
+                "status, started_at, completed_at, logs"
+            ).eq("scheduled_job_id", job_id).order(
+                "started_at", desc=True
+            ).limit(1).execute()
+
+            run = run_result.data[0] if run_result.data else None
+
+            if run:
+                run_status = run.get("status", "unknown")
+                status_emoji = {"completed": "done", "failed": "failed", "running": "running"}.get(run_status, run_status)
+                started = run.get("started_at", "")
+                if started:
+                    try:
+                        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        started_str = started_dt.strftime("%b %d, %I:%M %p")
+                    except Exception:
+                        started_str = started[:16]
+                else:
+                    started_str = "Pending"
+
+                # Extract summary from logs
+                logs = run.get("logs", "") or ""
+                summary = ""
+                for line in logs.split("\n"):
+                    if "Ads saved:" in line or "Ads found:" in line:
+                        summary = line.strip()
+                        break
+
+                display = f"{started_str} — {status_emoji}"
+                if summary:
+                    display += f" — {summary}"
+                st.caption(display)
+            else:
+                if job_status == "active":
+                    st.caption("Queued — waiting for worker pickup...")
+                elif job_status == "archived":
+                    st.caption("Archived (no run data)")
+
+    except Exception:
+        pass  # Non-critical UI section — don't break the page
+
 
 def get_research_stats(
     competitor_id: str,
@@ -1216,36 +1291,77 @@ with tab_ads:
     if ad_library_url:
         st.caption(f"[Ad Library URL]({ad_library_url})")
 
-        col_input, col_btn = st.columns([2, 1])
-        with col_input:
-            max_ads_to_scrape = st.number_input(
-                "Max ads to scrape",
-                min_value=10,
-                max_value=2000,
-                value=500,
-                step=100,
-                key="max_ads_scrape",
-                help="Maximum number of ads to scrape from the Ad Library"
-            )
-        with col_btn:
-            st.markdown("")  # Spacer
-            if st.button("🔍 Scrape Ads from Ad Library", key="scrape_ads"):
-                with st.spinner(f"Scraping up to {max_ads_to_scrape} ads from Facebook Ad Library... This may take several minutes."):
-                    result = scrape_competitor_facebook_ads(
-                        ad_library_url=ad_library_url,
-                        competitor_id=selected_competitor_id,
-                        brand_id=selected_brand_id,
-                        max_ads=max_ads_to_scrape
-                    )
+        legacy_mode = st.checkbox(
+            "Run scrape directly (legacy)", value=False, key="scrape_legacy_mode",
+            help="Runs the scrape in-process instead of queuing to the background worker"
+        )
 
-                if result["success"]:
-                    if result["saved"] > 0:
-                        st.success(f"✅ {result['message']}")
-                        st.rerun()
+        if legacy_mode:
+            # Legacy mode: original in-process behavior
+            col_input, col_btn = st.columns([2, 1])
+            with col_input:
+                max_ads_to_scrape = st.number_input(
+                    "Max ads to scrape",
+                    min_value=10,
+                    max_value=2000,
+                    value=500,
+                    step=100,
+                    key="max_ads_scrape",
+                    help="Maximum number of ads to scrape from the Ad Library"
+                )
+            with col_btn:
+                st.markdown("")  # Spacer
+                if st.button("Scrape Ads from Ad Library", key="scrape_ads"):
+                    with st.spinner(f"Scraping up to {max_ads_to_scrape} ads from Facebook Ad Library... This may take several minutes."):
+                        result = scrape_competitor_facebook_ads(
+                            ad_library_url=ad_library_url,
+                            competitor_id=selected_competitor_id,
+                            brand_id=selected_brand_id,
+                            max_ads=max_ads_to_scrape
+                        )
+
+                    if result["success"]:
+                        if result["saved"] > 0:
+                            st.success(f"{result['message']}")
+                            st.rerun()
+                        else:
+                            st.warning(result["message"])
                     else:
-                        st.warning(result["message"])
-                else:
-                    st.error(f"❌ Scraping failed: {result['message']}")
+                        st.error(f"Scraping failed: {result['message']}")
+        else:
+            # Queued mode: queue to background worker
+            col_input, col_btn = st.columns([2, 1])
+            with col_input:
+                max_ads_to_scrape = st.number_input(
+                    "Max ads to scrape",
+                    min_value=10,
+                    max_value=2000,
+                    value=500,
+                    step=100,
+                    key="max_ads_scrape_queued",
+                    help="Maximum number of ads to scrape from the Ad Library"
+                )
+            with col_btn:
+                st.markdown("")  # Spacer
+                if st.button("Scrape Ads from Ad Library", key="scrape_ads_queued"):
+                    from viraltracker.services.pipeline_helpers import queue_one_time_job
+
+                    job_id = queue_one_time_job(
+                        brand_id=selected_brand_id,
+                        job_type="competitor_scrape",
+                        parameters={
+                            "competitor_id": selected_competitor_id,
+                            "ad_library_url": ad_library_url,
+                            "max_ads": max_ads_to_scrape,
+                        },
+                    )
+                    if job_id:
+                        st.success("Competitor scrape queued! It will start within 60 seconds.")
+                    else:
+                        st.error("Failed to queue scrape job. Please try legacy mode.")
+
+            # Recent manual scrape runs
+            render_recent_competitor_scrapes(selected_brand_id, selected_competitor_id)
     else:
         st.warning("No Ad Library URL configured for this competitor.")
         st.caption("Add one on the Competitors page.")
