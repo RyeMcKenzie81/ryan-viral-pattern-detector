@@ -572,6 +572,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_competitor_scrape_job(job)
     elif job_type == 'reddit_scrape':
         return await execute_reddit_scrape_job(job)
+    elif job_type == 'amazon_review_scrape':
+        return await execute_amazon_review_scrape_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -2777,6 +2779,118 @@ async def execute_reddit_scrape_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Reddit scrape job {job_name} failed: {error_msg}")
 
         freshness.record_failure(brand_id, "reddit_data", error_msg, run_id=run_id)
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
+
+
+async def execute_amazon_review_scrape_job(job: Dict) -> Dict[str, Any]:
+    """Execute an Amazon review scrape job.
+
+    Scrapes Amazon reviews for a competitor product using the Apify-based
+    multi-layer strategy and saves them to the competitor_amazon_reviews table.
+
+    Parameters (from job['parameters']):
+        competitor_amazon_url_id: str - UUID of the competitor_amazon_urls record (required)
+        include_keywords: bool - Include keyword filter configs (default: True)
+        include_helpful: bool - Include helpful-sort configs (default: True)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting amazon review scrape job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
+    logs = []
+
+    try:
+        from uuid import UUID
+        from viraltracker.services.competitor_service import CompetitorService
+
+        freshness.record_start(brand_id, "amazon_reviews", run_id=run_id)
+
+        competitor_amazon_url_id = params.get('competitor_amazon_url_id')
+        include_keywords = params.get('include_keywords', True)
+        include_helpful = params.get('include_helpful', True)
+
+        if not competitor_amazon_url_id:
+            raise ValueError("competitor_amazon_url_id is a required parameter")
+
+        asin = params.get('asin', 'Unknown')
+        logs.append(f"Amazon review scrape for brand: {brand_name}")
+        logs.append(f"ASIN: {asin}")
+        logs.append(f"Include keywords: {include_keywords}, Include helpful: {include_helpful}")
+
+        # Scrape reviews via CompetitorService
+        service = CompetitorService()
+        result = service.scrape_amazon_reviews_for_competitor(
+            competitor_amazon_url_id=UUID(competitor_amazon_url_id),
+            include_keywords=include_keywords,
+            include_helpful=include_helpful,
+            timeout=900
+        )
+
+        reviews_saved = result.get('reviews_saved', 0)
+        raw_count = result.get('raw_reviews_count', 0)
+        unique_count = result.get('unique_reviews_count', 0)
+        cost = result.get('cost_estimate', 0.0)
+        errors = result.get('errors', [])
+
+        logs.append("")
+        logs.append("=== Summary ===")
+        logs.append(f"Raw reviews fetched: {raw_count}")
+        logs.append(f"Unique reviews: {unique_count}")
+        logs.append(f"Reviews saved: {reviews_saved}")
+        logs.append(f"Estimated cost: ${cost:.2f}")
+
+        if errors:
+            for err in errors:
+                logs.append(f"Error: {err}")
+            raise Exception(f"Scrape completed with errors: {'; '.join(errors)}")
+
+        freshness.record_success(brand_id, "amazon_reviews", records_affected=reviews_saved, run_id=run_id)
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed amazon review scrape job: {job_name} - {reviews_saved} reviews saved")
+        return {"success": True, "raw_reviews": raw_count, "reviews_saved": reviews_saved}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Amazon review scrape job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "amazon_reviews", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",

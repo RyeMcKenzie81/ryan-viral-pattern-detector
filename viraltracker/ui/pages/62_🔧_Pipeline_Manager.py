@@ -38,6 +38,7 @@ JOB_TYPE_INFO = {
     "congruence_reanalysis": {"emoji": "🔍", "label": "Congruence Reanalysis", "default_params": {}},
     "competitor_scrape": {"emoji": "🕵️", "label": "Competitor Scrape", "default_params": {"max_ads": 500}},
     "reddit_scrape": {"emoji": "🔍", "label": "Reddit Scrape", "default_params": {"max_posts": 500}},
+    "amazon_review_scrape": {"emoji": "📦", "label": "Amazon Review Scrape", "default_params": {}},
     "ad_creation": {"emoji": "🎨", "label": "Ad Creation", "default_params": {}},
 }
 
@@ -59,6 +60,7 @@ DATASET_LABELS = {
     "templates_evaluated": "Templates Evaluated",
     "competitor_ads": "Competitor Ads",
     "reddit_data": "Reddit Data",
+    "amazon_reviews": "Amazon Reviews",
     "landing_pages": "Landing Pages",
 }
 

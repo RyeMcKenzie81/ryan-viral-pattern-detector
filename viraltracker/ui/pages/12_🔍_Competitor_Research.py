@@ -37,6 +37,8 @@ if 'research_competitor_product_id' not in st.session_state:
     st.session_state.research_competitor_product_id = None
 if 'scrape_legacy_mode' not in st.session_state:
     st.session_state.scrape_legacy_mode = False
+if 'amazon_scrape_legacy_mode' not in st.session_state:
+    st.session_state.amazon_scrape_legacy_mode = False
 
 def get_supabase_client():
     """Get Supabase client."""
@@ -259,6 +261,74 @@ def render_recent_competitor_scrapes(brand_id: str, competitor_id: str):
 
     except Exception:
         pass  # Non-critical UI section — don't break the page
+
+
+def render_recent_amazon_review_scrapes(brand_id: str, competitor_amazon_url_id: str):
+    """Show recent one-time amazon_review_scrape runs for this brand/URL."""
+    db = get_supabase_client()
+    try:
+        jobs_result = db.table("scheduled_jobs").select(
+            "id, status, created_at, parameters"
+        ).eq("brand_id", brand_id).eq(
+            "job_type", "amazon_review_scrape"
+        ).eq("schedule_type", "one_time").order(
+            "created_at", desc=True
+        ).limit(5).execute()
+
+        # Filter to jobs for this specific amazon URL
+        jobs = [
+            j for j in (jobs_result.data or [])
+            if (j.get("parameters") or {}).get("competitor_amazon_url_id") == competitor_amazon_url_id
+        ]
+        if not jobs:
+            return
+
+        st.caption("**Recent Review Scrapes**")
+
+        for job in jobs:
+            job_id = job["id"]
+            job_status = job.get("status", "unknown")
+
+            run_result = db.table("scheduled_job_runs").select(
+                "status, started_at, completed_at, logs"
+            ).eq("scheduled_job_id", job_id).order(
+                "started_at", desc=True
+            ).limit(1).execute()
+
+            run = run_result.data[0] if run_result.data else None
+
+            if run:
+                run_status = run.get("status", "unknown")
+                status_emoji = {"completed": "done", "failed": "failed", "running": "running"}.get(run_status, run_status)
+                started = run.get("started_at", "")
+                if started:
+                    try:
+                        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        started_str = started_dt.strftime("%b %d, %I:%M %p")
+                    except Exception:
+                        started_str = started[:16]
+                else:
+                    started_str = "Pending"
+
+                logs = run.get("logs", "") or ""
+                summary = ""
+                for line in logs.split("\n"):
+                    if "Reviews saved:" in line or "Raw reviews" in line:
+                        summary = line.strip()
+                        break
+
+                display = f"{started_str} — {status_emoji}"
+                if summary:
+                    display += f" — {summary}"
+                st.caption(display)
+            else:
+                if job_status == "active":
+                    st.caption("Queued — waiting for worker pickup...")
+                elif job_status == "archived":
+                    st.caption("Archived (no run data)")
+
+    except Exception:
+        pass  # Non-critical UI section
 
 
 def get_research_stats(
@@ -1918,6 +1988,11 @@ with tab_landing:
 with tab_amazon:
     st.markdown("### Amazon Review Analysis")
 
+    legacy_mode_amz = st.checkbox(
+        "Scrape reviews directly (legacy)", value=False, key="amazon_scrape_legacy_mode",
+        help="Runs the scrape in-process instead of queuing to the background worker"
+    )
+
     # Add Amazon URL
     with st.expander("➕ Add Amazon Product URL"):
         with st.form("add_amazon_url"):
@@ -2002,24 +2077,41 @@ with tab_amazon:
                 with col_actions:
                     col_scrape, col_del = st.columns(2)
                     with col_scrape:
-                        if st.button("📥 Scrape", key=f"scrape_amz_{amz['id']}", help="Scrape reviews"):
-                            with st.spinner(f"Scraping reviews for {amz['asin']}... (this may take 5-15 minutes)"):
-                                try:
-                                    service = get_competitor_service()
-                                    result = service.scrape_amazon_reviews_for_competitor(
-                                        competitor_amazon_url_id=UUID(amz['id'])
-                                    )
-                                    if result.get('errors'):
-                                        st.error(f"Errors: {result['errors']}")
-                                    else:
-                                        st.success(
-                                            f"Scraped {result['reviews_saved']} reviews "
-                                            f"(from {result['raw_reviews_count']} raw, "
-                                            f"~${result['cost_estimate']:.2f})"
+                        amazon_legacy = st.session_state.get('amazon_scrape_legacy_mode', False)
+                        if amazon_legacy:
+                            if st.button("📥 Scrape", key=f"scrape_amz_{amz['id']}", help="Scrape reviews (legacy in-process)"):
+                                with st.spinner(f"Scraping reviews for {amz['asin']}... (this may take 5-15 minutes)"):
+                                    try:
+                                        service = get_competitor_service()
+                                        result = service.scrape_amazon_reviews_for_competitor(
+                                            competitor_amazon_url_id=UUID(amz['id'])
                                         )
-                                        st.rerun()
-                                except Exception as e:
-                                    st.error(f"Scrape failed: {e}")
+                                        if result.get('errors'):
+                                            st.error(f"Errors: {result['errors']}")
+                                        else:
+                                            st.success(
+                                                f"Scraped {result['reviews_saved']} reviews "
+                                                f"(from {result['raw_reviews_count']} raw, "
+                                                f"~${result['cost_estimate']:.2f})"
+                                            )
+                                            st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Scrape failed: {e}")
+                        else:
+                            if st.button("📥 Scrape", key=f"scrape_amz_{amz['id']}", help="Queue review scrape"):
+                                from viraltracker.services.pipeline_helpers import queue_one_time_job
+                                job_id = queue_one_time_job(
+                                    brand_id=selected_brand_id,
+                                    job_type="amazon_review_scrape",
+                                    parameters={
+                                        "competitor_amazon_url_id": amz['id'],
+                                        "asin": amz['asin'],
+                                    },
+                                )
+                                if job_id:
+                                    st.success("Review scrape queued! It will start within 60 seconds.")
+                                else:
+                                    st.error("Failed to queue scrape job. Try legacy mode.")
                     with col_del:
                         if st.button("🗑️", key=f"del_amz_{amz['id']}", help="Delete"):
                             try:
@@ -2029,6 +2121,10 @@ with tab_amazon:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Failed: {e}")
+
+                # Show recent scrape runs for this URL (queued mode only)
+                if not st.session_state.get('amazon_scrape_legacy_mode', False):
+                    render_recent_amazon_review_scrapes(selected_brand_id, amz['id'])
         else:
             st.info("No Amazon products added.")
 
