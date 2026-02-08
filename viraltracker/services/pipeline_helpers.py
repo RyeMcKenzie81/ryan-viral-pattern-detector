@@ -27,7 +27,7 @@ PST = pytz.timezone("America/Los_Angeles")
 
 
 def ensure_recurring_job(
-    brand_id: str,
+    brand_id: Optional[str],
     job_type: str,
     cron_expression: str,
     parameters: Optional[Dict[str, Any]] = None,
@@ -42,7 +42,7 @@ def ensure_recurring_job(
     - Sets status='active' if enabled, 'paused' if not
 
     Args:
-        brand_id: Brand UUID string
+        brand_id: Brand UUID string, or None for platform-level jobs
         job_type: Job type identifier (e.g. 'meta_sync')
         cron_expression: Cron schedule string
         parameters: Optional job-specific parameters
@@ -60,9 +60,12 @@ def ensure_recurring_job(
 
     try:
         # Look for existing recurring job for this (brand_id, job_type)
-        result = db.table("scheduled_jobs").select("id").eq(
-            "brand_id", brand_id
-        ).eq("job_type", job_type).eq(
+        query = db.table("scheduled_jobs").select("id")
+        if brand_id is None:
+            query = query.is_("brand_id", "null")
+        else:
+            query = query.eq("brand_id", brand_id)
+        result = query.eq("job_type", job_type).eq(
             "schedule_type", "recurring"
         ).limit(1).execute()
 
@@ -83,7 +86,7 @@ def ensure_recurring_job(
                 updates["name"] = name
 
             db.table("scheduled_jobs").update(updates).eq("id", job_id).execute()
-            logger.info(f"Updated recurring {job_type} job {job_id} for brand {brand_id}")
+            logger.info(f"Updated recurring {job_type} job {job_id} for {'platform' if brand_id is None else f'brand {brand_id}'}")
             return job_id
         else:
             # Create new recurring job
@@ -102,16 +105,16 @@ def ensure_recurring_job(
 
             result = db.table("scheduled_jobs").insert(insert_data).execute()
             job_id = result.data[0]["id"] if result.data else None
-            logger.info(f"Created recurring {job_type} job {job_id} for brand {brand_id}")
+            logger.info(f"Created recurring {job_type} job {job_id} for {'platform' if brand_id is None else f'brand {brand_id}'}")
             return job_id
 
     except Exception as e:
-        logger.error(f"Failed to ensure_recurring_job {job_type} for {brand_id}: {e}")
+        logger.error(f"Failed to ensure_recurring_job {job_type} for {'platform' if brand_id is None else f'brand {brand_id}'}: {e}")
         return None
 
 
 def queue_one_time_job(
-    brand_id: str,
+    brand_id: Optional[str],
     job_type: str,
     parameters: Optional[Dict[str, Any]] = None,
     trigger_source: str = "manual",
@@ -124,7 +127,7 @@ def queue_one_time_job(
     - Worker auto-archives after completion (status='archived')
 
     Args:
-        brand_id: Brand UUID string
+        brand_id: Brand UUID string, or None for platform-level jobs
         job_type: Job type identifier (e.g. 'meta_sync')
         parameters: Optional job-specific parameters
         trigger_source: 'manual' or 'api' (default: 'manual')
@@ -155,9 +158,9 @@ def queue_one_time_job(
 
         result = db.table("scheduled_jobs").insert(insert_data).execute()
         job_id = result.data[0]["id"] if result.data else None
-        logger.info(f"Queued one-time {job_type} job {job_id} for brand {brand_id} (trigger: {trigger_source})")
+        logger.info(f"Queued one-time {job_type} job {job_id} for {'platform' if brand_id is None else f'brand {brand_id}'} (trigger: {trigger_source})")
         return job_id
 
     except Exception as e:
-        logger.error(f"Failed to queue_one_time_job {job_type} for {brand_id}: {e}")
+        logger.error(f"Failed to queue_one_time_job {job_type} for {'platform' if brand_id is None else f'brand {brand_id}'}: {e}")
         return None

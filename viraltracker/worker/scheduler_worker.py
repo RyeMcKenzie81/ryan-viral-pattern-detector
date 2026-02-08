@@ -1539,7 +1539,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
     logs = []
 
     try:
-        freshness.record_start(brand_id, "templates_scraped", run_id=run_id)
+        if brand_id:
+            freshness.record_start(brand_id, "templates_scraped", run_id=run_id)
 
         # Get parameters
         search_url = params.get('search_url')
@@ -1721,7 +1722,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         if auto_queue:
             logs.append(f"Queued for review: {queued_count}")
 
-        freshness.record_success(brand_id, "templates_scraped", records_affected=new_count, run_id=run_id)
+        if brand_id:
+            freshness.record_success(brand_id, "templates_scraped", records_affected=new_count, run_id=run_id)
 
         # Update job run as completed
         update_job_run(run_id, {
@@ -1746,7 +1748,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Template scrape job {job_name} failed: {error_msg}")
 
-        freshness.record_failure(brand_id, "templates_scraped", error_msg, run_id=run_id)
+        if brand_id:
+            freshness.record_failure(brand_id, "templates_scraped", error_msg, run_id=run_id)
 
         update_job_run(run_id, {
             "status": "failed",

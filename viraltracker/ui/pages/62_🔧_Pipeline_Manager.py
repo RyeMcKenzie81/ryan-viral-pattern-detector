@@ -50,6 +50,15 @@ CADENCE_PRESETS = {
     "Monthly": "0 6 1 * *",
 }
 
+# Platform-level jobs (no brand_id)
+PLATFORM_JOB_TYPES = ["template_approval", "template_scrape"]
+
+# Brand-scoped schedulable types (exclude platform jobs and ad_creation which has its own scheduler)
+BRAND_SCHEDULABLE_TYPES = [
+    "meta_sync", "ad_classification", "asset_download",
+    "scorecard", "congruence_reanalysis",
+]
+
 # Dataset keys and their labels
 DATASET_LABELS = {
     "meta_ads_performance": "Ad Performance",
@@ -131,7 +140,7 @@ def get_scheduled_jobs_all(status_filter: Optional[str] = None) -> List[Dict]:
                     brand_info = job["products"].get("brands", {}) or {}
                     job["_brand_name"] = brand_info.get("name", "Unknown")
                 else:
-                    job["_brand_name"] = "Unknown"
+                    job["_brand_name"] = "Platform"
 
         return jobs
     except Exception as e:
@@ -295,9 +304,9 @@ def render_health_overview():
 
             # Run Now buttons
             st.markdown("---")
-            run_cols = st.columns(4)
-            schedulable_types = ["meta_sync", "template_scrape", "ad_classification", "asset_download"]
-            for i, jt in enumerate(schedulable_types):
+            health_run_types = ["meta_sync", "ad_classification", "asset_download"]
+            run_cols = st.columns(len(health_run_types))
+            for i, jt in enumerate(health_run_types):
                 info = JOB_TYPE_INFO.get(jt, {})
                 with run_cols[i]:
                     if st.button(
@@ -340,14 +349,7 @@ def render_schedules():
     except Exception:
         existing_jobs = {}
 
-    # Schedulable job types (exclude ad_creation which has its own scheduler)
-    schedulable_types = [
-        "meta_sync", "template_scrape", "ad_classification",
-        "asset_download", "scorecard", "template_approval",
-        "congruence_reanalysis",
-    ]
-
-    for jt in schedulable_types:
+    for jt in BRAND_SCHEDULABLE_TYPES:
         info = JOB_TYPE_INFO.get(jt, {"emoji": "❓", "label": jt, "default_params": {}})
         existing = existing_jobs.get(jt)
 
@@ -455,6 +457,178 @@ def render_schedules():
                     from viraltracker.services.pipeline_helpers import queue_one_time_job
                     job_id = queue_one_time_job(
                         brand_id=brand_id,
+                        job_type=jt,
+                        parameters=params,
+                    )
+                    if job_id:
+                        st.success(f"{info['label']} queued for immediate run!")
+                    else:
+                        st.error("Failed to queue job.")
+
+
+def _get_last_run_info(job_id: str) -> Optional[Dict]:
+    """Get the most recent run status/time for a scheduled job."""
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_job_runs").select(
+            "status, started_at, completed_at, error_message"
+        ).eq("scheduled_job_id", job_id).order(
+            "started_at", desc=True
+        ).limit(1).execute()
+        return result.data[0] if result.data else None
+    except Exception:
+        return None
+
+
+def render_platform_schedules():
+    """Platform-level scheduling for jobs that aren't brand-scoped."""
+    st.subheader("Platform Schedules")
+    st.caption("These jobs run across all brands and don't require a brand selector.")
+
+    # Fetch existing recurring platform jobs (brand_id IS NULL)
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_jobs").select("*").is_(
+            "brand_id", "null"
+        ).eq("schedule_type", "recurring").in_(
+            "status", ["active", "paused"]
+        ).execute()
+        existing_jobs = {j["job_type"]: j for j in (result.data or [])}
+    except Exception:
+        existing_jobs = {}
+
+    for jt in PLATFORM_JOB_TYPES:
+        info = JOB_TYPE_INFO.get(jt, {"emoji": "❓", "label": jt, "default_params": {}})
+        existing = existing_jobs.get(jt)
+
+        with st.expander(
+            f"{info['emoji']} **{info['label']}** — "
+            f"{'🟢 Active' if existing and existing.get('status') == 'active' else '⏸️ Paused' if existing else '⚪ Not configured'}",
+            expanded=False,
+        ):
+            # Show last run info
+            if existing:
+                last_run = _get_last_run_info(existing["id"])
+                if last_run:
+                    run_status = last_run.get("status", "unknown")
+                    run_emoji = {"completed": "✅", "failed": "❌", "running": "⏳"}.get(run_status, "❓")
+                    st.caption(f"Last run: {run_emoji} {run_status} — {format_age(last_run.get('started_at'))}")
+                    if last_run.get("error_message"):
+                        st.caption(f"Error: {last_run['error_message'][:100]}")
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Cadence selector
+                current_cron = existing.get("cron_expression", "") if existing else ""
+                current_preset = "On-demand only"
+                for preset_name, preset_cron in CADENCE_PRESETS.items():
+                    if preset_cron and preset_cron == current_cron:
+                        current_preset = preset_name
+                        break
+                else:
+                    if current_cron and existing:
+                        current_preset = "Advanced"
+
+                preset_options = list(CADENCE_PRESETS.keys()) + ["Advanced"]
+                preset_idx = preset_options.index(current_preset) if current_preset in preset_options else 0
+
+                cadence = st.selectbox(
+                    "Cadence",
+                    options=preset_options,
+                    index=preset_idx,
+                    key=f"platform_cadence_{jt}",
+                )
+
+                if cadence == "Advanced":
+                    cron_expr = st.text_input(
+                        "Cron Expression",
+                        value=current_cron,
+                        key=f"platform_cron_{jt}",
+                        help="Standard cron format: minute hour day-of-month month day-of-week",
+                    )
+                else:
+                    cron_expr = CADENCE_PRESETS.get(cadence)
+
+                # Show next run preview
+                if cron_expr:
+                    try:
+                        from viraltracker.worker.scheduler_worker import calculate_next_run
+                        next_run = calculate_next_run(cron_expr)
+                        if next_run:
+                            st.caption(f"Next run: {next_run.strftime('%b %d at %I:%M %p PST')}")
+                        else:
+                            st.warning("Invalid cron expression")
+                    except Exception:
+                        st.caption("Could not preview next run")
+
+            with col2:
+                # Status toggle
+                enabled = st.checkbox(
+                    "Enabled",
+                    value=existing.get("status") == "active" if existing else False,
+                    key=f"platform_enabled_{jt}",
+                )
+
+                # Parameters (editable for platform jobs)
+                params = existing.get("parameters", info["default_params"]) if existing else info["default_params"]
+                params = dict(params) if params else {}
+
+                if jt == "template_scrape":
+                    st.markdown("**Parameters:**")
+                    params["search_url"] = st.text_input(
+                        "Search URL",
+                        value=params.get("search_url", ""),
+                        key=f"platform_param_search_url_{jt}",
+                        help="Facebook Ad Library search URL to scrape",
+                    )
+                    params["max_ads"] = st.number_input(
+                        "Max Ads",
+                        value=int(params.get("max_ads", 50)),
+                        min_value=1, max_value=500,
+                        key=f"platform_param_max_ads_{jt}",
+                    )
+                elif params:
+                    st.markdown("**Parameters:**")
+                    for pk, pv in params.items():
+                        st.caption(f"{pk}: {pv}")
+
+            # Action buttons
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("💾 Save Schedule", key=f"platform_save_{jt}"):
+                    if cadence == "On-demand only":
+                        if existing:
+                            db = get_supabase_client()
+                            db.table("scheduled_jobs").update(
+                                {"status": "paused"}
+                            ).eq("id", existing["id"]).execute()
+                            st.success(f"{info['label']} paused.")
+                            st.rerun()
+                        else:
+                            st.info("No schedule to save (on-demand only).")
+                    elif cron_expr:
+                        from viraltracker.services.pipeline_helpers import ensure_recurring_job
+                        job_id = ensure_recurring_job(
+                            brand_id=None,
+                            job_type=jt,
+                            cron_expression=cron_expr,
+                            parameters=params,
+                            enabled=enabled,
+                        )
+                        if job_id:
+                            st.success(f"{info['label']} schedule saved!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to save schedule.")
+                    else:
+                        st.warning("Select a cadence first.")
+
+            with btn_col2:
+                if st.button("▶️ Run Now", key=f"platform_runnow_{jt}"):
+                    from viraltracker.services.pipeline_helpers import queue_one_time_job
+                    job_id = queue_one_time_job(
+                        brand_id=None,
                         job_type=jt,
                         parameters=params,
                     )
@@ -740,7 +914,11 @@ with tab1:
     render_health_overview()
 
 with tab2:
-    render_schedules()
+    sub_brand, sub_platform = st.tabs(["🏢 Brand Schedules", "🌐 Platform Schedules"])
+    with sub_brand:
+        render_schedules()
+    with sub_platform:
+        render_platform_schedules()
 
 with tab3:
     render_active_jobs()
