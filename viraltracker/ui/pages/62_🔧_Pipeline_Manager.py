@@ -37,6 +37,7 @@ JOB_TYPE_INFO = {
     "template_approval": {"emoji": "✅", "label": "Template Approval", "default_params": {"max_templates": 50}},
     "congruence_reanalysis": {"emoji": "🔍", "label": "Congruence Reanalysis", "default_params": {}},
     "competitor_scrape": {"emoji": "🕵️", "label": "Competitor Scrape", "default_params": {"max_ads": 500}},
+    "reddit_scrape": {"emoji": "🔍", "label": "Reddit Scrape", "default_params": {"max_posts": 500}},
     "ad_creation": {"emoji": "🎨", "label": "Ad Creation", "default_params": {}},
 }
 

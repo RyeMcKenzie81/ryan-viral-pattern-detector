@@ -50,6 +50,7 @@ def init_session_state():
         "reddit_selected_run": None,
         "reddit_persona_context": "",
         "reddit_topic_context": "",
+        "reddit_scrape_legacy_mode": False,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -128,6 +129,77 @@ def extract_candidates_from_run(run_id: str, product_id: str, brand_id: Optional
         product_id=UUID(product_id),
         brand_id=UUID(brand_id) if brand_id else None,
     )
+
+def render_recent_reddit_scrapes(brand_id: str):
+    """Show recent one-time reddit_scrape runs for this brand."""
+    db = get_supabase()
+    try:
+        jobs_result = db.table("scheduled_jobs").select(
+            "id, status, created_at, parameters"
+        ).eq("brand_id", brand_id).eq(
+            "job_type", "reddit_scrape"
+        ).eq("schedule_type", "one_time").order(
+            "created_at", desc=True
+        ).limit(5).execute()
+
+        jobs = jobs_result.data or []
+        if not jobs:
+            return
+
+        st.divider()
+        st.caption("**Recent Reddit Scrapes**")
+
+        for job in jobs:
+            job_id = job["id"]
+
+            # Fetch latest run for this job
+            run_result = db.table("scheduled_job_runs").select(
+                "status, started_at, completed_at, logs"
+            ).eq("scheduled_job_id", job_id).order(
+                "started_at", desc=True
+            ).limit(1).execute()
+
+            run = run_result.data[0] if run_result.data else None
+
+            if run:
+                run_status = run.get("status", "unknown")
+                status_emoji = {"completed": "✅", "failed": "❌", "running": "🔄"}.get(run_status, "⏳")
+                started = run.get("started_at", "")
+                if started:
+                    try:
+                        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                        started_str = started_dt.strftime("%b %d, %I:%M %p")
+                    except Exception:
+                        started_str = started[:16]
+                else:
+                    started_str = "Pending"
+
+                # Extract summary from logs
+                logs = run.get("logs", "") or ""
+                summary = ""
+                for line in logs.split("\n"):
+                    if "Quotes extracted:" in line or "Posts scraped:" in line:
+                        summary = line.strip()
+                        break
+
+                # Show queries from parameters
+                params = job.get("parameters") or {}
+                queries = params.get("search_queries", [])
+                queries_preview = ", ".join(queries[:2]) + ("..." if len(queries) > 2 else "") if queries else ""
+
+                display = f"{status_emoji} {started_str}"
+                if queries_preview:
+                    display += f" — {queries_preview}"
+                if summary:
+                    display += f" | {summary}"
+                st.caption(display)
+            else:
+                # Job queued but no run yet
+                st.caption(f"⏳ Queued — waiting for worker pickup")
+
+    except Exception as e:
+        st.caption(f"Could not load recent runs: {e}")
+
 
 # ============================================
 # UI COMPONENTS
@@ -296,7 +368,7 @@ def render_brand_association():
     return brand_id, persona_id
 
 def render_run_button(brand_id: Optional[str], persona_id: Optional[str]):
-    """Render the run button and execute pipeline."""
+    """Render the run button and execute pipeline (queued or legacy)."""
     # Parse queries
     queries = [
         q.strip() for q in st.session_state.reddit_search_queries.split("\n")
@@ -320,57 +392,111 @@ def render_run_button(brand_id: Optional[str], persona_id: Optional[str]):
     estimated_cost = (st.session_state.reddit_max_posts / 1000) * 1.50 + 0.85
     st.info(f"Estimated cost: ~${estimated_cost:.2f} (Apify + LLM)")
 
-    if st.button(
-        "Run Reddit Sentiment Analysis",
-        type="primary",
-        disabled=st.session_state.reddit_running,
-        use_container_width=True
-    ):
-        st.session_state.reddit_running = True
-        st.session_state.reddit_results = None
+    legacy_mode = st.checkbox(
+        "Run analysis directly (legacy)", value=False, key="reddit_scrape_legacy_mode",
+        help="Runs the pipeline in-process instead of queuing to the background worker"
+    )
 
-        with st.spinner("Running pipeline... This may take several minutes."):
-            progress_bar = st.progress(0, text="Starting...")
+    if legacy_mode:
+        # Legacy mode: original in-process behavior
+        if st.button(
+            "Run Reddit Sentiment Analysis",
+            type="primary",
+            disabled=st.session_state.reddit_running,
+            use_container_width=True,
+            key="reddit_run_legacy"
+        ):
+            st.session_state.reddit_running = True
+            st.session_state.reddit_results = None
 
-            async def run_pipeline():
-                from viraltracker.pipelines.reddit_sentiment import run_reddit_sentiment
+            with st.spinner("Running pipeline... This may take several minutes."):
+                progress_bar = st.progress(0, text="Starting...")
 
-                result = await run_reddit_sentiment(
-                    search_queries=queries,
-                    brand_id=UUID(brand_id) if brand_id else None,
-                    persona_id=UUID(persona_id) if persona_id else None,
-                    subreddits=subreddits,
-                    timeframe=st.session_state.reddit_timeframe,
-                    max_posts=st.session_state.reddit_max_posts,
-                    min_upvotes=st.session_state.reddit_min_upvotes,
-                    min_comments=st.session_state.reddit_min_comments,
-                    relevance_threshold=st.session_state.reddit_relevance_threshold,
-                    signal_threshold=st.session_state.reddit_signal_threshold,
-                    top_percentile=st.session_state.reddit_top_percentile,
-                    auto_sync_to_persona=st.session_state.reddit_auto_sync and persona_id is not None,
-                    persona_context=st.session_state.reddit_persona_context or None,
-                    topic_context=st.session_state.reddit_topic_context or None,
-                )
-                return result
+                async def run_pipeline():
+                    from viraltracker.pipelines.reddit_sentiment import run_reddit_sentiment
 
-            try:
-                result = asyncio.run(run_pipeline())
-                st.session_state.reddit_results = result
-                progress_bar.progress(100, text="Complete!")
-
-                if result.get("status") == "success":
-                    st.success(
-                        f"Analysis complete! Extracted {result.get('quotes_extracted', 0)} quotes "
-                        f"from {result.get('posts_top_selected', 0)} top posts."
+                    result = await run_reddit_sentiment(
+                        search_queries=queries,
+                        brand_id=UUID(brand_id) if brand_id else None,
+                        persona_id=UUID(persona_id) if persona_id else None,
+                        subreddits=subreddits,
+                        timeframe=st.session_state.reddit_timeframe,
+                        max_posts=st.session_state.reddit_max_posts,
+                        min_upvotes=st.session_state.reddit_min_upvotes,
+                        min_comments=st.session_state.reddit_min_comments,
+                        relevance_threshold=st.session_state.reddit_relevance_threshold,
+                        signal_threshold=st.session_state.reddit_signal_threshold,
+                        top_percentile=st.session_state.reddit_top_percentile,
+                        auto_sync_to_persona=st.session_state.reddit_auto_sync and persona_id is not None,
+                        persona_context=st.session_state.reddit_persona_context or None,
+                        topic_context=st.session_state.reddit_topic_context or None,
                     )
-                else:
-                    st.error(f"Pipeline failed: {result.get('error', 'Unknown error')}")
+                    return result
 
-            except Exception as e:
-                st.error(f"Pipeline error: {str(e)}")
+                try:
+                    result = asyncio.run(run_pipeline())
+                    st.session_state.reddit_results = result
+                    progress_bar.progress(100, text="Complete!")
 
-        st.session_state.reddit_running = False
-        st.rerun()
+                    if result.get("status") == "success":
+                        st.success(
+                            f"Analysis complete! Extracted {result.get('quotes_extracted', 0)} quotes "
+                            f"from {result.get('posts_top_selected', 0)} top posts."
+                        )
+                    else:
+                        st.error(f"Pipeline failed: {result.get('error', 'Unknown error')}")
+
+                except Exception as e:
+                    st.error(f"Pipeline error: {str(e)}")
+
+            st.session_state.reddit_running = False
+            st.rerun()
+    else:
+        # Queued mode: queue to background worker
+        if not brand_id:
+            st.warning("Select a brand above to use background processing, or enable legacy mode for standalone research.")
+            return
+
+        if st.button(
+            "Run Reddit Sentiment Analysis",
+            type="primary",
+            use_container_width=True,
+            key="reddit_run_queued"
+        ):
+            from viraltracker.services.pipeline_helpers import queue_one_time_job
+
+            parameters = {
+                "search_queries": queries,
+                "timeframe": st.session_state.reddit_timeframe,
+                "max_posts": st.session_state.reddit_max_posts,
+                "min_upvotes": st.session_state.reddit_min_upvotes,
+                "min_comments": st.session_state.reddit_min_comments,
+                "relevance_threshold": st.session_state.reddit_relevance_threshold,
+                "signal_threshold": st.session_state.reddit_signal_threshold,
+                "top_percentile": st.session_state.reddit_top_percentile,
+                "auto_sync_to_persona": st.session_state.reddit_auto_sync and persona_id is not None,
+            }
+            if subreddits:
+                parameters["subreddits"] = subreddits
+            if persona_id:
+                parameters["persona_id"] = persona_id
+            if st.session_state.reddit_persona_context:
+                parameters["persona_context"] = st.session_state.reddit_persona_context
+            if st.session_state.reddit_topic_context:
+                parameters["topic_context"] = st.session_state.reddit_topic_context
+
+            job_id = queue_one_time_job(
+                brand_id=brand_id,
+                job_type="reddit_scrape",
+                parameters=parameters,
+            )
+            if job_id:
+                st.success("Reddit scrape queued! It will start within 60 seconds. Check recent runs below for progress.")
+            else:
+                st.error("Failed to queue scrape job. Please try legacy mode.")
+
+        # Recent manual scrape runs
+        render_recent_reddit_scrapes(brand_id)
 
 def render_results():
     """Render pipeline results."""

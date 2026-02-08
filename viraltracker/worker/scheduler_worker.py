@@ -570,6 +570,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_asset_download_job(job)
     elif job_type == 'competitor_scrape':
         return await execute_competitor_scrape_job(job)
+    elif job_type == 'reddit_scrape':
+        return await execute_reddit_scrape_job(job)
     else:
         # Default to ad_creation for backward compatibility
         return await execute_ad_creation_job(job)
@@ -2639,6 +2641,150 @@ async def execute_competitor_scrape_job(job: Dict) -> Dict[str, Any]:
         })
 
         # Reschedule recurring jobs so they run again next cycle
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
+
+
+async def execute_reddit_scrape_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Reddit sentiment analysis pipeline job.
+
+    Runs the full reddit_sentiment pipeline (scrape → filter → categorize → save)
+    as a background job instead of blocking the UI.
+
+    Parameters (from job['parameters']):
+        search_queries: list[str] - Search terms (required)
+        subreddits: list[str] | None - Subreddits to search (optional)
+        timeframe: str - Time range: hour/day/week/month/year/all (default: month)
+        max_posts: int - Max posts to scrape (default: 500)
+        min_upvotes: int - Min upvotes filter (default: 20)
+        min_comments: int - Min comments filter (default: 5)
+        relevance_threshold: float - Relevance cutoff 0-1 (default: 0.6)
+        signal_threshold: float - Signal cutoff 0-1 (default: 0.5)
+        top_percentile: float - Top % to keep (default: 0.20)
+        persona_id: str | None - Persona UUID to sync quotes to
+        auto_sync_to_persona: bool - Whether to sync quotes (default: False)
+        persona_context: str | None - Persona description for LLM
+        topic_context: str | None - Topic/domain focus for LLM
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting reddit scrape job: {job_name} for brand {brand_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+
+    logs = []
+
+    try:
+        from uuid import UUID
+        from viraltracker.pipelines.reddit_sentiment import run_reddit_sentiment
+
+        freshness.record_start(brand_id, "reddit_data", run_id=run_id)
+
+        # Extract and validate parameters
+        search_queries = params.get('search_queries', [])
+        if not search_queries:
+            raise ValueError("search_queries is required (list of search terms)")
+
+        subreddits = params.get('subreddits')
+        timeframe = params.get('timeframe', 'month')
+        max_posts = params.get('max_posts', 500)
+        min_upvotes = params.get('min_upvotes', 20)
+        min_comments = params.get('min_comments', 5)
+        relevance_threshold = params.get('relevance_threshold', 0.6)
+        signal_threshold = params.get('signal_threshold', 0.5)
+        top_percentile = params.get('top_percentile', 0.20)
+        persona_id = params.get('persona_id')
+        auto_sync_to_persona = params.get('auto_sync_to_persona', False)
+        persona_context = params.get('persona_context')
+        topic_context = params.get('topic_context')
+
+        logs.append(f"Reddit scrape for brand: {brand_name}")
+        logs.append(f"Queries: {', '.join(search_queries)}")
+        if subreddits:
+            logs.append(f"Subreddits: {', '.join(subreddits)}")
+        logs.append(f"Timeframe: {timeframe}, Max posts: {max_posts}")
+
+        # Run the full pipeline
+        result = await run_reddit_sentiment(
+            search_queries=search_queries,
+            brand_id=UUID(brand_id) if brand_id else None,
+            persona_id=UUID(persona_id) if persona_id else None,
+            subreddits=subreddits,
+            timeframe=timeframe,
+            max_posts=max_posts,
+            min_upvotes=min_upvotes,
+            min_comments=min_comments,
+            relevance_threshold=relevance_threshold,
+            signal_threshold=signal_threshold,
+            top_percentile=top_percentile,
+            auto_sync_to_persona=auto_sync_to_persona and persona_id is not None,
+            persona_context=persona_context,
+            topic_context=topic_context,
+        )
+
+        status = result.get("status", "unknown")
+        posts_scraped = result.get("posts_scraped", 0)
+        quotes_extracted = result.get("quotes_extracted", 0)
+        pipeline_run_id = result.get("run_id", "")
+
+        logs.append("")
+        logs.append("=== Pipeline Result ===")
+        logs.append(f"Status: {status}")
+        logs.append(f"Posts scraped: {posts_scraped}")
+        logs.append(f"Quotes extracted: {quotes_extracted}")
+        if result.get("quotes_synced"):
+            logs.append(f"Quotes synced to persona: {result['quotes_synced']}")
+        if pipeline_run_id:
+            logs.append(f"Pipeline run ID: {pipeline_run_id}")
+
+        if status == "success":
+            freshness.record_success(brand_id, "reddit_data", records_affected=quotes_extracted, run_id=run_id)
+
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs)
+            })
+
+            _update_job_next_run(job, job_id)
+
+            logger.info(f"Completed reddit scrape job: {job_name} - {quotes_extracted} quotes extracted")
+            return {"success": True, "posts_scraped": posts_scraped, "quotes_extracted": quotes_extracted}
+        else:
+            error_msg = result.get("error", f"Pipeline returned status: {status}")
+            raise Exception(error_msg)
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Reddit scrape job {job_name} failed: {error_msg}")
+
+        freshness.record_failure(brand_id, "reddit_data", error_msg, run_id=run_id)
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
