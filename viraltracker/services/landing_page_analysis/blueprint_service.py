@@ -224,16 +224,18 @@ class ReconstructionBlueprintService:
 
         from pydantic_ai.settings import ModelSettings
 
+        model_settings = ModelSettings(max_tokens=16384)
         model = Config.get_model("complex")
         agent = Agent(
             model=model,
             system_prompt=RECONSTRUCTION_SYSTEM_PROMPT,
-            model_settings=ModelSettings(max_tokens=16384),
+            model_settings=model_settings,
         )
 
         result = await run_agent_with_tracking(
             agent,
             user_content,
+            model_settings=model_settings,
             tracker=self._tracker,
             user_id=self._user_id,
             organization_id=self._org_id,
