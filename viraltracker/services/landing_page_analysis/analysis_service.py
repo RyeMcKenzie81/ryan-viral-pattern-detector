@@ -64,12 +64,13 @@ class LandingPageAnalysisService:
 
     def scrape_landing_page(self, url: str) -> Dict[str, Any]:
         """Scrape a URL via FireCrawl, returning markdown + screenshot."""
+        from firecrawl.v2.types import ScreenshotFormat
         from viraltracker.services.web_scraping_service import WebScrapingService
 
         scraper = WebScrapingService()
         result = scraper.scrape_url(
             url,
-            formats=["markdown", "screenshot@fullPage"],
+            formats=["markdown", ScreenshotFormat(full_page=True)],
         )
 
         if not result.success:
