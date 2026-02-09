@@ -54,7 +54,7 @@ class BrandProfileService:
         brand = self._fetch_brand(brand_id)
         product = self._fetch_product(product_id)
         offer_variant = self._fetch_offer_variant(product_id, offer_variant_id)
-        mechanisms = self._fetch_mechanisms(product_id)
+        mechanisms = self._fetch_mechanisms_from_variants(product_id)
         personas = self._fetch_personas(product_id)
         pricing = self._fetch_pricing(product_id)
         reviews = self._fetch_review_analysis(product_id)
@@ -66,12 +66,10 @@ class BrandProfileService:
                 "brand_code": brand.get("brand_code", ""),
                 "voice_tone": brand.get("brand_voice_tone", ""),
                 "colors": brand.get("brand_colors") or {},
-                "ad_creation_notes": brand.get("ad_creation_notes", ""),
+                "description": brand.get("description", ""),
             },
             "product": {
                 "name": product.get("name", ""),
-                "category": product.get("category", ""),
-                "format": product.get("format", ""),
                 "target_audience": product.get("target_audience", ""),
                 "key_benefits": product.get("key_benefits") or [],
                 "key_problems_solved": product.get("key_problems_solved") or [],
@@ -94,8 +92,8 @@ class BrandProfileService:
             },
             "claims": {
                 "disallowed_claims": brand.get("disallowed_claims") or [],
-                "promise_boundary": product.get("promise_boundary", ""),
-                "contraindications": product.get("contraindications") or [],
+                "prohibited_claims": product.get("prohibited_claims") or [],
+                "required_disclaimers": product.get("required_disclaimers") or [],
             },
             "ingredients": product.get("ingredients") or [],
             "results_timeline": product.get("results_timeline") or [],
@@ -123,7 +121,7 @@ class BrandProfileService:
         try:
             result = self.supabase.table("brands").select(
                 "id, name, brand_code, brand_voice_tone, brand_colors, "
-                "ad_creation_notes, disallowed_claims"
+                "disallowed_claims, description"
             ).eq("id", brand_id).single().execute()
             return result.data or {}
         except Exception as e:
@@ -134,9 +132,9 @@ class BrandProfileService:
         """Fetch product with all blueprint-relevant fields."""
         try:
             result = self.supabase.table("products").select(
-                "id, name, category, format, target_audience, "
+                "id, name, target_audience, "
                 "guarantee, ingredients, results_timeline, faq_items, "
-                "promise_boundary, contraindications, "
+                "prohibited_claims, required_disclaimers, "
                 "review_platforms, media_features, awards_certifications, "
                 "key_benefits, key_problems_solved, features"
             ).eq("id", product_id).single().execute()
@@ -177,14 +175,21 @@ class BrandProfileService:
             logger.debug(f"No offer variants found for product {product_id}: {e}")
             return {}
 
-    def _fetch_mechanisms(self, product_id: str) -> List[Dict[str, Any]]:
-        """Fetch product mechanism library."""
+    def _fetch_mechanisms_from_variants(self, product_id: str) -> List[Dict[str, Any]]:
+        """Fetch mechanism data from offer variants (mechanism fields live on product_offer_variants)."""
         try:
-            result = self.supabase.table("product_mechanisms").select(
-                "name, mechanism_type, description, root_cause, "
-                "why_it_works, proof_types, status"
-            ).eq("product_id", product_id).execute()
-            return result.data or []
+            result = self.supabase.table("product_offer_variants").select(
+                "mechanism_name, mechanism_problem, mechanism_solution"
+            ).eq("product_id", product_id).eq("is_active", True).execute()
+            # Deduplicate by mechanism_name
+            seen = set()
+            mechanisms = []
+            for row in (result.data or []):
+                name = row.get("mechanism_name", "")
+                if name and name not in seen:
+                    seen.add(name)
+                    mechanisms.append(row)
+            return mechanisms
         except Exception as e:
             logger.debug(f"No mechanisms found for product {product_id}: {e}")
             return []
@@ -258,19 +263,18 @@ class BrandProfileService:
         mechanisms: List[Dict[str, Any]],
         offer_variant: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Build mechanism section from product_mechanisms."""
+        """Build mechanism section from offer variant mechanism fields."""
         if mechanisms:
             primary = mechanisms[0]
             return {
-                "name": primary.get("name", ""),
-                "type": primary.get("mechanism_type", ""),
-                "description": primary.get("description", ""),
-                "root_cause": primary.get("root_cause", ""),
-                "why_it_works": primary.get("why_it_works", ""),
+                "name": primary.get("mechanism_name", ""),
+                "root_cause": primary.get("mechanism_problem", ""),
+                "solution": primary.get("mechanism_solution", ""),
                 "all_mechanisms": [
                     {
-                        "name": m.get("name", ""),
-                        "description": m.get("description", ""),
+                        "name": m.get("mechanism_name", ""),
+                        "root_cause": m.get("mechanism_problem", ""),
+                        "solution": m.get("mechanism_solution", ""),
                     }
                     for m in mechanisms
                 ],
@@ -331,7 +335,7 @@ class BrandProfileService:
         """Get products for a brand (for UI dropdowns)."""
         try:
             result = self.supabase.table("products").select(
-                "id, name, category"
+                "id, name"
             ).eq("brand_id", brand_id).order("name").execute()
             return result.data or []
         except Exception as e:
@@ -391,9 +395,9 @@ class BrandProfileService:
 
         mech = profile.get("mechanism", {})
         _check("mechanism", "name", mech.get("name"),
-               "critical", "CONTENT NEEDED: Define a unique mechanism in Brand Manager → Product → Mechanisms.")
+               "critical", "CONTENT NEEDED: Define a unique mechanism in Brand Manager → Offer Variants.")
         _check("mechanism", "root_cause", mech.get("root_cause"),
-               "moderate", "CONTENT NEEDED: Define the root cause your mechanism addresses.")
+               "moderate", "CONTENT NEEDED: Define the root cause (mechanism problem) in Brand Manager → Offer Variants.")
 
         guar = profile.get("guarantee", {})
         _check("guarantee", "text", guar.get("text"),

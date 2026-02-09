@@ -489,7 +489,7 @@ def render_blueprint_tab(brand_id: str, org_id: str):
         if not products:
             st.warning("No products found for this brand. Add products in Brand Manager first.")
             return
-        product_options = {p["id"]: f"{p['name']} ({p.get('category', '')})" for p in products}
+        product_options = {p["id"]: p["name"] for p in products}
         product_id = st.selectbox(
             "Product",
             options=list(product_options.keys()),
