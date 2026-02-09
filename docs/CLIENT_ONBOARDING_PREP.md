@@ -38,27 +38,28 @@ These unlock the most powerful parts of onboarding — automated ad analysis, Am
 | # | Item | Why We Need It |
 |---|------|----------------|
 | 11 | **Brand voice / tone description** | How should ads sound? Casual, clinical, urgent, friendly? |
-| 12 | **Logo** (high-res PNG) | For asset generation and brand consistency |
-| 13 | **Compliance restrictions** | Any claims they CAN'T make (FDA, FTC, platform policies) |
-| 14 | **Required disclaimers** | Legal text that must appear on certain ads |
-| 15 | **Ad Account ID** | Meta ad account ID — needed if we're publishing ads on their behalf |
+| 12 | **Brand colors** | Hex codes or a brand style guide — used for ad visuals and backdrop colors |
+| 13 | **Logo** (high-res PNG) | For asset generation and brand consistency |
+| 14 | **Compliance restrictions** | Any claims they CAN'T make (FDA, FTC, platform policies) |
+| 15 | **Required disclaimers** | Legal text that must appear on certain ads |
+| 16 | **Ad Account ID** | Meta ad account ID — needed if we're publishing ads on their behalf |
 
 ### Target Audience
 
 | # | Item | Why We Need It |
 |---|------|----------------|
-| 16 | **Pain points** | Top 3-5 problems their customers face |
-| 17 | **Desires / goals** | What their customers want to achieve |
-| 18 | **Demographics** (if known) | Age range, gender skew, interests — helps with persona creation |
+| 17 | **Pain points** | Top 3-5 problems their customers face |
+| 18 | **Desires / goals** | What their customers want to achieve |
+| 19 | **Demographics** (if known) | Age range, gender skew, interests — helps with persona creation |
 
 ### Competitors
 
 | # | Item | Why We Need It |
 |---|------|----------------|
-| 19 | **Competitor names** (2-3) | Direct competitors in their space |
-| 20 | **Competitor Facebook Ad Library URLs** | We scrape and analyze their ads for messaging intel |
-| 21 | **Competitor Amazon URLs** | We mine their reviews for pain points and language |
-| 22 | **Competitor website URLs** | For landing page analysis |
+| 20 | **Competitor names** (2-3) | Direct competitors in their space |
+| 21 | **Competitor Facebook Ad Library URLs** | We scrape and analyze their ads for messaging intel |
+| 22 | **Competitor Amazon URLs** | We mine their reviews for pain points and language |
+| 23 | **Competitor website URLs** | For landing page analysis |
 
 ---
 
@@ -107,6 +108,7 @@ REALLY HELPFUL:
 - 2-3 competitor names + their Facebook Ad Library URLs
 - Any compliance restrictions (claims you can't make)
 - Your brand's tone/voice (casual, clinical, etc.)
+- Brand colors (hex codes or a style guide)
 - Logo file (high-res PNG)
 
 Don't worry if you don't have everything — we can fill in gaps during
