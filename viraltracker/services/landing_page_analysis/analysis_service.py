@@ -383,7 +383,7 @@ class LandingPageAnalysisService:
             operation=operation,
         )
 
-        return _parse_llm_json(result.data)
+        return _parse_llm_json(result.output)
 
     async def _run_gemini_multimodal(
         self,

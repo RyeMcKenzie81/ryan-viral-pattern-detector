@@ -235,7 +235,7 @@ class ReconstructionBlueprintService:
             operation="reconstruction_blueprint",
         )
 
-        return _parse_llm_json(result.data)
+        return _parse_llm_json(result.output)
 
     # ------------------------------------------------------------------
     # Persistence
