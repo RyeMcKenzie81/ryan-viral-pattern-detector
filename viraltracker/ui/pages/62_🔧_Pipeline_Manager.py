@@ -128,19 +128,21 @@ def get_scheduled_jobs_all(status_filter: Optional[str] = None) -> List[Dict]:
             if not job.get("products") and job.get("brand_id"):
                 brand_ids_needed.add(job["brand_id"])
 
+        brand_map = {}
         if brand_ids_needed:
             brands_result = db.table("brands").select("id, name").in_(
                 "id", list(brand_ids_needed)
             ).execute()
             brand_map = {b["id"]: b["name"] for b in (brands_result.data or [])}
-            for job in jobs:
-                if not job.get("products") and job.get("brand_id"):
-                    job["_brand_name"] = brand_map.get(job["brand_id"], "Unknown")
-                elif job.get("products"):
-                    brand_info = job["products"].get("brands", {}) or {}
-                    job["_brand_name"] = brand_info.get("name", "Unknown")
-                else:
-                    job["_brand_name"] = "Platform"
+
+        for job in jobs:
+            if not job.get("products") and job.get("brand_id"):
+                job["_brand_name"] = brand_map.get(job["brand_id"], "Unknown")
+            elif job.get("products"):
+                brand_info = job["products"].get("brands", {}) or {}
+                job["_brand_name"] = brand_info.get("name", "Unknown")
+            else:
+                job["_brand_name"] = "Platform"
 
         return jobs
     except Exception as e:
@@ -699,12 +701,17 @@ def render_active_jobs():
                     st.markdown("Next: **—**")
                 if job.get("cron_expression"):
                     st.caption(f"Cron: {job['cron_expression']}")
+                st.caption(f"Created: {format_datetime_pst(job.get('created_at'))}")
 
             with col3:
                 runs = f"{job.get('runs_completed', 0)}"
                 if job.get("max_runs"):
                     runs += f"/{job['max_runs']}"
                 st.markdown(f"Runs: **{runs}**")
+                last_run = _get_last_run_info(job["id"])
+                if last_run:
+                    run_emoji = {"completed": "✅", "failed": "❌", "running": "⏳"}.get(last_run.get("status", ""), "")
+                    st.caption(f"Last: {run_emoji} {format_datetime_pst(last_run.get('started_at'))}")
                 if job.get("last_error"):
                     st.caption(f"⚠️ {job['last_error'][:60]}")
 
