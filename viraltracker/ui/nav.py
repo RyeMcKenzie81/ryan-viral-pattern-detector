@@ -157,6 +157,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.PLATFORM_SETTINGS: True,
             FeatureKey.HISTORY: True,
             FeatureKey.CLIENT_ONBOARDING: True,
+            FeatureKey.PIPELINE_MANAGER: True,
             FeatureKey.PIPELINE_VISUALIZER: True,
             FeatureKey.ADMIN: True,
         }
