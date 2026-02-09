@@ -2215,7 +2215,9 @@ def render_target_audience_tab(session: dict):
 # ============================================
 
 st.title("🚀 Client Onboarding")
-st.markdown("Collect and organize information for new client onboarding.")
+st.markdown("Collect and organize information for new client onboarding. "
+            "[📋 Client Prep Checklist](https://github.com/RyeMcKenzie81/ryan-viral-pattern-detector/blob/main/docs/CLIENT_ONBOARDING_PREP.md)"
+            " — send to clients before the call.")
 st.markdown("---")
 
 # Session selector
