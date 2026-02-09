@@ -29,7 +29,7 @@ These unlock the most powerful parts of onboarding — automated ad analysis, Am
 |---|------|----------------|
 | 6 | **Product URL** | Main product/sales page on your site |
 | 7 | **Amazon product URL** | We scrape listing images, reviews, and product details automatically |
-| 8 | **Landing page URLs** (all active funnels) | Each landing page becomes an "offer variant" — we extract pain points, benefits, mechanism, and hooks from each one |
+| 8 | **Landing page URLs NOT in active ads** | We auto-discover landing pages from their ad library — only need URLs for funnels they're *not* currently running ads to (new pages, paused campaigns, etc.) |
 | 9 | **Product dimensions & weight** | Width, height, depth, weight — used in ad copy and compliance |
 | 10 | **Product description** | 2-3 sentences — what it is and what it does |
 
@@ -79,8 +79,8 @@ These can be gathered after the initial call or extracted automatically by the t
 Here's what the tool does with everything above — so clients understand the value of coming prepared:
 
 1. **Brand Basics** — We enter brand info and auto-scrape their website for tagline/benefits
-2. **Facebook/Meta** — We scrape their ad library, group ads by landing page, and run AI analysis to extract messaging patterns (hooks, pain points, benefits) from each ad group
-3. **Products** — For each product we scrape Amazon (images + reviews), analyze each landing page for offer variants, and build out the full product profile
+2. **Facebook/Meta** — We scrape their ad library, group ads by destination URL (auto-discovering their landing pages), and run AI analysis to extract messaging patterns (hooks, pain points, benefits) from each group. Each landing page becomes an offer variant automatically.
+3. **Products** — For each product we scrape Amazon (images + reviews), and build out the full product profile. Offer variants from step 2 are linked here.
 4. **Competitors** — We scrape competitor ads and Amazon listings, extracting their messaging strategy for competitive intelligence
 
 The more URLs and info they bring, the more the AI can extract automatically. A well-prepared client can be fully onboarded in a single session.
@@ -103,7 +103,7 @@ MUST HAVE:
 
 REALLY HELPFUL:
 - Amazon product URL(s)
-- All active landing page / funnel URLs
+- Landing page URLs for any funnels NOT in your current ads (we auto-discover the rest)
 - 2-3 competitor names + their Facebook Ad Library URLs
 - Any compliance restrictions (claims you can't make)
 - Your brand's tone/voice (casual, clinical, etc.)
