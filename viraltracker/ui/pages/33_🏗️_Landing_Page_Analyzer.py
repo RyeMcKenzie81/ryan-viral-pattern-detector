@@ -927,6 +927,15 @@ if not org_id:
     st.warning("No organization selected.")
     st.stop()
 
+# Superusers have org_id="all" — resolve to the brand's actual org for writes
+if org_id == "all":
+    try:
+        _brand_row = get_supabase_client().table("brands").select("organization_id").eq("id", brand_id).single().execute()
+        org_id = _brand_row.data["organization_id"]
+    except Exception:
+        st.warning("Could not determine organization for this brand.")
+        st.stop()
+
 tab_analyze, tab_results, tab_blueprint = st.tabs(["🔍 Analyze", "📊 Results", "📋 Blueprint"])
 
 with tab_analyze:
