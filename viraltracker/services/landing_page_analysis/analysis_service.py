@@ -63,7 +63,9 @@ class LandingPageAnalysisService:
     # ------------------------------------------------------------------
 
     def scrape_landing_page(self, url: str) -> Dict[str, Any]:
-        """Scrape a URL via FireCrawl, returning markdown + screenshot."""
+        """Scrape a URL via FireCrawl, returning markdown + screenshot (base64)."""
+        import base64
+        import httpx
         from firecrawl.v2.types import ScreenshotFormat
         from viraltracker.services.web_scraping_service import WebScrapingService
 
@@ -76,10 +78,22 @@ class LandingPageAnalysisService:
         if not result.success:
             raise ValueError(f"Failed to scrape {url}: {result.error}")
 
+        # FireCrawl v4 returns a URL for screenshots — download and convert to base64
+        screenshot_b64 = None
+        if result.screenshot and result.screenshot.startswith("http"):
+            try:
+                resp = httpx.get(result.screenshot, timeout=30)
+                resp.raise_for_status()
+                screenshot_b64 = base64.b64encode(resp.content).decode("utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to download screenshot: {e}")
+        elif result.screenshot:
+            screenshot_b64 = result.screenshot
+
         return {
             "url": url,
             "markdown": result.markdown or "",
-            "screenshot": result.screenshot,
+            "screenshot": screenshot_b64,
             "source_type": "url",
             "source_id": None,
         }
