@@ -132,6 +132,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.BELIEF_CANVAS: True,
             FeatureKey.RESEARCH_INSIGHTS: True,
             FeatureKey.CONGRUENCE_INSIGHTS: True,
+            FeatureKey.LANDING_PAGE_ANALYZER: True,
             FeatureKey.HOOK_ANALYSIS: True,
             FeatureKey.PLAN_LIST: True,
             FeatureKey.PLAN_EXECUTOR: True,
@@ -283,6 +284,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         ads.append(st.Page("pages/31_🧠_Belief_Canvas.py", title="Belief Canvas", icon="🧠"))
     if visible(SK_ADS, "research_insights"):
         ads.append(st.Page("pages/32_💡_Research_Insights.py", title="Research Insights", icon="💡"))
+    if visible(SK_ADS, "landing_page_analyzer"):
+        ads.append(st.Page("pages/33_🏗️_Landing_Page_Analyzer.py", title="Landing Page Analyzer", icon="🏗️"))
     if visible(SK_ADS, "congruence_insights"):
         ads.append(st.Page("pages/34_🔗_Congruence_Insights.py", title="Congruence Insights", icon="🔗"))
     if visible(SK_ADS, "hook_analysis"):

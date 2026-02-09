@@ -68,6 +68,7 @@ class FeatureKey:
     BELIEF_CANVAS = "belief_canvas"
     RESEARCH_INSIGHTS = "research_insights"
     CONGRUENCE_INSIGHTS = "congruence_insights"
+    LANDING_PAGE_ANALYZER = "landing_page_analyzer"
     HOOK_ANALYSIS = "hook_analysis"
     PLAN_LIST = "plan_list"
     PLAN_EXECUTOR = "plan_executor"
@@ -235,6 +236,7 @@ class FeatureService:
             FeatureKey.BELIEF_CANVAS,
             FeatureKey.RESEARCH_INSIGHTS,
             FeatureKey.CONGRUENCE_INSIGHTS,
+            FeatureKey.LANDING_PAGE_ANALYZER,
             FeatureKey.HOOK_ANALYSIS,
             FeatureKey.PLAN_LIST,
             FeatureKey.PLAN_EXECUTOR,

@@ -317,6 +317,35 @@ There are 70+ `model_dump()` calls across the codebase. Any that feed into JSONB
 
 ---
 
+### 16. Landing Page Analyzer — Unit Tests
+
+**Priority**: Low
+**Complexity**: Medium
+**Added**: 2026-02-09
+
+**Context**: The Landing Page Analyzer (Phase 1) passed graph invariants review but has no unit tests. Key functions to test: `_parse_llm_json()`, `run_full_analysis()` partial failure handling, `_finalize_analysis()` denormalization, org_id filtering in `list_analyses()`. Also the Pydantic models in `models.py` are reference-only — could be wired up for LLM output validation when prompts stabilize.
+
+**Files**: `viraltracker/services/landing_page_analysis/analysis_service.py`, `models.py`
+
+---
+
+### 17. Landing Page Analyzer — Blueprint Enhancements
+
+**Priority**: Low
+**Complexity**: Low-Medium
+**Added**: 2026-02-09
+
+**Context**: Phase 2 (Reconstruction Blueprint) is functional but has deferred enhancements:
+- **Formatted doc export (docx):** Currently only JSON and Markdown exports. Could add docx/PDF for handing to copywriters.
+- **Blueprint comparison view:** Side-by-side comparison of two brands from the same analysis.
+- **Screenshot storage in Supabase storage:** Currently screenshots are passed as base64 directly to Gemini. Could store in Supabase storage for reference.
+- **Re-run failed blueprints:** Button to retry a failed blueprint without re-selecting all options.
+- **Unit tests for BrandProfileService:** Gap detection logic, offer variant fallback chain, graceful degradation when tables are missing.
+
+**Files**: `viraltracker/services/landing_page_analysis/blueprint_service.py`, `brand_profile_service.py`
+
+---
+
 ### 15. Platform Schedules — Pending QA
 
 **Priority**: High

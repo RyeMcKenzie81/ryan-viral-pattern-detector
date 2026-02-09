@@ -1364,6 +1364,67 @@ with st.container():
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
+    # Brand Voice & Colors Section
+    st.markdown("")
+    st.markdown("**Brand Voice & Colors**")
+    st.caption("Structured brand voice tone and color palette for blueprint generation")
+
+    bv_col1, bv_col2 = st.columns(2)
+    with bv_col1:
+        current_voice = selected_brand.get("brand_voice_tone") or ""
+        new_voice = st.text_input(
+            "Brand Voice / Tone",
+            value=current_voice,
+            placeholder='e.g., "Aggressive, masculine, bold, direct"',
+            key="brand_voice_tone_input",
+        )
+    with bv_col2:
+        current_colors = selected_brand.get("brand_colors") or {}
+        new_primary = st.color_picker(
+            "Primary Color",
+            value=current_colors.get("primary", "#000000"),
+            key="brand_color_primary",
+        )
+
+    bc_col1, bc_col2 = st.columns(2)
+    with bc_col1:
+        new_accent = st.color_picker(
+            "Accent Color",
+            value=current_colors.get("accent", "#FFFFFF"),
+            key="brand_color_accent",
+        )
+    with bc_col2:
+        secondary_str = ", ".join(current_colors.get("secondary", []))
+        new_secondary_str = st.text_input(
+            "Secondary Colors (comma-separated hex)",
+            value=secondary_str,
+            placeholder="#FF0000, #00FF00",
+            key="brand_color_secondary",
+        )
+
+    new_colors = {
+        "primary": new_primary,
+        "accent": new_accent,
+        "secondary": [c.strip() for c in new_secondary_str.split(",") if c.strip()] if new_secondary_str else [],
+    }
+
+    voice_changed = new_voice != current_voice
+    colors_changed = new_colors != current_colors
+    if voice_changed or colors_changed:
+        if st.button("Save Voice & Colors", key="save_brand_voice_colors", type="secondary"):
+            try:
+                db = get_supabase_client()
+                update_data = {}
+                if voice_changed:
+                    update_data["brand_voice_tone"] = new_voice or None
+                if colors_changed:
+                    update_data["brand_colors"] = new_colors
+                db.table("brands").update(update_data).eq("id", selected_brand_id).execute()
+                st.success("Brand voice & colors saved!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
     # Facebook Ad Library Section
     st.markdown("")  # Spacer
     st.markdown("**Facebook Ad Library**")
@@ -1623,6 +1684,47 @@ else:
                                     key=f"det_founders_{product_id}"
                                 )
 
+                                # Blueprint fields
+                                st.markdown("---")
+                                st.markdown("**Blueprint Fields** (used for landing page reconstruction)")
+
+                                edit_guarantee = st.text_input(
+                                    "Guarantee",
+                                    value=product.get('guarantee', '') or '',
+                                    placeholder='e.g., "365-day money-back guarantee"',
+                                    key=f"det_guarantee_{product_id}"
+                                )
+
+                                # Structured ingredients [{name, benefit, proof_point}]
+                                current_struct_ingredients = product.get('ingredients') or []
+                                ingredients_json = st.text_area(
+                                    "Structured Ingredients (JSON array)",
+                                    value=json.dumps(current_struct_ingredients, indent=2) if current_struct_ingredients else '[]',
+                                    height=100,
+                                    help='Format: [{"name": "Vitamin D", "benefit": "Bone health", "proof_point": "Clinical study"}]',
+                                    key=f"det_struct_ingredients_{product_id}"
+                                )
+
+                                # Results timeline [{timeframe, expected_result}]
+                                current_timeline = product.get('results_timeline') or []
+                                timeline_json = st.text_area(
+                                    "Results Timeline (JSON array)",
+                                    value=json.dumps(current_timeline, indent=2) if current_timeline else '[]',
+                                    height=80,
+                                    help='Format: [{"timeframe": "Week 1-2", "expected_result": "Increased energy"}]',
+                                    key=f"det_timeline_{product_id}"
+                                )
+
+                                # FAQ items [{question, answer}]
+                                current_faq = product.get('faq_items') or []
+                                faq_json = st.text_area(
+                                    "FAQ Items (JSON array)",
+                                    value=json.dumps(current_faq, indent=2) if current_faq else '[]',
+                                    height=100,
+                                    help='Format: [{"question": "How do I use it?", "answer": "Take 1 scoop daily"}]',
+                                    key=f"det_faq_{product_id}"
+                                )
+
                             det_save_col, det_cancel_col = st.columns(2)
                             with det_save_col:
                                 det_submitted = st.form_submit_button("💾 Save", type="primary")
@@ -1630,6 +1732,23 @@ else:
                                 det_cancelled = st.form_submit_button("Cancel")
 
                             if det_submitted:
+                                # Parse JSON fields safely
+                                try:
+                                    parsed_struct_ingredients = json.loads(ingredients_json) if ingredients_json.strip() else []
+                                except json.JSONDecodeError:
+                                    parsed_struct_ingredients = current_struct_ingredients
+                                    st.warning("Invalid JSON for structured ingredients — kept previous value.")
+                                try:
+                                    parsed_timeline = json.loads(timeline_json) if timeline_json.strip() else []
+                                except json.JSONDecodeError:
+                                    parsed_timeline = current_timeline
+                                    st.warning("Invalid JSON for results timeline — kept previous value.")
+                                try:
+                                    parsed_faq = json.loads(faq_json) if faq_json.strip() else []
+                                except json.JSONDecodeError:
+                                    parsed_faq = current_faq
+                                    st.warning("Invalid JSON for FAQ items — kept previous value.")
+
                                 updates = {
                                     "current_offer": edit_current_offer or None,
                                     "target_audience": edit_target_audience or None,
@@ -1638,6 +1757,10 @@ else:
                                     "key_ingredients": [i.strip() for i in edit_ingredients.split("\n") if i.strip()] or None,
                                     "founders": edit_founders or None,
                                     "brand_voice_notes": edit_brand_voice or None,
+                                    "guarantee": edit_guarantee or None,
+                                    "ingredients": parsed_struct_ingredients,
+                                    "results_timeline": parsed_timeline,
+                                    "faq_items": parsed_faq,
                                 }
                                 if save_product_details(product_id, updates):
                                     st.success("Product details saved!")

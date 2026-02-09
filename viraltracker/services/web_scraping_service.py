@@ -30,6 +30,7 @@ class ScrapeResult:
     html: Optional[str] = None
     links: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
+    screenshot: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -124,7 +125,8 @@ class WebScrapingService:
                 markdown=getattr(result, 'markdown', None),
                 html=getattr(result, 'html', None),
                 links=getattr(result, 'links', None),
-                metadata=getattr(result, 'metadata', None)
+                metadata=getattr(result, 'metadata', None),
+                screenshot=getattr(result, 'screenshot', None),
             )
 
         except Exception as e:
@@ -175,7 +177,8 @@ class WebScrapingService:
                 markdown=getattr(result, 'markdown', None),
                 html=getattr(result, 'html', None),
                 links=getattr(result, 'links', None),
-                metadata=getattr(result, 'metadata', None)
+                metadata=getattr(result, 'metadata', None),
+                screenshot=getattr(result, 'screenshot', None),
             )
 
         except Exception as e:
