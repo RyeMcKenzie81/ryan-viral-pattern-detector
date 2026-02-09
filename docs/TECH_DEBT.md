@@ -298,6 +298,39 @@ There are 70+ `model_dump()` calls across the codebase. Any that feed into JSONB
 
 ---
 
+### 14. Consolidate Template Job Scheduling Between Ad Scheduler and Pipeline Manager
+
+**Priority**: Low
+**Complexity**: Low-Medium
+**Added**: 2026-02-07
+
+**Context**: The Ad Scheduler page (`24_📅_Ad_Scheduler.py`) still has its own `template_scrape` and `template_approval` scheduling forms that create brand-scoped jobs. With the Platform Schedules sub-tab in Pipeline Manager (Checkpoint 009), these jobs are now intended to be platform-level (`brand_id=NULL`). Having two places to schedule the same job types creates confusion.
+
+**What's needed**:
+1. Remove or redirect `template_scrape` / `template_approval` forms from Ad Scheduler
+2. Add a link or note pointing users to Pipeline Manager → Platform Schedules
+3. Audit any other pages that create template jobs to ensure they use `brand_id=None`
+
+**Reference**:
+- Checkpoint: `docs/plans/data-pipeline-control-plane/CHECKPOINT_009.md`
+- Testing plan: `docs/plans/data-pipeline-control-plane/TESTING_009_PLATFORM_SCHEDULES.md`
+
+---
+
+### 15. Platform Schedules — Pending QA
+
+**Priority**: High
+**Complexity**: N/A (testing only)
+**Added**: 2026-02-07
+
+**Context**: Platform Schedules sub-tab has been implemented and passed automated post-plan review, but needs manual QA before considering complete.
+
+**Testing plan**: `docs/plans/data-pipeline-control-plane/TESTING_009_PLATFORM_SCHEDULES.md`
+
+**Remove this item** after QA is complete.
+
+---
+
 ## Completed
 
 ### ~~8~~. Fix CPC Baseline Per-Row Inflation
