@@ -365,13 +365,19 @@ class LandingPageAnalysisService:
         user_content: str,
         model_key: str = "complex",
         operation: str = "analysis",
+        max_tokens: int = 16384,
     ) -> Dict[str, Any]:
         """Run a PydanticAI text agent with tracking."""
+        from pydantic_ai.settings import ModelSettings
         from viraltracker.core.config import Config
         from viraltracker.services.agent_tracking import run_agent_with_tracking
 
         model = Config.get_model(model_key)
-        agent = Agent(model=model, system_prompt=system_prompt)
+        agent = Agent(
+            model=model,
+            system_prompt=system_prompt,
+            model_settings=ModelSettings(max_tokens=max_tokens),
+        )
 
         result = await run_agent_with_tracking(
             agent,
