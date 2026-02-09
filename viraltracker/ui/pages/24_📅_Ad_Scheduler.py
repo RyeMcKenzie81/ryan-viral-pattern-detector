@@ -619,6 +619,17 @@ def calculate_next_run(schedule_type: str, cron: str = None, scheduled_at: datet
 # View: Schedule List
 # ============================================================================
 
+def _format_date_short(dt_str):
+    """Format a datetime string to compact PST display like 'Feb 05, 2:30 PM'."""
+    if not dt_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+        dt = dt.astimezone(PST)
+        return dt.strftime("%b %d, %I:%M %p")
+    except (ValueError, TypeError):
+        return "—"
+
 def render_schedule_list():
     """Render the schedule list view."""
     st.title("📅 Scheduler")
@@ -697,7 +708,20 @@ def render_schedule_list():
         st.info("No scheduled jobs found. Click 'Create Schedule' to get started!")
         return
 
-    # Display jobs as cards
+    # Batch-fetch last run info for all jobs
+    last_runs = {}
+    try:
+        db = get_supabase_client()
+        for jid in [j["id"] for j in jobs]:
+            r = db.table("scheduled_job_runs").select(
+                "scheduled_job_id, status, started_at"
+            ).eq("scheduled_job_id", jid).order("started_at", desc=True).limit(1).execute()
+            if r.data:
+                last_runs[jid] = r.data[0]
+    except Exception:
+        pass
+
+    # Display jobs as compact cards
     for job in jobs:
         product_info = job.get('products', {}) or {}
         # Get brand info - from products join for ad_creation, direct join for others
@@ -723,7 +747,7 @@ def render_schedule_list():
                     type_badge = "🔬 "
                 elif job_type == 'asset_download':
                     type_badge = "📦 "
-                st.markdown(f"### {status_emoji} {type_badge}{job['name']}")
+                st.markdown(f"{status_emoji} {type_badge}**{job['name']}**")
 
                 # Show brand → product for ad_creation, just brand for others, system-wide for template_approval
                 if job_type == 'ad_creation':
@@ -735,42 +759,36 @@ def render_schedule_list():
 
             with col2:
                 schedule_desc = cron_to_description(job.get('cron_expression'), job['schedule_type'])
-                st.markdown(f"**Schedule:** {schedule_desc}")
+                if job['schedule_type'] == 'one_time':
+                    created_date = _format_date_short(job.get('created_at'))
+                    st.caption(f"One-time · {created_date}")
+                else:
+                    st.caption(schedule_desc)
 
                 if job.get('next_run_at'):
                     next_run = datetime.fromisoformat(job['next_run_at'].replace('Z', '+00:00'))
                     st.caption(f"Next: {next_run.strftime('%b %d, %I:%M %p')}")
 
             with col3:
-                runs = f"{job.get('runs_completed', 0)}"
+                runs_completed = job.get('runs_completed', 0)
+                runs = f"{runs_completed}"
                 if job.get('max_runs'):
-                    runs += f" / {job['max_runs']}"
-                st.markdown(f"**Runs:** {runs}")
+                    runs += f"/{job['max_runs']}"
+                st.caption(f"Runs: {runs}")
 
-                # Show template info for ad_creation jobs, parameters for others
-                if job_type == 'ad_creation':
-                    template_source = job.get('template_source', 'uploaded')
-                    if template_source == 'scraped':
-                        scraped_ids = job.get('scraped_template_ids') or []
-                        st.caption(f"Source: Scraped Library ({len(scraped_ids)} templates)")
+                # Show last run status if available
+                last_run = last_runs.get(job['id'])
+                if last_run:
+                    run_date = _format_date_short(last_run.get('started_at'))
+                    run_status = last_run.get('status', '')
+                    if run_status == 'completed':
+                        st.caption(f"Last: ✅ {run_date}")
+                    elif run_status == 'failed':
+                        st.caption(f"Last: ❌ {run_date}")
+                    elif run_status == 'running':
+                        st.caption(f"Last: 🔄 {run_date}")
                     else:
-                        template_mode = job.get('template_mode', 'unused')
-                        if template_mode == 'unused':
-                            template_info = f"{job.get('template_count', '?')} templates"
-                        else:
-                            template_ids = job.get('template_ids') or []
-                            template_info = f"{len(template_ids)} templates"
-                        st.caption(f"Mode: {template_mode} ({template_info})")
-                elif job_type == 'meta_sync':
-                    params = job.get('parameters', {}) or {}
-                    st.caption(f"Syncs last {params.get('days_back', 7)} days")
-                elif job_type == 'scorecard':
-                    params = job.get('parameters', {}) or {}
-                    st.caption(f"Analyzes last {params.get('days_back', 7)} days")
-                elif job_type == 'template_scrape':
-                    params = job.get('parameters', {}) or {}
-                    max_ads = params.get('max_ads', 50)
-                    st.caption(f"Scrapes up to {max_ads} ads")
+                        st.caption(f"Last: {run_date}")
 
             with col4:
                 if st.button("View", key=f"view_{job['id']}", use_container_width=True):
