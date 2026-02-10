@@ -1436,6 +1436,11 @@ INSTRUCTIONS:
 3. Every suggestion MUST include evidence with source attribution.
 4. If no evidence is found for a field, set confidence to "low" and explain in reasoning.
 5. Only extract factual information — do not invent or hallucinate data.
+6. IMPORTANT: Some fields (e.g. brand voice/tone) are ALWAYS inferred — there is never an explicit "Brand Voice:" heading.
+   For these fields, SYNTHESIZE a value from the copy style, word choices, and emotional tone observed in the source data.
+   A synthesized value is still valid — set confidence to "medium" and cite the snippets you inferred from.
+7. The "value" field must ALWAYS be populated for every field suggestion. Never leave it null or empty.
+   If evidence is weak, still provide your best extraction/synthesis and set confidence to "low".
 
 CONFIDENCE RULES:
 - "high": Exact-match field pattern in source (e.g. explicit "Guarantee:" heading) + strong snippet + product-level source

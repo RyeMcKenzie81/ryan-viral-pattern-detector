@@ -332,6 +332,14 @@ def _render_single_gap_control(
         existing_suggestion = st.session_state.lpa_gap_suggestions.get(suggestion_key)
         if existing_suggestion:
             _render_suggestion_evidence(existing_suggestion, spec)
+            # If suggestion exists but value is empty, show a note
+            if not existing_suggestion.get("value"):
+                reasoning = existing_suggestion.get("reasoning", "")
+                if reasoning:
+                    st.info(
+                        "AI could not extract an explicit value but provided analysis above. "
+                        "You can use the reasoning to compose a value manually."
+                    )
 
         # "Generate Suggestion" button for auto-fillable fields
         if spec.auto_fillable and not existing_suggestion:
