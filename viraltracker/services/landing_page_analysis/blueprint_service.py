@@ -243,7 +243,13 @@ class ReconstructionBlueprintService:
             operation="reconstruction_blueprint",
         )
 
-        return _parse_llm_json(result.output)
+        raw = result.output
+        logger.info(
+            f"Blueprint LLM response: {len(raw)} chars, "
+            f"usage={result.usage()}, "
+            f"first_100={raw[:100]!r}, last_100={raw[-100:]!r}"
+        )
+        return _parse_llm_json(raw)
 
     # ------------------------------------------------------------------
     # Persistence

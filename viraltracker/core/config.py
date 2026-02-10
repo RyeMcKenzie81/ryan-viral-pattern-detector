@@ -162,14 +162,14 @@ class Config:
     
     # Model Defaults
     DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
-    COMPLEX_MODEL = "claude-opus-4-5-20251101"
+    COMPLEX_MODEL = "claude-opus-4-6"
     FAST_MODEL = "claude-sonnet-4-20250514"
     ORCHESTRATOR_MODEL = "openai:gpt-4o"  # Target change for orchestrator
 
     # Future capability-based models (User defined)
     # Pydantic AI requires 'google-gla:' prefix for models/ string format
     # BUT standard google-genai client fails with it.
-    CREATIVE_MODEL = "claude-opus-4-5-20251101"  # Opus 4.5 for copy/creative writing
+    CREATIVE_MODEL = "claude-opus-4-6"  # Opus 4.6 for copy/creative writing
     AD_AGENT_MODEL = "google-gla:models/gemini-3-pro-image-preview"  # Gemini 3 Pro for main ad agent
     # Using widely available model for vision to fix 404 error
     VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview"
