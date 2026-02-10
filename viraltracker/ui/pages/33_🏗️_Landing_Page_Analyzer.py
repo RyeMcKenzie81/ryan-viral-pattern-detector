@@ -473,6 +473,12 @@ def _get_offer_variants(product_id: str):
     return BrandProfileService(get_supabase_client()).get_offer_variants(product_id)
 
 
+def _get_personas_for_product(product_id: str):
+    """Get personas for product dropdown."""
+    from viraltracker.services.landing_page_analysis import BrandProfileService
+    return BrandProfileService(get_supabase_client()).get_personas_for_product(product_id)
+
+
 def render_blueprint_tab(brand_id: str, org_id: str):
     """Render the blueprint generation and display UI."""
     st.subheader("Reconstruction Blueprint")
@@ -511,6 +517,23 @@ def render_blueprint_tab(brand_id: str, org_id: str):
         else:
             st.info("No offer variants — using product defaults.")
 
+    # Persona selector (optional — target a specific persona)
+    personas = _get_personas_for_product(product_id) if product_id else []
+    persona_id = None
+    if personas:
+        persona_options = {"Auto (let AI choose)": None}
+        for p in personas:
+            label = p["name"]
+            if p.get("snapshot"):
+                label += f" — {p['snapshot'][:60]}"
+            persona_options[label] = p["id"]
+        selected_persona_label = st.selectbox(
+            "Target Persona (optional)",
+            options=list(persona_options.keys()),
+            key="lpa_bp_persona",
+        )
+        persona_id = persona_options[selected_persona_label]
+
     # Analysis selector
     service = get_analysis_service()
     analyses = service.list_analyses(org_id)
@@ -541,6 +564,7 @@ def render_blueprint_tab(brand_id: str, org_id: str):
             brand_id=brand_id,
             product_id=product_id,
             offer_variant_id=offer_variant_id,
+            persona_id=persona_id,
             org_id=org_id,
         )
 
@@ -559,6 +583,7 @@ def _run_blueprint_generation(
     product_id: str,
     offer_variant_id: str,
     org_id: str,
+    persona_id: str = None,
 ):
     """Execute blueprint generation with progress tracking."""
     progress = st.progress(0, text="Starting blueprint generation...")
@@ -595,6 +620,7 @@ def _run_blueprint_generation(
                 product_id=product_id,
                 org_id=org_id,
                 offer_variant_id=offer_variant_id,
+                persona_id=persona_id,
                 progress_callback=on_progress,
             )
         )

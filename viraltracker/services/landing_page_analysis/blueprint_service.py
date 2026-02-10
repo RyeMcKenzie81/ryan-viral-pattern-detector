@@ -63,6 +63,7 @@ class ReconstructionBlueprintService:
         product_id: str,
         org_id: str,
         offer_variant_id: Optional[str] = None,
+        persona_id: Optional[str] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> Dict[str, Any]:
         """Generate a reconstruction blueprint from analysis + brand profile.
@@ -73,6 +74,7 @@ class ReconstructionBlueprintService:
             product_id: UUID of the target product
             org_id: Organization ID for multi-tenancy
             offer_variant_id: Optional specific offer variant (defaults to product default)
+            persona_id: Optional persona UUID to optimize blueprint for (None = auto)
             progress_callback: Called with (step_number, status_message)
 
         Returns:
@@ -119,11 +121,19 @@ class ReconstructionBlueprintService:
         )
 
         try:
+            # Resolve target persona if persona_id provided
+            target_persona = None
+            if persona_id:
+                target_persona = self._lookup_persona(product_id, persona_id)
+                if not target_persona:
+                    logger.warning(f"Persona {persona_id} not found — falling back to auto")
+
             # 4-5. Run Skill 5 LLM calls (chunked — steps 3 & 4 via callback)
             blueprint_data = await self._run_reconstruction(
                 analysis=analysis,
                 brand_profile=brand_profile,
                 progress_callback=_progress,
+                target_persona=target_persona,
             )
 
             elapsed_ms = int((time.time() - start_time) * 1000)
@@ -215,6 +225,7 @@ class ReconstructionBlueprintService:
         analysis: Dict[str, Any],
         brand_profile: Dict[str, Any],
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        target_persona: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run Skill 5: Reconstruction Blueprint via 2 chunked LLM calls.
 
@@ -223,6 +234,12 @@ class ReconstructionBlueprintService:
         and generates bottom-of-funnel sections + bonus_sections +
         content_needed_summary + metadata.
         Results are merged into the final blueprint structure.
+
+        Args:
+            analysis: Stored analysis data (Skills 1-4).
+            brand_profile: Aggregated brand profile.
+            progress_callback: Optional progress reporting callback.
+            target_persona: Optional persona dict to optimize for (None = auto).
         """
         def _progress(step: int, msg: str):
             if progress_callback:
@@ -249,6 +266,7 @@ class ReconstructionBlueprintService:
             chunk_elements=chunk1_elements,
             chunk_number=1,
             strategy_summary=None,
+            target_persona=target_persona,
         )
         chunk1_data = await self._run_blueprint_chunk(
             user_content=chunk1_prompt,
@@ -266,6 +284,7 @@ class ReconstructionBlueprintService:
             chunk_elements=chunk2_elements,
             chunk_number=2,
             strategy_summary=strategy_summary,
+            target_persona=target_persona,
         )
 
         try:
@@ -322,12 +341,21 @@ class ReconstructionBlueprintService:
         chunk_elements: Dict[str, Any],
         chunk_number: int,
         strategy_summary: Optional[Dict[str, Any]],
+        target_persona: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build the user prompt for a single blueprint chunk.
 
         Chunk 1 asks for strategy_summary + sections for its elements.
         Chunk 2 receives strategy_summary for tone consistency and asks for
         remaining sections + bonus_sections + content_needed_summary + metadata.
+
+        Args:
+            analysis: Stored analysis data.
+            profile_for_prompt: Brand profile (without gaps).
+            chunk_elements: Elements assigned to this chunk.
+            chunk_number: 1 or 2.
+            strategy_summary: Strategy summary from chunk 1 (for chunk 2 only).
+            target_persona: Optional persona dict to optimize for.
         """
         parts: List[str] = []
 
@@ -367,6 +395,30 @@ class ReconstructionBlueprintService:
                 "Output valid JSON matching the reconstruction_blueprint schema, "
                 "but omit the `strategy_summary` key.\n"
             )
+
+        # Inject persona targeting directive when a specific persona is selected
+        if target_persona:
+            if chunk_number == 1:
+                persona_directive = (
+                    "## TARGET PERSONA (REQUIRED)\n\n"
+                    "You MUST optimize the entire blueprint for this specific persona:\n\n"
+                    f"Name: {target_persona.get('name', '')}\n"
+                    f"Snapshot: {target_persona.get('snapshot', '')}\n"
+                    f"Pain Points: {json.dumps(target_persona.get('pain_points', {}))}\n"
+                    f"Desires: {json.dumps(target_persona.get('desires', {}))}\n"
+                    f"Buying Objections: {json.dumps(target_persona.get('buying_objections', {}))}\n"
+                    f"Activation Events: {json.dumps(target_persona.get('activation_events', []))}\n\n"
+                    "Use this persona's language, pain points, and emotional triggers throughout all\n"
+                    "copy_direction, emotional_hook, and brand_mapping fields. Reference this persona\n"
+                    "by name in the strategy_summary.target_persona field.\n"
+                )
+                parts.append(persona_directive)
+            else:
+                parts.append(
+                    "## TARGET PERSONA REMINDER\n\n"
+                    f"Optimize all sections for persona: {target_persona.get('name', '')}. "
+                    "Maintain the persona targeting from Part 1.\n"
+                )
 
         parts.append("Generate the reconstruction blueprint chunk now.")
         return "\n".join(parts)
@@ -469,6 +521,27 @@ class ReconstructionBlueprintService:
             f"{populated} populated, {partial} partial, {content_needed_count} need content"
         )
         return merged
+
+    # ------------------------------------------------------------------
+    # Persona lookup
+    # ------------------------------------------------------------------
+
+    def _lookup_persona(self, product_id: str, persona_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a full persona by ID for targeting directives.
+
+        Returns:
+            Persona dict with name, snapshot, pain_points, desires,
+            buying_objections, activation_events — or None if not found.
+        """
+        try:
+            result = self.supabase.table("personas_4d").select(
+                "id, name, snapshot, pain_points, desires, "
+                "buying_objections, activation_events"
+            ).eq("id", persona_id).eq("product_id", product_id).single().execute()
+            return result.data
+        except Exception as e:
+            logger.debug(f"Persona lookup failed for {persona_id}: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Persistence

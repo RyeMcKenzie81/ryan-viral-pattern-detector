@@ -342,6 +342,15 @@ class BrandProfileService:
             logger.error(f"Failed to fetch products for brand {brand_id}: {e}")
             return []
 
+    def get_personas_for_product(self, product_id: str) -> List[Dict[str, Any]]:
+        """Get personas for a product (for UI dropdowns).
+
+        Returns:
+            List of dicts with id, name, snapshot for each persona.
+        """
+        personas = self._fetch_personas(product_id)
+        return [{"id": p["id"], "name": p["name"], "snapshot": p.get("snapshot", "")} for p in personas]
+
     def get_offer_variants(self, product_id: str) -> List[Dict[str, Any]]:
         """Get active offer variants for a product (for UI dropdowns)."""
         try:
