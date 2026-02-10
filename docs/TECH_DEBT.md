@@ -428,6 +428,59 @@ Background `ad_classification` job type pre-computes classifications via schedul
 **Files**: `ad_creation_service.py` (line 1928), `22_📊_Ad_History.py` (rerun handler)
 **Checkpoint**: `docs/archive/CHECKPOINT_2026-02-06_regenerate-ad-uuid-fix.md`
 
+### 18. Brand Voice/Tone — Per-Offer-Variant and Per-Persona Overrides
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-10
+
+**Context**: Brand voice/tone is currently stored at the brand level (`brands.brand_voice_tone`). This works when a brand has a single consistent voice, but breaks down when different landing pages need different tones — e.g., an empathetic/urgent tone for worried pet parents vs. an authoritative/scientific tone for health-conscious buyers. The tone often depends on the offer variant (different product angles) or the target persona (different audience segments).
+
+**What's needed**:
+
+1. **Database migrations** — Add voice/tone override columns:
+   ```sql
+   ALTER TABLE product_offer_variants
+       ADD COLUMN IF NOT EXISTS voice_tone_override TEXT;
+   COMMENT ON COLUMN product_offer_variants.voice_tone_override
+       IS 'Optional voice/tone override for this offer variant. Takes precedence over brand-level voice_tone during blueprint generation.';
+
+   ALTER TABLE personas_4d
+       ADD COLUMN IF NOT EXISTS voice_tone_override TEXT;
+   COMMENT ON COLUMN personas_4d.voice_tone_override
+       IS 'Optional voice/tone override for this persona. Takes precedence over offer-variant and brand-level voice_tone.';
+   ```
+
+2. **Blueprint service** — Update `ReconstructionBlueprintService` to resolve voice/tone with a precedence chain:
+   - Persona `voice_tone_override` (highest priority — if a persona is selected)
+   - Offer variant `voice_tone_override` (if set)
+   - Brand `brand_voice_tone` (fallback default)
+   - This means a brand can set a general tone, an offer variant can override it for specific product angles, and a persona can further specialize it for the target audience.
+
+3. **Content Gap Filler** — Update `GAP_FIELD_REGISTRY` to add:
+   - `offer_variant.voice_tone` (`product_offer_variants.voice_tone_override`, `confirm_overwrite`)
+   - `persona.voice_tone` (`personas_4d.voice_tone_override`, `confirm_overwrite`)
+   - Keep existing `brand.voice_tone` as the brand-wide default
+   - AI suggestions should consider the offer variant's product angle and persona's psychographic profile when synthesizing tone
+
+4. **Brand Manager UI** — Add voice/tone fields to:
+   - Offer variant editor section (with hint: "Leave blank to use brand default")
+   - Persona detail view (with hint: "Leave blank to use offer variant or brand default")
+
+5. **Gap fixer UX** — When the gap fixer detects `brand.voice_tone` is missing, show the resolution chain:
+   - "This will set the brand-wide default tone. You can override per offer variant or persona later."
+   - When saving to offer variant or persona level, show which level is being set
+
+**Precedence chain summary**:
+```
+Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand brand_voice_tone
+(most specific)                                                        (most general)
+```
+
+**Files**: `blueprint_service.py`, `brand_profile_service.py`, `content_gap_filler_service.py`, Brand Manager UI, Persona UI
+
+---
+
 ### Content Gap Filler — Integrate with Brand Ingestion Tools
 
 **Priority**: Medium
