@@ -562,12 +562,13 @@ def _run_blueprint_generation(
 ):
     """Execute blueprint generation with progress tracking."""
     progress = st.progress(0, text="Starting blueprint generation...")
-    step_progress = {1: 15, 2: 35, 3: 70, 4: 100}
+    step_progress = {1: 10, 2: 25, 3: 50, 4: 80, 5: 100}
     step_labels = {
-        1: "Step 1/4: Loading analysis...",
-        2: "Step 2/4: Aggregating brand profile...",
-        3: "Step 3/4: Generating reconstruction blueprint...",
-        4: "Blueprint complete!",
+        1: "Step 1/5: Loading analysis...",
+        2: "Step 2/5: Aggregating brand profile...",
+        3: "Step 3/5: Blueprint Part 1 (strategy + top sections)...",
+        4: "Step 4/5: Blueprint Part 2 (remaining + summary)...",
+        5: "Blueprint complete!",
     }
 
     def on_progress(step, msg):
@@ -886,7 +887,7 @@ def _render_blueprint_history(org_id: str, brand_id: str):
         else:
             created_str = ""
 
-        status_icon = {"completed": "✅", "failed": "❌", "processing": "⏳"}.get(status, "❓")
+        status_icon = {"completed": "✅", "partial": "⚠️", "failed": "❌", "processing": "⏳"}.get(status, "❓")
         header = (
             f"{status_icon} **{url}** — "
             f"{sections} sections, {mapped} mapped, {needed} need content — "
