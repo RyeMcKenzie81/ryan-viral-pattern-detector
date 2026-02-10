@@ -929,6 +929,8 @@ Return ONLY a JSON array of question strings."""
                 brand_data["website"] = brand_basics["website_url"]
             if brand_basics.get("brand_voice"):
                 brand_data["brand_guidelines"] = brand_basics["brand_voice"]
+            if brand_basics.get("brand_voice_tone"):
+                brand_data["brand_voice_tone"] = brand_basics["brand_voice_tone"]
             if brand_basics.get("disallowed_claims"):
                 brand_data["disallowed_claims"] = brand_basics["disallowed_claims"]
 
@@ -1036,6 +1038,16 @@ Return ONLY a JSON array of question strings."""
                             ta_parts.append(f"Desires/Goals: {', '.join(desires)}")
                         if ta_parts:
                             prod_data["target_audience"] = "\n".join(ta_parts)
+
+                    # Auto-filled fields from LP/review extraction
+                    if prod.get("guarantee"):
+                        prod_data["guarantee"] = prod["guarantee"]
+                    if prod.get("ingredients"):
+                        prod_data["ingredients"] = prod["ingredients"]  # JSONB
+                    if prod.get("results_timeline"):
+                        prod_data["results_timeline"] = prod["results_timeline"]  # JSONB
+                    if prod.get("faq_items"):
+                        prod_data["faq_items"] = prod["faq_items"]  # JSONB
 
                     prod_result = self.supabase.table("products").insert(prod_data).execute()
                     created_product_id = prod_result.data[0]["id"]
