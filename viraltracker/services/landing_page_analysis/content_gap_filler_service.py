@@ -1650,6 +1650,7 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
                 pass
 
         # 2. Known brand LP URLs
+        seen_urls = {u["url"] for u in urls}
         try:
             result = self.supabase.table("brand_landing_pages").select(
                 "url, page_title, created_at"
@@ -1657,14 +1658,16 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
                 "created_at", desc=True
             ).limit(5).execute()
             for lp in (result.data or []):
-                if lp.get("url"):
+                url = lp.get("url")
+                if url and url not in seen_urls:
                     urls.append({
-                        "url": lp["url"],
+                        "url": url,
                         "source": "brand_landing_pages",
-                        "label": f"Brand LP: {lp.get('page_title', lp['url'][:50])}",
+                        "label": f"Brand LP: {lp.get('page_title', url[:50])}",
                         "priority": 2,
                         "scraped_at": lp.get("created_at"),
                     })
+                    seen_urls.add(url)
         except Exception:
             pass
 

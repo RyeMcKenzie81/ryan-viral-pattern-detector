@@ -771,14 +771,22 @@ def _render_fresh_scrape_option(
                 f"Last scraped {cooldown['hours_ago']:.0f}h ago. "
                 "Cached data available above."
             )
-        else:
-            # URL selector
-            url_options = {u["url"]: u["label"] for u in ranked_urls}
-            selected_url = st.selectbox(
-                "Scrape URL",
-                options=list(url_options.keys()),
-                format_func=lambda x: url_options[x],
-                key=f"lpa_gap_scrape_url_{spec.key}_{key_suffix}",
+        # Always show URL selector so user can pick a different page to scrape
+        url_options = {u["url"]: u["label"] for u in ranked_urls}
+        # Add "Custom URL" sentinel option
+        custom_sentinel = "__custom__"
+        url_options[custom_sentinel] = "Enter a custom URL..."
+        selected_url = st.selectbox(
+            "Scrape URL",
+            options=list(url_options.keys()),
+            format_func=lambda x: url_options[x],
+            key=f"lpa_gap_scrape_url_{spec.key}_{key_suffix}",
+        )
+        if selected_url == custom_sentinel:
+            custom_url = st.text_input(
+                "Custom URL (https)",
+                placeholder="https://example.com/ingredients",
+                key=f"lpa_gap_scrape_custom_url_{spec.key}_{key_suffix}",
             )
 
     with scrape_col2:
@@ -799,6 +807,14 @@ def _render_fresh_scrape_option(
                 f"lpa_gap_scrape_url_{spec.key}_{key_suffix}",
                 ranked_urls[0]["url"],
             )
+            # Handle custom URL selection
+            if scrape_url == "__custom__":
+                scrape_url = st.session_state.get(
+                    f"lpa_gap_scrape_custom_url_{spec.key}_{key_suffix}", ""
+                ).strip()
+                if not scrape_url:
+                    st.warning("Please enter a URL to scrape.")
+                    return
             _run_fresh_scrape(
                 service=service,
                 url=scrape_url,
