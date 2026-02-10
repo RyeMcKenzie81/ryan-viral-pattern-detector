@@ -1615,6 +1615,137 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
             logger.error(f"Fresh scrape extraction failed: {e}")
             return {}
 
+    # ------------------------------------------------------------------
+    # Raw content extraction (used by onboarding auto-fill)
+    # ------------------------------------------------------------------
+
+    async def extract_from_raw_content(
+        self,
+        raw_content: str,
+        target_fields: List[str],
+        content_source: str = "fresh_scrape",
+        source_url: Optional[str] = None,
+        product_name: Optional[str] = None,
+        brand_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Extract field values from raw page content using chunked LLM extraction.
+
+        Accepts FULL raw_content — caller must NOT truncate. Content is chunked
+        internally and only relevant portions are sent to the LLM.
+
+        Args:
+            raw_content: Full page markdown content (no truncation).
+            target_fields: List of gap_keys to extract (e.g. "product.guarantee").
+            content_source: Source label for provenance ("fresh_scrape", "cached").
+            source_url: Optional URL for provenance tracking.
+            product_name: Optional product name for keyword relevance check.
+            brand_name: Optional brand name for keyword relevance check.
+
+        Returns:
+            Dict keyed by gap_key with suggestion dicts containing:
+            field, value, confidence, evidence, reasoning.
+        """
+        # Resolve target specs
+        specs = [GAP_FIELD_REGISTRY[k] for k in target_fields if k in GAP_FIELD_REGISTRY]
+        if not specs:
+            return {}
+
+        # Keyword relevance check
+        keyword_warning = None
+        if product_name and raw_content:
+            content_lower = raw_content.lower()
+            if product_name.lower() not in content_lower:
+                if not brand_name or brand_name.lower() not in content_lower:
+                    keyword_warning = (
+                        f"This page may not be about {product_name}. "
+                        f"Neither product name nor brand name found in page content."
+                    )
+
+        # Chunk and select relevant portions
+        chunks = chunk_markdown(raw_content)
+        relevant = pick_chunks_for_fields(chunks, specs)
+
+        source_data = {
+            content_source: {
+                "url": source_url,
+                "chunks": [
+                    {"heading": "/".join(c.heading_path), "text": c.text, "chunk_id": c.chunk_id}
+                    for c in relevant
+                ],
+            }
+        }
+
+        prompt = self._build_extraction_prompt(specs, source_data)
+        try:
+            suggestions = await self._run_extraction_llm(prompt, operation="onboarding_extract")
+            if not isinstance(suggestions, list):
+                suggestions = [suggestions]
+
+            extracted = {}
+            for s in suggestions:
+                field_key = s.get("field", "")
+                if field_key:
+                    extracted[field_key] = s
+
+            if keyword_warning:
+                for key in extracted:
+                    extracted[key]["keyword_warning"] = keyword_warning
+
+            return extracted
+        except Exception as e:
+            logger.error(f"Raw content extraction failed: {e}")
+            return {}
+
+    async def extract_from_amazon_analysis(
+        self,
+        amazon_analysis: Dict[str, Any],
+        target_fields: List[str],
+    ) -> Dict[str, Any]:
+        """Extract field values from Amazon review analysis data.
+
+        Used by onboarding auto-fill to derive pain points, results timeline,
+        and mechanism root cause from Amazon review analysis.
+
+        Args:
+            amazon_analysis: Amazon analysis dict with messaging sub-dict
+                containing pain_points, desires_goals, customer_language,
+                transformation_language.
+            target_fields: List of gap_keys to extract.
+
+        Returns:
+            Dict keyed by gap_key with suggestion dicts.
+        """
+        specs = [GAP_FIELD_REGISTRY[k] for k in target_fields if k in GAP_FIELD_REGISTRY]
+        if not specs:
+            return {}
+
+        messaging = amazon_analysis.get("messaging", {})
+        source_data = {
+            "amazon_review_analysis": {
+                "pain_points": messaging.get("pain_points"),
+                "desires": messaging.get("desires_goals"),
+                "top_positive_quotes": messaging.get("customer_language"),
+                "transformation_quotes": messaging.get("transformation_language"),
+            }
+        }
+
+        prompt = self._build_extraction_prompt(specs, source_data)
+        try:
+            suggestions = await self._run_extraction_llm(prompt, operation="onboarding_amazon_extract")
+            if not isinstance(suggestions, list):
+                suggestions = [suggestions]
+
+            extracted = {}
+            for s in suggestions:
+                field_key = s.get("field", "")
+                if field_key:
+                    extracted[field_key] = s
+
+            return extracted
+        except Exception as e:
+            logger.error(f"Amazon analysis extraction failed: {e}")
+            return {}
+
     def _validate_scrape_url(self, url: str) -> None:
         """Validate a URL for SSRF protection.
 
