@@ -16,6 +16,7 @@ Tab 3: Blueprint — Generate brand-specific reconstruction blueprints
 import streamlit as st
 import asyncio
 from datetime import datetime
+from typing import Optional
 
 st.set_page_config(page_title="Landing Page Analyzer", page_icon="🏗️", layout="wide")
 
@@ -29,6 +30,17 @@ if "lpa_latest_result" not in st.session_state:
     st.session_state.lpa_latest_result = None
 if "lpa_latest_blueprint" not in st.session_state:
     st.session_state.lpa_latest_blueprint = None
+# Gap filler state
+if "lpa_gap_suggestions" not in st.session_state:
+    st.session_state.lpa_gap_suggestions = {}
+if "lpa_gap_sources" not in st.session_state:
+    st.session_state.lpa_gap_sources = {}
+if "lpa_gaps_saved" not in st.session_state:
+    st.session_state.lpa_gaps_saved = set()
+if "lpa_gap_dismissed" not in st.session_state:
+    st.session_state.lpa_gap_dismissed = set()
+if "lpa_gap_overwrite_confirmed" not in st.session_state:
+    st.session_state.lpa_gap_overwrite_confirmed = set()
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +74,12 @@ def _risk_color(risk: str) -> str:
     return {"critical": "🔴", "moderate": "🟡", "low": "🟢"}.get(risk, "⚪")
 
 
+def get_gap_filler_service():
+    """Lazy-load ContentGapFillerService."""
+    from viraltracker.services.landing_page_analysis import ContentGapFillerService
+    return ContentGapFillerService(get_supabase_client())
+
+
 def _awareness_badge(level: str) -> str:
     badges = {
         "unaware": "⬜ Unaware",
@@ -71,6 +89,800 @@ def _awareness_badge(level: str) -> str:
         "most_aware": "🟪 Most-Aware",
     }
     return badges.get(level, level or "Unknown")
+
+
+# ---------------------------------------------------------------------------
+# Gap Fixer UI
+# ---------------------------------------------------------------------------
+
+def _render_gap_fixer(
+    result: dict,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    key_suffix: str = "latest",
+):
+    """Render the content gap fixer inline below blueprint results.
+
+    Shows fillable gaps with manual entry controls, conflict resolution,
+    Not Applicable dismissal, and a Needs Setup section.
+    """
+    from viraltracker.services.landing_page_analysis import (
+        GAP_FIELD_REGISTRY, resolve_gap_key,
+    )
+
+    gaps = result.get("brand_profile_gaps", [])
+    if not gaps:
+        return
+
+    service = get_gap_filler_service()
+    service._user_id = st.session_state.get("user_id")
+    service._org_id = org_id
+
+    blueprint_id = result.get("id") or result.get("blueprint_id")
+
+    # Resolve gap dicts to GapFieldSpec keys
+    resolved_gaps = []
+    needs_setup_gaps = []
+    for gap in gaps:
+        gap_key = resolve_gap_key(gap)
+        if not gap_key or gap_key not in GAP_FIELD_REGISTRY:
+            continue
+        spec = GAP_FIELD_REGISTRY[gap_key]
+        if spec.needs_setup:
+            needs_setup_gaps.append((gap, spec))
+        else:
+            resolved_gaps.append((gap, spec))
+
+    # Check dismissed state from session (faster than DB each render)
+    active_gaps = []
+    for gap, spec in resolved_gaps:
+        dismiss_key = f"{key_suffix}:{spec.key}"
+        if dismiss_key in st.session_state.lpa_gap_dismissed:
+            continue
+        # Also check DB for persisted dismissals
+        entity_id = service._resolve_entity_id(spec, brand_id, product_id, offer_variant_id)
+        if entity_id and blueprint_id and service.is_gap_dismissed(spec.key, blueprint_id, entity_id):
+            st.session_state.lpa_gap_dismissed.add(dismiss_key)
+            continue
+        active_gaps.append((gap, spec))
+
+    # Check available sources (cached in session state per key_suffix)
+    source_cache_key = f"lpa_gap_sources_loaded:{key_suffix}"
+    if source_cache_key not in st.session_state:
+        source_results = service.check_available_sources(
+            gaps=gaps,
+            brand_id=brand_id,
+            product_id=product_id,
+            offer_variant_id=offer_variant_id,
+        )
+        for gap_key, cands in source_results.items():
+            sk = f"{key_suffix}:{gap_key}"
+            st.session_state.lpa_gap_sources[sk] = cands
+        st.session_state[source_cache_key] = True
+
+    filled_count = len(st.session_state.lpa_gaps_saved)
+    total = len(resolved_gaps) + len(needs_setup_gaps)
+    remaining = len(active_gaps) + len(needs_setup_gaps)
+
+    st.markdown(f"### Fill Content Gaps ({remaining} of {total} remaining)")
+
+    # "Fix All Auto-Fillable Gaps" button
+    auto_fillable_active = [
+        (g, s) for g, s in active_gaps if s.auto_fillable
+    ]
+    if auto_fillable_active:
+        fix_all_col, fix_all_info = st.columns([2, 4])
+        with fix_all_col:
+            if st.button(
+                f"Fix All Auto-Fillable ({len(auto_fillable_active)} gaps)",
+                type="secondary",
+                key=f"lpa_gap_fixall_{key_suffix}",
+            ):
+                _run_fix_all(
+                    service=service,
+                    gaps=[g for g, _ in active_gaps],
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    offer_variant_id=offer_variant_id,
+                    org_id=org_id,
+                    blueprint_id=blueprint_id,
+                    key_suffix=key_suffix,
+                )
+        with fix_all_info:
+            st.caption("Batched AI extraction (~2 calls). Review each before saving.")
+
+    # "Apply & Regenerate" sticky CTA
+    if filled_count > 0:
+        st.success(
+            f"{filled_count} field{'s' if filled_count != 1 else ''} saved. "
+            "Blueprint may now produce better results."
+        )
+        if st.button(
+            "Regenerate Blueprint with Updated Data",
+            type="primary",
+            key=f"lpa_gap_regenerate_{key_suffix}",
+        ):
+            # Reset gap state
+            st.session_state.lpa_gaps_saved = set()
+            st.session_state.lpa_gap_suggestions = {}
+            st.session_state.lpa_gap_sources = {}
+            st.session_state.lpa_gap_dismissed = set()
+            st.session_state.lpa_gap_overwrite_confirmed = set()
+            # Re-run blueprint with current selections
+            _run_blueprint_generation(
+                analysis_id=st.session_state.get("lpa_bp_analysis", ""),
+                brand_id=brand_id,
+                product_id=product_id,
+                offer_variant_id=offer_variant_id,
+                persona_id=st.session_state.get("lpa_bp_persona_id"),
+                org_id=org_id,
+            )
+            st.rerun()
+
+    # Render each active gap
+    for gap, spec in active_gaps:
+        _render_single_gap_control(
+            gap=gap,
+            spec=spec,
+            brand_id=brand_id,
+            product_id=product_id,
+            offer_variant_id=offer_variant_id,
+            org_id=org_id,
+            blueprint_id=blueprint_id,
+            key_suffix=key_suffix,
+            service=service,
+        )
+
+    # Dismissed gaps — show undo option
+    dismissed_for_this = [
+        (gap, spec) for gap, spec in resolved_gaps
+        if f"{key_suffix}:{spec.key}" in st.session_state.lpa_gap_dismissed
+    ]
+    if dismissed_for_this:
+        with st.expander(f"Dismissed ({len(dismissed_for_this)})", expanded=False):
+            for gap, spec in dismissed_for_this:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.caption(f"~~{spec.display_name}~~ — marked Not Applicable")
+                with col2:
+                    if st.button("Undo", key=f"lpa_gap_undo_{spec.key}_{key_suffix}"):
+                        service.undo_not_applicable(
+                            gap_key=spec.key,
+                            brand_id=brand_id,
+                            product_id=product_id,
+                            offer_variant_id=offer_variant_id,
+                            blueprint_id=blueprint_id,
+                            org_id=org_id,
+                        )
+                        dismiss_key = f"{key_suffix}:{spec.key}"
+                        st.session_state.lpa_gap_dismissed.discard(dismiss_key)
+                        st.rerun()
+
+    # "Needs Setup" collapsed section
+    if needs_setup_gaps:
+        with st.expander(f"Needs Setup ({len(needs_setup_gaps)} fields)", expanded=False):
+            for gap, spec in needs_setup_gaps:
+                st.markdown(
+                    f"**{spec.display_name}** — "
+                    f"Set up in [{spec.manual_entry_link}]({spec.manual_entry_link})"
+                )
+
+
+def _render_single_gap_control(
+    gap: dict,
+    spec,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    blueprint_id,
+    key_suffix: str,
+    service,
+):
+    """Render a single gap field with manual entry and controls."""
+    severity = gap.get("severity", "low")
+    severity_icon = {"critical": "🔴", "moderate": "🟡", "low": "🟢"}.get(severity, "⚪")
+
+    # Check if already saved this session
+    save_key = f"{key_suffix}:{spec.key}"
+    already_saved = save_key in st.session_state.lpa_gaps_saved
+
+    header = f"{severity_icon} {spec.display_name} ({severity})"
+    if already_saved:
+        header = f"✅ {spec.display_name} — saved"
+
+    with st.expander(header, expanded=(not already_saved and severity in ("critical", "moderate"))):
+        # Target entity warning for offer_variant fields
+        if spec.entity == "offer_variant" and not offer_variant_id:
+            entity_id = service._resolve_entity_id(spec, brand_id, product_id, None)
+            if not entity_id:
+                st.warning("No offer variant found. Create one in Brand Manager first.")
+                st.markdown(f"[Go to Brand Manager]({spec.manual_entry_link})")
+                return
+
+        current_value = service._get_current_value(spec, brand_id, product_id, offer_variant_id)
+
+        # Show current value if exists
+        if current_value and not service._is_empty(current_value):
+            st.caption("**Current value:**")
+            _display_current_value(spec, current_value)
+
+        # Source candidates (populated from session state)
+        source_key = f"{key_suffix}:{spec.key}"
+        sources = st.session_state.lpa_gap_sources.get(source_key, [])
+        if sources:
+            _render_source_snippets(sources, spec, key_suffix)
+
+        # Fresh scrape option (for fields that support it)
+        if "fresh_scrape" in spec.sources and spec.auto_fillable:
+            _render_fresh_scrape_option(
+                service=service,
+                spec=spec,
+                brand_id=brand_id,
+                product_id=product_id,
+                offer_variant_id=offer_variant_id,
+                org_id=org_id,
+                key_suffix=key_suffix,
+            )
+
+        # AI suggestion (if available)
+        suggestion_key = f"{key_suffix}:{spec.key}"
+        existing_suggestion = st.session_state.lpa_gap_suggestions.get(suggestion_key)
+        if existing_suggestion:
+            _render_suggestion_evidence(existing_suggestion, spec)
+
+        # "Generate Suggestion" button for auto-fillable fields
+        if spec.auto_fillable and not existing_suggestion:
+            if st.button(
+                f"Generate AI Suggestion",
+                key=f"lpa_gap_suggest_{spec.key}_{key_suffix}",
+            ):
+                _run_per_gap_suggestion(
+                    service=service,
+                    spec=spec,
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    offer_variant_id=offer_variant_id,
+                    org_id=org_id,
+                    key_suffix=key_suffix,
+                )
+
+        # Manual entry input — check for "Use This" prefill
+        widget_key = f"lpa_gap_input_{spec.key}_{key_suffix}"
+        usethis_key = f"lpa_gap_usethis_{spec.key}_{key_suffix}"
+        prefill = st.session_state.get(usethis_key, "")
+
+        if spec.value_type == "text":
+            new_value = st.text_area(
+                f"Enter {spec.display_name}",
+                value=prefill,
+                key=widget_key,
+                height=100,
+            )
+        elif spec.value_type == "text_list":
+            st.caption("Enter one item per line:")
+            new_value = st.text_area(
+                f"Enter {spec.display_name}",
+                value=prefill,
+                key=widget_key,
+                height=150,
+            )
+        elif spec.value_type in ("qa_list", "timeline_list", "json_array", "json"):
+            _render_structured_entry_help(spec)
+            new_value = st.text_area(
+                f"Enter {spec.display_name} (JSON)",
+                value=prefill,
+                key=widget_key,
+                height=200,
+            )
+        elif spec.value_type == "quote_list":
+            st.info(
+                "Customer testimonials come from Amazon Review Analysis. "
+                "Run an analysis to populate this field."
+            )
+            st.markdown(f"[Go to Brand Manager]({spec.manual_entry_link})")
+            return
+        else:
+            st.markdown(f"[Set up in Brand Manager]({spec.manual_entry_link})")
+            return
+
+        # Action buttons row
+        col_save, col_na, col_link = st.columns([2, 2, 2])
+
+        with col_save:
+            if new_value and new_value.strip():
+                overwrite_key = f"{key_suffix}:{spec.key}"
+                needs_confirm = (
+                    not service._is_empty(current_value)
+                    and spec.write_policy in ("allow_if_empty", "confirm_overwrite")
+                    and overwrite_key not in st.session_state.lpa_gap_overwrite_confirmed
+                )
+
+                if needs_confirm:
+                    btn_label = "Overwrite?"
+                    btn_type = "secondary"
+                else:
+                    target_label = f"{spec.table}.{spec.column}" if spec.column else spec.table
+                    btn_label = f"Save to {target_label}"
+                    btn_type = "primary"
+
+                if st.button(btn_label, type=btn_type, key=f"lpa_gap_save_{spec.key}_{key_suffix}"):
+                    if needs_confirm:
+                        st.session_state.lpa_gap_overwrite_confirmed.add(overwrite_key)
+                        st.rerun()
+                    else:
+                        _execute_gap_save(
+                            service=service,
+                            spec=spec,
+                            value=new_value,
+                            brand_id=brand_id,
+                            product_id=product_id,
+                            offer_variant_id=offer_variant_id,
+                            org_id=org_id,
+                            blueprint_id=blueprint_id,
+                            key_suffix=key_suffix,
+                            force_overwrite=overwrite_key in st.session_state.lpa_gap_overwrite_confirmed,
+                        )
+            else:
+                st.button(
+                    "Save", disabled=True,
+                    key=f"lpa_gap_save_disabled_{spec.key}_{key_suffix}",
+                )
+
+        with col_na:
+            if st.button("Not Applicable", key=f"lpa_gap_na_{spec.key}_{key_suffix}"):
+                service.mark_not_applicable(
+                    gap_key=spec.key,
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    offer_variant_id=offer_variant_id,
+                    blueprint_id=blueprint_id,
+                    org_id=org_id,
+                )
+                dismiss_key = f"{key_suffix}:{spec.key}"
+                st.session_state.lpa_gap_dismissed.add(dismiss_key)
+                st.rerun()
+
+        with col_link:
+            st.markdown(f"[Edit in Brand Manager]({spec.manual_entry_link})")
+
+
+def _display_current_value(spec, value):
+    """Display the current value of a gap field."""
+    if spec.value_type == "text":
+        st.code(str(value), language=None)
+    elif spec.value_type == "text_list":
+        if isinstance(value, list):
+            for item in value[:5]:
+                st.markdown(f"- {item}")
+            if len(value) > 5:
+                st.caption(f"...and {len(value) - 5} more")
+        else:
+            st.code(str(value), language=None)
+    elif spec.value_type in ("qa_list", "timeline_list", "json_array", "json"):
+        import json as _json
+        st.code(_json.dumps(value, indent=2, ensure_ascii=False)[:500], language="json")
+    else:
+        st.code(str(value)[:300], language=None)
+
+
+def _render_structured_entry_help(spec):
+    """Show format help for structured JSON fields."""
+    if spec.value_type == "qa_list":
+        st.caption('Format: [{"question": "...", "answer": "..."}]')
+    elif spec.value_type == "timeline_list":
+        st.caption('Format: [{"timeframe": "Week 1-2", "expected_result": "..."}]')
+    elif spec.value_type == "json_array":
+        if spec.key == "product.ingredients":
+            st.caption('Format: [{"name": "...", "benefit": "...", "proof_point": "..."}]')
+        else:
+            st.caption("Format: JSON array of objects")
+
+
+def _render_source_snippets(sources: list, spec, key_suffix: str):
+    """Render source candidate snippets with 'Use This' buttons."""
+    st.caption("**Available sources:**")
+    for i, src in enumerate(sources):
+        source_icon = {
+            "brand_landing_pages": "📄", "amazon_review_analysis": "📊",
+            "reddit_sentiment_quotes": "💬", "fresh_scrape": "🔄",
+        }.get(src.source_type, "📋")
+
+        conf_badge = {"high": "🟢", "medium": "🟡", "low": "🟠"}.get(src.confidence, "⚪")
+        source_label = src.source_type.replace("_", " ").title()
+
+        col_info, col_btn = st.columns([4, 1])
+        with col_info:
+            st.markdown(f"{source_icon} **{source_label}** {conf_badge} {src.confidence}")
+            for snippet in src.snippets[:3]:
+                display = f'"{snippet[:200]}..."' if len(snippet) > 200 else f'"{snippet}"'
+                st.caption(f"> {display}")
+            if src.url:
+                st.caption(f"URL: {src.url}")
+            if src.scraped_at:
+                st.caption(f"Scraped: {str(src.scraped_at)[:19]}")
+
+        with col_btn:
+            if src.extracted_value is not None:
+                use_key = f"lpa_gap_use_{spec.key}_{i}_{key_suffix}"
+                if st.button("Use This", key=use_key):
+                    # Store extracted value in session so text_area picks it up
+                    _store_use_this_value(spec, src, key_suffix)
+                    st.rerun()
+            else:
+                st.caption("(Needs AI)")
+
+
+def _store_use_this_value(spec, src, key_suffix: str):
+    """Store a 'Use This' value in session state for the text area to pick up."""
+    import json as _json
+    sess_key = f"lpa_gap_usethis_{spec.key}_{key_suffix}"
+    sess_source_key = f"lpa_gap_usethis_source_{spec.key}_{key_suffix}"
+
+    if spec.value_type == "text":
+        st.session_state[sess_key] = str(src.extracted_value)
+    elif spec.value_type == "text_list":
+        if isinstance(src.extracted_value, list):
+            st.session_state[sess_key] = "\n".join(str(v) for v in src.extracted_value)
+        else:
+            st.session_state[sess_key] = str(src.extracted_value)
+    elif spec.value_type in ("qa_list", "timeline_list", "json_array", "json"):
+        st.session_state[sess_key] = _json.dumps(src.extracted_value, indent=2, ensure_ascii=False)
+    else:
+        st.session_state[sess_key] = str(src.extracted_value)
+
+    # Store source info for provenance
+    st.session_state[sess_source_key] = {
+        "source_type": src.source_type,
+        "source_table": src.source_table,
+        "source_id": src.source_id,
+        "confidence": src.confidence,
+        "url": src.url,
+    }
+
+
+def _execute_gap_save(
+    service,
+    spec,
+    value,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    blueprint_id,
+    key_suffix: str,
+    force_overwrite: bool = False,
+    source_type_override: str = None,
+    source_detail_override: dict = None,
+):
+    """Execute the save action for a gap field."""
+    # Check if a "Use This" source was used
+    usethis_source_key = f"lpa_gap_usethis_source_{spec.key}_{key_suffix}"
+    source_info = st.session_state.get(usethis_source_key)
+
+    if source_type_override:
+        src_type = source_type_override
+        src_detail = source_detail_override or {}
+    elif source_info:
+        src_type = "cached_source"
+        src_detail = source_info
+    else:
+        src_type = "manual"
+        src_detail = {"entered_via": "gap_fixer"}
+
+    result = service.apply_value(
+        gap_key=spec.key,
+        value=value,
+        brand_id=brand_id,
+        product_id=product_id,
+        offer_variant_id=offer_variant_id,
+        source_type=src_type,
+        source_detail=src_detail,
+        blueprint_id=blueprint_id,
+        force_overwrite=force_overwrite,
+        org_id=org_id,
+    )
+
+    if result.success:
+        if result.action == "no_change":
+            st.info("No changes — value matches current data.")
+        else:
+            save_key = f"{key_suffix}:{spec.key}"
+            st.session_state.lpa_gaps_saved.add(save_key)
+            target_label = f"{spec.table}.{spec.column}" if spec.column else spec.table
+            st.success(f"Saved to {target_label}")
+            st.rerun()
+    elif result.needs_confirmation:
+        st.warning("Field already has a value. Click 'Overwrite?' to confirm.")
+    else:
+        st.error(f"Save failed: {result.new_value or 'Unknown error'}")
+
+
+def _run_fix_all(
+    service,
+    gaps: list,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    blueprint_id,
+    key_suffix: str,
+):
+    """Run batched AI extraction for all auto-fillable gaps."""
+    import asyncio as _asyncio
+
+    # Set tracking context
+    try:
+        from viraltracker.services.usage_tracker import UsageTracker
+        tracker = UsageTracker(get_supabase_client())
+        user_id = st.session_state.get("user_id")
+        service.set_tracking_context(tracker, user_id, org_id)
+    except Exception:
+        pass
+
+    progress = st.progress(0, text="Generating AI suggestions...")
+    try:
+        suggestions = _asyncio.run(
+            service.generate_all_suggestions(
+                gaps=gaps,
+                brand_id=brand_id,
+                product_id=product_id,
+                offer_variant_id=offer_variant_id,
+            )
+        )
+        progress.progress(1.0, text=f"Generated {len(suggestions)} suggestions")
+
+        # Store suggestions in session state for each gap
+        for s in suggestions:
+            field_key = s.get("field", "")
+            sess_key = f"{key_suffix}:{field_key}"
+            st.session_state.lpa_gap_suggestions[sess_key] = s
+
+            # Also prefill the "Use This" value from the suggestion
+            from viraltracker.services.landing_page_analysis import GAP_FIELD_REGISTRY
+            spec = GAP_FIELD_REGISTRY.get(field_key)
+            if spec and s.get("value"):
+                _prefill_from_suggestion(spec, s, key_suffix)
+
+        st.success(f"Generated {len(suggestions)} AI suggestions. Review each below before saving.")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Fix All failed: {e}")
+        progress.empty()
+
+
+def _run_per_gap_suggestion(
+    service,
+    spec,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    key_suffix: str,
+):
+    """Generate a single AI suggestion for one gap."""
+    import asyncio as _asyncio
+
+    # Set tracking context
+    try:
+        from viraltracker.services.usage_tracker import UsageTracker
+        tracker = UsageTracker(get_supabase_client())
+        user_id = st.session_state.get("user_id")
+        service.set_tracking_context(tracker, user_id, org_id)
+    except Exception:
+        pass
+
+    with st.spinner(f"Generating suggestion for {spec.display_name}..."):
+        try:
+            suggestion = _asyncio.run(
+                service.generate_suggestion(
+                    gap_key=spec.key,
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    offer_variant_id=offer_variant_id,
+                )
+            )
+            if suggestion:
+                sess_key = f"{key_suffix}:{spec.key}"
+                st.session_state.lpa_gap_suggestions[sess_key] = suggestion
+                if suggestion.get("value"):
+                    _prefill_from_suggestion(spec, suggestion, key_suffix)
+                st.rerun()
+            else:
+                st.warning("No suggestion generated. Not enough source data.")
+        except Exception as e:
+            st.error(f"Suggestion failed: {e}")
+
+
+def _prefill_from_suggestion(spec, suggestion: dict, key_suffix: str):
+    """Prefill the text area from an AI suggestion."""
+    import json as _json
+
+    sess_key = f"lpa_gap_usethis_{spec.key}_{key_suffix}"
+    value = suggestion.get("value")
+
+    if spec.value_type == "text":
+        st.session_state[sess_key] = str(value)
+    elif spec.value_type == "text_list":
+        if isinstance(value, list):
+            # Handle list of dicts with "text" key (from AI schema)
+            texts = []
+            for v in value:
+                if isinstance(v, dict) and "text" in v:
+                    texts.append(v["text"])
+                else:
+                    texts.append(str(v))
+            st.session_state[sess_key] = "\n".join(texts)
+        else:
+            st.session_state[sess_key] = str(value)
+    elif spec.value_type in ("qa_list", "timeline_list", "json_array", "json"):
+        st.session_state[sess_key] = _json.dumps(value, indent=2, ensure_ascii=False)
+    else:
+        st.session_state[sess_key] = str(value)
+
+    # Store AI source provenance
+    source_key = f"lpa_gap_usethis_source_{spec.key}_{key_suffix}"
+    st.session_state[source_key] = {
+        "source_type": "ai_suggestion",
+        "confidence": suggestion.get("confidence", "medium"),
+        "evidence": suggestion.get("evidence") or suggestion.get("evidence_map"),
+        "reasoning": suggestion.get("reasoning", ""),
+    }
+
+
+def _render_fresh_scrape_option(
+    service,
+    spec,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    key_suffix: str,
+):
+    """Render the fresh scrape option for a gap field."""
+    cooldown = service._get_scrape_cooldown_info(brand_id)
+    ranked_urls = service._rank_scrape_urls(product_id, offer_variant_id, brand_id)
+
+    if not ranked_urls:
+        return
+
+    scrape_col1, scrape_col2 = st.columns([3, 3])
+    with scrape_col1:
+        if cooldown and cooldown.get("within_cooldown"):
+            st.caption(
+                f"Last scraped {cooldown['hours_ago']:.0f}h ago. "
+                "Cached data available above."
+            )
+        else:
+            # URL selector
+            url_options = {u["url"]: u["label"] for u in ranked_urls}
+            selected_url = st.selectbox(
+                "Scrape URL",
+                options=list(url_options.keys()),
+                format_func=lambda x: url_options[x],
+                key=f"lpa_gap_scrape_url_{spec.key}_{key_suffix}",
+            )
+
+    with scrape_col2:
+        force = cooldown and cooldown.get("within_cooldown")
+        btn_label = "Scrape Fresh (1 FireCrawl credit)"
+        if force:
+            btn_label = "Force Scrape (1 FireCrawl credit)"
+
+        if st.button(
+            btn_label,
+            key=f"lpa_gap_scrape_{spec.key}_{key_suffix}",
+        ):
+            if not ranked_urls:
+                st.warning("No URLs available for scraping.")
+                return
+
+            scrape_url = st.session_state.get(
+                f"lpa_gap_scrape_url_{spec.key}_{key_suffix}",
+                ranked_urls[0]["url"],
+            )
+            _run_fresh_scrape(
+                service=service,
+                url=scrape_url,
+                spec=spec,
+                brand_id=brand_id,
+                product_id=product_id,
+                offer_variant_id=offer_variant_id,
+                org_id=org_id,
+                key_suffix=key_suffix,
+            )
+
+
+def _run_fresh_scrape(
+    service,
+    url: str,
+    spec,
+    brand_id: str,
+    product_id: str,
+    offer_variant_id,
+    org_id: str,
+    key_suffix: str,
+):
+    """Execute a fresh scrape and extract values."""
+    import asyncio as _asyncio
+
+    # Set tracking context
+    try:
+        from viraltracker.services.usage_tracker import UsageTracker
+        tracker = UsageTracker(get_supabase_client())
+        user_id = st.session_state.get("user_id")
+        service.set_tracking_context(tracker, user_id, org_id)
+    except Exception:
+        pass
+
+    with st.spinner(f"Scraping {url[:60]}..."):
+        try:
+            extracted = _asyncio.run(
+                service.scrape_and_extract_from_lp(
+                    url=url,
+                    target_fields=[spec.key],
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    offer_variant_id=offer_variant_id,
+                )
+            )
+
+            suggestion = extracted.get(spec.key)
+            if suggestion:
+                # Check for keyword warning
+                warning = suggestion.get("keyword_warning")
+                if warning:
+                    st.warning(warning)
+
+                # Store as suggestion
+                sess_key = f"{key_suffix}:{spec.key}"
+                st.session_state.lpa_gap_suggestions[sess_key] = suggestion
+
+                if suggestion.get("value"):
+                    _prefill_from_suggestion(spec, suggestion, key_suffix)
+
+                st.success("Scrape complete! Review the extracted value below.")
+                st.rerun()
+            else:
+                st.warning("Scrape succeeded but no data could be extracted for this field.")
+        except ValueError as e:
+            st.error(f"URL validation failed: {e}")
+        except Exception as e:
+            st.error(f"Scrape failed: {e}")
+
+
+def _render_suggestion_evidence(suggestion: dict, spec):
+    """Render the evidence panel for an AI suggestion."""
+    confidence = suggestion.get("confidence", "unknown")
+    conf_icon = {"high": "🟢", "medium": "🟡", "low": "🟠"}.get(confidence, "⚪")
+    st.caption(f"AI Confidence: {conf_icon} {confidence}")
+
+    reasoning = suggestion.get("reasoning", "")
+    if reasoning:
+        st.caption(f"Reasoning: {reasoning}")
+
+    # Evidence for scalar fields
+    evidence = suggestion.get("evidence", [])
+    if evidence and isinstance(evidence, list):
+        with st.expander("Evidence", expanded=False):
+            for ev in evidence:
+                source = ev.get("source", "unknown")
+                snippet = ev.get("snippet", "")
+                url = ev.get("url")
+                st.markdown(f"**{source}**: \"{snippet}\"")
+                if url:
+                    st.caption(f"URL: {url}")
+
+    # Evidence map for list fields
+    evidence_map = suggestion.get("evidence_map", {})
+    if evidence_map and isinstance(evidence_map, dict):
+        with st.expander("Evidence (per item)", expanded=False):
+            for item_id, ev in evidence_map.items():
+                source = ev.get("source", "unknown")
+                snippet = ev.get("snippet", "")
+                st.markdown(f"**{item_id}** ({source}): \"{snippet}\"")
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +1383,13 @@ def render_blueprint_tab(brand_id: str, org_id: str):
     # Show latest generated blueprint
     if st.session_state.lpa_latest_blueprint:
         st.divider()
-        _render_blueprint(st.session_state.lpa_latest_blueprint)
+        _render_blueprint(
+            st.session_state.lpa_latest_blueprint,
+            brand_id=brand_id,
+            product_id=product_id,
+            offer_variant_id=offer_variant_id,
+            org_id=org_id,
+        )
 
     # Show past blueprints
     _render_blueprint_history(org_id, brand_id)
@@ -636,8 +1454,15 @@ def _run_blueprint_generation(
         st.error(f"Blueprint generation failed: {e}")
 
 
-def _render_blueprint(result: dict, key_suffix: str = "latest"):
-    """Render a generated blueprint with section accordion and exports."""
+def _render_blueprint(
+    result: dict,
+    key_suffix: str = "latest",
+    brand_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+    offer_variant_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+):
+    """Render a generated blueprint with section accordion, gap fixer, and exports."""
     blueprint = result.get("blueprint", {})
     rb = blueprint.get("reconstruction_blueprint", blueprint)
 
@@ -688,7 +1513,7 @@ def _render_blueprint(result: dict, key_suffix: str = "latest"):
             if source:
                 st.caption(f"Source: {source}")
 
-    # --- Brand Profile Gaps ---
+    # --- Brand Profile Gaps (raw list) ---
     gaps = result.get("brand_profile_gaps", [])
     if gaps:
         with st.expander(f"Brand Profile Gaps ({len(gaps)} items)", expanded=False):
@@ -696,6 +1521,18 @@ def _render_blueprint(result: dict, key_suffix: str = "latest"):
                 severity = gap.get("severity", "low")
                 icon = {"critical": "🔴", "moderate": "🟡", "low": "🟢"}.get(severity, "⚪")
                 st.markdown(f"{icon} **{gap.get('field', '?')}** ({gap.get('section', '')}) — {gap.get('instruction', '')}")
+
+    # --- Gap Fixer (inline fill controls) ---
+    if gaps and brand_id and product_id and org_id:
+        st.divider()
+        _render_gap_fixer(
+            result=result,
+            brand_id=brand_id,
+            product_id=product_id,
+            offer_variant_id=offer_variant_id,
+            org_id=org_id,
+            key_suffix=key_suffix,
+        )
 
     # --- Exports ---
     st.markdown("### Export")
@@ -927,6 +1764,7 @@ def _render_blueprint_history(org_id: str, brand_id: str):
                 continue
             # Build a result-like dict for _render_blueprint
             result_like = {
+                "id": bp["id"],
                 "blueprint": full.get("blueprint", {}),
                 "source_url": full.get("source_url", ""),
                 "brand_profile_gaps": full.get("content_gaps", []),
@@ -934,7 +1772,14 @@ def _render_blueprint_history(org_id: str, brand_id: str):
                 "elements_mapped": full.get("elements_mapped", 0),
                 "content_needed_count": full.get("content_needed_count", 0),
             }
-            _render_blueprint(result_like, key_suffix=bp["id"])
+            _render_blueprint(
+                result_like,
+                key_suffix=bp["id"],
+                brand_id=full.get("brand_id"),
+                product_id=full.get("product_id"),
+                offer_variant_id=full.get("offer_variant_id"),
+                org_id=full.get("organization_id"),
+            )
 
 
 # ---------------------------------------------------------------------------

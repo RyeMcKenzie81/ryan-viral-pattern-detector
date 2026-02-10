@@ -428,3 +428,19 @@ Background `ad_classification` job type pre-computes classifications via schedul
 **Files**: `ad_creation_service.py` (line 1928), `22_📊_Ad_History.py` (rerun handler)
 **Checkpoint**: `docs/archive/CHECKPOINT_2026-02-06_regenerate-ad-uuid-fix.md`
 
+### Content Gap Filler — Integrate with Brand Ingestion Tools
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-10
+
+**Context**: The Content Gap Filler currently works inline during blueprint review. It could be proactively integrated into the brand onboarding flow so gaps are filled before the first blueprint is ever generated.
+
+**What's needed**:
+1. Wire gap filler data sources + auto-extraction into the initial brand onboarding flow
+2. Proactively run `check_available_sources()` during onboarding and surface which fields are already fillable
+3. Auto-populate fields like guarantee, FAQ, ingredients during onboarding rather than waiting for first blueprint
+4. Relevant tools: Brand Manager product setup, offer variant creation wizard, Amazon review scrape pipeline
+
+**Files**: `content_gap_filler_service.py`, Brand Manager UI pages
+

@@ -18,9 +18,21 @@ from viraltracker.services.landing_page_analysis.brand_profile_service import (
 from viraltracker.services.landing_page_analysis.blueprint_service import (
     ReconstructionBlueprintService,
 )
+from viraltracker.services.landing_page_analysis.content_gap_filler_service import (
+    ContentGapFillerService,
+    GapFieldSpec,
+    GAP_FIELD_REGISTRY,
+    SourceCandidate,
+    resolve_gap_key,
+)
 
 __all__ = [
     "LandingPageAnalysisService",
     "BrandProfileService",
     "ReconstructionBlueprintService",
+    "ContentGapFillerService",
+    "GapFieldSpec",
+    "GAP_FIELD_REGISTRY",
+    "SourceCandidate",
+    "resolve_gap_key",
 ]
