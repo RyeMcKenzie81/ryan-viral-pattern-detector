@@ -118,6 +118,7 @@ class ReconstructionBlueprintService:
             offer_variant_id=offer_variant_id,
             source_url=analysis.get("url", ""),
             brand_profile_snapshot=brand_profile,
+            persona_id=persona_id,
         )
 
         try:
@@ -571,6 +572,7 @@ class ReconstructionBlueprintService:
         offer_variant_id: Optional[str],
         source_url: str,
         brand_profile_snapshot: Dict[str, Any],
+        persona_id: Optional[str] = None,
     ) -> str:
         """Create initial blueprint record, return its ID."""
         record = {
@@ -584,6 +586,8 @@ class ReconstructionBlueprintService:
         }
         if offer_variant_id:
             record["offer_variant_id"] = offer_variant_id
+        if persona_id:
+            record["persona_id"] = persona_id
 
         result = self.supabase.table("landing_page_blueprints").insert(record).execute()
         return result.data[0]["id"]
