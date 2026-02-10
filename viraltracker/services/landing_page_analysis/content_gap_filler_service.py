@@ -17,8 +17,14 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
+
+from viraltracker.services.landing_page_analysis.chunk_markdown import (
+    chunk_markdown,
+    pick_chunks_for_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1223,7 +1229,9 @@ class ContentGapFillerService:
         if not spec or not spec.auto_fillable:
             return None
 
-        source_data = self._gather_all_source_data(brand_id, product_id, offer_variant_id)
+        source_data = self._gather_all_source_data(
+            brand_id, product_id, offer_variant_id, gap_specs=[spec],
+        )
         if not source_data:
             return None
 
@@ -1268,7 +1276,9 @@ class ContentGapFillerService:
         if not auto_fillable_specs:
             return []
 
-        source_data = self._gather_all_source_data(brand_id, product_id, offer_variant_id)
+        source_data = self._gather_all_source_data(
+            brand_id, product_id, offer_variant_id, gap_specs=auto_fillable_specs,
+        )
         if not source_data:
             return []
 
@@ -1323,6 +1333,7 @@ class ContentGapFillerService:
         brand_id: str,
         product_id: str,
         offer_variant_id: Optional[str] = None,
+        gap_specs: Optional[List[GapFieldSpec]] = None,
     ) -> Dict[str, Any]:
         """Gather all available source data for AI extraction."""
         data = {}
@@ -1341,15 +1352,25 @@ class ContentGapFillerService:
         if brand_lps:
             # Take the most relevant LP (first one, already sorted by recency)
             lp = brand_lps[0]
-            data["brand_landing_pages"] = {
+            lp_entry: Dict[str, Any] = {
                 "url": lp.get("url"),
                 "guarantee": lp.get("guarantee"),
                 "benefits": lp.get("benefits"),
                 "features": lp.get("features"),
                 "testimonials": lp.get("testimonials"),
                 "extracted_data": lp.get("extracted_data"),
-                "raw_markdown": (lp.get("raw_markdown") or "")[:3000],  # Truncate for prompt
             }
+            # Use chunking instead of truncation — select relevant portions for LLM
+            full_markdown = lp.get("raw_markdown") or ""
+            if full_markdown:
+                chunks = chunk_markdown(full_markdown)
+                specs_for_chunking = gap_specs or list(GAP_FIELD_REGISTRY.values())
+                relevant = pick_chunks_for_fields(chunks, specs_for_chunking)
+                lp_entry["chunks"] = [
+                    {"heading": "/".join(c.heading_path), "text": c.text, "chunk_id": c.chunk_id}
+                    for c in relevant
+                ]
+            data["brand_landing_pages"] = lp_entry
 
         reddit = self._fetch_reddit_quote_data(product_id)
         if reddit:
@@ -1397,9 +1418,14 @@ class ContentGapFillerService:
         fields_section = "\n".join(fields_desc)
 
         source_json = json.dumps(source_data, indent=2, ensure_ascii=False, default=str)
-        # Truncate if too long
-        if len(source_json) > 12000:
-            source_json = source_json[:12000] + "\n... (truncated)"
+        # Safety cap — pick_chunks_for_fields already limits LLM-bound content,
+        # but guard against unexpectedly large non-chunk data (e.g., Amazon reviews)
+        if len(source_json) > 20000:
+            logger.warning(
+                f"Source JSON unexpectedly large ({len(source_json)} chars) — "
+                "chunking should have limited this. Applying safety cap."
+            )
+            source_json = source_json[:20000] + "\n... (safety-capped)"
 
         has_list_field = any(s.value_type == "text_list" for s in gap_specs)
 
@@ -1555,10 +1581,16 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
         if not specs:
             return {}
 
+        # Chunk full markdown for LLM prompt — no truncation of stored content
+        chunks = chunk_markdown(markdown)
+        relevant = pick_chunks_for_fields(chunks, specs)
         source_data = {
             "fresh_scrape": {
                 "url": url,
-                "raw_markdown": markdown[:6000],
+                "chunks": [
+                    {"heading": "/".join(c.heading_path), "text": c.text, "chunk_id": c.chunk_id}
+                    for c in relevant
+                ],
             }
         }
 
@@ -1705,19 +1737,33 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
         brand_id: str,
         product_id: Optional[str] = None,
     ) -> None:
-        """Cache a scrape result in brand_landing_pages for future use."""
+        """Cache a scrape result in brand_landing_pages with content_hash dedup."""
         try:
+            content_hash = hashlib.sha256(markdown.encode()).hexdigest()
+            now = datetime.now(timezone.utc).isoformat()
+            content_length = len(markdown)
+            logger.info(f"Caching scrape for {url}: {content_length} chars")
+
             # Check if URL already exists for this brand
             existing = self.supabase.table("brand_landing_pages").select(
-                "id"
+                "id, content_hash"
             ).eq("brand_id", brand_id).eq("url", url).limit(1).execute()
 
             if existing.data:
-                # Update existing
-                self.supabase.table("brand_landing_pages").update({
-                    "raw_markdown": markdown,
-                    "scrape_status": "scraped",
-                }).eq("id", existing.data[0]["id"]).execute()
+                row = existing.data[0]
+                if row.get("content_hash") == content_hash:
+                    # Content unchanged — bump last_scraped_at only
+                    self.supabase.table("brand_landing_pages").update({
+                        "last_scraped_at": now,
+                    }).eq("id", row["id"]).execute()
+                else:
+                    # Content changed — update full content
+                    self.supabase.table("brand_landing_pages").update({
+                        "raw_markdown": markdown,
+                        "content_hash": content_hash,
+                        "last_scraped_at": now,
+                        "scrape_status": "scraped",
+                    }).eq("id", row["id"]).execute()
             else:
                 # Insert new
                 self.supabase.table("brand_landing_pages").insert({
@@ -1725,6 +1771,8 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
                     "product_id": product_id,
                     "url": url,
                     "raw_markdown": markdown,
+                    "content_hash": content_hash,
+                    "last_scraped_at": now,
                     "scrape_status": "scraped",
                 }).execute()
         except Exception as e:

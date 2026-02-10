@@ -18,6 +18,12 @@ from viraltracker.services.landing_page_analysis.brand_profile_service import (
 from viraltracker.services.landing_page_analysis.blueprint_service import (
     ReconstructionBlueprintService,
 )
+from viraltracker.services.landing_page_analysis.chunk_markdown import (
+    MarkdownChunk,
+    chunk_markdown,
+    pick_chunks_for_fields,
+    extract_deterministic_snippet,
+)
 from viraltracker.services.landing_page_analysis.content_gap_filler_service import (
     ContentGapFillerService,
     GapFieldSpec,
@@ -35,4 +41,8 @@ __all__ = [
     "GAP_FIELD_REGISTRY",
     "SourceCandidate",
     "resolve_gap_key",
+    "MarkdownChunk",
+    "chunk_markdown",
+    "pick_chunks_for_fields",
+    "extract_deterministic_snippet",
 ]
