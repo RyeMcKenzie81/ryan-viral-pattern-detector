@@ -181,6 +181,141 @@ class MetaAdsService:
         else:
             raise Exception("Failed to link brand to ad account")
 
+    def validate_ad_account(self, meta_ad_account_id: str) -> Dict[str, Any]:
+        """Validate format, existence, AND read access for a Meta ad account.
+
+        Synchronous method — uses SDK directly (called from Streamlit button handler).
+
+        Args:
+            meta_ad_account_id: The ad account ID to validate (e.g., "act_123456789" or "123456789").
+
+        Returns:
+            Structured result dict with keys:
+            - valid_format: bool
+            - exists: bool
+            - can_read_ads: bool
+            - can_read_insights: bool
+            - has_access: bool (True if EITHER can_read_ads or can_read_insights)
+            - name: str or None
+            - meta_ad_account_id: str (normalized to act_ prefix)
+            - reason_code: "ok"|"invalid_format"|"not_found"|"no_access"|"rate_limited"|"sdk_error"
+            - error: str or None
+        """
+        result = {
+            "valid_format": False,
+            "exists": False,
+            "can_read_ads": False,
+            "can_read_insights": False,
+            "has_access": False,
+            "name": None,
+            "meta_ad_account_id": meta_ad_account_id,
+            "reason_code": "invalid_format",
+            "error": None,
+        }
+
+        # 1. Format check — normalize to act_XXXX
+        account_id = meta_ad_account_id.strip()
+        if account_id.startswith("act_"):
+            numeric_part = account_id[4:]
+        else:
+            numeric_part = account_id
+            account_id = f"act_{account_id}"
+
+        if not re.match(r'^\d+$', numeric_part):
+            result["error"] = f"Invalid ad account ID format: must be numeric (got '{numeric_part}')"
+            return result
+
+        result["valid_format"] = True
+        result["meta_ad_account_id"] = account_id
+
+        # 2. Existence + metadata check via SDK
+        try:
+            self._ensure_sdk()
+        except (ImportError, Exception) as e:
+            result["reason_code"] = "sdk_error"
+            result["error"] = f"Meta SDK not available: {e}"
+            return result
+
+        try:
+            from facebook_business.adobjects.adaccount import AdAccount
+            from facebook_business.exceptions import FacebookRequestError
+
+            ad_account = AdAccount(account_id)
+            account_data = ad_account.api_get(fields=["name", "account_status"])
+            result["exists"] = True
+            result["name"] = account_data.get("name")
+
+        except FacebookRequestError as e:
+            error_code = getattr(e, 'api_error_code', None) or 0
+            error_subcode = getattr(e, 'api_error_subcode', None) or 0
+
+            if error_code == 4 or error_code == 17:
+                result["reason_code"] = "rate_limited"
+                result["error"] = "Rate limited by Meta API. Please try again in a few minutes."
+            elif error_code == 100 or error_subcode == 33:
+                result["reason_code"] = "not_found"
+                result["error"] = f"Ad account {account_id} not found."
+            else:
+                result["reason_code"] = "no_access"
+                result["error"] = f"Cannot access account: {e.api_error_message()}"
+            return result
+
+        except Exception as e:
+            result["reason_code"] = "sdk_error"
+            result["error"] = f"Unexpected error: {e}"
+            return result
+
+        # 3. Ads access check
+        try:
+            from facebook_business.adobjects.adaccount import AdAccount
+            from facebook_business.exceptions import FacebookRequestError
+
+            ad_account = AdAccount(account_id)
+            ads = ad_account.get_ads(fields=["id"], params={"limit": 1})
+            # Iterating forces the API call
+            list(ads)
+            result["can_read_ads"] = True
+        except FacebookRequestError as e:
+            error_code = getattr(e, 'api_error_code', None) or 0
+            if error_code == 4 or error_code == 17:
+                result["reason_code"] = "rate_limited"
+                result["error"] = "Rate limited during ads check."
+                return result
+            logger.debug(f"Cannot read ads for {account_id}: {e.api_error_message()}")
+        except Exception as e:
+            logger.debug(f"Ads check error for {account_id}: {e}")
+
+        # 4. Insights access fallback
+        if not result["can_read_ads"]:
+            try:
+                ad_account = AdAccount(account_id)
+                insights = ad_account.get_insights(params={"date_preset": "yesterday", "limit": 1})
+                list(insights)
+                result["can_read_insights"] = True
+            except FacebookRequestError as e:
+                error_code = getattr(e, 'api_error_code', None) or 0
+                if error_code == 4 or error_code == 17:
+                    result["reason_code"] = "rate_limited"
+                    result["error"] = "Rate limited during insights check."
+                    return result
+                logger.debug(f"Cannot read insights for {account_id}: {e.api_error_message()}")
+            except Exception as e:
+                logger.debug(f"Insights check error for {account_id}: {e}")
+
+        # 5. Final result
+        result["has_access"] = result["can_read_ads"] or result["can_read_insights"]
+        if result["has_access"]:
+            result["reason_code"] = "ok"
+            result["error"] = None
+        else:
+            result["reason_code"] = "no_access"
+            result["error"] = (
+                f"Account {account_id} exists but no read access. "
+                "Ensure the system user has been granted access to this ad account."
+            )
+
+        return result
+
     def _get_ad_account_id(self, brand_id: Optional[UUID] = None, ad_account_id: Optional[str] = None) -> str:
         """
         Resolve which ad account ID to use.

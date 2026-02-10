@@ -957,6 +957,25 @@ Return ONLY a JSON array of question strings."""
                 }
             ).eq("id", str(session_id)).execute()
 
+            # Link ad account — only if validated with API access
+            if (facebook_meta.get("ad_account_id")
+                    and facebook_meta.get("ad_account_has_access")):
+                try:
+                    ad_account_id = facebook_meta["ad_account_id"].strip()
+                    if not ad_account_id.startswith("act_"):
+                        ad_account_id = f"act_{ad_account_id}"
+                    self.supabase.table("brand_ad_accounts").upsert({
+                        "brand_id": str(brand_id),
+                        "meta_ad_account_id": ad_account_id,
+                        "account_name": facebook_meta.get("ad_account_name"),
+                        "is_primary": True,
+                        "auth_method": "system_user",
+                    }, on_conflict="brand_id,meta_ad_account_id").execute()
+                    created["ad_account_linked"] = ad_account_id
+                    logger.info(f"Linked ad account {ad_account_id} to brand {brand_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to link ad account: {e}")
+
             # Import scraped Facebook ads
             if facebook_meta.get("url_groups"):
                 ads_imported = self._import_brand_facebook_ads(brand_id, facebook_meta)

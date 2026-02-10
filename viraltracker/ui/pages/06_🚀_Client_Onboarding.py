@@ -503,11 +503,64 @@ def render_facebook_tab(session: dict):
 
     with col2:
         ad_account_id = st.text_input(
-            "Ad Account ID (for publishing)",
+            "Ad Account ID (for API access)",
             value=data.get("ad_account_id", ""),
             placeholder="act_123456789",
             key="fb_ad_account_id",
         )
+
+        ad_account_name = st.text_input(
+            "Ad Account Name",
+            value=data.get("ad_account_name", ""),
+            placeholder="My Brand - Ad Account",
+            key="fb_ad_account_name",
+        )
+
+        # Validate Account button
+        if ad_account_id:
+            validate_col1, validate_col2 = st.columns([1, 2])
+            with validate_col1:
+                if st.button("Validate Account", key="validate_ad_account"):
+                    with st.spinner("Validating ad account..."):
+                        try:
+                            from viraltracker.services.meta_ads_service import MetaAdsService
+                            meta_service = MetaAdsService()
+                            validation = meta_service.validate_ad_account(ad_account_id)
+
+                            st.session_state["ad_account_validation"] = validation
+
+                            # Auto-fill name from API if not manually set
+                            if validation.get("name") and not ad_account_name:
+                                data["ad_account_name"] = validation["name"]
+
+                            # Store validation results in session data
+                            data["ad_account_validated"] = validation.get("valid_format", False)
+                            data["ad_account_has_access"] = validation.get("has_access", False)
+                            data["ad_account_name"] = validation.get("name") or ad_account_name
+                            data["meta_ad_account_id"] = validation.get("meta_ad_account_id", ad_account_id)
+                            service.update_section(UUID(session["id"]), "facebook_meta", data)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Validation failed: {e}")
+
+            # Show validation status
+            validation = st.session_state.get("ad_account_validation") or {}
+            if not validation and data.get("ad_account_validated") is not None:
+                # Reconstruct from saved data
+                validation = {
+                    "valid_format": data.get("ad_account_validated", False),
+                    "has_access": data.get("ad_account_has_access", False),
+                    "name": data.get("ad_account_name"),
+                }
+
+            if validation:
+                with validate_col2:
+                    if validation.get("has_access"):
+                        st.success(f"API access confirmed{' — ' + validation['name'] if validation.get('name') else ''}")
+                    elif validation.get("valid_format") and not validation.get("has_access"):
+                        st.warning(validation.get("error", "Account found but no read access."))
+                    elif validation.get("error"):
+                        st.error(validation.get("error", "Validation failed."))
 
     # Save basic info
     if st.button("💾 Save Facebook/Meta", type="primary", key="save_facebook"):
@@ -516,6 +569,7 @@ def render_facebook_tab(session: dict):
                 "page_url": page_url,
                 "ad_library_url": ad_library_url,
                 "ad_account_id": ad_account_id,
+                "ad_account_name": ad_account_name,
             }
         )
         service.update_section(UUID(session["id"]), "facebook_meta", data)
@@ -523,8 +577,15 @@ def render_facebook_tab(session: dict):
         st.rerun()
 
     # ============================================
-    # AD SCRAPING & ANALYSIS
+    # AD SCRAPING & ANALYSIS (skip-scraping banner when API access confirmed)
     # ============================================
+    if data.get("ad_account_has_access"):
+        st.info(
+            "**API mode enabled.** Ads, creatives, and performance data will be "
+            "pulled directly via Meta API for this brand. Ad Library scraping below "
+            "is optional for creative preview only."
+        )
+
     st.markdown("---")
     st.markdown("### 📊 Ad Analysis for Offer Variants")
     st.caption(
