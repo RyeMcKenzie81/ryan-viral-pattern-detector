@@ -13,7 +13,8 @@
 | Phase 2A | Brand Profile + Blueprint Service (Skill 5) | Done | `CHECKPOINT_PHASE_2.md` |
 | Phase 2B | Blueprint UI (Tab 3) | Done | `CHECKPOINT_PHASE_2.md` |
 | Phase 2C | Chunked streaming blueprint fix | Done | `CHECKPOINT_PHASE_2_CHUNKED_BLUEPRINT.md` |
-| **Manual QA** | **Test Phases 0-2 end-to-end** | **Next** | — |
+| Phase 2D | Persona selector for blueprint generation | Done | `CHECKPOINT_PERSONA_SELECTOR.md` |
+| **Manual QA** | **Test Phases 0-2D end-to-end** | **Next** | — |
 
 ## What Needs Testing Now
 
@@ -34,6 +35,8 @@
 - `migrations/2026-02-09_landing_page_blueprint_fields.sql`
 - `migrations/2026-02-09_landing_page_analyses.sql`
 - `migrations/2026-02-09_landing_page_blueprints.sql`
+- `migrations/2026-02-09_landing_page_blueprints_add_persona_id.sql`
+- `migrations/2026-02-10_landing_page_blueprints_add_partial_status.sql`
 
 ## Feature Flag
 ```sql
