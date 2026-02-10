@@ -357,15 +357,23 @@ def _render_single_gap_control(
                     key_suffix=key_suffix,
                 )
 
-        # Manual entry input — check for "Use This" prefill
+        # Manual entry input — check for "Use This" / AI suggestion prefill
         widget_key = f"lpa_gap_input_{spec.key}_{key_suffix}"
         usethis_key = f"lpa_gap_usethis_{spec.key}_{key_suffix}"
         prefill = st.session_state.get(usethis_key, "")
 
+        # Streamlit keyed widgets ignore the `value` param after first render —
+        # they always read from st.session_state[widget_key]. So when we have a
+        # new prefill value, set it directly on the widget key and clear the
+        # intermediate key to avoid overwriting future user edits.
+        if prefill:
+            st.session_state[widget_key] = prefill
+            del st.session_state[usethis_key]
+
         if spec.value_type == "text":
             new_value = st.text_area(
                 f"Enter {spec.display_name}",
-                value=prefill,
+                value=st.session_state.get(widget_key, ""),
                 key=widget_key,
                 height=100,
             )
@@ -373,7 +381,7 @@ def _render_single_gap_control(
             st.caption("Enter one item per line:")
             new_value = st.text_area(
                 f"Enter {spec.display_name}",
-                value=prefill,
+                value=st.session_state.get(widget_key, ""),
                 key=widget_key,
                 height=150,
             )
@@ -381,7 +389,7 @@ def _render_single_gap_control(
             _render_structured_entry_help(spec)
             new_value = st.text_area(
                 f"Enter {spec.display_name} (JSON)",
-                value=prefill,
+                value=st.session_state.get(widget_key, ""),
                 key=widget_key,
                 height=200,
             )
