@@ -153,9 +153,6 @@ def _get_gap_filler_service():
 
 def _scrape_for_autofill(url: str, session_id: str) -> dict:
     """Scrape a URL and store result server-side. Returns scrape ref dict."""
-    import hashlib
-    from viraltracker.core.database import get_supabase_client
-
     web_service = get_web_scraping_service()
     result = web_service.scrape_url(url, formats=["markdown"])
 
@@ -163,41 +160,16 @@ def _scrape_for_autofill(url: str, session_id: str) -> dict:
         raise ValueError(f"Scrape failed: {result.error or 'No content returned'}")
 
     raw_markdown = result.markdown
-    content_length = len(raw_markdown)
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    content_hash = hashlib.sha256(raw_markdown.encode()).hexdigest()
 
-    # Store in onboarding_scrape_cache (server-side, not session state)
-    supabase = get_supabase_client()
-    supabase.table("onboarding_scrape_cache").upsert({
-        "session_id": session_id,
-        "url_hash": url_hash,
-        "url": url,
-        "raw_markdown": raw_markdown,
-        "content_hash": content_hash,
-        "content_length": content_length,
-    }, on_conflict="session_id,url_hash").execute()
-
-    return {
-        "url": url,
-        "url_hash": url_hash,
-        "content_length": content_length,
-        "raw_markdown": raw_markdown,  # Keep in memory for immediate use
-    }
+    # Store in onboarding_scrape_cache via service (server-side, not session state)
+    service = get_onboarding_service()
+    return service.cache_onboarding_scrape(session_id, url, raw_markdown)
 
 
 def _load_cached_markdown(session_id: str, url_hash: str) -> str:
     """Load cached markdown from server-side storage."""
-    from viraltracker.core.database import get_supabase_client
-
-    supabase = get_supabase_client()
-    result = supabase.table("onboarding_scrape_cache").select(
-        "raw_markdown"
-    ).eq("session_id", session_id).eq("url_hash", url_hash).limit(1).execute()
-
-    if result.data:
-        return result.data[0]["raw_markdown"]
-    return ""
+    service = get_onboarding_service()
+    return service.load_onboarding_scrape(session_id, url_hash)
 
 
 def _render_autofill_suggestions(

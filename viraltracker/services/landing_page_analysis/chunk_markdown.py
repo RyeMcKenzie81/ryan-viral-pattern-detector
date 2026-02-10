@@ -9,11 +9,10 @@ The full page content is always stored in the DB — these functions only
 select what the LLM sees.
 """
 
-import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 @dataclass

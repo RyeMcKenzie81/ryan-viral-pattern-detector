@@ -14,6 +14,7 @@ Architecture:
 Part of the Service Layer - contains business logic, no UI or agent code.
 """
 
+import hashlib
 import logging
 import re
 from datetime import datetime
@@ -731,6 +732,61 @@ Return ONLY a JSON array of question strings."""
         slug = re.sub(r"[^a-z0-9]+", "-", slug)
         slug = slug.strip("-")
         return slug
+
+    # ------------------------------------------------------------------
+    # Onboarding scrape cache (server-side LP storage before import)
+    # ------------------------------------------------------------------
+
+    def cache_onboarding_scrape(
+        self, session_id: str, url: str, raw_markdown: str,
+    ) -> dict:
+        """Store a scrape result in server-side cache during onboarding.
+
+        Args:
+            session_id: Onboarding session UUID.
+            url: URL that was scraped.
+            raw_markdown: Full page markdown content.
+
+        Returns:
+            Dict with url, url_hash, content_length, raw_markdown.
+        """
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        content_hash = hashlib.sha256(raw_markdown.encode()).hexdigest()
+        content_length = len(raw_markdown)
+
+        self.supabase.table("onboarding_scrape_cache").upsert({
+            "session_id": session_id,
+            "url_hash": url_hash,
+            "url": url,
+            "raw_markdown": raw_markdown,
+            "content_hash": content_hash,
+            "content_length": content_length,
+        }, on_conflict="session_id,url_hash").execute()
+
+        return {
+            "url": url,
+            "url_hash": url_hash,
+            "content_length": content_length,
+            "raw_markdown": raw_markdown,
+        }
+
+    def load_onboarding_scrape(self, session_id: str, url_hash: str) -> str:
+        """Load cached markdown from onboarding scrape cache.
+
+        Args:
+            session_id: Onboarding session UUID.
+            url_hash: SHA-256 hash of the URL.
+
+        Returns:
+            Raw markdown string, or empty string if not found.
+        """
+        result = self.supabase.table("onboarding_scrape_cache").select(
+            "raw_markdown"
+        ).eq("session_id", session_id).eq("url_hash", url_hash).limit(1).execute()
+
+        if result.data:
+            return result.data[0]["raw_markdown"]
+        return ""
 
     def _extract_facebook_page_id(self, url: str) -> Optional[str]:
         """
