@@ -224,7 +224,7 @@ class ReconstructionBlueprintService:
 
         from pydantic_ai.settings import ModelSettings
 
-        model_settings = ModelSettings(max_tokens=65536)
+        model_settings = ModelSettings(max_tokens=32768, timeout=600)
         model = Config.get_model("complex")
         agent = Agent(
             model=model,
