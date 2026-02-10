@@ -387,7 +387,7 @@ class ReconstructionBlueprintService:
         """
         from .prompts.reconstruction import RECONSTRUCTION_SYSTEM_PROMPT
         from viraltracker.core.config import Config
-        from viraltracker.services.agent_tracking import run_agent_with_tracking
+        from viraltracker.services.agent_tracking import run_agent_stream_with_tracking
         from pydantic_ai.settings import ModelSettings
 
         model_settings = ModelSettings(max_tokens=16384, timeout=600)
@@ -398,7 +398,7 @@ class ReconstructionBlueprintService:
             model_settings=model_settings,
         )
 
-        result = await run_agent_with_tracking(
+        result = await run_agent_stream_with_tracking(
             agent,
             user_content,
             model_settings=model_settings,

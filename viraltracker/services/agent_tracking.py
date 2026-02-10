@@ -143,6 +143,64 @@ def run_agent_sync_with_tracking(
     return result
 
 
+async def run_agent_stream_with_tracking(
+    agent: Agent[Any, T],
+    prompt: str,
+    *,
+    tracker: Optional[UsageTracker] = None,
+    user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+    tool_name: str = "pydantic_agent",
+    operation: str = "run",
+    **run_kwargs
+):
+    """
+    Run a PydanticAI agent with streaming to avoid Anthropic's non-streaming timeout.
+
+    Uses agent.run_stream() internally, consumes the full stream, then returns
+    a result-like object with .output and .usage() matching run_agent_with_tracking.
+
+    Use this for long-running generations (e.g. blueprint chunks) that would
+    exceed Anthropic's 10-minute non-streaming request limit.
+    """
+    # Enforce usage limit before running (fail open)
+    if organization_id and organization_id != "all":
+        try:
+            from .usage_limit_service import UsageLimitService
+            from ..core.database import get_supabase_client
+            limit_svc = UsageLimitService(get_supabase_client())
+            limit_svc.enforce_limit(organization_id, "monthly_cost")
+        except ImportError:
+            pass
+        except Exception as e:
+            from .usage_limit_service import UsageLimitExceeded
+            if isinstance(e, UsageLimitExceeded):
+                raise
+            logger.warning(f"Usage limit check failed (non-fatal): {e}")
+
+    # Run with streaming to keep the connection alive
+    async with agent.run_stream(prompt, **run_kwargs) as result:
+        async for _ in result.stream_text(delta=True):
+            pass  # consume the stream
+
+    # Track usage (fire-and-forget)
+    if tracker and organization_id and organization_id != "all":
+        try:
+            _track_agent_usage(
+                result=result,
+                agent=agent,
+                tracker=tracker,
+                user_id=user_id,
+                organization_id=organization_id,
+                tool_name=tool_name,
+                operation=operation,
+            )
+        except Exception as e:
+            logger.warning(f"Agent usage tracking failed (non-fatal): {e}")
+
+    return result
+
+
 def _track_agent_usage(
     result,
     agent: Agent,
