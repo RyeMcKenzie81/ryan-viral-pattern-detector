@@ -178,16 +178,19 @@ async def run_agent_stream_with_tracking(
                 raise
             logger.warning(f"Usage limit check failed (non-fatal): {e}")
 
-    # Run with streaming to keep the connection alive
-    async with agent.run_stream(prompt, **run_kwargs) as result:
-        async for _ in result.stream_text(delta=True):
-            pass  # consume the stream
+    # Run with streaming to keep the connection alive.
+    # StreamedRunResult has get_output() (not .output), so we capture
+    # both output and usage inside the context and return a wrapper
+    # that matches AgentRunResult's interface (.output / .usage()).
+    async with agent.run_stream(prompt, **run_kwargs) as stream_result:
+        output = await stream_result.get_output()
+        usage_data = stream_result.usage()
 
     # Track usage (fire-and-forget)
     if tracker and organization_id and organization_id != "all":
         try:
-            _track_agent_usage(
-                result=result,
+            _track_stream_usage(
+                usage=usage_data,
                 agent=agent,
                 tracker=tracker,
                 user_id=user_id,
@@ -198,7 +201,7 @@ async def run_agent_stream_with_tracking(
         except Exception as e:
             logger.warning(f"Agent usage tracking failed (non-fatal): {e}")
 
-    return result
+    return _StreamResultCompat(output=output, _usage=usage_data)
 
 
 def _track_agent_usage(
@@ -218,6 +221,43 @@ def _track_agent_usage(
     provider = _get_provider_from_model(model_name)
 
     # PydanticAI Usage object has: request_tokens, response_tokens, total_tokens
+    record = UsageRecord(
+        provider=provider,
+        model=model_name,
+        tool_name=tool_name,
+        operation=operation,
+        input_tokens=usage.request_tokens or 0,
+        output_tokens=usage.response_tokens or 0,
+    )
+
+    tracker.track(user_id, organization_id, record)
+    logger.debug(f"Tracked {tool_name}/{operation}: {usage.request_tokens}+{usage.response_tokens} tokens")
+
+
+class _StreamResultCompat:
+    """Lightweight wrapper so streamed results match AgentRunResult's interface."""
+
+    def __init__(self, output, _usage):
+        self.output = output
+        self._usage = _usage
+
+    def usage(self):
+        return self._usage
+
+
+def _track_stream_usage(
+    usage,
+    agent: Agent,
+    tracker: UsageTracker,
+    user_id: Optional[str],
+    organization_id: str,
+    tool_name: str,
+    operation: str,
+) -> None:
+    """Track usage from a pre-extracted Usage object (streaming variant)."""
+    model_name = str(agent.model) if agent.model else "unknown"
+    provider = _get_provider_from_model(model_name)
+
     record = UsageRecord(
         provider=provider,
         model=model_name,
