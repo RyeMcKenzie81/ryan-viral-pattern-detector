@@ -1,6 +1,6 @@
 # Landing Page Analyzer — Status
 
-**Last Updated:** 2026-02-09
+**Last Updated:** 2026-02-10
 
 ## Phase Overview
 
@@ -12,6 +12,7 @@
 | Phase 1C | Analysis UI (Tab 1 Analyze, Tab 2 Results) | Done | `CHECKPOINT_PHASE_0_1A.md` |
 | Phase 2A | Brand Profile + Blueprint Service (Skill 5) | Done | `CHECKPOINT_PHASE_2.md` |
 | Phase 2B | Blueprint UI (Tab 3) | Done | `CHECKPOINT_PHASE_2.md` |
+| Phase 2C | Chunked streaming blueprint fix | Done | `CHECKPOINT_PHASE_2_CHUNKED_BLUEPRINT.md` |
 | **Manual QA** | **Test Phases 0-2 end-to-end** | **Next** | — |
 
 ## What Needs Testing Now
@@ -63,11 +64,12 @@ VALUES ('your-org-id', 'landing_page_analyzer', true);
 | `viraltracker/services/landing_page_analysis/prompts/reconstruction.py` | Skill 5 prompt |
 | `viraltracker/ui/pages/33_🏗️_Landing_Page_Analyzer.py` | UI page (3 tabs) |
 
-### Modified Files (4)
+### Modified Files (5)
 | File | Changes |
 |------|---------|
 | `viraltracker/services/feature_service.py` | Added `LANDING_PAGE_ANALYZER` to FeatureKey |
 | `viraltracker/services/web_scraping_service.py` | Added `screenshot` field to ScrapeResult |
+| `viraltracker/services/agent_tracking.py` | Added `run_agent_stream_with_tracking()` for long-running LLM calls |
 | `viraltracker/ui/nav.py` | Registered page 33 in Ads section |
 | `viraltracker/ui/pages/02_🏢_Brand_Manager.py` | Brand voice/colors + product blueprint fields UI |
 
