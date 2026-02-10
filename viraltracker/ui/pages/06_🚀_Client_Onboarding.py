@@ -110,6 +110,239 @@ def get_group_resume_status(group: dict, max_ads: int = 50) -> dict:
         return {"already_analyzed": 0, "remaining": len(ads), "total": len(ads), "has_resume": False}
 
 # ============================================
+# AUTO-FILL HELPERS
+# ============================================
+
+# Gap key → (entity_level, session_field_name)
+ONBOARDING_GAP_KEY_MAP = {
+    "product.guarantee": ("product", "guarantee"),
+    "product.ingredients": ("product", "ingredients"),
+    "product.results_timeline": ("product", "results_timeline"),
+    "product.faq_items": ("product", "faq_items"),
+    "offer_variant.pain_points": ("offer_variant", "pain_points"),
+    "offer_variant.mechanism.name": ("offer_variant", "mechanism_name"),
+    "offer_variant.mechanism.root_cause": ("offer_variant", "mechanism_problem"),
+    "brand.voice_tone": ("brand", "brand_voice_tone"),
+}
+
+LP_AUTOFILL_FIELDS = [
+    "product.guarantee", "product.ingredients", "product.faq_items",
+    "product.results_timeline", "offer_variant.mechanism.name",
+    "offer_variant.mechanism.root_cause", "offer_variant.pain_points",
+    "brand.voice_tone",
+]
+
+REVIEW_AUTOFILL_FIELDS = [
+    "offer_variant.pain_points", "product.results_timeline",
+    "offer_variant.mechanism.root_cause",
+]
+
+def _get_gap_filler_service():
+    """Get ContentGapFillerService instance with tracking."""
+    from viraltracker.services.landing_page_analysis.content_gap_filler_service import (
+        ContentGapFillerService,
+    )
+    from viraltracker.core.database import get_supabase_client
+    from viraltracker.ui.utils import setup_tracking_context
+
+    supabase = get_supabase_client()
+    svc = ContentGapFillerService(supabase=supabase)
+    setup_tracking_context(svc)
+    return svc
+
+
+def _scrape_for_autofill(url: str, session_id: str) -> dict:
+    """Scrape a URL and store result server-side. Returns scrape ref dict."""
+    import hashlib
+    from viraltracker.core.database import get_supabase_client
+
+    web_service = get_web_scraping_service()
+    result = web_service.scrape_url(url, formats=["markdown"])
+
+    if not result.success or not result.markdown:
+        raise ValueError(f"Scrape failed: {result.error or 'No content returned'}")
+
+    raw_markdown = result.markdown
+    content_length = len(raw_markdown)
+    url_hash = hashlib.sha256(url.encode()).hexdigest()
+    content_hash = hashlib.sha256(raw_markdown.encode()).hexdigest()
+
+    # Store in onboarding_scrape_cache (server-side, not session state)
+    supabase = get_supabase_client()
+    supabase.table("onboarding_scrape_cache").upsert({
+        "session_id": session_id,
+        "url_hash": url_hash,
+        "url": url,
+        "raw_markdown": raw_markdown,
+        "content_hash": content_hash,
+        "content_length": content_length,
+    }, on_conflict="session_id,url_hash").execute()
+
+    return {
+        "url": url,
+        "url_hash": url_hash,
+        "content_length": content_length,
+        "raw_markdown": raw_markdown,  # Keep in memory for immediate use
+    }
+
+
+def _load_cached_markdown(session_id: str, url_hash: str) -> str:
+    """Load cached markdown from server-side storage."""
+    from viraltracker.core.database import get_supabase_client
+
+    supabase = get_supabase_client()
+    result = supabase.table("onboarding_scrape_cache").select(
+        "raw_markdown"
+    ).eq("session_id", session_id).eq("url_hash", url_hash).limit(1).execute()
+
+    if result.data:
+        return result.data[0]["raw_markdown"]
+    return ""
+
+
+def _render_autofill_suggestions(
+    suggestions: dict,
+    prod_idx: int,
+    session: dict,
+    products: list,
+    service,
+    source_label: str = "LP",
+):
+    """Render the auto-fill suggestion review UI.
+
+    Args:
+        suggestions: Dict keyed by gap_key with suggestion dicts.
+        prod_idx: Product index in the products list.
+        session: Full session dict.
+        products: Products list from session.
+        service: Onboarding service instance.
+        source_label: "LP" or "Reviews" for display.
+    """
+    if not suggestions:
+        st.info("No suggestions found.")
+        return
+
+    st.markdown(f"#### Auto-fill Suggestions ({source_label})")
+
+    # Confidence icons
+    conf_icons = {"high": "🟢", "medium": "🟡", "low": "🟠"}
+
+    prod = products[prod_idx]
+
+    # Accept All High+Medium button
+    high_medium = {k: v for k, v in suggestions.items()
+                   if v.get("confidence") in ("high", "medium")}
+    if len(high_medium) > 1:
+        if st.button(
+            f"Accept All High+Medium ({len(high_medium)})",
+            key=f"accept_all_{source_label.lower()}_{prod_idx}",
+            type="primary",
+        ):
+            # Store undo snapshot
+            st.session_state[f"autofill_undo_{prod_idx}"] = {
+                "products": [dict(p) for p in products],
+                "brand_basics": dict(session.get("brand_basics") or {}),
+            }
+            for gap_key, suggestion in high_medium.items():
+                _apply_suggestion(gap_key, suggestion, prod_idx, session, products, service)
+            st.success(f"Applied {len(high_medium)} suggestions!")
+            st.rerun()
+
+    # Per-suggestion rows
+    for gap_key, suggestion in suggestions.items():
+        if gap_key not in ONBOARDING_GAP_KEY_MAP:
+            continue
+
+        entity_level, field_name = ONBOARDING_GAP_KEY_MAP[gap_key]
+        confidence = suggestion.get("confidence", "low")
+        icon = conf_icons.get(confidence, "⚪")
+        value = suggestion.get("value")
+        display_name = gap_key.split(".")[-1].replace("_", " ").title()
+
+        # Format value preview
+        if isinstance(value, list):
+            preview = f"{len(value)} items"
+        elif isinstance(value, str) and len(value) > 80:
+            preview = value[:80] + "..."
+        else:
+            preview = str(value) if value else "_empty_"
+
+        col1, col2, col3 = st.columns([4, 1, 1])
+        with col1:
+            st.markdown(f"{icon} **{display_name}** ({confidence})")
+            st.caption(preview)
+            if suggestion.get("keyword_warning"):
+                st.warning(suggestion["keyword_warning"])
+        with col2:
+            if st.button("Accept", key=f"accept_{gap_key}_{source_label.lower()}_{prod_idx}"):
+                st.session_state[f"autofill_undo_{prod_idx}"] = {
+                    "products": [dict(p) for p in products],
+                    "brand_basics": dict(session.get("brand_basics") or {}),
+                }
+                _apply_suggestion(gap_key, suggestion, prod_idx, session, products, service)
+                st.success(f"Applied {display_name}!")
+                st.rerun()
+        with col3:
+            if st.button("Skip", key=f"skip_{gap_key}_{source_label.lower()}_{prod_idx}"):
+                pass  # No action needed — just don't apply
+
+    # Undo button
+    if f"autofill_undo_{prod_idx}" in st.session_state:
+        if st.button("Undo last accept", key=f"undo_{source_label.lower()}_{prod_idx}"):
+            undo = st.session_state.pop(f"autofill_undo_{prod_idx}")
+            service.update_section(UUID(session["id"]), "products", undo["products"])
+            if undo.get("brand_basics"):
+                service.update_section(UUID(session["id"]), "brand_basics", undo["brand_basics"])
+            st.success("Undone!")
+            st.rerun()
+
+
+def _apply_suggestion(gap_key, suggestion, prod_idx, session, products, service):
+    """Apply a single suggestion to the session data."""
+    entity_level, field_name = ONBOARDING_GAP_KEY_MAP[gap_key]
+    value = suggestion.get("value")
+
+    if entity_level == "brand":
+        brand_basics = session.get("brand_basics") or {}
+        brand_basics[field_name] = value
+        service.update_section(UUID(session["id"]), "brand_basics", brand_basics)
+    elif entity_level == "product":
+        prod = products[prod_idx]
+        # For list fields: append if existing has values
+        existing = prod.get(field_name)
+        if isinstance(value, list) and isinstance(existing, list) and existing:
+            # Merge without duplicates
+            existing_strs = {str(x).lower().strip() for x in existing}
+            for item in value:
+                if str(item).lower().strip() not in existing_strs:
+                    existing.append(item)
+            prod[field_name] = existing
+        else:
+            prod[field_name] = value
+        products[prod_idx] = prod
+        service.update_section(UUID(session["id"]), "products", products)
+    elif entity_level == "offer_variant":
+        # Apply to the current (most recent or default) offer variant
+        prod = products[prod_idx]
+        ovs = prod.get("offer_variants") or []
+        if ovs:
+            ov = ovs[-1]  # Apply to last variant
+            existing = ov.get(field_name)
+            if isinstance(value, list) and isinstance(existing, list) and existing:
+                existing_strs = {str(x).lower().strip() for x in existing}
+                for item in value:
+                    if str(item).lower().strip() not in existing_strs:
+                        existing.append(item)
+                ov[field_name] = existing
+            else:
+                ov[field_name] = value
+            ovs[-1] = ov
+            prod["offer_variants"] = ovs
+            products[prod_idx] = prod
+            service.update_section(UUID(session["id"]), "products", products)
+
+
+# ============================================
 # HELPER FUNCTIONS
 # ============================================
 
@@ -1304,13 +1537,35 @@ def render_products_tab(session: dict):
                         st.markdown(f"📦 Amazon: {prod['amazon_url']}{asin_display}")
 
                         # Amazon analysis button
-                        amz_col1, amz_col2 = st.columns([1, 3])
+                        amz_col1, amz_col2, amz_col3 = st.columns([1, 1, 2])
                         with amz_col1:
                             if st.button("🔬 Analyze Listing", key=f"analyze_amazon_{i}"):
                                 _analyze_amazon_listing(session, products, i, service)
                         with amz_col2:
                             if prod.get("amazon_analysis"):
                                 st.caption("✅ Amazon data extracted")
+                                if st.button("🤖 Auto-fill from Reviews", key=f"autofill_reviews_{i}"):
+                                    with st.spinner("Extracting fields from Amazon reviews..."):
+                                        try:
+                                            gap_filler = _get_gap_filler_service()
+                                            review_suggestions = asyncio.get_event_loop().run_until_complete(
+                                                gap_filler.extract_from_amazon_analysis(
+                                                    amazon_analysis=prod["amazon_analysis"],
+                                                    target_fields=REVIEW_AUTOFILL_FIELDS,
+                                                )
+                                            )
+                                            st.session_state[f"review_autofill_{i}"] = review_suggestions
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Review auto-fill failed: {e}")
+
+                        # Show review auto-fill suggestions if cached
+                        review_suggestions = st.session_state.get(f"review_autofill_{i}")
+                        if review_suggestions:
+                            _render_autofill_suggestions(
+                                review_suggestions, i, session, products, service,
+                                source_label="Reviews",
+                            )
 
                     # Dimensions & Weight
                     dims = prod.get("dimensions") or {}
@@ -1557,8 +1812,8 @@ def render_products_tab(session: dict):
                         key=f"ov_name_{i}",
                     )
 
-                    # Landing Page URL with Analyze and Extract Images buttons
-                    url_col1, url_col2, url_col3 = st.columns([3, 1, 1])
+                    # Landing Page URL with Analyze, Auto-fill, and Images buttons
+                    url_col1, url_col2, url_col3, url_col4 = st.columns([3, 1, 1, 1])
                     with url_col1:
                         ov_url = st.text_input(
                             "Landing Page URL *",
@@ -1570,10 +1825,20 @@ def render_products_tab(session: dict):
                         analyze_clicked = st.button(
                             "🔍 Analyze",
                             key=f"analyze_lp_{i}",
-                            help="Scrape the landing page to auto-fill fields",
+                            help="Scrape the landing page to auto-fill offer variant fields",
                             disabled=not ov_url,
                         )
                     with url_col3:
+                        st.markdown("")  # Spacing
+                        autofill_running = st.session_state.get(f"autofill_running_{i}", False)
+                        autofill_cached = f"lp_autofill_{i}" in st.session_state
+                        autofill_lp_clicked = st.button(
+                            "🤖 Auto-fill" if not autofill_cached else "🤖 Re-run",
+                            key=f"autofill_lp_{i}",
+                            help="AI extracts guarantee, ingredients, FAQ, mechanism, pain points from LP",
+                            disabled=not ov_url or autofill_running,
+                        )
+                    with url_col4:
                         st.markdown("")  # Spacing
                         extract_images_clicked = st.button(
                             "🖼️ Images",
@@ -1628,6 +1893,49 @@ def render_products_tab(session: dict):
                                     st.error(f"Analysis failed: {analysis.get('error')}")
                             except Exception as e:
                                 st.error(f"Error analyzing page: {e}")
+
+                    # Handle auto-fill from LP button click
+                    if autofill_lp_clicked and ov_url:
+                        st.session_state[f"autofill_running_{i}"] = True
+                        with st.spinner("Scraping page and extracting fields with AI..."):
+                            try:
+                                # Step 1: Scrape and cache server-side
+                                scrape_ref = _scrape_for_autofill(ov_url, session["id"])
+
+                                content_length = scrape_ref["content_length"]
+                                if content_length < 2000:
+                                    st.warning(
+                                        f"Very short content ({content_length} chars) — "
+                                        "page may not have loaded fully. Try 'Re-run'."
+                                    )
+
+                                # Step 2: Extract fields via chunked LLM
+                                gap_filler = _get_gap_filler_service()
+                                suggestions = asyncio.get_event_loop().run_until_complete(
+                                    gap_filler.extract_from_raw_content(
+                                        raw_content=scrape_ref["raw_markdown"],
+                                        target_fields=LP_AUTOFILL_FIELDS,
+                                        content_source="fresh_scrape",
+                                        source_url=ov_url,
+                                        product_name=prod.get("name"),
+                                        brand_name=(session.get("brand_basics") or {}).get("name"),
+                                    )
+                                )
+
+                                # Cache suggestions (small JSON — OK in session state)
+                                st.session_state[f"lp_autofill_{i}"] = suggestions
+                                st.session_state[f"autofill_running_{i}"] = False
+                                st.rerun()
+                            except Exception as e:
+                                st.session_state[f"autofill_running_{i}"] = False
+                                st.error(f"Auto-fill failed: {e}")
+
+                    # Show LP auto-fill suggestions if cached
+                    lp_suggestions = st.session_state.get(f"lp_autofill_{i}")
+                    if lp_suggestions:
+                        _render_autofill_suggestions(
+                            lp_suggestions, i, session, products, service, source_label="LP"
+                        )
 
                     # Get any stored analysis for pre-filling
                     lp_analysis = st.session_state.get(f"lp_analysis_{i}") or {}
