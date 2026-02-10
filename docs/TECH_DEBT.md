@@ -16,32 +16,26 @@ This document tracks technical debt and planned future enhancements that aren't 
 ### 1. Meta Ads OAuth Per-Brand Authentication
 
 **Priority**: Low (only needed for external client accounts)
-**Complexity**: Medium-High
+**Complexity**: Medium (schema ready, need OAuth UI flow)
 **Added**: 2025-12-20
+**Updated**: 2026-02-10
 
 **Context**: Currently using a single System User token for all ad accounts in the Business Manager. This works fine for internal brands but won't work for external client accounts.
 
-**What's needed**:
-1. Database migration - Add token columns to `brand_ad_accounts`:
-   ```sql
-   ALTER TABLE brand_ad_accounts ADD COLUMN IF NOT EXISTS
-       access_token TEXT,
-       token_expires_at TIMESTAMPTZ,
-       refresh_token TEXT,
-       auth_method TEXT DEFAULT 'system_user';
-   ```
+**Status**: OAuth-ready schema columns now exist on `brand_ad_accounts` (`auth_method`, `access_token`, `token_expires_at`, `refresh_token`) via migration `2026-02-10_brand_ad_accounts_oauth.sql`. Manual ad account ID entry + validation (format, existence, access checks) works in onboarding. Validated accounts are auto-linked on import.
 
-2. OAuth flow implementation:
+**Remaining work**:
+1. OAuth flow implementation:
    - "Connect Facebook" button in brand settings
    - Redirect to Facebook OAuth dialog
    - Handle callback, store tokens per-brand
    - Token refresh logic (60-day tokens)
 
-3. Service updates:
+2. Service updates:
    - `_get_access_token(brand_id)` - Check DB first, fallback to env var
    - Token expiry checking and refresh
 
-4. UI:
+3. UI:
    - Connection status indicator per brand
    - "Reconnect" button when token expires
 
@@ -483,17 +477,26 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 ### Content Gap Filler — Integrate with Brand Ingestion Tools
 
-**Priority**: Medium
+**Priority**: Medium (partially done)
 **Complexity**: Medium
 **Added**: 2026-02-10
+**Updated**: 2026-02-10
 
-**Context**: The Content Gap Filler currently works inline during blueprint review. It could be proactively integrated into the brand onboarding flow so gaps are filled before the first blueprint is ever generated.
+**Context**: The Content Gap Filler now uses heading-based markdown chunking (`chunk_markdown.py`) instead of hard truncation. Full LP content is always stored; only relevant chunks go to the LLM.
 
-**What's needed**:
-1. Wire gap filler data sources + auto-extraction into the initial brand onboarding flow
-2. Proactively run `check_available_sources()` during onboarding and surface which fields are already fillable
-3. Auto-populate fields like guarantee, FAQ, ingredients during onboarding rather than waiting for first blueprint
-4. Relevant tools: Brand Manager product setup, offer variant creation wizard, Amazon review scrape pipeline
+**Completed**:
+- `chunk_markdown()` with heading split + size/keyword fallback strategies
+- `pick_chunks_for_fields()` with keyword scoring and budget caps
+- Removed all `[:3000]`, `[:6000]`, `[:12000]` truncations from extraction pipeline
+- Content hash dedup for brand_landing_pages (avoids re-storing identical scrapes)
+- `extract_from_raw_content()` + `extract_from_amazon_analysis()` for onboarding auto-fill
+- Auto-fill from LP and Reviews in Client Onboarding (06_Client_Onboarding.py)
+- 29 unit tests for chunking module
 
-**Files**: `content_gap_filler_service.py`, Brand Manager UI pages
+**Remaining work**:
+1. Proactively run `check_available_sources()` during onboarding and surface which fields are already fillable
+2. Deterministic evidence snippets using `extract_deterministic_snippet()` — wire into suggestion display
+3. Integrate chunking into Brand Manager product setup (not just onboarding)
+
+**Files**: `chunk_markdown.py`, `content_gap_filler_service.py`, `06_Client_Onboarding.py`
 
