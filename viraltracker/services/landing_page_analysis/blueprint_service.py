@@ -376,7 +376,7 @@ class ReconstructionBlueprintService:
         user_content: str,
         operation_suffix: str,
     ) -> Dict[str, Any]:
-        """Execute a single blueprint LLM call with max_tokens=16384.
+        """Execute a single blueprint LLM call (streamed, max_tokens=32768).
 
         Args:
             user_content: The fully-built user prompt for this chunk.
@@ -390,7 +390,7 @@ class ReconstructionBlueprintService:
         from viraltracker.services.agent_tracking import run_agent_stream_with_tracking
         from pydantic_ai.settings import ModelSettings
 
-        model_settings = ModelSettings(max_tokens=16384, timeout=600)
+        model_settings = ModelSettings(max_tokens=32768, timeout=600)
         model = Config.get_model("complex")
         agent = Agent(
             model=model,
