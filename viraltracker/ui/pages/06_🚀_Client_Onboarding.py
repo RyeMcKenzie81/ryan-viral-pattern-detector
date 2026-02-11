@@ -284,6 +284,8 @@ def _apply_suggestion(gap_key, suggestion, prod_idx, session, products, service)
         brand_basics = session.get("brand_basics") or {}
         brand_basics[field_name] = value
         service.update_section(UUID(session["id"]), "brand_basics", brand_basics)
+        # Clear widget keys so rerun picks up new values
+        st.session_state.pop("brand_voice", None)
     elif entity_level == "product":
         prod = products[prod_idx]
         # For list fields: append if existing has values
@@ -318,6 +320,20 @@ def _apply_suggestion(gap_key, suggestion, prod_idx, session, products, service)
             prod["offer_variants"] = ovs
             products[prod_idx] = prod
             service.update_section(UUID(session["id"]), "products", products)
+
+    # Clear stale widget keys so rerun recreates them from fresh data
+    i = prod_idx
+    for key in [
+        # Product-level
+        f"prod_pain_{i}", f"prod_desires_{i}",
+        f"dim_w_{i}", f"dim_h_{i}", f"dim_d_{i}",
+        f"weight_val_{i}", f"weight_unit_{i}",
+        # Offer variant-level (keyed by product index)
+        f"ov_pain_{i}", f"ov_desires_{i}", f"ov_benefits_{i}",
+        f"ov_disallowed_{i}", f"ov_disclaimers_{i}",
+        f"ov_name_{i}", f"ov_url_{i}",
+    ]:
+        st.session_state.pop(key, None)
 
 
 # ============================================
