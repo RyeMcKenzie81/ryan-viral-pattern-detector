@@ -983,8 +983,6 @@ Return ONLY a JSON array of question strings."""
 
             if brand_basics.get("website_url"):
                 brand_data["website"] = brand_basics["website_url"]
-            if brand_basics.get("brand_voice"):
-                brand_data["brand_guidelines"] = brand_basics["brand_voice"]
             if brand_basics.get("brand_voice_tone"):
                 brand_data["brand_voice_tone"] = brand_basics["brand_voice_tone"]
             if brand_basics.get("disallowed_claims"):
