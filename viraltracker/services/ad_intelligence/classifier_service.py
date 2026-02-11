@@ -205,9 +205,10 @@ class ClassifierService:
             source = "existing_brand_ad_analysis"
 
         # 2. Try video classification if this is a video ad with budget
-        # Allow if we have meta_video_id OR has_video_in_storage (video file exists in assets)
+        # REQUIRE has_video_in_storage — having a meta_video_id alone is not enough
+        # because the video may be marked not_downloadable (e.g. Reels without source URL)
         has_video_in_storage = ad_data.get("has_video_in_storage", False)
-        if not classification_data and is_video and (video_id or has_video_in_storage) and video_budget_remaining > 0:
+        if not classification_data and is_video and has_video_in_storage and video_budget_remaining > 0:
             logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
             video_result = await self._classify_video_with_gemini(
                 video_id, ad_copy, ad_data.get("lp_data"),
@@ -226,11 +227,12 @@ class ClassifierService:
                     f"Skipping video ad {meta_ad_id}: video classification budget exhausted. "
                     f"Rerun analysis or increase budget to classify remaining video ads."
                 )
-            elif not video_id and not has_video_in_storage:
+            elif not has_video_in_storage:
                 skip_reason = "missing_video_file"
                 logger.warning(
-                    f"Skipping video ad {meta_ad_id}: no video file in storage. "
-                    f"Run 'Download Assets' to download video files."
+                    f"Skipping video ad {meta_ad_id}: no video file in storage "
+                    f"(video_id={video_id}). "
+                    f"Run 'Download Assets' or video may be not_downloadable (e.g. Reel)."
                 )
             else:
                 skip_reason = "video_classification_failed"
@@ -814,9 +816,10 @@ class ClassifierService:
         except Exception as e:
             logger.warning(f"Error fetching performance data for {meta_ad_id}: {e}")
 
-        # If is_video but no meta_video_id, check meta_ad_assets for downloaded video file
-        # This handles cases where video was downloaded but meta_video_id wasn't populated in Meta API
-        if result.get("is_video") and not result.get("meta_video_id"):
+        # For ALL video ads, check meta_ad_assets for an actual downloaded video file.
+        # Having a meta_video_id does NOT mean the video was downloaded — many are
+        # marked not_downloadable (e.g. Reels with no source URL from Meta API).
+        if result.get("is_video"):
             try:
                 asset_result = self.supabase.table("meta_ad_assets").select(
                     "storage_path"
@@ -826,9 +829,8 @@ class ClassifierService:
 
                 if asset_result.data:
                     result["has_video_in_storage"] = True
-                    logger.info(
-                        f"Ad {meta_ad_id} has video file in storage despite missing meta_video_id"
-                    )
+                else:
+                    result["has_video_in_storage"] = False
             except Exception as e:
                 logger.warning(f"Error checking meta_ad_assets for {meta_ad_id}: {e}")
 
