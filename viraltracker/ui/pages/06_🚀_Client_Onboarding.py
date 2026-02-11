@@ -569,8 +569,11 @@ def render_sidebar(session: dict):
             "🚀 Import to Production", type="primary", use_container_width=True
         ):
             try:
-                from viraltracker.ui.utils import get_current_organization_id
-                org_id = get_current_organization_id()
+                from viraltracker.ui.utils import get_current_organization_id, _auto_init_organization
+                org_id = get_current_organization_id() or _auto_init_organization()
+                if not org_id or org_id == "all":
+                    st.sidebar.error("Please select an organization before importing.")
+                    st.stop()
                 result = service.import_to_production(
                     UUID(session["id"]), organization_id=org_id,
                 )
