@@ -123,6 +123,8 @@ ONBOARDING_GAP_KEY_MAP = {
     "offer_variant.mechanism.name": ("offer_variant", "mechanism_name"),
     "offer_variant.mechanism.root_cause": ("offer_variant", "mechanism_problem"),
     "brand.voice_tone": ("brand", "brand_voice_tone"),
+    # Product-level target audience (used by product URL auto-fill)
+    "product.target_audience.pain_points": ("product_ta", "pain_points"),
 }
 
 LP_AUTOFILL_FIELDS = [
@@ -135,6 +137,12 @@ LP_AUTOFILL_FIELDS = [
 REVIEW_AUTOFILL_FIELDS = [
     "offer_variant.pain_points", "product.results_timeline",
     "offer_variant.mechanism.root_cause",
+]
+
+PRODUCT_URL_AUTOFILL_FIELDS = [
+    "product.guarantee", "product.ingredients", "product.faq_items",
+    "product.results_timeline", "offer_variant.mechanism.name",
+    "offer_variant.mechanism.root_cause", "offer_variant.pain_points",
 ]
 
 def _get_gap_filler_service():
@@ -299,6 +307,22 @@ def _apply_suggestion(gap_key, suggestion, prod_idx, session, products, service)
             prod[field_name] = existing
         else:
             prod[field_name] = value
+        products[prod_idx] = prod
+        service.update_section(UUID(session["id"]), "products", products)
+    elif entity_level == "product_ta":
+        # Apply to product target_audience (from product URL auto-fill)
+        prod = products[prod_idx]
+        ta = prod.get("target_audience") or {}
+        existing = ta.get(field_name)
+        if isinstance(value, list) and isinstance(existing, list) and existing:
+            existing_strs = {str(x).lower().strip() for x in existing}
+            for item in value:
+                if str(item).lower().strip() not in existing_strs:
+                    existing.append(item)
+            ta[field_name] = existing
+        else:
+            ta[field_name] = value
+        prod["target_audience"] = ta
         products[prod_idx] = prod
         service.update_section(UUID(session["id"]), "products", products)
     elif entity_level == "offer_variant":
@@ -1738,6 +1762,69 @@ def render_products_tab(session: dict):
                     if st.button("🔬 Analyze Listing", key=f"analyze_amazon_edit_{i}"):
                         _analyze_amazon_listing(session, products, i, service)
 
+                # Product URL field (editable) with auto-fill
+                product_url = st.text_input(
+                    "Product URL",
+                    value=prod.get("product_url", ""),
+                    placeholder="https://brand.com/product-name",
+                    key=f"prod_url_{i}",
+                )
+                if product_url:
+                    prod_url_col1, prod_url_col2 = st.columns([1, 3])
+                    with prod_url_col1:
+                        prod_url_cached = f"prod_url_autofill_{i}" in st.session_state
+                        prod_url_autofill_clicked = st.button(
+                            "🤖 Auto-fill from Website" if not prod_url_cached else "🤖 Re-run",
+                            key=f"autofill_prod_url_{i}",
+                        )
+                    with prod_url_col2:
+                        if prod_url_cached:
+                            st.caption("✅ Website extracted")
+
+                    if prod_url_autofill_clicked:
+                        with st.spinner("Scraping product website and extracting fields with AI..."):
+                            try:
+                                scrape_ref = _scrape_for_autofill(product_url, session["id"])
+                                content_length = scrape_ref["content_length"]
+                                if content_length < 2000:
+                                    st.warning(
+                                        f"Very short content ({content_length} chars) — "
+                                        "page may not have loaded fully. Try 'Re-run'."
+                                    )
+
+                                gap_filler = _get_gap_filler_service()
+                                suggestions = asyncio.run(
+                                    gap_filler.extract_from_raw_content(
+                                        raw_content=scrape_ref["raw_markdown"],
+                                        target_fields=PRODUCT_URL_AUTOFILL_FIELDS,
+                                        content_source="fresh_scrape",
+                                        source_url=product_url,
+                                        product_name=prod.get("name"),
+                                        brand_name=(session.get("brand_basics") or {}).get("name"),
+                                    )
+                                )
+
+                                # Remap offer_variant keys to product target_audience
+                                prod_suggestions = {}
+                                for key, val in suggestions.items():
+                                    if key == "offer_variant.pain_points":
+                                        prod_suggestions["product.target_audience.pain_points"] = val
+                                    else:
+                                        prod_suggestions[key] = val
+
+                                st.session_state[f"prod_url_autofill_{i}"] = prod_suggestions
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Auto-fill failed: {e}")
+
+                    # Show product URL auto-fill suggestions if cached
+                    prod_url_suggestions = st.session_state.get(f"prod_url_autofill_{i}")
+                    if prod_url_suggestions:
+                        _render_autofill_suggestions(
+                            prod_url_suggestions, i, session, products, service,
+                            source_label="Website",
+                        )
+
                 edit_col1, edit_col2 = st.columns(2)
 
                 with edit_col1:
@@ -2131,6 +2218,9 @@ def render_products_tab(session: dict):
                     # Save product name
                     if prod_name_edit:
                         prod["name"] = prod_name_edit
+
+                    # Save Product URL
+                    prod["product_url"] = product_url
 
                     # Save Amazon URL and extract ASIN
                     prod["amazon_url"] = amazon_url
