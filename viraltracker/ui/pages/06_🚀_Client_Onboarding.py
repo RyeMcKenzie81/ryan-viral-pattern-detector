@@ -1455,23 +1455,21 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
                 prod["images"] = product_info["images"][:10]
 
             # Populate product-level target audience from reviews
+            # Always overwrite on re-analyze — user clicked the button, they want fresh data
             # Prefer rich_analysis themes (clean labels) over messaging (may be raw sentences)
             messaging = result.get("messaging", {})
             rich = result.get("rich_analysis") or {}
             ta = prod.get("target_audience") or {}
 
-            if not ta.get("pain_points"):
-                if rich.get("pain_points"):
-                    # Rich analysis: extract theme names (clean labels)
-                    ta["pain_points"] = [t["theme"] for t in rich["pain_points"] if t.get("theme")][:7]
-                elif messaging.get("pain_points"):
-                    ta["pain_points"] = messaging["pain_points"][:7]
+            if rich.get("pain_points"):
+                ta["pain_points"] = [t["theme"] for t in rich["pain_points"] if t.get("theme")][:7]
+            elif messaging.get("pain_points"):
+                ta["pain_points"] = messaging["pain_points"][:7]
 
-            if not ta.get("desires_goals"):
-                if rich.get("desired_outcomes"):
-                    ta["desires_goals"] = [t["theme"] for t in rich["desired_outcomes"] if t.get("theme")][:7]
-                elif messaging.get("desires_goals"):
-                    ta["desires_goals"] = messaging["desires_goals"][:7]
+            if rich.get("desired_outcomes"):
+                ta["desires_goals"] = [t["theme"] for t in rich["desired_outcomes"] if t.get("theme")][:7]
+            elif messaging.get("desires_goals"):
+                ta["desires_goals"] = messaging["desires_goals"][:7]
 
             if ta:
                 prod["target_audience"] = ta
