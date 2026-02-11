@@ -10,6 +10,7 @@ import logging
 import asyncio
 import time
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from uuid import UUID
@@ -28,6 +29,14 @@ logger = logging.getLogger(__name__)
 # account setup.  "omni_purchase" is the omnichannel variant (website + app +
 # offline combined) and is the superset, so we check it first.
 PURCHASE_ACTION_TYPES = ["omni_purchase", "purchase"]
+
+
+@dataclass
+class AssetDownloadResult:
+    """Result from an asset download attempt."""
+    storage_path: Optional[str] = None  # Set on success
+    status: str = "failed"              # "downloaded", "not_downloadable", or "failed"
+    reason: Optional[str] = None        # Reason code for non-success
 
 
 class MetaAdsService:
@@ -69,6 +78,8 @@ class MetaAdsService:
         "video_p50_watched_actions",
         "video_p75_watched_actions",
         "video_p100_watched_actions",
+        "video_p95_watched_actions",
+        "video_thruplay_watched_actions",
     ]
 
     def __init__(
@@ -666,13 +677,16 @@ class MetaAdsService:
                         if image_url:
                             logger.info(f"Ad {ad_id}: IMAGE - FALLBACK to thumbnail_url (no image_url found)")
 
-                if image_url:
-                    thumbnails[ad_id] = {
-                        "thumbnail_url": image_url,
-                        "video_id": video_id,
-                        "is_video": is_video,
-                    }
-                else:
+                # Always add entry — caller needs fetch_ok to distinguish
+                # "API succeeded but no URL" from "per-ad API error"
+                thumbnails[ad_id] = {
+                    "thumbnail_url": image_url,  # None when no URL found
+                    "video_id": video_id,
+                    "is_video": is_video,
+                    "object_type": object_type,
+                    "fetch_ok": True,
+                }
+                if not image_url:
                     logger.warning(f"No image found for ad {ad_id}, creative {creative_id}")
 
             except Exception as e:
@@ -739,16 +753,37 @@ class MetaAdsService:
             "video_p50_watched": self._extract_video_metric(insight, "video_p50_watched_actions"),
             "video_p75_watched": self._extract_video_metric(insight, "video_p75_watched_actions"),
             "video_p100_watched": self._extract_video_metric(insight, "video_p100_watched_actions"),
+            # New action types
+            "initiate_checkouts": self._extract_action(insight, "initiate_checkout"),
+            "landing_page_views": self._extract_action(insight, "landing_page_view"),
+            "content_views": self._extract_action(insight, "view_content"),
+            # New video metrics (from separate insight fields)
+            "video_thruplay": self._extract_video_metric(insight, "video_thruplay_watched_actions"),
+            "video_p95_watched": self._extract_video_metric(insight, "video_p95_watched_actions"),
+            # New costs
+            "cost_per_initiate_checkout": self._extract_cost(insight, "initiate_checkout"),
             # Raw data for extensibility
             "raw_actions": insight.get("actions"),
             "raw_costs": insight.get("cost_per_action_type"),
         }
 
-        # Calculate conversion rate
-        if result["purchases"] and result["link_clicks"]:
+        # Calculate conversion rate (use is not None to handle 0 correctly)
+        if result["purchases"] is not None and result["link_clicks"] is not None and result["link_clicks"] > 0:
             result["conversion_rate"] = (result["purchases"] / result["link_clicks"]) * 100
         else:
             result["conversion_rate"] = None
+
+        # Hold rate = ThruPlay / 3-second video views
+        if result["video_thruplay"] is not None and result["video_views"] is not None and result["video_views"] > 0:
+            result["hold_rate"] = round(result["video_thruplay"] / result["video_views"], 4)
+        else:
+            result["hold_rate"] = None
+
+        # Hook rate = 3-second video views / impressions
+        if result["video_views"] is not None and result["impressions"] is not None and result["impressions"] > 0:
+            result["hook_rate"] = round(result["video_views"] / result["impressions"], 4)
+        else:
+            result["hook_rate"] = None
 
         return result
 
@@ -1019,6 +1054,15 @@ class MetaAdsService:
                     "raw_actions": insight.get("raw_actions"),
                     "raw_costs": insight.get("raw_costs"),
                     "thumbnail_url": insight.get("thumbnail_url"),
+                    # New metric columns
+                    "video_p95_watched": insight.get("video_p95_watched"),
+                    "video_thruplay": insight.get("video_thruplay"),
+                    "hold_rate": insight.get("hold_rate"),
+                    "hook_rate": insight.get("hook_rate"),
+                    "initiate_checkouts": insight.get("initiate_checkouts"),
+                    "landing_page_views": insight.get("landing_page_views"),
+                    "content_views": insight.get("content_views"),
+                    "cost_per_initiate_checkout": insight.get("cost_per_initiate_checkout"),
                     "brand_id": str(brand_id) if brand_id else None,
                     "ad_status": ad_statuses.get(ad_id),  # Add status if fetched
                 }
@@ -1036,6 +1080,128 @@ class MetaAdsService:
 
         logger.info(f"Saved {saved_count}/{len(insights)} performance records (with {len(ad_statuses)} statuses)")
         return saved_count
+
+    def backfill_expanded_metrics(self, brand_id: UUID, batch_size: int = 500) -> int:
+        """Backfill new metric columns from raw_actions JSONB for existing rows.
+
+        Processes in batches to avoid memory issues.
+        Only updates rows where new columns are NULL (won't overwrite).
+
+        Can populate: initiate_checkouts, landing_page_views, content_views,
+        cost_per_initiate_checkout, hook_rate.
+        Cannot populate (needs fresh sync): video_p95_watched, video_thruplay, hold_rate.
+
+        Args:
+            brand_id: Brand UUID to backfill.
+            batch_size: Rows per batch.
+
+        Returns:
+            Number of rows updated.
+        """
+        import json as json_mod
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+        updated_total = 0
+        last_id = None
+
+        while True:
+            # Paginate by id
+            query = supabase.table("meta_ads_performance").select(
+                "id, raw_actions, raw_costs, video_views, impressions"
+            ).eq(
+                "brand_id", str(brand_id)
+            ).not_.is_(
+                "raw_actions", "null"
+            ).or_(
+                "initiate_checkouts.is.null,"
+                "landing_page_views.is.null,"
+                "content_views.is.null,"
+                "cost_per_initiate_checkout.is.null,"
+                "hook_rate.is.null"
+            ).order("id").limit(batch_size)
+
+            if last_id:
+                query = query.gt("id", last_id)
+
+            result = query.execute()
+            rows = result.data or []
+            if not rows:
+                break
+
+            batch_updated = 0
+            for row in rows:
+                row_id = row["id"]
+                last_id = row_id
+
+                raw_actions = row.get("raw_actions")
+                raw_costs = row.get("raw_costs")
+                video_views = row.get("video_views")
+                impressions_val = row.get("impressions")
+
+                # Parse raw_actions if it's a string
+                if isinstance(raw_actions, str):
+                    try:
+                        raw_actions = json_mod.loads(raw_actions)
+                    except (json_mod.JSONDecodeError, TypeError):
+                        raw_actions = None
+
+                if isinstance(raw_costs, str):
+                    try:
+                        raw_costs = json_mod.loads(raw_costs)
+                    except (json_mod.JSONDecodeError, TypeError):
+                        raw_costs = None
+
+                updates = {}
+
+                # Extract from actions array
+                if isinstance(raw_actions, list):
+                    for action in raw_actions:
+                        at = action.get("action_type")
+                        val = action.get("value")
+                        if at == "initiate_checkout" and val is not None:
+                            updates["initiate_checkouts"] = self._parse_int(val)
+                        elif at == "landing_page_view" and val is not None:
+                            updates["landing_page_views"] = self._parse_int(val)
+                        elif at == "view_content" and val is not None:
+                            updates["content_views"] = self._parse_int(val)
+
+                # Extract cost
+                if isinstance(raw_costs, list):
+                    for cost in raw_costs:
+                        if cost.get("action_type") == "initiate_checkout":
+                            updates["cost_per_initiate_checkout"] = self._parse_float(cost.get("value"))
+
+                # Calculate hook_rate from existing columns
+                if video_views is not None and impressions_val is not None:
+                    vv = self._parse_int(video_views)
+                    imp = self._parse_int(impressions_val)
+                    if vv is not None and imp is not None and imp > 0:
+                        updates["hook_rate"] = round(vv / imp, 4)
+
+                # Only update columns that would be NULL (don't overwrite)
+                # Filter out None values from updates
+                updates = {k: v for k, v in updates.items() if v is not None}
+
+                if not updates:
+                    continue
+
+                try:
+                    supabase.table("meta_ads_performance").update(
+                        updates
+                    ).eq("id", row_id).execute()
+                    batch_updated += 1
+                except Exception as e:
+                    logger.warning(f"Failed to backfill row {row_id}: {e}")
+
+            updated_total += batch_updated
+            logger.info(f"Backfill batch: updated {batch_updated}/{len(rows)} rows (total: {updated_total})")
+
+            if len(rows) < batch_size:
+                break
+
+        logger.info(f"Backfill complete for brand {brand_id}: {updated_total} rows updated")
+        return updated_total
 
     async def update_missing_thumbnails(
         self,
@@ -1057,30 +1223,36 @@ class MetaAdsService:
         supabase = get_supabase_client()
         logger.info(f"[THUMBNAILS] Starting update_missing_thumbnails for brand {brand_id}")
 
-        # Find ads without thumbnails (check for NULL)
-        # Query more rows to ensure we get enough unique ad IDs
-        query = supabase.table("meta_ads_performance").select(
-            "meta_ad_id"
-        ).is_("thumbnail_url", "null")
-
-        if brand_id:
-            query = query.eq("brand_id", str(brand_id))
-
-        # Get more rows than limit to account for duplicates
-        result = query.limit(limit * 10).execute()
-        logger.info(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} rows with NULL thumbnail")
-
-        if not result.data:
-            # Also check for empty string thumbnails
-            query2 = supabase.table("meta_ads_performance").select(
+        # Find ads missing thumbnail (null OR empty string) OR missing object_type
+        # Single query replaces the old two-step null/empty approach and adds
+        # object_type backfill.  Deploy guard: object_type column may not exist
+        # before migration runs.
+        try:
+            query = supabase.table("meta_ads_performance").select(
                 "meta_ad_id"
-            ).eq("thumbnail_url", "")
-
+            ).or_("thumbnail_url.is.null,thumbnail_url.eq.,object_type.is.null")
             if brand_id:
-                query2 = query2.eq("brand_id", str(brand_id))
-
-            result = query2.limit(limit * 10).execute()
-            logger.info(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} rows with empty thumbnail")
+                query = query.eq("brand_id", str(brand_id))
+            result = query.limit(limit * 10).execute()
+            logger.info(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} rows needing thumbnail or object_type")
+        except Exception:
+            logger.debug("object_type column not available yet — falling back to thumbnail-only query")
+            # Legacy two-step: null thumbnails first, then empty-string thumbnails
+            query = supabase.table("meta_ads_performance").select(
+                "meta_ad_id"
+            ).is_("thumbnail_url", "null")
+            if brand_id:
+                query = query.eq("brand_id", str(brand_id))
+            result = query.limit(limit * 10).execute()
+            logger.info(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} rows with NULL thumbnail")
+            if not result.data:
+                query2 = supabase.table("meta_ads_performance").select(
+                    "meta_ad_id"
+                ).eq("thumbnail_url", "")
+                if brand_id:
+                    query2 = query2.eq("brand_id", str(brand_id))
+                result = query2.limit(limit * 10).execute()
+                logger.info(f"[THUMBNAILS] Found {len(result.data) if result.data else 0} rows with empty thumbnail")
 
         if not result.data:
             logger.info("[THUMBNAILS] No ads need thumbnails")
@@ -1099,15 +1271,25 @@ class MetaAdsService:
             logger.info("[THUMBNAILS] No thumbnails returned from Meta API")
             return 0
 
-        # Update database records (thumbnail_url + video metadata)
+        # Update database records (thumbnail_url + video metadata + object_type)
+        # Guard: only set thumbnail_url when truthy — don't clobber existing
+        # with None for ads selected only because object_type IS NULL
         updated = 0
         for ad_id, meta in thumbnails.items():
             try:
-                update_data = {"thumbnail_url": meta["thumbnail_url"]}
+                update_data = {}
+                # Only set thumbnail_url when we actually have one
+                if meta.get("thumbnail_url"):
+                    update_data["thumbnail_url"] = meta["thumbnail_url"]
                 if meta.get("video_id"):
                     update_data["meta_video_id"] = meta["video_id"]
                 if meta.get("is_video") is not None:
                     update_data["is_video"] = meta["is_video"]
+                if meta.get("object_type"):
+                    update_data["object_type"] = meta["object_type"]
+
+                if not update_data:
+                    continue  # Nothing to update for this ad
 
                 supabase.table("meta_ads_performance").update(
                     update_data
@@ -1207,10 +1389,12 @@ class MetaAdsService:
         mime_type: str,
         file_extension: str,
         meta_video_id: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> AssetDownloadResult:
         """Download an asset from a URL and store it in Supabase storage.
 
         Generic helper for both video and image downloads.
+        Classifies HTTP failures as terminal (not_downloadable) or
+        retriable (failed) based on status code.
 
         Args:
             meta_ad_id: Meta ad ID.
@@ -1222,10 +1406,12 @@ class MetaAdsService:
             meta_video_id: Meta video ID (for video assets only).
 
         Returns:
-            Storage path string or None on failure.
+            AssetDownloadResult with status and optional storage_path.
         """
         from ..core.database import get_supabase_client
         import httpx
+
+        supabase = get_supabase_client()
 
         try:
             async with httpx.AsyncClient(
@@ -1236,10 +1422,27 @@ class MetaAdsService:
             ) as http_client:
                 response = await http_client.get(source_url, follow_redirects=True)
                 if response.status_code != 200:
+                    # Classify HTTP failure
+                    hard_failures = {403, 404, 410}
+                    if response.status_code in hard_failures:
+                        status = "not_downloadable"
+                    else:
+                        status = "failed"
+                    reason = f"http_{response.status_code}"
+
                     logger.warning(
-                        f"Failed to download {asset_type} for ad {meta_ad_id}: HTTP {response.status_code}"
+                        f"Failed to download {asset_type} for ad {meta_ad_id}: "
+                        f"HTTP {response.status_code} -> {status}"
                     )
-                    return None
+                    supabase.table("meta_ad_assets").upsert({
+                        "meta_ad_id": meta_ad_id,
+                        "brand_id": str(brand_id),
+                        "asset_type": asset_type,
+                        "storage_path": "",
+                        "status": status,
+                        "not_downloadable_reason": reason,
+                    }, on_conflict="meta_ad_id,asset_type").execute()
+                    return AssetDownloadResult(status=status, reason=reason)
                 content_bytes = response.content
 
             file_size = len(content_bytes)
@@ -1249,7 +1452,6 @@ class MetaAdsService:
 
             # Upload to Supabase storage
             storage_key = f"{brand_id}/{meta_ad_id}{file_extension}"
-            supabase = get_supabase_client()
 
             supabase.storage.from_("meta-ad-assets").upload(
                 storage_key,
@@ -1279,18 +1481,29 @@ class MetaAdsService:
                 on_conflict="meta_ad_id,asset_type",
             ).execute()
 
-            return storage_path
+            return AssetDownloadResult(storage_path=storage_path, status="downloaded")
 
         except Exception as e:
             logger.error(f"Failed to download/store {asset_type} for ad {meta_ad_id}: {e}")
-            return None
+            try:
+                supabase.table("meta_ad_assets").upsert({
+                    "meta_ad_id": meta_ad_id,
+                    "brand_id": str(brand_id),
+                    "asset_type": asset_type,
+                    "storage_path": "",
+                    "status": "failed",
+                    "not_downloadable_reason": "download_error",
+                }, on_conflict="meta_ad_id,asset_type").execute()
+            except Exception:
+                pass  # Don't mask original error
+            return AssetDownloadResult(status="failed", reason="download_error")
 
     async def download_and_store_video(
         self,
         meta_ad_id: str,
         video_id: str,
         brand_id: UUID,
-    ) -> Optional[str]:
+    ) -> AssetDownloadResult:
         """Download a video from Meta and store it in Supabase storage.
 
         Fetches the video source URL via the Marketing API, then delegates
@@ -1302,7 +1515,7 @@ class MetaAdsService:
             brand_id: Brand UUID for storage path organization.
 
         Returns:
-            Storage path string or None on failure.
+            AssetDownloadResult with status and optional storage_path.
         """
         source_url = await self.fetch_video_source_url(video_id)
         if not source_url:
@@ -1316,9 +1529,10 @@ class MetaAdsService:
                 "asset_type": "video",
                 "storage_path": "",  # No file stored
                 "status": "not_downloadable",
+                "not_downloadable_reason": "no_source_url",
                 "meta_video_id": video_id,
             }, on_conflict="meta_ad_id,asset_type").execute()
-            return None
+            return AssetDownloadResult(status="not_downloadable", reason="no_source_url")
 
         return await self._download_and_store_asset(
             meta_ad_id=meta_ad_id,
@@ -1335,7 +1549,7 @@ class MetaAdsService:
         meta_ad_id: str,
         image_url: str,
         brand_id: UUID,
-    ) -> Optional[str]:
+    ) -> AssetDownloadResult:
         """Download an ad image and store it in Supabase storage.
 
         For static/image ads, the image_url from the creative is the actual
@@ -1347,11 +1561,11 @@ class MetaAdsService:
             brand_id: Brand UUID for storage path organization.
 
         Returns:
-            Storage path string or None on failure.
+            AssetDownloadResult with status and optional storage_path.
         """
         if not image_url:
             logger.warning(f"No image URL for ad {meta_ad_id}")
-            return None
+            return AssetDownloadResult(status="failed", reason="no_image_url")
 
         # Detect format from URL or default to jpg
         ext = ".jpg"
@@ -1398,9 +1612,9 @@ class MetaAdsService:
             "brand_id", str(brand_id)
         ).execute()
 
-        # Deduplicate: track unique video and image ads
-        unique_video_ads = set()
-        unique_image_ads = set()
+        # Deduplicate per-ad with precedence: if ANY row has is_video=true
+        # or a meta_video_id, it's a video ad. Prevents mixed-row misclassification.
+        ad_is_video = {}  # meta_ad_id -> bool
 
         for row in (all_perf.data or []):
             meta_ad_id = row.get("meta_ad_id")
@@ -1409,12 +1623,15 @@ class MetaAdsService:
 
             is_video = row.get("is_video")
             has_video_id = row.get("meta_video_id") is not None
-            has_thumbnail = row.get("thumbnail_url") is not None
 
-            if is_video and has_video_id:
-                unique_video_ads.add(meta_ad_id)
-            elif (not is_video or is_video is None) and has_thumbnail:
-                unique_image_ads.add(meta_ad_id)
+            if meta_ad_id not in ad_is_video:
+                ad_is_video[meta_ad_id] = False
+            # Once marked as video, stays video
+            if is_video or has_video_id:
+                ad_is_video[meta_ad_id] = True
+
+        unique_video_ads = {aid for aid, is_vid in ad_is_video.items() if is_vid}
+        unique_image_ads = {aid for aid, is_vid in ad_is_video.items() if not is_vid}
 
         total_videos = len(unique_video_ads)
         total_images = len(unique_image_ads)
@@ -1490,16 +1707,17 @@ class MetaAdsService:
 
         supabase = get_supabase_client()
         downloaded = {"videos": 0, "images": 0}
+        marked_nd = {"videos": 0, "images": 0}      # not_downloadable (terminal)
+        marked_failed = {"videos": 0, "images": 0}   # failed (retriable)
+        attempted = {"videos": 0, "images": 0}
         remaining_videos = max_videos
         remaining_images = max_images
 
-        # --- Video ads ---
+        # --- Video ads: any ad with a downloadable video ID ---
         video_ads_result = supabase.table("meta_ads_performance").select(
             "meta_ad_id, meta_video_id"
         ).eq(
             "brand_id", str(brand_id)
-        ).eq(
-            "is_video", True
         ).not_.is_(
             "meta_video_id", "null"
         ).execute()
@@ -1510,23 +1728,38 @@ class MetaAdsService:
             if ad_id not in video_ads:
                 video_ads[ad_id] = row["meta_video_id"]
 
-        # --- Image ads (non-video with a thumbnail_url) ---
-        image_ads_result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id, thumbnail_url"
-        ).eq(
-            "brand_id", str(brand_id)
-        ).or_(
-            "is_video.is.null,is_video.eq.false"
-        ).not_.is_(
-            "thumbnail_url", "null"
+        # --- Build strong video ad ID set for image exclusion ---
+        # Any ad with ANY video indicator on ANY row must be excluded from images
+        video_indicator_result = supabase.table("meta_ads_performance").select(
+            "meta_ad_id"
+        ).eq("brand_id", str(brand_id)).or_(
+            "is_video.eq.true,meta_video_id.not.is.null"
         ).execute()
 
-        image_ads = {}
-        for row in (image_ads_result.data or []):
-            ad_id = row["meta_ad_id"]
-            thumb = row.get("thumbnail_url", "")
-            if ad_id not in image_ads and thumb:
-                image_ads[ad_id] = thumb
+        video_ad_ids = set(
+            r["meta_ad_id"] for r in (video_indicator_result.data or []) if r.get("meta_ad_id")
+        )
+
+        # Also check object_type for VIDEO (if column exists)
+        try:
+            video_type_result = supabase.table("meta_ads_performance").select(
+                "meta_ad_id"
+            ).eq("brand_id", str(brand_id)).ilike("object_type", "%VIDEO%").execute()
+            video_ad_ids.update(
+                r["meta_ad_id"] for r in (video_type_result.data or []) if r.get("meta_ad_id")
+            )
+        except Exception:
+            logger.debug("object_type column not available yet — skipping object_type video check")
+
+        # --- Image ads: all unique ads minus known video ads ---
+        all_ads_result = supabase.table("meta_ads_performance").select(
+            "meta_ad_id"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        all_ad_ids = set(
+            r["meta_ad_id"] for r in (all_ads_result.data or []) if r.get("meta_ad_id")
+        )
+        image_ad_ids = all_ad_ids - video_ad_ids
 
         # --- Check which already have assets (downloaded or marked not_downloadable) ---
         existing_result = supabase.table("meta_ad_assets").select(
@@ -1552,15 +1785,19 @@ class MetaAdsService:
         if videos_to_dl and remaining_videos > 0:
             logger.info(f"Found {len(videos_to_dl)} video ads needing download")
             for meta_ad_id, video_id in list(videos_to_dl.items())[:remaining_videos]:
+                attempted["videos"] += 1
                 result = await self.download_and_store_video(meta_ad_id, video_id, brand_id)
-                if result:
+                if result.status == "downloaded":
                     downloaded["videos"] += 1
+                elif result.status == "not_downloadable":
+                    marked_nd["videos"] += 1
+                else:
+                    marked_failed["videos"] += 1
                 await self._rate_limit()
 
         # --- Download images ---
-        # Filter to those not already downloaded
         images_to_dl = [
-            ad_id for ad_id in image_ads.keys()
+            ad_id for ad_id in image_ad_ids
             if (ad_id, "image") not in existing_set
         ]
 
@@ -1568,34 +1805,72 @@ class MetaAdsService:
             logger.info(f"Found {len(images_to_dl)} image ads needing download")
 
             # Fetch fresh URLs from API (stored URLs expire)
-            # Process in batches to avoid API limits
             batch_size = min(remaining_images, 50)
             ad_ids_batch = images_to_dl[:batch_size]
 
             fresh_urls = await self.fetch_ad_thumbnails(ad_ids_batch)
             logger.info(f"Fetched {len(fresh_urls)} fresh image URLs from API")
 
-            for meta_ad_id in ad_ids_batch:
-                if downloaded["images"] >= remaining_images:
-                    break
+            # If the API returned NOTHING for the whole batch, it likely failed
+            if not fresh_urls and len(ad_ids_batch) > 0:
+                logger.warning(
+                    f"fetch_ad_thumbnails returned empty for {len(ad_ids_batch)} ads — "
+                    f"likely API failure, skipping batch (will retry next run)"
+                )
+            else:
+                for meta_ad_id in ad_ids_batch:
+                    if downloaded["images"] >= remaining_images:
+                        break
 
-                # Get fresh URL from API response
-                ad_data = fresh_urls.get(meta_ad_id, {})
-                fresh_url = ad_data.get("thumbnail_url") if isinstance(ad_data, dict) else None
+                    attempted["images"] += 1
 
-                if not fresh_url:
-                    logger.warning(f"No fresh URL for image ad {meta_ad_id}")
-                    continue
+                    # Get fresh URL from API response
+                    ad_data = fresh_urls.get(meta_ad_id, {})
+                    fresh_url = ad_data.get("thumbnail_url") if isinstance(ad_data, dict) else None
 
-                result = await self.download_and_store_image(meta_ad_id, fresh_url, brand_id)
-                if result:
-                    downloaded["images"] += 1
-                await self._rate_limit()
+                    if not fresh_url:
+                        if meta_ad_id in fresh_urls and isinstance(ad_data, dict) and ad_data.get("fetch_ok"):
+                            # Creative API succeeded but no image URL — terminal
+                            reason = "no_url_from_api"
+                            status = "not_downloadable"
+                        else:
+                            # Per-ad API error or missing — retriable
+                            reason = "creative_fetch_failed"
+                            status = "failed"
+
+                        logger.warning(
+                            f"No fresh URL for image ad {meta_ad_id} ({reason}) - marking as {status}"
+                        )
+                        supabase.table("meta_ad_assets").upsert({
+                            "meta_ad_id": meta_ad_id,
+                            "brand_id": str(brand_id),
+                            "asset_type": "image",
+                            "storage_path": "",
+                            "status": status,
+                            "not_downloadable_reason": reason,
+                        }, on_conflict="meta_ad_id,asset_type").execute()
+                        if status == "not_downloadable":
+                            marked_nd["images"] += 1
+                        else:
+                            marked_failed["images"] += 1
+                        continue
+
+                    result = await self.download_and_store_image(meta_ad_id, fresh_url, brand_id)
+                    if result.status == "downloaded":
+                        downloaded["images"] += 1
+                    elif result.status == "not_downloadable":
+                        marked_nd["images"] += 1
+                    else:
+                        marked_failed["images"] += 1
+                    await self._rate_limit()
 
         logger.info(
             f"Asset download complete for brand {brand_id}: "
-            f"{downloaded['videos']} videos, {downloaded['images']} images "
-            f"({len(videos_to_dl)} videos pending, {len(images_to_dl)} images pending)"
+            f"attempted={attempted['videos']}v/{attempted['images']}i, "
+            f"downloaded={downloaded['videos']}v/{downloaded['images']}i, "
+            f"marked_nd={marked_nd['videos']}v/{marked_nd['images']}i, "
+            f"failed_retriable={marked_failed['videos']}v/{marked_failed['images']}i, "
+            f"eligible={len(videos_to_dl)}v/{len(images_to_dl)}i"
         )
         return downloaded
 

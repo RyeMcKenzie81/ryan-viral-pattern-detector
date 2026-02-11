@@ -257,8 +257,8 @@ class ClassifierService:
         # 3. Fallback to image+copy classification (for non-video ads only)
         if not classification_data:
             classification_data = await self._classify_with_gemini(
-                thumbnail_url, ad_copy, ad_data.get("lp_data"),
-                meta_ad_id=meta_ad_id,
+                ad_data=ad_data,
+                ad_copy=ad_copy,
             )
             if classification_data is not None:
                 media_source = classification_data.pop("_media_source", None)
@@ -782,12 +782,12 @@ class ClassifierService:
             Dict with thumbnail_url, ad_copy, landing_page_id, lp_data,
             meta_video_id, is_video.
         """
-        result = {}
+        result = {"meta_ad_id": meta_ad_id}
 
         # Get thumbnail, ad copy, and video metadata from meta_ads_performance
         try:
             perf_result = self.supabase.table("meta_ads_performance").select(
-                "thumbnail_url, ad_name, meta_campaign_id, meta_video_id, is_video, video_views"
+                "thumbnail_url, ad_name, meta_campaign_id, meta_video_id, is_video, video_views, object_type"
             ).eq(
                 "meta_ad_id", meta_ad_id
             ).eq(
@@ -803,6 +803,7 @@ class ClassifierService:
                 result["campaign_id"] = row.get("meta_campaign_id", "")
                 result["meta_video_id"] = row.get("meta_video_id")
                 result["is_video"] = row.get("is_video", False)
+                result["object_type"] = row.get("object_type", "unknown")
 
                 # Bootstrap: if meta_video_id is NULL but video_views > 0,
                 # this is likely a video ad whose metadata hasn't been populated yet
@@ -1368,10 +1369,8 @@ class ClassifierService:
 
     async def _classify_with_gemini(
         self,
-        thumbnail_url: str,
+        ad_data: Dict,
         ad_copy: str,
-        lp_data: Optional[Dict] = None,
-        meta_ad_id: Optional[str] = None,
     ) -> Optional[Dict]:
         """Run lightweight Gemini classification on ad image + copy.
 
@@ -1380,15 +1379,18 @@ class ClassifierService:
         provides an image, returns None to signal the caller to skip.
 
         Args:
-            thumbnail_url: URL to ad thumbnail/image (fallback).
+            ad_data: Dict from _fetch_ad_data with thumbnail_url, meta_ad_id,
+                     object_type, lp_data etc.
             ad_copy: Ad copy text.
-            lp_data: Landing page data (optional).
-            meta_ad_id: Meta ad ID for stored image lookup.
 
         Returns:
             Dict with classification fields including ``_media_source``
             (``"stored"`` or ``"thumbnail"``), or None if no image available.
         """
+        meta_ad_id = ad_data.get("meta_ad_id")
+        thumbnail_url = ad_data.get("thumbnail_url")
+        object_type = ad_data.get("object_type", "unknown")
+
         if self._gemini is not None:
             gemini = self._gemini
         else:
@@ -1399,6 +1401,7 @@ class ClassifierService:
 
         image_bytes = None
         media_source = None
+        storage_path = None
 
         # 1. Try stored image from meta_ad_assets (permanent copy)
         if meta_ad_id:
@@ -1421,9 +1424,37 @@ class ClassifierService:
             except Exception as img_err:
                 logger.warning(f"Failed to download thumbnail for {meta_ad_id}: {img_err}")
 
-        # 3. Skip if no image available (no copy-only fallback)
+        # 3. Skip if no image available — log with reason codes
         if not image_bytes:
-            logger.warning(f"No image available for {meta_ad_id or 'unknown'}, skipping classification.")
+            reason = "unknown"
+            nd_reason = None
+            if meta_ad_id:
+                try:
+                    nd_result = self.supabase.table("meta_ad_assets").select(
+                        "status, not_downloadable_reason"
+                    ).eq("meta_ad_id", meta_ad_id).eq("asset_type", "image").limit(1).execute()
+                    if nd_result.data and nd_result.data[0].get("status") == "not_downloadable":
+                        reason = "asset_not_downloadable"
+                        nd_reason = nd_result.data[0].get("not_downloadable_reason")
+                except Exception:
+                    pass
+
+            if reason == "unknown":
+                if not meta_ad_id:
+                    reason = "no_meta_ad_id"
+                elif not storage_path and not thumbnail_url:
+                    reason = "no_image_source"
+                elif storage_path and not image_bytes:
+                    reason = "storage_download_failed"
+                elif thumbnail_url and not image_bytes:
+                    reason = "thumbnail_expired"
+
+            logger.warning(
+                f"No image available for {meta_ad_id or 'unknown'} "
+                f"(object_type={object_type}, reason={reason}"
+                f"{f', nd_reason={nd_reason}' if nd_reason else ''}), "
+                f"skipping classification."
+            )
             return None
 
         # 4. Classify with image
