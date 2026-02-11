@@ -1455,13 +1455,25 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
                 prod["images"] = product_info["images"][:10]
 
             # Populate product-level target audience from reviews
+            # Prefer rich_analysis themes (clean labels) over messaging (may be raw sentences)
             messaging = result.get("messaging", {})
-            if messaging.get("pain_points") or messaging.get("desires_goals"):
-                ta = prod.get("target_audience") or {}
-                if not ta.get("pain_points") and messaging.get("pain_points"):
+            rich = result.get("rich_analysis") or {}
+            ta = prod.get("target_audience") or {}
+
+            if not ta.get("pain_points"):
+                if rich.get("pain_points"):
+                    # Rich analysis: extract theme names (clean labels)
+                    ta["pain_points"] = [t["theme"] for t in rich["pain_points"] if t.get("theme")][:7]
+                elif messaging.get("pain_points"):
                     ta["pain_points"] = messaging["pain_points"][:7]
-                if not ta.get("desires_goals") and messaging.get("desires_goals"):
+
+            if not ta.get("desires_goals"):
+                if rich.get("desired_outcomes"):
+                    ta["desires_goals"] = [t["theme"] for t in rich["desired_outcomes"] if t.get("theme")][:7]
+                elif messaging.get("desires_goals"):
                     ta["desires_goals"] = messaging["desires_goals"][:7]
+
+            if ta:
                 prod["target_audience"] = ta
 
             # Create offer variant from Amazon messaging
@@ -1493,26 +1505,15 @@ def _analyze_amazon_listing(session: dict, products: list, prod_idx: int, servic
             products[prod_idx] = prod
             service.update_section(UUID(session["id"]), "products", products)
 
-            # Force-update widget keys so rerun picks up new values
-            # (Streamlit caches widget values by key — must update session_state directly)
-            dims = prod.get("dimensions") or {}
-            weight = prod.get("weight") or {}
-            ta = prod.get("target_audience") or {}
+            # Clear stale widget keys so rerun recreates them from fresh data
+            # (Streamlit caches widget values by key — deleting forces re-read from value= param)
             i = prod_idx
-            if dims.get("width"):
-                st.session_state[f"dim_w_{i}"] = str(dims["width"])
-            if dims.get("height"):
-                st.session_state[f"dim_h_{i}"] = str(dims["height"])
-            if dims.get("depth"):
-                st.session_state[f"dim_d_{i}"] = str(dims["depth"])
-            if weight.get("value"):
-                st.session_state[f"weight_val_{i}"] = float(weight["value"])
-            if weight.get("unit") and weight["unit"] in ["lbs", "kg", "oz", "g"]:
-                st.session_state[f"weight_unit_{i}"] = weight["unit"]
-            if ta.get("pain_points"):
-                st.session_state[f"prod_pain_{i}"] = "\n".join(ta["pain_points"])
-            if ta.get("desires_goals"):
-                st.session_state[f"prod_desires_{i}"] = "\n".join(ta["desires_goals"])
+            for key in [
+                f"dim_w_{i}", f"dim_h_{i}", f"dim_d_{i}", f"dim_unit_{i}",
+                f"weight_val_{i}", f"weight_unit_{i}",
+                f"prod_pain_{i}", f"prod_desires_{i}",
+            ]:
+                st.session_state.pop(key, None)
 
             # Show summary
             st.success("Amazon listing analyzed!")
