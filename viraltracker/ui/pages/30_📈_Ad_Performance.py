@@ -2877,15 +2877,20 @@ elif selected_tab == "🔗 Linked":
         if stats:
             v = stats["videos"]
             i = stats["images"]
-            # Show downloaded/total and pending
-            st.caption(
-                f"Videos: {v['downloaded']}/{v['total']} "
-                f"({v['pending']} pending)"
-            )
-            st.caption(
-                f"Images: {i['downloaded']}/{i['total']} "
-                f"({i['pending']} pending)"
-            )
+            # Show downloaded/total, pending, and unavailable
+            video_parts = [f"Videos: {v['downloaded']}/{v['total']}"]
+            if v['pending'] > 0:
+                video_parts.append(f"{v['pending']} pending")
+            if v['not_downloadable'] > 0:
+                video_parts.append(f"{v['not_downloadable']} unavailable")
+            st.caption(" | ".join(video_parts))
+
+            image_parts = [f"Images: {i['downloaded']}/{i['total']}"]
+            if i['pending'] > 0:
+                image_parts.append(f"{i['pending']} pending")
+            if i['not_downloadable'] > 0:
+                image_parts.append(f"{i['not_downloadable']} unavailable")
+            st.caption(" | ".join(image_parts))
 
     # Debug panel
     if st.session_state.get("ad_perf_debug_thumbs"):
