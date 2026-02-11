@@ -942,7 +942,9 @@ Return ONLY a JSON array of question strings."""
         logger.info(f"Product data backfill complete: {results}")
         return results
 
-    def import_to_production(self, session_id: UUID) -> Dict[str, Any]:
+    def import_to_production(
+        self, session_id: UUID, organization_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Import session data to production tables (brands, products, competitors).
 
@@ -980,6 +982,10 @@ Return ONLY a JSON array of question strings."""
                 "name": brand_basics["name"],
                 "slug": self._slugify(brand_basics["name"]),
             }
+
+            # organization_id is required (NOT NULL) on brands
+            if organization_id and organization_id != "all":
+                brand_data["organization_id"] = organization_id
 
             if brand_basics.get("website_url"):
                 brand_data["website"] = brand_basics["website_url"]
@@ -1020,13 +1026,23 @@ Return ONLY a JSON array of question strings."""
                     ad_account_id = facebook_meta["ad_account_id"].strip()
                     if not ad_account_id.startswith("act_"):
                         ad_account_id = f"act_{ad_account_id}"
-                    self.supabase.table("brand_ad_accounts").upsert({
+                    ad_account_data = {
                         "brand_id": str(brand_id),
                         "meta_ad_account_id": ad_account_id,
                         "account_name": facebook_meta.get("ad_account_name"),
                         "is_primary": True,
-                        "auth_method": "system_user",
-                    }, on_conflict="brand_id,meta_ad_account_id").execute()
+                    }
+                    try:
+                        ad_account_data["auth_method"] = "system_user"
+                        self.supabase.table("brand_ad_accounts").upsert(
+                            ad_account_data, on_conflict="brand_id,meta_ad_account_id"
+                        ).execute()
+                    except Exception:
+                        # auth_method column may not exist if migration not run
+                        ad_account_data.pop("auth_method", None)
+                        self.supabase.table("brand_ad_accounts").upsert(
+                            ad_account_data, on_conflict="brand_id,meta_ad_account_id"
+                        ).execute()
                     created["ad_account_linked"] = ad_account_id
                     logger.info(f"Linked ad account {ad_account_id} to brand {brand_id}")
                 except Exception as e:
@@ -1051,32 +1067,15 @@ Return ONLY a JSON array of question strings."""
                     prod_data = {
                         "brand_id": str(brand_id),
                         "name": prod["name"],
-                        "slug": self._slugify(prod["name"]),
                     }
 
                     if prod.get("description"):
                         prod_data["description"] = prod["description"]
-                    if prod.get("product_url"):
-                        prod_data["product_url"] = prod["product_url"]
-
-                    # Format dimensions as text (matches products table format)
-                    dimensions = prod.get("dimensions")
-                    if dimensions:
-                        dim_parts = []
-                        if dimensions.get("width"):
-                            dim_parts.append(f"W: {dimensions['width']}")
-                        if dimensions.get("height"):
-                            dim_parts.append(f"H: {dimensions['height']}")
-                        if dimensions.get("depth"):
-                            dim_parts.append(f"D: {dimensions['depth']}")
-                        if dim_parts:
-                            unit = dimensions.get("unit", "inches")
-                            prod_data["product_dimensions"] = f"{' x '.join(dim_parts)} ({unit})"
 
                     # Format target audience as text
                     target_audience = prod.get("target_audience")
+                    ta_parts = []
                     if target_audience:
-                        ta_parts = []
                         demographics = target_audience.get("demographics")
                         if demographics:
                             demo_str = ", ".join(
@@ -1090,8 +1089,23 @@ Return ONLY a JSON array of question strings."""
                         desires = target_audience.get("desires_goals")
                         if desires:
                             ta_parts.append(f"Desires/Goals: {', '.join(desires)}")
-                        if ta_parts:
-                            prod_data["target_audience"] = "\n".join(ta_parts)
+
+                    # Include dimensions in target_audience text
+                    dimensions = prod.get("dimensions")
+                    if dimensions:
+                        dim_parts = []
+                        if dimensions.get("width"):
+                            dim_parts.append(f"W: {dimensions['width']}")
+                        if dimensions.get("height"):
+                            dim_parts.append(f"H: {dimensions['height']}")
+                        if dimensions.get("depth"):
+                            dim_parts.append(f"D: {dimensions['depth']}")
+                        if dim_parts:
+                            unit = dimensions.get("unit", "inches")
+                            ta_parts.append(f"Dimensions: {' x '.join(dim_parts)} ({unit})")
+
+                    if ta_parts:
+                        prod_data["target_audience"] = "\n".join(ta_parts)
 
                     # Auto-filled fields from LP/review extraction
                     if prod.get("guarantee"):
@@ -1103,7 +1117,28 @@ Return ONLY a JSON array of question strings."""
                     if prod.get("faq_items"):
                         prod_data["faq_items"] = prod["faq_items"]  # JSONB
 
-                    prod_result = self.supabase.table("products").insert(prod_data).execute()
+                    # Optional columns that may not exist in all DB schemas
+                    optional_prod_fields = {}
+                    if prod.get("product_url"):
+                        optional_prod_fields["product_url"] = prod["product_url"]
+                    slug = self._slugify(prod["name"])
+                    if slug:
+                        optional_prod_fields["slug"] = slug
+
+                    prod_data.update(optional_prod_fields)
+                    try:
+                        prod_result = self.supabase.table("products").insert(prod_data).execute()
+                    except Exception as insert_err:
+                        if "PGRST204" in str(insert_err) or "schema cache" in str(insert_err):
+                            # Retry without optional fields
+                            for field in optional_prod_fields:
+                                prod_data.pop(field, None)
+                            logger.warning(
+                                f"Product insert failed with optional fields, retrying without: {insert_err}"
+                            )
+                            prod_result = self.supabase.table("products").insert(prod_data).execute()
+                        else:
+                            raise
                     created_product_id = prod_result.data[0]["id"]
                     product_ids.append(str(created_product_id))
                     logger.info(f"Created product: {prod['name']} ({created_product_id})")

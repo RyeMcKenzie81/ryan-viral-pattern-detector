@@ -569,7 +569,11 @@ def render_sidebar(session: dict):
             "🚀 Import to Production", type="primary", use_container_width=True
         ):
             try:
-                result = service.import_to_production(UUID(session["id"]))
+                from viraltracker.ui.utils import get_current_organization_id
+                org_id = get_current_organization_id()
+                result = service.import_to_production(
+                    UUID(session["id"]), organization_id=org_id,
+                )
                 st.sidebar.success(f"Imported! Brand ID: {result.get('brand_id')}")
                 st.rerun()
             except Exception as e:
