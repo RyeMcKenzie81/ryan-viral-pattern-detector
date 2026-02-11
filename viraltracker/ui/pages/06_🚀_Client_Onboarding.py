@@ -653,7 +653,7 @@ def render_brand_basics_tab(session: dict):
                             )
                             # Extract voice/tone
                             gap_svc = _get_gap_filler_service()
-                            suggestions = asyncio.get_event_loop().run_until_complete(
+                            suggestions = asyncio.run(
                                 gap_svc.extract_from_raw_content(
                                     raw_content=raw_md,
                                     target_fields=["brand.voice_tone"],
@@ -1636,7 +1636,7 @@ def render_products_tab(session: dict):
                                     with st.spinner("Extracting fields from Amazon reviews..."):
                                         try:
                                             gap_filler = _get_gap_filler_service()
-                                            review_suggestions = asyncio.get_event_loop().run_until_complete(
+                                            review_suggestions = asyncio.run(
                                                 gap_filler.extract_from_amazon_analysis(
                                                     amazon_analysis=prod["amazon_analysis"],
                                                     target_fields=REVIEW_AUTOFILL_FIELDS,
@@ -1999,7 +1999,7 @@ def render_products_tab(session: dict):
 
                                 # Step 2: Extract fields via chunked LLM
                                 gap_filler = _get_gap_filler_service()
-                                suggestions = asyncio.get_event_loop().run_until_complete(
+                                suggestions = asyncio.run(
                                     gap_filler.extract_from_raw_content(
                                         raw_content=scrape_ref["raw_markdown"],
                                         target_fields=LP_AUTOFILL_FIELDS,
@@ -2299,7 +2299,7 @@ def _analyze_competitor_ad_group(
                     max_ads=10,
                 )
 
-            result = asyncio.get_event_loop().run_until_complete(run_analysis())
+            result = asyncio.run(run_analysis())
 
             # Extract messaging from result
             ad_messaging = {
