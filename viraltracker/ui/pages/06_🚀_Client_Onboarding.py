@@ -564,16 +564,33 @@ def render_sidebar(session: dict):
                 except Exception as e:
                     st.sidebar.error(f"Backfill failed: {e}")
     elif score >= 50:
+        # Resolve organization for import
+        from viraltracker.ui.utils import get_current_organization_id, _auto_init_organization
+        org_id = get_current_organization_id() or _auto_init_organization()
+
+        # Superuser in "all" mode — show org picker
+        if not org_id or org_id == "all":
+            from viraltracker.services.organization_service import OrganizationService
+            from viraltracker.core.database import get_supabase_client
+            org_svc = OrganizationService(get_supabase_client())
+            all_orgs = org_svc.get_all_organizations()
+            if all_orgs:
+                org_options = {o["name"]: o["id"] for o in all_orgs}
+                selected_org_name = st.sidebar.selectbox(
+                    "Import into organization",
+                    options=list(org_options.keys()),
+                    key="import_org_selector",
+                )
+                org_id = org_options[selected_org_name]
+            else:
+                st.sidebar.error("No organizations found.")
+                st.stop()
+
         # Ready to import
         if st.sidebar.button(
             "🚀 Import to Production", type="primary", use_container_width=True
         ):
             try:
-                from viraltracker.ui.utils import get_current_organization_id, _auto_init_organization
-                org_id = get_current_organization_id() or _auto_init_organization()
-                if not org_id or org_id == "all":
-                    st.sidebar.error("Please select an organization before importing.")
-                    st.stop()
                 result = service.import_to_production(
                     UUID(session["id"]), organization_id=org_id,
                 )
