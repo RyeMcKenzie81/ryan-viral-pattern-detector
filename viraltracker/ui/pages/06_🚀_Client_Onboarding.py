@@ -614,11 +614,97 @@ def render_brand_basics_tab(session: dict):
     with col2:
         brand_voice = st.text_area(
             "Brand Voice / Tone",
-            value=data.get("brand_voice", ""),
+            value=data.get("brand_voice_tone") or data.get("brand_voice", ""),
             placeholder="Describe the brand's communication style, personality, key phrases...",
             height=120,
             key="brand_voice",
         )
+
+        # Auto-fill voice/tone from website
+        if website_url and data.get("scraped_website_data"):
+            voice_col1, voice_col2 = st.columns([1, 2])
+            with voice_col1:
+                voice_autofill_cached = "brand_voice_autofill" in st.session_state
+                voice_autofill_clicked = st.button(
+                    "🤖 Auto-fill Voice/Tone" if not voice_autofill_cached else "🤖 Re-run",
+                    key="autofill_brand_voice",
+                    help="AI analyzes the website to describe the brand's communication style",
+                )
+            with voice_col2:
+                if voice_autofill_cached:
+                    suggestion = st.session_state["brand_voice_autofill"]
+                    conf = suggestion.get("confidence", "medium")
+                    conf_icon = {"high": "✅", "medium": "🔶", "low": "⚠️"}.get(conf, "🔶")
+                    st.caption(f"{conf_icon} Voice/tone suggestion ready — see below")
+
+            if voice_autofill_clicked:
+                with st.spinner("Analyzing website for brand voice/tone..."):
+                    try:
+                        # Scrape for markdown (not structured)
+                        web_svc = get_web_scraping_service()
+                        scrape_result = web_svc.scrape_url(website_url, formats=["markdown"])
+                        if not scrape_result.success or not scrape_result.markdown:
+                            st.error("Could not scrape website for voice analysis.")
+                        else:
+                            raw_md = scrape_result.markdown
+                            # Cache markdown server-side
+                            service.cache_onboarding_scrape(
+                                session["id"], website_url, raw_md,
+                            )
+                            # Extract voice/tone
+                            gap_svc = _get_gap_filler_service()
+                            suggestions = asyncio.get_event_loop().run_until_complete(
+                                gap_svc.extract_from_raw_content(
+                                    raw_content=raw_md,
+                                    target_fields=["brand.voice_tone"],
+                                    source_url=website_url,
+                                    brand_name=data.get("name"),
+                                )
+                            )
+                            if "brand.voice_tone" in suggestions:
+                                st.session_state["brand_voice_autofill"] = suggestions["brand.voice_tone"]
+                                st.rerun()
+                            else:
+                                st.warning("Could not detect brand voice/tone from the website.")
+                    except Exception as e:
+                        st.error(f"Auto-fill failed: {e}")
+
+            # Show suggestion with accept/skip
+            if voice_autofill_cached:
+                suggestion = st.session_state["brand_voice_autofill"]
+                value = suggestion.get("value", "")
+                conf = suggestion.get("confidence", "medium")
+                reasoning = suggestion.get("reasoning", "")
+
+                with st.container(border=True):
+                    st.markdown(f"**Suggested Voice/Tone** ({conf} confidence)")
+                    st.text_area(
+                        "Preview",
+                        value=value,
+                        height=80,
+                        disabled=True,
+                        key="voice_tone_preview",
+                        label_visibility="collapsed",
+                    )
+                    if reasoning:
+                        st.caption(f"💡 {reasoning}")
+
+                    accept_col, skip_col = st.columns(2)
+                    with accept_col:
+                        if st.button("✅ Accept", key="accept_voice_tone"):
+                            # Update the session data
+                            data["brand_voice_tone"] = value
+                            data["brand_voice"] = value
+                            service.update_section(
+                                UUID(session["id"]), "brand_basics", data
+                            )
+                            st.session_state.pop("brand_voice_autofill", None)
+                            st.success("Voice/tone applied!")
+                            st.rerun()
+                    with skip_col:
+                        if st.button("⏭️ Skip", key="skip_voice_tone"):
+                            st.session_state.pop("brand_voice_autofill", None)
+                            st.rerun()
 
         # Logo upload placeholder
         st.markdown("**Logo Upload**")
@@ -672,6 +758,7 @@ def render_brand_basics_tab(session: dict):
                 "name": name,
                 "website_url": website_url,
                 "brand_voice": brand_voice,
+                "brand_voice_tone": brand_voice,  # Also save as brand_voice_tone for import
                 "disallowed_claims": [c.strip() for c in disallowed_claims_str.split("\n") if c.strip()],
             }
         )
