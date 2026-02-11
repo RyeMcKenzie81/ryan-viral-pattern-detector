@@ -500,3 +500,22 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 **Files**: `chunk_markdown.py`, `content_gap_filler_service.py`, `06_Client_Onboarding.py`
 
+---
+
+### 19. Replace `asyncio.get_event_loop()` in UI Pages
+
+**Priority**: Low (only fails when Streamlit thread has no event loop)
+**Complexity**: Trivial (find-and-replace)
+**Added**: 2026-02-10
+
+**Context**: Several UI pages use `asyncio.get_event_loop().run_until_complete()` to call async service methods. This fails in Streamlit's `ScriptRunner.scriptThread` which has no event loop, causing `"There is no current event loop"` errors. Already fixed in `06_Client_Onboarding.py` by switching to `asyncio.run()`.
+
+**Remaining instances**:
+- `viraltracker/ui/pages/21_🎨_Ad_Creator.py:2451` — `editable_ads = asyncio.get_event_loop().run_until_complete(...)`
+- `viraltracker/ui/pages/21_🎨_Ad_Creator.py:2531` — `result = asyncio.get_event_loop().run_until_complete(...)`
+- `viraltracker/ui/pages/47_🎬_Veo_Avatars.py:107` — `return asyncio.get_event_loop().run_until_complete(coro)`
+
+**Fix**: Replace `asyncio.get_event_loop().run_until_complete(coro)` with `asyncio.run(coro)` in each instance.
+
+**Files**: `21_Ad_Creator.py`, `47_Veo_Avatars.py`
+
