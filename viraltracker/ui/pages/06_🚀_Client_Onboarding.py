@@ -2422,7 +2422,35 @@ def render_competitors_tab(session: dict):
 
                 with col1:
                     if comp.get("website_url"):
-                        st.markdown(f"🌐 Website: {comp['website_url']}")
+                        web_col1, web_col2 = st.columns([3, 1])
+                        with web_col1:
+                            st.markdown(f"🌐 Website: {comp['website_url']}")
+                        with web_col2:
+                            if st.button("🔍 Scrape Website", key=f"scrape_comp_web_{i}"):
+                                with st.spinner("Scraping competitor website..."):
+                                    try:
+                                        web_service = get_web_scraping_service()
+                                        from viraltracker.services.web_scraping_service import (
+                                            LANDING_PAGE_SCHEMA,
+                                        )
+                                        result = web_service.extract_structured(
+                                            url=comp["website_url"],
+                                            schema=LANDING_PAGE_SCHEMA,
+                                        )
+                                        if result.success:
+                                            comp["scraped_website_data"] = result.data
+                                            competitors[i] = comp
+                                            service.update_section(
+                                                UUID(session["id"]), "competitors", competitors
+                                            )
+                                            st.success("Website scraped!")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Scrape failed: {result.error}")
+                                    except Exception as e:
+                                        st.error(f"Scrape error: {e}")
+                        if comp.get("scraped_website_data"):
+                            st.caption("✅ Website data collected")
                     if comp.get("facebook_page_url"):
                         st.markdown(f"📘 Facebook: {comp['facebook_page_url']}")
                     if comp.get("ad_library_url"):
