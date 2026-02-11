@@ -771,14 +771,40 @@ def render_brand_basics_tab(session: dict):
     if data.get("scraped_website_data"):
         with st.expander("📄 Scraped Website Data", expanded=False):
             scraped = data["scraped_website_data"]
-            if scraped.get("title"):
-                st.markdown(f"**Title:** {scraped['title']}")
-            if scraped.get("tagline"):
-                st.markdown(f"**Tagline:** {scraped['tagline']}")
+            # Support both old field names (title/tagline) and LANDING_PAGE_SCHEMA names
+            title = scraped.get("page_title") or scraped.get("title")
+            subtitle = scraped.get("meta_description") or scraped.get("tagline")
+            if title:
+                st.markdown(f"**Title:** {title}")
+            if subtitle:
+                st.markdown(f"**Subtitle:** {subtitle}")
+            if scraped.get("product_name"):
+                st.markdown(f"**Product:** {scraped['product_name']}")
             if scraped.get("benefits"):
                 st.markdown("**Benefits:**")
                 for b in scraped["benefits"][:5]:
                     st.caption(f"• {b}")
+            if scraped.get("features"):
+                st.markdown("**Features:**")
+                for f in scraped["features"][:5]:
+                    st.caption(f"• {f}")
+            if scraped.get("guarantee"):
+                st.markdown(f"**Guarantee:** {scraped['guarantee']}")
+            if scraped.get("call_to_action"):
+                st.markdown(f"**CTA:** {scraped['call_to_action']}")
+            if scraped.get("testimonials"):
+                st.markdown(f"**Testimonials:** {len(scraped['testimonials'])} found")
+            if scraped.get("social_proof"):
+                st.markdown("**Social Proof:**")
+                for sp in scraped["social_proof"][:3]:
+                    st.caption(f"• {sp}")
+            # Show message if nothing was extracted
+            if not any(scraped.get(k) for k in [
+                "page_title", "title", "meta_description", "tagline",
+                "product_name", "benefits", "features", "guarantee",
+                "call_to_action", "testimonials", "social_proof",
+            ]):
+                st.caption("_No structured data extracted. The scraper may have returned raw content only._")
 
     # Compliance Restrictions
     st.markdown("---")
