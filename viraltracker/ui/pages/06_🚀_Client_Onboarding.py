@@ -231,18 +231,24 @@ def _render_autofill_suggestions(
         value = suggestion.get("value")
         display_name = gap_key.split(".")[-1].replace("_", " ").title()
 
-        # Format value preview
-        if isinstance(value, list):
-            preview = f"{len(value)} items"
-        elif isinstance(value, str) and len(value) > 80:
-            preview = value[:80] + "..."
-        else:
-            preview = str(value) if value else "_empty_"
-
         col1, col2, col3 = st.columns([4, 1, 1])
         with col1:
             st.markdown(f"{icon} **{display_name}** ({confidence})")
-            st.caption(preview)
+            # Format value preview — show actual content, not just counts
+            if isinstance(value, list):
+                for item in value[:8]:
+                    if isinstance(item, dict):
+                        # FAQ items, ingredients, results_timeline
+                        parts = [str(v) for v in item.values() if v]
+                        st.caption(f"• {' — '.join(parts[:2])}")
+                    else:
+                        st.caption(f"• {str(item)[:120]}")
+                if len(value) > 8:
+                    st.caption(f"_...and {len(value) - 8} more_")
+            elif isinstance(value, str) and len(value) > 120:
+                st.caption(value[:120] + "...")
+            else:
+                st.caption(str(value) if value else "_empty_")
             if suggestion.get("keyword_warning"):
                 st.warning(suggestion["keyword_warning"])
         with col2:
