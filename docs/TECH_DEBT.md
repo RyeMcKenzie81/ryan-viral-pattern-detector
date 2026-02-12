@@ -552,7 +552,7 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 **Added**: 2026-02-11
 **Updated**: 2026-02-12
 
-**Status**: Core 4-phase implementation complete (commit `65119c2`). Tool Readiness `any_of_groups`, ad_copy extraction, destination sync wiring, Brand Research parallel Meta methods, URL Mapping Meta integration all shipped.
+**Status**: Core 4-phase implementation complete (commit `65119c2`). Tool Readiness `any_of_groups`, ad_copy extraction, destination sync wiring, Brand Research parallel Meta methods, URL Mapping Meta integration all shipped. Amazon review re-scrape buttons added to Brand Research, Brand Manager, and Pipeline Manager (commit `5e92787`). All UI model references updated from Opus 4.5 to Opus 4.6.
 
 **Known issue — destination sync bootstrap**: `discover_meta_urls()` depends on `meta_ad_destinations` being populated, which only happens during a meta_sync job (Step 4.5). For brands that haven't had a meta_sync since the deploy, the table is empty and URL discovery returns 0. **Fix**: either trigger a meta_sync job, or add a manual "Fetch Destinations" button to URL Mapping that calls `sync_ad_destinations_to_db()` on demand.
 
@@ -582,7 +582,7 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 2. **`get_matching_stats()` performance** — Currently fetches all `meta_ad_id` rows to COUNT(DISTINCT) in Python. For brands with very large Meta ad volumes, add a DB function or RPC. Low priority.
 
-3. **Copy analysis double-save** — `analyze_copy_batch_meta()` calls `analyze_copy()` which saves with `data_source='ad_library'` default, then re-saves with `data_source='meta_api'`. Works due to dedupe index but creates brief duplicates. Could refactor `analyze_copy()` to accept `data_source` param. Low priority.
+3. ~~**Copy analysis double-save**~~ — FIXED (commit `5e92787`). Added `skip_save=True` param to `analyze_copy()`, used by `analyze_copy_batch_meta()` so the Meta batch method handles its own save with correct FKs.
 
 4. **Hook Analysis / Congruence Insights Meta path** — These tools read from `ad_creative_classifications` which already handles Meta ads. But their hard requirement `has_ad_data` now uses `any_of_groups`. Verify end-to-end that classifications feed correctly when only Meta data exists.
 
