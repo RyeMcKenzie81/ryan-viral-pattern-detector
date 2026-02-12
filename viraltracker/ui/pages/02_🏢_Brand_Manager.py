@@ -33,6 +33,8 @@ if 'analyzing_image' not in st.session_state:
     st.session_state.analyzing_image = None
 if 'scraping_ads' not in st.session_state:
     st.session_state.scraping_ads = False
+if 'amazon_action_running' not in st.session_state:
+    st.session_state.amazon_action_running = False
 
 def get_supabase_client():
     """Get Supabase client."""
@@ -2293,11 +2295,75 @@ else:
                     render_offer_variant_discovery(selected_brand_id, product_id, product['name'])
 
                 with tab_amazon:
+                    # Amazon review scrape/analyze actions
+                    try:
+                        _amz_urls = get_supabase_client().table("amazon_product_urls").select(
+                            "amazon_url, asin, total_reviews_scraped, last_scraped_at"
+                        ).eq("product_id", product_id).execute()
+                        _amz_url_data = _amz_urls.data or []
+                    except Exception:
+                        _amz_url_data = []
+
+                    if _amz_url_data:
+                        _total_scraped = sum((u.get("total_reviews_scraped") or 0) for u in _amz_url_data)
+                        _asins = ", ".join(u.get("asin", "?") for u in _amz_url_data)
+                        st.caption(f"ASIN: {_asins} | {_total_scraped} reviews scraped")
+
+                        _btn_col1, _btn_col2, _btn_spacer = st.columns([1, 1, 2])
+                        with _btn_col1:
+                            if st.button("Re-scrape Reviews", key=f"bm_scrape_{product_id}",
+                                         disabled=st.session_state.amazon_action_running):
+                                st.session_state.amazon_action_running = True
+                                with st.spinner("Scraping Amazon reviews (2-5 min)..."):
+                                    try:
+                                        from viraltracker.services.amazon_review_service import AmazonReviewService
+                                        _svc = AmazonReviewService()
+                                        _saved = 0
+                                        for _u in _amz_url_data:
+                                            _res = _svc.scrape_reviews_for_product(
+                                                product_id=UUID(product_id),
+                                                amazon_url=_u["amazon_url"],
+                                            )
+                                            _saved += _res.reviews_saved
+                                        st.success(f"Scrape complete! {_saved} reviews saved.")
+                                    except Exception as e:
+                                        st.error(f"Scrape failed: {e}")
+                                st.session_state.amazon_action_running = False
+                                st.rerun()
+
+                        with _btn_col2:
+                            if st.button("Re-analyze Reviews", key=f"bm_analyze_{product_id}",
+                                         disabled=st.session_state.amazon_action_running, type="primary"):
+                                st.session_state.amazon_action_running = True
+                                with st.spinner("Analyzing reviews (30-60s)..."):
+                                    try:
+                                        from viraltracker.services.amazon_review_service import AmazonReviewService
+                                        from viraltracker.ui.utils import setup_tracking_context
+                                        import asyncio
+                                        _svc = AmazonReviewService()
+                                        setup_tracking_context(_svc)
+                                        _result = asyncio.run(
+                                            _svc.analyze_reviews_for_product(UUID(product_id))
+                                        )
+                                        if _result:
+                                            st.success("Analysis complete!")
+                                        else:
+                                            st.warning("No reviews found. Scrape first.")
+                                    except Exception as e:
+                                        st.error(f"Analysis failed: {e}")
+                                st.session_state.amazon_action_running = False
+                                st.rerun()
+
+                        st.markdown("---")
+
                     # Amazon Review Analysis
                     amazon_data = get_amazon_analysis_for_product(product_id)
 
                     if not amazon_data:
-                        st.info("No Amazon analysis imported. Run Amazon analysis during brand onboarding to populate this data.")
+                        if _amz_url_data:
+                            st.info("Reviews scraped but not yet analyzed. Click **Re-analyze Reviews** above.")
+                        else:
+                            st.info("No Amazon product URL configured. Add one in URL Mapping to enable review scraping.")
                     else:
                         col_am1, col_am2 = st.columns(2)
 
