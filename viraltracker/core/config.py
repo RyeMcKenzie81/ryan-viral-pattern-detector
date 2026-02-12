@@ -221,11 +221,11 @@ class Config:
 
             # Service & Pipeline Mappings
             "REDDIT": cls.BASIC_MODEL,        # Basic sentiment analysis
-            "COMIC": cls.COMPLEX_MODEL,       # Claude Opus 4.5 for comic scripts
-            "SCRIPT": cls.COMPLEX_MODEL,      # Claude Opus 4.5 for scripts
-            "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Opus 4.5 for creative writing
+            "COMIC": cls.COMPLEX_MODEL,       # Claude Opus 4.6 for comic scripts
+            "SCRIPT": cls.COMPLEX_MODEL,      # Claude Opus 4.6 for scripts
+            "COPY_SCAFFOLD": cls.CREATIVE_MODEL, # Opus 4.6 for creative writing
             "PLANNING": cls.COMPLEX_MODEL,    # Complex reasoning
-            "PERSONA": cls.CREATIVE_MODEL,    # Opus 4.5 for persona generation
+            "PERSONA": cls.CREATIVE_MODEL,    # Opus 4.6 for persona generation
         }
         
         if key_upper in mappings:

@@ -1196,7 +1196,7 @@ def _render_belief_first_section(brand_id: str, product_id: Optional[str], scrap
     from viraltracker.ui.utils import render_belief_first_analysis, render_belief_first_aggregation
 
     st.markdown("#### Belief-First Analysis (13-Layer Canvas)")
-    st.caption("Deep strategic analysis using Claude Opus 4.5 to evaluate messaging coherence")
+    st.caption("Deep strategic analysis using Claude Opus 4.6 to evaluate messaging coherence")
 
     if scraped_count == 0:
         st.info("Scrape landing pages first to run belief-first analysis.")
@@ -1231,11 +1231,11 @@ def _render_belief_first_section(brand_id: str, product_id: Optional[str], scrap
             )
 
             # Cost estimate
-            estimated_cost = analyze_limit * 0.15  # ~$0.15 per page with Opus 4.5
-            st.caption(f"Estimated cost: ~${estimated_cost:.2f} (Opus 4.5)")
+            estimated_cost = analyze_limit * 0.15  # ~$0.15 per page with Opus 4.6
+            st.caption(f"Estimated cost: ~${estimated_cost:.2f} (Opus 4.6)")
 
             if st.button("Run Belief-First Analysis", type="primary", key="btn_bf_analyze"):
-                with st.spinner(f"Analyzing {analyze_limit} pages with Claude Opus 4.5..."):
+                with st.spinner(f"Analyzing {analyze_limit} pages with Claude Opus 4.6..."):
                     try:
                         results = run_belief_first_analysis_sync(brand_id, analyze_limit, product_id)
                         st.success(f"Analyzed {len(results)} pages")

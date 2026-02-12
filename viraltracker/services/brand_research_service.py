@@ -911,7 +911,8 @@ class BrandResearchService:
         ad_copy: str,
         headline: Optional[str] = None,
         ad_id: Optional[UUID] = None,
-        brand_id: Optional[UUID] = None
+        brand_id: Optional[UUID] = None,
+        skip_save: bool = False,
     ) -> Dict:
         """
         Analyze ad copy text with Claude.
@@ -923,6 +924,7 @@ class BrandResearchService:
             headline: Optional headline text
             ad_id: Optional UUID of the facebook_ads record (if linked)
             brand_id: Optional brand to link analysis to
+            skip_save: If True, skip the internal DB save (caller handles it)
 
         Returns:
             Analysis result dict
@@ -964,14 +966,15 @@ class BrandResearchService:
 
             analysis_dict = json.loads(response_text)
 
-            # Save to database
-            self._save_copy_analysis(
-                ad_id=ad_id,
-                brand_id=brand_id,
-                raw_response=analysis_dict,
-                tokens_used=tokens_used,
-                model_used=Config.get_model("creative")
-            )
+            # Save to database (unless caller handles save separately)
+            if not skip_save:
+                self._save_copy_analysis(
+                    ad_id=ad_id,
+                    brand_id=brand_id,
+                    raw_response=analysis_dict,
+                    tokens_used=tokens_used,
+                    model_used=Config.get_model("creative")
+                )
 
             logger.info(f"Copy analysis complete for ad: {ad_id}")
             return analysis_dict
@@ -1508,7 +1511,7 @@ class BrandResearchService:
                 "visual_style_guide": summary.get("visual_style_guide"),
                 "images_analyzed": images_analyzed,
                 "videos_analyzed": videos_analyzed,
-                "model_used": "claude-opus-4-5-20251101",
+                "model_used": "claude-opus-4-6",
                 "generated_at": datetime.utcnow().isoformat()
             }
 
@@ -2345,8 +2348,9 @@ class BrandResearchService:
                     headline=None,
                     ad_id=None,
                     brand_id=brand_id,
+                    skip_save=True,
                 )
-                # Re-save with Meta-specific fields (overwrite the default save)
+                # Save with Meta-specific fields
                 self._save_copy_analysis(
                     ad_id=mid,
                     brand_id=brand_id,
@@ -3734,7 +3738,7 @@ class BrandResearchService:
         """
         Analyze a single landing page using the 13-layer belief-first canvas.
 
-        Uses Claude Opus 4.5 for deep strategic analysis that evaluates:
+        Uses Claude Opus 4.6 for deep strategic analysis that evaluates:
         - Market context & awareness level
         - Brand, product, persona alignment
         - JTBD, angle, unique mechanism
@@ -3774,7 +3778,7 @@ class BrandResearchService:
                 logger.warning(f"No content for page {page_id}, skipping")
                 return None
 
-            # Truncate content if too long (Opus 4.5 can handle large context)
+            # Truncate content if too long (Opus 4.6 can handle large context)
             max_content_length = 50000
             if len(content) > max_content_length:
                 content = content[:max_content_length] + "\n\n[Content truncated...]"
@@ -3786,7 +3790,7 @@ class BrandResearchService:
                 content=content
             )
 
-            # Call Claude Opus 4.5
+            # Call Claude Opus 4.6
             # Pydantic AI Agent (Complex assumption)
             agent = Agent(
                 model=Config.get_model("complex"),
@@ -3807,7 +3811,7 @@ class BrandResearchService:
             # Add metadata
             analysis["page_id"] = str(page_id)
             analysis["url"] = page.get("url", "")
-            analysis["model_used"] = "claude-opus-4-5-20251101"
+            analysis["model_used"] = "claude-opus-4-6"
             analysis["analyzed_at"] = datetime.utcnow().isoformat()
 
             # Save to database
@@ -3840,7 +3844,7 @@ class BrandResearchService:
         Args:
             brand_id: Brand UUID
             limit: Maximum pages to analyze
-            delay_between: Delay between API calls (Opus 4.5 benefits from spacing)
+            delay_between: Delay between API calls (Opus 4.6 benefits from spacing)
             product_id: Optional product filter
             force_reanalyze: Re-analyze existing
 
@@ -4054,7 +4058,7 @@ class BrandResearchService:
                 "average_score": aggregation.get("overall", {}).get("average_score"),
                 "most_common_issues": aggregation.get("overall", {}).get("most_common_issues", []),
                 "strongest_layers": aggregation.get("overall", {}).get("strongest_layers", []),
-                "model_used": "claude-opus-4-5-20251101",
+                "model_used": "claude-opus-4-6",
                 "generated_at": datetime.utcnow().isoformat()
             }
 
@@ -4894,7 +4898,7 @@ Return ONLY valid JSON, no other text."""
 
 
 # Belief-First Landing Page Evaluation Canvas
-# Uses Claude Opus 4.5 for deep strategic analysis of landing pages
+# Uses Claude Opus 4.6 for deep strategic analysis of landing pages
 BELIEF_FIRST_ANALYSIS_PROMPT = """You are an expert conversion copywriter evaluating landing pages through a "Belief-First" framework.
 
 Analyze this landing page through 13 strategic layers. For each layer, evaluate:
