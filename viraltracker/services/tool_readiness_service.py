@@ -22,8 +22,13 @@ class ToolReadinessService:
         self._freshness = DatasetFreshnessService()
         self._memo = {}
 
-    def get_readiness_report(self, brand_id: str):
+    def get_readiness_report(self, brand_id: str, session_org_id: str = None):
         """Build full readiness report for a brand.
+
+        Args:
+            brand_id: Brand UUID string.
+            session_org_id: Organization ID from the user's session.
+                Pass "all" for superusers to bypass feature gates.
 
         For each tool in the registry:
         1. Check if the tool's feature is enabled for the org (skip if not)
@@ -63,11 +68,14 @@ class ToolReadinessService:
         ready, partial, blocked, not_applicable = [], [], [], []
 
         from viraltracker.services.feature_service import FeatureService
-        feature_service = FeatureService(self._db) if brand_org_id else None
+        # Use session org for feature gating — superusers pass "all" which
+        # bypasses all feature gates.  Fall back to the brand's org.
+        feature_org_id = session_org_id or brand_org_id
+        feature_service = FeatureService(self._db) if feature_org_id else None
 
         for tool_key, tool_config in TOOL_REQUIREMENTS.items():
             feature_key = tool_config.get("feature_key")
-            if feature_key and feature_service and not feature_service.has_feature(brand_org_id, feature_key):
+            if feature_key and feature_service and not feature_service.has_feature(feature_org_id, feature_key):
                 continue
 
             applicability = tool_config.get("applicable_when")

@@ -83,10 +83,11 @@ cache_key = f"tool_readiness_{brand_id}"
 
 if cache_key not in st.session_state:
     from viraltracker.services.tool_readiness_service import ToolReadinessService
+    from viraltracker.ui.utils import get_current_organization_id
     service = ToolReadinessService()
     try:
         with st.spinner("Checking tool readiness..."):
-            report = service.get_readiness_report(brand_id)
+            report = service.get_readiness_report(brand_id, session_org_id=get_current_organization_id())
         st.session_state[cache_key] = report.model_dump(mode="json")
     except Exception as e:
         st.error(f"Failed to check readiness: {e}")
