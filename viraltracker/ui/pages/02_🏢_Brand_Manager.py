@@ -758,10 +758,21 @@ def render_offer_variant_discovery(brand_id: str, product_id: str, product_name:
     st.markdown("#### Discover Offer Variants from Ads")
     st.caption("Analyze your scraped Facebook ads to auto-discover landing pages and extract messaging.")
 
-    # Check for ads
+    # Check for ads (both scraped and Meta API)
     ads = get_brand_ads_for_grouping(brand_id)
     if not ads:
-        st.info("No ads scraped yet. Use 'Scrape Ads' in the Facebook Ad Library section above.")
+        # Check if brand has Meta API ads instead
+        try:
+            _db = get_supabase_client()
+            _meta_count = _db.table("meta_ads_performance").select(
+                "meta_ad_id", count="exact"
+            ).eq("brand_id", brand_id).limit(1).execute()
+            if (_meta_count.count or 0) > 0:
+                st.info("This brand has Meta API ads but no Ad Library scrapes. Use **Brand Research** or **URL Mapping** to discover offer variants from Meta ads.")
+            else:
+                st.info("No ads available. Scrape ads from the Ad Library or link a Meta ad account to enable variant discovery.")
+        except Exception:
+            st.info("No ads scraped yet. Use 'Scrape Ads' in the Facebook Ad Library section above.")
         return
 
     st.success(f"Found {len(ads)} scraped ads")
@@ -2365,59 +2376,96 @@ else:
                         else:
                             st.info("No Amazon product URL configured. Add one in URL Mapping to enable review scraping.")
                     else:
+                        # Helper to extract theme names from nested analysis data
+                        # New format: {themes: [{theme, score, quotes}, ...]}
+                        # Old format: direct list of strings
+                        def _extract_themes(data):
+                            if isinstance(data, dict):
+                                themes = data.get('themes', [])
+                            elif isinstance(data, list):
+                                themes = data
+                            else:
+                                return []
+                            # Each theme may be a dict with 'theme' key or a plain string
+                            return [t.get('theme', str(t)) if isinstance(t, dict) else str(t) for t in themes]
+
+                        # Extract from nested structure (matching Brand Research logic)
+                        pain_data = amazon_data.get('pain_points', {})
+                        if isinstance(pain_data, dict):
+                            pain_themes = _extract_themes(pain_data)
+                            jtbd_themes = _extract_themes({'themes': pain_data.get('jobs_to_be_done', [])})
+                            issues_themes = _extract_themes({'themes': pain_data.get('product_issues', [])})
+                        elif isinstance(pain_data, list):
+                            pain_themes = [str(p) for p in pain_data]
+                            jtbd_themes = []
+                            issues_themes = []
+                        else:
+                            pain_themes = []
+                            jtbd_themes = []
+                            issues_themes = []
+
+                        desires_themes = _extract_themes(amazon_data.get('desires', {}))
+                        objections_themes = _extract_themes(amazon_data.get('objections', {}))
+
                         col_am1, col_am2 = st.columns(2)
 
                         with col_am1:
-                            # Pain Points
                             st.markdown("**Pain Points from Reviews**")
-                            pain_points = amazon_data.get('pain_points') or []
-                            if pain_points:
-                                for pp in pain_points:
+                            if pain_themes:
+                                for pp in pain_themes:
                                     st.caption(f"• {pp}")
                             else:
                                 st.caption("None extracted")
 
-                            # Desires/Goals
-                            st.markdown("")
-                            st.markdown("**Desires & Goals**")
-                            desires = amazon_data.get('desires_goals') or []
-                            if desires:
-                                for d in desires:
-                                    st.caption(f"• {d}")
-                            else:
-                                st.caption("None extracted")
-
-                        with col_am2:
-                            # Benefits
-                            st.markdown("**Benefits Mentioned**")
-                            benefits = amazon_data.get('benefits') or []
-                            if benefits:
-                                for b in benefits:
-                                    st.caption(f"• {b}")
-                            else:
-                                st.caption("None extracted")
-
-                            # Jobs to be Done
                             st.markdown("")
                             st.markdown("**Jobs to be Done**")
-                            jtbd = amazon_data.get('jobs_to_be_done') or []
-                            if jtbd:
-                                for j in jtbd:
+                            if jtbd_themes:
+                                for j in jtbd_themes:
                                     st.caption(f"• {j}")
                             else:
                                 st.caption("None extracted")
 
-                        # Quotes section (full width)
-                        st.markdown("---")
-                        st.markdown("**Customer Quotes**")
-                        quotes = amazon_data.get('quotes') or []
-                        if quotes:
-                            for q in quotes[:5]:
-                                st.markdown(f"> *\"{q}\"*")
-                            if len(quotes) > 5:
-                                st.caption(f"*...and {len(quotes) - 5} more quotes*")
-                        else:
-                            st.caption("No quotes extracted")
+                        with col_am2:
+                            st.markdown("**Desired Outcomes**")
+                            if desires_themes:
+                                for d in desires_themes:
+                                    st.caption(f"• {d}")
+                            else:
+                                st.caption("None extracted")
+
+                            st.markdown("")
+                            st.markdown("**Buying Objections**")
+                            if objections_themes:
+                                for o in objections_themes:
+                                    st.caption(f"• {o}")
+                            else:
+                                st.caption("None extracted")
+
+                        # Product issues (full width)
+                        if issues_themes:
+                            st.markdown("---")
+                            st.markdown("**Product Issues**")
+                            for issue in issues_themes:
+                                st.caption(f"• {issue}")
+
+                        # Quotes — collect from all theme sections
+                        all_quotes = []
+                        for section_key in ['pain_points', 'desires', 'objections']:
+                            section = amazon_data.get(section_key, {})
+                            if isinstance(section, dict):
+                                for theme_list_key in ['themes', 'jobs_to_be_done', 'product_issues']:
+                                    for theme in (section.get(theme_list_key, []) if isinstance(section, dict) else []):
+                                        if isinstance(theme, dict):
+                                            all_quotes.extend(theme.get('quotes', []))
+
+                        if all_quotes:
+                            st.markdown("---")
+                            st.markdown("**Customer Quotes**")
+                            for q in all_quotes[:5]:
+                                quote_text = q.get('quote', q) if isinstance(q, dict) else str(q)
+                                st.markdown(f"> *\"{quote_text}\"*")
+                            if len(all_quotes) > 5:
+                                st.caption(f"*...and {len(all_quotes) - 5} more quotes*")
 
                         # Metadata
                         st.markdown("---")
