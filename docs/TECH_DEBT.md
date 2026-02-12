@@ -545,43 +545,44 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 ---
 
-### 20. Meta API Ads as First-Class Data Source for Brand Research & Downstream Tools
+### 20. Meta API Ads as First-Class Data Source — Remaining Work
 
-**Priority**: High
-**Complexity**: Medium-High
+**Priority**: Medium (core implementation done, remaining items are polish/robustness)
+**Complexity**: Low-Medium per item
 **Added**: 2026-02-11
+**Updated**: 2026-02-12
 
-**Context**: Brand Research currently assumes ads come from Facebook Ad Library scraping (via `ad_library_url`). But brands with a linked Meta ad account get richer data directly from the Meta API (synced via `meta_sync` job). These two data paths should be interchangeable — if a brand has Meta API data, there's no need to scrape the Ad Library.
+**Status**: Core 4-phase implementation complete (commit `65119c2`). Tool Readiness `any_of_groups`, ad_copy extraction, destination sync wiring, Brand Research parallel Meta methods, URL Mapping Meta integration all shipped.
 
-Currently, the Tool Readiness Dashboard treats `has_ad_library_url` and `has_ad_account` as independent soft requirements for Brand Research. The real logic should be: **either** a linked Meta ad account with synced data **or** an Ad Library URL is sufficient.
+**Known issue — destination sync bootstrap**: `discover_meta_urls()` depends on `meta_ad_destinations` being populated, which only happens during a meta_sync job (Step 4.5). For brands that haven't had a meta_sync since the deploy, the table is empty and URL discovery returns 0. **Fix**: either trigger a meta_sync job, or add a manual "Fetch Destinations" button to URL Mapping that calls `sync_ad_destinations_to_db()` on demand.
 
-**What needs investigation**:
+**Testing protocol** (use for QA after any changes to this subsystem):
 
-1. **Data parity audit**: Compare what `brand_facebook_ads` rows look like from Meta API sync vs Ad Library scraping. Do they have the same columns populated? Key fields to check:
-   - `ad_url` / `landing_page_url` — needed for URL Mapping and Landing Page Analyzer
-   - `ad_creative_bodies` / `ad_creative_link_titles` — needed for Hook Analysis
-   - `page_name`, `started_running_date` — needed for Competitive Analysis
-   - Video/image URLs — needed for Deep Video Analysis
-   - Any fields that are only populated by one source
+1. **Meta-only brand** (ad account linked, no Ad Library URL):
+   - Tool Readiness: tools show PARTIAL not BLOCKED, "Satisfied by: Meta ad account linked"
+   - Trigger meta_sync → verify `ad_copy` populated in `meta_ads_performance`
+   - Verify `meta_ad_destinations` populated after meta_sync (Step 4.5)
+   - Verify `brand_landing_pages` created during auto-classification (`scrape_missing_lp=True`)
+   - Brand Research: ad count shows Meta ads, copy/image/video analysis works
+   - URL Mapping: Discover URLs finds URLs from `meta_ad_destinations`, bulk match writes to `meta_ad_product_matches`
 
-2. **Landing page extraction**: Does Brand Research extract landing pages from Meta API ads the same way it does from scraped ads? If not, the landing page pipeline needs to handle both.
+2. **Scrape-only brand** (Ad Library URL, no ad account):
+   - No regressions across all tools
+   - `brand_ad_analysis` rows have `data_source='ad_library'`
 
-3. **URL Mapping**: Does the URL Mapping tool work with Meta API ads? It needs `ad_url` or similar to map ads to product URLs.
+3. **Both-sources brand**:
+   - Tool Readiness says "Satisfied by: Ad Library URL, Meta ad account linked"
+   - Brand Research shows combined ad counts
+   - URL Mapping discovers from both sources, matches to both tables
+   - No duplicate analysis rows
 
-4. **Tool Readiness registry update**: Change Brand Research requirements so `has_ad_account` (with synced ads) OR `has_ad_library_url` satisfies the "ad data source" need. May need a new check type like `any_of_requirements` that passes if at least one of several checks is met.
+**Remaining work**:
 
-5. **Brand Research UI**: Does the Brand Research page itself handle Meta API ads? Or does it only know how to scrape from Ad Library? If the latter, the page needs to also surface and analyze ads that arrived via Meta sync.
+1. **Destination sync bootstrap UX** — Add "Fetch Destinations" button to URL Mapping page that calls `sync_ad_destinations_to_db()` directly, so users don't have to wait for the scheduler. Low complexity.
 
-**Testing scenarios** (save for QA):
-- Brand with only Meta ad account (no Ad Library URL) → Brand Research should work, landing pages should be extractable, URL Mapping should function
-- Brand with only Ad Library URL (no Meta account) → existing flow, should still work
-- Brand with both → should prefer Meta API data (richer), no duplicate processing
-- Downstream tools (Hook Analysis, Congruence Insights, Landing Page Analyzer) should work identically regardless of ad data source
+2. **`get_matching_stats()` performance** — Currently fetches all `meta_ad_id` rows to COUNT(DISTINCT) in Python. For brands with very large Meta ad volumes, add a DB function or RPC. Low priority.
 
-**Files to investigate**:
-- `viraltracker/ui/pages/05_🔬_Brand_Research.py` — how it finds/processes ads
-- `viraltracker/services/brand_research_service.py` — landing page extraction logic
-- `viraltracker/ui/pages/04_🔗_URL_Mapping.py` — how it finds ad URLs
-- `viraltracker/worker/scheduler_worker.py` — meta_sync job: what fields it populates
-- `viraltracker/ui/tool_readiness_requirements.py` — registry update needed
+3. **Copy analysis double-save** — `analyze_copy_batch_meta()` calls `analyze_copy()` which saves with `data_source='ad_library'` default, then re-saves with `data_source='meta_api'`. Works due to dedupe index but creates brief duplicates. Could refactor `analyze_copy()` to accept `data_source` param. Low priority.
+
+4. **Hook Analysis / Congruence Insights Meta path** — These tools read from `ad_creative_classifications` which already handles Meta ads. But their hard requirement `has_ad_data` now uses `any_of_groups`. Verify end-to-end that classifications feed correctly when only Meta data exists.
 
