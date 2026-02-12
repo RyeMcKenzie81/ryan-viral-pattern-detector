@@ -519,3 +519,69 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 **Files**: `21_Ad_Creator.py`, `47_Veo_Avatars.py`
 
+---
+
+### 21. Remove SQLite References from Archived Docs
+
+**Priority**: Low
+**Complexity**: Trivial
+**Added**: 2026-02-11
+
+**Context**: SQLite references exist only in archived docs (`docs/PYDANTIC_AI_MIGRATION_PLAN.md`, `docs/HANDOFF_TASK_1.11.md`). Zero Python code uses SQLite — the entire stack is Supabase/Postgres. These references are misleading to anyone reading the docs.
+
+**What's needed**: Remove or update SQLite mentions in those two files. No code changes required.
+
+---
+
+### 23. Persona Synthesis — Fallback to `ad_creative_classifications`
+
+**Priority**: Medium
+**Complexity**: Low-Medium
+**Added**: 2026-02-11
+
+**Context**: Brand Research (`brand_ad_analysis`) is the canonical source for persona synthesis. For brands that have Meta API data but no Brand Research analysis yet, `ad_creative_classifications` can serve as a temporary fallback source. Scope: add fallback-only path in persona synthesis that reads from `ad_creative_classifications` when `brand_ad_analysis` has no rows for the brand. Once Phase 3 of the Meta API parity work is complete (Brand Research can analyze Meta API ads), this fallback becomes unnecessary for new brands.
+
+**Files**: `viraltracker/services/persona_service.py`, `viraltracker/ui/pages/03_👤_Personas.py`
+
+---
+
+### 20. Meta API Ads as First-Class Data Source for Brand Research & Downstream Tools
+
+**Priority**: High
+**Complexity**: Medium-High
+**Added**: 2026-02-11
+
+**Context**: Brand Research currently assumes ads come from Facebook Ad Library scraping (via `ad_library_url`). But brands with a linked Meta ad account get richer data directly from the Meta API (synced via `meta_sync` job). These two data paths should be interchangeable — if a brand has Meta API data, there's no need to scrape the Ad Library.
+
+Currently, the Tool Readiness Dashboard treats `has_ad_library_url` and `has_ad_account` as independent soft requirements for Brand Research. The real logic should be: **either** a linked Meta ad account with synced data **or** an Ad Library URL is sufficient.
+
+**What needs investigation**:
+
+1. **Data parity audit**: Compare what `brand_facebook_ads` rows look like from Meta API sync vs Ad Library scraping. Do they have the same columns populated? Key fields to check:
+   - `ad_url` / `landing_page_url` — needed for URL Mapping and Landing Page Analyzer
+   - `ad_creative_bodies` / `ad_creative_link_titles` — needed for Hook Analysis
+   - `page_name`, `started_running_date` — needed for Competitive Analysis
+   - Video/image URLs — needed for Deep Video Analysis
+   - Any fields that are only populated by one source
+
+2. **Landing page extraction**: Does Brand Research extract landing pages from Meta API ads the same way it does from scraped ads? If not, the landing page pipeline needs to handle both.
+
+3. **URL Mapping**: Does the URL Mapping tool work with Meta API ads? It needs `ad_url` or similar to map ads to product URLs.
+
+4. **Tool Readiness registry update**: Change Brand Research requirements so `has_ad_account` (with synced ads) OR `has_ad_library_url` satisfies the "ad data source" need. May need a new check type like `any_of_requirements` that passes if at least one of several checks is met.
+
+5. **Brand Research UI**: Does the Brand Research page itself handle Meta API ads? Or does it only know how to scrape from Ad Library? If the latter, the page needs to also surface and analyze ads that arrived via Meta sync.
+
+**Testing scenarios** (save for QA):
+- Brand with only Meta ad account (no Ad Library URL) → Brand Research should work, landing pages should be extractable, URL Mapping should function
+- Brand with only Ad Library URL (no Meta account) → existing flow, should still work
+- Brand with both → should prefer Meta API data (richer), no duplicate processing
+- Downstream tools (Hook Analysis, Congruence Insights, Landing Page Analyzer) should work identically regardless of ad data source
+
+**Files to investigate**:
+- `viraltracker/ui/pages/05_🔬_Brand_Research.py` — how it finds/processes ads
+- `viraltracker/services/brand_research_service.py` — landing page extraction logic
+- `viraltracker/ui/pages/04_🔗_URL_Mapping.py` — how it finds ad URLs
+- `viraltracker/worker/scheduler_worker.py` — meta_sync job: what fields it populates
+- `viraltracker/ui/tool_readiness_requirements.py` — registry update needed
+

@@ -42,6 +42,9 @@ def _render_tool(tool):
         if tool.summary and tool.status != ReadinessStatus.READY:
             st.caption(tool.summary)
 
+        if tool.unlocks_tools and tool.status != ReadinessStatus.READY:
+            st.caption(f"🔓 Enables: {', '.join(tool.unlocks_tools)}")
+
         all_unmet = [
             r for r in tool.hard_results + tool.soft_results + tool.freshness_results
             if not r.met
@@ -110,9 +113,9 @@ if not report.ready and not report.partial:
         "**Getting Started**\n\n"
         "No tools are ready yet. Recommended first steps:\n"
         "1. Add products in **Brand Manager**\n"
-        "2. Set the **Ad Library URL** for your brand\n"
+        "2. Link a **Meta Ad Account** or set the **Ad Library URL**\n"
         "3. Add competitors (optional)\n"
-        "4. Run **Brand Research** to scrape ads"
+        "4. Run **Meta Sync** or **Brand Research** to populate ads"
     )
 
 STATUS_CONFIG = {
@@ -125,6 +128,9 @@ for status, config in STATUS_CONFIG.items():
     tools = getattr(report, status.value, [])
     if not tools:
         continue
+
+    if status in (ReadinessStatus.BLOCKED, ReadinessStatus.PARTIAL):
+        tools = sorted(tools, key=lambda t: len(t.unlocks_tools), reverse=True)
 
     st.subheader(f"{config['emoji']} {config['header']} ({len(tools)})")
 

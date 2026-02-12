@@ -106,6 +106,19 @@ class ToolReadinessService:
             else:
                 not_applicable.append(tool_result)
 
+        # Compute unlocks_tools for non-ready tools
+        non_ready_keys = {t.tool_key for t in partial + blocked}
+        all_tools = ready + partial + blocked + not_applicable
+        tool_label_map = {t.tool_key: t.tool_label for t in all_tools}
+
+        for tool in partial + blocked:
+            tool_config = TOOL_REQUIREMENTS.get(tool.tool_key, {})
+            unlocks_keys = tool_config.get("unlocks", [])
+            tool.unlocks_tools = [
+                tool_label_map[k] for k in unlocks_keys
+                if k in non_ready_keys and k != tool.tool_key
+            ]
+
         total_tools = len(ready) + len(partial) + len(blocked)
         overall_pct = (len(ready) + 0.5 * len(partial)) / total_tools if total_tools > 0 else 0.0
 
@@ -139,6 +152,13 @@ class ToolReadinessService:
             for req in config.get("freshness", [])
         ]
 
+        for group in config.get("any_of_groups", []):
+            group_result = self._check_any_of_group(brand_id, group)
+            if group.get("group_type") == "hard":
+                hard_results.append(group_result)
+            else:
+                soft_results.append(group_result)
+
         hard_unmet = [r for r in hard_results if not r.met]
         soft_unmet = [r for r in soft_results if not r.met]
         fresh_unmet = [r for r in freshness_results if not r.met]
@@ -163,6 +183,38 @@ class ToolReadinessService:
             soft_results=soft_results,
             freshness_results=freshness_results,
             summary=summary,
+        )
+
+    def _check_any_of_group(self, brand_id, group):
+        """Evaluate an any_of_group: pass if ANY sub-requirement is met."""
+        from viraltracker.services.models import RequirementResult, RequirementType
+
+        group_type = group.get("group_type", "soft")
+        req_type = RequirementType.HARD if group_type == "hard" else RequirementType.SOFT
+
+        sub_results = []
+        for req in group.get("requirements", []):
+            result = self._check_requirement(brand_id, req, req_type)
+            sub_results.append(result)
+
+        any_met = any(r.met for r in sub_results)
+
+        if any_met:
+            met_labels = [r.label for r in sub_results if r.met]
+            detail = f"Satisfied by: {', '.join(met_labels)}"
+        else:
+            detail = "None configured (need at least one)"
+
+        first_unmet = next((r for r in sub_results if not r.met), None)
+
+        return RequirementResult(
+            key=group["group_key"],
+            label=group["group_label"],
+            requirement_type=req_type,
+            met=any_met,
+            detail=detail,
+            fix_action=first_unmet.fix_action if first_unmet and not any_met else None,
+            fix_page_link=first_unmet.fix_page_link if first_unmet and not any_met else None,
         )
 
     def _check_requirement(self, brand_id, req, req_type):

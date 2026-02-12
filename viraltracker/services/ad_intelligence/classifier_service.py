@@ -353,6 +353,7 @@ class ClassifierService:
         meta_ad_ids: List[str],
         max_new: int = 200,
         max_video: int = 15,
+        scrape_missing_lp: bool = False,
     ) -> BatchClassificationResult:
         """Classify a batch of ads, prioritizing by spend.
 
@@ -367,6 +368,8 @@ class ClassifierService:
             meta_ad_ids: List of meta ad IDs to classify.
             max_new: Max new Gemini classifications (from RunConfig).
             max_video: Max video classifications per run (from RunConfig).
+            scrape_missing_lp: If True, create and scrape landing pages for
+                unmatched destination URLs during classification.
 
         Returns:
             BatchClassificationResult with classifications list and
@@ -419,6 +422,7 @@ class ClassifierService:
                 classification = await self.classify_ad(
                     meta_ad_id, brand_id, org_id, run_id,
                     video_budget_remaining=video_budget,
+                    scrape_missing_lp=scrape_missing_lp,
                 )
                 classifications.append(classification)
 
@@ -787,7 +791,7 @@ class ClassifierService:
         # Get thumbnail, ad copy, and video metadata from meta_ads_performance
         try:
             perf_result = self.supabase.table("meta_ads_performance").select(
-                "thumbnail_url, ad_name, meta_campaign_id, meta_video_id, is_video, video_views, object_type"
+                "thumbnail_url, ad_name, ad_copy, meta_campaign_id, meta_video_id, is_video, video_views, object_type"
             ).eq(
                 "meta_ad_id", meta_ad_id
             ).eq(
@@ -800,6 +804,7 @@ class ClassifierService:
                 row = perf_result.data[0]
                 result["thumbnail_url"] = row.get("thumbnail_url", "")
                 result["ad_name"] = row.get("ad_name", "")
+                result["ad_copy"] = row.get("ad_copy") or ""
                 result["campaign_id"] = row.get("meta_campaign_id", "")
                 result["meta_video_id"] = row.get("meta_video_id")
                 result["is_video"] = row.get("is_video", False)
@@ -835,10 +840,8 @@ class ClassifierService:
             except Exception as e:
                 logger.warning(f"Error checking meta_ad_assets for {meta_ad_id}: {e}")
 
-        # Note: ad_archive_id linkage to facebook_ads not implemented.
-        # Ad copy falls back to ad_name below.
-
-        # Use ad_name as fallback for ad_copy
+        # Use ad_copy from meta_ads_performance if populated (extracted from
+        # object_story_spec by _fetch_thumbnails_sync). Fall back to ad_name.
         if not result.get("ad_copy"):
             result["ad_copy"] = result.get("ad_name", "")
 

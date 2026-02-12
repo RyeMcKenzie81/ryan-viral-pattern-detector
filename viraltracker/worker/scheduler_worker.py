@@ -87,7 +87,7 @@ def get_due_jobs() -> List[Dict]:
                 brand_ids_needed.add(job['brand_id'])
 
         if brand_ids_needed:
-            brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids_needed)).execute()
+            brands_result = db.table("brands").select("id, name, organization_id").in_("id", list(brand_ids_needed)).execute()
             brand_map = {b['id']: b for b in (brands_result.data or [])}
             for job in jobs:
                 if not job.get('products') and job.get('brand_id'):
@@ -1181,6 +1181,27 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             logs.append(f"Asset download error (non-fatal): {asset_err}")
             logger.warning(f"Asset download failed for {brand_name}: {asset_err}")
 
+        # Step 4.5: Fetch destination URLs for new ads (NON-FATAL)
+        freshness.record_start(brand_id, "ad_destinations", run_id=run_id)
+        try:
+            org_id = brand_info.get("organization_id")
+            if org_id:
+                from uuid import UUID as _UUID_dest
+                dest_stats = await service.sync_ad_destinations_to_db(
+                    brand_id=_UUID_dest(brand_id),
+                    organization_id=_UUID_dest(org_id),
+                    limit=params.get('destination_limit', 100),
+                )
+                if dest_stats["stored"] > 0:
+                    logs.append(f"Fetched {dest_stats['fetched']} / stored {dest_stats['stored']} destination URLs")
+                freshness.record_success(brand_id, "ad_destinations", records_affected=dest_stats.get("stored", 0), run_id=run_id)
+            else:
+                logs.append("Skipped destination sync (no organization_id)")
+        except Exception as dest_err:
+            freshness.record_failure(brand_id, "ad_destinations", str(dest_err), run_id=run_id)
+            logs.append(f"Destination URL fetch error (non-fatal): {dest_err}")
+            logger.warning(f"Destination URL fetch failed for {brand_name}: {dest_err}")
+
         # Step 5: Auto-classify ads if enabled (NON-FATAL)
         if params.get('auto_classify', False):
             freshness.record_start(brand_id, "ad_classifications", run_id=run_id)
@@ -1194,6 +1215,7 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                     max_new=params.get('classify_max_new', 200),
                     max_video=params.get('classify_max_video', 15),
                     days_back=params.get('classify_days_back', days_back),
+                    scrape_missing_lp=params.get('scrape_missing_lp', True),
                 )
                 logs.append(
                     f"Classified: {classify_result['classified']} "
@@ -2195,6 +2217,7 @@ async def _run_classification_for_brand(
     max_new: int = 200,
     max_video: int = 15,
     days_back: int = 30,
+    scrape_missing_lp: bool = False,
 ) -> Dict[str, Any]:
     """Shared helper: classify active ads for a brand.
 
@@ -2208,6 +2231,8 @@ async def _run_classification_for_brand(
         max_new: Max new Gemini classification calls (default: 200).
         max_video: Max video classification calls (default: 15).
         days_back: Number of days to look back for active ads (default: 30).
+        scrape_missing_lp: If True, create and scrape landing pages for
+            unmatched destination URLs during classification.
 
     Returns:
         Dict with keys: total_active, classified, video, errors.
@@ -2279,6 +2304,7 @@ async def _run_classification_for_brand(
             meta_ad_ids=active_ids,
             max_new=max_new,
             max_video=max_video,
+            scrape_missing_lp=scrape_missing_lp,
         )
 
         total_classified = len(batch_result.classifications)

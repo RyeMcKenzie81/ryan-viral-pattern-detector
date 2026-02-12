@@ -17,6 +17,19 @@ Check types (evaluated by ToolReadinessService):
 - "field_not_null": a specific field on a record is not null/empty
 - "competitors_have_field": count competitors with non-null field vs total
 - "dataset_fresh": uses DatasetFreshnessService.check_is_fresh()
+
+Group types:
+- any_of_groups: List of groups where each group passes if ANY sub-requirement
+  is met. Each group has:
+  - "group_key": unique key for the group result
+  - "group_label": display label
+  - "group_type": "hard" or "soft" — determines BLOCKED vs PARTIAL when unmet
+  - "requirements": list of standard requirement dicts
+
+Dependency tracking:
+- unlocks: List of tool_keys that this tool enables when it becomes ready.
+  Used to show "Enables: X, Y, Z" badges on blocked/partial tools, helping
+  users prioritize which prerequisites to satisfy first.
 """
 
 TOOL_REQUIREMENTS = {
@@ -39,27 +52,21 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/02_🏢_Brand_Manager.py",
             },
         ],
-        "soft": [
-            {
-                "key": "has_ad_library_url",
-                "label": "Ad Library URL configured",
-                "check": "field_not_null",
-                "table": "brands",
-                "field": "ad_library_url",
-                "filter": {"id": "{brand_id}"},
-                "fix_action": "Set Ad Library URL in Brand Manager",
-                "fix_page_link": "pages/02_🏢_Brand_Manager.py",
-            },
-            {
-                "key": "has_ad_account",
-                "label": "Ad account linked",
-                "check": "count_gt_zero",
-                "table": "brand_ad_accounts",
-                "filter": {"brand_id": "{brand_id}"},
-                "fix_action": "Link a Meta ad account",
-                "fix_page_link": "pages/02_🏢_Brand_Manager.py",
-            },
-        ],
+        "soft": [],
+        "any_of_groups": [{
+            "group_key": "has_data_source",
+            "group_label": "Ad data source configured",
+            "group_type": "soft",
+            "requirements": [
+                {"key": "has_ad_library_url", "label": "Ad Library URL", "check": "field_not_null",
+                 "table": "brands", "field": "ad_library_url", "filter": {"id": "{brand_id}"},
+                 "fix_action": "Set Ad Library URL in Brand Manager", "fix_page_link": "pages/02_🏢_Brand_Manager.py"},
+                {"key": "has_ad_account", "label": "Meta ad account linked", "check": "count_gt_zero",
+                 "table": "brand_ad_accounts", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Link a Meta ad account", "fix_page_link": "pages/02_🏢_Brand_Manager.py"},
+            ],
+        }],
+        "unlocks": ["url_mapping", "hook_analysis", "congruence_insights", "personas", "research_insights", "landing_page_analyzer"],
         "freshness": [],
     },
     "ad_performance": {
@@ -78,17 +85,21 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/02_🏢_Brand_Manager.py",
             },
         ],
-        "soft": [
-            {
-                "key": "has_ads",
-                "label": "Ads scraped",
-                "check": "count_gt_zero",
-                "table": "brand_facebook_ads",
-                "filter": {"brand_id": "{brand_id}"},
-                "fix_action": "Scrape ads from Brand Research",
-                "fix_page_link": "pages/05_🔬_Brand_Research.py",
-            },
-        ],
+        "soft": [],
+        "any_of_groups": [{
+            "group_key": "has_ad_data",
+            "group_label": "Ad data available",
+            "group_type": "soft",
+            "requirements": [
+                {"key": "has_scraped_ads", "label": "Ads scraped (Ad Library)", "check": "count_gt_zero",
+                 "table": "brand_facebook_ads", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Scrape ads from Brand Research", "fix_page_link": "pages/05_🔬_Brand_Research.py"},
+                {"key": "has_meta_ads", "label": "Meta API ads synced", "check": "count_gt_zero",
+                 "table": "meta_ads_performance", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Sync ads via Meta Ad Account", "fix_page_link": "pages/30_📈_Ad_Performance.py"},
+            ],
+        }],
+        "unlocks": ["hook_analysis", "congruence_insights", "url_mapping"],
         "freshness": [
             {
                 "key": "meta_ads_performance",
@@ -115,16 +126,21 @@ TOOL_REQUIREMENTS = {
                 "fix_action": "Add products in Brand Manager",
                 "fix_page_link": "pages/02_🏢_Brand_Manager.py",
             },
-            {
-                "key": "has_ads",
-                "label": "Ads scraped",
-                "check": "count_gt_zero",
-                "table": "brand_facebook_ads",
-                "filter": {"brand_id": "{brand_id}"},
-                "fix_action": "Scrape ads from Brand Research",
-                "fix_page_link": "pages/05_🔬_Brand_Research.py",
-            },
         ],
+        "any_of_groups": [{
+            "group_key": "has_ad_data",
+            "group_label": "Ad data available",
+            "group_type": "hard",
+            "requirements": [
+                {"key": "has_scraped_ads", "label": "Ads scraped (Ad Library)", "check": "count_gt_zero",
+                 "table": "brand_facebook_ads", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Scrape ads from Brand Research", "fix_page_link": "pages/05_🔬_Brand_Research.py"},
+                {"key": "has_meta_ads", "label": "Meta API ads synced", "check": "count_gt_zero",
+                 "table": "meta_ads_performance", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Sync ads via Meta Ad Account", "fix_page_link": "pages/30_📈_Ad_Performance.py"},
+            ],
+        }],
+        "unlocks": [],
         "soft": [
             {
                 "key": "has_product_urls",
@@ -161,6 +177,7 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/11_🎯_Competitors.py",
             },
         ],
+        "unlocks": ["competitive_analysis"],
         "freshness": [],
     },
     "ad_creator": {
@@ -217,6 +234,7 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/32_💡_Research_Insights.py",
             },
         ],
+        "unlocks": [],
         "freshness": [],
     },
 
@@ -228,17 +246,21 @@ TOOL_REQUIREMENTS = {
         "icon": "🎣",
         "page_link": "pages/35_🎣_Hook_Analysis.py",
         "feature_key": "hook_analysis",
-        "hard": [
-            {
-                "key": "has_ads",
-                "label": "Ads scraped",
-                "check": "count_gt_zero",
-                "table": "brand_facebook_ads",
-                "filter": {"brand_id": "{brand_id}"},
-                "fix_action": "Scrape ads from Brand Research",
-                "fix_page_link": "pages/05_🔬_Brand_Research.py",
-            },
-        ],
+        "hard": [],
+        "any_of_groups": [{
+            "group_key": "has_ad_data",
+            "group_label": "Ad data available",
+            "group_type": "hard",
+            "requirements": [
+                {"key": "has_scraped_ads", "label": "Ads scraped (Ad Library)", "check": "count_gt_zero",
+                 "table": "brand_facebook_ads", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Scrape ads from Brand Research", "fix_page_link": "pages/05_🔬_Brand_Research.py"},
+                {"key": "has_meta_ads", "label": "Meta API ads synced", "check": "count_gt_zero",
+                 "table": "meta_ads_performance", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Sync ads via Meta Ad Account", "fix_page_link": "pages/30_📈_Ad_Performance.py"},
+            ],
+        }],
+        "unlocks": [],
         "soft": [],
         "freshness": [
             {
@@ -256,17 +278,21 @@ TOOL_REQUIREMENTS = {
         "icon": "🔗",
         "page_link": "pages/34_🔗_Congruence_Insights.py",
         "feature_key": "congruence_insights",
-        "hard": [
-            {
-                "key": "has_ads",
-                "label": "Ads scraped",
-                "check": "count_gt_zero",
-                "table": "brand_facebook_ads",
-                "filter": {"brand_id": "{brand_id}"},
-                "fix_action": "Scrape ads from Brand Research",
-                "fix_page_link": "pages/05_🔬_Brand_Research.py",
-            },
-        ],
+        "hard": [],
+        "any_of_groups": [{
+            "group_key": "has_ad_data",
+            "group_label": "Ad data available",
+            "group_type": "hard",
+            "requirements": [
+                {"key": "has_scraped_ads", "label": "Ads scraped (Ad Library)", "check": "count_gt_zero",
+                 "table": "brand_facebook_ads", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Scrape ads from Brand Research", "fix_page_link": "pages/05_🔬_Brand_Research.py"},
+                {"key": "has_meta_ads", "label": "Meta API ads synced", "check": "count_gt_zero",
+                 "table": "meta_ads_performance", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Sync ads via Meta Ad Account", "fix_page_link": "pages/30_📈_Ad_Performance.py"},
+            ],
+        }],
+        "unlocks": [],
         "soft": [],
         "freshness": [
             {
@@ -303,6 +329,7 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/05_🔬_Brand_Research.py",
             },
         ],
+        "unlocks": [],
         "freshness": [],
     },
 
@@ -327,15 +354,6 @@ TOOL_REQUIREMENTS = {
         ],
         "soft": [
             {
-                "key": "has_brand_ads",
-                "label": "Brand ads scraped (for AI personas)",
-                "check": "count_gt_zero",
-                "table": "brand_facebook_ads",
-                "filter": {"brand_id": "{brand_id}"},
-                "fix_action": "Scrape ads from Brand Research",
-                "fix_page_link": "pages/05_🔬_Brand_Research.py",
-            },
-            {
                 "key": "has_amazon_reviews",
                 "label": "Amazon reviews collected",
                 "check": "count_gt_zero",
@@ -345,6 +363,20 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/02_🏢_Brand_Manager.py",
             },
         ],
+        "any_of_groups": [{
+            "group_key": "has_ad_data",
+            "group_label": "Ad data available (for AI personas)",
+            "group_type": "soft",
+            "requirements": [
+                {"key": "has_brand_ads", "label": "Brand ads scraped (Ad Library)", "check": "count_gt_zero",
+                 "table": "brand_facebook_ads", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Scrape ads from Brand Research", "fix_page_link": "pages/05_🔬_Brand_Research.py"},
+                {"key": "has_meta_ads", "label": "Meta API ads synced", "check": "count_gt_zero",
+                 "table": "meta_ads_performance", "filter": {"brand_id": "{brand_id}"},
+                 "fix_action": "Sync ads via Meta Ad Account", "fix_page_link": "pages/30_📈_Ad_Performance.py"},
+            ],
+        }],
+        "unlocks": ["ad_creator", "competitive_analysis"],
         "freshness": [],
     },
     "research_insights": {
@@ -374,6 +406,7 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/32_💡_Research_Insights.py",
             },
         ],
+        "unlocks": ["ad_planning", "ad_creator"],
         "freshness": [],
     },
     "ad_planning": {
@@ -411,6 +444,7 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/62_🔧_Pipeline_Manager.py",
             },
         ],
+        "unlocks": ["ad_creator"],
         "freshness": [],
     },
     "template_queue": {
@@ -420,6 +454,7 @@ TOOL_REQUIREMENTS = {
         "feature_key": "template_queue",
         "hard": [],
         "soft": [],
+        "unlocks": ["template_evaluation", "ad_creator", "ad_planning"],
         "freshness": [
             {
                 "key": "templates_scraped",
@@ -438,6 +473,7 @@ TOOL_REQUIREMENTS = {
         "feature_key": "template_evaluation",
         "hard": [],
         "soft": [],
+        "unlocks": ["ad_creator"],
         "freshness": [
             {
                 "key": "templates_evaluated",
@@ -473,6 +509,7 @@ TOOL_REQUIREMENTS = {
                 "fix_page_link": "pages/03_👤_Personas.py",
             },
         ],
+        "unlocks": [],
         "freshness": [],
     },
 }

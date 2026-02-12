@@ -2519,6 +2519,7 @@ class ToolReadiness(BaseModel):
     soft_results: List[RequirementResult] = Field(default_factory=list)
     freshness_results: List[RequirementResult] = Field(default_factory=list)
     summary: str = ""
+    unlocks_tools: List[str] = Field(default_factory=list)
 
 
 class ToolReadinessReport(BaseModel):

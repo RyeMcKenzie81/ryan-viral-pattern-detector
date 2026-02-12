@@ -389,6 +389,28 @@ class BrandResearchService:
         self.supabase = supabase or get_supabase_client()
         logger.info("BrandResearchService initialized")
 
+    def _detect_ad_source(self, brand_id: str) -> str:
+        """Returns 'meta_api', 'ad_library', 'both', or 'none'.
+
+        Used to determine which data path to use for ad analysis.
+        """
+        meta = self.supabase.table("meta_ads_performance").select(
+            "meta_ad_id", count="exact"
+        ).eq("brand_id", brand_id).limit(1).execute()
+        scraped = self.supabase.table("brand_facebook_ads").select(
+            "id", count="exact"
+        ).eq("brand_id", brand_id).limit(1).execute()
+        has_meta = (meta.count or 0) > 0
+        has_scraped = (scraped.count or 0) > 0
+        if has_meta and has_scraped:
+            return "both"
+        elif has_meta:
+            return "meta_api"
+        elif has_scraped:
+            return "ad_library"
+        else:
+            return "none"
+
     def check_asset_health(self, brand_id: str, asset_type: str = "image") -> Dict:
         """
         Check health of assets before analysis.
@@ -1151,7 +1173,9 @@ class BrandResearchService:
         brand_id: Optional[UUID],
         raw_response: Dict,
         tokens_used: int = 0,
-        model_used: str = "claude-sonnet-4-20250514"
+        model_used: str = "claude-sonnet-4-20250514",
+        data_source: str = "ad_library",
+        meta_ad_id: Optional[str] = None,
     ) -> Optional[UUID]:
         """Save copy analysis to brand_ad_analysis table.
 
@@ -1161,6 +1185,8 @@ class BrandResearchService:
             raw_response: The analysis response dict
             tokens_used: Number of tokens used
             model_used: Model name used for analysis
+            data_source: 'ad_library' or 'meta_api'
+            meta_ad_id: Meta ad ID for Meta API sourced analysis
 
         Returns:
             UUID of saved record or None on failure
@@ -1185,10 +1211,14 @@ class BrandResearchService:
             )
             all_pain_points.extend(transformation.get("before", []))
 
-            # Handle both UUID (from facebook_ads) and string (ad_archive_id from onboarding)
+            # Handle ad ID based on data source
             facebook_ad_id = None
             ad_archive_id = None
-            if ad_id:
+            resolved_meta_ad_id = None
+
+            if data_source == "meta_api":
+                resolved_meta_ad_id = str(ad_id) if ad_id else meta_ad_id
+            elif ad_id:
                 if isinstance(ad_id, UUID):
                     facebook_ad_id = str(ad_id)
                 else:
@@ -1199,6 +1229,8 @@ class BrandResearchService:
                 "brand_id": str(brand_id) if brand_id else None,
                 "facebook_ad_id": facebook_ad_id,
                 "ad_archive_id": ad_archive_id,  # For resume tracking in onboarding
+                "meta_ad_id": resolved_meta_ad_id,
+                "data_source": data_source,
                 "analysis_type": "copy_analysis",
                 "raw_response": raw_response,
                 "extracted_hooks": hooks_list,
@@ -2212,6 +2244,300 @@ class BrandResearchService:
             f"Image analysis complete: {analyzed_count}/{len(images_to_analyze)} images analyzed, "
             f"skipped: {len(skipped_failed)} failed, {len(skipped_expired) + newly_expired} expired"
         )
+        return results
+
+    # ----------------------------------------------------------------
+    # Meta API parallel analysis methods
+    # ----------------------------------------------------------------
+    # These methods operate on meta_ads_performance / meta_ad_assets and
+    # NEVER mix IDs with the Ad Library (facebook_ads / scraped_ad_assets)
+    # path. Each method writes to brand_ad_analysis with
+    # data_source='meta_api' and uses the meta_ad_id / meta_asset_id FKs.
+    # ----------------------------------------------------------------
+
+    async def analyze_copy_batch_meta(
+        self,
+        brand_id: UUID,
+        limit: int = 50,
+        delay_between: float = 2.0,
+        meta_ad_ids: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Copy analysis for Meta API ads. Separate from analyze_copy_batch().
+
+        Queries meta_ads_performance for ad_copy, NOT facebook_ads.snapshot.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum ads to process
+            delay_between: Delay between API calls
+            meta_ad_ids: Optional list of specific Meta ad IDs
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        if meta_ad_ids is None:
+            # Get DISTINCT meta_ad_ids, picking best row per ad (prefer ad_copy)
+            result = self.supabase.table("meta_ads_performance").select(
+                "meta_ad_id, ad_copy, ad_name, date"
+            ).eq("brand_id", str(brand_id)).order("date", desc=True).execute()
+
+            best_by_id: Dict[str, Dict] = {}
+            for r in (result.data or []):
+                mid = r["meta_ad_id"]
+                if mid not in best_by_id:
+                    best_by_id[mid] = r
+                elif r.get("ad_copy") and not best_by_id[mid].get("ad_copy"):
+                    best_by_id[mid] = r
+            ads = list(best_by_id.values())
+            meta_ad_ids = [a["meta_ad_id"] for a in ads]
+        else:
+            if not meta_ad_ids:
+                return []
+            # Fetch ad data for provided IDs
+            result = self.supabase.table("meta_ads_performance").select(
+                "meta_ad_id, ad_copy, ad_name, date"
+            ).eq("brand_id", str(brand_id)).in_(
+                "meta_ad_id", meta_ad_ids
+            ).order("date", desc=True).execute()
+
+            best_by_id = {}
+            for r in (result.data or []):
+                mid = r["meta_ad_id"]
+                if mid not in best_by_id:
+                    best_by_id[mid] = r
+                elif r.get("ad_copy") and not best_by_id[mid].get("ad_copy"):
+                    best_by_id[mid] = r
+            ads = list(best_by_id.values())
+
+        if not meta_ad_ids:
+            logger.info(f"No Meta ads found for brand: {brand_id}")
+            return []
+
+        # Check already-analyzed using meta_ad_id column (NOT facebook_ad_id)
+        analyzed = self.supabase.table("brand_ad_analysis").select(
+            "meta_ad_id"
+        ).in_("meta_ad_id", meta_ad_ids).eq("analysis_type", "copy_analysis").execute()
+        analyzed_ids = {r["meta_ad_id"] for r in (analyzed.data or [])}
+
+        # Build processing list
+        ads_to_process = []
+        for ad in ads:
+            if ad["meta_ad_id"] in analyzed_ids:
+                continue
+            ad_copy = ad.get("ad_copy") or ad.get("ad_name") or ""
+            if not ad_copy.strip():
+                continue
+            ads_to_process.append((ad["meta_ad_id"], ad_copy))
+
+        total_needing = len(ads_to_process)
+        ads_to_process = ads_to_process[:limit]
+        logger.info(f"Processing {len(ads_to_process)} of {total_needing} Meta ads for copy analysis (limit={limit})")
+
+        results = []
+        for i, (mid, ad_copy) in enumerate(ads_to_process):
+            if i > 0:
+                await asyncio.sleep(delay_between)
+            try:
+                analysis = await self.analyze_copy(
+                    ad_copy=ad_copy,
+                    headline=None,
+                    ad_id=None,
+                    brand_id=brand_id,
+                )
+                # Re-save with Meta-specific fields (overwrite the default save)
+                self._save_copy_analysis(
+                    ad_id=mid,
+                    brand_id=brand_id,
+                    raw_response=analysis,
+                    data_source="meta_api",
+                    meta_ad_id=mid,
+                )
+                results.append({"meta_ad_id": mid, "analysis": analysis})
+                logger.info(f"Meta copy analysis {i + 1}/{len(ads_to_process)} complete")
+            except Exception as e:
+                logger.error(f"Failed to analyze copy for Meta ad {mid}: {e}")
+                results.append({"meta_ad_id": mid, "error": str(e)})
+
+        logger.info(
+            f"Meta batch copy analysis complete: "
+            f"{len([r for r in results if 'analysis' in r])}/{len(ads_to_process)} analyzed"
+        )
+        return results
+
+    async def analyze_videos_for_brand_meta(
+        self,
+        brand_id: UUID,
+        limit: int = 15,
+        delay_between: float = 5.0,
+        meta_ad_ids: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Video analysis for Meta API assets. Queries meta_ad_assets, NOT scraped_ad_assets.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum videos to analyze
+            delay_between: Delay between API calls
+            meta_ad_ids: Optional list of specific Meta ad IDs
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        logger.info(f"Starting Meta video analysis for brand: {brand_id}, limit={limit}")
+
+        query = self.supabase.table("meta_ad_assets").select(
+            "id, meta_ad_id, storage_path, asset_type, file_size_bytes"
+        ).eq("brand_id", str(brand_id)).eq("asset_type", "video").eq("status", "downloaded")
+        if meta_ad_ids:
+            query = query.in_("meta_ad_id", meta_ad_ids)
+        assets_result = query.execute()
+
+        video_assets = assets_result.data or []
+        if not video_assets:
+            logger.info("No downloaded Meta video assets found")
+            return []
+
+        # Filter out already-analyzed
+        asset_ids = [a["id"] for a in video_assets]
+        analyzed_result = self.supabase.table("brand_ad_analysis").select(
+            "meta_asset_id"
+        ).in_("meta_asset_id", asset_ids).eq("analysis_type", "video_vision").execute()
+        analyzed_ids = {r["meta_asset_id"] for r in (analyzed_result.data or [])}
+        unanalyzed = [a for a in video_assets if a["id"] not in analyzed_ids][:limit]
+
+        if not unanalyzed:
+            logger.info("All Meta video assets already analyzed")
+            return []
+
+        logger.info(f"Processing {len(unanalyzed)} Meta video assets")
+
+        results = []
+        for i, asset in enumerate(unanalyzed):
+            if i > 0:
+                await asyncio.sleep(delay_between)
+            try:
+                # Use existing analyze_video with skip_save=True, then save with Meta FKs
+                analysis = await self.analyze_video(
+                    asset_id=UUID(asset["id"]),
+                    storage_path=asset["storage_path"],
+                    brand_id=brand_id,
+                    skip_save=True,
+                )
+                if not analysis or analysis.get("error"):
+                    logger.warning(f"Meta video analysis returned error for {asset['id']}")
+                    results.append({"asset_id": asset["id"], "error": analysis.get("error", "Unknown")})
+                    continue
+
+                record = {
+                    "brand_id": str(brand_id),
+                    "meta_ad_id": asset["meta_ad_id"],
+                    "meta_asset_id": asset["id"],
+                    "data_source": "meta_api",
+                    "analysis_type": "video_vision",
+                    "raw_response": analysis,
+                    "extracted_hooks": analysis.get("hooks", []),
+                    "extracted_benefits": analysis.get("benefits", []),
+                    "pain_points": analysis.get("pain_points", []),
+                }
+                self.supabase.table("brand_ad_analysis").insert(record).execute()
+                results.append({"asset_id": asset["id"], "analysis": analysis})
+                logger.info(f"Meta video analysis {i + 1}/{len(unanalyzed)} complete")
+            except Exception as e:
+                logger.error(f"Failed to analyze Meta video asset {asset['id']}: {e}")
+                results.append({"asset_id": asset["id"], "error": str(e)})
+
+        return results
+
+    async def analyze_images_for_brand_meta(
+        self,
+        brand_id: UUID,
+        limit: int = 50,
+        delay_between: float = 2.0,
+        meta_ad_ids: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Image analysis for Meta API assets. Queries meta_ad_assets, NOT scraped_ad_assets.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum images to analyze
+            delay_between: Delay between API calls
+            meta_ad_ids: Optional list of specific Meta ad IDs
+
+        Returns:
+            List of analysis results
+        """
+        import asyncio
+
+        logger.info(f"Starting Meta image analysis for brand: {brand_id}, limit={limit}")
+
+        query = self.supabase.table("meta_ad_assets").select(
+            "id, meta_ad_id, storage_path, asset_type, file_size_bytes"
+        ).eq("brand_id", str(brand_id)).eq("asset_type", "image").eq("status", "downloaded")
+        if meta_ad_ids:
+            query = query.in_("meta_ad_id", meta_ad_ids)
+        assets_result = query.execute()
+
+        image_assets = assets_result.data or []
+        if not image_assets:
+            logger.info("No downloaded Meta image assets found")
+            return []
+
+        # Filter out already-analyzed
+        asset_ids = [a["id"] for a in image_assets]
+        analyzed_result = self.supabase.table("brand_ad_analysis").select(
+            "meta_asset_id"
+        ).in_("meta_asset_id", asset_ids).eq("analysis_type", "image_vision").execute()
+        analyzed_ids = {r["meta_asset_id"] for r in (analyzed_result.data or [])}
+        unanalyzed = [a for a in image_assets if a["id"] not in analyzed_ids][:limit]
+
+        if not unanalyzed:
+            logger.info("All Meta image assets already analyzed")
+            return []
+
+        logger.info(f"Processing {len(unanalyzed)} Meta image assets")
+
+        results = []
+        for i, asset in enumerate(unanalyzed):
+            if i > 0:
+                await asyncio.sleep(delay_between)
+            try:
+                image_base64 = await self._get_asset_base64(asset["storage_path"])
+                if not image_base64:
+                    logger.warning(f"Failed to download Meta image asset: {asset['id']}")
+                    continue
+
+                # Use existing analyze_image with skip_save=True, then save with Meta FKs
+                analysis = self.analyze_image_sync(
+                    image_base64=image_base64,
+                    brand_id=brand_id,
+                    skip_save=True,
+                )
+                if not analysis or analysis.get("error"):
+                    logger.warning(f"Meta image analysis returned error for {asset['id']}")
+                    results.append({"asset_id": asset["id"], "error": analysis.get("error", "Unknown")})
+                    continue
+
+                record = {
+                    "brand_id": str(brand_id),
+                    "meta_ad_id": asset["meta_ad_id"],
+                    "meta_asset_id": asset["id"],
+                    "data_source": "meta_api",
+                    "analysis_type": "image_vision",
+                    "raw_response": analysis,
+                    "extracted_hooks": analysis.get("hooks", []),
+                    "extracted_benefits": analysis.get("benefits", []),
+                    "pain_points": analysis.get("pain_points", []),
+                }
+                self.supabase.table("brand_ad_analysis").insert(record).execute()
+                results.append({"asset_id": asset["id"], "analysis": analysis})
+                logger.info(f"Meta image analysis {i + 1}/{len(unanalyzed)} complete")
+            except Exception as e:
+                logger.error(f"Failed to analyze Meta image asset {asset['id']}: {e}")
+                results.append({"asset_id": asset["id"], "error": str(e)})
+
         return results
 
     async def synthesize_to_personas(

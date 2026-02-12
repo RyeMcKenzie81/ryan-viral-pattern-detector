@@ -16,6 +16,7 @@ import json
 from datetime import datetime
 from uuid import UUID
 from typing import Optional, Dict, Any, List
+from dataclasses import dataclass, field
 
 # Fix for nested event loops in Streamlit
 
@@ -155,10 +156,18 @@ def get_products_for_brand(brand_id: str):
         st.error(f"Failed to fetch products: {e}")
         return []
 
-def get_ad_ids_for_product(brand_id: str, product_id: str) -> List[str]:
-    """Get ad IDs that link to a specific product's URLs.
+@dataclass
+class AdIdSet:
+    """Typed container for ad IDs from different sources. Never mix."""
+    facebook_ad_ids: List[str] = field(default_factory=list)
+    meta_ad_ids: List[str] = field(default_factory=list)
 
-    Matches ads whose link_url contains any of the product's URL patterns.
+
+def get_ad_ids_for_product(brand_id: str, product_id: str) -> AdIdSet:
+    """Get ad IDs for a product from BOTH sources, kept separate.
+
+    Facebook path: brand_facebook_ads -> facebook_ads snapshot link_url matching
+    Meta path: meta_ad_destinations URL matching via product URL patterns
     """
     try:
         db = get_supabase_client()
@@ -168,99 +177,144 @@ def get_ad_ids_for_product(brand_id: str, product_id: str) -> List[str]:
             "url_pattern"
         ).eq("product_id", product_id).execute()
 
-        if not patterns_result.data:
-            return []
+        patterns = [p['url_pattern'] for p in (patterns_result.data or [])]
 
-        patterns = [p['url_pattern'] for p in patterns_result.data]
-
-        # Get all ads for this brand
+        # --- Facebook path (existing) ---
+        fb_ids = []
         ads_result = db.table("brand_facebook_ads").select(
             "ad_id"
         ).eq("brand_id", brand_id).execute()
 
-        if not ads_result.data:
-            return []
+        if ads_result.data and patterns:
+            ad_ids = [r['ad_id'] for r in ads_result.data]
 
-        ad_ids = [r['ad_id'] for r in ads_result.data]
+            facebook_ads = db.table("facebook_ads").select(
+                "id, snapshot"
+            ).in_("id", ad_ids).execute()
 
-        # Get ads with their link_urls
-        facebook_ads = db.table("facebook_ads").select(
-            "id, snapshot"
-        ).in_("id", ad_ids).execute()
+            for ad in facebook_ads.data or []:
+                snapshot = ad.get('snapshot', {})
+                if isinstance(snapshot, str):
+                    try:
+                        snapshot = json.loads(snapshot)
+                    except Exception:
+                        continue
 
-        # Filter to ads whose link_url matches a product pattern
-        matching_ad_ids = []
-        for ad in facebook_ads.data or []:
-            snapshot = ad.get('snapshot', {})
-            if isinstance(snapshot, str):
-                import json
-                try:
-                    snapshot = json.loads(snapshot)
-                except:
+                link_url = snapshot.get('link_url', '') if isinstance(snapshot, dict) else ''
+                if link_url:
+                    for pattern in patterns:
+                        if pattern in link_url:
+                            fb_ids.append(ad['id'])
+                            break
+
+        # --- Meta path ---
+        meta_ids = []
+        if patterns:
+            dest_result = db.table("meta_ad_destinations").select(
+                "meta_ad_id, canonical_url, destination_url"
+            ).eq("brand_id", brand_id).execute()
+
+            for dest in (dest_result.data or []):
+                url = dest.get("canonical_url") or dest.get("destination_url")
+                if not url:
                     continue
-
-            link_url = snapshot.get('link_url', '') if isinstance(snapshot, dict) else ''
-            if link_url:
                 for pattern in patterns:
-                    if pattern in link_url:
-                        matching_ad_ids.append(ad['id'])
+                    if pattern in url:
+                        meta_ids.append(dest["meta_ad_id"])
                         break
+            meta_ids = list(set(meta_ids))
 
-        return matching_ad_ids
+        return AdIdSet(facebook_ad_ids=fb_ids, meta_ad_ids=meta_ids)
     except Exception as e:
         import streamlit as st
         st.error(f"Failed to get ads for product: {e}")
-        return []
+        return AdIdSet()
 
 def get_ad_count_for_brand(brand_id: str, product_id: Optional[str] = None) -> int:
-    """Get count of ads linked to a brand, optionally filtered by product."""
+    """Get count of ads linked to a brand from both sources, optionally filtered by product."""
     try:
         db = get_supabase_client()
 
         if product_id:
-            ad_ids = get_ad_ids_for_product(brand_id, product_id)
-            return len(ad_ids)
+            ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+            return len(ad_id_set.facebook_ad_ids) + len(ad_id_set.meta_ad_ids)
 
-        result = db.table("brand_facebook_ads").select(
+        # Scraped ads count
+        scraped_result = db.table("brand_facebook_ads").select(
             "ad_id", count="exact"
         ).eq("brand_id", brand_id).execute()
-        return result.count or 0
+        scraped_count = scraped_result.count or 0
+
+        # Meta ads count (DISTINCT meta_ad_id since meta_ads_performance has daily rows)
+        meta_result = db.table("meta_ads_performance").select(
+            "meta_ad_id"
+        ).eq("brand_id", brand_id).execute()
+        meta_count = len(set(r["meta_ad_id"] for r in (meta_result.data or [])))
+
+        return scraped_count + meta_count
     except Exception:
         return 0
 
 def get_asset_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
-    """Get counts of video/image assets for a brand, optionally filtered by product."""
+    """Get counts of video/image assets for a brand from both sources, optionally filtered by product."""
     try:
         db = get_supabase_client()
 
         # Get ad IDs - filtered by product if specified
         if product_id:
-            ad_ids = get_ad_ids_for_product(brand_id, product_id)
+            ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+            fb_ad_ids = ad_id_set.facebook_ad_ids
+            meta_ad_ids = ad_id_set.meta_ad_ids
         else:
             link_result = db.table("brand_facebook_ads").select("ad_id").eq(
                 "brand_id", brand_id
             ).execute()
-            ad_ids = [r['ad_id'] for r in link_result.data] if link_result.data else []
+            fb_ad_ids = [r['ad_id'] for r in link_result.data] if link_result.data else []
+            meta_ad_ids = None  # signal to query all Meta assets for brand
 
-        if not ad_ids:
-            return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
+        total_ads = len(fb_ad_ids) + (len(meta_ad_ids) if meta_ad_ids is not None else 0)
+        videos = 0
+        images = 0
+        ads_with_assets = 0
 
-        total_ads = len(ad_ids)
+        # Scraped assets
+        if fb_ad_ids:
+            assets_result = db.table("scraped_ad_assets").select(
+                "id, mime_type, facebook_ad_id"
+            ).in_("facebook_ad_id", fb_ad_ids).execute()
 
-        # Get asset counts
-        assets_result = db.table("scraped_ad_assets").select(
-            "id, mime_type, facebook_ad_id"
-        ).in_("facebook_ad_id", ad_ids).execute()
+            videos += sum(1 for a in assets_result.data if a.get('mime_type', '').startswith('video/'))
+            images += sum(1 for a in assets_result.data if a.get('mime_type', '').startswith('image/'))
+            ads_with_assets += len(set(a['facebook_ad_id'] for a in assets_result.data))
 
-        videos = sum(1 for a in assets_result.data if a.get('mime_type', '').startswith('video/'))
-        images = sum(1 for a in assets_result.data if a.get('mime_type', '').startswith('image/'))
+        # Meta assets
+        meta_query = db.table("meta_ad_assets").select(
+            "id, meta_ad_id, asset_type"
+        ).eq("brand_id", brand_id).eq("status", "downloaded")
+        if meta_ad_ids is not None:
+            if meta_ad_ids:
+                meta_query = meta_query.in_("meta_ad_id", meta_ad_ids)
+            else:
+                meta_query = None  # empty list = skip
+        meta_assets = (meta_query.execute().data or []) if meta_query else []
 
-        # Count ads that have assets downloaded
-        ads_with_assets = len(set(a['facebook_ad_id'] for a in assets_result.data))
-        ads_without_assets = total_ads - ads_with_assets
+        videos += sum(1 for a in meta_assets if a.get('asset_type') == 'video')
+        images += sum(1 for a in meta_assets if a.get('asset_type') == 'image')
+        meta_ads_with_assets = len(set(a['meta_ad_id'] for a in meta_assets))
+        ads_with_assets += meta_ads_with_assets
+
+        # Total ads including Meta distinct count
+        if meta_ad_ids is None:
+            meta_total_result = db.table("meta_ads_performance").select(
+                "meta_ad_id"
+            ).eq("brand_id", brand_id).execute()
+            meta_total = len(set(r["meta_ad_id"] for r in (meta_total_result.data or [])))
+            total_ads = len(fb_ad_ids) + meta_total
+
+        ads_without_assets = max(0, total_ads - ads_with_assets)
 
         return {
-            "total": len(assets_result.data),
+            "total": videos + images,
             "videos": videos,
             "images": images,
             "ads_with_assets": ads_with_assets,
@@ -277,13 +331,23 @@ def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None
 
         # If filtering by product, get the relevant ad IDs first
         if product_id:
-            ad_ids = get_ad_ids_for_product(brand_id, product_id)
-            if not ad_ids:
+            ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+            if not ad_id_set.facebook_ad_ids and not ad_id_set.meta_ad_ids:
                 return {"video_vision": 0, "image_vision": 0, "copy_analysis": 0, "amazon_reviews": 0, "total": 0}
 
-            result = db.table("brand_ad_analysis").select(
-                "analysis_type"
-            ).eq("brand_id", brand_id).in_("facebook_ad_id", ad_ids).execute()
+            # Query both ID types separately and merge
+            all_rows = []
+            if ad_id_set.facebook_ad_ids:
+                fb_result = db.table("brand_ad_analysis").select(
+                    "analysis_type"
+                ).eq("brand_id", brand_id).in_("facebook_ad_id", ad_id_set.facebook_ad_ids).execute()
+                all_rows.extend(fb_result.data or [])
+            if ad_id_set.meta_ad_ids:
+                meta_result = db.table("brand_ad_analysis").select(
+                    "analysis_type"
+                ).eq("brand_id", brand_id).in_("meta_ad_id", ad_id_set.meta_ad_ids).execute()
+                all_rows.extend(meta_result.data or [])
+            result = type('Result', (), {'data': all_rows})()
         else:
             result = db.table("brand_ad_analysis").select(
                 "analysis_type"
@@ -333,10 +397,12 @@ def download_assets_sync(brand_id: str, limit: int = 50, product_id: Optional[st
     """Download assets for brand (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
 
-    # If filtering by product, get the specific ad IDs
+    # If filtering by product, get the specific ad IDs (only FB path — Meta assets
+    # are downloaded by meta_sync job via download_new_ad_assets)
     ad_ids = None
     if product_id:
-        ad_ids = get_ad_ids_for_product(brand_id, product_id)
+        ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+        ad_ids = ad_id_set.facebook_ad_ids or None
         if not ad_ids:
             return {"ads_processed": 0, "videos_downloaded": 0, "images_downloaded": 0, "errors": 0}
 
@@ -349,42 +415,66 @@ def download_assets_sync(brand_id: str, limit: int = 50, product_id: Optional[st
 def analyze_videos_sync(brand_id: str, limit: int = 10, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze videos for brand (sync wrapper).
 
-    Uses analyze_videos_for_brand() which combines fetching and analyzing
-    in one async operation to avoid event loop issues on repeated runs.
+    Uses analyze_videos_for_brand() for scraped ads and
+    analyze_videos_for_brand_meta() for Meta API ads.
     """
     from viraltracker.services.brand_research_service import BrandResearchService
 
-    # If filtering by product, get the specific ad IDs
-    ad_ids = None
+    ad_id_set = None
     if product_id:
-        ad_ids = get_ad_ids_for_product(brand_id, product_id)
-        if not ad_ids:
+        ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_id_set.facebook_ad_ids and not ad_id_set.meta_ad_ids:
             return []
 
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_videos_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
+        results = []
+        # Scraped path
+        fb_ids = ad_id_set.facebook_ad_ids if ad_id_set else None
+        if fb_ids is None or fb_ids:
+            r = await service.analyze_videos_for_brand(UUID(brand_id), limit=limit, ad_ids=fb_ids)
+            results.extend(r)
+        # Meta path
+        meta_ids = ad_id_set.meta_ad_ids if ad_id_set else None
+        if meta_ids is None or meta_ids:
+            remaining = max(0, limit - len(results))
+            if remaining > 0:
+                r = await service.analyze_videos_for_brand_meta(UUID(brand_id), limit=remaining, meta_ad_ids=meta_ids)
+                results.extend(r)
+        return results
 
     return run_async(_analyze())
 
 def analyze_images_sync(brand_id: str, limit: int = 20, product_id: Optional[str] = None) -> List[Dict]:
     """Analyze images for brand (sync wrapper).
 
-    Uses analyze_images_for_brand() which combines fetching and analyzing
-    in one async operation to avoid event loop issues on repeated runs.
+    Uses analyze_images_for_brand() for scraped ads and
+    analyze_images_for_brand_meta() for Meta API ads.
     """
     from viraltracker.services.brand_research_service import BrandResearchService
 
-    # If filtering by product, get the specific ad IDs
-    ad_ids = None
+    ad_id_set = None
     if product_id:
-        ad_ids = get_ad_ids_for_product(brand_id, product_id)
-        if not ad_ids:
+        ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_id_set.facebook_ad_ids and not ad_id_set.meta_ad_ids:
             return []
 
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_images_for_brand(UUID(brand_id), limit=limit, ad_ids=ad_ids)
+        results = []
+        # Scraped path
+        fb_ids = ad_id_set.facebook_ad_ids if ad_id_set else None
+        if fb_ids is None or fb_ids:
+            r = await service.analyze_images_for_brand(UUID(brand_id), limit=limit, ad_ids=fb_ids)
+            results.extend(r)
+        # Meta path
+        meta_ids = ad_id_set.meta_ad_ids if ad_id_set else None
+        if meta_ids is None or meta_ids:
+            remaining = max(0, limit - len(results))
+            if remaining > 0:
+                r = await service.analyze_images_for_brand_meta(UUID(brand_id), limit=remaining, meta_ad_ids=meta_ids)
+                results.extend(r)
+        return results
 
     return run_async(_analyze())
 
@@ -429,19 +519,31 @@ def get_image_assets_for_brand(brand_id: str, only_unanalyzed: bool = True, limi
         return []
 
 def analyze_copy_sync(brand_id: str, limit: int = 50, product_id: Optional[str] = None) -> List[Dict]:
-    """Analyze ad copy for brand (sync wrapper)."""
+    """Analyze ad copy for brand (sync wrapper). Handles both sources."""
     from viraltracker.services.brand_research_service import BrandResearchService
 
-    # If filtering by product, get the specific ad IDs
-    ad_ids = None
+    ad_id_set = None
     if product_id:
-        ad_ids = get_ad_ids_for_product(brand_id, product_id)
-        if not ad_ids:
+        ad_id_set = get_ad_ids_for_product(brand_id, product_id)
+        if not ad_id_set.facebook_ad_ids and not ad_id_set.meta_ad_ids:
             return []
 
     async def _analyze():
         service = BrandResearchService()
-        return await service.analyze_copy_batch(UUID(brand_id), limit=limit, ad_ids=ad_ids)
+        results = []
+        # Scraped path
+        fb_ids = ad_id_set.facebook_ad_ids if ad_id_set else None
+        if fb_ids is None or fb_ids:
+            r = await service.analyze_copy_batch(UUID(brand_id), limit=limit, ad_ids=fb_ids)
+            results.extend(r)
+        # Meta path
+        meta_ids = ad_id_set.meta_ad_ids if ad_id_set else None
+        if meta_ids is None or meta_ids:
+            remaining = max(0, limit - len(results))
+            if remaining > 0:
+                r = await service.analyze_copy_batch_meta(UUID(brand_id), limit=remaining, meta_ad_ids=meta_ids)
+                results.extend(r)
+        return results
 
     return run_async(_analyze())
 

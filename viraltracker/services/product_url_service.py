@@ -488,7 +488,8 @@ class ProductURLService:
         brand_id: UUID,
         url: str,
         normalized_url: str,
-        ad_ids: List[str]
+        ad_ids: List[str] = None,
+        meta_ad_ids: List[str] = None,
     ) -> None:
         """
         Add or update an unmatched URL in the review queue.
@@ -497,11 +498,15 @@ class ProductURLService:
             brand_id: Brand UUID
             url: Original URL
             normalized_url: Normalized URL for deduplication
-            ad_ids: Sample ad IDs using this URL
+            ad_ids: Sample scraped ad IDs using this URL (UUIDs)
+            meta_ad_ids: Sample Meta ad IDs using this URL (TEXT)
         """
+        ad_ids = ad_ids or []
+        meta_ad_ids = meta_ad_ids or []
+
         # Check if already exists
         existing = self.supabase.table("url_review_queue")\
-            .select("id, occurrence_count, sample_ad_ids")\
+            .select("id, occurrence_count, sample_ad_ids, sample_meta_ad_ids")\
             .eq("brand_id", str(brand_id))\
             .eq("normalized_url", normalized_url)\
             .execute()
@@ -515,23 +520,35 @@ class ProductURLService:
             # Merge ad IDs (keep max 5)
             merged_ids = list(set(existing_ids + ad_ids))[:5]
 
+            update_data = {
+                "occurrence_count": new_count,
+                "sample_ad_ids": merged_ids,
+            }
+
+            # Merge sample_meta_ad_ids if provided
+            if meta_ad_ids:
+                existing_meta = record.get('sample_meta_ad_ids') or []
+                merged_meta = list(set(existing_meta + meta_ad_ids))[:5]
+                update_data["sample_meta_ad_ids"] = merged_meta
+
             self.supabase.table("url_review_queue")\
-                .update({
-                    "occurrence_count": new_count,
-                    "sample_ad_ids": merged_ids
-                })\
+                .update(update_data)\
                 .eq("id", record['id'])\
                 .execute()
         else:
             # Insert new
+            insert_data = {
+                "brand_id": str(brand_id),
+                "url": url,
+                "normalized_url": normalized_url,
+                "sample_ad_ids": ad_ids,
+                "occurrence_count": 1,
+            }
+            if meta_ad_ids:
+                insert_data["sample_meta_ad_ids"] = meta_ad_ids
+
             self.supabase.table("url_review_queue")\
-                .insert({
-                    "brand_id": str(brand_id),
-                    "url": url,
-                    "normalized_url": normalized_url,
-                    "sample_ad_ids": ad_ids,
-                    "occurrence_count": 1
-                })\
+                .insert(insert_data)\
                 .execute()
 
     def get_review_queue(
@@ -900,13 +917,154 @@ class ProductURLService:
         logger.info(f"URL discovery for brand {brand_id}: {stats}")
         return stats
 
+    def discover_meta_urls(
+        self,
+        brand_id: UUID,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Discover URLs from meta_ad_destinations and add to review queue.
+
+        Parallel to discover_urls_from_ads() but uses Meta API destinations
+        instead of scraped ad snapshots. Meta ad IDs go into
+        sample_meta_ad_ids, NOT sample_ad_ids.
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum destinations to scan
+
+        Returns:
+            Stats dict with discovered, new, existing counts
+        """
+        result = self.supabase.table("meta_ad_destinations").select(
+            "meta_ad_id, destination_url, canonical_url"
+        ).eq("brand_id", str(brand_id)).limit(limit).execute()
+
+        discovered = {}  # normalized_url -> {url, meta_ad_ids}
+        for row in (result.data or []):
+            url = row.get("canonical_url") or row.get("destination_url")
+            if not url:
+                continue
+            normalized = self._normalize_url(url)
+            if not normalized:
+                continue
+            if normalized not in discovered:
+                discovered[normalized] = {"url": url, "meta_ad_ids": []}
+            if len(discovered[normalized]["meta_ad_ids"]) < 5:
+                discovered[normalized]["meta_ad_ids"].append(row["meta_ad_id"])
+
+        stats = {"discovered": len(discovered), "new": 0, "existing": 0}
+
+        for normalized, data in discovered.items():
+            existing = self.supabase.table("url_review_queue")\
+                .select("id, sample_meta_ad_ids")\
+                .eq("brand_id", str(brand_id))\
+                .eq("normalized_url", normalized)\
+                .execute()
+
+            if existing.data:
+                stats["existing"] += 1
+                record = existing.data[0]
+                existing_meta = record.get("sample_meta_ad_ids") or []
+                merged_meta = list(set(existing_meta + data["meta_ad_ids"]))[:5]
+                self.supabase.table("url_review_queue")\
+                    .update({
+                        "sample_meta_ad_ids": merged_meta,
+                    })\
+                    .eq("id", record["id"])\
+                    .execute()
+            else:
+                match = self.match_url_to_product(data["url"], brand_id)
+                insert_data = {
+                    "brand_id": str(brand_id),
+                    "url": data["url"],
+                    "normalized_url": normalized,
+                    "sample_ad_ids": [],
+                    "sample_meta_ad_ids": data["meta_ad_ids"],
+                    "occurrence_count": 1,
+                }
+                if match:
+                    product_id, confidence, _ = match
+                    insert_data["status"] = "assigned"
+                    insert_data["suggested_product_id"] = str(product_id)
+                    insert_data["suggestion_confidence"] = confidence
+                else:
+                    insert_data["status"] = "pending"
+                    stats["new"] += 1
+                self.supabase.table("url_review_queue").insert(insert_data).execute()
+
+        logger.info(f"Meta URL discovery for brand {brand_id}: {stats}")
+        return stats
+
+    def bulk_match_meta(
+        self,
+        brand_id: UUID,
+        limit: int = 500,
+        only_unmatched: bool = True,
+    ) -> Dict[str, int]:
+        """Match Meta ads to products using meta_ad_destinations URLs.
+
+        Writes to meta_ad_product_matches (not facebook_ads.product_id).
+
+        Args:
+            brand_id: Brand UUID
+            limit: Maximum ads to process
+            only_unmatched: Only process ads without existing match
+
+        Returns:
+            Stats dict with matched, unmatched, failed, total counts
+        """
+        dest_result = self.supabase.table("meta_ad_destinations").select(
+            "meta_ad_id, canonical_url, destination_url"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        destinations = dest_result.data or []
+
+        if only_unmatched:
+            matched_result = self.supabase.table("meta_ad_product_matches").select(
+                "meta_ad_id"
+            ).eq("brand_id", str(brand_id)).execute()
+            matched_ids = set(r["meta_ad_id"] for r in (matched_result.data or []))
+            destinations = [d for d in destinations if d["meta_ad_id"] not in matched_ids]
+
+        # Deduplicate by meta_ad_id
+        seen_ids = set()
+        unique_dests = []
+        for d in destinations:
+            if d["meta_ad_id"] not in seen_ids:
+                seen_ids.add(d["meta_ad_id"])
+                unique_dests.append(d)
+        destinations = unique_dests
+
+        stats = {"matched": 0, "unmatched": 0, "failed": 0, "total": len(destinations)}
+        for dest in destinations[:limit]:
+            url = dest.get("canonical_url") or dest.get("destination_url")
+            if not url:
+                stats["failed"] += 1
+                continue
+            match = self.match_url_to_product(url, brand_id)
+            if match:
+                product_id, confidence, method = match
+                self.supabase.table("meta_ad_product_matches").upsert({
+                    "meta_ad_id": dest["meta_ad_id"],
+                    "brand_id": str(brand_id),
+                    "product_id": str(product_id),
+                    "match_confidence": confidence,
+                    "match_method": "url",
+                }, on_conflict="brand_id,meta_ad_id").execute()
+                stats["matched"] += 1
+            else:
+                stats["unmatched"] += 1
+
+        logger.info(f"Meta bulk match for brand {brand_id}: {stats}")
+        return stats
+
     # ============================================================
     # Statistics
     # ============================================================
 
     def get_matching_stats(self, brand_id: UUID) -> Dict[str, Any]:
         """
-        Get product matching statistics for a brand.
+        Get product matching statistics for a brand (both sources).
 
         Args:
             brand_id: Brand UUID
@@ -914,30 +1072,41 @@ class ProductURLService:
         Returns:
             Stats dict with counts and percentages
         """
-        # Total ads linked to brand via junction table
+        # --- Scraped ads ---
         total_result = self.supabase.table("brand_facebook_ads")\
             .select("ad_id", count="exact")\
             .eq("brand_id", str(brand_id))\
             .execute()
-        total = total_result.count or 0
+        scraped_total = total_result.count or 0
 
-        # Get ad IDs to check matched status
-        if total > 0:
+        scraped_matched = 0
+        if scraped_total > 0:
             link_result = self.supabase.table("brand_facebook_ads")\
                 .select("ad_id")\
                 .eq("brand_id", str(brand_id))\
                 .execute()
             ad_ids = [r['ad_id'] for r in (link_result.data or [])]
 
-            # Matched ads (have product_id set)
             matched_result = self.supabase.table("facebook_ads")\
                 .select("id", count="exact")\
                 .in_("id", ad_ids)\
                 .not_.is_("product_id", "null")\
                 .execute()
-            matched = matched_result.count or 0
-        else:
-            matched = 0
+            scraped_matched = matched_result.count or 0
+
+        # --- Meta ads (DISTINCT meta_ad_id, not daily rows) ---
+        meta_ads_result = self.supabase.table("meta_ads_performance").select(
+            "meta_ad_id"
+        ).eq("brand_id", str(brand_id)).execute()
+        meta_total = len(set(r["meta_ad_id"] for r in (meta_ads_result.data or [])))
+
+        meta_matched_result = self.supabase.table("meta_ad_product_matches").select(
+            "meta_ad_id", count="exact"
+        ).eq("brand_id", str(brand_id)).execute()
+        meta_matched = meta_matched_result.count or 0
+
+        total = scraped_total + meta_total
+        matched = scraped_matched + meta_matched
 
         # Pending review URLs
         pending_result = self.supabase.table("url_review_queue")\

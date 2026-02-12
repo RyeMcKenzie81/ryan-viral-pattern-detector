@@ -299,8 +299,13 @@ with col1:
         st.session_state.matching_in_progress = True
         with st.spinner("Discovering URLs from ads..."):
             try:
+                # Discover from both scraped ads and Meta API destinations
                 result = service.discover_urls_from_ads(brand_id, limit=1000)
-                st.success(f"Found {result['discovered']} unique URLs: {result['new']} new, {result['existing']} already in queue")
+                meta_result = service.discover_meta_urls(brand_id, limit=1000)
+                total_discovered = result['discovered'] + meta_result['discovered']
+                total_new = result['new'] + meta_result['new']
+                total_existing = result['existing'] + meta_result['existing']
+                st.success(f"Found {total_discovered} unique URLs: {total_new} new, {total_existing} already in queue")
                 st.session_state.matching_in_progress = False
                 st.rerun()
             except Exception as e:
@@ -313,8 +318,13 @@ with col2:
             st.session_state.matching_in_progress = True
             with st.spinner("Matching ads to products..."):
                 try:
+                    # Match both scraped ads and Meta API ads
                     result = service.bulk_match_ads(brand_id, limit=500)
-                    st.success(f"Matched {result['matched']} ads, {result['unmatched']} unmatched, {result['failed']} failed")
+                    meta_result = service.bulk_match_meta(UUID(brand_id), limit=500)
+                    total_matched = result['matched'] + meta_result['matched']
+                    total_unmatched = result['unmatched'] + meta_result['unmatched']
+                    total_failed = result['failed'] + meta_result['failed']
+                    st.success(f"Matched {total_matched} ads, {total_unmatched} unmatched, {total_failed} failed")
                     st.session_state.matching_in_progress = False
                     st.rerun()
                 except Exception as e:
@@ -496,7 +506,7 @@ with st.expander("ℹ️ How URL Mapping Works"):
     st.markdown("""
     ### URL Matching Process
 
-    1. **Discover URLs**: Click "Discover URLs from Ads" to scan all scraped ads and find unique landing page URLs.
+    1. **Discover URLs**: Click "Discover URLs from Ads" to scan all ads (both scraped and Meta API) and find unique landing page URLs.
 
     2. **Review & Assign**: For each discovered URL, you can:
        - **✓ Assign to Product**: Link URL to an existing product (also adds as matching pattern)

@@ -677,6 +677,14 @@ class MetaAdsService:
                         if image_url:
                             logger.info(f"Ad {ad_id}: IMAGE - FALLBACK to thumbnail_url (no image_url found)")
 
+                # Extract ad copy from story_spec
+                ad_copy = None
+                if story_spec:
+                    link_data_copy = story_spec.get("link_data", {})
+                    video_data_spec = story_spec.get("video_data", {})
+                    ad_copy = (link_data_copy.get("message") or video_data_spec.get("message")
+                               or story_spec.get("page_welcome_message", {}).get("text"))
+
                 # Always add entry — caller needs fetch_ok to distinguish
                 # "API succeeded but no URL" from "per-ad API error"
                 thumbnails[ad_id] = {
@@ -684,6 +692,7 @@ class MetaAdsService:
                     "video_id": video_id,
                     "is_video": is_video,
                     "object_type": object_type,
+                    "ad_copy": ad_copy,
                     "fetch_ok": True,
                 }
                 if not image_url:
@@ -1230,7 +1239,7 @@ class MetaAdsService:
         try:
             query = supabase.table("meta_ads_performance").select(
                 "meta_ad_id"
-            ).or_("thumbnail_url.is.null,thumbnail_url.eq.,object_type.is.null")
+            ).or_("thumbnail_url.is.null,thumbnail_url.eq.,object_type.is.null,ad_copy.is.null")
             if brand_id:
                 query = query.eq("brand_id", str(brand_id))
             result = query.limit(limit * 10).execute()
@@ -1287,6 +1296,8 @@ class MetaAdsService:
                     update_data["is_video"] = meta["is_video"]
                 if meta.get("object_type"):
                     update_data["object_type"] = meta["object_type"]
+                if meta.get("ad_copy"):
+                    update_data["ad_copy"] = meta["ad_copy"]
 
                 if not update_data:
                     continue  # Nothing to update for this ad
