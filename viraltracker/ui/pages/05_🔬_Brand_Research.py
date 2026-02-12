@@ -1422,8 +1422,34 @@ def render_amazon_review_section(brand_id: str, product_id: Optional[str] = None
             st.caption(f"Model: {stats.get('model_used', 'Unknown')} | Analyzed: {stats.get('analyzed_at', 'Unknown')[:10] if stats.get('analyzed_at') else 'Unknown'}")
 
     with col2:
-        # Button to run/re-run analysis
         if product_id:
+            # Re-scrape button — fetch new reviews from Amazon
+            if st.button("Re-scrape Reviews", disabled=st.session_state.analysis_running, key="btn_amazon_scrape"):
+                st.session_state.analysis_running = True
+                with st.spinner("Scraping Amazon reviews (2-5 minutes)..."):
+                    try:
+                        db = get_supabase_client()
+                        urls = db.table("amazon_product_urls").select(
+                            "amazon_url"
+                        ).eq("product_id", product_id).execute()
+                        if not urls.data:
+                            st.warning("No Amazon URL configured for this product.")
+                        else:
+                            service = get_amazon_review_service()
+                            total_saved = 0
+                            for url_row in urls.data:
+                                result = service.scrape_reviews_for_product(
+                                    product_id=UUID(product_id),
+                                    amazon_url=url_row["amazon_url"],
+                                )
+                                total_saved += result.reviews_saved
+                            st.success(f"Scrape complete! {total_saved} reviews saved.")
+                    except Exception as e:
+                        st.error(f"Scrape failed: {e}")
+                st.session_state.analysis_running = False
+                st.rerun()
+
+            # Analyze button — run AI analysis on stored reviews
             btn_label = "Re-analyze Reviews" if stats.get("has_analysis") else "Analyze Reviews"
             if st.button(btn_label, type="primary", disabled=st.session_state.analysis_running, key="btn_amazon"):
                 st.session_state.analysis_running = True

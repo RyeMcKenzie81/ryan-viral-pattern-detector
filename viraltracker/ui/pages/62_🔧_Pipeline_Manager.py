@@ -903,18 +903,152 @@ def render_freshness_matrix():
 
 
 # ============================================================================
+# Tab 6: Amazon Reviews
+# ============================================================================
+
+def render_amazon_reviews():
+    """Scrape and analyze Amazon reviews per product."""
+    st.subheader("Amazon Review Scraping & Analysis")
+    st.markdown("Re-scrape Amazon reviews to pick up new reviews, then re-analyze.")
+
+    from viraltracker.ui.utils import render_brand_selector
+    brand_id = render_brand_selector(key="amazon_reviews_brand")
+    if not brand_id:
+        st.info("Select a brand to manage Amazon reviews.")
+        return
+
+    # Fetch products with Amazon URLs for this brand
+    try:
+        db = get_supabase_client()
+        url_result = db.table("amazon_product_urls").select(
+            "id, product_id, amazon_url, asin, total_reviews_scraped, last_scraped_at, "
+            "products(name)"
+        ).eq("brand_id", brand_id).execute()
+    except Exception as e:
+        st.error(f"Failed to fetch Amazon URLs: {e}")
+        return
+
+    if not url_result.data:
+        st.info("No Amazon product URLs configured for this brand. Add URLs in Brand Manager or URL Mapping.")
+        return
+
+    # Group by product
+    products = {}
+    for row in url_result.data:
+        pid = row["product_id"]
+        if pid not in products:
+            product_info = row.get("products") or {}
+            products[pid] = {
+                "name": product_info.get("name", "Unknown Product"),
+                "urls": [],
+            }
+        products[pid]["urls"].append(row)
+
+    # Initialize session state for running status
+    if "amazon_scrape_running" not in st.session_state:
+        st.session_state.amazon_scrape_running = False
+
+    for pid, product_data in products.items():
+        product_name = product_data["name"]
+        urls = product_data["urls"]
+        total_scraped = sum((u.get("total_reviews_scraped") or 0) for u in urls)
+        asins = ", ".join(u.get("asin", "?") for u in urls)
+
+        # Last scraped date
+        scrape_dates = [u.get("last_scraped_at") for u in urls if u.get("last_scraped_at")]
+        last_scraped = max(scrape_dates) if scrape_dates else None
+
+        with st.expander(f"**{product_name}** — {total_scraped} reviews | ASIN: {asins}", expanded=True):
+            col1, col2, col3 = st.columns([2, 1, 1])
+
+            with col1:
+                st.caption(f"Last scraped: {format_age(last_scraped) if last_scraped else 'never'}")
+                for u in urls:
+                    st.caption(f"ASIN {u.get('asin', '?')}: {u.get('total_reviews_scraped', 0) or 0} reviews")
+
+                # Check for analysis
+                try:
+                    analysis = db.table("amazon_review_analysis").select(
+                        "analyzed_at, total_reviews_analyzed"
+                    ).eq("product_id", pid).execute()
+                    if analysis.data:
+                        a = analysis.data[0]
+                        st.caption(f"Analysis: {a.get('total_reviews_analyzed', 0)} reviews analyzed ({format_age(a.get('analyzed_at'))})")
+                    else:
+                        st.caption("Analysis: not yet run")
+                except Exception:
+                    pass
+
+            with col2:
+                if st.button(
+                    "Re-scrape Reviews",
+                    key=f"pm_scrape_{pid}",
+                    disabled=st.session_state.amazon_scrape_running,
+                ):
+                    st.session_state.amazon_scrape_running = True
+                    with st.spinner(f"Scraping reviews for {product_name} (2-5 min)..."):
+                        try:
+                            from viraltracker.services.amazon_review_service import AmazonReviewService
+                            from uuid import UUID
+                            service = AmazonReviewService()
+                            total_saved = 0
+                            for url_row in urls:
+                                result = service.scrape_reviews_for_product(
+                                    product_id=UUID(pid),
+                                    amazon_url=url_row["amazon_url"],
+                                )
+                                total_saved += result.reviews_saved
+                            st.success(f"Scrape complete! {total_saved} reviews saved.")
+                        except Exception as e:
+                            st.error(f"Scrape failed: {e}")
+                    st.session_state.amazon_scrape_running = False
+                    st.rerun()
+
+            with col3:
+                if st.button(
+                    "Analyze Reviews",
+                    key=f"pm_analyze_{pid}",
+                    disabled=st.session_state.amazon_scrape_running,
+                    type="primary",
+                ):
+                    st.session_state.amazon_scrape_running = True
+                    with st.spinner(f"Analyzing reviews for {product_name} (30-60s)..."):
+                        try:
+                            from viraltracker.services.amazon_review_service import AmazonReviewService
+                            from viraltracker.ui.utils import setup_tracking_context
+                            from uuid import UUID
+                            import asyncio
+                            service = AmazonReviewService()
+                            setup_tracking_context(service)
+
+                            result = asyncio.run(
+                                service.analyze_reviews_for_product(UUID(pid))
+                            )
+
+                            if result:
+                                st.success("Analysis complete!")
+                            else:
+                                st.warning("No reviews found to analyze. Scrape first.")
+                        except Exception as e:
+                            st.error(f"Analysis failed: {e}")
+                    st.session_state.amazon_scrape_running = False
+                    st.rerun()
+
+
+# ============================================================================
 # Main Page
 # ============================================================================
 
 st.title("🔧 Pipeline Manager")
 st.markdown("Centralized data pipeline health, scheduling, and monitoring.")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🏥 Health Overview",
     "📅 Schedules",
     "📋 Active Jobs",
     "📜 Run History",
     "📊 Freshness Matrix",
+    "📦 Amazon Reviews",
 ])
 
 with tab1:
@@ -935,3 +1069,6 @@ with tab4:
 
 with tab5:
     render_freshness_matrix()
+
+with tab6:
+    render_amazon_reviews()
