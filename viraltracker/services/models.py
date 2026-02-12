@@ -2474,3 +2474,60 @@ class GenerateRecommendationsResult(BaseModel):
     )
     total_templates_analyzed: int = Field(..., ge=0, description="Total templates considered")
     generation_time_ms: int = Field(..., ge=0, description="Time taken in milliseconds")
+
+
+# ============================================================================
+# Tool Readiness Models
+# ============================================================================
+
+class ReadinessStatus(str, Enum):
+    """Tool readiness state."""
+    READY = "ready"
+    PARTIAL = "partial"
+    BLOCKED = "blocked"
+    NOT_APPLICABLE = "n/a"
+
+
+class RequirementType(str, Enum):
+    """Kind of requirement check."""
+    HARD = "hard"
+    SOFT = "soft"
+    FRESHNESS = "freshness"
+
+
+class RequirementResult(BaseModel):
+    """Result of evaluating a single requirement."""
+    key: str
+    label: str
+    requirement_type: RequirementType
+    met: bool
+    detail: str = ""
+    fix_action: Optional[str] = None
+    fix_page_link: Optional[str] = None
+    fix_job_type: Optional[str] = None
+    last_updated: Optional[datetime] = None
+
+
+class ToolReadiness(BaseModel):
+    """Readiness assessment for a single tool/page."""
+    tool_key: str
+    tool_label: str
+    icon: str
+    status: ReadinessStatus
+    page_link: str
+    hard_results: List[RequirementResult] = Field(default_factory=list)
+    soft_results: List[RequirementResult] = Field(default_factory=list)
+    freshness_results: List[RequirementResult] = Field(default_factory=list)
+    summary: str = ""
+
+
+class ToolReadinessReport(BaseModel):
+    """Full readiness report for a brand."""
+    brand_id: str
+    brand_name: str
+    ready: List[ToolReadiness] = Field(default_factory=list)
+    partial: List[ToolReadiness] = Field(default_factory=list)
+    blocked: List[ToolReadiness] = Field(default_factory=list)
+    not_applicable: List[ToolReadiness] = Field(default_factory=list)
+    overall_pct: float
+    generated_at: datetime

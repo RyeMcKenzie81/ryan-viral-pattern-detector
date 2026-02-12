@@ -52,6 +52,7 @@ class FeatureKey:
     PERSONAS = "personas"
     URL_MAPPING = "url_mapping"
     BRAND_RESEARCH = "brand_research"
+    TOOL_READINESS = "tool_readiness"
     # Competitors
     COMPETITORS = "competitors"
     COMPETITIVE_ANALYSIS = "competitive_analysis"
@@ -221,6 +222,7 @@ class FeatureService:
             FeatureKey.PERSONAS,
             FeatureKey.URL_MAPPING,
             FeatureKey.BRAND_RESEARCH,
+            FeatureKey.TOOL_READINESS,
             # Competitors pages
             FeatureKey.COMPETITORS,
             FeatureKey.COMPETITIVE_ANALYSIS,
@@ -263,6 +265,7 @@ class FeatureService:
             FeatureKey.HISTORY,
             FeatureKey.CLIENT_ONBOARDING,
             FeatureKey.PIPELINE_VISUALIZER,
+            FeatureKey.PIPELINE_MANAGER,
             FeatureKey.USAGE_DASHBOARD,
             FeatureKey.ADMIN,
         ]

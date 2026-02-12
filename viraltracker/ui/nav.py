@@ -118,6 +118,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.PERSONAS: True,
             FeatureKey.URL_MAPPING: True,
             FeatureKey.BRAND_RESEARCH: True,
+            FeatureKey.TOOL_READINESS: True,
             # Competitors pages
             FeatureKey.COMPETITORS: True,
             FeatureKey.COMPETITIVE_ANALYSIS: True,
@@ -230,6 +231,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         brands.append(st.Page("pages/04_🔗_URL_Mapping.py", title="URL Mapping", icon="🔗"))
     if visible(SK_BRANDS, "brand_research"):
         brands.append(st.Page("pages/05_🔬_Brand_Research.py", title="Brand Research", icon="🔬"))
+    if visible(SK_BRANDS, "tool_readiness"):
+        brands.append(st.Page("pages/07_📥_Tool_Readiness.py", title="Tool Readiness", icon="📥"))
     if brands:
         pages["Brands"] = brands
 

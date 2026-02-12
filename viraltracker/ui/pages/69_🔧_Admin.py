@@ -380,6 +380,7 @@ with tab_features:
                 (FeatureKey.PERSONAS, "Personas"),
                 (FeatureKey.URL_MAPPING, "URL Mapping"),
                 (FeatureKey.BRAND_RESEARCH, "Brand Research"),
+                (FeatureKey.TOOL_READINESS, "Tool Readiness"),
             ],
         },
         {
