@@ -84,6 +84,30 @@ def get_sample_ads(ad_ids: list, limit: int = 3):
         return []
 
 
+def _find_landing_page_by_url(brand_id: str, url: str):
+    """Find a landing page record by URL or canonical URL."""
+    try:
+        from viraltracker.services.url_canonicalizer import canonicalize_url
+
+        db = get_supabase_client()
+        canonical = canonicalize_url(url)
+
+        result = db.table("brand_landing_pages").select("*").eq(
+            "brand_id", brand_id
+        ).eq("canonical_url", canonical).limit(1).execute()
+
+        if result.data:
+            return result.data[0]
+
+        result = db.table("brand_landing_pages").select("*").eq(
+            "brand_id", brand_id
+        ).eq("url", url).limit(1).execute()
+
+        return result.data[0] if result.data else None
+    except Exception:
+        return None
+
+
 # ============================================================
 # Main Page
 # ============================================================
@@ -497,6 +521,79 @@ else:
                             st.rerun()
 
             st.markdown("---")
+
+# ============================================================
+# Assigned URLs — Create Offer Variants
+# ============================================================
+
+st.markdown("---")
+st.subheader("✅ Assigned URLs — Create Offer Variants")
+
+assigned_urls = service.get_review_queue(brand_id, status='assigned', limit=50)
+new_product_urls = service.get_review_queue(brand_id, status='new_product', limit=50)
+all_assigned = assigned_urls + new_product_urls
+
+if not all_assigned:
+    st.caption("No assigned URLs yet. Assign URLs to products in the review queue above.")
+else:
+    st.caption(f"{len(all_assigned)} URLs assigned to products. Create offer variants from these landing pages.")
+
+    for url_record in all_assigned:
+        url = url_record.get("url", "")
+        record_id = url_record.get("id", "")
+        product_id_for_variant = url_record.get("suggested_product_id")
+
+        # Get product name for display
+        product_name = "Unknown"
+        if product_id_for_variant:
+            for p in products:
+                if p["id"] == product_id_for_variant:
+                    product_name = p["name"]
+                    break
+
+        with st.expander(f"🔗 {url}", expanded=False):
+            col_info, col_action = st.columns([3, 1])
+            with col_info:
+                st.caption(f"Product: {product_name} • Found in {url_record.get('occurrence_count', 0)} ads")
+            with col_action:
+                if st.button("Create Variant", key=f"urlmap_variant_{record_id}"):
+                    st.session_state[f"urlmap_variant_form_{record_id}"] = True
+
+            if st.session_state.get(f"urlmap_variant_form_{record_id}"):
+                from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                from viraltracker.ui.offer_variant_form import render_offer_variant_review_form
+
+                ov_service = ProductOfferVariantService()
+
+                # Check if URL has landing page analysis
+                lp = _find_landing_page_by_url(brand_id, url)
+                if lp and lp.get("scrape_status") == "analyzed":
+                    extracted = ov_service.extract_variant_from_landing_page(UUID(lp["id"]))
+                else:
+                    with st.spinner("Analyzing landing page..."):
+                        extracted = ov_service.analyze_landing_page(url)
+                        if extracted.get("success"):
+                            extracted["landing_page_url"] = url
+
+                if extracted.get("success"):
+                    result = render_offer_variant_review_form(
+                        extracted_data=extracted,
+                        product_id=str(product_id_for_variant) if product_id_for_variant else None,
+                        brand_id=brand_id,
+                        form_key=f"urlmap_ov_{record_id}",
+                        products=products,
+                        show_product_selector=(product_id_for_variant is None),
+                        mode="create_or_update",
+                    )
+                    if result:
+                        st.session_state[f"urlmap_variant_form_{record_id}"] = False
+                        st.rerun()
+                else:
+                    st.warning(f"Could not extract variant data: {extracted.get('error', 'Unknown error')}")
+                    if st.button("Close", key=f"urlmap_close_{record_id}"):
+                        st.session_state[f"urlmap_variant_form_{record_id}"] = False
+                        st.rerun()
+
 
 # ============================================================
 # Help Section

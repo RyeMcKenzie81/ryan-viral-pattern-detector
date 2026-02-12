@@ -19,11 +19,13 @@ Part of the Service Layer - contains business logic, no UI or agent code.
 
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from uuid import UUID
 
 from supabase import Client
+from postgrest.exceptions import APIError
 
 from ..core.database import get_supabase_client
 
@@ -81,6 +83,12 @@ class ProductOfferVariantService:
         required_disclaimers: Optional[str] = None,
         is_default: bool = False,
         notes: Optional[str] = None,
+        mechanism_name: Optional[str] = None,
+        mechanism_problem: Optional[str] = None,
+        mechanism_solution: Optional[str] = None,
+        sample_hooks: Optional[List[str]] = None,
+        source: Optional[str] = None,
+        source_metadata: Optional[Dict[str, Any]] = None,
     ) -> UUID:
         """
         Create a new offer variant for a product.
@@ -99,6 +107,12 @@ class ProductOfferVariantService:
             required_disclaimers: Legal disclaimers required for this variant
             is_default: Whether this is the default variant
             notes: Optional internal notes
+            mechanism_name: Name of the unique mechanism
+            mechanism_problem: UMP - the problem/root cause
+            mechanism_solution: UMS - how the mechanism solves it
+            sample_hooks: List of sample ad hooks
+            source: How this variant was created (manual|ad_analysis|landing_page_analysis|meta_ad_analysis)
+            source_metadata: Additional metadata about the source
 
         Returns:
             UUID of created offer variant
@@ -112,10 +126,11 @@ class ProductOfferVariantService:
         if is_default and existing:
             self._clear_defaults(product_id)
 
+        base_slug = self._slugify(name)
+
         data = {
             "product_id": str(product_id),
             "name": name,
-            "slug": self._slugify(name),
             "landing_page_url": landing_page_url,
             "pain_points": pain_points or [],
             "desires_goals": desires_goals or [],
@@ -132,12 +147,41 @@ class ProductOfferVariantService:
             data["required_disclaimers"] = required_disclaimers
         if notes:
             data["notes"] = notes
+        if mechanism_name:
+            data["mechanism_name"] = mechanism_name
+        if mechanism_problem:
+            data["mechanism_problem"] = mechanism_problem
+        if mechanism_solution:
+            data["mechanism_solution"] = mechanism_solution
+        if sample_hooks:
+            data["sample_hooks"] = sample_hooks
+        if source:
+            data["source"] = source
+        if source_metadata:
+            data["source_metadata"] = source_metadata
 
-        result = self.supabase.table("product_offer_variants").insert(data).execute()
-        variant_id = UUID(result.data[0]["id"])
+        # Insert with retry on slug collision (race-safe)
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            if attempt == 0:
+                data["slug"] = base_slug
+            elif attempt < max_attempts - 1:
+                data["slug"] = f"{base_slug}-{attempt}"
+            else:
+                data["slug"] = f"{base_slug}-{int(time.time()) % 10000}"
 
-        logger.info(f"Created offer variant: {name} for product {product_id}")
-        return variant_id
+            try:
+                result = self.supabase.table("product_offer_variants").insert(data).execute()
+                variant_id = UUID(result.data[0]["id"])
+                logger.info(f"Created offer variant: {name} for product {product_id}")
+                return variant_id
+            except APIError as e:
+                if "product_offer_variants_product_id_slug_key" in str(e):
+                    logger.info(f"Slug collision for '{name}', retrying with suffix -{attempt + 1}")
+                    continue
+                raise
+
+        raise RuntimeError(f"Failed to create offer variant after {max_attempts} slug collision retries")
 
     def get_offer_variants(
         self,
@@ -236,8 +280,9 @@ class ProductOfferVariantService:
             True if successful
         """
         # Handle slug regeneration if name changed
-        if "name" in updates and "slug" not in updates:
-            updates["slug"] = self._slugify(updates["name"])
+        needs_slug_retry = "name" in updates and "slug" not in updates
+        if needs_slug_retry:
+            base_slug = self._slugify(updates["name"])
 
         # Handle is_default specially
         if updates.get("is_default"):
@@ -245,12 +290,30 @@ class ProductOfferVariantService:
             if variant:
                 self._clear_defaults(UUID(variant["product_id"]))
 
-        self.supabase.table("product_offer_variants").update(updates).eq(
-            "id", str(variant_id)
-        ).execute()
+        # Single write path with slug collision retry
+        max_attempts = 10 if needs_slug_retry else 1
+        for attempt in range(max_attempts):
+            if needs_slug_retry:
+                if attempt == 0:
+                    updates["slug"] = base_slug
+                elif attempt < max_attempts - 1:
+                    updates["slug"] = f"{base_slug}-{attempt}"
+                else:
+                    updates["slug"] = f"{base_slug}-{int(time.time()) % 10000}"
 
-        logger.info(f"Updated offer variant: {variant_id}")
-        return True
+            try:
+                self.supabase.table("product_offer_variants").update(updates).eq(
+                    "id", str(variant_id)
+                ).execute()
+                logger.info(f"Updated offer variant: {variant_id}")
+                return True
+            except APIError as e:
+                if needs_slug_retry and "product_offer_variants_product_id_slug_key" in str(e):
+                    logger.info(f"Slug collision on update for variant {variant_id}, retrying")
+                    continue
+                raise
+
+        raise RuntimeError(f"Failed to update offer variant after {max_attempts} slug collision retries")
 
     def set_as_default(self, variant_id: UUID) -> bool:
         """
@@ -541,3 +604,187 @@ class ProductOfferVariantService:
                 "benefits": [],
                 "target_audience": "",
             }
+
+    # ============================================
+    # CREATE OR UPDATE (UPSERT BY URL)
+    # ============================================
+
+    def create_or_update_offer_variant(
+        self,
+        product_id: UUID,
+        landing_page_url: str,
+        **kwargs,
+    ) -> Tuple[UUID, bool]:
+        """
+        Create or update an offer variant by product_id + landing_page_url.
+
+        Checks for an existing variant matching the product and URL.
+        If found, updates it. If not, creates a new one.
+
+        Args:
+            product_id: UUID of the product
+            landing_page_url: Landing page URL to match
+            **kwargs: All other params accepted by create_offer_variant
+
+        Returns:
+            Tuple of (variant_id, was_created)
+        """
+        existing = self.supabase.table("product_offer_variants").select("id, name").eq(
+            "product_id", str(product_id)
+        ).eq("landing_page_url", landing_page_url).limit(1).execute()
+
+        if existing.data:
+            variant_id = UUID(existing.data[0]["id"])
+            # Build update dict from kwargs, excluding None values
+            updates = {}
+            for key in ["name", "pain_points", "desires_goals", "benefits",
+                        "target_audience", "disallowed_claims", "required_disclaimers",
+                        "notes", "mechanism_name", "mechanism_problem",
+                        "mechanism_solution", "sample_hooks", "source", "source_metadata"]:
+                if key in kwargs and kwargs[key] is not None:
+                    updates[key] = kwargs[key]
+            if "is_default" in kwargs:
+                updates["is_default"] = kwargs["is_default"]
+
+            if updates:
+                self.update_offer_variant(variant_id, updates)
+
+            logger.info(f"Updated existing offer variant: {variant_id} for URL {landing_page_url}")
+            return variant_id, False
+        else:
+            name = kwargs.pop("name", landing_page_url.split("/")[-1] or "Unnamed Variant")
+            variant_id = self.create_offer_variant(
+                product_id=product_id,
+                name=name,
+                landing_page_url=landing_page_url,
+                **kwargs,
+            )
+            return variant_id, True
+
+    # ============================================
+    # EXTRACT FROM LANDING PAGE (NO AI)
+    # ============================================
+
+    @staticmethod
+    def _normalize_to_string_list(data: Any, max_items: int = 10) -> List[str]:
+        """Flatten any input to a list of non-empty strings.
+
+        Handles: List[str], List[Dict], Dict[str, List], str, None.
+        """
+        if data is None:
+            return []
+        if isinstance(data, str):
+            return [data] if data.strip() else []
+        if isinstance(data, dict):
+            result = []
+            for v in data.values():
+                if isinstance(v, list):
+                    result.extend(str(item) if not isinstance(item, str) else item for item in v)
+                elif isinstance(v, str):
+                    result.append(v)
+            return [s for s in result if s.strip()][:max_items]
+        if isinstance(data, list):
+            result = []
+            for item in data:
+                if isinstance(item, str):
+                    result.append(item)
+                elif isinstance(item, dict):
+                    for key in ("quote", "text", "explanation", "objection", "signal"):
+                        if key in item and isinstance(item[key], str):
+                            result.append(item[key])
+                            break
+                    else:
+                        result.append(str(item))
+                else:
+                    result.append(str(item))
+            return [s for s in result if s.strip()][:max_items]
+        return []
+
+    def extract_variant_from_landing_page(self, landing_page_id: UUID) -> Dict[str, Any]:
+        """Extract offer variant fields from an already-analyzed brand_landing_pages record.
+
+        Returns dict ready for review form. Does NOT create the variant.
+        All list fields are normalized to List[str]. All scalar fields are str.
+
+        Args:
+            landing_page_id: UUID of the brand_landing_pages record
+
+        Returns:
+            Dict with extracted fields + success/error flags
+        """
+        result = self.supabase.table("brand_landing_pages").select("*").eq(
+            "id", str(landing_page_id)
+        ).execute()
+
+        if not result.data:
+            return {"success": False, "error": "Landing page not found"}
+
+        page = result.data[0]
+
+        if page.get("scrape_status") not in ("analyzed", "scraped"):
+            return {"success": False, "error": f"Page not yet analyzed (status: {page.get('scrape_status', 'unknown')})"}
+
+        normalize = self._normalize_to_string_list
+        analysis_raw = page.get("analysis_raw") or {}
+        belief_first = page.get("belief_first_analysis") or {}
+        layers = belief_first.get("layers", {}) if isinstance(belief_first, dict) else {}
+        persona_signals = analysis_raw.get("persona_signals") or {}
+        copy_patterns = analysis_raw.get("copy_patterns") or {}
+
+        # Build target audience from persona signals
+        target_parts = []
+        if isinstance(persona_signals, dict):
+            demographics = persona_signals.get("target_demographics")
+            if demographics:
+                target_parts.append(str(demographics) if not isinstance(demographics, str) else demographics)
+            psychographics = persona_signals.get("psychographics")
+            if psychographics:
+                target_parts.append(str(psychographics) if not isinstance(psychographics, str) else psychographics)
+        target_audience = ". ".join(target_parts) if target_parts else ""
+
+        # Mechanism from belief-first analysis
+        unique_mechanism = layers.get("unique_mechanism", {}) if isinstance(layers, dict) else {}
+        mechanism_name = ""
+        mechanism_solution = ""
+        if isinstance(unique_mechanism, dict):
+            mechanism_name = unique_mechanism.get("explanation", "") or ""
+            examples = unique_mechanism.get("examples", [])
+            if examples and isinstance(examples, list):
+                first = examples[0]
+                mechanism_solution = first.get("quote", str(first)) if isinstance(first, dict) else str(first)
+
+        problem_layer = layers.get("problem_pain_symptoms", {}) if isinstance(layers, dict) else {}
+        mechanism_problem = ""
+        if isinstance(problem_layer, dict):
+            mechanism_problem = problem_layer.get("problem", "") or problem_layer.get("explanation", "") or ""
+
+        # Suggested name
+        name = page.get("page_title") or ""
+        if not name:
+            url = page.get("url", "")
+            path = url.rstrip("/").split("/")[-1] if url else ""
+            name = path.replace("-", " ").replace("_", " ").title() if path else "Unnamed Variant"
+
+        extracted = {
+            "success": True,
+            "error": None,
+            "name": name,
+            "landing_page_url": page.get("url", ""),
+            "product_id": page.get("product_id"),
+            "pain_points": normalize(analysis_raw.get("pain_points_addressed")),
+            "desires_goals": normalize(analysis_raw.get("desires_appealed_to")),
+            "benefits": list(page.get("benefits") or []),
+            "target_audience": target_audience,
+            "mechanism_name": mechanism_name,
+            "mechanism_problem": mechanism_problem,
+            "mechanism_solution": mechanism_solution,
+            "sample_hooks": normalize(copy_patterns.get("key_phrases"), max_items=5),
+            "source": "landing_page_analysis",
+            "source_metadata": {
+                "landing_page_id": str(landing_page_id),
+                "has_belief_first": bool(belief_first),
+                "has_analysis_raw": bool(analysis_raw),
+            },
+        }
+
+        return extracted

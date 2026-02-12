@@ -324,6 +324,21 @@ def get_asset_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -
         st.error(f"Failed to get asset stats: {e}")
         return {"total": 0, "videos": 0, "images": 0, "ads_with_assets": 0, "ads_without_assets": 0}
 
+def get_analyzed_landing_page_count(brand_id: str, product_id: Optional[str] = None) -> int:
+    """Get count of analyzed landing pages for a brand, optionally filtered by product."""
+    try:
+        db = get_supabase_client()
+        query = db.table("brand_landing_pages").select("id", count="exact").eq(
+            "brand_id", brand_id
+        ).eq("scrape_status", "analyzed")
+        if product_id:
+            query = query.eq("product_id", product_id)
+        result = query.execute()
+        return result.count or 0
+    except Exception:
+        return 0
+
+
 def get_analysis_stats_for_brand(brand_id: str, product_id: Optional[str] = None) -> Dict[str, int]:
     """Get counts of completed analyses for a brand, optionally filtered by product."""
     try:
@@ -589,13 +604,16 @@ def get_landing_page_stats(brand_id: str, product_id: Optional[str] = None) -> D
     service = BrandResearchService()
     return service.get_landing_page_stats(UUID(brand_id), UUID(product_id) if product_id else None)
 
-def synthesize_personas_sync(brand_id: str) -> List[Dict]:
+def synthesize_personas_sync(brand_id: str, product_id: Optional[str] = None) -> List[Dict]:
     """Synthesize personas from analyses (sync wrapper)."""
     from viraltracker.services.brand_research_service import BrandResearchService
 
     async def _synthesize():
         service = BrandResearchService()
-        return await service.synthesize_to_personas(UUID(brand_id))
+        return await service.synthesize_to_personas(
+            UUID(brand_id),
+            product_id=UUID(product_id) if product_id else None,
+        )
 
     return run_async(_synthesize())
 
@@ -1181,11 +1199,49 @@ def render_landing_page_section(brand_id: str, product_id: Optional[str] = None)
         with st.expander(f"View {successfully_scraped} scraped landing pages"):
             pages = get_landing_pages_for_brand(brand_id)
             for page in pages:
+                page_id = page.get("id", "")
                 status_icon = "✅" if page.get("scrape_status") == "analyzed" else "📄"
                 url = page.get("url", "")
                 title = page.get("page_title") or url.split("/")[-1] or "Untitled"
-                st.markdown(f"{status_icon} **{title}**")
-                st.caption(url)
+
+                col_info, col_action = st.columns([4, 1])
+                with col_info:
+                    st.markdown(f"{status_icon} **{title}**")
+                    st.caption(url)
+                with col_action:
+                    if page.get("scrape_status") in ("analyzed", "scraped"):
+                        if st.button("Create Variant", key=f"lp_variant_{page_id}"):
+                            st.session_state[f"lp_variant_form_{page_id}"] = True
+
+                if st.session_state.get(f"lp_variant_form_{page_id}"):
+                    from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                    from viraltracker.ui.offer_variant_form import render_offer_variant_review_form
+
+                    ov_service = ProductOfferVariantService()
+                    extracted = ov_service.extract_variant_from_landing_page(UUID(page_id))
+
+                    if extracted.get("success"):
+                        # Use LP's own product_id first, then page-level filter
+                        lp_product_id = extracted.get("product_id") or product_id
+                        result = render_offer_variant_review_form(
+                            extracted_data=extracted,
+                            product_id=str(lp_product_id) if lp_product_id else None,
+                            brand_id=brand_id,
+                            form_key=f"lp_ov_{page_id}",
+                            products=get_products_for_brand(brand_id),
+                            show_product_selector=(lp_product_id is None),
+                            mode="create_or_update",
+                        )
+                        if result:
+                            st.session_state[f"lp_variant_form_{page_id}"] = False
+                            st.rerun()
+                    else:
+                        st.warning(f"Cannot extract variant: {extracted.get('error', 'Unknown error')}")
+                        if st.button("Close", key=f"lp_variant_close_{page_id}"):
+                            st.session_state[f"lp_variant_form_{page_id}"] = False
+                            st.rerun()
+
+                st.markdown("---")
 
     # Belief-First Analysis Section
     st.divider()
@@ -1703,10 +1759,15 @@ def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
     # Tab 1: Synthesize from analyses (existing flow)
     with tab_analyses:
         analysis_stats = get_analysis_stats_for_brand(brand_id, product_id)
+        lp_count = get_analyzed_landing_page_count(brand_id, product_id)
+        total_data_sources = analysis_stats["total"] + lp_count
 
-        if analysis_stats["total"] < 3:
-            st.warning("Run at least 3 analyses before synthesizing from analyses.")
+        if total_data_sources == 0:
+            st.warning("No data sources available. Run ad analyses or scrape landing pages first.")
         else:
+            if total_data_sources < 3:
+                st.info(f"Limited data ({analysis_stats['total']} analyses + {lp_count} landing pages). More data improves persona quality.")
+
             # Build analysis summary
             parts = []
             if analysis_stats['video_vision'] > 0:
@@ -1717,15 +1778,17 @@ def render_synthesis_section(brand_id: str, product_id: Optional[str] = None):
                 parts.append(f"{analysis_stats['copy_analysis']} copy")
             if analysis_stats['amazon_reviews'] > 0:
                 parts.append(f"{analysis_stats['amazon_reviews']} Amazon reviews")
+            if lp_count > 0:
+                parts.append(f"{lp_count} landing pages")
 
-            st.info(f"Ready to synthesize from {analysis_stats['total']} analyses ({', '.join(parts)})")
+            st.info(f"Ready to synthesize from {total_data_sources} data sources ({', '.join(parts)})")
 
             if st.button("Synthesize from Analyses", type="primary", disabled=st.session_state.analysis_running, key="btn_synth_analyses"):
                 st.session_state.analysis_running = True
 
                 with st.spinner("Analyzing patterns and generating personas... (30-60 seconds)"):
                     try:
-                        personas = synthesize_personas_sync(brand_id)
+                        personas = synthesize_personas_sync(brand_id, product_id=product_id)
                         st.session_state.suggested_personas = personas
                         st.session_state.review_mode = True
                         st.success(f"Generated {len(personas)} suggested persona(s)")

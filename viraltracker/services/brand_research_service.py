@@ -17,6 +17,7 @@ import base64
 import time
 import tempfile
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
 from uuid import UUID
@@ -35,6 +36,17 @@ from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 logfire = get_logfire()
+
+
+@dataclass
+class SynthesisDataSources:
+    """Config for which data sources to include in persona synthesis.
+
+    Defaults to all enabled (backward-compatible).
+    """
+    include_ad_analyses: bool = True
+    include_amazon_reviews: bool = True
+    include_landing_pages: bool = True
 
 
 # Analysis prompts
@@ -2547,40 +2559,52 @@ class BrandResearchService:
     async def synthesize_to_personas(
         self,
         brand_id: UUID,
-        max_personas: int = 3
+        max_personas: int = 3,
+        product_id: Optional[UUID] = None,
+        sources: Optional[SynthesisDataSources] = None,
     ) -> List[Dict]:
         """
         Synthesize all analyses into suggested 4D personas.
 
-        Aggregates video, image, and copy analyses to:
-        1. Detect distinct customer segments/clusters
-        2. Generate 1-3 suggested 4D personas
-        3. Populate all 4D fields from aggregated data
-        4. Include confidence scoring per persona
+        Aggregates video, image, copy analyses, Amazon reviews, and landing page
+        data to generate 1-3 suggested 4D personas.
 
         Args:
             brand_id: Brand UUID to synthesize for
             max_personas: Maximum number of personas to generate (1-3)
+            product_id: Optional product UUID to filter analyses
+            sources: Optional data source toggles (defaults to all enabled)
 
         Returns:
             List of persona dictionaries ready for PersonaService._build_persona_from_ai_response
         """
+        effective_sources = sources or SynthesisDataSources()
 
+        logger.info(f"Synthesizing personas for brand: {brand_id} (product: {product_id})")
 
-        logger.info(f"Synthesizing personas for brand: {brand_id}")
+        # 1. Get ad analyses (possibly product-filtered)
+        analyses = []
+        if effective_sources.include_ad_analyses:
+            if product_id:
+                ad_ids = self._get_ad_ids_for_product(brand_id, product_id)
+                analyses = self._get_analyses_by_ad_ids(brand_id, ad_ids)
+            else:
+                analyses = self.get_analyses_for_brand(brand_id)
 
-        # Get all analyses for brand
-        analyses = self.get_analyses_for_brand(brand_id)
+        # 2. Aggregate ad analyses (skip Amazon — gated separately below)
+        aggregated = self._aggregate_analyses(analyses, brand_id=brand_id, skip_amazon=True)
 
-        if not analyses:
-            logger.warning(f"No analyses found for brand: {brand_id}")
-            return []
+        # 3. Integrate Amazon review data (gated by source toggle)
+        if effective_sources.include_amazon_reviews and brand_id:
+            aggregated = self._integrate_amazon_review_data(aggregated, brand_id, product_id=product_id)
 
-        # Aggregate data from all analyses (including Amazon review data)
-        aggregated = self._aggregate_analyses(analyses, brand_id=brand_id)
+        # 4. Integrate landing page data
+        if effective_sources.include_landing_pages:
+            aggregated = self._integrate_landing_page_data(aggregated, brand_id, product_id=product_id)
 
+        # 5. Check if we have ANY data after all integrations
         if not aggregated.get("has_data"):
-            logger.warning("Insufficient data for persona synthesis")
+            logger.warning("No data from any source for persona synthesis")
             return []
 
         # Build synthesis prompt
@@ -2641,7 +2665,7 @@ class BrandResearchService:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
-    def _aggregate_analyses(self, analyses: List[Dict], brand_id: UUID = None) -> Dict[str, Any]:
+    def _aggregate_analyses(self, analyses: List[Dict], brand_id: UUID = None, skip_amazon: bool = False) -> Dict[str, Any]:
         """
         Aggregate data from multiple analyses for synthesis.
 
@@ -2660,6 +2684,7 @@ class BrandResearchService:
         Args:
             analyses: List of analysis records from brand_ad_analysis
             brand_id: Optional brand UUID to fetch Amazon review data
+            skip_amazon: If True, skip Amazon integration (caller will handle it)
 
         Returns:
             Aggregated data dictionary
@@ -2699,7 +2724,8 @@ class BrandResearchService:
                 "video": 0,
                 "image": 0,
                 "copy": 0,
-                "amazon_reviews": 0
+                "amazon_reviews": 0,
+                "landing_pages": 0
             },
             "has_data": False
         }
@@ -2818,12 +2844,12 @@ class BrandResearchService:
             aggregated["worldview"][key] = list(set(aggregated["worldview"][key]))
 
         # Fetch and integrate Amazon review analysis if brand_id provided
-        if brand_id:
+        if brand_id and not skip_amazon:
             aggregated = self._integrate_amazon_review_data(aggregated, brand_id)
 
         return aggregated
 
-    def _integrate_amazon_review_data(self, aggregated: Dict, brand_id: UUID) -> Dict:
+    def _integrate_amazon_review_data(self, aggregated: Dict, brand_id: UUID, product_id: Optional[UUID] = None) -> Dict:
         """
         Fetch and integrate Amazon review analysis into aggregated data.
 
@@ -2841,16 +2867,19 @@ class BrandResearchService:
         Args:
             aggregated: Existing aggregated data dictionary
             brand_id: Brand UUID to fetch review data for
+            product_id: Optional product UUID to filter reviews
 
         Returns:
             Updated aggregated dictionary with Amazon review insights
         """
         try:
-            # Fetch all review analyses for products under this brand
-            result = self.supabase.table("amazon_review_analysis") \
+            # Fetch review analyses, optionally filtered by product
+            query = self.supabase.table("amazon_review_analysis") \
                 .select("*") \
-                .eq("brand_id", str(brand_id)) \
-                .execute()
+                .eq("brand_id", str(brand_id))
+            if product_id:
+                query = query.eq("product_id", str(product_id))
+            result = query.execute()
 
             if not result.data:
                 logger.debug(f"No Amazon review analyses found for brand: {brand_id}")
@@ -3004,6 +3033,237 @@ class BrandResearchService:
 
         return aggregated
 
+    def _get_ad_ids_for_product(self, brand_id: UUID, product_id: UUID) -> Dict[str, List[str]]:
+        """Get ad IDs linked to a product via persisted product mappings."""
+        fb_result = self.supabase.table("facebook_ads").select("id").eq(
+            "brand_id", str(brand_id)
+        ).eq("product_id", str(product_id)).execute()
+
+        meta_result = self.supabase.table("meta_ad_product_matches").select("meta_ad_id").eq(
+            "brand_id", str(brand_id)
+        ).eq("product_id", str(product_id)).execute()
+
+        return {
+            "facebook_ad_ids": [r["id"] for r in (fb_result.data or [])],
+            "meta_ad_ids": [r["meta_ad_id"] for r in (meta_result.data or [])],
+        }
+
+    def _get_analyses_by_ad_ids(self, brand_id: UUID, ad_ids: Dict[str, List[str]]) -> List[Dict]:
+        """Get brand_ad_analysis records matching the given ad IDs."""
+        analyses = []
+        seen_ids = set()
+
+        fb_ids = ad_ids.get("facebook_ad_ids", [])
+        if fb_ids:
+            # Query in batches to avoid URL length limits
+            for i in range(0, len(fb_ids), 50):
+                batch = fb_ids[i:i + 50]
+                result = self.supabase.table("brand_ad_analysis").select("*").eq(
+                    "brand_id", str(brand_id)
+                ).in_("facebook_ad_id", batch).execute()
+                for r in (result.data or []):
+                    if r["id"] not in seen_ids:
+                        seen_ids.add(r["id"])
+                        analyses.append(r)
+
+        meta_ids = ad_ids.get("meta_ad_ids", [])
+        if meta_ids:
+            for i in range(0, len(meta_ids), 50):
+                batch = meta_ids[i:i + 50]
+                result = self.supabase.table("brand_ad_analysis").select("*").eq(
+                    "brand_id", str(brand_id)
+                ).in_("meta_ad_id", batch).execute()
+                for r in (result.data or []):
+                    if r["id"] not in seen_ids:
+                        seen_ids.add(r["id"])
+                        analyses.append(r)
+
+        return analyses
+
+    @staticmethod
+    def _normalize_lp_field(data: Any) -> List[str]:
+        """Normalize landing page field data to List[str] for aggregation.
+
+        Handles: Dict[str, List], List[Dict], List[str], str, None.
+        Extracts 'quote'/'text'/'explanation' from dicts, flattens nested dicts.
+        """
+        if data is None:
+            return []
+        if isinstance(data, str):
+            return [data] if data.strip() else []
+        if isinstance(data, dict):
+            result = []
+            for v in data.values():
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, str):
+                            result.append(item)
+                        elif isinstance(item, dict):
+                            for key in ("quote", "text", "explanation", "objection", "signal"):
+                                if key in item and isinstance(item[key], str):
+                                    result.append(item[key])
+                                    break
+                elif isinstance(v, str):
+                    result.append(v)
+            return [s for s in result if s.strip()]
+        if isinstance(data, list):
+            result = []
+            for item in data:
+                if isinstance(item, str):
+                    result.append(item)
+                elif isinstance(item, dict):
+                    for key in ("quote", "text", "explanation", "objection", "signal"):
+                        if key in item and isinstance(item[key], str):
+                            result.append(item[key])
+                            break
+            return [s for s in result if s.strip()]
+        return []
+
+    def _integrate_single_landing_page(self, aggregated: Dict, page_data: Dict) -> Dict:
+        """Integrate a single landing page's data into the aggregated structure."""
+        analysis_raw = page_data.get("analysis_raw") or {}
+        belief_first = page_data.get("belief_first_analysis") or {}
+        layers = belief_first.get("layers", {}) if isinstance(belief_first, dict) else {}
+
+        normalize = self._normalize_lp_field
+
+        # Pain points
+        pain = normalize(analysis_raw.get("pain_points_addressed"))
+        if pain:
+            aggregated["pain_points"]["functional"].extend(pain)
+
+        # Desires
+        desires = analysis_raw.get("desires_appealed_to", {})
+        if isinstance(desires, dict):
+            transformation = normalize(desires.get("transformation"))
+            if transformation:
+                aggregated["transformation"]["after"].extend(transformation)
+            outcomes = normalize(desires.get("outcomes"))
+            if outcomes:
+                aggregated["desires"]["self_actualization"].extend(outcomes)
+            emotional_benefits = normalize(desires.get("emotional_benefits"))
+            if emotional_benefits:
+                aggregated["desires"]["comfort_convenience"].extend(emotional_benefits)
+
+        # Benefits from TEXT[] column
+        benefits = page_data.get("benefits") or []
+        if benefits:
+            aggregated["benefits"]["functional"].extend(benefits)
+
+        # Copy patterns
+        copy_patterns = analysis_raw.get("copy_patterns") or {}
+        key_phrases = copy_patterns.get("key_phrases") or []
+        if key_phrases and isinstance(key_phrases, list):
+            aggregated["hooks"].extend([p for p in key_phrases if isinstance(p, str)])
+        power_words = copy_patterns.get("power_words") or []
+        if power_words and isinstance(power_words, list):
+            aggregated["customer_language"]["descriptive_words"].extend(
+                [w for w in power_words if isinstance(w, str)]
+            )
+
+        # Persona signals
+        persona_signals = analysis_raw.get("persona_signals")
+        if persona_signals:
+            aggregated["persona_signals"].append(persona_signals)
+
+        # Objection handling
+        objections = normalize(analysis_raw.get("objection_handling"))
+        if objections:
+            aggregated["objections"].extend(objections)
+
+        # Belief-first layers
+        if isinstance(layers, dict):
+            # Problem/pain symptoms examples
+            problem_layer = layers.get("problem_pain_symptoms", {})
+            if isinstance(problem_layer, dict):
+                pain_examples = normalize(problem_layer.get("examples"))
+                if pain_examples:
+                    aggregated["pain_points"]["emotional"].extend(pain_examples)
+
+            # Benefits examples
+            benefits_layer = layers.get("benefits", {})
+            if isinstance(benefits_layer, dict):
+                benefit_examples = normalize(benefits_layer.get("examples"))
+                if benefit_examples:
+                    aggregated["benefits"]["emotional"].extend(benefit_examples)
+
+            # Jobs to be done as purchase triggers
+            jtbd = layers.get("jobs_to_be_done", {})
+            if isinstance(jtbd, dict):
+                explanation = jtbd.get("explanation", "")
+                if explanation and isinstance(explanation, str):
+                    aggregated["purchase_triggers"].append(f"[LP] {explanation[:200]}")
+
+        aggregated["has_data"] = True
+        return aggregated
+
+    MAX_LANDING_PAGES_FOR_SYNTHESIS = 15
+
+    def _integrate_landing_page_data(
+        self, aggregated: Dict, brand_id: UUID, product_id: Optional[UUID] = None
+    ) -> Dict:
+        """Integrate landing page analysis data into aggregated synthesis data."""
+        try:
+            query = self.supabase.table("brand_landing_pages").select("*").eq(
+                "brand_id", str(brand_id)
+            ).eq("scrape_status", "analyzed").order(
+                "analyzed_at", desc=True
+            ).limit(self.MAX_LANDING_PAGES_FOR_SYNTHESIS)
+
+            if product_id:
+                query = query.eq("product_id", str(product_id))
+
+            result = query.execute()
+
+            if not result.data:
+                logger.debug(f"No analyzed landing pages for brand: {brand_id}")
+                return aggregated
+
+            logger.info(f"Integrating {len(result.data)} landing pages into synthesis")
+
+            for page in result.data:
+                aggregated = self._integrate_single_landing_page(aggregated, page)
+
+            aggregated["analysis_counts"]["landing_pages"] = len(result.data)
+
+        except Exception as e:
+            logger.warning(f"Failed to integrate landing page data: {e}")
+            # Continue without LP data - don't fail synthesis
+
+        return aggregated
+
+    def _integrate_variant_landing_page(
+        self, aggregated: Dict, brand_id: UUID, landing_page_url: str
+    ) -> Dict:
+        """Integrate landing page data for a specific variant URL."""
+        try:
+            from viraltracker.services.url_canonicalizer import canonicalize_url
+            canonical = canonicalize_url(landing_page_url)
+
+            # Try matching by canonical_url first, then by exact url
+            result = self.supabase.table("brand_landing_pages").select("*").eq(
+                "brand_id", str(brand_id)
+            ).eq("canonical_url", canonical).eq(
+                "scrape_status", "analyzed"
+            ).limit(1).execute()
+
+            if not result.data:
+                result = self.supabase.table("brand_landing_pages").select("*").eq(
+                    "brand_id", str(brand_id)
+                ).eq("url", landing_page_url).eq(
+                    "scrape_status", "analyzed"
+                ).limit(1).execute()
+
+            if result.data:
+                aggregated = self._integrate_single_landing_page(aggregated, result.data[0])
+                aggregated["analysis_counts"]["landing_pages"] = aggregated["analysis_counts"].get("landing_pages", 0) + 1
+                logger.info(f"Integrated landing page data for variant URL: {landing_page_url}")
+
+        except Exception as e:
+            logger.warning(f"Failed to integrate variant landing page data: {e}")
+
+        return aggregated
+
     def _save_synthesis_record(
         self,
         brand_id: UUID,
@@ -3123,6 +3383,7 @@ class BrandResearchService:
                 "image": 0,
                 "copy": 0,
                 "amazon_reviews": 0,
+                "landing_pages": 0,
                 "offer_variant": 1
             },
             "has_data": True,
@@ -3141,6 +3402,11 @@ class BrandResearchService:
         # Try to integrate Amazon data if available
         if brand_id:
             aggregated = self._integrate_amazon_review_data(aggregated, UUID(brand_id))
+
+        # Try to integrate landing page data for the variant's URL
+        landing_page_url = variant.get("landing_page_url", "")
+        if brand_id and landing_page_url:
+            aggregated = self._integrate_variant_landing_page(aggregated, UUID(brand_id), landing_page_url)
 
         # Build synthesis prompt
         prompt = PERSONA_SYNTHESIS_PROMPT.format(
@@ -4743,9 +5009,9 @@ Return ONLY valid JSON."""
 
 
 # Persona synthesis prompt
-PERSONA_SYNTHESIS_PROMPT = """You are an expert at building detailed 4D customer personas from advertising data.
+PERSONA_SYNTHESIS_PROMPT = """You are an expert at building detailed 4D customer personas from advertising and research data.
 
-Given the aggregated ad analysis data below, identify distinct customer segments and generate {max_personas} persona(s).
+Given the aggregated data below (from ad analyses, Amazon reviews, and landing page analyses), identify distinct customer segments and generate {max_personas} persona(s).
 
 AGGREGATED DATA:
 {aggregated_data}

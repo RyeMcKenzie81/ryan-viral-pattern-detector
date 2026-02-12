@@ -586,3 +586,78 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 4. **Hook Analysis / Congruence Insights Meta path** — These tools read from `ad_creative_classifications` which already handles Meta ads. But their hard requirement `has_ad_data` now uses `any_of_groups`. Verify end-to-end that classifications feed correctly when only Meta data exists.
 
+---
+
+### 24. Persona Synthesis — Custom Data Source Combinations
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-12
+
+**Context**: Persona synthesis currently has three separate paths that each consume a fixed, hard-coded set of data sources:
+
+| Path | Ad Analyses | Amazon Reviews | Landing Page Data | Offer Variant Fields | Product Filter |
+|------|-------------|----------------|-------------------|---------------------|----------------|
+| Brand Research "From Analyses" | All (brand-wide) | Yes (brand-wide) | **No** | No | **No** (ignores product selector) |
+| Brand Research "From Variant" | **No** | Yes (brand-wide) | **No** (URL only) | Yes | N/A |
+| Personas Page "Generate" | Partial (`product_images` + `brand_research_synthesis`) | **No** | **No** | Yes (if selected) | Yes |
+
+**Problems identified**:
+1. **No path consumes landing page data** — `brand_landing_pages` has rich structured data (`persona_signals`, `copy_patterns`, `belief_first_analysis`, `objection_handling`, `benefits`, `testimonials`) but none of the three persona synthesis paths use it. Ironically, competitor persona synthesis DOES use `competitor_landing_pages`.
+2. **"From Analyses" ignores the product selector** — passes only `brand_id` to the service, so synthesis always uses all 300+ analyses regardless of which product is selected in the UI.
+3. **No way to mix data sources** — Users can't say "use ad analyses + landing page insights + Amazon reviews for this specific product." Each path is all-or-nothing with its fixed combination.
+4. **Amazon reviews inconsistently included** — Paths 1 and 2 use them, Path 3 does not.
+
+**What's needed**:
+1. **Unified persona synthesis UI** with checkboxes for data sources:
+   - Ad copy analyses (with option to filter by product)
+   - Amazon review analyses
+   - Landing page scraped content + belief-first analysis
+   - Offer variant fields (if variant selected)
+   - `ad_creative_classifications` (fallback for brands without Brand Research)
+2. **Product-scoped filtering** — when a product is selected, filter ad analyses and landing page data to that product
+3. **Landing page integration** — aggregate `persona_signals`, `copy_patterns`, and `belief_first_analysis` from `brand_landing_pages` into the synthesis prompt alongside existing ad analysis and Amazon review data
+4. **Single service method** that accepts a configuration of which sources to include, replacing the three separate paths
+
+**Related files**:
+- `viraltracker/services/brand_research_service.py` — `synthesize_to_personas()` (line 2547), `synthesize_from_offer_variant()` (line 3042), `_integrate_amazon_review_data()` (line 2822)
+- `viraltracker/services/persona_service.py` — `generate_persona_from_product()` (line 749)
+- `viraltracker/ui/pages/05_🔬_Brand_Research.py` — `render_synthesis_section()` (line 1686)
+- `viraltracker/ui/pages/03_👤_Personas.py` — persona generation form (line 838+)
+
+---
+
+### 25. Promote Landing Pages to Offer Variants from Brand Research / URL Mapping
+
+**Priority**: Medium-High
+**Complexity**: Medium
+**Added**: 2026-02-12
+
+**Context**: There is no UI flow to create an offer variant from a landing page. Offer variant creation happens exclusively on the Brand Manager page (page 02), either manually or via the "Discover Variants" tab (which only works with scraped Ad Library ads). For Meta-only brands, the Discover Variants tab shows "This brand has Meta API ads but no Ad Library scrapes" with no action.
+
+Meanwhile, Brand Research's landing page section has rich scraped + analyzed data (`raw_markdown`, `benefits`, `persona_signals`, `objection_handling`, `belief_first_analysis`, etc.) and URL Mapping has product-URL associations — but neither page can turn a landing page into an offer variant.
+
+**What's needed**:
+1. **Brand Research — "Create Offer Variant" button** per landing page in the "View Scraped Landing Pages" section:
+   - Pre-populate variant fields from `brand_landing_pages` data (benefits, pain_points from `persona_signals`, objections, etc.)
+   - If belief-first analysis exists, extract mechanism (UMP/UMS), desires, sample hooks
+   - Allow user to review/edit before saving
+   - Call `ProductOfferVariantService.create_offer_variant()` (proper service-layer method)
+   - Auto-assign to selected product (or prompt for product selection)
+
+2. **URL Mapping — "Create Offer Variant" action** in the URL review queue:
+   - When a URL is matched to a product, offer an action to also create an offer variant
+   - If the URL exists in `brand_landing_pages` with scraped content, pre-populate from that data
+   - If not yet scraped, offer to scrape-then-create
+
+3. **Brand Manager Discover Variants — Meta-only path**:
+   - When brand has Meta ads but no Ad Library scrapes, group `meta_ad_destinations` by URL
+   - Use `meta_ads_performance.ad_copy` for messaging synthesis (instead of requiring scraped ad body text)
+   - Falls back to the same `synthesize_messaging()` flow but with Meta ad copy as input
+
+**Related files**:
+- `viraltracker/ui/pages/05_🔬_Brand_Research.py` — `render_landing_page_section()` (line 1051)
+- `viraltracker/ui/pages/04_🔗_URL_Mapping.py` — URL review queue section
+- `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — `render_offer_variant_discovery()` (line 753)
+- `viraltracker/services/product_offer_variant_service.py` — `create_offer_variant()`, `analyze_landing_page()`
+

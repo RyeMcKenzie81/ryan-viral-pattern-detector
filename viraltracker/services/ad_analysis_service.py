@@ -13,6 +13,7 @@ import logging
 import json
 import asyncio
 import httpx
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable, Set
 from dataclasses import dataclass, field
 from collections import Counter
@@ -1047,3 +1048,236 @@ class AdAnalysisService:
         }
 
         return synthesis
+
+    # ============================================================
+    # Meta Ad Grouping (for Meta-only brands)
+    # ============================================================
+
+    def group_meta_ads_by_destination(
+        self, brand_id: str, min_ads: int = 1, days_back: int = 90
+    ) -> List[Dict]:
+        """Group Meta ads by destination URL for variant discovery.
+
+        Aggregates per-ad first (DISTINCT meta_ad_ids), then per-group.
+        Deduplicates ads appearing in multiple canonical URLs.
+
+        Args:
+            brand_id: Brand UUID string
+            min_ads: Minimum number of distinct ads per group
+            days_back: Date window for performance aggregation
+
+        Returns:
+            List of MetaAdGroup-like dicts sorted by total_spend DESC
+        """
+        from viraltracker.services.url_canonicalizer import canonicalize_url
+        from datetime import timedelta
+
+        # 1. Get all destination URLs for brand
+        dest_result = self.supabase.table("meta_ad_destinations").select(
+            "id, meta_ad_id, destination_url, canonical_url"
+        ).eq("brand_id", brand_id).execute()
+
+        if not dest_result.data:
+            return []
+
+        # 2. Dedupe: assign each meta_ad_id to its first canonical URL only
+        ad_to_canonical = {}  # meta_ad_id -> canonical_url
+        for row in dest_result.data:
+            ad_id = row.get("meta_ad_id")
+            canonical = row.get("canonical_url") or canonicalize_url(row.get("destination_url", ""))
+            if ad_id and ad_id not in ad_to_canonical:
+                ad_to_canonical[ad_id] = canonical
+
+        # 3. Group by canonical URL
+        groups = {}  # canonical_url -> {meta_ad_ids, display_url}
+        for row in dest_result.data:
+            ad_id = row.get("meta_ad_id")
+            canonical = row.get("canonical_url") or canonicalize_url(row.get("destination_url", ""))
+            # Only count this ad in this group if it's the ad's assigned group
+            if ad_id and ad_to_canonical.get(ad_id) == canonical:
+                if canonical not in groups:
+                    groups[canonical] = {
+                        "canonical_url": canonical,
+                        "display_url": row.get("destination_url", ""),
+                        "meta_ad_ids": set(),
+                    }
+                groups[canonical]["meta_ad_ids"].add(ad_id)
+
+        # 4. Get performance data (per-ad aggregation)
+        all_ad_ids = list(ad_to_canonical.keys())
+        ad_performance = {}  # meta_ad_id -> {spend, impressions, purchases, purchase_value}
+
+        for i in range(0, len(all_ad_ids), 50):
+            batch = all_ad_ids[i:i + 50]
+            perf_result = self.supabase.table("meta_ads_performance").select(
+                "meta_ad_id, spend, impressions, purchases, purchase_roas"
+            ).eq("brand_id", brand_id).in_("meta_ad_id", batch).gte(
+                "date", (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+            ).execute()
+
+            for row in (perf_result.data or []):
+                ad_id = row["meta_ad_id"]
+                if ad_id not in ad_performance:
+                    ad_performance[ad_id] = {"spend": 0, "impressions": 0, "purchases": 0, "purchase_value": 0}
+                ad_performance[ad_id]["spend"] += float(row.get("spend") or 0)
+                ad_performance[ad_id]["impressions"] += int(row.get("impressions") or 0)
+                ad_performance[ad_id]["purchases"] += int(row.get("purchases") or 0)
+
+        # 5. Get sample ad copy
+        ad_copy = {}
+        for i in range(0, len(all_ad_ids), 50):
+            batch = all_ad_ids[i:i + 50]
+            copy_result = self.supabase.table("meta_ads").select(
+                "meta_ad_id, ad_copy"
+            ).in_("meta_ad_id", batch).execute()
+            for row in (copy_result.data or []):
+                if row.get("ad_copy"):
+                    ad_copy[row["meta_ad_id"]] = row["ad_copy"]
+
+        # 6. Check existing analyses
+        analyzed_ads = set()
+        for i in range(0, len(all_ad_ids), 50):
+            batch = all_ad_ids[i:i + 50]
+            analysis_result = self.supabase.table("brand_ad_analysis").select(
+                "meta_ad_id"
+            ).eq("brand_id", brand_id).in_("meta_ad_id", batch).execute()
+            for row in (analysis_result.data or []):
+                if row.get("meta_ad_id"):
+                    analyzed_ads.add(row["meta_ad_id"])
+
+        # 7. Build result
+        result = []
+        for canonical, group in groups.items():
+            ad_ids = list(group["meta_ad_ids"])
+            ad_count = len(ad_ids)
+            if ad_count < min_ads:
+                continue
+
+            total_spend = sum(ad_performance.get(aid, {}).get("spend", 0) for aid in ad_ids)
+            total_impressions = sum(ad_performance.get(aid, {}).get("impressions", 0) for aid in ad_ids)
+            total_purchases = sum(ad_performance.get(aid, {}).get("purchases", 0) for aid in ad_ids)
+            total_purchase_value = sum(ad_performance.get(aid, {}).get("purchase_value", 0) for aid in ad_ids)
+
+            sample_copy = None
+            for aid in ad_ids:
+                if aid in ad_copy:
+                    sample_copy = ad_copy[aid]
+                    break
+
+            analyzed_count = len(set(ad_ids) & analyzed_ads)
+
+            result.append({
+                "canonical_url": canonical,
+                "display_url": group["display_url"],
+                "ad_count": ad_count,
+                "meta_ad_ids": ad_ids[:20],  # Limit for payload size
+                "sample_ad_copy": sample_copy[:300] if sample_copy else None,
+                "total_spend": round(total_spend, 2),
+                "total_impressions": total_impressions,
+                "total_purchases": total_purchases,
+                "avg_roas": round(total_purchase_value / total_spend, 2) if total_spend > 0 else None,
+                "analyzed_count": analyzed_count,
+            })
+
+        # Sort by total_spend DESC
+        result.sort(key=lambda x: x["total_spend"], reverse=True)
+        return result
+
+    def fetch_meta_analyses_for_group(self, brand_id: str, meta_ad_ids: List[str]) -> Dict:
+        """Fetch existing brand_ad_analysis records for a group of Meta ads.
+
+        Returns a structure compatible with synthesize_messaging().
+        """
+        analyses = []
+        for i in range(0, len(meta_ad_ids), 50):
+            batch = meta_ad_ids[i:i + 50]
+            result = self.supabase.table("brand_ad_analysis").select("*").eq(
+                "brand_id", brand_id
+            ).in_("meta_ad_id", batch).execute()
+            analyses.extend(result.data or [])
+
+        # Restructure into synthesize_messaging format
+        formatted_analyses = []
+        for a in analyses:
+            raw = a.get("raw_response", {})
+            formatted = {}
+            if a.get("analysis_type") == "copy_analysis":
+                formatted["copy_analysis"] = raw
+            elif a.get("analysis_type") == "image_vision":
+                formatted["image_analysis"] = raw
+            elif a.get("analysis_type") == "video_vision":
+                formatted["video_analysis"] = raw
+            else:
+                formatted["copy_analysis"] = raw
+            formatted_analyses.append(formatted)
+
+        return {
+            "analyses": formatted_analyses,
+            "analyzed_ads": len(formatted_analyses),
+            "ad_count": len(meta_ad_ids),
+            "source_ad_ids": meta_ad_ids[:20],
+        }
+
+    def synthesize_from_raw_copy(self, ad_copies: List[str], landing_page_url: str) -> Dict:
+        """Lightweight extraction from raw ad copy text.
+
+        Used when no full analysis exists yet. Returns same shape as
+        synthesize_messaging() but with basic extraction.
+
+        Args:
+            ad_copies: List of raw ad copy strings
+            landing_page_url: The destination URL
+
+        Returns:
+            Synthesis dict compatible with the shared form
+        """
+        # Basic pattern extraction from raw text
+        all_text = "\n---\n".join(c for c in ad_copies if c)
+        if not all_text:
+            return self._empty_raw_synthesis(landing_page_url)
+
+        # Extract potential hooks (first sentence patterns)
+        hooks = []
+        for copy in ad_copies[:10]:
+            if copy:
+                first_line = copy.strip().split("\n")[0].strip()
+                if first_line and len(first_line) < 150:
+                    hooks.append(first_line)
+
+        # Generate a suggested name from URL
+        url_path = landing_page_url.rstrip("/").split("/")[-1] if landing_page_url else ""
+        name_from_url = url_path.replace("-", " ").replace("_", " ").title() if url_path else "Meta Ad Variant"
+
+        return {
+            "suggested_name": name_from_url,
+            "landing_page_url": landing_page_url,
+            "pain_points": [],
+            "desires_goals": [],
+            "benefits": [],
+            "target_audience": "",
+            "mechanism_name": "",
+            "mechanism_problem": "",
+            "mechanism_solution": "",
+            "sample_hooks": hooks[:5],
+            "analyzed_count": len(ad_copies),
+            "source_ad_ids": [],
+            "_needs_full_analysis": True,
+        }
+
+    def _empty_raw_synthesis(self, landing_page_url: str) -> Dict:
+        """Return empty synthesis structure."""
+        return {
+            "suggested_name": "Unnamed Variant",
+            "landing_page_url": landing_page_url,
+            "pain_points": [],
+            "desires_goals": [],
+            "benefits": [],
+            "target_audience": "",
+            "mechanism_name": "",
+            "mechanism_problem": "",
+            "mechanism_solution": "",
+            "sample_hooks": [],
+            "analyzed_count": 0,
+            "source_ad_ids": [],
+            "_needs_full_analysis": True,
+        }

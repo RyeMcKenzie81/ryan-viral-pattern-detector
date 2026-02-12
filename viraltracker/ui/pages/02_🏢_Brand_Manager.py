@@ -193,31 +193,8 @@ def get_offer_variants_for_product(product_id: str) -> list:
         st.error(f"Failed to fetch offer variants: {e}")
         return []
 
-def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -> bool:
-    """Sync a URL to brand_landing_pages for scraping/analysis.
-
-    Auto-syncs offer variant URLs so they appear in Brand Research landing pages.
-    Uses upsert to avoid duplicates.
-    """
-    try:
-        db = get_supabase_client()
-        record = {
-            "brand_id": brand_id,
-            "url": url,
-            "product_id": product_id,
-            "scrape_status": "pending"
-        }
-        # Upsert to avoid duplicates (url + brand_id should be unique)
-        db.table("brand_landing_pages").upsert(
-            record,
-            on_conflict="brand_id,url"
-        ).execute()
-        return True
-    except Exception as e:
-        # Log but don't fail - this is a background sync
-        import logging
-        logging.warning(f"Failed to sync URL to landing pages: {e}")
-        return False
+# sync_url_to_landing_pages moved to viraltracker.ui.offer_variant_form
+from viraltracker.ui.offer_variant_form import sync_url_to_landing_pages
 
 def get_offer_variant_images(offer_variant_id: str) -> list:
     """Get images associated with an offer variant via junction table."""
@@ -750,6 +727,127 @@ def get_brand_ads_for_grouping(brand_id: str) -> list:
             ads.append(ad)
     return ads
 
+def _render_meta_variant_discovery(brand_id: str, product_id: str):
+    """Render Meta ad variant discovery when no Ad Library scrapes exist."""
+    st.info("This brand has Meta API ads. Discover offer variants by grouping ads by destination URL.")
+
+    meta_session_key = f"meta_groups_{brand_id}"
+
+    # Check for destination data
+    _db = get_supabase_client()
+    dest_count = _db.table("meta_ad_destinations").select(
+        "id", count="exact"
+    ).eq("brand_id", brand_id).limit(1).execute()
+
+    if (dest_count.count or 0) == 0:
+        st.warning("No destination URLs found. Fetch ad destinations first via the Meta Ads section.")
+        return
+
+    if st.button("Group Meta Ads by Destination URL", key=f"meta_group_{product_id}"):
+        with st.spinner("Grouping Meta ads by destination..."):
+            from viraltracker.services.ad_analysis_service import AdAnalysisService
+            ad_service = AdAnalysisService()
+            groups = ad_service.group_meta_ads_by_destination(brand_id, min_ads=1)
+            st.session_state[meta_session_key] = groups
+
+    groups = st.session_state.get(meta_session_key, [])
+    if not groups:
+        return
+
+    st.markdown(f"Found **{len(groups)}** destination URL groups")
+
+    for i, group in enumerate(groups):
+        url = group.get("display_url", group.get("canonical_url", ""))
+        ad_count = group.get("ad_count", 0)
+        spend = group.get("total_spend", 0)
+        analyzed = group.get("analyzed_count", 0)
+
+        label_parts = [f"{ad_count} ads"]
+        if spend > 0:
+            label_parts.append(f"${spend:,.0f} spent")
+        if group.get("avg_roas"):
+            label_parts.append(f"ROAS: {group['avg_roas']:.1f}x")
+        label = " | ".join(label_parts)
+
+        with st.expander(f"🔗 {url[:60]}{'...' if len(url) > 60 else ''} — {label}", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Ads", ad_count)
+            with col2:
+                st.metric("Spend", f"${spend:,.0f}")
+            with col3:
+                st.metric("Analyzed", f"{analyzed}/{ad_count}")
+
+            if group.get("sample_ad_copy"):
+                st.caption("Sample ad copy:")
+                st.text(group["sample_ad_copy"][:200] + "..." if len(group["sample_ad_copy"]) > 200 else group["sample_ad_copy"])
+
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("Analyze & Create Variant", key=f"meta_analyze_{product_id}_{i}", type="primary"):
+                    with st.spinner("Synthesizing variant data..."):
+                        try:
+                            from viraltracker.services.ad_analysis_service import AdAnalysisService
+                            ad_service = AdAnalysisService()
+                            meta_ad_ids = group.get("meta_ad_ids", [])
+
+                            if analyzed > 0:
+                                analysis_result = ad_service.fetch_meta_analyses_for_group(brand_id, meta_ad_ids)
+                                synthesis = ad_service.synthesize_messaging(analysis_result)
+                            else:
+                                # Fetch raw copy for lightweight extraction
+                                _db2 = get_supabase_client()
+                                copy_result = _db2.table("meta_ads").select("ad_copy").in_(
+                                    "meta_ad_id", meta_ad_ids[:20]
+                                ).execute()
+                                copies = [r["ad_copy"] for r in (copy_result.data or []) if r.get("ad_copy")]
+                                synthesis = ad_service.synthesize_from_raw_copy(copies, url)
+
+                            # Map to extracted_data for shared form
+                            extracted_data = {
+                                "name": synthesis.get("suggested_name", url.split("/")[-1] or "Meta Ad Variant"),
+                                "landing_page_url": url,
+                                "pain_points": synthesis.get("pain_points", []),
+                                "desires_goals": synthesis.get("desires_goals", []),
+                                "benefits": synthesis.get("benefits", []),
+                                "target_audience": synthesis.get("target_audience", ""),
+                                "mechanism_name": synthesis.get("mechanism_name", ""),
+                                "mechanism_problem": synthesis.get("mechanism_problem", ""),
+                                "mechanism_solution": synthesis.get("mechanism_solution", ""),
+                                "sample_hooks": synthesis.get("sample_hooks", []),
+                                "source": "meta_ad_analysis",
+                                "source_metadata": {
+                                    "ad_count": ad_count,
+                                    "source_ad_ids": meta_ad_ids[:20],
+                                    "total_spend": spend,
+                                },
+                            }
+
+                            st.session_state[f"meta_extracted_{product_id}_{i}"] = extracted_data
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Analysis failed: {e}")
+
+            with btn_col2:
+                if st.button("Skip", key=f"meta_skip_{product_id}_{i}"):
+                    pass
+
+            # Show shared form if extraction is available
+            extracted = st.session_state.get(f"meta_extracted_{product_id}_{i}")
+            if extracted:
+                from viraltracker.ui.offer_variant_form import render_offer_variant_review_form
+                result = render_offer_variant_review_form(
+                    extracted_data=extracted,
+                    product_id=product_id,
+                    brand_id=brand_id,
+                    form_key=f"meta_ov_{product_id}_{i}",
+                    mode="create_or_update",
+                )
+                if result:
+                    del st.session_state[f"meta_extracted_{product_id}_{i}"]
+                    st.rerun()
+
+
 def render_offer_variant_discovery(brand_id: str, product_id: str, product_name: str):
     """Render offer variant discovery UI for a product."""
     import json
@@ -768,7 +866,8 @@ def render_offer_variant_discovery(brand_id: str, product_id: str, product_name:
                 "meta_ad_id", count="exact"
             ).eq("brand_id", brand_id).limit(1).execute()
             if (_meta_count.count or 0) > 0:
-                st.info("This brand has Meta API ads but no Ad Library scrapes. Use **Brand Research** or **URL Mapping** to discover offer variants from Meta ads.")
+                _render_meta_variant_discovery(brand_id, product_id)
+                return
             else:
                 st.info("No ads available. Scrape ads from the Ad Library or link a Meta ad account to enable variant discovery.")
         except Exception:
@@ -927,46 +1026,35 @@ def render_url_groups_for_brand(url_groups: list, product_id: str, brand_id: str
                                 ))
                                 synthesis = ad_service.synthesize_messaging(analyses)
 
-                                db = get_supabase_client()
+                                from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+                                ov_service = ProductOfferVariantService()
                                 suggested_name = synthesis.get("suggested_name", f"Variant from {display_url[:30]}")
-                                variant_data = {
-                                    "product_id": product_id,
-                                    "name": suggested_name,
-                                    "slug": suggested_name.lower().replace(" ", "-").replace("/", "-")[:50],
-                                    "landing_page_url": display_url,
-                                    "pain_points": synthesis.get("pain_points", []),
-                                    "desires_goals": synthesis.get("desires_goals", []),
-                                    "benefits": synthesis.get("benefits", []),
-                                    "mechanism_name": synthesis.get("mechanism_name"),
-                                    "mechanism_problem": synthesis.get("mechanism_problem"),
-                                    "mechanism_solution": synthesis.get("mechanism_solution"),
-                                    "sample_hooks": synthesis.get("sample_hooks", []),
-                                    "source_metadata": {
-                                        "source": "ad_analysis",
+
+                                variant_id, was_created = ov_service.create_or_update_offer_variant(
+                                    product_id=UUID(product_id),
+                                    landing_page_url=display_url,
+                                    name=suggested_name,
+                                    pain_points=synthesis.get("pain_points", []),
+                                    desires_goals=synthesis.get("desires_goals", []),
+                                    benefits=synthesis.get("benefits", []),
+                                    mechanism_name=synthesis.get("mechanism_name"),
+                                    mechanism_problem=synthesis.get("mechanism_problem"),
+                                    mechanism_solution=synthesis.get("mechanism_solution"),
+                                    sample_hooks=synthesis.get("sample_hooks", []),
+                                    source="ad_analysis",
+                                    source_metadata={
                                         "ad_count": synthesis.get("analyzed_count", 0),
                                         "source_ad_ids": synthesis.get("source_ad_ids", [])
-                                    }
-                                }
-                                # Check if variant exists for this URL
-                                existing = db.table("product_offer_variants").select("id").eq(
-                                    "product_id", product_id
-                                ).eq("landing_page_url", display_url).execute()
-
-                                if existing.data:
-                                    # Update existing variant
-                                    db.table("product_offer_variants").update(variant_data).eq(
-                                        "id", existing.data[0]['id']
-                                    ).execute()
-                                else:
-                                    # Insert new variant
-                                    db.table("product_offer_variants").insert(variant_data).execute()
+                                    },
+                                )
 
                                 # Auto-sync URL to landing pages for Brand Research
                                 sync_url_to_landing_pages(brand_id, display_url, product_id)
 
                                 st.session_state[session_key][i]['status'] = 'done'
                                 st.session_state[session_key][i]['variant_name'] = suggested_name
-                                st.success(f"✅ Created offer variant: **{suggested_name}**")
+                                action = "Created" if was_created else "Updated"
+                                st.success(f"✅ {action} offer variant: **{suggested_name}**")
                                 st.rerun()
 
                             except Exception as e:
@@ -1064,28 +1152,27 @@ def _analyze_merged_groups_for_brand(
             st.session_state[session_key][idx]["status"] = "merged"
             st.session_state[session_key][idx]["merged_into_variant"] = variant_name
 
-        # Create offer variant in database
-        db = get_supabase_client()
-        variant_data = {
-            "product_id": product_id,
-            "name": variant_name,
-            "slug": variant_name.lower().replace(" ", "-").replace("/", "-")[:50],
-            "landing_page_url": primary_url,
-            "pain_points": synthesis.get("pain_points", []),
-            "desires_goals": synthesis.get("desires_goals", []),
-            "benefits": synthesis.get("benefits", []),
-            "mechanism_name": synthesis.get("mechanism_name"),
-            "mechanism_problem": synthesis.get("mechanism_problem"),
-            "mechanism_solution": synthesis.get("mechanism_solution"),
-            "sample_hooks": synthesis.get("sample_hooks", []),
-            "source_metadata": {
-                "source": "ad_analysis_merged",
+        # Create offer variant via service
+        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+        ov_service = ProductOfferVariantService()
+        ov_service.create_or_update_offer_variant(
+            product_id=UUID(product_id),
+            landing_page_url=primary_url,
+            name=variant_name,
+            pain_points=synthesis.get("pain_points", []),
+            desires_goals=synthesis.get("desires_goals", []),
+            benefits=synthesis.get("benefits", []),
+            mechanism_name=synthesis.get("mechanism_name"),
+            mechanism_problem=synthesis.get("mechanism_problem"),
+            mechanism_solution=synthesis.get("mechanism_solution"),
+            sample_hooks=synthesis.get("sample_hooks", []),
+            source="ad_analysis_merged",
+            source_metadata={
                 "ad_count": synthesis.get("analyzed_count", 0),
                 "source_urls": all_urls,
                 "source_ad_ids": synthesis.get("source_ad_ids", [])
-            }
-        }
-        db.table("product_offer_variants").insert(variant_data).execute()
+            },
+        )
 
         # Auto-sync all URLs to landing pages for Brand Research
         for url in all_urls:
@@ -2009,6 +2096,9 @@ else:
                                 from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
                                 ov_service = ProductOfferVariantService()
                                 analysis = ov_service.analyze_landing_page(new_ov_url)
+                                # Add landing_page_url to analysis for the shared form
+                                if analysis.get('success'):
+                                    analysis["landing_page_url"] = new_ov_url
                                 st.session_state[f"{new_ov_key}_analysis"] = analysis
                                 if analysis.get('success'):
                                     st.success("Analysis complete! Review and edit the extracted data below.")
@@ -2016,106 +2106,22 @@ else:
                                     st.error(f"Analysis failed: {analysis.get('error', 'Unknown error')}")
                                 st.rerun()
 
-                        # Show form if analysis is available
+                        # Show shared form if analysis is available
                         analysis = st.session_state[f"{new_ov_key}_analysis"]
                         if analysis and analysis.get('success'):
                             st.markdown("---")
-                            st.markdown("**Review Extracted Data**")
-
-                            # Editable fields pre-filled with analysis results
-                            new_ov_name = st.text_input(
-                                "Variant Name",
-                                value=analysis.get('name', ''),
-                                key=f"{new_ov_key}_name",
-                                help="Short name for this offer angle"
+                            from viraltracker.ui.offer_variant_form import render_offer_variant_review_form
+                            result = render_offer_variant_review_form(
+                                extracted_data=analysis,
+                                product_id=product_id,
+                                brand_id=selected_brand_id,
+                                form_key=f"bm_ov_{product_id}",
+                                mode="create_only",
                             )
-
-                            new_ov_target = st.text_area(
-                                "Target Audience",
-                                value=analysis.get('target_audience', ''),
-                                key=f"{new_ov_key}_target",
-                                height=80
-                            )
-
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                pain_points_text = "\n".join(analysis.get('pain_points', []))
-                                new_ov_pain = st.text_area(
-                                    "Pain Points (one per line)",
-                                    value=pain_points_text,
-                                    key=f"{new_ov_key}_pain",
-                                    height=120
-                                )
-
-                                benefits_text = "\n".join(analysis.get('benefits', []))
-                                new_ov_benefits = st.text_area(
-                                    "Benefits (one per line)",
-                                    value=benefits_text,
-                                    key=f"{new_ov_key}_benefits",
-                                    height=120
-                                )
-
-                            with col2:
-                                desires_text = "\n".join(analysis.get('desires_goals', []))
-                                new_ov_desires = st.text_area(
-                                    "Desires/Goals (one per line)",
-                                    value=desires_text,
-                                    key=f"{new_ov_key}_desires",
-                                    height=120
-                                )
-
-                                new_ov_disclaimers = st.text_area(
-                                    "Required Disclaimers",
-                                    value="",
-                                    key=f"{new_ov_key}_disclaimers",
-                                    height=120,
-                                    help="Legal disclaimers required for this offer"
-                                )
-
-                            new_ov_default = st.checkbox(
-                                "Set as default variant for this product",
-                                value=False,
-                                key=f"{new_ov_key}_default"
-                            )
-
-                            # Create button
-                            if st.button("✅ Create Offer Variant", key=f"{new_ov_key}_create", type="primary"):
-                                if not new_ov_name:
-                                    st.error("Please enter a variant name")
-                                else:
-                                    with st.spinner("Creating offer variant..."):
-                                        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
-                                        ov_service = ProductOfferVariantService()
-
-                                        # Parse text areas into lists
-                                        pain_list = [p.strip() for p in new_ov_pain.split('\n') if p.strip()]
-                                        benefits_list = [b.strip() for b in new_ov_benefits.split('\n') if b.strip()]
-                                        desires_list = [d.strip() for d in new_ov_desires.split('\n') if d.strip()]
-
-                                        try:
-                                            variant_id = ov_service.create_offer_variant(
-                                                product_id=UUID(product_id),
-                                                name=new_ov_name,
-                                                landing_page_url=new_ov_url,
-                                                pain_points=pain_list,
-                                                desires_goals=desires_list,
-                                                benefits=benefits_list,
-                                                target_audience=new_ov_target,
-                                                required_disclaimers=new_ov_disclaimers if new_ov_disclaimers else None,
-                                                is_default=new_ov_default
-                                            )
-
-                                            # Also sync to brand research URL patterns
-                                            sync_url_to_landing_pages(selected_brand_id, new_ov_url, product_id)
-
-                                            # Clear the form state
-                                            st.session_state[f"{new_ov_key}_analysis"] = None
-                                            st.session_state[f"{new_ov_key}_url"] = ""
-
-                                            st.success(f"✅ Created offer variant: **{new_ov_name}**")
-                                            st.rerun()
-                                        except Exception as e:
-                                            st.error(f"Failed to create variant: {e}")
+                            if result:
+                                st.session_state[f"{new_ov_key}_analysis"] = None
+                                st.session_state[f"{new_ov_key}_url"] = ""
+                                st.rerun()
 
                     st.markdown("---")
 
