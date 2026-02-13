@@ -893,8 +893,9 @@ class MetaAdsService:
         """
         Try to extract a generated_ad_id from the Meta ad name.
 
-        Supports two filename formats:
-        - New: d4e5f6a7-WP-C3-SQ.png (8-char ID first)
+        Supports filename formats:
+        - Current: M5-d4e5f6a7-WP-C3-SQ.png (M5- prefix + 8-char ID)
+        - Legacy: d4e5f6a7-WP-C3-SQ.png (8-char ID first, no prefix)
         - Old: WP-C3-a1b2c3-d4e5f6-SQ.png (6-char ID in 4th position)
 
         Args:
@@ -911,7 +912,7 @@ class MetaAdsService:
         # Pattern 1: New format - 8 hex chars at start
         # Example: d4e5f6a7-WP-C3-SQ.png or "d4e5f6a7 - Summer Sale"
         patterns_8char = [
-            r"^([a-f0-9]{8})",  # Start of string
+            r"^(?:M5-)?([a-f0-9]{8})",  # Start of string (with optional M5- prefix)
             r"[\s\-_]([a-f0-9]{8})[\s\-_]",  # Between delimiters
             r"[\s\-_]([a-f0-9]{8})$",  # End of string
         ]

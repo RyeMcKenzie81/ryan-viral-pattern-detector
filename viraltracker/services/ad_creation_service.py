@@ -341,7 +341,7 @@ class AdCreationService:
         # Use 8 chars for ~2.8 trillion combinations (collision-safe)
         ad_short = str(ad_id).replace("-", "")[:8]
 
-        return f"{ad_short}-{brand_code}-{product_code}-{format_code}.{extension}"
+        return f"M5-{ad_short}-{brand_code}-{product_code}-{format_code}.{extension}"
 
     # ============================================
     # IMAGE UPLOAD
@@ -396,7 +396,7 @@ class AdCreationService:
             storage_path = f"{ad_run_id}/{filename}"
         else:
             # Fall back to legacy naming for backwards compatibility
-            storage_path = f"{ad_run_id}/{prompt_index}.png"
+            storage_path = f"{ad_run_id}/M5-{prompt_index}.png"
             generated_ad_id = None  # Don't return ad_id for legacy mode
 
         # Run sync Supabase call in thread pool to avoid blocking event loop
@@ -910,7 +910,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
             storage_filename = f"{ad_run_id}/{filename}"
         else:
             # Fallback for ads without product_id
-            storage_filename = f"{ad_run_id}/variant_{target_size.replace(':', 'x')}_{uuid_module.uuid4().hex[:8]}.png"
+            storage_filename = f"{ad_run_id}/M5-variant_{target_size.replace(':', 'x')}_{uuid_module.uuid4().hex[:8]}.png"
 
         image_data = base64.b64decode(generated_image_base64)
         self.supabase.storage.from_("generated-ads").upload(
@@ -1777,7 +1777,7 @@ images are reference materials to use."""
             )
             storage_filename = f"{ad_run_id}/{filename}"
         else:
-            storage_filename = f"{ad_run_id}/edit_{new_ad_id.hex[:8]}.png"
+            storage_filename = f"{ad_run_id}/M5-edit_{new_ad_id.hex[:8]}.png"
 
         # Upload to storage
         image_data = base64.b64decode(generated_image_base64)
