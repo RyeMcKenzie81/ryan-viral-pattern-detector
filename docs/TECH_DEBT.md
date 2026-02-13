@@ -650,3 +650,18 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 - `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — `_render_meta_variant_discovery()`
 - `viraltracker/services/ad_analysis_service.py` — `group_meta_ads_by_destination()`
 
+### 27. Product Dimensions — Add to Brand Manager UI
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-02-12
+
+**Context**: Product dimensions (width, height, depth, weight) are only collected during Client Onboarding and get merged into the `target_audience` text field on import. There is no way to view or edit them in Brand Manager. The `product_dimensions` DB column exists but is only used by the ad creation service for AI image generation context.
+
+**What's needed**: Add dimension fields to the Brand Manager product Details tab (either as structured inputs or a simple text field), and persist them to the `product_dimensions` column so they're available for ad image generation.
+
+**Related files**:
+- `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — product Details tab (~line 1740)
+- `viraltracker/ui/pages/06_🚀_Client_Onboarding.py` — onboarding dimension collection (~line 1880)
+- `viraltracker/services/client_onboarding_service.py` — import logic (~line 1093)
+
