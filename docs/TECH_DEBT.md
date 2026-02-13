@@ -370,7 +370,7 @@ There are 70+ `model_dump()` calls across the codebase. Any that feed into JSONB
 **Options to explore**:
 1. **Pydantic structured output** (`output_type=Persona4D`) — Pydantic-AI natively supports this. Eliminates JSON parsing entirely, guarantees valid output, and the schema is auto-derived from the model. May need to simplify some `Dict[str, Any]` fields to concrete types.
 2. **Two-pass generation** — Generate core dimensions first (demographics, psychographics, identity), then generate domain-specific dimensions (pain points, purchase behavior, objections) in a second call. Smaller outputs per call, easier to retry on failure.
-3. **Flatten/slim the model** — Audit which fields are actually used downstream (ad creation prompts, blueprint generation, persona display). Drop or merge fields that aren't consumed. Maintain detail density but reduce field count.
+3. **Flatten/slim the model** — Merge overlapping nested sub-models where possible (e.g., consolidate similar `Dict[str, Any]` fields). Don't remove fields just because they aren't consumed yet — the data is valuable for future use. Focus on reducing structural overhead (fewer nesting levels, fewer sub-models) rather than reducing information.
 
 **Key constraint**: The detail level is valuable and should be maintained — the goal is to restructure how it's generated and transmitted, not to reduce the richness of the persona.
 
