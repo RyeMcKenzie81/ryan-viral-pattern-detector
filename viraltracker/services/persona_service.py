@@ -22,6 +22,7 @@ from datetime import datetime
 from supabase import Client
 from ..core.config import Config
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 import asyncio
 
 
@@ -835,6 +836,7 @@ class PersonaService:
         result = await run_agent_with_tracking(
             agent,
             prompt,
+            model_settings=ModelSettings(max_tokens=16384),
             tracker=self._tracker,
             user_id=self._user_id,
             organization_id=self._org_id,
@@ -1119,6 +1121,7 @@ Return ONLY valid JSON, no other text."""
         result = await run_agent_with_tracking(
             agent,
             prompt,
+            model_settings=ModelSettings(max_tokens=16384),
             tracker=self._tracker,
             user_id=self._user_id,
             organization_id=self._org_id,
