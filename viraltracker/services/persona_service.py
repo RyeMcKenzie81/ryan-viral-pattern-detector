@@ -239,9 +239,10 @@ def parse_llm_json(response_text: str) -> dict:
     clean_response = clean_response.strip()
 
     # First attempt: parse as-is
+    first_error = None
     try:
         return json.loads(clean_response)
-    except json.JSONDecodeError as first_error:
+    except (json.JSONDecodeError, TypeError, ValueError) as first_error:
         logger.warning(f"Initial JSON parse failed: {first_error}")
 
     # Second attempt: repair and parse
