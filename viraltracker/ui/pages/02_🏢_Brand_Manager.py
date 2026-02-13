@@ -860,17 +860,19 @@ def render_offer_variant_discovery(brand_id: str, product_id: str, product_name:
     ads = get_brand_ads_for_grouping(brand_id)
     if not ads:
         # Check if brand has Meta API ads instead
+        has_meta = False
         try:
             _db = get_supabase_client()
             _meta_count = _db.table("meta_ads_performance").select(
                 "meta_ad_id", count="exact"
             ).eq("brand_id", brand_id).limit(1).execute()
-            if (_meta_count.count or 0) > 0:
-                _render_meta_variant_discovery(brand_id, product_id)
-                return
-            else:
-                st.info("No ads available. Scrape ads from the Ad Library or link a Meta ad account to enable variant discovery.")
+            has_meta = (_meta_count.count or 0) > 0
         except Exception:
+            pass
+
+        if has_meta:
+            _render_meta_variant_discovery(brand_id, product_id)
+        else:
             st.info("No ads scraped yet. Use 'Scrape Ads' in the Facebook Ad Library section above.")
         return
 

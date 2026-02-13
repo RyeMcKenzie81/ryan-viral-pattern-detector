@@ -1110,7 +1110,7 @@ class AdAnalysisService:
         for i in range(0, len(all_ad_ids), 50):
             batch = all_ad_ids[i:i + 50]
             perf_result = self.supabase.table("meta_ads_performance").select(
-                "meta_ad_id, spend, impressions, purchases, purchase_roas"
+                "meta_ad_id, spend, impressions, purchases, purchase_value"
             ).eq("brand_id", brand_id).in_("meta_ad_id", batch).gte(
                 "date", (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
             ).execute()
@@ -1122,16 +1122,17 @@ class AdAnalysisService:
                 ad_performance[ad_id]["spend"] += float(row.get("spend") or 0)
                 ad_performance[ad_id]["impressions"] += int(row.get("impressions") or 0)
                 ad_performance[ad_id]["purchases"] += int(row.get("purchases") or 0)
+                ad_performance[ad_id]["purchase_value"] += float(row.get("purchase_value") or 0)
 
-        # 5. Get sample ad copy
+        # 5. Get sample ad copy (ad_copy lives on meta_ads_performance)
         ad_copy = {}
         for i in range(0, len(all_ad_ids), 50):
             batch = all_ad_ids[i:i + 50]
-            copy_result = self.supabase.table("meta_ads").select(
+            copy_result = self.supabase.table("meta_ads_performance").select(
                 "meta_ad_id, ad_copy"
-            ).in_("meta_ad_id", batch).execute()
+            ).in_("meta_ad_id", batch).not_.is_("ad_copy", "null").limit(len(batch)).execute()
             for row in (copy_result.data or []):
-                if row.get("ad_copy"):
+                if row.get("ad_copy") and row["meta_ad_id"] not in ad_copy:
                     ad_copy[row["meta_ad_id"]] = row["ad_copy"]
 
         # 6. Check existing analyses
