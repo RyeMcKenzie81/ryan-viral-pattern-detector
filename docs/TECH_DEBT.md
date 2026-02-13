@@ -354,6 +354,33 @@ There are 70+ `model_dump()` calls across the codebase. Any that feed into JSONB
 
 ---
 
+### 28. Persona4D Model — Reduce JSON Size / Use Structured Output
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-12
+
+**Context**: `Persona4D` is a massive Pydantic model (8 dimensions, 40+ fields, deeply nested sub-models like `Demographics`, `TransformationMap`, `SocialRelations`, `DomainSentiment`). When generated via LLM, the raw JSON output routinely exceeds 15K chars / 234+ lines, causing truncation at default `max_tokens` limits. We patched this by bumping `max_tokens` to 16384 in `persona_service.py`, but the underlying problem is the sheer size of the output.
+
+**Problems**:
+1. **Token cost** — Every persona generation burns a large number of output tokens (Opus @ $75/M output tokens)
+2. **Fragile JSON parsing** — Raw text output + `parse_llm_json()` repair is brittle; any truncation = total failure
+3. **Prompt/model coupling** — The `PERSONA_GENERATION_PROMPT` template must manually describe every field; any schema change requires updating the prompt
+
+**Options to explore**:
+1. **Pydantic structured output** (`output_type=Persona4D`) — Pydantic-AI natively supports this. Eliminates JSON parsing entirely, guarantees valid output, and the schema is auto-derived from the model. May need to simplify some `Dict[str, Any]` fields to concrete types.
+2. **Two-pass generation** — Generate core dimensions first (demographics, psychographics, identity), then generate domain-specific dimensions (pain points, purchase behavior, objections) in a second call. Smaller outputs per call, easier to retry on failure.
+3. **Flatten/slim the model** — Audit which fields are actually used downstream (ad creation prompts, blueprint generation, persona display). Drop or merge fields that aren't consumed. Maintain detail density but reduce field count.
+
+**Key constraint**: The detail level is valuable and should be maintained — the goal is to restructure how it's generated and transmitted, not to reduce the richness of the persona.
+
+**Related files**:
+- `viraltracker/services/persona_service.py` — `generate_persona_from_product()`, `synthesize_competitor_persona()`
+- `viraltracker/services/models.py` — `Persona4D`, `Demographics`, `TransformationMap`, `SocialRelations`, `DomainSentiment`
+- `viraltracker/services/brand_research_service.py` — `synthesize_to_personas()`, `synthesize_from_offer_variant()`
+
+---
+
 ## Completed
 
 ### ~~8~~. Fix CPC Baseline Per-Row Inflation
