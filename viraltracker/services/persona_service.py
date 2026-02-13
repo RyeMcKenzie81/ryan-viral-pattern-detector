@@ -242,8 +242,9 @@ def parse_llm_json(response_text: str) -> dict:
     first_error = None
     try:
         return json.loads(clean_response)
-    except (json.JSONDecodeError, TypeError, ValueError) as first_error:
-        logger.warning(f"Initial JSON parse failed: {first_error}")
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        first_error = e  # Save explicitly — `as` var is deleted after except block
+        logger.warning(f"Initial JSON parse failed: {e}")
 
     # Second attempt: repair and parse
     try:
