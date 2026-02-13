@@ -83,6 +83,16 @@ class GeminiService:
 
         logger.info(f"GeminiService initialized with model: {model}, rate limit: {self._requests_per_minute} req/min")
 
+    def reset_client(self):
+        """Recreate the genai.Client to get a fresh HTTP connection pool.
+
+        Call this between asyncio.run() boundaries (e.g., batch template
+        iterations) to avoid 'TCPTransport closed' errors from stale
+        connections left over after a previous event loop was destroyed.
+        """
+        self.client = genai.Client(api_key=self.api_key)
+        logger.debug("GeminiService client reset (fresh HTTP connection pool)")
+
     def set_tracking_context(
         self,
         usage_tracker,

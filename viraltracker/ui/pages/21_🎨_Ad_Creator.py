@@ -2192,11 +2192,15 @@ else:
 
             # Run batch workflow — iterate in main thread so Streamlit
             # can flush progress updates to the browser between templates.
-            # Reset the global Supabase client to avoid stale TCP connections
-            # from previous asyncio.run() event loops.
+            # IMPORTANT: Use get_event_loop().run_until_complete() instead of
+            # asyncio.run() to reuse the same event loop across iterations.
+            # asyncio.run() creates/destroys a new event loop each call, which
+            # kills httpx connection pools and causes "TCPTransport closed" errors
+            # on subsequent templates. nest_asyncio is already applied in app.py.
             from viraltracker.core.database import reset_supabase_client
             reset_supabase_client()
             db = get_supabase_client()
+            loop = asyncio.get_event_loop()
             batch_results = {
                 'successful': [],
                 'failed': [],
@@ -2213,20 +2217,17 @@ else:
                 status_placeholder.caption(f"📄 Currently processing: **{template_name}**")
 
                 try:
-                    # Download template image (refresh client if connection is stale)
+                    # Download template image
                     bucket = template.get('bucket', 'reference-ads')
                     storage_path = template.get('storage_path', '')
-                    try:
-                        template_data = db.storage.from_(bucket).download(storage_path)
-                    except Exception:
-                        # Connection may be stale after asyncio.run() — reset and retry
-                        reset_supabase_client()
-                        db = get_supabase_client()
-                        template_data = db.storage.from_(bucket).download(storage_path)
+                    template_data = db.storage.from_(bucket).download(storage_path)
                     ref_base64 = base64.b64encode(template_data).decode('utf-8')
 
-                    # Run workflow for this template (own asyncio.run)
-                    result = asyncio.run(run_workflow(
+                    # Reset Supabase singleton so pipeline nodes get a fresh client
+                    reset_supabase_client()
+
+                    # Run workflow for this template (reuse event loop)
+                    result = loop.run_until_complete(run_workflow(
                         product_id=selected_product_id,
                         reference_ad_base64=ref_base64,
                         filename=template_name,
@@ -2271,6 +2272,9 @@ else:
                         'approved_count': result.get('approved_count', 0),
                         'generated_count': len(result.get('generated_ads', []))
                     })
+
+                    # Refresh db for next iteration's download
+                    db = get_supabase_client()
 
                 except Exception as e:
                     # Stop entire batch if usage limit exceeded
