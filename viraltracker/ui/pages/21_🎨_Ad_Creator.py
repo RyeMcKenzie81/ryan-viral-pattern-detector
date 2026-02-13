@@ -1786,11 +1786,11 @@ else:
                     bucket = parts[0] if len(parts) == 2 else "scraped-assets"
                     path = parts[1] if len(parts) == 2 else storage_path
 
-                    # Checkbox for multi-select
+                    # Checkbox for multi-select (key by template_id to survive filter changes)
                     if st.checkbox(
                         template_name[:15] + "..." if len(template_name) > 15 else template_name,
                         value=is_selected,
-                        key=f"scraped_tpl_cb_{idx}",
+                        key=f"scraped_tpl_cb_{template_id}",
                         help=template_name
                     ):
                         if not is_selected:
