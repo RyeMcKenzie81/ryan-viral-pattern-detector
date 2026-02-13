@@ -627,37 +627,26 @@ Persona voice_tone_override  →  Offer Variant voice_tone_override  →  Brand 
 
 ---
 
-### 25. Promote Landing Pages to Offer Variants from Brand Research / URL Mapping
+### 25. ~~Promote Landing Pages to Offer Variants from Brand Research / URL Mapping~~
 
-**Priority**: Medium-High
-**Complexity**: Medium
+**Status**: COMPLETED (2026-02-12)
+Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create Variant" button, URL Mapping assigned URLs section, Meta-only Discover Variants, shared offer variant form, persona synthesis LP integration.
+
+---
+
+### 26. Meta Discover Variants — Filter Out Already-Created Offer Variants
+
+**Priority**: Low
+**Complexity**: Low
 **Added**: 2026-02-12
 
-**Context**: There is no UI flow to create an offer variant from a landing page. Offer variant creation happens exclusively on the Brand Manager page (page 02), either manually or via the "Discover Variants" tab (which only works with scraped Ad Library ads). For Meta-only brands, the Discover Variants tab shows "This brand has Meta API ads but no Ad Library scrapes" with no action.
+**Context**: When using "Group Meta Ads by Destination URL" in Discover Variants, the results include URL groups that already have an offer variant created for that product + landing_page_url combination. Users have to manually remember which ones they've already created.
 
-Meanwhile, Brand Research's landing page section has rich scraped + analyzed data (`raw_markdown`, `benefits`, `persona_signals`, `objection_handling`, `belief_first_analysis`, etc.) and URL Mapping has product-URL associations — but neither page can turn a landing page into an offer variant.
-
-**What's needed**:
-1. **Brand Research — "Create Offer Variant" button** per landing page in the "View Scraped Landing Pages" section:
-   - Pre-populate variant fields from `brand_landing_pages` data (benefits, pain_points from `persona_signals`, objections, etc.)
-   - If belief-first analysis exists, extract mechanism (UMP/UMS), desires, sample hooks
-   - Allow user to review/edit before saving
-   - Call `ProductOfferVariantService.create_offer_variant()` (proper service-layer method)
-   - Auto-assign to selected product (or prompt for product selection)
-
-2. **URL Mapping — "Create Offer Variant" action** in the URL review queue:
-   - When a URL is matched to a product, offer an action to also create an offer variant
-   - If the URL exists in `brand_landing_pages` with scraped content, pre-populate from that data
-   - If not yet scraped, offer to scrape-then-create
-
-3. **Brand Manager Discover Variants — Meta-only path**:
-   - When brand has Meta ads but no Ad Library scrapes, group `meta_ad_destinations` by URL
-   - Use `meta_ads_performance.ad_copy` for messaging synthesis (instead of requiring scraped ad body text)
-   - Falls back to the same `synthesize_messaging()` flow but with Meta ad copy as input
+**What's needed**: After grouping, cross-reference `product_offer_variants` by `product_id + landing_page_url` (using canonical URL matching). Either:
+- Filter out groups that already have a variant (simplest)
+- Show a badge like "Variant exists" and sort them to the bottom (more informative)
 
 **Related files**:
-- `viraltracker/ui/pages/05_🔬_Brand_Research.py` — `render_landing_page_section()` (line 1051)
-- `viraltracker/ui/pages/04_🔗_URL_Mapping.py` — URL review queue section
-- `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — `render_offer_variant_discovery()` (line 753)
-- `viraltracker/services/product_offer_variant_service.py` — `create_offer_variant()`, `analyze_landing_page()`
+- `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — `_render_meta_variant_discovery()`
+- `viraltracker/services/ad_analysis_service.py` — `group_meta_ads_by_destination()`
 
