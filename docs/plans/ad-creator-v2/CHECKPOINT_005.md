@@ -1,7 +1,7 @@
 # Ad Creator V2 — Checkpoint 005: Phase 0 Implementation
 
-> **Date**: 2026-02-13
-> **Status**: Phase 0 code complete — post-plan review PASS — nice-to-haves in progress
+> **Date**: 2026-02-13 (finalized 2026-02-14)
+> **Status**: Phase 0 COMPLETE — all browser tests PASS — ready for Phase 1
 > **Branch**: `feat/ad-creator-v2-phase0`
 > **Follows**: CHECKPOINT_004 (Final consistency pass, plan v14)
 
@@ -106,39 +106,33 @@
 
 ---
 
-## Nice-to-Have Fixes (in progress)
+## Nice-to-Have Fixes (complete)
 
 | # | Fix | Status |
 |---|-----|--------|
 | 1 | Add `ad_creation_v2` + all missing job types to `job_type_badge()` in `61_Scheduled_Tasks.py` | **DONE** |
 | 2 | Batch `_fetch_campaigns_sync()` API calls (groups of 50, matching `_fetch_ad_statuses_sync()` pattern) | **DONE** |
-| 3 | Deactivate 12 duplicate `scraped_templates` rows (older of each pair) | **DONE** — `scripts/phase0_cleanup.py --live` |
+| 3 | Deactivate 16 duplicate `scraped_templates` rows (older of each pair) | **DONE** — `scripts/phase0_cleanup.py --live` |
 | 4 | Clean up 53 orphaned `product_template_usage` rows | **DONE** — `scripts/phase0_cleanup.py --live` |
 | 5 | Unit tests for `scheduler_worker.py` and `meta_ads_service.py` | TODO (Phase 1 scope) |
 
+## Bugs Fixed During Browser Testing
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | `scraped_template_ids` column missing from `scheduled_jobs` — PGRST204 on job creation | Added column via migration P0-5: `UUID[] DEFAULT '{}'` |
+| 2 | `template_source` column missing from `scheduled_jobs` — PGRST204 on job creation | Added column via migration P0-6: `TEXT DEFAULT 'uploaded'` |
+
 ---
 
-## Browser Testing Recommendations
+## Browser Testing Results (2026-02-14)
 
-Before merging, verify in the Streamlit UI:
-
-1. **Scheduled Tasks page** (`61_📅_Scheduled_Tasks.py`)
-   - Confirm existing jobs still display correctly with badges
-   - Verify no errors loading the page
-
-2. **Ad Scheduler page** (`24_📅_Ad_Scheduler.py`)
-   - Create a test ad_creation job → verify it runs via V1 path (not broken by routing change)
-   - Verify "Run Now" still works
-
-3. **Meta Sync** (if a brand has Meta connected)
-   - Trigger a meta sync job and check:
-     - `meta_campaigns` table gets populated (new Part A)
-     - `meta_ads_performance.campaign_objective` gets values (new Part B)
-   - Check Railway worker logs for campaign sync log messages
-
-4. **Ad Performance page** (`30_📈_Ad_Performance.py`)
-   - Verify diagnostics still load (field rename from `objective` → `campaign_objective`)
-   - Check that objective-aware rules (CTR skip for non-click, ROAS skip for non-conversion) still work
+| # | Test | Result | Notes |
+|---|------|--------|-------|
+| 1 | Scheduled Tasks page — job badges | **PASS** | All job types display correct colored badges |
+| 2 | Ad Scheduler — V1 ad creation "Run Now" | **PASS** | Job created, worker executed successfully (test3, Martin Clinic → Cortisol Control) |
+| 3 | Meta Sync — manual run for Martin Clinic | **PASS** | Completed 1/1 runs, no errors in Logfire |
+| 4 | Ad Performance / Diagnostics — analyze Martin Clinic | **PASS** | 125 active ads analyzed, no errors in Logfire, campaign_objective rename working |
 
 ---
 
@@ -146,7 +140,7 @@ Before merging, verify in the Streamlit UI:
 
 | File | Change | Status |
 |------|--------|--------|
-| `migrations/2026-02-13_ad_creator_v2_phase0.sql` | New — 6 schema migrations | Applied |
+| `migrations/2026-02-13_ad_creator_v2_phase0.sql` | New — 8 schema migrations (6 original + 2 bug fixes) | Applied |
 | `viraltracker/worker/scheduler_worker.py` | V2 routing, hard-fail, stub handler | Done |
 | `viraltracker/services/meta_ads_service.py` | Campaign sync + enrichment | Done |
 | `viraltracker/services/ad_creation_service.py` | canvas_size persistence | Done |
@@ -158,9 +152,16 @@ Before merging, verify in the Streamlit UI:
 
 ---
 
-## Next Steps
+## Tech Debt Added
 
-1. Fix remaining nice-to-haves (#2-4) in a new context window
-2. Browser test the 4 areas listed above
-3. Commit all changes on `feat/ad-creator-v2-phase0`
-4. Phase 0 complete → Phase 1 can begin
+Items #28-31 added to `docs/TECH_DEBT.md` during browser testing:
+- **#28**: Ad Scheduler "Run Now" shows wrong next run time (timezone mismatch)
+- **#29**: Scheduled Tasks — show completion time and duration
+- **#30**: Add Logfire instrumentation to cron/worker server
+- **#31**: Show "Running" indicator in job list view
+
+---
+
+## Phase 0 Status: COMPLETE
+
+All code committed and pushed to `feat/ad-creator-v2-phase0`. Ready for merge/PR and Phase 1.
