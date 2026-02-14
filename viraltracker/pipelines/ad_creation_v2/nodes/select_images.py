@@ -46,14 +46,15 @@ class SelectImagesNode(BaseNode[AdCreationPipelineState]):
         ctx.state.current_step = "select_images"
 
         try:
-            # Fetch product images from database
+            # Fetch product images from database (Phase 3: include asset_tags)
             image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
             product_image_paths = []
             image_analyses = {}
+            image_asset_tags = {}  # path -> list of asset tag strings
 
             db = ctx.deps.ad_creation.supabase
             images_result = db.table("product_images").select(
-                "storage_path, image_analysis, is_main"
+                "storage_path, image_analysis, is_main, asset_tags"
             ).eq("product_id", ctx.state.product_id).order("is_main", desc=True).execute()
 
             for img in images_result.data or []:
@@ -62,6 +63,12 @@ class SelectImagesNode(BaseNode[AdCreationPipelineState]):
                     product_image_paths.append(path)
                     if img.get('image_analysis'):
                         image_analyses[path] = img['image_analysis']
+                    # Track asset tags for all images
+                    tags = img.get('asset_tags') or []
+                    if isinstance(tags, list):
+                        image_asset_tags[path] = [str(t) for t in tags]
+                    else:
+                        image_asset_tags[path] = []
 
             logger.info(f"Found {len(product_image_paths)} images, {len(image_analyses)} with analysis")
 
@@ -83,7 +90,14 @@ class SelectImagesNode(BaseNode[AdCreationPipelineState]):
             else:
                 auto_count = len(manual_selection) if manual_selection else 1
 
-            # Select images
+            # Phase 3: Extract template asset requirements for image scoring bonus
+            template_required_assets = None
+            template_optional_assets = None
+            if ctx.state.template_elements is not None:
+                template_required_assets = ctx.state.template_elements.get("required_assets", [])
+                template_optional_assets = ctx.state.template_elements.get("optional_assets", [])
+
+            # Select images (Phase 3: pass asset tags for scoring bonus)
             content_service = AdContentService()
             selected = content_service.select_product_images(
                 product_image_paths=product_image_paths,
@@ -92,7 +106,16 @@ class SelectImagesNode(BaseNode[AdCreationPipelineState]):
                 selection_mode=ctx.state.image_selection_mode,
                 image_analyses=image_analyses,
                 manual_selection=manual_selection,
+                image_asset_tags=image_asset_tags if ctx.state.template_elements is not None else None,
+                template_required_assets=template_required_assets,
+                template_optional_assets=template_optional_assets,
             )
+
+            # Phase 3: Enrich each selected image with asset_tags from our DB fetch
+            for img in selected:
+                path = img.get("storage_path", "")
+                img["asset_tags"] = image_asset_tags.get(path, [])
+
             ctx.state.selected_images = selected
 
             # Update ad run status

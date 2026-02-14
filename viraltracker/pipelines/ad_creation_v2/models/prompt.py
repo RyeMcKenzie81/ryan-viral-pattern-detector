@@ -18,8 +18,8 @@ from pydantic import BaseModel, Field
 class TaskConfig(BaseModel):
     """Top-level task configuration."""
     action: str = "create_facebook_ad"
-    variation_index: int = Field(..., ge=1, le=15)
-    total_variations: int = Field(..., ge=1, le=15)
+    variation_index: int = Field(..., ge=1, le=100)
+    total_variations: int = Field(..., ge=1, le=100)
     product_name: str
     canvas_size: str = "1080x1080px"
     color_mode: str = "original"
@@ -134,17 +134,31 @@ class TemplateAnalysis(BaseModel):
     detailed_description: str = ""
 
 
-class AssetContext(BaseModel):
-    """Asset context for template scoring integration (stub for Phase 1).
+class TextAreaSpec(BaseModel):
+    """Text area specification from template element detection."""
+    type: str                           # headline, subheadline, cta, body_text
+    position: Optional[str] = None      # top, middle, bottom, overlay
+    max_chars: Optional[int] = None     # character limit from detection
 
-    Will be expanded in Phase 3+ to include detected asset types,
-    required asset slots, and scoring breakdown.
+
+class AssetContext(BaseModel):
+    """Asset context linking template element detection with product assets.
+
+    Populated in Phase 3 when template_elements is not None (detection has run).
+    Stays None in the prompt when no detection data is available.
     """
     template_requires_logo: bool = False
     brand_has_logo: bool = False
+    logo_placement: Optional[str] = None
     template_requires_badge: bool = False
     brand_has_badge: bool = False
+    template_requires_person: bool = False
+    available_person_tags: List[str] = Field(default_factory=list)
+    template_text_areas: List[TextAreaSpec] = Field(default_factory=list)
     asset_match_score: Optional[float] = None
+    matched_assets: List[str] = Field(default_factory=list)
+    missing_assets: List[str] = Field(default_factory=list)
+    asset_instructions: str = ""
 
 
 class TextPreservation(BaseModel):

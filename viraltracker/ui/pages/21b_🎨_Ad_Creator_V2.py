@@ -437,15 +437,19 @@ def _render_scored_template_selection(mode: str):
                         else:
                             st.caption("No preview")
                     with scores_col:
-                        s1, s2, s3, s4 = st.columns(4)
+                        s1, s2, s3, s4, s5, s6 = st.columns(6)
                         with s1:
                             st.metric("Composite", f"{scores.get('composite', 0):.3f}")
                         with s2:
-                            st.metric("Asset Match", f"{scores.get('asset_match', 0):.2f}")
+                            st.metric("Asset", f"{scores.get('asset_match', 0):.2f}")
                         with s3:
-                            st.metric("Unused Bonus", f"{scores.get('unused_bonus', 0):.2f}")
+                            st.metric("Unused", f"{scores.get('unused_bonus', 0):.2f}")
                         with s4:
                             st.metric("Category", f"{scores.get('category_match', 0):.2f}")
+                        with s5:
+                            st.metric("Awareness", f"{scores.get('awareness_align', 0):.2f}")
+                        with s6:
+                            st.metric("Audience", f"{scores.get('audience_match', 0):.2f}")
                     st.caption(f"Category: {tmpl.get('category', 'N/A')} | "
                                f"Used: {tmpl.get('times_used', 0)}x")
 
@@ -457,6 +461,7 @@ def _run_template_preview(mode, count, category, asset_strictness):
         from viraltracker.services.template_scoring_service import (
             fetch_template_candidates, prefetch_product_asset_tags,
             select_templates_with_fallback, SelectionContext,
+            fetch_brand_min_asset_score,
             ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
         )
         from uuid import UUID
@@ -472,11 +477,30 @@ def _run_template_preview(mode, count, category, asset_strictness):
         asset_tags = loop.run_until_complete(prefetch_product_asset_tags(product_id))
         candidates = loop.run_until_complete(fetch_template_candidates(product_id))
 
+        # Extract persona target_sex for AudienceMatchScorer
+        persona_target_sex = None
+        persona_id = st.session_state.get('v2_persona_id')
+        if persona_id:
+            try:
+                from viraltracker.services.persona_service import PersonaService
+                persona_service = PersonaService()
+                persona_data = persona_service.export_for_ad_generation(UUID(persona_id))
+                if persona_data:
+                    demographics = persona_data.get("demographics") or {}
+                    gender = (demographics.get("gender") or "").lower().strip()
+                    if gender in ("male", "female"):
+                        persona_target_sex = gender
+                    elif gender in ("any", "all", "both"):
+                        persona_target_sex = "unisex"
+            except Exception as e:
+                logger.warning(f"Failed to load persona for scoring preview: {e}")
+
         context = SelectionContext(
             product_id=UUID(product_id),
             brand_id=UUID(brand_id) if brand_id else UUID(product_id),
             product_asset_tags=asset_tags,
             requested_category=category,
+            target_sex=persona_target_sex,
         )
 
         weights = ROLL_THE_DICE_WEIGHTS if mode == 'roll_the_dice' else SMART_SELECT_WEIGHTS
@@ -486,6 +510,8 @@ def _run_template_preview(mode, count, category, asset_strictness):
             min_asset_score = 0.3
         elif asset_strictness == 'premium':
             min_asset_score = 0.8
+        elif asset_strictness == 'default' and brand_id:
+            min_asset_score = fetch_brand_min_asset_score(brand_id)
 
         result = select_templates_with_fallback(
             candidates=candidates,
@@ -533,24 +559,13 @@ def render_generation_config():
             key="v2_content_source",
         )
 
-        color_mode = st.selectbox(
-            "Color mode",
-            options=["original", "complementary", "brand"],
-            format_func=lambda x: {
-                "original": "Original - match template colors",
-                "complementary": "Complementary - fresh color scheme",
-                "brand": "Brand - use brand colors",
-            }[x],
-            key="v2_color_mode",
-        )
-
-    with col2:
         num_variations = st.slider(
-            "Variations per template",
+            "Variations (hooks) per template",
             min_value=1, max_value=15, value=5,
             key="v2_num_variations",
         )
 
+    with col2:
         image_resolution = st.selectbox(
             "Image resolution",
             options=["1K", "2K", "4K"],
@@ -558,17 +573,46 @@ def render_generation_config():
             key="v2_image_resolution",
         )
 
+    # Phase 2: Multi-size + multi-color controls
+    st.markdown("**Output Variants**")
+    size_col, color_col = st.columns(2)
+
+    with size_col:
+        canvas_sizes = st.multiselect(
+            "Canvas sizes",
+            options=["1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"],
+            default=["1080x1080px"],
+            format_func=lambda x: {
+                "1080x1080px": "1:1 (1080x1080) - Feed",
+                "1080x1350px": "4:5 (1080x1350) - Feed optimal",
+                "1080x1920px": "9:16 (1080x1920) - Stories/Reels",
+                "1200x628px": "16:9 (1200x628) - Landscape",
+            }[x],
+            key="v2_canvas_sizes",
+        )
+        if not canvas_sizes:
+            st.warning("Select at least one canvas size.")
+
+    with color_col:
+        color_modes = st.multiselect(
+            "Color modes",
+            options=["original", "complementary", "brand"],
+            default=["original"],
+            format_func=lambda x: {
+                "original": "Original - match template colors",
+                "complementary": "Complementary - fresh palette",
+                "brand": "Brand - use brand colors",
+            }[x],
+            key="v2_color_modes",
+        )
+        if not color_modes:
+            st.warning("Select at least one color mode.")
+
     # Optional settings
     with st.expander("Advanced Settings"):
         col1, col2 = st.columns(2)
 
         with col1:
-            canvas_size = st.selectbox(
-                "Canvas size",
-                options=["1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"],
-                key="v2_canvas_size",
-            )
-
             product_id = st.session_state.get('v2_product_id')
             personas = get_personas_for_product(product_id) if product_id else []
             persona_options = [{"id": None, "name": "None (default)"}] + personas
@@ -597,22 +641,29 @@ def render_batch_estimate():
 
     mode = st.session_state.v2_template_mode
     num_variations = st.session_state.get('v2_num_variations', 5)
+    size_count = len(st.session_state.get('v2_canvas_sizes', ['1080x1080px']))
+    color_count = len(st.session_state.get('v2_color_modes', ['original']))
 
     if mode == "manual":
         template_count = len(st.session_state.v2_selected_scraped_templates)
     else:
         template_count = st.session_state.get('v2_template_count', 3)
 
-    total_attempts = template_count * num_variations
+    size_color_combos = size_count * color_count
+    total_attempts = template_count * num_variations * size_color_combos
     estimated_cost = total_attempts * 0.02  # ~$0.02/attempt
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Templates", template_count)
     with col2:
-        st.metric("Total Attempts", total_attempts)
+        st.metric("Variations", num_variations)
     with col3:
-        st.metric("Est. Cost", f"${estimated_cost:.2f}")
+        st.metric("Size x Color", size_color_combos)
+    with col4:
+        st.metric("Total Attempts", total_attempts)
+
+    st.caption(f"Est. cost: ${estimated_cost:.2f} (~$0.02/attempt)")
 
     if total_attempts > 50:
         st.warning(f"Total attempts ({total_attempts}) exceeds the per-run limit of 50. "
@@ -661,9 +712,9 @@ def _handle_submit():
         'template_count': st.session_state.get('v2_template_count', 3),
         'template_category': st.session_state.v2_category if st.session_state.v2_category != 'all' else None,
         'content_source': st.session_state.get('v2_content_source', 'hooks'),
-        'color_mode': st.session_state.get('v2_color_mode', 'original'),
+        'canvas_sizes': st.session_state.get('v2_canvas_sizes', ['1080x1080px']),
+        'color_modes': st.session_state.get('v2_color_modes', ['original']),
         'num_variations': st.session_state.get('v2_num_variations', 5),
-        'canvas_size': st.session_state.get('v2_canvas_size', '1080x1080px'),
         'image_resolution': st.session_state.get('v2_image_resolution', '2K'),
         'persona_id': st.session_state.get('v2_persona_id'),
         'additional_instructions': st.session_state.get('v2_additional_instructions') or None,

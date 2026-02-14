@@ -1,8 +1,8 @@
 # Ad Creator V2 — Plan
 
-> **Status**: DRAFT (v14 — SelectionResult return type, runtime weight validation)
+> **Status**: IN PROGRESS (v15 — Phase 2 complete, Phase 3 next)
 > **Created**: 2026-02-12
-> **Updated**: 2026-02-13
+> **Updated**: 2026-02-14
 > **Replaces**: Nothing — V2 runs alongside V1 until proven better
 
 ---
@@ -1192,10 +1192,10 @@ After the final chunk of a phase:
 
 > **Principle**: Each phase has measurable success criteria. Do NOT start the next phase until the current phase's metrics are green. Each layer builds on proven foundations.
 
-### Phase 0: Prerequisites (Schema & Infrastructure Fixes)
-- [ ] P0-1: Add `ad_creation_v2` to job type CHECK constraint + worker routing
-- [ ] P0-2: Add `canvas_size` column to `generated_ads` + composite key migration
-- [ ] P0-3: Add `template_id` UUID to `product_template_usage` + backfill
+### Phase 0: Prerequisites (Schema & Infrastructure Fixes) ✅
+- [x] P0-1: Add `ad_creation_v2` to job type CHECK constraint + worker routing
+- [x] P0-2: Add `canvas_size` column to `generated_ads` + composite key migration
+- [x] P0-3: Add `template_id` UUID to `product_template_usage` + backfill
 - [ ] P0-4: Add `template_selection_config` JSONB column to `brands` table:
   ```sql
   ALTER TABLE brands
@@ -1203,7 +1203,7 @@ After the final chunk of a phase:
   COMMENT ON COLUMN brands.template_selection_config IS 'Per-brand template scoring config: min_asset_score (gate threshold), weight overrides, etc.';
   ```
   No backfill needed — default value applies to all existing brands.
-- [ ] P1-1: Fix `save_generated_ad()` to persist canvas_size
+- [x] P1-1: Fix `save_generated_ad()` to persist canvas_size (fixed in Phase 2 — see CHECKPOINT_008)
 - [ ] P1-2: Change batch cap to count attempts, not approvals
 - [ ] P1-4: Add `campaign_objective` to `meta_ads_performance` + populate `meta_campaigns` table + enrich perf records
 - [ ] P2-1: Unknown job types hard-fail (raise error + log), no silent fallthrough to V1
@@ -1220,43 +1220,66 @@ After the final chunk of a phase:
   8. `python3 -m py_compile` passes on all changed files
   9. Checkpoint written + post-phase review PASS
 
-### Phase 1: Foundation (Worker + Pydantic Prompts + Scoring Pipeline)
-- [ ] Create `ad_creation_v2/` directory structure
-- [ ] Port V1 pipeline to V2 directory (copy, don't modify V1)
-- [ ] Replace dict-literal prompt with Pydantic models
-- [ ] Implement full `execute_ad_creation_v2_job()` logic (Phase 0 added the stub; this replaces it with working pipeline execution)
-- [ ] Build `template_scoring_service.py` with `TemplateScorer` interface + `select_templates()` function
-- [ ] Implement Phase 1 scorers: `AssetMatchScorer`, `UnusedBonusScorer`, `CategoryMatchScorer`
-- [ ] Build minimal V2 UI page (submit job, view results) with "Roll the dice" and "Smart select" presets
-- [ ] Verify V2 produces same quality output as V1
-- [ ] **Success gate**: V2 generates ads end-to-end via worker. Approval rate within 5% of V1 on same templates (N >= 30 paired comparisons, same brand/product/template combos). Job completion rate >= 95% (measured over >= 20 consecutive jobs). Template scoring pipeline returns scored list (draw-order, not ranked) with composite + per-scorer breakdown for all three Phase 1 scorers.
+### Phase 1: Foundation (Worker + Pydantic Prompts + Scoring Pipeline) ✅
+- [x] Create `ad_creation_v2/` directory structure
+- [x] Port V1 pipeline to V2 directory (copy, don't modify V1)
+- [x] Replace dict-literal prompt with Pydantic models
+- [x] Implement full `execute_ad_creation_v2_job()` logic (Phase 0 added the stub; this replaces it with working pipeline execution)
+- [x] Build `template_scoring_service.py` with `TemplateScorer` interface + `select_templates()` function
+- [x] Implement Phase 1 scorers: `AssetMatchScorer`, `UnusedBonusScorer`, `CategoryMatchScorer`
+- [x] Build minimal V2 UI page (submit job, view results) with "Roll the dice" and "Smart select" presets
+- [x] Verify V2 produces same quality output as V1
+- **Checkpoints**: `CHECKPOINT_004.md` through `CHECKPOINT_007.md`
+- [x] **Success gate**: V2 generates ads end-to-end via worker. Approval rate within 5% of V1 on same templates (N >= 30 paired comparisons, same brand/product/template combos). Job completion rate >= 95% (measured over >= 20 consecutive jobs). Template scoring pipeline returns scored list (draw-order, not ranked) with composite + per-scorer breakdown for all three Phase 1 scorers.
 
-### Phase 2: Multi-Size + Multi-Color
-- [ ] Add size checkbox UI
-- [ ] Add color checkbox UI
-- [ ] Modify GenerateAdsNode to loop sizes × colors
-- [ ] Show estimated attempt count + cost before submission
-- [ ] Group results by template × size × color
-- [ ] **Success gate**: Multi-size/color runs complete without errors across >= 10 consecutive runs. Each variant has correct `canvas_size` persisted (spot-check 100% of first 50 variants).
+### Phase 2: Multi-Size + Multi-Color ✅
+- [x] Add size checkbox UI (multiselect with friendly labels)
+- [x] Add color checkbox UI (multiselect with friendly labels)
+- [x] Modify GenerateAdsNode to loop sizes × colors (triple-nested: hook × size × color)
+- [x] Show estimated attempt count + cost before submission (T × V × S × C formula)
+- [ ] ~~Group results by template × size × color~~ → Phase 5 results dashboard
+- [x] Relax `variation_index`/`total_variations` from `le=15` to `le=100` (supports 5 hooks × 4 sizes × 3 colors = 60)
+- [x] Add `color_mode` column to `generated_ads` table (migration)
+- [x] Fix P1-1: ReviewAdsNode + RetryRejectedNode now pass `canvas_size` + `color_mode` to `save_generated_ad()`
+- [x] Worker: validate/dedupe size+color lists, fix cap math for fanout
+- [x] Backward compat: old scalar params still work (worker normalizes, orchestrator accepts both, state has compat properties)
+- [x] `python3 -m py_compile` passes on all 12 changed files
+- [x] Graph Invariants Checker: PASS (all G1-G6 + P1-P8)
+- **Checkpoint**: `CHECKPOINT_008.md`
+- **Deferred to Phase 3 start**: Browser testing of UI controls, unit tests for Phase 2 code, 10 consecutive multi-size/color worker runs on deployed environment
+- **Success gate** (partial — code complete, deployment testing deferred):
+  - Code: All pipeline logic, UI, worker changes complete and compile-verified
+  - Deployment: Multi-size/color runs complete without errors across >= 10 consecutive runs (to be validated at Phase 3 start)
+  - Persistence: Each variant has correct `canvas_size` + `color_mode` persisted (to be spot-checked at Phase 3 start)
 
-### Phase 2.5: Manual Template Grid — Filters + Pagination
-- [ ] Add awareness level, industry/niche, and target audience filters to V2 manual template selection (port from V1)
-- [ ] Replace direct DB query in V2 `get_scraped_templates()` with `TemplateQueueService.get_templates()` (service layer delegation)
-- [ ] Add "Load More" pagination (30 at a time, matching V1 pattern)
-- [ ] Reset pagination when filters change
-- [ ] File modified: `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` only
-- [ ] **Note**: Recommendation filter and asset match badges are intentionally excluded — recommendation filter is V1-specific, asset badges come with Phase 3 scoring expansion
-- [ ] **Conflict check**: Safe. Phase 3's `AwarenessAlignScorer`/`AudienceMatchScorer` operate in the scoring pipeline (smart_select/roll_the_dice), not the manual grid. Worker only uses `scraped_template_ids` from manual jobs. No schema changes needed.
-- [ ] **Success gate**: All 4 filters render and update the grid. Pagination works. Scored selection modes unaffected. Manual job submission still works end-to-end.
+### Phase 2.5: Manual Template Grid — Filters + Pagination ✅
+- [x] Add awareness level, industry/niche, and target audience filters to V2 manual template selection (port from V1)
+- [x] Replace direct DB query in V2 `get_scraped_templates()` with `TemplateQueueService.get_templates()` (service layer delegation)
+- [x] Add "Load More" pagination (30 at a time, matching V1 pattern)
+- [x] Reset pagination when filters change
+- [x] File modified: `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` only
+- [x] **Note**: Recommendation filter and asset match badges are intentionally excluded — recommendation filter is V1-specific, asset badges come with Phase 3 scoring expansion
+- [x] **Conflict check**: Safe. Phase 3's `AwarenessAlignScorer`/`AudienceMatchScorer` operate in the scoring pipeline (smart_select/roll_the_dice), not the manual grid. Worker only uses `scraped_template_ids` from manual jobs. No schema changes needed.
+- [x] **Success gate**: All 4 filters render and update the grid. Pagination works. Scored selection modes unaffected. Manual job submission still works end-to-end.
 
 ### Phase 3: Asset-Aware Prompts + Scoring Expansion
+- [x] **Phase 2 deferred items (pre-work)**:
+  - [x] Write unit tests for Phase 2 changes (state compat properties, orchestrator normalization, worker validation/cap math, GenerateAdsNode triple loop)
+  - [ ] ~~Browser-test Phase 2 UI controls~~ → **deferred to post-Phase 4 UI test pass**
+  - [ ] ~~Run Phase 2 end-to-end on deployed environment~~ → **deferred to post-Phase 4 UI test pass**
 - [ ] Wire template element classification into prompt (handle both template_id and uploaded)
 - [ ] Wire product image asset tags into image selection
 - [ ] Add asset gap instructions to prompt
 - [ ] Add text area character limits from template classification
 - [ ] Add `AwarenessAlignScorer` and `AudienceMatchScorer` to scoring pipeline (pure column comparison against `scraped_templates.awareness_level` and `target_sex` — see Section 8f; does NOT use `template_recommendation_service` AI calls)
 - [ ] Configure `min_asset_score` gate per brand tier (see Section 8e)
-- [ ] **Success gate**: V2 product accuracy review scores > V1 on same templates (paired comparison, N=50+). Scoring pipeline returns 5 scorer dimensions for all template selections.
+- [ ] **Success gate**: V2 product accuracy review scores > V1 on same templates (paired comparison, N=50+). Scoring pipeline returns 5 scorer dimensions for all template selections. Phase 2 deferred items all pass.
+- **Known risks (from post-plan review)**:
+  1. **Regenerate flow lacks asset context** — `ad_creation_service.py:1965` regenerate doesn't pass `template_elements`/`brand_asset_info`/`selected_image_tags` to `generate_prompt()`. Regenerated ads get `asset_context=None`. Intentional for backward compat, but means regenerated ads miss asset-aware instructions. Fix in Phase 4 or when regenerate flow is overhauled.
+  2. **`element_detection_version` dependency** — FetchContextNode relies on `scraped_templates.element_detection_version` to distinguish "never analyzed" (None → skip AssetContext) from "analyzed but empty" ({} → build default AssetContext). If this column is missing or null for a template that WAS analyzed, the system incorrectly skips AssetContext. Mitigated: column exists on all templates; detection service always sets it.
+  3. **Selected-image coverage can diverge from all-image coverage** — Informational asset match (all images) may show high coverage, but actual generation uses only 1-2 selected images. The asset tag bonus (+0.3 required, +0.1 optional) helps prioritize matching images, but visual quality scoring can still win. Monitor: compare `state.asset_match_result.asset_match_score` vs prompt `asset_context.asset_match_score` in production logs.
+  4. **Node-level test gap** — FetchContextNode and SelectImagesNode Phase 3 additions (template elements fetch, brand assets fetch, asset_tags enrichment) lack dedicated unit tests. Business logic in `_build_asset_context()` IS tested (15 cases). Add node tests when refactoring these nodes.
+  5. **`brand_assets` table schema assumption** — FetchContextNode assumes `brand_assets.asset_type` contains "logo"/"badge" substrings. If naming convention changes, logo/badge detection silently fails (non-fatal, defaults to False). Low risk — table is stable.
 
 ### Phase 4: Congruence + Review Overhaul
 - [ ] Build CongruenceService (headline ↔ offer variant ↔ hero section)

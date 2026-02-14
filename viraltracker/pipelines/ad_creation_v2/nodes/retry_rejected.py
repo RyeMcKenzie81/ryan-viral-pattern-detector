@@ -89,6 +89,13 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
         review_service = AdReviewService()
         selected_image_paths = [img["storage_path"] for img in ctx.state.selected_images]
 
+        # Phase 3: Collect selected_image_tags (same as GenerateAdsNode)
+        selected_image_tags = []
+        for img in ctx.state.selected_images:
+            for tag in (img.get("asset_tags") or []):
+                if tag not in selected_image_tags:
+                    selected_image_tags.append(tag)
+
         # Get the next prompt_index (after all existing ads)
         max_index = max(
             (ad.get('prompt_index', 0) for ad in ctx.state.reviewed_ads),
@@ -117,8 +124,12 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                 if original_hook.get(key):
                     selected_hook[key] = original_hook[key]
 
+            # Read canvas_size/color_mode from the rejected ad (per-ad, not state)
+            retry_canvas_size = rejected_ad.get("canvas_size", ctx.state.canvas_size)
+            retry_color_mode = rejected_ad.get("color_mode", ctx.state.color_mode)
+
             try:
-                # Generate prompt (same hook, fresh variation)
+                # Generate prompt (same hook, fresh variation; Phase 3: asset state passthrough)
                 prompt = generation_service.generate_prompt(
                     prompt_index=next_index,
                     selected_hook=selected_hook,
@@ -127,12 +138,15 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     ad_brief_instructions=ctx.state.ad_brief_instructions,
                     reference_ad_path=ctx.state.reference_ad_path,
                     product_image_paths=selected_image_paths,
-                    color_mode=ctx.state.color_mode,
+                    color_mode=retry_color_mode,
                     brand_colors=ctx.state.brand_colors,
                     brand_fonts=ctx.state.brand_fonts,
                     num_variations=1,
-                    canvas_size=ctx.state.canvas_size,
+                    canvas_size=retry_canvas_size,
                     prompt_version=ctx.state.prompt_version,
+                    template_elements=ctx.state.template_elements,
+                    brand_asset_info=ctx.state.brand_asset_info,
+                    selected_image_tags=selected_image_tags,
                 )
 
                 # Execute generation
@@ -145,11 +159,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
 
                 # Upload image
                 ad_uuid = uuid_module.uuid4()
-                canvas_size = None
-                json_prompt = prompt.get('json_prompt', {})
-                if isinstance(json_prompt, dict):
-                    style = json_prompt.get('style', {})
-                    canvas_size = style.get('canvas_size', '1080x1080px')
+                canvas_size = retry_canvas_size
 
                 product_id_for_naming = await ctx.deps.ad_creation.get_product_id_for_run(
                     UUID(ctx.state.ad_run_id)
@@ -230,6 +240,8 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     generation_retries=generated_ad.get('generation_retries', 0),
                     ad_id=ad_uuid,
                     regenerate_parent_id=original_ad_uuid,
+                    canvas_size=retry_canvas_size,
+                    color_mode=retry_color_mode,
                 )
 
                 # Append retry result to reviewed_ads
@@ -242,6 +254,8 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     "reviewers_agree": reviewers_agree,
                     "final_status": final_status,
                     "ad_uuid": str(ad_uuid),
+                    "canvas_size": retry_canvas_size,
+                    "color_mode": retry_color_mode,
                     "is_retry": True,
                     "retry_of_index": rejected_ad.get('prompt_index'),
                 })

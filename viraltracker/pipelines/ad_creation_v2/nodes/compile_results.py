@@ -71,15 +71,23 @@ class CompileResultsNode(BaseNode[AdCreationPipelineState]):
             ctx.state.content_source, ctx.state.content_source
         )
 
+        total_requested = (ctx.state.num_variations
+                          * len(ctx.state.canvas_sizes)
+                          * len(ctx.state.color_modes))
+
         summary_parts = [
             f"Ad creation V2 workflow completed for {ctx.state.product_dict.get('name')}.",
             "",
             f"**Pipeline Version:** {ctx.state.pipeline_version}",
             f"**Prompt Version:** {ctx.state.prompt_version}",
             f"**Content Source:** {content_source_label}",
+            f"**Canvas Sizes:** {', '.join(ctx.state.canvas_sizes)}",
+            f"**Color Modes:** {', '.join(ctx.state.color_modes)}",
             "",
             "**Results:**",
-            f"- Total ads requested: {ctx.state.num_variations}",
+            f"- Total ads requested: {ctx.state.num_variations} variations x "
+            f"{len(ctx.state.canvas_sizes)} size(s) x {len(ctx.state.color_modes)} color(s) "
+            f"= {total_requested}",
             f"- Approved (production-ready): {approved_count}",
             f"- Rejected (both reviewers): {rejected_count}",
             f"- Flagged (reviewer disagreement): {flagged_count}",

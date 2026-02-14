@@ -61,10 +61,14 @@ async def run_ad_creation_v2(
     reference_ad_filename: str = "reference.png",
     project_id: Optional[str] = None,
     template_id: Optional[str] = None,
-    canvas_size: str = "1080x1080px",
+    # Phase 2: multi-size/color (preferred)
+    canvas_sizes: Optional[List[str]] = None,
+    color_modes: Optional[List[str]] = None,
+    # Backward compat (scalar -> wrapped in list)
+    canvas_size: Optional[str] = None,
+    color_mode: Optional[str] = None,
     num_variations: int = 5,
     content_source: str = "hooks",
-    color_mode: str = "original",
     brand_colors: Optional[Dict[str, Any]] = None,
     brand_fonts: Optional[Dict[str, Any]] = None,
     image_selection_mode: str = "auto",
@@ -92,12 +96,14 @@ async def run_ad_creation_v2(
         reference_ad_filename: Filename for storage (default: reference.png)
         project_id: Optional UUID of project as string
         template_id: Optional scraped_templates.id UUID for scoring
-        canvas_size: Explicit canvas size (default: 1080x1080px)
-        num_variations: Number of ad variations to generate (1-15)
+        canvas_sizes: List of canvas sizes for multi-size generation (Phase 2)
+        color_modes: List of color modes for multi-color generation (Phase 2)
+        canvas_size: Deprecated scalar (backward compat, wrapped in list)
+        color_mode: Deprecated scalar (backward compat, wrapped in list)
+        num_variations: Number of hook variations per template (1-100)
         content_source: Content mode - "hooks", "recreate_template",
             "belief_first", "plan", "angles"
-        color_mode: Color scheme - "original", "complementary", "brand"
-        brand_colors: Brand color data when color_mode is "brand"
+        brand_colors: Brand color data when color_mode includes "brand"
         brand_fonts: Brand font data (heading/body families)
         image_selection_mode: "auto" or "manual"
         selected_image_paths: Manual image paths (1-2 images)
@@ -119,9 +125,13 @@ async def run_ad_creation_v2(
     """
     from viraltracker.agent.dependencies import AgentDependencies
 
+    # Normalize: prefer list params, fall back to scalar, then defaults
+    _canvas_sizes = canvas_sizes or ([canvas_size] if canvas_size else ["1080x1080px"])
+    _color_modes = color_modes or ([color_mode] if color_mode else ["original"])
+
     # Validate inputs
-    if num_variations < 1 or num_variations > 15:
-        raise ValueError(f"num_variations must be between 1 and 15, got {num_variations}")
+    if num_variations < 1 or num_variations > 100:
+        raise ValueError(f"num_variations must be between 1 and 100, got {num_variations}")
 
     valid_content_sources = ["hooks", "recreate_template", "belief_first", "plan", "angles"]
     if content_source not in valid_content_sources:
@@ -129,7 +139,7 @@ async def run_ad_creation_v2(
 
     logger.info(f"=== STARTING AD CREATION V2 PIPELINE for product {product_id} ===")
     logger.info(f"Generating {num_variations} variations using content_source='{content_source}'")
-    logger.info(f"Canvas size: {canvas_size}, Template ID: {template_id or 'None'}")
+    logger.info(f"Canvas sizes: {_canvas_sizes}, Color modes: {_color_modes}, Template ID: {template_id or 'None'}")
 
     # Create dependencies if not provided
     if deps is None:
@@ -142,10 +152,10 @@ async def run_ad_creation_v2(
         reference_ad_filename=reference_ad_filename,
         project_id=project_id,
         template_id=template_id,
-        canvas_size=canvas_size,
+        canvas_sizes=_canvas_sizes,
         num_variations=num_variations,
         content_source=content_source,
-        color_mode=color_mode,
+        color_modes=_color_modes,
         brand_colors=brand_colors,
         brand_fonts=brand_fonts,
         image_selection_mode=image_selection_mode,

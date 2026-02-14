@@ -664,6 +664,9 @@ Write the adapted headline:"""
         selection_mode: str = "auto",
         image_analyses: Optional[Dict[str, Dict]] = None,
         manual_selection: Optional[List[str]] = None,
+        image_asset_tags: Optional[Dict[str, List[str]]] = None,
+        template_required_assets: Optional[List[str]] = None,
+        template_optional_assets: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Select best product images matching reference ad format.
@@ -711,9 +714,27 @@ Write the adapted headline:"""
                 score = max(score, 0.6)
                 reasons.append("Main product image (fallback)")
 
+            # Phase 3: Asset tag matching bonus (when template elements available)
+            if image_asset_tags and (template_required_assets or template_optional_assets):
+                img_tags = set(image_asset_tags.get(path, []))
+                required_set = set(template_required_assets or [])
+                optional_set = set(template_optional_assets or [])
+
+                if required_set:
+                    required_overlap = len(img_tags & required_set) / len(required_set)
+                    score += required_overlap * 0.3
+                    if required_overlap > 0:
+                        reasons.append(f"Required asset match: {required_overlap:.0%}")
+
+                if optional_set:
+                    optional_overlap = len(img_tags & optional_set) / len(optional_set)
+                    score += optional_overlap * 0.1
+                    if optional_overlap > 0:
+                        reasons.append(f"Optional asset match: {optional_overlap:.0%}")
+
             scored_images.append({
                 "storage_path": path,
-                "match_score": score,
+                "match_score": min(score, 1.0),
                 "match_reasons": reasons,
                 "analysis": analysis
             })

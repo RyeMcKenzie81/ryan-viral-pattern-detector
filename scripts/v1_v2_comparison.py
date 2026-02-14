@@ -159,7 +159,8 @@ async def run_v2_pipeline(
             template_id=template_id,
             num_variations=num_variations,
             content_source="hooks",
-            color_mode="original",
+            canvas_sizes=["1080x1080px"],
+            color_modes=["original"],
             image_resolution="2K",
             deps=deps,
         )

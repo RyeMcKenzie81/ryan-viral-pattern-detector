@@ -575,7 +575,9 @@ class AdCreationService:
         # Regeneration lineage
         regenerate_parent_id: Optional[UUID] = None,
         # V2: Multi-size variant identity
-        canvas_size: Optional[str] = None
+        canvas_size: Optional[str] = None,
+        # V2 Phase 2: Multi-color variant identity
+        color_mode: Optional[str] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -604,6 +606,7 @@ class AdCreationService:
             template_name: Name of template for display
             regenerate_parent_id: Source ad UUID when regenerated from rejected ad
             canvas_size: Canvas dimensions string (e.g. '1080x1080', '1080x1350')
+            color_mode: Color mode used (e.g. 'original', 'complementary', 'brand')
 
         Returns:
             UUID of generated ad record
@@ -663,6 +666,8 @@ class AdCreationService:
             data["regenerate_parent_id"] = str(regenerate_parent_id)
         if canvas_size is not None:
             data["canvas_size"] = canvas_size
+        if color_mode is not None:
+            data["color_mode"] = color_mode
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

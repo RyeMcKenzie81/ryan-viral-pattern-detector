@@ -152,6 +152,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 generation_time_ms=generated_ad.get('generation_time_ms'),
                 generation_retries=generated_ad.get('generation_retries', 0),
                 ad_id=ad_uuid,
+                canvas_size=ad_data.get("canvas_size"),
+                color_mode=ad_data.get("color_mode"),
             )
 
             reviewed_ads.append({
@@ -163,6 +165,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 "reviewers_agree": reviewers_agree,
                 "final_status": final_status,
                 "ad_uuid": ad_uuid_str,
+                "canvas_size": ad_data.get("canvas_size"),
+                "color_mode": ad_data.get("color_mode"),
             })
 
             ctx.state.ads_reviewed += 1

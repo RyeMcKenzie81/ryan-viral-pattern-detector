@@ -646,10 +646,41 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         template_category = params.get('template_category')
         content_source = params.get('content_source', 'hooks')
         num_variations = params.get('num_variations', 5)
-        canvas_size = params.get('canvas_size', '1080x1080px')
+
+        # Phase 2: multi-size/color — type-normalize, validate, dedupe
+        VALID_CANVAS_SIZES = {"1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"}
+        VALID_COLOR_MODES = {"original", "complementary", "brand"}
+
+        raw_sizes = params.get('canvas_sizes') or params.get('canvas_size') or '1080x1080px'
+        canvas_sizes = raw_sizes if isinstance(raw_sizes, list) else [raw_sizes]
+
+        raw_colors = params.get('color_modes') or params.get('color_mode') or 'original'
+        color_modes = raw_colors if isinstance(raw_colors, list) else [raw_colors]
+
+        # Validate + dedupe (preserve order)
+        canvas_sizes = list(dict.fromkeys(s for s in canvas_sizes if s in VALID_CANVAS_SIZES))
+        color_modes = list(dict.fromkeys(m for m in color_modes if m in VALID_COLOR_MODES))
+
+        # Fallback if validation stripped everything
+        if not canvas_sizes:
+            canvas_sizes = ["1080x1080px"]
+            logs.append("WARNING: No valid canvas sizes in params, defaulting to 1080x1080px")
+        if not color_modes:
+            color_modes = ["original"]
+            logs.append("WARNING: No valid color modes in params, defaulting to original")
+
+        # Pre-compute per-template fanout and check cap
+        per_template_ads = num_variations * len(canvas_sizes) * len(color_modes)
+        if per_template_ads > MAX_ADS_PER_SCHEDULED_RUN:
+            logs.append(f"WARNING: per-template fanout ({per_template_ads}) exceeds cap "
+                        f"({MAX_ADS_PER_SCHEDULED_RUN}). Clamping variations.")
+            num_variations = max(1, MAX_ADS_PER_SCHEDULED_RUN // (len(canvas_sizes) * len(color_modes)))
+            per_template_ads = num_variations * len(canvas_sizes) * len(color_modes)
 
         logs.append(f"V2 Pipeline | Mode: {template_selection_mode} | "
-                    f"Content: {content_source} | Variations: {num_variations}")
+                    f"Content: {content_source} | Variations: {num_variations} | "
+                    f"Sizes: {canvas_sizes} | Colors: {color_modes} | "
+                    f"Per-template: {per_template_ads}")
 
         # ── Template Selection ──────────────────────────────────────────
         if template_selection_mode == 'manual':
@@ -663,6 +694,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
             from viraltracker.services.template_scoring_service import (
                 fetch_template_candidates, prefetch_product_asset_tags,
                 select_templates_with_fallback, SelectionContext,
+                fetch_brand_min_asset_score,
                 ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
             )
             from uuid import UUID as _UUID
@@ -675,12 +707,33 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
             candidates = await fetch_template_candidates(product_id)
             logs.append(f"Template candidates: {len(candidates)} active templates")
 
+            # Extract persona demographics for scoring context
+            persona_target_sex = None
+            persona_id = params.get('persona_id')
+            if persona_id:
+                try:
+                    from viraltracker.services.persona_service import PersonaService
+                    persona_service = PersonaService()
+                    persona_data = persona_service.export_for_ad_generation(_UUID(persona_id))
+                    if persona_data:
+                        demographics = persona_data.get("demographics") or {}
+                        gender = (demographics.get("gender") or "").lower().strip()
+                        if gender in ("male", "female"):
+                            persona_target_sex = gender
+                        elif gender in ("any", "all", "both"):
+                            persona_target_sex = "unisex"
+                        # else: stays None → scorer returns 0.7 neutral
+                except Exception as e:
+                    logger.warning(f"Failed to load persona for scoring: {e}")
+                    # Non-fatal — scoring proceeds with neutral scores
+
             # Build selection context
             context = SelectionContext(
                 product_id=_UUID(product_id),
                 brand_id=_UUID(brand_id) if brand_id else _UUID(product_id),
                 product_asset_tags=asset_tags,
                 requested_category=template_category,
+                target_sex=persona_target_sex,
             )
 
             # Choose weight preset
@@ -696,6 +749,8 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 min_asset_score = 0.3
             elif asset_strictness == 'premium':
                 min_asset_score = 0.8
+            elif asset_strictness == 'default' and brand_id:
+                min_asset_score = fetch_brand_min_asset_score(brand_id)
 
             # Select templates with fallback
             selection = select_templates_with_fallback(
@@ -720,7 +775,9 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                             f"composite={score_dict.get('composite', 0):.3f} "
                             f"[asset={score_dict.get('asset_match', 0):.2f}, "
                             f"unused={score_dict.get('unused_bonus', 0):.2f}, "
-                            f"category={score_dict.get('category_match', 0):.2f}]")
+                            f"category={score_dict.get('category_match', 0):.2f}, "
+                            f"awareness={score_dict.get('awareness_align', 0):.2f}, "
+                            f"audience={score_dict.get('audience_match', 0):.2f}]")
 
             # Convert to standard template format for the loop
             templates = []
@@ -750,7 +807,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
 
         # Get brand colors if using brand color mode
         brand_colors_data = None
-        if params.get('color_mode') == 'brand':
+        if 'brand' in color_modes:
             brand_colors_data = brand_info.get('brand_colors')
 
         # ── Template Loop ───────────────────────────────────────────────
@@ -761,6 +818,13 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
 
             if ads_attempted >= MAX_ADS_PER_SCHEDULED_RUN:
                 logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                break
+
+            # Check remaining budget before starting a template
+            remaining_budget = MAX_ADS_PER_SCHEDULED_RUN - ads_attempted
+            if remaining_budget < per_template_ads:
+                logs.append(f"Remaining budget ({remaining_budget}) < per-template fanout "
+                            f"({per_template_ads}), stopping")
                 break
 
             template_ref = template.get('name', template.get('id', 'Unknown'))
@@ -796,10 +860,10 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     reference_ad_base64=template_base64,
                     reference_ad_filename=template_ref,
                     template_id=template_id,
-                    canvas_size=canvas_size,
+                    canvas_sizes=canvas_sizes,
+                    color_modes=color_modes,
                     num_variations=num_variations,
                     content_source=content_source,
-                    color_mode=params.get('color_mode', 'original'),
                     brand_colors=brand_colors_data,
                     image_selection_mode=params.get('image_selection_mode', 'auto'),
                     persona_id=params.get('persona_id'),
@@ -824,13 +888,14 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     rejected = result.get('rejected_count', 0)
                     flagged = result.get('flagged_count', 0)
 
-                    # V2 cap metric: count attempts, not approvals
-                    ads_attempted += num_variations
+                    # V2 cap metric: count attempts (hook x size x color fanout)
+                    ads_attempted += per_template_ads
                     ads_approved += approved
 
                     logs.append(f"  Completed: {approved} approved, "
                                 f"{rejected} rejected, {flagged} flagged "
-                                f"(pipeline={result.get('pipeline_version', 'v2')})")
+                                f"(pipeline={result.get('pipeline_version', 'v2')}, "
+                                f"fanout={per_template_ads})")
 
                     # Handle export
                     export_dest = params.get('export_destination', 'none')
@@ -844,11 +909,11 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                         )
                         logs.append(f"  Exported to: {export_dest}")
                 else:
-                    ads_attempted += num_variations
+                    ads_attempted += per_template_ads
                     logs.append(f"  No ad_run_id returned")
 
             except Exception as e:
-                ads_attempted += num_variations
+                ads_attempted += per_template_ads
                 logs.append(f"  Error: {str(e)}")
                 logger.error(f"V2 error processing template {template_ref}: {e}")
 

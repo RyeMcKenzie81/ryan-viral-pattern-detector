@@ -4,8 +4,11 @@ Ad Creation Pipeline V2 State - dataclass passed through all pipeline nodes.
 Extends V1 state with:
 - template_id: scraped_templates.id UUID for template scoring
 - pipeline_version: always "v2"
-- canvas_size: explicit canvas size (not derived from analysis)
+- canvas_sizes: list of canvas sizes for multi-size generation (Phase 2)
+- color_modes: list of color modes for multi-color generation (Phase 2)
 - prompt_version: tracks Pydantic prompt schema version
+
+Backward compat properties: canvas_size, color_mode return first element.
 """
 
 from dataclasses import dataclass, field
@@ -30,14 +33,14 @@ class AdCreationPipelineState:
     # === V2-SPECIFIC CONFIGURATION ===
     template_id: Optional[str] = None        # scraped_templates.id UUID
     pipeline_version: str = "v2"
-    canvas_size: str = "1080x1080px"          # Explicit, not derived from analysis
+    canvas_sizes: List[str] = field(default_factory=lambda: ["1080x1080px"])
     prompt_version: str = "v2.1.0"
 
     # === CONFIGURATION (set at creation, not changed by nodes) ===
     reference_ad_filename: str = "reference.png"
     num_variations: int = 5
     content_source: str = "hooks"  # hooks, recreate_template, belief_first, plan, angles
-    color_mode: str = "original"  # original, complementary, brand
+    color_modes: List[str] = field(default_factory=lambda: ["original"])
     brand_colors: Optional[Dict[str, Any]] = None
     brand_fonts: Optional[Dict[str, Any]] = None
     image_selection_mode: str = "auto"  # auto, manual
@@ -65,6 +68,11 @@ class AdCreationPipelineState:
     hooks_list: List[Dict[str, Any]] = field(default_factory=list)
     ad_brief_instructions: str = ""
 
+    # FetchContextNode (Phase 3 — asset-aware prompts)
+    template_elements: Optional[Dict[str, Any]] = None     # None = no detection ran, {} = detection ran but empty
+    asset_match_result: Optional[Dict[str, Any]] = None     # informational match against all images
+    brand_asset_info: Optional[Dict[str, Any]] = None       # logo/badge detection from brand_assets
+
     # AnalyzeTemplateNode
     ad_analysis: Optional[Dict[str, Any]] = None
 
@@ -87,6 +95,16 @@ class AdCreationPipelineState:
     ads_reviewed: int = 0
     error: Optional[str] = None
     error_step: Optional[str] = None
+
+    @property
+    def canvas_size(self) -> str:
+        """First canvas size (backward compat for nodes that need a single value)."""
+        return self.canvas_sizes[0] if self.canvas_sizes else "1080x1080px"
+
+    @property
+    def color_mode(self) -> str:
+        """First color mode (backward compat for nodes that need a single value)."""
+        return self.color_modes[0] if self.color_modes else "original"
 
     def mark_step_complete(self, step_name: str) -> None:
         """Mark a step as complete and update current_step."""

@@ -56,7 +56,9 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
             run_parameters = {
                 "num_variations": ctx.state.num_variations,
                 "content_source": ctx.state.content_source,
-                "color_mode": ctx.state.color_mode,
+                "color_mode": ctx.state.color_mode,          # scalar for regenerate compat
+                "color_modes": ctx.state.color_modes,        # full list for provenance
+                "canvas_sizes": ctx.state.canvas_sizes,      # full list for provenance
                 "image_selection_mode": ctx.state.image_selection_mode,
                 "selected_image_paths": ctx.state.selected_image_paths,
                 "brand_colors": ctx.state.brand_colors,

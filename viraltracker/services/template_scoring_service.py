@@ -2,9 +2,8 @@
 Template Scoring Service — Pluggable scoring pipeline for V2 template selection.
 
 Provides weighted-random template selection using pluggable scorers.
-Phase 1 includes: AssetMatchScorer, UnusedBonusScorer, CategoryMatchScorer.
-Future phases add more scorers (awareness, audience, belief clarity, performance, fatigue)
-without changing the pipeline interface — only the weight source evolves.
+Phase 3 includes: AssetMatchScorer, UnusedBonusScorer, CategoryMatchScorer,
+AwarenessAlignScorer, AudienceMatchScorer.
 
 Usage:
     from viraltracker.services.template_scoring_service import (
@@ -54,12 +53,16 @@ ROLL_THE_DICE_WEIGHTS: Dict[str, float] = {
     "asset_match": 0.0,
     "unused_bonus": 1.0,
     "category_match": 0.5,
+    "awareness_align": 0.0,
+    "audience_match": 0.0,
 }
 
 SMART_SELECT_WEIGHTS: Dict[str, float] = {
     "asset_match": 1.0,
     "unused_bonus": 0.8,
     "category_match": 0.6,
+    "awareness_align": 0.5,
+    "audience_match": 0.4,
 }
 
 
@@ -82,7 +85,9 @@ class SelectionContext:
         requested_category: If provided, CategoryMatchScorer uses exact match.
             If None, all categories score 0.5.
         awareness_stage: Persona awareness level (1-5). If None,
-            AwarenessAlignScorer (Phase 3) returns 0.5 (neutral).
+            AwarenessAlignScorer returns 0.5 (neutral).
+        target_sex: Target audience sex ("male", "female", "unisex", None).
+            If None, AudienceMatchScorer returns 0.7 (neutral).
         has_meta_connection: Whether the brand has a Meta connection.
     """
     product_id: UUID
@@ -90,6 +95,7 @@ class SelectionContext:
     product_asset_tags: Set[str] = field(default_factory=set)
     requested_category: Optional[str] = None
     awareness_stage: Optional[int] = None
+    target_sex: Optional[str] = None
     has_meta_connection: bool = False
 
 
@@ -193,11 +199,62 @@ class CategoryMatchScorer(TemplateScorer):
         return 0.0
 
 
-# Phase 1 scorer instances
+class AwarenessAlignScorer(TemplateScorer):
+    """Score based on alignment between template and persona awareness level.
+
+    Input: template["awareness_level"] (INT 1-5, nullable) vs context.awareness_stage (INT 1-5, nullable).
+    Logic: 1.0 - abs(template_level - persona_level) / 4.0.
+    If either is None → 0.5 (neutral).
+    """
+    name = "awareness_align"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        template_level = template.get("awareness_level")
+        persona_level = context.awareness_stage
+
+        if template_level is None or persona_level is None:
+            return 0.5
+
+        return 1.0 - abs(template_level - persona_level) / 4.0
+
+
+class AudienceMatchScorer(TemplateScorer):
+    """Score based on template target_sex matching context target_sex.
+
+    Exact match → 1.0, either unisex/None → 0.7, mismatch → 0.2.
+    """
+    name = "audience_match"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        template_sex = template.get("target_sex")
+        context_sex = context.target_sex
+
+        if template_sex is None or context_sex is None:
+            return 0.7
+
+        if template_sex == context_sex:
+            return 1.0
+
+        if template_sex == "unisex" or context_sex == "unisex":
+            return 0.7
+
+        return 0.2
+
+
+# Phase 1 scorer instances (kept for backward compat)
 PHASE_1_SCORERS: List[TemplateScorer] = [
     AssetMatchScorer(),
     UnusedBonusScorer(),
     CategoryMatchScorer(),
+]
+
+# Phase 3 scorer instances (default for select_templates_with_fallback)
+PHASE_3_SCORERS: List[TemplateScorer] = [
+    AssetMatchScorer(),
+    UnusedBonusScorer(),
+    CategoryMatchScorer(),
+    AwarenessAlignScorer(),
+    AudienceMatchScorer(),
 ]
 
 
@@ -432,6 +489,42 @@ async def prefetch_product_asset_tags(product_id: str) -> Set[str]:
     return tags
 
 
+def fetch_brand_min_asset_score(brand_id: str) -> float:
+    """Read min_asset_score from brands.template_selection_config JSONB.
+
+    Args:
+        brand_id: Brand UUID string.
+
+    Returns:
+        Float in [0.0, 1.0]. Defaults to 0.0 if not configured or malformed.
+    """
+    try:
+        from viraltracker.core.database import get_supabase_client
+
+        db = get_supabase_client()
+        result = db.table("brands").select(
+            "template_selection_config"
+        ).eq("id", brand_id).single().execute()
+
+        if not result.data:
+            return 0.0
+
+        config = result.data.get("template_selection_config")
+        if not config or not isinstance(config, dict):
+            return 0.0
+
+        raw_value = config.get("min_asset_score")
+        if raw_value is None:
+            return 0.0
+
+        value = float(raw_value)
+        return max(0.0, min(1.0, value))
+
+    except Exception as e:
+        logger.warning(f"Failed to read brand min_asset_score for {brand_id}: {e}")
+        return 0.0
+
+
 # ============================================================================
 # Fallback Selection
 # ============================================================================
@@ -471,7 +564,7 @@ def select_templates_with_fallback(
         SelectionResult — check result.empty to see if selection succeeded.
     """
     if scorers is None:
-        scorers = PHASE_1_SCORERS
+        scorers = PHASE_3_SCORERS
 
     # Tier 1: Normal selection
     result = select_templates(
@@ -524,6 +617,7 @@ def select_templates_with_fallback(
             product_asset_tags=context.product_asset_tags,
             requested_category=None,
             awareness_stage=context.awareness_stage,
+            target_sex=context.target_sex,
             has_meta_connection=context.has_meta_connection,
         )
         result = select_templates(

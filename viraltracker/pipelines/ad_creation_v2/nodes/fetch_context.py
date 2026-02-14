@@ -136,6 +136,74 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                 except Exception as e:
                     logger.warning(f"Failed to load brand fonts: {e}")
 
+            # Phase 3: Fetch template elements + brand assets (non-fatal)
+            if ctx.state.template_id:
+                # A. Fetch template elements using element_detection_version to distinguish
+                #    None (never ran) from {} (ran but found nothing)
+                try:
+                    from viraltracker.core.database import get_supabase_client as _get_db
+                    _db = _get_db()
+                    te_result = _db.table("scraped_templates").select(
+                        "template_elements, element_detection_version"
+                    ).eq("id", ctx.state.template_id).execute()
+
+                    if te_result.data:
+                        row = te_result.data[0]
+                        if row.get("element_detection_version") is not None:
+                            # Detection has run — use elements (may be {} if nothing detected)
+                            ctx.state.template_elements = row.get("template_elements") or {}
+                        else:
+                            # Detection never ran
+                            ctx.state.template_elements = None
+                    else:
+                        ctx.state.template_elements = None
+
+                    # If detection has run, get informational asset match against all images
+                    if ctx.state.template_elements is not None:
+                        try:
+                            from viraltracker.services.template_element_service import TemplateElementService
+                            tes = TemplateElementService()
+                            match_result = tes.match_assets_to_template(
+                                ctx.state.template_id, ctx.state.product_id
+                            )
+                            ctx.state.asset_match_result = match_result
+                            logger.info(f"Asset match (all images): score={match_result.get('asset_match_score', 'N/A')}")
+                        except Exception as e:
+                            logger.warning(f"Asset match failed (non-fatal): {e}")
+
+                    logger.info(f"Template elements: {'loaded' if ctx.state.template_elements is not None else 'no detection'}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch template elements (non-fatal): {e}")
+
+                # B. Fetch brand assets (logo/badge)
+                if brand_id:
+                    try:
+                        from viraltracker.core.database import get_supabase_client as _get_db2
+                        _db2 = _get_db2()
+                        ba_result = _db2.table("brand_assets").select(
+                            "asset_type, storage_path"
+                        ).eq("brand_id", brand_id).execute()
+
+                        has_logo = False
+                        logo_path = None
+                        has_badge = False
+                        for asset in (ba_result.data or []):
+                            asset_type = (asset.get("asset_type") or "").lower()
+                            if "logo" in asset_type:
+                                has_logo = True
+                                logo_path = asset.get("storage_path")
+                            if "badge" in asset_type:
+                                has_badge = True
+
+                        ctx.state.brand_asset_info = {
+                            "has_logo": has_logo,
+                            "logo_path": logo_path,
+                            "has_badge": has_badge,
+                        }
+                        logger.info(f"Brand assets: logo={has_logo}, badge={has_badge}")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch brand assets (non-fatal): {e}")
+
             # Build combined instructions
             combined_instructions = ""
             if ctx.state.additional_instructions:

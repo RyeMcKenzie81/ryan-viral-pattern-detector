@@ -28,6 +28,8 @@ from ..models.prompt import (
     TemplateImageConfig,
     ProductImageEntry,
     TemplateAnalysis,
+    AssetContext,
+    TextAreaSpec,
     GenerationRules,
     ProductImageRules,
     MultiImageHandling,
@@ -64,6 +66,10 @@ class AdGenerationService:
         num_variations: int = 5,
         canvas_size: str = "1080x1080px",
         prompt_version: str = "v2.1.0",
+        # Phase 3: asset-aware prompt params (all Optional for backward compat)
+        template_elements: Optional[Dict[str, Any]] = None,
+        brand_asset_info: Optional[Dict[str, Any]] = None,
+        selected_image_tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON prompt for Gemini image generation using Pydantic models.
@@ -89,8 +95,8 @@ class AdGenerationService:
         """
         logger.info(f"Generating Pydantic prompt for variation {prompt_index}")
 
-        if prompt_index < 1 or prompt_index > 15:
-            raise ValueError("prompt_index must be between 1 and 15")
+        if prompt_index < 1 or prompt_index > 100:
+            raise ValueError("prompt_index must be between 1 and 100")
         if not product_image_paths or len(product_image_paths) == 0:
             raise ValueError("product_image_paths cannot be empty")
 
@@ -196,6 +202,15 @@ class AdGenerationService:
                 text=product['combined_instructions'],
             )
 
+        # Phase 3: Build AssetContext when template_elements is not None
+        asset_context = None
+        if template_elements is not None:
+            asset_context = self._build_asset_context(
+                template_elements=template_elements,
+                brand_asset_info=brand_asset_info,
+                selected_image_tags=selected_image_tags,
+            )
+
         # Construct the Pydantic prompt model
         prompt_model = AdGenerationPrompt(
             task=TaskConfig(
@@ -260,6 +275,7 @@ class AdGenerationService:
                 has_founder_mention=has_founder_mention,
                 detailed_description=ad_analysis.get('detailed_description', ''),
             ),
+            asset_context=asset_context,
             rules=GenerationRules(
                 product_image=ProductImageRules(
                     multi_image_handling=multi_image_handling,
@@ -364,3 +380,101 @@ class AdGenerationService:
                     f"(model={generation_result.get('model_used')}, "
                     f"time={generation_result.get('generation_time_ms')}ms)")
         return generated_ad
+
+    def _build_asset_context(
+        self,
+        template_elements: Dict[str, Any],
+        brand_asset_info: Optional[Dict[str, Any]],
+        selected_image_tags: Optional[List[str]],
+    ) -> AssetContext:
+        """Build AssetContext from template elements, brand info, and selected image tags.
+
+        Called only when template_elements is not None (detection has run).
+        Uses selected_image_tags (not all images) for accurate coverage.
+        """
+        brand_info = brand_asset_info or {}
+        brand_has_logo = brand_info.get("has_logo", False)
+        brand_has_badge = brand_info.get("has_badge", False)
+
+        # Parse text areas
+        text_areas_raw = template_elements.get("text_areas", [])
+        text_areas = []
+        for ta in (text_areas_raw if isinstance(text_areas_raw, list) else []):
+            if isinstance(ta, dict):
+                text_areas.append(TextAreaSpec(
+                    type=ta.get("type", "unknown"),
+                    position=ta.get("position"),
+                    max_chars=ta.get("max_chars"),
+                ))
+
+        # Determine logo/person requirements from both required + optional + logo_areas
+        required_assets = template_elements.get("required_assets", [])
+        optional_assets = template_elements.get("optional_assets", [])
+        logo_areas = template_elements.get("logo_areas", [])
+
+        all_assets = set(required_assets + optional_assets)
+        requires_logo = any("logo" in a for a in all_assets) or len(logo_areas) > 0
+        requires_person = any("person" in a for a in all_assets)
+        requires_badge = any("badge" in a for a in all_assets)
+
+        # Logo placement from first logo_area
+        logo_placement = None
+        if logo_areas and isinstance(logo_areas, list) and len(logo_areas) > 0:
+            first_logo = logo_areas[0] if isinstance(logo_areas[0], dict) else {}
+            logo_placement = first_logo.get("position")
+
+        # Recompute asset coverage against SELECTED image tags (not all images)
+        selected_tags_set = set(selected_image_tags or [])
+        required_set = set(required_assets)
+        matched = sorted(required_set & selected_tags_set)
+        missing = sorted(required_set - selected_tags_set)
+        score = len(matched) / len(required_set) if required_set else 1.0
+
+        # Person/logo gap detection using selected image tags + brand info
+        has_person_in_selected = any(t.startswith("person:") for t in selected_tags_set)
+        has_logo_in_selected = "logo" in selected_tags_set
+        person_gap = requires_person and not has_person_in_selected
+        logo_gap = requires_logo and not (brand_has_logo or has_logo_in_selected)
+
+        # Available person tags from selected images
+        available_person_tags = sorted(
+            t for t in selected_tags_set if t.startswith("person:")
+        )
+
+        # Generate asset_instructions
+        instructions = []
+        if logo_gap:
+            instructions.append(
+                "Template has logo area but brand has no logo. "
+                "Leave logo area empty or use brand name text."
+            )
+        if person_gap:
+            instructions.append(
+                "Template shows person but no person images in selected set. "
+                "Use product-focused composition."
+            )
+        for ta in text_areas:
+            if ta.max_chars:
+                instructions.append(
+                    f"The {ta.type} text area fits ~{ta.max_chars} characters. "
+                    f"Keep within this limit."
+                )
+        for m in missing:
+            instructions.append(
+                f"Template requires '{m}' but it's not in the selected images."
+            )
+
+        return AssetContext(
+            template_requires_logo=requires_logo,
+            brand_has_logo=brand_has_logo,
+            logo_placement=logo_placement,
+            template_requires_badge=requires_badge,
+            brand_has_badge=brand_has_badge,
+            template_requires_person=requires_person,
+            available_person_tags=available_person_tags,
+            template_text_areas=text_areas,
+            asset_match_score=score,
+            matched_assets=matched,
+            missing_assets=missing,
+            asset_instructions=" | ".join(instructions) if instructions else "",
+        )
