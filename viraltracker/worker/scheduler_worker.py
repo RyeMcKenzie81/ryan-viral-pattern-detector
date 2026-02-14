@@ -586,15 +586,38 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
 
 
 async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
-    """Stub handler for V2 ad creation jobs.
+    """Execute a V2 ad creation job with template scoring and Pydantic prompts.
 
-    Marks the run as completed with metadata indicating the V2 pipeline
-    is not yet implemented. Full implementation replaces this in Phase 1.
+    V2 differences from V1:
+    - Template selection via 3 modes: manual, roll_the_dice, smart_select
+    - Calls run_ad_creation_v2() (parallel V2 pipeline, V1 untouched)
+    - Cap metric: ads_attempted counts attempts, not approvals
+    - Progress metadata updated during template loop
+
+    Args:
+        job: Scheduled job dict with parameters JSONB containing:
+            template_selection_mode: "manual" | "roll_the_dice" | "smart_select"
+            template_count: Number of templates to select (for scored modes)
+            template_category: Optional category filter
+            content_source: "hooks" | "recreate_template" | "belief_first" | "plan" | "angles"
+            color_mode: "original" | "complementary" | "brand"
+            num_variations: Number of ad variations per template (1-15)
+            canvas_size: Canvas dimensions (default: "1080x1080px")
+            image_resolution: "1K" | "2K" | "4K"
+            persona_id: Optional persona UUID
+            additional_instructions: Optional extra instructions
     """
     job_id = job['id']
     job_name = job['name']
+    product_id = job['product_id']
+    product_info = job.get('products', {}) or {}
+    brand_info = product_info.get('brands', {}) or {}
+    params = job.get('parameters', {}) or {}
 
-    logger.info(f"V2 ad creation job received: {job_name} (ID: {job_id}) — stub handler")
+    logger.info(f"Starting V2 job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent re-pickup
+    update_job(job_id, {"next_run_at": None})
 
     # Create job run record
     run_id = create_job_run(job_id)
@@ -602,35 +625,308 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         logger.error(f"Failed to create run record for V2 job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
 
-    # Mark as completed with stub metadata
-    update_job_run(run_id, {
-        "status": "completed",
-        "completed_at": datetime.now(PST).isoformat(),
-        "metadata": {"stub": True, "reason": "V2 pipeline not yet implemented"},
-        "logs": "V2 ad creation stub: pipeline not yet implemented. "
-                "This job type will be functional after Phase 1."
-    })
+    logs = []
+    ad_run_ids = []
+    templates_used = []
+    ads_attempted = 0
+    ads_approved = 0
 
-    # Update parent job: increment runs_completed, schedule next run
-    runs_completed = job.get('runs_completed', 0) + 1
-    max_runs = job.get('max_runs')
-    job_updates = {"runs_completed": runs_completed}
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+    brand_id = brand_info.get('id')
 
-    if max_runs and runs_completed >= max_runs:
-        job_updates["status"] = "completed"
-        job_updates["next_run_at"] = None
-    elif job.get('schedule_type') == 'recurring':
-        next_run = calculate_next_run(job.get('cron_expression'))
-        if next_run:
-            job_updates["next_run_at"] = next_run.isoformat()
-    else:
-        job_updates["status"] = "completed"
-        job_updates["next_run_at"] = None
+    try:
+        if brand_id:
+            freshness.record_start(brand_id, "ad_creations", run_id=run_id)
 
-    update_job(job_id, job_updates)
+        # Parse V2-specific params
+        template_selection_mode = params.get('template_selection_mode', 'manual')
+        template_count = params.get('template_count', 3)
+        template_category = params.get('template_category')
+        content_source = params.get('content_source', 'hooks')
+        num_variations = params.get('num_variations', 5)
+        canvas_size = params.get('canvas_size', '1080x1080px')
 
-    logger.info(f"V2 stub completed: {job_name} (run_id: {run_id})")
-    return {"success": True, "stub": True, "run_id": run_id}
+        logs.append(f"V2 Pipeline | Mode: {template_selection_mode} | "
+                    f"Content: {content_source} | Variations: {num_variations}")
+
+        # ── Template Selection ──────────────────────────────────────────
+        if template_selection_mode == 'manual':
+            # Manual: use scraped_template_ids from job
+            scraped_template_ids = job.get('scraped_template_ids') or []
+            templates = get_scraped_templates_for_job(scraped_template_ids)
+            logs.append(f"Manual selection: {len(templates)} templates")
+
+        elif template_selection_mode in ('roll_the_dice', 'smart_select'):
+            # Scored selection via template scoring service
+            from viraltracker.services.template_scoring_service import (
+                fetch_template_candidates, prefetch_product_asset_tags,
+                select_templates_with_fallback, SelectionContext,
+                ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
+            )
+            from uuid import UUID as _UUID
+
+            # Prefetch asset tags once (N+1 prevention)
+            asset_tags = await prefetch_product_asset_tags(product_id)
+            logs.append(f"Product asset tags: {len(asset_tags)} tags")
+
+            # Fetch all candidates (no category filter — scorer handles it)
+            candidates = await fetch_template_candidates(product_id)
+            logs.append(f"Template candidates: {len(candidates)} active templates")
+
+            # Build selection context
+            context = SelectionContext(
+                product_id=_UUID(product_id),
+                brand_id=_UUID(brand_id) if brand_id else _UUID(product_id),
+                product_asset_tags=asset_tags,
+                requested_category=template_category,
+            )
+
+            # Choose weight preset
+            if template_selection_mode == 'roll_the_dice':
+                weights = ROLL_THE_DICE_WEIGHTS
+            else:
+                weights = SMART_SELECT_WEIGHTS
+
+            # Determine asset gate threshold
+            min_asset_score = 0.0
+            asset_strictness = params.get('asset_strictness', 'default')
+            if asset_strictness == 'growth':
+                min_asset_score = 0.3
+            elif asset_strictness == 'premium':
+                min_asset_score = 0.8
+
+            # Select templates with fallback
+            selection = select_templates_with_fallback(
+                candidates=candidates,
+                context=context,
+                weights=weights,
+                count=template_count,
+                min_asset_score=min_asset_score,
+            )
+
+            if selection.empty:
+                raise Exception(
+                    f"No eligible templates: {selection.reason}"
+                )
+
+            # Log scoring results
+            logs.append(f"Selected {len(selection.templates)} templates "
+                        f"({selection.candidates_after_gate}/{selection.candidates_before_gate} "
+                        f"passed gate)")
+            for i, (tmpl, score_dict) in enumerate(zip(selection.templates, selection.scores)):
+                logs.append(f"  #{i+1} {tmpl.get('name', tmpl['id'])}: "
+                            f"composite={score_dict.get('composite', 0):.3f} "
+                            f"[asset={score_dict.get('asset_match', 0):.2f}, "
+                            f"unused={score_dict.get('unused_bonus', 0):.2f}, "
+                            f"category={score_dict.get('category_match', 0):.2f}]")
+
+            # Convert to standard template format for the loop
+            templates = []
+            for tmpl in selection.templates:
+                storage_path = tmpl.get('storage_path', '')
+                parts = storage_path.split('/', 1) if storage_path else ['scraped-assets', '']
+                bucket = parts[0] if len(parts) == 2 else 'scraped-assets'
+                path = parts[1] if len(parts) == 2 else storage_path
+                templates.append({
+                    'id': tmpl['id'],
+                    'name': tmpl.get('name', 'Template'),
+                    'storage_path': path,
+                    'bucket': bucket,
+                    'full_storage_path': storage_path,
+                })
+        else:
+            raise ValueError(f"Unknown template_selection_mode: {template_selection_mode}")
+
+        if not templates:
+            raise Exception("No templates available for this V2 job")
+
+        # ── Import V2 pipeline and dependencies ─────────────────────────
+        from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
+        from viraltracker.agent.dependencies import AgentDependencies
+
+        deps = AgentDependencies.create(project_name="scheduler_v2")
+
+        # Get brand colors if using brand color mode
+        brand_colors_data = None
+        if params.get('color_mode') == 'brand':
+            brand_colors_data = brand_info.get('brand_colors')
+
+        # ── Template Loop ───────────────────────────────────────────────
+        for idx, template in enumerate(templates):
+            if shutdown_requested:
+                logs.append("Shutdown requested, stopping V2 job execution")
+                break
+
+            if ads_attempted >= MAX_ADS_PER_SCHEDULED_RUN:
+                logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                break
+
+            template_ref = template.get('name', template.get('id', 'Unknown'))
+            template_id = template.get('id')
+
+            logs.append(f"\nTemplate {idx + 1}/{len(templates)}: {template_ref}")
+            logger.info(f"V2 Job {job_name}: Template {idx + 1}/{len(templates)}")
+
+            # Update progress metadata
+            update_job_run(run_id, {
+                "metadata": {
+                    "pipeline_version": "v2",
+                    "ads_attempted": ads_attempted,
+                    "ads_approved": ads_approved,
+                    "current_template": template_ref,
+                    "template_progress": f"{idx + 1}/{len(templates)}",
+                }
+            })
+
+            # Download template
+            template_base64 = get_template_base64(template)
+            if not template_base64:
+                logs.append(f"  Failed to download template: {template_ref}")
+                continue
+
+            # Build additional instructions
+            combined_instructions = params.get('additional_instructions') or None
+
+            # Run V2 ad creation pipeline
+            try:
+                result = await run_ad_creation_v2(
+                    product_id=product_id,
+                    reference_ad_base64=template_base64,
+                    reference_ad_filename=template_ref,
+                    template_id=template_id,
+                    canvas_size=canvas_size,
+                    num_variations=num_variations,
+                    content_source=content_source,
+                    color_mode=params.get('color_mode', 'original'),
+                    brand_colors=brand_colors_data,
+                    image_selection_mode=params.get('image_selection_mode', 'auto'),
+                    persona_id=params.get('persona_id'),
+                    variant_id=params.get('variant_id'),
+                    offer_variant_id=params.get('offer_variant_id'),
+                    additional_instructions=combined_instructions,
+                    image_resolution=params.get('image_resolution', '2K'),
+                    deps=deps,
+                )
+
+                if result and result.get('ad_run_id'):
+                    ad_run_id = result['ad_run_id']
+                    ad_run_ids.append(ad_run_id)
+                    templates_used.append(template_ref)
+
+                    # Record template usage
+                    if template_id:
+                        mark_recommendation_as_used(product_id, template_id)
+                        record_template_usage(product_id, template_ref, ad_run_id)
+
+                    approved = result.get('approved_count', 0)
+                    rejected = result.get('rejected_count', 0)
+                    flagged = result.get('flagged_count', 0)
+
+                    # V2 cap metric: count attempts, not approvals
+                    ads_attempted += num_variations
+                    ads_approved += approved
+
+                    logs.append(f"  Completed: {approved} approved, "
+                                f"{rejected} rejected, {flagged} flagged "
+                                f"(pipeline={result.get('pipeline_version', 'v2')})")
+
+                    # Handle export
+                    export_dest = params.get('export_destination', 'none')
+                    if export_dest != 'none':
+                        await handle_export(
+                            result=result,
+                            params=params,
+                            product_name=product_info.get('name', 'Product'),
+                            brand_name=brand_info.get('name', 'Brand'),
+                            deps=deps
+                        )
+                        logs.append(f"  Exported to: {export_dest}")
+                else:
+                    ads_attempted += num_variations
+                    logs.append(f"  No ad_run_id returned")
+
+            except Exception as e:
+                ads_attempted += num_variations
+                logs.append(f"  Error: {str(e)}")
+                logger.error(f"V2 error processing template {template_ref}: {e}")
+
+        logs.append(f"\n=== V2 Summary: {ads_approved} approved / "
+                    f"{ads_attempted} attempted, {len(ad_run_ids)} runs ===")
+
+        if brand_id:
+            freshness.record_success(brand_id, "ad_creations", records_affected=ads_approved, run_id=run_id)
+
+        # Job completed successfully
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "ad_run_ids": ad_run_ids,
+            "templates_used": templates_used,
+            "metadata": {
+                "pipeline_version": "v2",
+                "ads_attempted": ads_attempted,
+                "ads_approved": ads_approved,
+                "template_selection_mode": template_selection_mode,
+            },
+            "logs": "\n".join(logs),
+        })
+
+        # Update parent job: increment runs_completed, schedule next run
+        runs_completed = job.get('runs_completed', 0) + 1
+        max_runs = job.get('max_runs')
+        job_updates = {"runs_completed": runs_completed}
+
+        if max_runs and runs_completed >= max_runs:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+        elif job.get('schedule_type') == 'recurring':
+            next_run = calculate_next_run(job.get('cron_expression'))
+            if next_run:
+                job_updates["next_run_at"] = next_run.isoformat()
+        else:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+
+        update_job(job_id, job_updates)
+
+        logger.info(f"V2 job completed: {job_name} ({ads_approved} approved / {ads_attempted} attempted)")
+        return {
+            "success": True,
+            "ad_run_ids": ad_run_ids,
+            "templates_used": templates_used,
+            "ads_attempted": ads_attempted,
+            "ads_approved": ads_approved,
+            "pipeline_version": "v2",
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"V2 job failed: {error_msg}")
+        logger.error(f"V2 Job {job_name} failed: {error_msg}")
+
+        if brand_id:
+            freshness.record_failure(brand_id, "ad_creations", error_msg, run_id=run_id)
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "ad_run_ids": ad_run_ids,
+            "templates_used": templates_used,
+            "metadata": {
+                "pipeline_version": "v2",
+                "ads_attempted": ads_attempted,
+                "ads_approved": ads_approved,
+                "error": "no_eligible_templates" if "No eligible templates" in error_msg else "pipeline_error",
+            },
+            "logs": "\n".join(logs),
+        })
+
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
 
 
 async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:

@@ -745,3 +745,34 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 **Related files**:
 - `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — job list rendering
 
+### ~~32. Template Scoring Service — Database Client Import~~ (RESOLVED)
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-02-13
+**Resolved**: 2026-02-13
+
+**Context**: Fixed — now imports from `viraltracker.core.database` instead of `viraltracker.ui.auth`.
+
+### 33. V2 UI Page — Async Event Loop for Scoring Preview
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-02-13
+
+**Context**: `_run_template_preview()` in the V2 UI page creates a new `asyncio.new_event_loop()` to run async scoring functions. This works but isn't ideal in Streamlit's event loop. Consider using `asyncio.run()` or Streamlit's native async support when available.
+
+**Related files**:
+- `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` — `_run_template_preview()`
+
+### 34. V1/V2 Comparison Script — Live Testing Needed
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-13
+
+**Context**: The `scripts/v1_v2_comparison.py` script has `--dry-run` and `--live` modes. The dry-run mode verifies compile/import/structure checks. The live mode (which actually runs both pipelines) requires a deployed environment with LLM API access. Should be run as part of Phase 1 validation before merging.
+
+**Related files**:
+- `scripts/v1_v2_comparison.py`
+
