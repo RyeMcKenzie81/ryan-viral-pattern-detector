@@ -692,3 +692,56 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 - `viraltracker/ui/pages/06_🚀_Client_Onboarding.py` — onboarding dimension collection (~line 1880)
 - `viraltracker/services/client_onboarding_service.py` — import logic (~line 1093)
 
+### 28. Ad Scheduler "Run Now" Shows Wrong Next Run Time
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-02-13
+
+**Context**: When using "Run Now" in the Ad Scheduler, the job is created and the worker picks it up correctly, but the Scheduled Tasks list shows a next-day timestamp (e.g., "Next: Feb 14, 05:38 AM") instead of the imminent run time. Likely a timezone mismatch between the `next_run_at` value set by the UI (PST) and how it's displayed on the Scheduled Tasks page.
+
+**Related files**:
+- `viraltracker/ui/pages/24_📅_Ad_Scheduler.py` — `_build_ad_creation_job_data()` sets `next_run_at`
+- `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — displays `next_run_at`
+
+### 29. Scheduled Tasks — Show Completion Time and Duration
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-02-13
+
+**Context**: The Scheduled Tasks page shows when a job last ran but not when it completed or how long it took. Adding completion timestamp and duration (e.g., "Completed in 2m 34s") would help with monitoring and debugging slow jobs.
+
+**What's needed**: The `scheduled_job_runs` table likely already has `started_at` and `completed_at` (or similar) — surface these in the UI. Calculate and display duration.
+
+**Related files**:
+- `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — job list and detail views
+- `viraltracker/worker/scheduler_worker.py` — sets run timestamps
+
+### 30. Add Logfire Instrumentation to Cron/Worker Server
+
+**Priority**: Medium
+**Complexity**: Low-Medium
+**Added**: 2026-02-13
+
+**Context**: The Streamlit app is instrumented with Logfire for observability, but the Railway cron/worker process (`scheduler_worker.py`) is not. Adding Logfire to the worker would give visibility into job execution times, error rates, Meta API call latency, and ad creation pipeline performance — all currently only visible via Railway logs.
+
+**What's needed**: Initialize Logfire in the worker entrypoint, add span instrumentation around key operations (job execution, Meta API calls, ad generation). Consider using the existing `LOGFIRE_TOKEN` env var or a separate worker-specific token.
+
+**Related files**:
+- `viraltracker/worker/scheduler_worker.py` — worker entrypoint and job execution
+- `viraltracker/worker/` — any other worker modules
+
+### 31. Scheduled Tasks — Show "Running" Indicator in Job List
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-02-13
+
+**Context**: When a scheduled job is actively running, the job list shows no visual indicator — it still displays the green active dot and "Runs: 0/1". You have to click "View" to see the run status. A spinning indicator or "🔄 Running" badge in the list view would make it immediately obvious which jobs are in progress.
+
+**What's needed**: Check `scheduled_job_runs` for an active run (status = `running` or `in_progress`) when rendering the job list, and show a visual indicator (e.g., spinner emoji, "Running..." text, or a pulsing badge) next to the job name or in the "Last" column.
+
+**Related files**:
+- `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — job list rendering
+
