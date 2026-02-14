@@ -614,7 +614,7 @@ TemplateScorer (interface)
 ├── CategoryMatchScorer     → Phase 1  (1.0 if template.category matches request, 0.5 if "All")
 ├── AwarenessAlignScorer    → Phase 3  (template.awareness_level vs persona.awareness_stage)
 ├── AudienceMatchScorer     → Phase 3  (template.target_sex vs persona demographics)
-├── BeliefClarityScorer     → Phase 4  (wraps template_evaluation_service D1-D6 scores)
+├── BeliefClarityScorer     → Phase 4  (D1-D5 from template_evaluations normalized to [0,1]; D6=false → 0.0 in-scorer gate; no eval → 0.5)
 ├── PerformanceScorer       → Phase 6  (Creative Genome historical reward for this template_id)
 └── FatigueScorer           → Phase 8  (decay curve based on time since last use for this audience)
 ```
@@ -752,7 +752,7 @@ The scoring pipeline reads from pre-computed data — **no per-template AI or DB
 | AssetMatchScorer | `required = row["template_elements"].get("required_assets", [])` → if empty/missing: return 1.0 (no requirements); else: `len(set(required) & context.product_asset_tags) / len(required)` | `row["template_elements"]` from candidate query (JSONB, may be `{}` for unanalyzed) + `context.product_asset_tags` (prefetched once) |
 | AwarenessAlignScorer | `1.0 - abs(row["awareness_level"] - context.awareness_stage) / 4.0`; if either value is None → return 0.5 (neutral) | `row["awareness_level"]` from candidate query (INTEGER 1-5, nullable) — **no AI call** |
 | AudienceMatchScorer | exact match → 1.0, either is `unisex`/None → 0.7, mismatch → 0.2 | `row["target_sex"]` from candidate query (TEXT, nullable) — **no AI call** |
-| BeliefClarityScorer | Normalize D1-D6 total (0-18) to [0,1] | Pre-computed scores from `template_evaluation_service.py` (cached on template row or in evaluation table) |
+| BeliefClarityScorer | If D6=false → 0.0; else normalize D1-D5 total (0-15) to [0,1]; no evaluation → 0.5 neutral | Pre-computed scores from `template_evaluations` table (D1-D5 INT 0-3, D6 BOOL). D6 acts as in-scorer compliance gate — non-compliant templates score 0.0, not hard-filtered from candidates. |
 | PerformanceScorer | `creative_element_scores` Beta(α,β) for `template_id` | `creative_genome_service.py` (Phase 6) |
 
 **N+1 prevention for AssetMatch:** `match_assets_to_template()` queries `product_images` per call (line 622 of `template_element_service.py`). The scoring pipeline must NOT call it per-template. Instead: (1) prefetch `product_images` for the product once into `SelectionContext.product_asset_tags: Set[str]`, (2) `AssetMatchScorer` compares `row["template_elements"]["required_assets"]` against that set directly. This replaces `match_assets_to_template()` with inline set intersection — same logic, zero DB calls per template.
@@ -1289,8 +1289,8 @@ After the final chunk of a phase:
 - [ ] Add human override buttons to Results Dashboard (Override Approve/Reject/Confirm)
 - [ ] Create `ad_review_overrides` table
 - [ ] Create `quality_scoring_config` table with initial static thresholds
-- [ ] Add `BeliefClarityScorer` to scoring pipeline (wraps existing `template_evaluation_service` D1-D6)
-- [ ] **Success gate**: Defect scan catches >= 30% of rejects (saves review cost). Override rate tracked. Structured scores stored for all V2 ads.
+- [ ] Add `BeliefClarityScorer` to scoring pipeline (reads D1-D5 from `template_evaluations`, D6=false → 0.0, no eval → 0.5)
+- [ ] **Success gate**: Defect scan catches >= 30% of rejects (saves review cost). Override rate tracked. `defect_scan_result` present for all successfully generated V2 ads. `review_check_scores` present for all Stage-2-reviewed ads (defect-passed).
 
 ### Phase 5: Polish + Promotion
 - [ ] Scoring pipeline already active from Phase 1 — validate "Roll the dice" and "Smart select" presets produce good template diversity across >= 5 brands
