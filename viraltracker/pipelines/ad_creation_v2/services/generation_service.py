@@ -209,7 +209,7 @@ class AdGenerationService:
             ),
             special_instructions=special_instructions,
             product=ProductContext(
-                id=product.get('id'),
+                id=str(product['id']) if product.get('id') else None,
                 name=product.get('name', ''),
                 display_name=product.get('display_name', product.get('name', '')),
                 target_audience=target_audience_for_prompt,
@@ -229,7 +229,7 @@ class AdGenerationService:
                 headline=HeadlineConfig(
                     text=selected_hook.get('adapted_text'),
                     source="hook",
-                    hook_id=selected_hook.get('id'),
+                    hook_id=str(selected_hook['id']) if selected_hook.get('id') else None,
                     persuasion_type=selected_hook.get('persuasion_type'),
                 ),
                 subheadline=SubheadlineConfig(
