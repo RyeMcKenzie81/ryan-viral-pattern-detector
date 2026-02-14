@@ -115,6 +115,16 @@ def get_scraped_templates(category=None):
         return []
 
 
+def get_scraped_template_url(storage_path: str) -> str:
+    """Get public URL for scraped template asset."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_asset_preview_url(storage_path)
+    except Exception:
+        return ""
+
+
 def get_personas_for_product(product_id: str):
     """Get personas linked to a product."""
     try:
@@ -243,16 +253,27 @@ def _render_manual_template_selection():
     for i, tmpl in enumerate(templates[:30]):
         with cols[i % 5]:
             selected = is_template_selected(tmpl['id'])
-            label = f"{'[x]' if selected else '[ ]'} {tmpl.get('name', 'Template')}"
-            st.caption(f"{tmpl.get('category', '').replace('_', ' ').title()}")
-            st.caption(f"Used: {tmpl.get('times_used', 0)}x")
+            storage_path = tmpl.get('storage_path', '')
+
+            # Show thumbnail
+            thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+            if thumb_url:
+                border_style = "3px solid #00ff00" if selected else "1px solid #333"
+                st.markdown(
+                    f'<img src="{thumb_url}" style="width:100%;border:{border_style};border-radius:4px;">',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("No preview")
+
+            st.caption(f"**{tmpl.get('name', 'Template')[:35]}**")
+            st.caption(f"{tmpl.get('category', '').replace('_', ' ').title()} | Used: {tmpl.get('times_used', 0)}x")
 
             if st.button(
-                label[:40],
+                "Deselect" if selected else "Select",
                 key=f"v2_tmpl_{tmpl['id']}",
                 type="primary" if selected else "secondary",
             ):
-                storage_path = tmpl.get('storage_path', '')
                 parts = storage_path.split('/', 1) if storage_path else ['scraped-assets', '']
                 bucket = parts[0] if len(parts) == 2 else 'scraped-assets'
                 path = parts[1] if len(parts) == 2 else storage_path
@@ -327,15 +348,24 @@ def _render_scored_template_selection(mode: str):
 
             for i, (tmpl, scores) in enumerate(zip(preview['templates'], preview['scores'])):
                 with st.expander(f"#{i+1}: {tmpl.get('name', tmpl['id'][:8])}", expanded=i == 0):
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Composite", f"{scores.get('composite', 0):.3f}")
-                    with col2:
-                        st.metric("Asset Match", f"{scores.get('asset_match', 0):.2f}")
-                    with col3:
-                        st.metric("Unused Bonus", f"{scores.get('unused_bonus', 0):.2f}")
-                    with col4:
-                        st.metric("Category", f"{scores.get('category_match', 0):.2f}")
+                    img_col, scores_col = st.columns([1, 3])
+                    with img_col:
+                        storage_path = tmpl.get('storage_path', '')
+                        thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
+                        if thumb_url:
+                            st.image(thumb_url, width=150)
+                        else:
+                            st.caption("No preview")
+                    with scores_col:
+                        s1, s2, s3, s4 = st.columns(4)
+                        with s1:
+                            st.metric("Composite", f"{scores.get('composite', 0):.3f}")
+                        with s2:
+                            st.metric("Asset Match", f"{scores.get('asset_match', 0):.2f}")
+                        with s3:
+                            st.metric("Unused Bonus", f"{scores.get('unused_bonus', 0):.2f}")
+                        with s4:
+                            st.metric("Category", f"{scores.get('category_match', 0):.2f}")
                     st.caption(f"Category: {tmpl.get('category', 'N/A')} | "
                                f"Used: {tmpl.get('times_used', 0)}x")
 
