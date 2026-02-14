@@ -166,6 +166,20 @@ COMMENT ON COLUMN scheduled_jobs.scraped_template_ids IS
 
 
 -- ============================================================================
+-- P0-6: template_source on scheduled_jobs
+-- ============================================================================
+-- Stores whether ad_creation jobs use 'uploaded' or 'scraped' templates.
+-- Matches existing pattern of template_mode, template_count, template_ids
+-- as top-level columns. Default 'uploaded' for backward compatibility.
+
+ALTER TABLE scheduled_jobs
+ADD COLUMN IF NOT EXISTS template_source TEXT DEFAULT 'uploaded';
+
+COMMENT ON COLUMN scheduled_jobs.template_source IS
+    'Template source: uploaded (legacy) or scraped (template library)';
+
+
+-- ============================================================================
 -- Backfill audit queries (run manually after migration)
 -- ============================================================================
 -- These are informational — they do NOT modify data.
