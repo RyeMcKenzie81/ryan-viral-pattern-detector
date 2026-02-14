@@ -573,7 +573,9 @@ class AdCreationService:
         meta_primary_text: Optional[str] = None,
         template_name: Optional[str] = None,
         # Regeneration lineage
-        regenerate_parent_id: Optional[UUID] = None
+        regenerate_parent_id: Optional[UUID] = None,
+        # V2: Multi-size variant identity
+        canvas_size: Optional[str] = None
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -601,6 +603,7 @@ class AdCreationService:
             meta_primary_text: Primary text for Meta ad placement (above image)
             template_name: Name of template for display
             regenerate_parent_id: Source ad UUID when regenerated from rejected ad
+            canvas_size: Canvas dimensions string (e.g. '1080x1080', '1080x1350')
 
         Returns:
             UUID of generated ad record
@@ -658,6 +661,8 @@ class AdCreationService:
             data["template_name"] = template_name
         if regenerate_parent_id is not None:
             data["regenerate_parent_id"] = str(regenerate_parent_id)
+        if canvas_size is not None:
+            data["canvas_size"] = canvas_size
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

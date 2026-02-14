@@ -167,12 +167,12 @@ NON_CONVERSION_OBJECTIVES = NON_CLICK_OBJECTIVES | {"LINK_CLICKS", "TRAFFIC"}
 
 def _is_non_click_objective(ad_data: Dict) -> bool:
     """Check if the ad's campaign objective doesn't optimize for link clicks."""
-    return (ad_data.get("objective") or "").upper() in NON_CLICK_OBJECTIVES
+    return (ad_data.get("campaign_objective") or "").upper() in NON_CLICK_OBJECTIVES
 
 
 def _is_non_conversion_objective(ad_data: Dict) -> bool:
     """Check if the ad's campaign objective doesn't optimize for conversions."""
-    return (ad_data.get("objective") or "").upper() in NON_CONVERSION_OBJECTIVES
+    return (ad_data.get("campaign_objective") or "").upper() in NON_CONVERSION_OBJECTIVES
 
 
 # =============================================================================
@@ -984,7 +984,7 @@ class DiagnosticEngine:
             impr_series.append(_safe_numeric(r.get("impressions")))
 
         # Campaign objective (from most recent row)
-        objective = rows[-1].get("objective") if rows else None
+        objective = rows[-1].get("campaign_objective") if rows else None
 
         data = {
             "days_with_data": len(rows),
@@ -1000,7 +1000,7 @@ class DiagnosticEngine:
             "hook_rate": hook_rate,
             "hold_rate": hold_rate,
             "impressions": total_impressions,
-            "objective": objective,
+            "campaign_objective": objective,
             # Series
             "link_ctr_series": ctr_series,
             "frequency_series": freq_series,

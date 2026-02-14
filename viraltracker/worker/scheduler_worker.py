@@ -574,9 +574,63 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_reddit_scrape_job(job)
     elif job_type == 'amazon_review_scrape':
         return await execute_amazon_review_scrape_job(job)
-    else:
-        # Default to ad_creation for backward compatibility
+    elif job_type == 'ad_creation_v2':
+        return await execute_ad_creation_v2_job(job)
+    elif job_type == 'ad_creation':
         return await execute_ad_creation_job(job)
+    else:
+        # Hard-fail on unknown job types — never silently fall through to V1
+        logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
+                     f"No handler registered. Refusing to execute.")
+        raise ValueError(f"Unknown job_type: {job_type}")
+
+
+async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
+    """Stub handler for V2 ad creation jobs.
+
+    Marks the run as completed with metadata indicating the V2 pipeline
+    is not yet implemented. Full implementation replaces this in Phase 1.
+    """
+    job_id = job['id']
+    job_name = job['name']
+
+    logger.info(f"V2 ad creation job received: {job_name} (ID: {job_id}) — stub handler")
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for V2 job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    # Mark as completed with stub metadata
+    update_job_run(run_id, {
+        "status": "completed",
+        "completed_at": datetime.now(PST).isoformat(),
+        "metadata": {"stub": True, "reason": "V2 pipeline not yet implemented"},
+        "logs": "V2 ad creation stub: pipeline not yet implemented. "
+                "This job type will be functional after Phase 1."
+    })
+
+    # Update parent job: increment runs_completed, schedule next run
+    runs_completed = job.get('runs_completed', 0) + 1
+    max_runs = job.get('max_runs')
+    job_updates = {"runs_completed": runs_completed}
+
+    if max_runs and runs_completed >= max_runs:
+        job_updates["status"] = "completed"
+        job_updates["next_run_at"] = None
+    elif job.get('schedule_type') == 'recurring':
+        next_run = calculate_next_run(job.get('cron_expression'))
+        if next_run:
+            job_updates["next_run_at"] = next_run.isoformat()
+    else:
+        job_updates["status"] = "completed"
+        job_updates["next_run_at"] = None
+
+    update_job(job_id, job_updates)
+
+    logger.info(f"V2 stub completed: {job_name} (run_id: {run_id})")
+    return {"success": True, "stub": True, "run_id": run_id}
 
 
 async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
