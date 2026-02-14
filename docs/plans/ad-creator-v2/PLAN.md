@@ -1239,6 +1239,16 @@ After the final chunk of a phase:
 - [ ] Group results by template × size × color
 - [ ] **Success gate**: Multi-size/color runs complete without errors across >= 10 consecutive runs. Each variant has correct `canvas_size` persisted (spot-check 100% of first 50 variants).
 
+### Phase 2.5: Manual Template Grid — Filters + Pagination
+- [ ] Add awareness level, industry/niche, and target audience filters to V2 manual template selection (port from V1)
+- [ ] Replace direct DB query in V2 `get_scraped_templates()` with `TemplateQueueService.get_templates()` (service layer delegation)
+- [ ] Add "Load More" pagination (30 at a time, matching V1 pattern)
+- [ ] Reset pagination when filters change
+- [ ] File modified: `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` only
+- [ ] **Note**: Recommendation filter and asset match badges are intentionally excluded — recommendation filter is V1-specific, asset badges come with Phase 3 scoring expansion
+- [ ] **Conflict check**: Safe. Phase 3's `AwarenessAlignScorer`/`AudienceMatchScorer` operate in the scoring pipeline (smart_select/roll_the_dice), not the manual grid. Worker only uses `scraped_template_ids` from manual jobs. No schema changes needed.
+- [ ] **Success gate**: All 4 filters render and update the grid. Pagination works. Scored selection modes unaffected. Manual job submission still works end-to-end.
+
 ### Phase 3: Asset-Aware Prompts + Scoring Expansion
 - [ ] Wire template element classification into prompt (handle both template_id and uploaded)
 - [ ] Wire product image asset tags into image selection

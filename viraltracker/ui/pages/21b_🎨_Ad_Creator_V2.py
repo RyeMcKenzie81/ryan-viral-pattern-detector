@@ -45,6 +45,8 @@ if 'v2_category' not in st.session_state:
     st.session_state.v2_category = 'all'
 if 'v2_preview_result' not in st.session_state:
     st.session_state.v2_preview_result = None
+if 'v2_templates_visible' not in st.session_state:
+    st.session_state.v2_templates_visible = 30
 
 
 # ============================================================================
@@ -99,17 +101,37 @@ def get_template_categories():
                 "ugc_style", "meme", "carousel_frame", "story_format", "other"]
 
 
-def get_scraped_templates(category=None):
-    """Fetch active scraped templates with optional category filter."""
+def get_awareness_levels():
+    """Get awareness level filter options."""
     try:
-        db = get_supabase_client()
-        query = db.table("scraped_templates").select(
-            "id, name, storage_path, category, thumbnail_path, times_used, awareness_level"
-        ).eq("is_active", True)
-        if category and category != "all":
-            query = query.eq("category", category)
-        result = query.order("created_at", desc=True).execute()
-        return result.data or []
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_awareness_levels()
+    except Exception:
+        return []
+
+
+def get_industry_niches():
+    """Get industry niche filter options."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        return TemplateQueueService().get_industry_niches()
+    except Exception:
+        return []
+
+
+def get_scraped_templates(category=None, awareness_level=None, industry_niche=None, target_sex=None, limit=100):
+    """Fetch active scraped templates with optional filters."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_templates(
+            category=category if category != "all" else None,
+            awareness_level=awareness_level,
+            industry_niche=industry_niche if industry_niche != "all" else None,
+            target_sex=target_sex if target_sex != "all" else None,
+            active_only=True,
+            limit=limit,
+        )
     except Exception as e:
         st.warning(f"Could not load templates: {e}")
         return []
@@ -222,35 +244,86 @@ def render_template_selection():
 
 
 def _render_manual_template_selection():
-    """Render manual template grid with checkboxes."""
-    col1, col2 = st.columns([1, 3])
-    with col1:
+    """Render manual template grid with filters and pagination."""
+    # --- Filter row (4 columns) ---
+    fc1, fc2, fc3, fc4 = st.columns(4)
+
+    with fc1:
         categories = get_template_categories()
         category = st.selectbox(
             "Category",
             options=categories,
             index=categories.index(st.session_state.v2_category) if st.session_state.v2_category in categories else 0,
             format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
-            key="v2_manual_category",
+            key="v2_filter_category",
         )
-        st.session_state.v2_category = category
 
-    with col2:
-        selected_count = len(st.session_state.v2_selected_scraped_templates)
-        st.metric("Selected", selected_count)
-        if selected_count > 0 and st.button("Clear all", key="v2_clear_templates"):
+    with fc2:
+        awareness_levels = get_awareness_levels()
+        awareness_options = [None] + [a['value'] for a in awareness_levels]
+        awareness_labels = {None: "All", **{a['value']: a['label'] for a in awareness_levels}}
+        awareness_level = st.selectbox(
+            "Awareness Level",
+            options=awareness_options,
+            format_func=lambda x: awareness_labels.get(x, str(x)),
+            key="v2_filter_awareness",
+        )
+
+    with fc3:
+        niches = get_industry_niches()
+        niche_options = ["all"] + niches
+        industry_niche = st.selectbox(
+            "Industry / Niche",
+            options=niche_options,
+            format_func=lambda x: x.replace("_", " ").title() if x != "all" else "All",
+            key="v2_filter_niche",
+        )
+
+    with fc4:
+        sex_options = ["all", "male", "female", "unisex"]
+        target_sex = st.selectbox(
+            "Target Audience",
+            options=sex_options,
+            format_func=lambda x: x.title() if x != "all" else "All",
+            key="v2_filter_sex",
+        )
+
+    # Reset pagination when any filter changes
+    _current_filters = (category, awareness_level, industry_niche, target_sex)
+    if st.session_state.get('_v2_prev_filters') != _current_filters:
+        st.session_state.v2_templates_visible = 30
+        st.session_state['_v2_prev_filters'] = _current_filters
+
+    # Persist category for other sections
+    st.session_state.v2_category = category
+
+    # --- Header row ---
+    selected_count = len(st.session_state.v2_selected_scraped_templates)
+    hdr1, hdr2 = st.columns([3, 1])
+    with hdr1:
+        cat_label = category.replace("_", " ").title() if category != "all" else "All"
+        st.markdown(f"**Showing templates in '{cat_label}'** | **{selected_count} selected**")
+    with hdr2:
+        if selected_count > 0 and st.button("Clear Selection", key="v2_clear_templates"):
             st.session_state.v2_selected_scraped_templates = []
             st.rerun()
 
-    templates = get_scraped_templates(category if category != "all" else None)
+    # --- Fetch templates with all filters ---
+    templates = get_scraped_templates(
+        category=category,
+        awareness_level=awareness_level,
+        industry_niche=industry_niche,
+        target_sex=target_sex,
+    )
 
     if not templates:
-        st.info("No templates found.")
+        st.info("No templates found for the selected filters.")
         return
 
-    # Grid display
+    # --- Grid display (paginated) ---
+    visible = st.session_state.v2_templates_visible
     cols = st.columns(5)
-    for i, tmpl in enumerate(templates[:30]):
+    for i, tmpl in enumerate(templates[:visible]):
         with cols[i % 5]:
             selected = is_template_selected(tmpl['id'])
             storage_path = tmpl.get('storage_path', '')
@@ -286,6 +359,13 @@ def _render_manual_template_selection():
                     'full_storage_path': storage_path,
                 })
                 st.rerun()
+
+    # --- Load More pagination ---
+    if visible < len(templates):
+        remaining = len(templates) - visible
+        if st.button(f"Load More ({remaining} remaining)", key="v2_load_more"):
+            st.session_state.v2_templates_visible += 30
+            st.rerun()
 
 
 def _render_scored_template_selection(mode: str):
