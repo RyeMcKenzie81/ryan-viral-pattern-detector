@@ -152,6 +152,20 @@ COMMENT ON COLUMN scheduled_job_runs.metadata IS
 
 
 -- ============================================================================
+-- P0-5: scraped_template_ids on scheduled_jobs
+-- ============================================================================
+-- Stores selected scraped template IDs for ad_creation jobs using the
+-- scraped template library. Matches the existing pattern of template_ids,
+-- template_source, template_mode, template_count as top-level columns.
+
+ALTER TABLE scheduled_jobs
+ADD COLUMN IF NOT EXISTS scraped_template_ids UUID[] DEFAULT '{}';
+
+COMMENT ON COLUMN scheduled_jobs.scraped_template_ids IS
+    'Selected scraped_templates IDs for jobs with template_source=scraped';
+
+
+-- ============================================================================
 -- Backfill audit queries (run manually after migration)
 -- ============================================================================
 -- These are informational — they do NOT modify data.
