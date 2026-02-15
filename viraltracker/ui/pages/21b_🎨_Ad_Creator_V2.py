@@ -759,16 +759,228 @@ def _handle_submit():
 
 
 # ============================================================================
-# Results View
+# Results View — Phase 4: structured scores, defect/congruence, overrides
 # ============================================================================
 
+def _get_override_service():
+    """Lazy import override service."""
+    from viraltracker.services.ad_review_override_service import AdReviewOverrideService
+    return AdReviewOverrideService()
+
+
+def _get_signed_url(storage_path: str) -> str:
+    """Get signed URL for image display."""
+    if not storage_path:
+        return ""
+    db = get_supabase_client()
+    parts = storage_path.split("/", 1)
+    bucket = parts[0]
+    path = parts[1] if len(parts) > 1 else storage_path
+    try:
+        result = db.storage.from_(bucket).create_signed_url(path, 3600)
+        return result.get("signedURL", "")
+    except Exception:
+        return ""
+
+
+def _score_color(score: float) -> str:
+    """Return CSS color for a 0-10 rubric score."""
+    if score >= 8.0:
+        return "#2ecc71"  # green
+    if score >= 6.0:
+        return "#f39c12"  # amber
+    return "#e74c3c"  # red
+
+
+def _status_badge(status: str, override_status: str = None) -> str:
+    """Return a styled badge string for ad status."""
+    badge_map = {
+        "approved": ("Approved", "#2ecc71"),
+        "rejected": ("Rejected", "#e74c3c"),
+        "flagged": ("Flagged", "#f39c12"),
+        "review_failed": ("Review Failed", "#95a5a6"),
+        "generation_failed": ("Gen Failed", "#95a5a6"),
+    }
+    override_map = {
+        "override_approved": ("Override Approved", "#27ae60"),
+        "override_rejected": ("Override Rejected", "#c0392b"),
+        "confirmed": ("Confirmed", "#2980b9"),
+    }
+    if override_status and override_status in override_map:
+        label, color = override_map[override_status]
+    elif status in badge_map:
+        label, color = badge_map[status]
+    else:
+        label, color = status, "#95a5a6"
+    return f'<span style="background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:0.85em;">{label}</span>'
+
+
+def _render_rubric_scores(scores: dict):
+    """Render the 15-check rubric scores as colored bars."""
+    if not scores:
+        st.caption("No structured review scores")
+        return
+
+    visual_checks = [f"V{i}" for i in range(1, 10)]
+    content_checks = [f"C{i}" for i in range(1, 5)]
+    congruence_checks = ["G1", "G2"]
+
+    for group_name, checks in [
+        ("Visual", visual_checks),
+        ("Content", content_checks),
+        ("Congruence", congruence_checks),
+    ]:
+        cols = st.columns(len(checks) + 1)
+        with cols[0]:
+            st.caption(f"**{group_name}**")
+        for idx, check in enumerate(checks):
+            with cols[idx + 1]:
+                val = scores.get(check, 5.0)
+                color = _score_color(val)
+                st.markdown(
+                    f'<div style="text-align:center">'
+                    f'<div style="font-size:0.7em;color:#888">{check}</div>'
+                    f'<div style="font-size:1.1em;font-weight:bold;color:{color}">{val:.1f}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+
+def _render_defect_result(defect_result: dict):
+    """Render defect scan result."""
+    if not defect_result:
+        return
+    passed = defect_result.get("passed", True)
+    defects = defect_result.get("defects", [])
+    model = defect_result.get("model", "?")
+    latency = defect_result.get("latency_ms", 0)
+
+    if passed:
+        st.caption(f"Defect Scan: Passed ({model}, {latency}ms)")
+    else:
+        st.caption(f"Defect Scan: **FAILED** ({model}, {latency}ms)")
+        for d in defects:
+            st.markdown(f"- **{d.get('type', '?')}**: {d.get('description', '')}")
+
+
+def _render_ad_card(ad: dict, run_key: str, org_id: str, user_id: str):
+    """Render a single generated ad card with review data and override controls."""
+    ad_id = ad.get("id", "")
+    status = ad.get("final_status", "unknown")
+    override_status = ad.get("override_status")
+    scores = ad.get("review_check_scores")
+    defect_result = ad.get("defect_scan_result")
+    congruence = ad.get("congruence_score")
+    storage_path = ad.get("storage_path")
+    hook_text = ad.get("hook_text", "")
+
+    # Header: index + status badge
+    st.markdown(
+        f"**#{ad.get('prompt_index', '?')}** "
+        f"{_status_badge(status, override_status)} "
+        f"{'— ' + hook_text[:60] + '...' if len(hook_text) > 60 else '— ' + hook_text if hook_text else ''}",
+        unsafe_allow_html=True,
+    )
+
+    # Image + details side by side
+    img_col, detail_col = st.columns([1, 2])
+
+    with img_col:
+        if storage_path:
+            url = _get_signed_url(storage_path)
+            if url:
+                st.image(url, width=200)
+            else:
+                st.caption("Image unavailable")
+        else:
+            st.caption("No image")
+
+    with detail_col:
+        # Congruence score
+        if congruence is not None:
+            cong_color = "#2ecc71" if congruence >= 0.6 else "#f39c12" if congruence >= 0.4 else "#e74c3c"
+            st.markdown(
+                f'Congruence: <span style="color:{cong_color};font-weight:bold">{congruence:.3f}</span>',
+                unsafe_allow_html=True,
+            )
+
+        # Defect scan
+        _render_defect_result(defect_result)
+
+        # Structured review scores
+        if scores:
+            with st.expander("Review Scores", expanded=False):
+                _render_rubric_scores(scores)
+
+    # Override controls
+    if status not in ("generation_failed", "review_failed") and ad_id:
+        override_key = f"override_{run_key}_{ad_id}"
+
+        ocol1, ocol2, ocol3, ocol4 = st.columns([1, 1, 1, 2])
+        with ocol1:
+            if st.button("Override Approve", key=f"{override_key}_approve", type="primary"):
+                _apply_override(ad_id, org_id, user_id, "override_approve", override_key)
+        with ocol2:
+            if st.button("Override Reject", key=f"{override_key}_reject"):
+                _apply_override(ad_id, org_id, user_id, "override_reject", override_key)
+        with ocol3:
+            if st.button("Confirm", key=f"{override_key}_confirm"):
+                _apply_override(ad_id, org_id, user_id, "confirm", override_key)
+        with ocol4:
+            st.text_input(
+                "Reason (optional)",
+                key=f"{override_key}_reason",
+                label_visibility="collapsed",
+                placeholder="Override reason...",
+            )
+
+
+def _apply_override(ad_id: str, org_id: str, user_id: str, action: str, override_key: str):
+    """Apply override via service and refresh."""
+    reason = st.session_state.get(f"{override_key}_reason", "").strip() or None
+    try:
+        svc = _get_override_service()
+        svc.create_override(
+            generated_ad_id=ad_id,
+            org_id=org_id,
+            user_id=user_id,
+            action=action,
+            reason=reason,
+        )
+        st.success(f"Override applied: {action}")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Override failed: {e}")
+
+
 def render_results():
-    """Render V2 job results view."""
+    """Render V2 job results view with Phase 4 review detail."""
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
     st.title("V2 Ad Creation Results")
 
     if st.button("Back to Create", key="v2_back_to_create"):
         st.session_state.v2_view = 'create'
         st.rerun()
+
+    org_id = get_current_organization_id() or ""
+    user_id = get_current_user_id() or ""
+
+    # Override rate summary
+    if org_id:
+        try:
+            svc = _get_override_service()
+            stats = svc.get_override_stats(org_id)
+            if stats["total"] > 0:
+                st.markdown(
+                    f"**Override Activity (30d):** {stats['total']} total — "
+                    f"{stats['override_approve']} approves, "
+                    f"{stats['override_reject']} rejects, "
+                    f"{stats['confirm']} confirms"
+                )
+        except Exception as e:
+            logger.warning(f"Could not load override stats: {e}")
 
     st.divider()
 
@@ -803,9 +1015,10 @@ def render_results():
 
             # Show run details
             runs = get_job_run_details(job['id'])
-            for run in runs:
+            for run_idx, run in enumerate(runs):
                 metadata = run.get('metadata') or {}
                 run_status = run.get('status', 'unknown')
+                run_key = f"job_{job['id']}_run_{run_idx}"
 
                 status_icon = {'running': 'Running...', 'completed': 'Completed', 'failed': 'Failed'}.get(
                     run_status, run_status
@@ -826,6 +1039,20 @@ def render_results():
 
                     if metadata.get('template_progress'):
                         st.caption(f"Progress: {metadata['template_progress']}")
+
+                # Phase 4: Show individual ad cards with review detail
+                ad_run_ids = run.get('ad_run_ids') or []
+                if ad_run_ids and run_status in ('completed', 'running'):
+                    with st.expander("Ad Details", expanded=False):
+                        try:
+                            svc = _get_override_service()
+                            for ad_run_id in ad_run_ids:
+                                ads = svc.get_ads_for_run(ad_run_id)
+                                for ad in ads:
+                                    _render_ad_card(ad, run_key, org_id, user_id)
+                                    st.divider()
+                        except Exception as e:
+                            st.warning(f"Could not load ad details: {e}")
 
                 # Show logs in collapsible
                 if run.get('logs'):

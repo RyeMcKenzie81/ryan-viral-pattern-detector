@@ -22,8 +22,10 @@ from .nodes.initialize import InitializeNode
 from .nodes.fetch_context import FetchContextNode
 from .nodes.analyze_template import AnalyzeTemplateNode
 from .nodes.select_content import SelectContentNode
+from .nodes.headline_congruence import HeadlineCongruenceNode
 from .nodes.select_images import SelectImagesNode
 from .nodes.generate_ads import GenerateAdsNode
+from .nodes.defect_scan import DefectScanNode
 from .nodes.review_ads import ReviewAdsNode
 from .nodes.retry_rejected import RetryRejectedNode
 from .nodes.compile_results import CompileResultsNode
@@ -40,8 +42,10 @@ ad_creation_v2_graph = Graph(
         FetchContextNode,
         AnalyzeTemplateNode,
         SelectContentNode,
+        HeadlineCongruenceNode,
         SelectImagesNode,
         GenerateAdsNode,
+        DefectScanNode,
         ReviewAdsNode,
         RetryRejectedNode,
         CompileResultsNode,

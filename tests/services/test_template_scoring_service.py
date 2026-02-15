@@ -1,8 +1,9 @@
 """
-Tests for template_scoring_service — Phase 3 scorer expansion.
+Tests for template_scoring_service — Phase 4 scorer expansion.
 
-Tests AwarenessAlignScorer, AudienceMatchScorer, weight presets,
-PHASE_3_SCORERS list, fallback context target_sex, and fetch_brand_min_asset_score.
+Tests AwarenessAlignScorer, AudienceMatchScorer, BeliefClarityScorer,
+weight presets, PHASE_3/4_SCORERS lists, fallback context, and
+fetch_brand_min_asset_score.
 """
 
 import pytest
@@ -12,11 +13,13 @@ from uuid import UUID
 from viraltracker.services.template_scoring_service import (
     AwarenessAlignScorer,
     AudienceMatchScorer,
+    BeliefClarityScorer,
     SelectionContext,
     ROLL_THE_DICE_WEIGHTS,
     SMART_SELECT_WEIGHTS,
     PHASE_1_SCORERS,
     PHASE_3_SCORERS,
+    PHASE_4_SCORERS,
     select_templates_with_fallback,
     fetch_brand_min_asset_score,
 )
@@ -146,30 +149,117 @@ class TestAudienceMatchScorer:
 
 
 # ============================================================================
+# BeliefClarityScorer
+# ============================================================================
+
+class TestBeliefClarityScorer:
+    """BeliefClarityScorer: no eval→0.5, D6=false→0.0, else D1-D5/15."""
+
+    def setup_method(self):
+        self.scorer = BeliefClarityScorer()
+
+    def test_no_eval_key_returns_neutral(self):
+        """Template without eval_total_score key → 0.5 (no data)."""
+        template = {"id": "t1"}
+        assert self.scorer.score(template, _ctx()) == 0.5
+
+    def test_eval_total_score_none_returns_neutral(self):
+        """LEFT JOIN returned NULL (no evaluation row) → 0.5."""
+        template = {
+            "id": "t1",
+            "eval_total_score": None,
+            "eval_d6_compliance_pass": None,
+        }
+        assert self.scorer.score(template, _ctx()) == 0.5
+
+    def test_d6_false_returns_zero(self):
+        """D6 compliance fail → 0.0 regardless of D1-D5 scores."""
+        template = {
+            "id": "t1",
+            "eval_total_score": 15,
+            "eval_d6_compliance_pass": False,
+        }
+        assert self.scorer.score(template, _ctx()) == 0.0
+
+    def test_perfect_scores_returns_one(self):
+        """D6=true, D1-D5 all 3 (total=15) → 1.0."""
+        template = {
+            "id": "t1",
+            "eval_total_score": 15,
+            "eval_d6_compliance_pass": True,
+        }
+        assert self.scorer.score(template, _ctx()) == 1.0
+
+    def test_mixed_scores(self):
+        """D6=true, D1-D5 mixed: (3+2+1+3+2)=11 → 11/15 ≈ 0.7333."""
+        template = {
+            "id": "t1",
+            "eval_total_score": 11,
+            "eval_d6_compliance_pass": True,
+        }
+        assert abs(self.scorer.score(template, _ctx()) - 11 / 15.0) < 1e-9
+
+    def test_all_zeros(self):
+        """D6=true, all D1-D5 are 0 → 0/15 = 0.0."""
+        template = {
+            "id": "t1",
+            "eval_total_score": 0,
+            "eval_d6_compliance_pass": True,
+        }
+        assert self.scorer.score(template, _ctx()) == 0.0
+
+    def test_partial_nulls_coalesced(self):
+        """D1-D5 with some NULLs: DB COALESCE(0) → total_score reflects that.
+
+        If D1=3, D2=None(0), D3=2, D4=None(0), D5=3 → total=8 → 8/15.
+        """
+        template = {
+            "id": "t1",
+            "eval_total_score": 8,
+            "eval_d6_compliance_pass": True,
+        }
+        assert abs(self.scorer.score(template, _ctx()) - 8 / 15.0) < 1e-9
+
+    def test_d6_none_treated_as_no_penalty(self):
+        """d6_compliance_pass=None (not False) → not penalized, scores normally."""
+        template = {
+            "id": "t1",
+            "eval_total_score": 12,
+            "eval_d6_compliance_pass": None,
+        }
+        assert abs(self.scorer.score(template, _ctx()) - 12 / 15.0) < 1e-9
+
+    def test_name_attribute(self):
+        assert self.scorer.name == "belief_clarity"
+
+
+# ============================================================================
 # Weight Presets
 # ============================================================================
 
 class TestWeightPresets:
-    """Weight presets have all 5 scorer keys."""
+    """Weight presets have all 6 scorer keys."""
 
     def test_roll_the_dice_has_all_keys(self):
         expected_keys = {"asset_match", "unused_bonus", "category_match",
-                         "awareness_align", "audience_match"}
+                         "awareness_align", "audience_match", "belief_clarity"}
         assert set(ROLL_THE_DICE_WEIGHTS.keys()) == expected_keys
 
     def test_smart_select_has_all_keys(self):
         expected_keys = {"asset_match", "unused_bonus", "category_match",
-                         "awareness_align", "audience_match"}
+                         "awareness_align", "audience_match", "belief_clarity"}
         assert set(SMART_SELECT_WEIGHTS.keys()) == expected_keys
 
     def test_roll_the_dice_new_scorers_neutral(self):
         """New scorers have weight 0 in roll_the_dice (unchanged behavior)."""
         assert ROLL_THE_DICE_WEIGHTS["awareness_align"] == 0.0
         assert ROLL_THE_DICE_WEIGHTS["audience_match"] == 0.0
+        assert ROLL_THE_DICE_WEIGHTS["belief_clarity"] == 0.0
 
     def test_smart_select_new_scorers_have_weight(self):
         assert SMART_SELECT_WEIGHTS["awareness_align"] > 0
         assert SMART_SELECT_WEIGHTS["audience_match"] > 0
+        assert SMART_SELECT_WEIGHTS["belief_clarity"] > 0
 
 
 # ============================================================================
@@ -192,6 +282,52 @@ class TestPhase3Scorers:
 
     def test_phase1_unchanged(self):
         assert len(PHASE_1_SCORERS) == 3
+
+
+class TestPhase4Scorers:
+    """PHASE_4_SCORERS list has exactly 6 scorers (Phase 3 + BeliefClarity)."""
+
+    def test_phase4_has_6_scorers(self):
+        assert len(PHASE_4_SCORERS) == 6
+
+    def test_phase4_scorer_names(self):
+        names = [s.name for s in PHASE_4_SCORERS]
+        assert "asset_match" in names
+        assert "unused_bonus" in names
+        assert "category_match" in names
+        assert "awareness_align" in names
+        assert "audience_match" in names
+        assert "belief_clarity" in names
+
+    def test_phase4_is_default(self):
+        """select_templates_with_fallback uses PHASE_4_SCORERS by default."""
+        # Verify by checking the function uses 6 scorers when none provided
+        # We do this by calling with a single candidate and checking score keys
+        candidates = [
+            {
+                "id": "t1",
+                "category": "testimonial",
+                "is_unused": True,
+                "has_detection": False,
+            },
+        ]
+        context = _ctx()
+        result = select_templates_with_fallback(
+            candidates=candidates,
+            context=context,
+            weights=SMART_SELECT_WEIGHTS,
+            count=1,
+        )
+        assert not result.empty
+        # Should have all 6 scorer names + composite
+        score_keys = set(result.scores[0].keys()) - {"composite"}
+        assert "belief_clarity" in score_keys
+        assert len(score_keys) == 6
+
+    def test_phase3_backward_compat(self):
+        """Phase 3 scorer list is still 5 (no belief_clarity)."""
+        names = [s.name for s in PHASE_3_SCORERS]
+        assert "belief_clarity" not in names
 
 
 # ============================================================================

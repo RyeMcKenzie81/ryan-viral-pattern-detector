@@ -11,21 +11,11 @@ from uuid import UUID
 from pydantic_graph import BaseNode, GraphRunContext
 
 from ..state import AdCreationPipelineState
+from ..utils import stringify_uuids
 from ....agent.dependencies import AgentDependencies
 from ...metadata import NodeMetadata
 
 logger = logging.getLogger(__name__)
-
-
-def _stringify_uuids(obj: Any) -> Any:
-    """Recursively convert UUID values to strings in dicts/lists."""
-    if isinstance(obj, UUID):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {k: _stringify_uuids(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_stringify_uuids(v) for v in obj]
-    return obj
 
 
 @dataclass
@@ -227,7 +217,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     ad_run_id=UUID(ctx.state.ad_run_id),
                     prompt_index=next_index,
                     prompt_text=prompt.get('full_prompt', ''),
-                    prompt_spec=_stringify_uuids(prompt.get('json_prompt', {})),
+                    prompt_spec=stringify_uuids(prompt.get('json_prompt', {})),
                     hook_id=hook_id,
                     hook_text=selected_hook.get('adapted_text', ''),
                     storage_path=storage_path,

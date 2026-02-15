@@ -204,6 +204,41 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                     except Exception as e:
                         logger.warning(f"Failed to fetch brand assets (non-fatal): {e}")
 
+            # Phase 4: Fetch LP hero data for congruence (non-fatal)
+            if ctx.state.offer_variant_id and brand_id:
+                lp_url = product_dict.get('offer_landing_page_url')
+                if lp_url:
+                    try:
+                        from viraltracker.core.database import get_supabase_client as _get_db_lp
+                        _db_lp = _get_db_lp()
+
+                        # Normalize URL: lowercase, strip trailing slash, strip query params
+                        normalized_url = lp_url.lower().rstrip("/").split("?")[0]
+
+                        # Try brand_id + normalized URL first
+                        lp_result = _db_lp.table("brand_landing_pages").select(
+                            "hero_headline, hero_subheadline, key_claims, url"
+                        ).eq("brand_id", brand_id).ilike(
+                            "url", f"%{normalized_url.split('://')[-1]}%"
+                        ).limit(1).execute()
+
+                        if lp_result.data:
+                            ctx.state.lp_hero_data = lp_result.data[0]
+                            logger.info(f"Loaded LP hero data for congruence: {ctx.state.lp_hero_data.get('hero_headline', 'N/A')[:50]}")
+                        else:
+                            # Fallback: try exact URL match
+                            lp_result2 = _db_lp.table("brand_landing_pages").select(
+                                "hero_headline, hero_subheadline, key_claims, url"
+                            ).eq("brand_id", brand_id).eq("url", lp_url).limit(1).execute()
+
+                            if lp_result2.data:
+                                ctx.state.lp_hero_data = lp_result2.data[0]
+                                logger.info(f"Loaded LP hero data (exact URL match)")
+                            else:
+                                logger.info(f"No LP hero data found for URL: {lp_url[:80]}")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch LP hero data (non-fatal): {e}")
+
             # Build combined instructions
             combined_instructions = ""
             if ctx.state.additional_instructions:

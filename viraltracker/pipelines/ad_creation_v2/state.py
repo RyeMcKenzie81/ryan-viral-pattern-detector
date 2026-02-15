@@ -73,6 +73,9 @@ class AdCreationPipelineState:
     asset_match_result: Optional[Dict[str, Any]] = None     # informational match against all images
     brand_asset_info: Optional[Dict[str, Any]] = None       # logo/badge detection from brand_assets
 
+    # FetchContextNode (Phase 4 — congruence)
+    lp_hero_data: Optional[Dict[str, Any]] = None           # LP hero headline/subheadline from brand_landing_pages
+
     # AnalyzeTemplateNode
     ad_analysis: Optional[Dict[str, Any]] = None
 
@@ -80,11 +83,18 @@ class AdCreationPipelineState:
     template_angle: Optional[Dict[str, Any]] = None  # recreate_template / belief_first w/ match
     selected_hooks: List[Dict[str, Any]] = field(default_factory=list)
 
+    # HeadlineCongruenceNode (Phase 4)
+    congruence_results: List[Dict[str, Any]] = field(default_factory=list)
+
     # SelectImagesNode
     selected_images: List[Dict[str, Any]] = field(default_factory=list)
 
     # GenerateAdsNode
     generated_ads: List[Dict[str, Any]] = field(default_factory=list)
+
+    # DefectScanNode (Phase 4)
+    defect_passed_ads: List[Dict[str, Any]] = field(default_factory=list)
+    defect_scan_results: List[Dict[str, Any]] = field(default_factory=list)
 
     # ReviewAdsNode
     reviewed_ads: List[Dict[str, Any]] = field(default_factory=list)

@@ -47,8 +47,8 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
     async def run(
         self,
         ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies]
-    ) -> "SelectImagesNode":
-        from .select_images import SelectImagesNode
+    ) -> "HeadlineCongruenceNode":
+        from .headline_congruence import HeadlineCongruenceNode
         from ..services.content_service import AdContentService
         from ..services.analysis_service import AdAnalysisService
 
@@ -176,7 +176,7 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
             ctx.state.mark_step_complete("select_content")
             logger.info(f"Content selected: {len(ctx.state.selected_hooks)} variations")
 
-            return SelectImagesNode()
+            return HeadlineCongruenceNode()
 
         except Exception as e:
             ctx.state.error = str(e)

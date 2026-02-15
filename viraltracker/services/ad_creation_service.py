@@ -577,7 +577,11 @@ class AdCreationService:
         # V2: Multi-size variant identity
         canvas_size: Optional[str] = None,
         # V2 Phase 2: Multi-color variant identity
-        color_mode: Optional[str] = None
+        color_mode: Optional[str] = None,
+        # V2 Phase 4: Review overhaul columns
+        defect_scan_result: Optional[Dict] = None,
+        review_check_scores: Optional[Dict] = None,
+        congruence_score: Optional[float] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -668,6 +672,14 @@ class AdCreationService:
             data["canvas_size"] = canvas_size
         if color_mode is not None:
             data["color_mode"] = color_mode
+
+        # Phase 4: Review overhaul columns
+        if defect_scan_result is not None:
+            data["defect_scan_result"] = defect_scan_result
+        if review_check_scores is not None:
+            data["review_check_scores"] = review_check_scores
+        if congruence_score is not None:
+            data["congruence_score"] = congruence_score
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

@@ -1,7 +1,11 @@
 """
-ReviewAdsNode - Dual AI review (Claude + Gemini) with OR logic.
+ReviewAdsNode — Phase 4 staged review (Stage 2-3) with structured rubric scores.
+
+Phase 4: Uses review_ad_staged() for 15-check rubric scoring via Claude Vision,
+with conditional Gemini Vision Stage 3 for borderline ads.
 """
 
+import base64
 import logging
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -10,47 +14,36 @@ from uuid import UUID
 from pydantic_graph import BaseNode, GraphRunContext
 
 from ..state import AdCreationPipelineState
+from ..utils import stringify_uuids
 from ....agent.dependencies import AgentDependencies
 from ...metadata import NodeMetadata
 
 logger = logging.getLogger(__name__)
 
 
-def _stringify_uuids(obj: Any) -> Any:
-    """Recursively convert UUID values to strings in dicts/lists."""
-    if isinstance(obj, UUID):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {k: _stringify_uuids(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_stringify_uuids(v) for v in obj]
-    return obj
-
-
 @dataclass
 class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
     """
-    Step 7: Dual AI review of all generated ads.
+    Step 7: Phase 4 staged review of generated ads.
 
-    For each successfully generated ad:
-    1. Claude Vision review
-    2. Gemini Vision review
-    3. Apply OR logic (either approving = approved)
-    4. Save review results to database
+    For each successfully generated ad (from defect_passed_ads):
+    1. Stage 2: Claude Vision 15-check rubric review
+    2. Stage 3: Conditional Gemini Vision (if borderline)
+    3. Save structured review scores to database
 
-    Reads: generated_ads, product_dict, ad_analysis, content_source, ad_run_id
+    Reads: defect_passed_ads (or generated_ads fallback), product_dict,
+           ad_analysis, content_source, ad_run_id, congruence_results
     Writes: reviewed_ads, ads_reviewed
-    Services: ReviewService.review_ad_claude(), .review_ad_gemini(),
-              .apply_dual_review_logic(), AdCreationService.save_generated_ad()
+    Services: ReviewService.review_ad_staged(), AdCreationService.save_generated_ad()
     """
 
     metadata: ClassVar[NodeMetadata] = NodeMetadata(
-        inputs=["generated_ads", "product_dict", "ad_analysis", "content_source", "ad_run_id"],
+        inputs=["defect_passed_ads", "product_dict", "ad_analysis", "content_source",
+                "ad_run_id", "congruence_results"],
         outputs=["reviewed_ads", "ads_reviewed"],
-        services=["review_service.review_ad_claude", "review_service.review_ad_gemini",
-                   "review_service.apply_dual_review_logic", "ad_creation.save_generated_ad"],
+        services=["review_service.review_ad_staged", "ad_creation.save_generated_ad"],
         llm="Claude Vision + Gemini Vision",
-        llm_purpose="Quality review of generated ads",
+        llm_purpose="15-check rubric review with conditional Stage 3",
     )
 
     async def run(
@@ -58,15 +51,31 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
         ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies]
     ) -> "RetryRejectedNode":
         from .retry_rejected import RetryRejectedNode
-        from ..services.review_service import AdReviewService
+        from ..services.review_service import AdReviewService, load_quality_config
 
-        logger.info(f"Step 7: Reviewing {len(ctx.state.generated_ads)} ads with dual AI review...")
+        # Phase 4: Review only defect-passed ads (defect-rejected already in reviewed_ads)
+        ads_to_review = ctx.state.defect_passed_ads if ctx.state.defect_passed_ads else ctx.state.generated_ads
+        logger.info(f"Step 7: Reviewing {len(ads_to_review)} ads with staged review...")
         ctx.state.current_step = "review_ads"
 
         review_service = AdReviewService()
+
+        # Load quality config from DB (org-specific or global fallback)
+        quality_config = None
+        try:
+            quality_config = await load_quality_config()
+        except Exception as e:
+            logger.warning(f"Could not load quality config, using defaults: {e}")
+
+        # Build congruence lookup from state
+        congruence_lookup = {}
+        for cr in (ctx.state.congruence_results or []):
+            headline = cr.get("headline", "")
+            congruence_lookup[headline] = cr.get("overall_score")
+
         reviewed_ads = []
 
-        for ad_data in ctx.state.generated_ads:
+        for ad_data in ads_to_review:
             prompt_index = ad_data["prompt_index"]
 
             # Skip failed generations
@@ -75,9 +84,7 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                     "prompt_index": prompt_index,
                     "prompt": None,
                     "storage_path": None,
-                    "claude_review": None,
-                    "gemini_review": None,
-                    "reviewers_agree": None,
+                    "review_check_scores": None,
                     "final_status": "generation_failed",
                     "error": ad_data.get("error")
                 })
@@ -87,42 +94,39 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
             hook = ad_data["hook"]
             logger.info(f"  Reviewing variation {prompt_index}...")
 
-            # Claude review
-            claude_review = None
+            # Get image data for staged review
+            image_data = None
             try:
-                claude_review = await review_service.review_ad_claude(
-                    storage_path=storage_path,
-                    product_name=ctx.state.product_dict.get('name'),
-                    hook_text=hook.get('adapted_text', ''),
-                    ad_analysis=ctx.state.ad_analysis,
-                    ad_creation_service=ctx.deps.ad_creation,
-                )
+                image_base64 = await ctx.deps.ad_creation.get_image_as_base64(storage_path)
+                image_data = base64.b64decode(image_base64)
             except Exception as e:
-                logger.warning(f"  Claude review failed for variation {prompt_index}: {e}")
-                claude_review = review_service.make_failed_review("claude", str(e))
+                logger.warning(f"  Could not load image for review, variation {prompt_index}: {e}")
 
-            # Gemini review
-            gemini_review = None
-            try:
-                gemini_review = await review_service.review_ad_gemini(
-                    storage_path=storage_path,
-                    product_name=ctx.state.product_dict.get('name'),
-                    hook_text=hook.get('adapted_text', ''),
-                    ad_analysis=ctx.state.ad_analysis,
-                    ad_creation_service=ctx.deps.ad_creation,
-                    gemini_service=ctx.deps.gemini,
-                )
-            except Exception as e:
-                logger.warning(f"  Gemini review failed for variation {prompt_index}: {e}")
-                gemini_review = review_service.make_failed_review("gemini", str(e))
+            # Staged review (Stage 2 Claude + conditional Stage 3 Gemini)
+            review_result = None
+            final_status = "review_failed"
+            review_check_scores = None
 
-            # Apply dual review OR logic
-            final_status, reviewers_agree = review_service.apply_dual_review_logic(
-                claude_review, gemini_review
-            )
+            if image_data:
+                try:
+                    review_result = await review_service.review_ad_staged(
+                        image_data=image_data,
+                        product_name=ctx.state.product_dict.get('name', ''),
+                        hook_text=hook.get('adapted_text', ''),
+                        ad_analysis=ctx.state.ad_analysis or {},
+                        config=quality_config,
+                    )
+                    final_status = review_result.get("final_status", "review_failed")
+                    review_check_scores = review_result.get("review_check_scores")
+                except Exception as e:
+                    logger.warning(f"  Staged review failed for variation {prompt_index}: {e}")
+                    final_status = "review_failed"
 
-            logger.info(f"  Reviews: Claude={claude_review.get('status')}, "
-                        f"Gemini={gemini_review.get('status')}, Final={final_status}")
+            logger.info(f"  Variation {prompt_index}: {final_status}")
+
+            # Look up congruence score from state
+            hook_text = hook.get('adapted_text', '') or hook.get('hook_text', '')
+            congruence_score = congruence_lookup.get(hook_text)
 
             # Determine hook_id for database
             if ctx.state.content_source == "hooks":
@@ -130,7 +134,7 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
             else:
                 hook_id = None
 
-            # Save to database with reviews
+            # Save to database with structured review data
             generated_ad = ad_data.get("generated_ad", {}) or {}
             prompt = ad_data.get("prompt", {}) or {}
             ad_uuid_str = ad_data.get("ad_uuid")
@@ -140,12 +144,12 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 ad_run_id=UUID(ctx.state.ad_run_id),
                 prompt_index=prompt_index,
                 prompt_text=prompt.get('full_prompt', ''),
-                prompt_spec=_stringify_uuids(prompt.get('json_prompt', {})),
+                prompt_spec=stringify_uuids(prompt.get('json_prompt', {})),
                 hook_id=hook_id,
                 hook_text=hook.get('adapted_text', ''),
                 storage_path=storage_path,
-                claude_review=claude_review,
-                gemini_review=gemini_review,
+                claude_review=review_result,
+                gemini_review=None,
                 final_status=final_status,
                 model_requested=generated_ad.get('model_requested'),
                 model_used=generated_ad.get('model_used'),
@@ -154,24 +158,29 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 ad_id=ad_uuid,
                 canvas_size=ad_data.get("canvas_size"),
                 color_mode=ad_data.get("color_mode"),
+                # Phase 4: structured scores, defect result, congruence
+                defect_scan_result=ad_data.get("defect_scan_result"),
+                review_check_scores=review_check_scores,
+                congruence_score=congruence_score,
             )
 
             reviewed_ads.append({
                 "prompt_index": prompt_index,
                 "prompt": prompt,
                 "storage_path": storage_path,
-                "claude_review": claude_review,
-                "gemini_review": gemini_review,
-                "reviewers_agree": reviewers_agree,
+                "review_check_scores": review_check_scores,
                 "final_status": final_status,
                 "ad_uuid": ad_uuid_str,
                 "canvas_size": ad_data.get("canvas_size"),
                 "color_mode": ad_data.get("color_mode"),
+                "weighted_score": review_result.get("weighted_score") if review_result else None,
+                "congruence_score": congruence_score,
             })
 
             ctx.state.ads_reviewed += 1
 
-        ctx.state.reviewed_ads = reviewed_ads
+        # Phase 4: Append to reviewed_ads (defect-rejected ads already there from DefectScanNode)
+        ctx.state.reviewed_ads.extend(reviewed_ads)
         ctx.state.mark_step_complete("review_ads")
         logger.info(f"Review complete: {ctx.state.ads_reviewed} ads reviewed")
 

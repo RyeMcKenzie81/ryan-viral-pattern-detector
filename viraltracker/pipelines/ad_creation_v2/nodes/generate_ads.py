@@ -60,8 +60,8 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
     async def run(
         self,
         ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies]
-    ) -> "ReviewAdsNode":
-        from .review_ads import ReviewAdsNode
+    ) -> "DefectScanNode":
+        from .defect_scan import DefectScanNode
         from ..services.generation_service import AdGenerationService
 
         total_variants = (len(ctx.state.selected_hooks)
@@ -172,4 +172,4 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
         ctx.state.mark_step_complete("generate_ads")
         logger.info(f"Generation complete: {ctx.state.ads_generated}/{total_variants} succeeded")
 
-        return ReviewAdsNode()
+        return DefectScanNode()

@@ -2,8 +2,8 @@
 Template Scoring Service — Pluggable scoring pipeline for V2 template selection.
 
 Provides weighted-random template selection using pluggable scorers.
-Phase 3 includes: AssetMatchScorer, UnusedBonusScorer, CategoryMatchScorer,
-AwarenessAlignScorer, AudienceMatchScorer.
+Phase 4 includes: AssetMatchScorer, UnusedBonusScorer, CategoryMatchScorer,
+AwarenessAlignScorer, AudienceMatchScorer, BeliefClarityScorer.
 
 Usage:
     from viraltracker.services.template_scoring_service import (
@@ -55,6 +55,7 @@ ROLL_THE_DICE_WEIGHTS: Dict[str, float] = {
     "category_match": 0.5,
     "awareness_align": 0.0,
     "audience_match": 0.0,
+    "belief_clarity": 0.0,
 }
 
 SMART_SELECT_WEIGHTS: Dict[str, float] = {
@@ -63,6 +64,7 @@ SMART_SELECT_WEIGHTS: Dict[str, float] = {
     "category_match": 0.6,
     "awareness_align": 0.5,
     "audience_match": 0.4,
+    "belief_clarity": 0.6,
 }
 
 
@@ -241,6 +243,40 @@ class AudienceMatchScorer(TemplateScorer):
         return 0.2
 
 
+class BeliefClarityScorer(TemplateScorer):
+    """Score based on template evaluation belief clarity dimensions (D1-D5, D6).
+
+    Reads prefetched evaluation data from the candidate row dict (merged by
+    fetch_template_candidates via LEFT JOIN on template_evaluations).
+
+    Logic:
+        - No evaluation row → 0.5 (neutral, no data)
+        - d6_compliance_pass = false → 0.0 (non-compliant penalty)
+        - Otherwise → sum(D1..D5) / 15.0 (each D is 0-3, max total 15)
+          NULLs treated as 0 (matches DB COALESCE behavior).
+    """
+    name = "belief_clarity"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        # Check if evaluation data was prefetched
+        if "eval_total_score" not in template:
+            return 0.5
+
+        eval_total_score = template.get("eval_total_score")
+
+        # No evaluation exists (LEFT JOIN returned NULL)
+        if eval_total_score is None:
+            return 0.5
+
+        # D6 compliance gate
+        d6_pass = template.get("eval_d6_compliance_pass")
+        if d6_pass is False:
+            return 0.0
+
+        # Normalize D1-D5 total (0-15) to [0, 1]
+        return eval_total_score / 15.0
+
+
 # Phase 1 scorer instances (kept for backward compat)
 PHASE_1_SCORERS: List[TemplateScorer] = [
     AssetMatchScorer(),
@@ -248,13 +284,23 @@ PHASE_1_SCORERS: List[TemplateScorer] = [
     CategoryMatchScorer(),
 ]
 
-# Phase 3 scorer instances (default for select_templates_with_fallback)
+# Phase 3 scorer instances (kept for backward compat)
 PHASE_3_SCORERS: List[TemplateScorer] = [
     AssetMatchScorer(),
     UnusedBonusScorer(),
     CategoryMatchScorer(),
     AwarenessAlignScorer(),
     AudienceMatchScorer(),
+]
+
+# Phase 4 scorer instances (default for select_templates_with_fallback)
+PHASE_4_SCORERS: List[TemplateScorer] = [
+    AssetMatchScorer(),
+    UnusedBonusScorer(),
+    CategoryMatchScorer(),
+    AwarenessAlignScorer(),
+    AudienceMatchScorer(),
+    BeliefClarityScorer(),
 ]
 
 
@@ -410,22 +456,26 @@ async def fetch_template_candidates(
     product_id: str,
     category: Optional[str] = None,
 ) -> List[dict]:
-    """Fetch template candidates with usage data merged in Python.
+    """Fetch template candidates with usage and evaluation data merged in Python.
 
-    Runs two queries:
+    Runs three queries:
     1. scraped_templates WHERE is_active = TRUE (+ optional category filter)
     2. product_template_usage WHERE product_id = :product_id
+    3. template_evaluations WHERE template_source = 'scraped_templates'
 
     Merges in Python, adding:
     - is_unused: bool (template_id not found in usage)
     - has_detection: bool (element_detection_version IS NOT NULL)
+    - eval_total_score: int or None (D1-D5 sum from evaluation)
+    - eval_d6_compliance_pass: bool or None (D6 compliance from evaluation)
+    - eval_eligible: bool or None (Phase 1-2 eligibility from evaluation)
 
     Args:
         product_id: Product UUID string.
         category: Optional category filter. None = all categories.
 
     Returns:
-        List of template row dicts with is_unused and has_detection added.
+        List of template row dicts with usage and evaluation data merged.
     """
     from viraltracker.core.database import get_supabase_client
 
@@ -452,10 +502,35 @@ async def fetch_template_candidates(
         r["template_id"] for r in (usage_result.data or []) if r.get("template_id")
     }
 
-    # Merge: add is_unused and has_detection to each template
+    # Query 3: Template evaluations (LEFT JOIN equivalent via separate query)
+    template_ids = [t["id"] for t in templates]
+    eval_by_template: Dict[str, dict] = {}
+    if template_ids:
+        eval_result = db.table("template_evaluations").select(
+            "template_id, total_score, d6_compliance_pass, eligible"
+        ).in_("template_id", template_ids).eq(
+            "template_source", "scraped_templates"
+        ).execute()
+
+        for row in (eval_result.data or []):
+            tid = row.get("template_id")
+            if tid:
+                eval_by_template[tid] = row
+
+    # Merge: add is_unused, has_detection, and evaluation data to each template
     for template in templates:
         template["is_unused"] = template["id"] not in used_template_ids
         template["has_detection"] = template.get("element_detection_version") is not None
+
+        eval_row = eval_by_template.get(template["id"])
+        if eval_row:
+            template["eval_total_score"] = eval_row.get("total_score")
+            template["eval_d6_compliance_pass"] = eval_row.get("d6_compliance_pass")
+            template["eval_eligible"] = eval_row.get("eligible")
+        else:
+            template["eval_total_score"] = None
+            template["eval_d6_compliance_pass"] = None
+            template["eval_eligible"] = None
 
     return templates
 
@@ -558,13 +633,13 @@ def select_templates_with_fallback(
         weights: Scorer weight dict.
         count: Number of templates to select.
         min_asset_score: Asset gate threshold.
-        scorers: Scorer instances (defaults to PHASE_1_SCORERS).
+        scorers: Scorer instances (defaults to PHASE_4_SCORERS).
 
     Returns:
         SelectionResult — check result.empty to see if selection succeeded.
     """
     if scorers is None:
-        scorers = PHASE_3_SCORERS
+        scorers = PHASE_4_SCORERS
 
     # Tier 1: Normal selection
     result = select_templates(
