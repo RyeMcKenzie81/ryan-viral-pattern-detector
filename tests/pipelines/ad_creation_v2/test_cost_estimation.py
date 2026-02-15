@@ -124,22 +124,38 @@ class TestBackendCap:
             )
 
     def test_orchestrator_allows_50(self):
-        """run_ad_creation_v2 doesn't raise for exactly 50."""
-        # We just verify the validation passes (will fail later for other reasons)
+        """run_ad_creation_v2 validation accepts exactly 50 (boundary value).
+
+        Calls the real function with num_variations=50 to verify it passes
+        validation. Patches the graph.run to avoid executing the full pipeline,
+        and passes mock deps to avoid AgentDependencies.create() side effects.
+
+        The orchestrator's except clause wraps all exceptions as
+        Exception("Ad V2 workflow failed: ..."), so we check the wrapper
+        message contains our sentinel string (proving graph.run was reached,
+        meaning validation passed).
+        """
+        from unittest.mock import MagicMock, patch, AsyncMock
         from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
         import asyncio
 
-        # 50 should not raise ValueError for num_variations
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                run_ad_creation_v2(
-                    product_id="test",
-                    reference_ad_base64="dGVzdA==",
-                    num_variations=50,
+        _SENTINEL = "__graph_run_reached__"
+        mock_deps = MagicMock()
+
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.orchestrator.ad_creation_v2_graph.run",
+            new_callable=AsyncMock,
+            side_effect=Exception(_SENTINEL),
+        ):
+            # Should NOT raise ValueError (validation passes for 50).
+            # Will raise the wrapped Exception from graph.run — that's fine,
+            # it proves we got past validation.
+            with pytest.raises(Exception, match=_SENTINEL):
+                asyncio.get_event_loop().run_until_complete(
+                    run_ad_creation_v2(
+                        product_id="test",
+                        reference_ad_base64="dGVzdA==",
+                        num_variations=50,
+                        deps=mock_deps,
+                    )
                 )
-            )
-        except ValueError as e:
-            if "num_variations" in str(e):
-                pytest.fail(f"50 should be allowed but got: {e}")
-        except Exception:
-            pass  # Expected — will fail at pipeline run, not validation

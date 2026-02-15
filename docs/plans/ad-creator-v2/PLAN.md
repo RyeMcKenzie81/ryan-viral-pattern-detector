@@ -1,6 +1,6 @@
 # Ad Creator V2 — Plan
 
-> **Status**: IN PROGRESS (v16 — Phase 5 complete, Phase 6 next)
+> **Status**: IN PROGRESS (v17 — Phase 5 code complete, gate pending; Phase 4 gate partially unvalidated)
 > **Created**: 2026-02-12
 > **Updated**: 2026-02-14
 > **Replaces**: Nothing — V2 runs alongside V1 until proven better
@@ -1281,7 +1281,7 @@ After the final chunk of a phase:
   4. **Node-level test gap** — FetchContextNode and SelectImagesNode Phase 3 additions (template elements fetch, brand assets fetch, asset_tags enrichment) lack dedicated unit tests. Business logic in `_build_asset_context()` IS tested (15 cases). Add node tests when refactoring these nodes.
   5. **`brand_assets` table schema assumption** — FetchContextNode assumes `brand_assets.asset_type` contains "logo"/"badge" substrings. If naming convention changes, logo/badge detection silently fails (non-fatal, defaults to False). Low risk — table is stable.
 
-### Phase 4: Congruence + Review Overhaul ✅
+### Phase 4: Congruence + Review Overhaul (code ✅, gate partially unvalidated)
 - [x] Build CongruenceService (headline ↔ offer variant ↔ hero section)
 - [x] Add HeadlineCongruenceNode to pipeline
 - [x] Build 3-stage review pipeline (defect scan → full review → conditional 2nd opinion)
@@ -1290,7 +1290,7 @@ After the final chunk of a phase:
 - [x] Create `ad_review_overrides` table
 - [x] Create `quality_scoring_config` table with initial static thresholds
 - [x] Add `BeliefClarityScorer` to scoring pipeline (reads D1-D5 from `template_evaluations`, D6=false → 0.0, no eval → 0.5)
-- [x] **Success gate**: Defect scan catches >= 30% of rejects (saves review cost). Override rate tracked. `defect_scan_result` present for all successfully generated V2 ads. `review_check_scores` present for all Stage-2-reviewed ads (defect-passed).
+- [ ] **Success gate**: Defect scan catches >= 30% of rejects (saves review cost). Override rate tracked. `defect_scan_result` present for all successfully generated V2 ads. `review_check_scores` present for all Stage-2-reviewed ads (defect-passed). **NOTE:** Defect catch rate (>= 30%) requires 50+ production ads to validate — see risk #3 below. Code is in place but metric is not yet measurable.
 - **Known risks (from post-plan review)**:
   1. **Browser testing deferred** — Override Approve/Reject/Confirm buttons, structured review scores, defect scan display, and congruence score display all untested in browser. Requires Railway staging deployment.
   2. **Regenerate flow lacks Phase 4 checks** — `ad_creation_service.py` regenerate doesn't pass congruence/defect/review data. Regenerated ads skip Phase 4 pipeline. Separate overhaul needed.
@@ -1298,20 +1298,23 @@ After the final chunk of a phase:
   4. **CongruenceService hero_alignment null** — Brands without `brand_landing_pages` data get null hero_alignment in congruence results. Non-fatal (overall score still computed from other dimensions) but reduces congruence signal strength.
   5. **RetryRejectedNode still used V1 dual review** — Fixed in Phase 5 (P5-C1 rewrite to staged review).
 
-### Phase 5: Polish + Promotion ✅
+### Phase 5: Polish + Promotion (code ✅, GATE_PENDING)
 - [x] Scoring pipeline already active from Phase 1 — validate "Roll the dice" and "Smart select" presets produce good template diversity across >= 5 brands (25 diversity invariant tests + analysis script)
 - [x] Add prompt versioning to generated_ads + ad_runs.generation_config (migration + service + pipeline wiring)
 - [x] Build results dashboard with grouping/filtering (summary stats, status/date filters, template grouping, bulk actions, pagination)
 - [x] Add batch size guardrails and cost estimation (CostEstimationService, tiered guardrails, hard cap at 50)
 - [x] RetryRejectedNode refactored to use staged review (replaced V1 dual review)
 - [x] QA full end-to-end flow (276 tests passing, syntax verified, post-plan review PASS)
-- [x] **Success gate**: Full V2 pipeline stable over >= 2 weeks of daily use. V2 approval rate >= V1 (N >= 100 ads per pipeline, same brand/template distribution). **Promotion to primary** requires additionally: V2 ads deployed to Meta show non-inferior CTR vs V1 ads (one-sided 90% CI lower bound >= 0.9× V1 mean CTR, measured over >= 50 V2 ads with >= 7 days matured data each). For brands without Meta connection, promotion requires V2 approval rate >= V1 only.
+- [ ] **Success gate**: Full V2 pipeline stable over >= 2 weeks of daily use. V2 approval rate >= V1 (N >= 100 ads per pipeline, same brand/template distribution). **Promotion to primary** requires additionally: V2 ads deployed to Meta show non-inferior CTR vs V1 ads (one-sided 90% CI lower bound >= 0.9× V1 mean CTR, measured over >= 50 V2 ads with >= 7 days matured data each). For brands without Meta connection, promotion requires V2 approval rate >= V1 only. **NOTE:** All code and tests complete. Gate is PENDING because stability, approval-rate comparison, and CTR non-inferiority require production deployment and time-based measurement. See CHECKPOINT_010.md for detailed gate evidence table.
 - **Known risks (from post-plan review)**:
   1. **No automated Streamlit UI tests** — Dashboard filter/pagination/bulk-action logic only testable via manual browser verification. All service-layer logic is tested (30 override service tests), but UI rendering paths are uncovered.
   2. **`ad_runs!inner` join dependency** — `get_ads_filtered()` and `get_summary_stats()` use inner join on ad_runs. If an ad_run row lacks `organization_id`, its ads are silently excluded from results. Low risk (org_id is always set at run creation) but worth noting.
   3. **No golden eval fixtures for retry node** — `test_retry_rejected.py` mocks all external calls (LLM, storage, DB). No integration test with real LLM responses to validate retry quality.
   4. **Unused `Any` import** — `retry_rejected.py` imports `Any` from typing but doesn't use it. Cosmetic only.
   5. **`print()` in analysis script** — `scripts/validate_scoring_presets.py` uses `print()` for console output instead of `logger.info()`. Acceptable for CLI script but inconsistent with project patterns.
+- **Bugs fixed (post-checkpoint)**:
+  1. **`fetch_template_candidates` PostgREST 400** (FIXED) — `.in_("template_id", template_ids)` on `template_evaluations` passed all active template IDs as a URL query parameter. With 200+ templates the URL exceeded PostgREST's ~8KB limit, causing a raw `400 Bad Request`. Fix: removed `.in_()` filter; query now fetches all `template_evaluations WHERE template_source = 'scraped_templates'` and Python-side merge already discards non-matching rows.
+  2. **`test_orchestrator_allows_50` env-dependent failure** (FIXED) — Test called `run_ad_creation_v2()` which triggered `AgentDependencies` import-time side effects (Apify client init) in environments without credentials. Fix: patches `ad_creation_v2_graph.run` with sentinel exception, passes mock deps, tests real validation path without external service init.
 
 ### Phase 6: Creative Genome (Learning Loop)
 - [ ] Add `element_tags` JSONB to generated_ads + populate during generation

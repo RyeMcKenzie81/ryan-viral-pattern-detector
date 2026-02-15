@@ -502,13 +502,15 @@ async def fetch_template_candidates(
         r["template_id"] for r in (usage_result.data or []) if r.get("template_id")
     }
 
-    # Query 3: Template evaluations (LEFT JOIN equivalent via separate query)
-    template_ids = [t["id"] for t in templates]
+    # Query 3: Template evaluations for all scraped templates.
+    # Filter by template_source only (not .in_(template_ids)) to avoid
+    # exceeding PostgREST URL length limits with large ID lists.
+    # Python-side merge at lines below already handles non-matching rows.
     eval_by_template: Dict[str, dict] = {}
-    if template_ids:
+    if templates:
         eval_result = db.table("template_evaluations").select(
             "template_id, total_score, d6_compliance_pass, eligible"
-        ).in_("template_id", template_ids).eq(
+        ).eq(
             "template_source", "scraped_templates"
         ).execute()
 
