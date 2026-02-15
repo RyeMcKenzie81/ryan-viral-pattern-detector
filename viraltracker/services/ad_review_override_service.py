@@ -174,10 +174,12 @@ class AdReviewOverrideService:
     ) -> List[Dict[str, Any]]:
         """Fetch generated ads with filters for the results dashboard.
 
-        Joins generated_ads with ad_runs to get template_id and product context.
+        Joins generated_ads with ad_runs to get product context and template ref.
+        Org scoping is done via product_id (UI pre-filters products by org).
+        ad_runs does NOT have organization_id or pipeline_version columns.
 
         Args:
-            org_id: Organization UUID.
+            org_id: Organization UUID (used for product scoping at UI level).
             status_filter: List of final_status values to include.
             date_from: ISO datetime string for start of range.
             date_to: ISO datetime string for end of range.
@@ -199,10 +201,8 @@ class AdReviewOverrideService:
                 "review_check_scores, defect_scan_result, congruence_score, "
                 "override_status, hook_text, prompt_version, template_name, "
                 "created_at, "
-                "ad_runs!inner(id, product_id, source_scraped_template_id, "
-                "pipeline_version, organization_id)"
+                "ad_runs!inner(id, product_id, source_scraped_template_id)"
             )
-            .eq("ad_runs.organization_id", org_id)
         )
 
         if status_filter:
@@ -251,9 +251,8 @@ class AdReviewOverrideService:
             self._db.table("generated_ads")
             .select(
                 "final_status, override_status, "
-                "ad_runs!inner(organization_id, product_id)"
+                "ad_runs!inner(product_id)"
             )
-            .eq("ad_runs.organization_id", org_id)
         )
 
         if date_from:

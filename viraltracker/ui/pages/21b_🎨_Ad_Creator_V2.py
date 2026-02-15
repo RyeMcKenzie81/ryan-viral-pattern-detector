@@ -1021,9 +1021,10 @@ def render_results():
         return
 
     svc = _get_override_service()
+    product_id = st.session_state.get("v2_product_id")
 
     # ── Summary Stats Bar ──
-    _render_summary_stats(svc, org_id)
+    _render_summary_stats(svc, org_id, product_id=product_id)
 
     st.divider()
 
@@ -1036,10 +1037,10 @@ def render_results():
     _render_filtered_ads(svc, org_id, user_id, filters)
 
 
-def _render_summary_stats(svc, org_id: str):
+def _render_summary_stats(svc, org_id: str, product_id: str = None):
     """Render aggregate stats bar at top of results view."""
     try:
-        stats = svc.get_summary_stats(org_id)
+        stats = svc.get_summary_stats(org_id, product_id=product_id)
         if stats["total"] == 0:
             st.info("No ads generated yet.")
             return
