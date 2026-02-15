@@ -197,8 +197,9 @@ class AdReviewOverrideService:
             .select(
                 "id, ad_run_id, prompt_index, storage_path, final_status, "
                 "review_check_scores, defect_scan_result, congruence_score, "
-                "override_status, hook_text, prompt_version, created_at, "
-                "ad_runs!inner(id, product_id, template_id, template_name, "
+                "override_status, hook_text, prompt_version, template_name, "
+                "created_at, "
+                "ad_runs!inner(id, product_id, source_scraped_template_id, "
                 "pipeline_version, organization_id)"
             )
             .eq("ad_runs.organization_id", org_id)
@@ -215,7 +216,7 @@ class AdReviewOverrideService:
         if ad_run_id:
             query = query.eq("ad_run_id", ad_run_id)
         if template_id:
-            query = query.eq("ad_runs.template_id", template_id)
+            query = query.eq("ad_runs.source_scraped_template_id", template_id)
 
         desc = sort_by != "oldest"
         query = query.order("created_at", desc=desc)

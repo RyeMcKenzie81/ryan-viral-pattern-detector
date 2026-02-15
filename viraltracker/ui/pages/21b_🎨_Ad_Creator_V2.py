@@ -1141,8 +1141,8 @@ def _render_filtered_ads(svc, org_id: str, user_id: str, filters: dict):
     template_groups: dict = {}
     for ad in ads:
         run_data = ad.get("ad_runs") or {}
-        tpl_id = run_data.get("template_id", "unknown")
-        tpl_name = run_data.get("template_name", "Unknown Template")
+        tpl_id = run_data.get("source_scraped_template_id", "unknown")
+        tpl_name = ad.get("template_name") or "Unknown Template"
         key = (tpl_id, tpl_name)
         template_groups.setdefault(key, []).append(ad)
 
