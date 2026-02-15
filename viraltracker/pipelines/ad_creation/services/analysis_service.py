@@ -144,19 +144,28 @@ class AdAnalysisService:
 
         vision_agent = Agent(
             model=Config.get_model("vision"),
-            system_prompt="You are a vision analysis expert. Return ONLY valid JSON, no markdown."
+            system_prompt="You are a vision analysis expert. Return ONLY valid JSON, no markdown.",
+            retries=3,
         )
 
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
-            result = await vision_agent.run(
-                [
-                    analysis_prompt + "\n\nIMPORTANT: Return ONLY the JSON object, no markdown code fences, no explanations.",
-                    BinaryContent(data=image_bytes, media_type=media_type)
-                ]
-            )
+            try:
+                result = await vision_agent.run(
+                    [
+                        analysis_prompt + "\n\nIMPORTANT: Return ONLY the JSON object, no markdown code fences, no explanations.",
+                        BinaryContent(data=image_bytes, media_type=media_type)
+                    ]
+                )
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} vision agent failed: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    raise Exception(f"Failed to get analysis after {max_retries} attempts: {last_error}")
 
             analysis_result = result.output
 
@@ -276,15 +285,30 @@ class AdAnalysisService:
 
         vision_agent = Agent(
             model=Config.get_model("vision"),
-            system_prompt="You are a marketing analysis expert. Return ONLY valid JSON."
+            system_prompt="You are a marketing analysis expert. Return ONLY valid JSON.",
+            retries=3,
         )
 
-        result = await vision_agent.run(
-            [
-                extraction_prompt + "\n\nReturn ONLY valid JSON, no other text.",
-                BinaryContent(data=image_bytes, media_type=media_type)
-            ]
-        )
+        max_retries = 3
+        last_error = None
+        result = None
+
+        for attempt in range(max_retries):
+            try:
+                result = await vision_agent.run(
+                    [
+                        extraction_prompt + "\n\nReturn ONLY valid JSON, no other text.",
+                        BinaryContent(data=image_bytes, media_type=media_type)
+                    ]
+                )
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} template angle extraction failed: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    raise Exception(f"Failed to extract template angle after {max_retries} attempts: {last_error}")
 
         result_text = result.output
 
