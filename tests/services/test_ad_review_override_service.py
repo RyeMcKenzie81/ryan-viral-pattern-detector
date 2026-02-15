@@ -1,7 +1,8 @@
 """
 Tests for AdReviewOverrideService — Phase 4 human override operations.
 
-Tests: validation, RPC delegation, latest-override lookup, stats aggregation.
+Tests: validation, RPC delegation, latest-override lookup, stats aggregation,
+filtered ad queries, summary stats, and bulk override.
 """
 
 import pytest
@@ -264,3 +265,195 @@ class TestGetAdsForRun:
 
         result = service.get_ads_for_run("run-empty")
         assert result == []
+
+
+# ============================================================================
+# get_ads_filtered
+# ============================================================================
+
+class TestGetAdsFiltered:
+    def _mock_chain(self, mock_db, data=None):
+        """Set up a fluent chain mock for get_ads_filtered."""
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.in_.return_value = chain
+        chain.gte.return_value = chain
+        chain.lte.return_value = chain
+        chain.order.return_value = chain
+        chain.range.return_value = chain
+        chain.execute.return_value = MagicMock(data=data or [])
+        mock_db.table.return_value = chain
+        return chain
+
+    def test_returns_ads_list(self, service, mock_db):
+        ads = [
+            {"id": "ad-1", "final_status": "approved", "ad_runs": {"template_id": "t1"}},
+            {"id": "ad-2", "final_status": "rejected", "ad_runs": {"template_id": "t1"}},
+        ]
+        self._mock_chain(mock_db, data=ads)
+
+        result = service.get_ads_filtered("org-1")
+        assert len(result) == 2
+
+    def test_status_filter_applied(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_ads_filtered("org-1", status_filter=["approved", "flagged"])
+        chain.in_.assert_called_once_with("final_status", ["approved", "flagged"])
+
+    def test_date_range_applied(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_ads_filtered(
+            "org-1",
+            date_from="2026-02-01",
+            date_to="2026-02-14",
+        )
+        chain.gte.assert_called_once_with("created_at", "2026-02-01")
+        chain.lte.assert_called_once_with("created_at", "2026-02-14")
+
+    def test_sort_newest(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_ads_filtered("org-1", sort_by="newest")
+        chain.order.assert_called_once_with("created_at", desc=True)
+
+    def test_sort_oldest(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_ads_filtered("org-1", sort_by="oldest")
+        chain.order.assert_called_once_with("created_at", desc=False)
+
+    def test_pagination(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_ads_filtered("org-1", limit=20, offset=40)
+        chain.range.assert_called_once_with(40, 59)
+
+    def test_returns_empty_when_no_data(self, service, mock_db):
+        self._mock_chain(mock_db, data=None)
+
+        result = service.get_ads_filtered("org-1")
+        assert result == []
+
+    def test_ad_run_id_filter(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_ads_filtered("org-1", ad_run_id="run-123")
+        # eq called for both org_id and ad_run_id
+        eq_calls = [call[0] for call in chain.eq.call_args_list]
+        assert ("ad_run_id", "run-123") in eq_calls
+
+
+# ============================================================================
+# get_summary_stats
+# ============================================================================
+
+class TestGetSummaryStats:
+    def _mock_chain(self, mock_db, data=None):
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.gte.return_value = chain
+        chain.lte.return_value = chain
+        chain.execute.return_value = MagicMock(data=data or [])
+        mock_db.table.return_value = chain
+        return chain
+
+    def test_empty_stats(self, service, mock_db):
+        self._mock_chain(mock_db, data=[])
+
+        result = service.get_summary_stats("org-1")
+        assert result["total"] == 0
+        assert result["approved"] == 0
+        assert result["override_rate"] == 0.0
+
+    def test_counts_statuses(self, service, mock_db):
+        rows = [
+            {"final_status": "approved", "override_status": None, "ad_runs": {}},
+            {"final_status": "approved", "override_status": None, "ad_runs": {}},
+            {"final_status": "rejected", "override_status": None, "ad_runs": {}},
+            {"final_status": "flagged", "override_status": "override_approved", "ad_runs": {}},
+            {"final_status": "review_failed", "override_status": None, "ad_runs": {}},
+        ]
+        self._mock_chain(mock_db, data=rows)
+
+        result = service.get_summary_stats("org-1")
+        assert result["total"] == 5
+        assert result["approved"] == 2
+        assert result["rejected"] == 1
+        assert result["flagged"] == 1
+        assert result["review_failed"] == 1
+        assert result["overridden"] == 1
+        assert result["override_rate"] == 20.0
+
+    def test_product_filter(self, service, mock_db):
+        chain = self._mock_chain(mock_db)
+
+        service.get_summary_stats("org-1", product_id="prod-1")
+        eq_calls = [call[0] for call in chain.eq.call_args_list]
+        assert ("ad_runs.product_id", "prod-1") in eq_calls
+
+
+# ============================================================================
+# bulk_override
+# ============================================================================
+
+class TestBulkOverride:
+    def test_invalid_action_raises(self, service):
+        with pytest.raises(ValueError, match="Invalid action"):
+            service.bulk_override(
+                generated_ad_ids=["ad-1"],
+                org_id="org-1",
+                user_id="user-1",
+                action="invalid",
+            )
+
+    def test_empty_list_returns_zero(self, service):
+        result = service.bulk_override(
+            generated_ad_ids=[],
+            org_id="org-1",
+            user_id="user-1",
+            action="override_approve",
+        )
+        assert result == {"success": 0, "failed": 0}
+
+    def test_applies_to_all_ads(self, service, mock_db):
+        mock_rpc = MagicMock()
+        mock_rpc.execute.return_value = MagicMock(data={"id": "ov-1"})
+        mock_db.rpc.return_value = mock_rpc
+
+        result = service.bulk_override(
+            generated_ad_ids=["ad-1", "ad-2", "ad-3"],
+            org_id="org-1",
+            user_id="user-1",
+            action="override_approve",
+            reason="Bulk approve",
+        )
+        assert result["success"] == 3
+        assert result["failed"] == 0
+        assert mock_db.rpc.call_count == 3
+
+    def test_counts_failures(self, service, mock_db):
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise Exception("RPC failed")
+            mock_result = MagicMock()
+            mock_result.execute.return_value = MagicMock(data={})
+            return mock_result
+
+        mock_db.rpc.side_effect = side_effect
+
+        result = service.bulk_override(
+            generated_ad_ids=["ad-1", "ad-2", "ad-3"],
+            org_id="org-1",
+            user_id="user-1",
+            action="override_reject",
+        )
+        assert result["success"] == 2
+        assert result["failed"] == 1

@@ -151,6 +151,7 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
                     canvas_size=ad_data.get("canvas_size"),
                     color_mode=ad_data.get("color_mode"),
                     defect_scan_result=scan_result_dict,
+                    prompt_version=ctx.state.prompt_version,
                 )
 
                 # Append to reviewed_ads immediately (visible to RetryRejected + CompileResults)

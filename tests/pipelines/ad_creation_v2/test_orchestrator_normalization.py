@@ -154,7 +154,7 @@ class TestNumVariationsValidation:
 
     @pytest.mark.asyncio
     async def test_zero_num_variations_raises(self):
-        with pytest.raises(ValueError, match="num_variations must be between 1 and 100"):
+        with pytest.raises(ValueError, match="num_variations must be between 1 and 50"):
             await run_ad_creation_v2(
                 product_id="p1",
                 reference_ad_base64="img",
@@ -164,7 +164,7 @@ class TestNumVariationsValidation:
 
     @pytest.mark.asyncio
     async def test_negative_num_variations_raises(self):
-        with pytest.raises(ValueError, match="num_variations must be between 1 and 100"):
+        with pytest.raises(ValueError, match="num_variations must be between 1 and 50"):
             await run_ad_creation_v2(
                 product_id="p1",
                 reference_ad_base64="img",
@@ -173,12 +173,12 @@ class TestNumVariationsValidation:
             )
 
     @pytest.mark.asyncio
-    async def test_over_100_num_variations_raises(self):
-        with pytest.raises(ValueError, match="num_variations must be between 1 and 100"):
+    async def test_over_50_num_variations_raises(self):
+        with pytest.raises(ValueError, match="num_variations must be between 1 and 50"):
             await run_ad_creation_v2(
                 product_id="p1",
                 reference_ad_base64="img",
-                num_variations=101,
+                num_variations=51,
                 deps=MagicMock(),
             )
 

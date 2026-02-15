@@ -561,7 +561,7 @@ def render_generation_config():
 
         num_variations = st.slider(
             "Variations (hooks) per template",
-            min_value=1, max_value=15, value=5,
+            min_value=1, max_value=50, value=5,
             key="v2_num_variations",
         )
 
@@ -636,7 +636,11 @@ def render_generation_config():
 # ============================================================================
 
 def render_batch_estimate():
-    """Show batch estimate with cost projection."""
+    """Show batch estimate with cost projection and tiered guardrails."""
+    from viraltracker.pipelines.ad_creation_v2.services.cost_estimation import (
+        estimate_run_cost, MAX_VARIATIONS_PER_RUN,
+    )
+
     st.subheader("3. Batch Estimate")
 
     mode = st.session_state.v2_template_mode
@@ -651,7 +655,14 @@ def render_batch_estimate():
 
     size_color_combos = size_count * color_count
     total_attempts = template_count * num_variations * size_color_combos
-    estimated_cost = total_attempts * 0.02  # ~$0.02/attempt
+
+    # Cost estimation using configurable pricing
+    cost = estimate_run_cost(
+        num_variations=num_variations,
+        num_canvas_sizes=size_count,
+        num_color_modes=color_count,
+        auto_retry=False,
+    )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -663,11 +674,44 @@ def render_batch_estimate():
     with col4:
         st.metric("Total Attempts", total_attempts)
 
-    st.caption(f"Est. cost: ${estimated_cost:.2f} (~$0.02/attempt)")
+    st.caption(f"Est. cost: **${cost['total_cost']:.2f}** "
+               f"(${cost['per_ad_cost']:.3f}/ad × {cost['total_ads']} ads + fixed)")
 
-    if total_attempts > 50:
-        st.warning(f"Total attempts ({total_attempts}) exceeds the per-run limit of 50. "
-                   f"The worker will stop after 50 attempts.")
+    # Tiered guardrails
+    if num_variations > MAX_VARIATIONS_PER_RUN:
+        num_jobs = -(-num_variations // MAX_VARIATIONS_PER_RUN)  # ceil division
+        per_job = -(-num_variations // num_jobs)
+        st.error(
+            f"Variations ({num_variations}) exceeds the per-run limit of "
+            f"{MAX_VARIATIONS_PER_RUN}. "
+            f"Reduce to {MAX_VARIATIONS_PER_RUN} or fewer."
+        )
+        st.info(
+            f"Tip: Auto-split into {num_jobs} sequential jobs of "
+            f"~{per_job} variations each."
+        )
+        st.session_state['v2_submit_blocked'] = True
+    elif num_variations > 30:
+        st.warning(
+            f"Large batch ({num_variations} variations). "
+            f"Estimated cost: **${cost['total_cost']:.2f}**."
+        )
+        confirmed = st.checkbox(
+            "I confirm this large batch run",
+            key="v2_large_batch_confirm",
+        )
+        st.session_state['v2_submit_blocked'] = not confirmed
+    elif num_variations > 10:
+        st.info(f"Estimated cost: **${cost['total_cost']:.2f}**")
+        st.session_state['v2_submit_blocked'] = False
+    else:
+        st.session_state['v2_submit_blocked'] = False
+
+    if total_attempts > MAX_VARIATIONS_PER_RUN and num_variations <= MAX_VARIATIONS_PER_RUN:
+        st.warning(
+            f"Total attempts ({total_attempts}) across all templates exceeds "
+            f"{MAX_VARIATIONS_PER_RUN}. The worker will process templates sequentially."
+        )
 
 
 # ============================================================================
@@ -696,6 +740,11 @@ def _handle_submit():
 
     if not product_id:
         st.error("Please select a product.")
+        return
+
+    # Phase 5: Block if guardrails not satisfied
+    if st.session_state.get('v2_submit_blocked', False):
+        st.error("Resolve batch size warnings before submitting.")
         return
 
     mode = st.session_state.v2_template_mode
@@ -954,7 +1003,7 @@ def _apply_override(ad_id: str, org_id: str, user_id: str, action: str, override
 
 
 def render_results():
-    """Render V2 job results view with Phase 4 review detail."""
+    """Render V2 job results view with dashboard, filters, and bulk actions."""
     from viraltracker.ui.auth import get_current_user_id
     from viraltracker.ui.utils import get_current_organization_id
 
@@ -967,22 +1016,208 @@ def render_results():
     org_id = get_current_organization_id() or ""
     user_id = get_current_user_id() or ""
 
-    # Override rate summary
-    if org_id:
-        try:
-            svc = _get_override_service()
-            stats = svc.get_override_stats(org_id)
-            if stats["total"] > 0:
-                st.markdown(
-                    f"**Override Activity (30d):** {stats['total']} total — "
-                    f"{stats['override_approve']} approves, "
-                    f"{stats['override_reject']} rejects, "
-                    f"{stats['confirm']} confirms"
-                )
-        except Exception as e:
-            logger.warning(f"Could not load override stats: {e}")
+    if not org_id:
+        st.warning("No organization context. Please log in.")
+        return
+
+    svc = _get_override_service()
+
+    # ── Summary Stats Bar ──
+    _render_summary_stats(svc, org_id)
 
     st.divider()
+
+    # ── Filter Controls ──
+    filters = _render_filter_controls()
+
+    st.divider()
+
+    # ── Filtered Ad Results ──
+    _render_filtered_ads(svc, org_id, user_id, filters)
+
+
+def _render_summary_stats(svc, org_id: str):
+    """Render aggregate stats bar at top of results view."""
+    try:
+        stats = svc.get_summary_stats(org_id)
+        if stats["total"] == 0:
+            st.info("No ads generated yet.")
+            return
+
+        cols = st.columns(6)
+        with cols[0]:
+            st.metric("Total Ads", stats["total"])
+        with cols[1]:
+            st.metric("Approved", stats["approved"])
+        with cols[2]:
+            st.metric("Rejected", stats["rejected"])
+        with cols[3]:
+            st.metric("Flagged", stats["flagged"])
+        with cols[4]:
+            st.metric("Review Failed", stats["review_failed"])
+        with cols[5]:
+            st.metric("Override Rate", f"{stats['override_rate']}%")
+
+    except Exception as e:
+        logger.warning(f"Could not load summary stats: {e}")
+
+
+def _render_filter_controls() -> dict:
+    """Render filter bar and return active filter dict."""
+    with st.expander("Filters", expanded=False):
+        fcol1, fcol2, fcol3 = st.columns(3)
+
+        with fcol1:
+            status_options = [
+                "approved", "rejected", "flagged",
+                "review_failed", "generation_failed",
+            ]
+            status_filter = st.multiselect(
+                "Status",
+                options=status_options,
+                key="v2_results_status_filter",
+            )
+
+        with fcol2:
+            from datetime import date, timedelta as td
+            default_from = date.today() - td(days=7)
+            date_from = st.date_input(
+                "From", value=default_from, key="v2_results_date_from"
+            )
+            date_to = st.date_input(
+                "To", value=date.today(), key="v2_results_date_to"
+            )
+
+        with fcol3:
+            ad_run_id = st.text_input(
+                "Ad Run ID", key="v2_results_ad_run_id",
+                placeholder="Optional: paste ad_run UUID"
+            )
+            sort_by = st.selectbox(
+                "Sort",
+                options=["Newest First", "Oldest First"],
+                key="v2_results_sort",
+            )
+
+    return {
+        "status_filter": status_filter or None,
+        "date_from": str(date_from) if date_from else None,
+        "date_to": str(date_to) if date_to else None,
+        "ad_run_id": ad_run_id.strip() or None,
+        "sort_by": "oldest" if sort_by == "Oldest First" else "newest",
+    }
+
+
+def _render_filtered_ads(svc, org_id: str, user_id: str, filters: dict):
+    """Render filtered ad list grouped by template with bulk actions."""
+    # Pagination
+    page_size = 20
+    if "v2_results_offset" not in st.session_state:
+        st.session_state.v2_results_offset = 0
+
+    product_id = st.session_state.get("v2_product_id")
+
+    try:
+        ads = svc.get_ads_filtered(
+            org_id,
+            status_filter=filters["status_filter"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+            product_id=product_id,
+            ad_run_id=filters["ad_run_id"],
+            sort_by=filters["sort_by"],
+            limit=page_size,
+            offset=st.session_state.v2_results_offset,
+        )
+    except Exception as e:
+        st.warning(f"Could not load ads: {e}")
+        return
+
+    if not ads:
+        st.info("No ads match the current filters.")
+        return
+
+    # Group by template
+    template_groups: dict = {}
+    for ad in ads:
+        run_data = ad.get("ad_runs") or {}
+        tpl_id = run_data.get("template_id", "unknown")
+        tpl_name = run_data.get("template_name", "Unknown Template")
+        key = (tpl_id, tpl_name)
+        template_groups.setdefault(key, []).append(ad)
+
+    for (tpl_id, tpl_name), group_ads in template_groups.items():
+        with st.expander(
+            f"Template: {tpl_name} ({len(group_ads)} ads)",
+            expanded=True,
+        ):
+            # Bulk actions for this template group
+            bcol1, bcol2 = st.columns([1, 3])
+            with bcol1:
+                # Collect overrideable ad IDs
+                overrideable_ids = [
+                    a["id"] for a in group_ads
+                    if a.get("final_status") not in ("generation_failed", "review_failed")
+                    and a.get("id")
+                ]
+                if overrideable_ids:
+                    ba_col1, ba_col2 = st.columns(2)
+                    with ba_col1:
+                        if st.button(
+                            "Approve All",
+                            key=f"bulk_approve_{tpl_id}",
+                            type="primary",
+                        ):
+                            result = svc.bulk_override(
+                                overrideable_ids, org_id, user_id,
+                                "override_approve", reason="Bulk approve"
+                            )
+                            st.success(f"Approved {result['success']} ads")
+                            st.rerun()
+                    with ba_col2:
+                        if st.button(
+                            "Reject All",
+                            key=f"bulk_reject_{tpl_id}",
+                        ):
+                            result = svc.bulk_override(
+                                overrideable_ids, org_id, user_id,
+                                "override_reject", reason="Bulk reject"
+                            )
+                            st.success(f"Rejected {result['success']} ads")
+                            st.rerun()
+
+            # Render individual ad cards
+            for ad in group_ads:
+                run_key = f"filtered_{tpl_id}_{ad.get('id', '')}"
+                _render_ad_card(ad, run_key, org_id, user_id)
+                st.divider()
+
+    # Pagination controls
+    pcol1, pcol2, pcol3 = st.columns([1, 1, 2])
+    with pcol1:
+        if st.session_state.v2_results_offset > 0:
+            if st.button("Previous Page", key="v2_results_prev"):
+                st.session_state.v2_results_offset = max(
+                    0, st.session_state.v2_results_offset - page_size
+                )
+                st.rerun()
+    with pcol2:
+        if len(ads) == page_size:
+            if st.button("Next Page", key="v2_results_next"):
+                st.session_state.v2_results_offset += page_size
+                st.rerun()
+    with pcol3:
+        page_num = (st.session_state.v2_results_offset // page_size) + 1
+        st.caption(f"Page {page_num} ({len(ads)} ads shown)")
+
+
+def render_results_legacy():
+    """Legacy results view — renders V2 job runs (kept for backward compat)."""
+    from viraltracker.ui.auth import get_current_user_id
+    from viraltracker.ui.utils import get_current_organization_id
+
+    org_id = get_current_organization_id() or ""
+    user_id = get_current_user_id() or ""
 
     jobs = get_v2_job_runs()
 

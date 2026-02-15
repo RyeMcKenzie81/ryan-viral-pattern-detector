@@ -456,7 +456,8 @@ class AdCreationService:
         product_id: UUID,
         reference_ad_storage_path: str,
         project_id: Optional[UUID] = None,
-        parameters: Optional[Dict] = None
+        parameters: Optional[Dict] = None,
+        generation_config: Optional[Dict] = None,
     ) -> UUID:
         """
         Create new ad run record.
@@ -466,6 +467,7 @@ class AdCreationService:
             reference_ad_storage_path: Storage path to reference ad
             project_id: Optional project UUID
             parameters: Optional generation parameters (num_variations, content_source, etc.)
+            generation_config: Optional reproducibility snapshot (prompt_version, pipeline_version, etc.)
 
         Returns:
             UUID of created ad run
@@ -481,6 +483,9 @@ class AdCreationService:
 
         if parameters:
             data["parameters"] = parameters
+
+        if generation_config:
+            data["generation_config"] = generation_config
 
         result = self.supabase.table("ad_runs").insert(data).execute()
         ad_run_id = UUID(result.data[0]["id"])
@@ -582,6 +587,8 @@ class AdCreationService:
         defect_scan_result: Optional[Dict] = None,
         review_check_scores: Optional[Dict] = None,
         congruence_score: Optional[float] = None,
+        # V2 Phase 5: Prompt versioning
+        prompt_version: Optional[str] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -611,6 +618,7 @@ class AdCreationService:
             regenerate_parent_id: Source ad UUID when regenerated from rejected ad
             canvas_size: Canvas dimensions string (e.g. '1080x1080', '1080x1350')
             color_mode: Color mode used (e.g. 'original', 'complementary', 'brand')
+            prompt_version: Pydantic prompt schema version (e.g. 'v2.1.0')
 
         Returns:
             UUID of generated ad record
@@ -680,6 +688,10 @@ class AdCreationService:
             data["review_check_scores"] = review_check_scores
         if congruence_score is not None:
             data["congruence_score"] = congruence_score
+
+        # Phase 5: Prompt versioning
+        if prompt_version is not None:
+            data["prompt_version"] = prompt_version
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

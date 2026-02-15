@@ -69,6 +69,20 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
                 "image_resolution": ctx.state.image_resolution
             }
 
+            # Phase 5: Build generation_config reproducibility snapshot
+            generation_config = {
+                "prompt_version": ctx.state.prompt_version,
+                "pipeline_version": ctx.state.pipeline_version,
+                "image_resolution": ctx.state.image_resolution,
+                "content_source": ctx.state.content_source,
+                "canvas_sizes": ctx.state.canvas_sizes,
+                "color_modes": ctx.state.color_modes,
+                "match_template_structure": ctx.state.match_template_structure,
+                "auto_retry_rejected": ctx.state.auto_retry_rejected,
+                "max_retry_attempts": ctx.state.max_retry_attempts,
+                "template_id": ctx.state.template_id,
+            }
+
             # Create ad run with temporary path
             product_uuid = UUID(ctx.state.product_id)
             project_uuid = UUID(ctx.state.project_id) if ctx.state.project_id else None
@@ -77,7 +91,8 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
                 product_id=product_uuid,
                 reference_ad_storage_path="temp",
                 project_id=project_uuid,
-                parameters=run_parameters
+                parameters=run_parameters,
+                generation_config=generation_config,
             )
             ctx.state.ad_run_id = str(ad_run_id)
 

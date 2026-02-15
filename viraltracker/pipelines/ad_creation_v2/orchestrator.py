@@ -134,8 +134,8 @@ async def run_ad_creation_v2(
     _color_modes = color_modes or ([color_mode] if color_mode else ["original"])
 
     # Validate inputs
-    if num_variations < 1 or num_variations > 100:
-        raise ValueError(f"num_variations must be between 1 and 100, got {num_variations}")
+    if num_variations < 1 or num_variations > 50:
+        raise ValueError(f"num_variations must be between 1 and 50, got {num_variations}")
 
     valid_content_sources = ["hooks", "recreate_template", "belief_first", "plan", "angles"]
     if content_source not in valid_content_sources:

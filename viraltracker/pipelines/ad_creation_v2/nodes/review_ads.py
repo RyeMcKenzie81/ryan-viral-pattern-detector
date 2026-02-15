@@ -162,6 +162,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 defect_scan_result=ad_data.get("defect_scan_result"),
                 review_check_scores=review_check_scores,
                 congruence_score=congruence_score,
+                # Phase 5: prompt versioning
+                prompt_version=ctx.state.prompt_version,
             )
 
             reviewed_ads.append({
