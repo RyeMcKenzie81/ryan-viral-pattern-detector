@@ -238,16 +238,18 @@ class TestBeliefClarityScorer:
 # ============================================================================
 
 class TestWeightPresets:
-    """Weight presets have all 6 scorer keys."""
+    """Weight presets have all scorer keys."""
 
     def test_roll_the_dice_has_all_keys(self):
         expected_keys = {"asset_match", "unused_bonus", "category_match",
-                         "awareness_align", "audience_match", "belief_clarity"}
+                         "awareness_align", "audience_match", "belief_clarity",
+                         "performance"}
         assert set(ROLL_THE_DICE_WEIGHTS.keys()) == expected_keys
 
     def test_smart_select_has_all_keys(self):
         expected_keys = {"asset_match", "unused_bonus", "category_match",
-                         "awareness_align", "audience_match", "belief_clarity"}
+                         "awareness_align", "audience_match", "belief_clarity",
+                         "performance"}
         assert set(SMART_SELECT_WEIGHTS.keys()) == expected_keys
 
     def test_roll_the_dice_new_scorers_neutral(self):
@@ -255,11 +257,13 @@ class TestWeightPresets:
         assert ROLL_THE_DICE_WEIGHTS["awareness_align"] == 0.0
         assert ROLL_THE_DICE_WEIGHTS["audience_match"] == 0.0
         assert ROLL_THE_DICE_WEIGHTS["belief_clarity"] == 0.0
+        assert ROLL_THE_DICE_WEIGHTS["performance"] == 0.0
 
     def test_smart_select_new_scorers_have_weight(self):
         assert SMART_SELECT_WEIGHTS["awareness_align"] > 0
         assert SMART_SELECT_WEIGHTS["audience_match"] > 0
         assert SMART_SELECT_WEIGHTS["belief_clarity"] > 0
+        assert SMART_SELECT_WEIGHTS["performance"] > 0
 
 
 # ============================================================================

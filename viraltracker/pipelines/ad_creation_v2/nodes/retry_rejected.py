@@ -142,6 +142,20 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
             retry_canvas_size = rejected_ad.get("canvas_size", ctx.state.canvas_size)
             retry_color_mode = rejected_ad.get("color_mode", ctx.state.color_mode)
 
+            # Phase 6: Build element tags for Creative Genome (same as GenerateAdsNode)
+            retry_element_tags = {
+                "hook_type": selected_hook.get("persuasion_type") or selected_hook.get("category")
+                             or original_hook.get("persuasion_type"),
+                "persona_id": ctx.state.persona_id,
+                "color_mode": retry_color_mode,
+                "template_category": (ctx.state.ad_analysis or {}).get("format_type"),
+                "awareness_stage": (ctx.state.product_dict or {}).get("awareness_stage"),
+                "canvas_size": retry_canvas_size,
+                "template_id": ctx.state.template_id,
+                "prompt_version": ctx.state.prompt_version,
+                "content_source": ctx.state.content_source,
+            }
+
             try:
                 # Generate prompt (same hook, fresh variation; Phase 3: asset state passthrough)
                 prompt = generation_service.generate_prompt(
@@ -161,6 +175,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     template_elements=ctx.state.template_elements,
                     brand_asset_info=ctx.state.brand_asset_info,
                     selected_image_tags=selected_image_tags,
+                    performance_context=ctx.state.performance_context,
                 )
 
                 # Execute generation
@@ -235,6 +250,8 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                         defect_scan_result=defect_scan_result,
                         congruence_score=congruence_score,
                         prompt_version=ctx.state.prompt_version,
+                        element_tags=retry_element_tags,
+                        pre_gen_score=None,
                     )
 
                     ctx.state.reviewed_ads.append({
@@ -307,6 +324,8 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     review_check_scores=review_check_scores,
                     congruence_score=congruence_score,
                     prompt_version=ctx.state.prompt_version,
+                    element_tags=retry_element_tags,
+                    pre_gen_score=None,
                 )
 
                 # Append retry result to reviewed_ads (match ReviewAdsNode dict shape)

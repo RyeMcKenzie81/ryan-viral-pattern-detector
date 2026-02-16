@@ -589,6 +589,9 @@ class AdCreationService:
         congruence_score: Optional[float] = None,
         # V2 Phase 5: Prompt versioning
         prompt_version: Optional[str] = None,
+        # V2 Phase 6: Creative Genome
+        element_tags: Optional[Dict] = None,
+        pre_gen_score: Optional[float] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -692,6 +695,12 @@ class AdCreationService:
         # Phase 5: Prompt versioning
         if prompt_version is not None:
             data["prompt_version"] = prompt_version
+
+        # Phase 6: Creative Genome
+        if element_tags is not None:
+            data["element_tags"] = element_tags
+        if pre_gen_score is not None:
+            data["pre_gen_score"] = float(pre_gen_score)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

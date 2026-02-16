@@ -56,6 +56,7 @@ ROLL_THE_DICE_WEIGHTS: Dict[str, float] = {
     "awareness_align": 0.0,
     "audience_match": 0.0,
     "belief_clarity": 0.0,
+    "performance": 0.0,
 }
 
 SMART_SELECT_WEIGHTS: Dict[str, float] = {
@@ -65,6 +66,7 @@ SMART_SELECT_WEIGHTS: Dict[str, float] = {
     "awareness_align": 0.5,
     "audience_match": 0.4,
     "belief_clarity": 0.6,
+    "performance": 0.3,
 }
 
 
@@ -277,6 +279,43 @@ class BeliefClarityScorer(TemplateScorer):
         return eval_total_score / 15.0
 
 
+class PerformanceScorer(TemplateScorer):
+    """Score based on Creative Genome performance data for this template.
+
+    Looks up the template_id's mean reward from creative_element_scores.
+    Returns 0.5 (neutral) when no performance data exists.
+
+    Phase 6: Integrates Thompson Sampling posteriors into template selection.
+    """
+    name = "performance"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        template_id = template.get("id")
+        if not template_id or not context.brand_id:
+            return 0.5
+
+        try:
+            from viraltracker.core.database import get_supabase_client
+            db = get_supabase_client()
+            result = db.table("creative_element_scores").select(
+                "alpha, beta, mean_reward"
+            ).eq("brand_id", str(context.brand_id)).eq(
+                "element_name", "template_id"
+            ).eq("element_value", str(template_id)).execute()
+
+            if result.data:
+                row = result.data[0]
+                # Use posterior mean: alpha / (alpha + beta)
+                alpha = row.get("alpha", 1.0)
+                beta_val = row.get("beta", 1.0)
+                return alpha / (alpha + beta_val)
+
+            return 0.5  # neutral when no data
+        except Exception as e:
+            logger.warning(f"PerformanceScorer failed for template {template_id}: {e}")
+            return 0.5  # neutral on error
+
+
 # Phase 1 scorer instances (kept for backward compat)
 PHASE_1_SCORERS: List[TemplateScorer] = [
     AssetMatchScorer(),
@@ -301,6 +340,17 @@ PHASE_4_SCORERS: List[TemplateScorer] = [
     AwarenessAlignScorer(),
     AudienceMatchScorer(),
     BeliefClarityScorer(),
+]
+
+# Phase 6 scorer instances (includes performance scorer)
+PHASE_6_SCORERS: List[TemplateScorer] = [
+    AssetMatchScorer(),
+    UnusedBonusScorer(),
+    CategoryMatchScorer(),
+    AwarenessAlignScorer(),
+    AudienceMatchScorer(),
+    BeliefClarityScorer(),
+    PerformanceScorer(),
 ]
 
 

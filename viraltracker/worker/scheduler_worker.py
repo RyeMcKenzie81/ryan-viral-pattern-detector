@@ -578,6 +578,10 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_ad_creation_v2_job(job)
     elif job_type == 'ad_creation':
         return await execute_ad_creation_job(job)
+    elif job_type == 'creative_genome_update':
+        return await execute_creative_genome_update_job(job)
+    elif job_type == 'genome_validation':
+        return await execute_genome_validation_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -3388,6 +3392,158 @@ async def run_scheduler():
             await asyncio.sleep(10)  # Brief pause on error
 
     logger.info("Scheduler worker stopped")
+
+
+# ============================================================================
+# Creative Genome Jobs (Phase 6)
+# ============================================================================
+
+
+async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Creative Genome update job — compute rewards and update element scores.
+
+    Runs weekly (or on-demand) to:
+    1. Find matured ads with performance data
+    2. Compute composite reward scores
+    3. Update Beta(a,b) distributions via Thompson Sampling
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+
+    logger.info(f"Starting Creative Genome update: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for genome update job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.creative_genome_service import CreativeGenomeService
+        from uuid import UUID
+        genome_service = CreativeGenomeService()
+
+        brand_uuid = UUID(brand_id) if brand_id else None
+        if not brand_uuid:
+            raise ValueError("brand_id is required for creative_genome_update")
+
+        # Step 1: Compute rewards for matured ads
+        logs.append("Computing rewards for matured ads...")
+        reward_result = await genome_service.compute_rewards(brand_uuid)
+        logs.append(f"New rewards computed: {reward_result.get('new_rewards', 0)}")
+
+        # Step 2: Update element scores (Thompson Sampling)
+        logs.append("Updating element scores...")
+        score_result = await genome_service.update_element_scores(brand_uuid)
+        logs.append(f"Elements updated: {score_result.get('elements_updated', 0)}")
+
+        summary = {
+            "new_rewards": reward_result.get("new_rewards", 0),
+            "elements_updated": score_result.get("elements_updated", 0),
+        }
+        logs.append(f"Genome update complete: {summary}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Creative Genome update failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Genome validation job — check health metrics and create alerts.
+
+    Runs weekly to validate:
+    - Approval rate, generation success rate, data freshness, winner rate
+    - Creates system_alerts when thresholds are exceeded
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+
+    logger.info(f"Starting Genome validation: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for genome validation job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.creative_genome_service import CreativeGenomeService
+        from uuid import UUID
+        genome_service = CreativeGenomeService()
+
+        brand_uuid = UUID(brand_id) if brand_id else None
+        if not brand_uuid:
+            raise ValueError("brand_id is required for genome_validation")
+
+        # Run validation
+        logs.append("Running genome health validation...")
+        validation_result = await genome_service.run_validation(brand_uuid)
+
+        metrics = validation_result.get("metrics", {})
+        alerts_created = validation_result.get("alerts_created", 0)
+
+        logs.append(f"Metrics: {metrics}")
+        logs.append(f"Alerts created: {alerts_created}")
+
+        summary = {"metrics": metrics, "alerts_created": alerts_created}
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Genome validation failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
 
 
 def main():

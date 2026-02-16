@@ -70,6 +70,8 @@ class AdGenerationService:
         template_elements: Optional[Dict[str, Any]] = None,
         brand_asset_info: Optional[Dict[str, Any]] = None,
         selected_image_tags: Optional[List[str]] = None,
+        # Phase 6: Creative Genome performance context
+        performance_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON prompt for Gemini image generation using Pydantic models.
@@ -211,6 +213,19 @@ class AdGenerationService:
                 selected_image_tags=selected_image_tags,
             )
 
+        # Phase 6: Build PerformanceContext from genome data
+        perf_context_model = None
+        if performance_context:
+            from ..models.prompt import PerformanceContext
+            perf_context_model = PerformanceContext(
+                cold_start_level=performance_context.get("cold_start_level", 0),
+                total_matured_ads=performance_context.get("total_matured_ads", 0),
+                historical_approval_rate=performance_context.get("historical_approval_rate"),
+                top_performing_elements=performance_context.get("top_performing_elements"),
+                exploration_rate=performance_context.get("exploration_rate"),
+                optimization_notes=performance_context.get("optimization_notes"),
+            )
+
         # Construct the Pydantic prompt model
         prompt_model = AdGenerationPrompt(
             task=TaskConfig(
@@ -293,6 +308,7 @@ class AdGenerationService:
             ad_brief=AdBriefConfig(
                 instructions=ad_brief_instructions,
             ),
+            performance_context=perf_context_model,
         )
 
         # Serialize using Pydantic's exclude_none

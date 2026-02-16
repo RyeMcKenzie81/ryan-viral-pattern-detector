@@ -152,6 +152,9 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
                     color_mode=ad_data.get("color_mode"),
                     defect_scan_result=scan_result_dict,
                     prompt_version=ctx.state.prompt_version,
+                    # Phase 6: Creative Genome element tags + pre-gen score
+                    element_tags=ad_data.get("element_tags"),
+                    pre_gen_score=ad_data.get("pre_gen_score"),
                 )
 
                 # Append to reviewed_ads immediately (visible to RetryRejected + CompileResults)

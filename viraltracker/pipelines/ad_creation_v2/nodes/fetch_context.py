@@ -239,6 +239,21 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                     except Exception as e:
                         logger.warning(f"Failed to fetch LP hero data (non-fatal): {e}")
 
+            # Phase 6: Fetch Creative Genome performance context (non-fatal)
+            if brand_id:
+                try:
+                    from viraltracker.services.creative_genome_service import CreativeGenomeService
+                    genome_service = CreativeGenomeService()
+                    brand_uuid_for_genome = UUID(brand_id) if isinstance(brand_id, str) else brand_id
+                    perf_context = await genome_service.get_performance_context(brand_uuid_for_genome)
+                    ctx.state.performance_context = perf_context
+                    logger.info(
+                        f"Genome context: cold_start={perf_context.get('cold_start_level')}, "
+                        f"matured={perf_context.get('total_matured_ads')}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch genome performance context (non-fatal): {e}")
+
             # Build combined instructions
             combined_instructions = ""
             if ctx.state.additional_instructions:

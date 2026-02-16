@@ -164,6 +164,9 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 congruence_score=congruence_score,
                 # Phase 5: prompt versioning
                 prompt_version=ctx.state.prompt_version,
+                # Phase 6: Creative Genome element tags + pre-gen score
+                element_tags=ad_data.get("element_tags"),
+                pre_gen_score=ad_data.get("pre_gen_score"),
             )
 
             reviewed_ads.append({

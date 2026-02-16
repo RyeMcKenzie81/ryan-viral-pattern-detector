@@ -112,6 +112,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             template_elements=ctx.state.template_elements,
                             brand_asset_info=ctx.state.brand_asset_info,
                             selected_image_tags=selected_image_tags,
+                            performance_context=ctx.state.performance_context,
                         )
 
                         # Execute generation
@@ -138,6 +139,34 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             canvas_size=canvas_size,
                         )
 
+                        # Phase 6: Build element tags for Creative Genome tracking
+                        element_tags = {
+                            "hook_type": selected_hook.get("persuasion_type") or selected_hook.get("category"),
+                            "persona_id": ctx.state.persona_id,
+                            "color_mode": color_mode,
+                            "template_category": (ctx.state.ad_analysis or {}).get("format_type"),
+                            "awareness_stage": (ctx.state.product_dict or {}).get("awareness_stage"),
+                            "canvas_size": canvas_size,
+                            "template_id": ctx.state.template_id,
+                            "prompt_version": ctx.state.prompt_version,
+                            "content_source": ctx.state.content_source,
+                        }
+
+                        # Phase 6: Pre-gen score from genome posteriors (non-fatal)
+                        pre_gen_score = None
+                        if ctx.state.performance_context and ctx.state.product_dict:
+                            try:
+                                from viraltracker.services.creative_genome_service import CreativeGenomeService
+                                genome_svc = CreativeGenomeService()
+                                brand_id = ctx.state.product_dict.get("brand_id")
+                                if brand_id:
+                                    pre_gen_score = await genome_svc.get_pre_gen_score(
+                                        UUID(brand_id) if isinstance(brand_id, str) else brand_id,
+                                        element_tags,
+                                    )
+                            except Exception as pgs_err:
+                                logger.debug(f"Pre-gen score failed (non-fatal): {pgs_err}")
+
                         generated_ads.append({
                             "prompt_index": variant_counter,
                             "prompt": prompt,
@@ -148,6 +177,8 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             "canvas_size": canvas_size,
                             "color_mode": color_mode,
                             "prompt_version": prompt.get("prompt_version", ctx.state.prompt_version),
+                            "element_tags": element_tags,
+                            "pre_gen_score": pre_gen_score,
                         })
 
                         ctx.state.ads_generated += 1

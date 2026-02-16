@@ -76,6 +76,9 @@ class AdCreationPipelineState:
     # FetchContextNode (Phase 4 — congruence)
     lp_hero_data: Optional[Dict[str, Any]] = None           # LP hero headline/subheadline from brand_landing_pages
 
+    # FetchContextNode (Phase 6 — Creative Genome)
+    performance_context: Optional[Dict[str, Any]] = None    # Advisory performance context from genome
+
     # AnalyzeTemplateNode
     ad_analysis: Optional[Dict[str, Any]] = None
 

@@ -241,12 +241,17 @@ class AdBriefConfig(BaseModel):
 
 
 class PerformanceContext(BaseModel):
-    """Performance context for scoring integration (stub for Phase 6+).
+    """Advisory performance context from Creative Genome (Phase 6).
 
-    Will include historical performance data, winning hooks,
-    and optimization signals.
+    Injected into prompts to guide generation toward better-performing
+    creative elements. All fields are advisory — the model uses them
+    as signals, not hard constraints.
     """
+    cold_start_level: int = 0
+    total_matured_ads: int = 0
     historical_approval_rate: Optional[float] = None
+    top_performing_elements: Optional[Dict[str, Any]] = None
+    exploration_rate: Optional[float] = None
     winning_hooks: Optional[List[str]] = None
     optimization_notes: Optional[str] = None
 
