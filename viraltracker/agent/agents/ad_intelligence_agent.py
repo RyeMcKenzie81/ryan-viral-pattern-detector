@@ -282,7 +282,7 @@ async def analyze_account(
         brand_id=brand_id,
         job_type="ad_intelligence_analysis",
         parameters=params,
-        trigger_source="agent_chat",
+        trigger_source="manual",
         name=f"Ad Intelligence Analysis - Agent Chat",
         max_retries=2,
     )
