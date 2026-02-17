@@ -65,7 +65,7 @@ class ExemplarService:
         result = db.table("ad_review_overrides").select(
             "id, generated_ad_id, override_action, check_overrides, reason, "
             "generated_ads!inner(id, brand_id, final_status, review_check_scores, "
-            "weighted_score, element_tags, canvas_size, color_mode, storage_path, hook_text)"
+            "element_tags, canvas_size, color_mode, storage_path, hook_text)"
         ).is_(
             "superseded_by", "null"
         ).eq(
@@ -93,8 +93,10 @@ class ExemplarService:
             elif action == "override_reject":
                 candidates["gold_reject"].append((ad_id, ad_data, override))
             elif action == "confirm":
-                # Edge case: confirmed borderline ads
-                weighted = ad_data.get("weighted_score")
+                # Edge case: confirmed borderline ads (compute weighted from check scores)
+                check_scores = ad_data.get("review_check_scores") or {}
+                vals = [v for v in check_scores.values() if isinstance(v, (int, float))]
+                weighted = sum(vals) / len(vals) if vals else None
                 if weighted is not None and 5.0 <= float(weighted) <= 7.0:
                     candidates["edge_case"].append((ad_id, ad_data, override))
 
@@ -237,7 +239,7 @@ class ExemplarService:
         db = get_supabase_client()
         query = db.table("exemplar_library").select(
             "*, generated_ads(id, hook_text, storage_path, final_status, "
-            "review_check_scores, weighted_score, canvas_size, color_mode, element_tags)"
+            "review_check_scores, canvas_size, color_mode, element_tags)"
         ).eq(
             "brand_id", str(brand_id)
         ).eq("is_active", True).order("created_at", desc=True)
@@ -316,7 +318,6 @@ class ExemplarService:
                 ga.hook_text,
                 ga.final_status,
                 ga.review_check_scores,
-                ga.weighted_score,
                 ga.storage_path,
                 1 - (ve.embedding <=> '{embedding_str}'::vector) AS similarity
             FROM exemplar_library el
@@ -377,7 +378,11 @@ class ExemplarService:
             category = ex.get("category", "unknown")
             hook = ex.get("hook_text", "N/A")
             scores = ex.get("review_check_scores") or {}
-            weighted = ex.get("weighted_score")
+            # Compute weighted avg from check scores (weighted_score not stored on generated_ads)
+            weighted = None
+            if scores:
+                vals = [v for v in scores.values() if isinstance(v, (int, float))]
+                weighted = sum(vals) / len(vals) if vals else None
 
             if category == "gold_approve":
                 label = "APPROVED — Gold Standard"
