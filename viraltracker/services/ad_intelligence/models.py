@@ -102,6 +102,7 @@ class AnalysisRun(BaseModel):
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    rendered_markdown: Optional[str] = None
 
 
 # =============================================================================

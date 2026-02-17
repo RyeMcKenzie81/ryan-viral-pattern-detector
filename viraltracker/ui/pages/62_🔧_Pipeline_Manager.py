@@ -40,6 +40,7 @@ JOB_TYPE_INFO = {
     "reddit_scrape": {"emoji": "🔍", "label": "Reddit Scrape", "default_params": {"max_posts": 500}},
     "amazon_review_scrape": {"emoji": "📦", "label": "Amazon Review Scrape", "default_params": {}},
     "ad_creation": {"emoji": "🎨", "label": "Ad Creation", "default_params": {}},
+    "ad_intelligence_analysis": {"emoji": "🧠", "label": "Ad Intelligence Analysis", "default_params": {"max_new": 200, "max_video": 15, "days_back": 30}},
 }
 
 CADENCE_PRESETS = {
@@ -57,6 +58,7 @@ PLATFORM_JOB_TYPES = ["template_approval", "template_scrape"]
 BRAND_SCHEDULABLE_TYPES = [
     "meta_sync", "ad_classification", "asset_download",
     "scorecard", "congruence_reanalysis",
+    "ad_intelligence_analysis",
 ]
 
 # Dataset keys and their labels
@@ -306,7 +308,7 @@ def render_health_overview():
 
             # Run Now buttons
             st.markdown("---")
-            health_run_types = ["meta_sync", "ad_classification", "asset_download"]
+            health_run_types = ["meta_sync", "ad_classification", "asset_download", "ad_intelligence_analysis"]
             run_cols = st.columns(len(health_run_types))
             for i, jt in enumerate(health_run_types):
                 info = JOB_TYPE_INFO.get(jt, {})

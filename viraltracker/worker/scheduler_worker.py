@@ -588,6 +588,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_experiment_analysis_job(job)
     elif job_type == 'quality_calibration':
         return await execute_quality_calibration_job(job)
+    elif job_type == 'ad_intelligence_analysis':
+        return await execute_ad_intelligence_analysis_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -2273,7 +2275,8 @@ def _reschedule_after_failure(job: Dict, job_id: str, run_attempt_number: int = 
             else:
                 logger.error(f"Job {job_id}: retries exhausted, could not calculate next run")
         else:
-            logger.warning(f"Job {job_id}: one-time job retries exhausted, staying dead")
+            logger.warning(f"Job {job_id}: one-time job retries exhausted, marking completed")
+            job_updates["status"] = "completed"  # Release dedup index
         update_job(job_id, job_updates)
 
 
@@ -2904,6 +2907,102 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
+
+
+async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute full 4-layer ad intelligence analysis in background.
+
+    Runs classify -> baselines -> diagnose -> recommend with full production
+    limits. Results stored in ad_intelligence_runs with rendered markdown.
+
+    One retry on failure (max_retries=2). On exhaustion, one-time jobs get
+    status='completed' to release dedup index. User re-triggers via agent chat.
+
+    Parameters (from job['parameters']):
+        max_new: int (default 200)
+        max_video: int (default 15)
+        days_back: int (default 30)
+        goal: str (default None)
+    """
+    job_id = job['id']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting ad intelligence analysis job for brand {brand_name}")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+    try:
+        from uuid import UUID as _AnalysisUUID
+        from viraltracker.services.gemini_service import GeminiService
+        from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+        from viraltracker.services.ad_intelligence.models import RunConfig
+
+        db = get_supabase_client()
+        brand_result = db.table("brands").select("organization_id").eq(
+            "id", str(brand_id)
+        ).limit(1).execute()
+        if not brand_result.data:
+            raise ValueError(f"Brand {brand_id} not found")
+        org_id = _AnalysisUUID(brand_result.data[0]["organization_id"])
+
+        gemini_service = GeminiService()
+        intel_service = AdIntelligenceService(db, gemini_service=gemini_service)
+
+        config = RunConfig(
+            days_back=params.get('days_back', 30),
+            max_classifications_per_run=params.get('max_new', 200),
+            max_video_classifications_per_run=params.get('max_video', 15),
+        )
+
+        logs.append(f"Running full analysis for: {brand_name}")
+        logs.append(f"Config: days_back={config.days_back}, max_new={config.max_classifications_per_run}, max_video={config.max_video_classifications_per_run}")
+
+        result = await intel_service.full_analysis(
+            brand_id=_AnalysisUUID(brand_id), org_id=org_id,
+            config=config, goal=params.get('goal'),
+        )
+
+        logs.append(f"Active ads: {result.active_ads}, Recs: {len(result.recommendations)}")
+        logs.append(f"Run ID: {result.run_id}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": {
+                "analysis_run_id": str(result.run_id),
+                "active_ads": result.active_ads,
+                "recommendations": len(result.recommendations),
+            },
+        })
+        _update_job_next_run(job, job_id)
+        return {"success": True, "run_id": str(result.run_id)}
+
+    except Exception as e:
+        logs.append(f"Failed: {e}")
+        logger.error(f"Ad intelligence analysis job {job.get('name', job_id)} failed: {e}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+
+        # Both one-time and recurring: use _reschedule_after_failure().
+        # One-time (max_retries=2): gets 1 retry, then exhaustion sets status='completed'
+        #   (releases dedup index so user can re-queue via agent chat).
+        # Recurring: exponential backoff, survives transient failures.
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": str(e)}
 
 
 async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:

@@ -164,6 +164,7 @@ def job_type_badge(job_type: str) -> str:
         'competitor_scrape': ('🕵️', 'Competitor Scrape'),
         'reddit_scrape': ('💬', 'Reddit Scrape'),
         'amazon_review_scrape': ('⭐', 'Amazon Reviews'),
+        'ad_intelligence_analysis': ('🧠', 'Ad Intelligence Analysis'),
     }
     return badges.get(job_type, ('❓', job_type))
 

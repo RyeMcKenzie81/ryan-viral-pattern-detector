@@ -158,54 +158,163 @@ async def analyze_account(
     brand_id: str,
     days_back: int = 30,
     goal: str = "",
+    force_refresh: bool = False,
 ) -> str:
     """Run full 4-layer account analysis: classify → baseline → diagnose → recommend.
 
-    Creates an analysis run, classifies all active ads by awareness level,
-    computes cohort baselines, runs diagnostic rules, and generates
-    actionable recommendations.
+    Analysis runs in a background worker (~2-10 minutes). This tool:
+    1. Returns cached results instantly if a recent analysis exists
+    2. Queues a new background analysis if no cache or force_refresh=True
+    3. Prevents duplicate jobs from being queued
+
+    Ask the user to check back in a few minutes if a new analysis was queued.
 
     Args:
         ctx: Run context with AgentDependencies.
         brand_id: Brand UUID string.
         days_back: Number of days to analyze (default: 30).
         goal: Analysis goal (e.g., 'lower_cpa', 'scale', 'stability').
+        force_refresh: If True, queue a new analysis even if cache exists.
 
     Returns:
-        Formatted markdown with analysis results.
+        Cached analysis markdown, or status message about queued job.
     """
-    from ...services.ad_intelligence.chat_renderer import ChatRenderer
-    from ...services.ad_intelligence.models import RunConfig
+    from ...services.pipeline_helpers import queue_one_time_job
+    from viraltracker.core.database import get_supabase_client
 
-    # Interactive mode: low limits to avoid Streamlit timeout.
-    # Skip new video classifications (41s each) — use cached only.
-    # Cap new image classifications at 20 to stay under ~60s.
-    config = RunConfig(
-        days_back=days_back,
-        max_classifications_per_run=20,
-        max_video_classifications_per_run=0,
-    )
+    db = get_supabase_client()
+    intel_service = ctx.deps.ad_intelligence
 
-    result = await ctx.deps.ad_intelligence.full_analysis(
-        brand_id=UUID(brand_id),
-        org_id=ctx.deps.ad_intelligence.supabase.table("brands").select(
-            "organization_id"
-        ).eq("id", brand_id).limit(1).execute().data[0]["organization_id"],
-        config=config,
-        goal=goal or None,
-    )
-
-    # Cache brand context and run_id for follow-up queries
+    # Cache brand context for follow-up queries
     ctx.deps.result_cache.custom["ad_intelligence_brand_id"] = brand_id
-    ctx.deps.result_cache.custom["ad_intelligence_brand_name"] = result.brand_name
-    ctx.deps.result_cache.custom["ad_intelligence_run_id"] = str(result.run_id)
 
-    rendered = ChatRenderer.render_account_analysis(result)
-    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
-        "tool_name": "analyze_account",
-        "rendered_markdown": rendered,
+    # --- Step 1: App-level dedup check (one-time jobs only) ---
+    # 1a. Check for queued (not yet running) one-time jobs
+    try:
+        queued_result = db.table("scheduled_jobs").select("id").eq(
+            "brand_id", brand_id
+        ).eq("job_type", "ad_intelligence_analysis").eq(
+            "schedule_type", "one_time"
+        ).eq("status", "active").limit(1).execute()
+
+        if queued_result.data:
+            return (
+                "An ad intelligence analysis is already queued for this brand. "
+                "Please ask again in a few minutes to see the results."
+            )
+    except Exception as e:
+        logger.warning(f"Dedup pre-check failed: {e}")
+
+    # 1b. Check for currently running analysis runs (via scheduled_job_runs)
+    try:
+        from datetime import datetime, timedelta, timezone
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
+
+        # Get all ad_intelligence_analysis job IDs for this brand
+        job_ids_result = db.table("scheduled_jobs").select("id").eq(
+            "brand_id", brand_id
+        ).eq("job_type", "ad_intelligence_analysis").execute()
+
+        if job_ids_result.data:
+            job_ids = [r["id"] for r in job_ids_result.data]
+            running_result = db.table("scheduled_job_runs").select("id").in_(
+                "scheduled_job_id", job_ids
+            ).eq("status", "running").gte(
+                "started_at", stale_cutoff
+            ).limit(1).execute()
+
+            if running_result.data:
+                return (
+                    "An ad intelligence analysis is currently running for this brand. "
+                    "Please ask again in a few minutes to see the results."
+                )
+    except Exception as e:
+        logger.warning(f"Running-run dedup check failed: {e}")
+
+    # --- Step 2: Check cache ---
+    if not force_refresh:
+        try:
+            cached = await intel_service.get_latest_completed_analysis(
+                brand_id=UUID(brand_id), days_back=days_back,
+            )
+            if cached and cached.rendered_markdown:
+                # Serve cached result with date stamp
+                completed_at = cached.completed_at or "unknown"
+                header = f"*Cached analysis from {completed_at} ({cached.config.days_back}-day window)*\n\n"
+                rendered = header + cached.rendered_markdown
+
+                ctx.deps.result_cache.custom["ad_intelligence_brand_name"] = cached.summary.get("brand_name", "") if cached.summary else ""
+                ctx.deps.result_cache.custom["ad_intelligence_run_id"] = str(cached.id)
+                ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+                    "tool_name": "analyze_account",
+                    "rendered_markdown": rendered,
+                }
+                return rendered
+        except Exception as e:
+            logger.warning(f"Cache lookup failed: {e}")
+
+    # Check if there's a cached analysis with different days_back (for hint)
+    hint_text = ""
+    if not force_refresh:
+        try:
+            any_cached = await intel_service.get_latest_completed_analysis_any_params(
+                brand_id=UUID(brand_id),
+            )
+            if any_cached and any_cached.rendered_markdown:
+                cached_days = any_cached.config.days_back
+                hint_text = (
+                    f"Latest available is a {cached_days}-day analysis from "
+                    f"{any_cached.completed_at}. Queuing a fresh {days_back}-day analysis...\n\n"
+                )
+        except Exception as e:
+            logger.warning(f"Hint lookup failed: {e}")
+
+    # --- Step 3: Queue new analysis ---
+    params = {
+        "max_new": 200,
+        "max_video": 15,
+        "days_back": days_back,
     }
-    return rendered
+    if goal:
+        params["goal"] = goal
+
+    job_id = queue_one_time_job(
+        brand_id=brand_id,
+        job_type="ad_intelligence_analysis",
+        parameters=params,
+        trigger_source="agent_chat",
+        name=f"Ad Intelligence Analysis - Agent Chat",
+        max_retries=2,
+    )
+
+    if job_id:
+        return (
+            f"{hint_text}"
+            f"Queued a full ad intelligence analysis for this brand (job {job_id[:8]}...). "
+            f"This typically takes 2-10 minutes depending on account size.\n\n"
+            f"Ask me again when you're ready to see the results."
+        )
+
+    # job_id is None — could be dedup or real DB error
+    # Follow-up query to distinguish
+    try:
+        check_result = db.table("scheduled_jobs").select("id").eq(
+            "brand_id", brand_id
+        ).eq("job_type", "ad_intelligence_analysis").eq(
+            "schedule_type", "one_time"
+        ).eq("status", "active").limit(1).execute()
+
+        if check_result.data:
+            return (
+                "An ad intelligence analysis is already queued for this brand. "
+                "Please ask again in a few minutes to see the results."
+            )
+    except Exception:
+        pass
+
+    return (
+        "Failed to queue the analysis. Please try again in a moment."
+    )
 
 
 @ad_intelligence_agent.tool(
