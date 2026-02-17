@@ -48,9 +48,12 @@ def handle_shutdown(signum, frame):
     shutdown_requested = True
 
 
-# Register signal handlers
-signal.signal(signal.SIGTERM, handle_shutdown)
-signal.signal(signal.SIGINT, handle_shutdown)
+# Register signal handlers (only when running as main entry point,
+# not when imported by Streamlit or other non-main threads)
+import threading
+if threading.current_thread() is threading.main_thread():
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
 
 
 # ============================================================================
