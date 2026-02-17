@@ -177,7 +177,14 @@ async def analyze_account(
     from ...services.ad_intelligence.chat_renderer import ChatRenderer
     from ...services.ad_intelligence.models import RunConfig
 
-    config = RunConfig(days_back=days_back)
+    # Interactive mode: low limits to avoid Streamlit timeout.
+    # Skip new video classifications (41s each) — use cached only.
+    # Cap new image classifications at 20 to stay under ~60s.
+    config = RunConfig(
+        days_back=days_back,
+        max_classifications_per_run=20,
+        max_video_classifications_per_run=0,
+    )
 
     result = await ctx.deps.ad_intelligence.full_analysis(
         brand_id=UUID(brand_id),
