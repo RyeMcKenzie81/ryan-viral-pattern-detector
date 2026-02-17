@@ -1356,12 +1356,28 @@ After the final chunk of a phase:
 - [ ] Cross-brand transfer learning (opt-in)
 - [ ] Competitive whitespace identification
 - [ ] **Success gate**: Human override rate decreasing quarter-over-quarter (compare Q1 vs Q2 override rates, require >= 50 overrides per quarter for statistical validity). Approval rate trend positive over 8-week rolling window. At least one autonomous threshold adjustment accepted by operator.
+- **Known risks (Phase 8A — from post-plan review)**:
+  1. **SQL injection in `_record_combo_usage()`** (FIXED) — brand_id, product_id, combo_key interpolated into raw SQL. Fixed with `_sql_val()` escaping. Consider migrating to parameterized RPC.
+  2. **Calibration proposal drift** — Auto-proposals could shift quality in undesirable direction if override patterns are biased. Mitigated by safety rails (±1.0 threshold max, ±0.5 weight max, min 30 overrides).
+  3. **Exemplar staleness** — Historical exemplars may become irrelevant as brand style evolves. Soft delete + per-brand caps (30) force periodic curation.
+  4. **Gemini Flash descriptor extraction inconsistency** — Edge cases (blank images, text-only ads) may produce invalid JSON. Falls back to `_default_descriptors()`.
+  5. **FatigueScorer cold start** — New brands get uniform 1.0 scores (no penalty). Intended behavior — combo modifier requires `MIN_COMBO_OBSERVATIONS = 3`.
+  6. **No eval baselines for ReviewAdsNode** — Pre-existing gap. Exemplar injection modified review prompt but no eval infra exists to verify quality. Tracked as tech debt.
+- **Known risks (Phase 8B — from implementation)**:
+  1. **Scorer weight learning cold start** — All brands start in "cold" phase (static weights only). Requires 30+ matured ads with selection snapshots before learning begins. Not a bug — designed to prevent premature optimization.
+  2. **Credit assignment noise** — contribution-weighted update attributes reward to scorers based on their weight × score proportion. With only 2-3 non-zero scorers active, attribution signal is noisy. Mitigated by soft updates (0.3× for low-contribution), safety rails (±0.15 max delta per update), and weight floor (0.1).
+  3. **Mann-Whitney U power with small samples** — Binary data (approved/not) with <50 ads per arm produces low statistical power. `min_sample_size` default is 20 ads but this may be insufficient for detecting small effects. Normal approximation degrades below n=20.
+  4. **Cross-brand transfer privacy** — Only statistical aggregates (element score posteriors, interaction effects) cross brand boundaries. However, transferred priors could leak strategic information about another brand's creative preferences. Mitigated by org-scoping, opt-in, and shrinkage (0.3× weight).
+  5. **DBSCAN eps sensitivity** — Cosine distance threshold (eps=0.3) is hardcoded. Different brands/visual styles may need different thresholds. All noise points get cluster_label=-1. Monitor cluster quality.
+  6. **Whitespace false positives** — Predicted potential based on individual element scores + synergy may not reflect actual pair performance. Novelty bonus inflates scores for untested combos. Top 20 candidates should be treated as suggestions, not guarantees.
+  7. **Selection snapshot volume** — Every pipeline run records a `selection_weight_snapshots` row. At high volume (100+ runs/day per brand), table grows quickly. No TTL or cleanup policy. Consider archiving snapshots older than 90 days.
+  8. **Experiment arm contamination** — Seed-based assignment uses minute-level timestamp. Two runs within the same minute for the same product+template get the same arm. This is intentional (replay stability) but prevents within-minute randomization.
 
 ---
 
 ## Pending UI Tests (Manual Browser Verification)
 
-These tests require deployment to Railway staging and manual browser verification. All underlying service-layer logic is unit-tested (276 tests passing), but UI rendering and interaction paths need manual confirmation.
+These tests require deployment to Railway staging and manual browser verification. All underlying service-layer logic is unit-tested (834 tests passing), but UI rendering and interaction paths need manual confirmation.
 
 ### Phase 2 (Deferred)
 - [ ] Template grid filters render and update correctly
@@ -1389,6 +1405,29 @@ These tests require deployment to Railway staging and manual browser verificatio
 - [ ] Bulk Approve All per template group works
 - [ ] Bulk Reject All per template group works
 - [ ] Pagination (Previous/Next) navigates correctly with page counter
+
+### Phase 8A (Deferred)
+- [ ] Run migration `2026-02-16_ad_creator_v2_phase8a.sql`
+- [ ] "Mark as Exemplar" button appears on approved ads in V2 results
+- [ ] Platform Settings shows Calibration Proposals, Interaction Effects, Exemplar Library tabs
+- [ ] Auto-seed exemplars works for brand with existing overrides
+- [ ] FatigueScorer active in template selection (8 scorers in logs)
+- [ ] Visual embeddings stored after review (check `visual_embeddings` table)
+- [ ] Quality calibration job runs on schedule
+- [ ] Interaction detection piggybacks on genome_validation (check `element_interactions` table)
+
+### Phase 8B (Deferred)
+- [ ] Run migration `2026-02-16_ad_creator_v2_phase8b.sql`
+- [ ] Platform Settings > Scorer Weights tab shows per-scorer DataFrame with phase/observations/weight
+- [ ] Platform Settings > Generation Experiments tab renders (empty state OK)
+- [ ] Platform Settings > Visual Clusters tab renders (empty state OK)
+- [ ] Brand Manager shows Cross-Brand Sharing toggle with save
+- [ ] Template selection uses `PHASE_8_SCORERS` (8 scorers — check logs)
+- [ ] Learned weights used when brand has 30+ observations (verify via Scorer Weights tab)
+- [ ] Selection snapshot recorded after pipeline run (check `selection_weight_snapshots` table)
+- [ ] Whitespace identification runs on genome_validation (check `whitespace_candidates` table)
+- [ ] Visual clustering runs on genome_validation (check `visual_style_clusters` table)
+- [ ] Generation experiment: create → activate → run ads → analyze → conclude workflow
 
 ### Full E2E (Post-Deployment)
 - [ ] V2 job creation → submission → worker execution → results display (full pipeline)

@@ -998,6 +998,27 @@ Run `/post-plan-review` against all changed files. Fix any issues. Produce PASS 
 | E1 | **No eval baselines for ReviewAdsNode** — No `tests/evals/` directory exists. Phase 8A modified the review prompt by adding optional `exemplar_context`, but the baseline gap predates Phase 8A. | Cannot automatically verify prompt changes don't degrade review quality. | Track as tech debt. Create eval baseline infrastructure in 8B or separate effort. |
 | E2 | **No integration tests for worker handlers** — Worker handlers (`execute_quality_calibration_job`, `execute_genome_validation_job`) are thin wiring, but not tested end-to-end. | Worker bugs only caught in production. | Existing pattern across all worker handlers. Consider integration test framework in future. |
 
+### Phase 8B Implementation Risks
+
+| # | Risk | Severity | Likelihood | Mitigation |
+|---|------|----------|------------|------------|
+| R10 | **Scorer weight learning cold start** — All brands start in "cold" phase (static weights only). Requires 30+ matured ads with selection snapshots before any learning begins. Until then, the system behaves identically to pre-8B. | LOW | HIGH | Intended design. Cold phase uses proven static weights. Warm phase blends linearly. No brand experiences degraded selection during ramp-up. |
+| R11 | **Credit assignment noise** — Contribution-weighted update attributes reward to scorers based on `W_i * S_i / Σ(W_j * S_j)`. With few non-zero scorers, attribution signal is noisy and may reinforce random correlations. | MEDIUM | MEDIUM | Soft updates (0.3× for low-contribution scorers) dampen noise. Safety rails: weight floor 0.1, ceiling 2.0, max ±0.15 delta per weekly update. Phase transition requires 100+ observations before full autonomy. |
+| R12 | **Mann-Whitney U power with small samples** — Binary approval data (1/0) with <50 ads per arm produces low statistical power. Normal approximation in tie-corrected variance degrades below n=20. | MEDIUM | MEDIUM | `min_sample_size` default = 20 ads (not runs). Service returns `inconclusive` rather than false positives when power is insufficient. Tie correction formula handles the extreme-tie case correctly (tested with heavy-tie binary data). |
+| R13 | **Cross-brand transfer leakage** — Transferred priors (element score posteriors, interaction effects) could leak strategic information about creative preferences between brands in the same org. | LOW | LOW | Only statistical aggregates cross boundaries (no ad content, images, or prompts). Org-scoped (no cross-org transfer). Opt-in per brand (`cross_brand_sharing` default FALSE). Shrinkage factor (0.3×) limits influence. Brand similarity gating planned. |
+| R14 | **DBSCAN eps sensitivity** — Cosine distance threshold (eps=0.3) hardcoded. Different brands/visual styles may produce vastly different cluster structures. Too-small eps = all noise; too-large = one mega-cluster. | LOW | MEDIUM | Default eps=0.3 works well for normalized embeddings. Noise points (cluster_label=-1) are expected and handled. Cluster quality visible in UI (Visual Clusters tab). Future: auto-tune eps via silhouette score. |
+| R15 | **Whitespace false positives** — Predicted potential from `mean(score_a, score_b) + synergy + novelty` may not reflect actual pair performance. Novelty bonus inflates untested combos. | LOW | HIGH | Candidates are advisory only (injected into prompts as suggestions, not constraints). Top 20 capped. Candidates tracked (`status`: identified → injected → tested → dismissed). Novelty bonus decays with usage. |
+| R16 | **Selection snapshot volume** — Every pipeline run records a `selection_weight_snapshots` row. High-volume brands (100+ runs/day) could grow this table quickly. No TTL or archival policy. | LOW | LOW | Most brands run 1-10 pipeline runs/day. At 100 rows/day, 90 days = 9K rows per brand — manageable. Monitor table size. Consider archiving snapshots > 90 days in future. |
+| R17 | **Experiment arm contamination via timestamp** — Seed uses `sha256(product_id:template_id:timestamp_minute)`. Two runs in the same minute for the same product+template get the same arm. | LOW | LOW | Intentional for replay stability (retries get consistent assignment). Different templates get different arms. Different minutes get different arms. True randomization not needed — deterministic split ratio is sufficient. |
+
+### Phase 8B Operational Risks
+
+| # | Risk | Severity | Mitigation |
+|---|------|----------|------------|
+| O4 | **Migration table count** — Phase 8B adds 7 new tables. Large migration may timeout on constrained Supabase plans. | LOW | Tables are small (no data migration, just DDL). Run in Supabase SQL editor with extended timeout if needed. |
+| O5 | **Worker genome_validation job duration** — Piggybacking weight learning + whitespace + clustering on weekly genome_validation extends job runtime. | MEDIUM | Each addition is individually wrapped in try/except (non-fatal). Clustering is the most expensive (O(n²) distance matrix) but bounded by per-brand embedding count. Monitor job duration after deployment. |
+| O6 | **sklearn dependency for DBSCAN** — VisualClusteringService includes a pure Python DBSCAN fallback, but sklearn import is attempted first. If sklearn is not installed, fallback activates automatically. | LOW | Pure Python implementation is correct but slower. At >1000 embeddings per brand, consider ensuring sklearn is available. Current brand sizes are well within pure Python performance range. |
+
 ---
 
 ## Change Log
@@ -1008,3 +1029,5 @@ Run `/post-plan-review` against all changed files. Fix any issues. Produce PASS 
 | 2026-02-16 | 4 | Implementation complete (P8A-C1 through P8A-C8) |
 | 2026-02-16 | 4 | Post-plan review: fixed SQL injection in combo tracking, fixed weight preset test regression |
 | 2026-02-16 | 4 | Added Risks & Mitigations section, expanded test coverage for CRUD methods |
+| 2026-02-16 | 4 | Phase 8B implementation complete (C1-C13): 6 features, 10 new files, 9 modified, 63 new tests, 834 total passing |
+| 2026-02-16 | 4 | Added Phase 8B risks (R10-R17, O4-O6) to risk register |
