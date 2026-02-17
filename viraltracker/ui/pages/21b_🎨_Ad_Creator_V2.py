@@ -390,19 +390,32 @@ def _render_scored_template_selection(mode: str):
         )
         st.session_state.v2_category = category
 
-    # Smart select has asset strictness option
+    # Smart select has awareness level + asset strictness options
+    awareness_stage = None
     asset_strictness = "default"
     if mode == "smart_select":
-        asset_strictness = st.selectbox(
-            "Asset strictness",
-            options=["default", "growth", "premium"],
-            format_func=lambda x: {
-                "default": "Default - all templates eligible",
-                "growth": "Growth - basic asset matching required",
-                "premium": "Premium - strict asset + detection required",
-            }[x],
-            key="v2_asset_strictness",
-        )
+        ss_col1, ss_col2 = st.columns(2)
+        with ss_col1:
+            awareness_levels = get_awareness_levels()
+            awareness_options = [None] + [a['value'] for a in awareness_levels]
+            awareness_labels = {None: "All", **{a['value']: a['label'] for a in awareness_levels}}
+            awareness_stage = st.selectbox(
+                "Awareness Level",
+                options=awareness_options,
+                format_func=lambda x: awareness_labels.get(x, str(x)),
+                key="v2_smart_awareness",
+            )
+        with ss_col2:
+            asset_strictness = st.selectbox(
+                "Asset strictness",
+                options=["default", "growth", "premium"],
+                format_func=lambda x: {
+                    "default": "Default - all templates eligible",
+                    "growth": "Growth - basic asset matching required",
+                    "premium": "Premium - strict asset + detection required",
+                }[x],
+                key="v2_asset_strictness",
+            )
 
     # Preview button
     if st.button("Preview Selection", key="v2_preview_selection"):
@@ -412,6 +425,7 @@ def _render_scored_template_selection(mode: str):
                 count=template_count,
                 category=category if category != "all" else None,
                 asset_strictness=asset_strictness,
+                awareness_stage=awareness_stage,
             )
             st.session_state.v2_preview_result = preview
 
@@ -433,7 +447,10 @@ def _render_scored_template_selection(mode: str):
                         storage_path = tmpl.get('storage_path', '')
                         thumb_url = get_scraped_template_url(storage_path) if storage_path else ""
                         if thumb_url:
-                            st.image(thumb_url, width=150)
+                            st.markdown(
+                                f'<img src="{thumb_url}" style="width:150px;border-radius:4px;">',
+                                unsafe_allow_html=True,
+                            )
                         else:
                             st.caption("No preview")
                     with scores_col:
@@ -454,7 +471,7 @@ def _render_scored_template_selection(mode: str):
                                f"Used: {tmpl.get('times_used', 0)}x")
 
 
-def _run_template_preview(mode, count, category, asset_strictness):
+def _run_template_preview(mode, count, category, asset_strictness, awareness_stage=None):
     """Run template scoring preview. Returns result dict."""
     try:
         import asyncio
@@ -502,6 +519,7 @@ def _run_template_preview(mode, count, category, asset_strictness):
             product_asset_tags=asset_tags,
             requested_category=category,
             target_sex=persona_target_sex,
+            awareness_stage=awareness_stage,
         )
 
         if mode == 'roll_the_dice':
