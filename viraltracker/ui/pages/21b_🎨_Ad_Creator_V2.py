@@ -1054,14 +1054,16 @@ def _render_exemplar_button(ad: dict, run_key: str):
                 # Get brand_id from ad data
                 brand_id = ad.get("brand_id")
                 if not brand_id:
-                    # Try to get from ad_runs
+                    # Look up via ad_runs (brand_id lives on ad_runs, not generated_ads)
                     from viraltracker.core.database import get_supabase_client
                     db = get_supabase_client()
-                    ad_result = db.table("generated_ads").select(
-                        "brand_id"
-                    ).eq("id", ad_id).limit(1).execute()
-                    if ad_result.data:
-                        brand_id = ad_result.data[0].get("brand_id")
+                    ad_run_id = ad.get("ad_run_id")
+                    if ad_run_id:
+                        run_result = db.table("ad_runs").select(
+                            "brand_id"
+                        ).eq("id", ad_run_id).limit(1).execute()
+                        if run_result.data:
+                            brand_id = run_result.data[0].get("brand_id")
 
                 if not brand_id:
                     st.error("Could not determine brand for this ad.")
