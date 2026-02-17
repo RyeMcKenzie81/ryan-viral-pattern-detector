@@ -173,11 +173,19 @@ def update_job(job_id: str, updates: Dict):
         logger.error(f"Failed to update job {job_id}: {e}")
 
 
+    # Job types that legitimately run longer than 30 minutes (e.g., full
+    # 4-layer analysis for large ad accounts). Use 120-minute threshold instead.
+LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis"}
+
+
 def recover_stuck_runs(stuck_threshold_minutes: int = 30):
     """Find runs stuck in 'running' state for too long and mark them failed.
 
     Called at the start of each poll cycle. Marks stuck runs as failed and
     reschedules their parent jobs via _reschedule_after_failure.
+
+    Long-running job types (e.g. ad_intelligence_analysis) use a 120-minute
+    threshold instead of the default 30.
 
     Args:
         stuck_threshold_minutes: How long a run can be 'running' before recovery.
@@ -185,12 +193,27 @@ def recover_stuck_runs(stuck_threshold_minutes: int = 30):
     try:
         db = get_supabase_client()
         cutoff = (datetime.now(PST) - timedelta(minutes=stuck_threshold_minutes)).isoformat()
+        long_cutoff = (datetime.now(PST) - timedelta(minutes=120)).isoformat()
 
         stuck = db.table("scheduled_job_runs").select(
             "id, scheduled_job_id, started_at, attempt_number"
         ).eq("status", "running").lt("started_at", cutoff).execute()
 
         for run in (stuck.data or []):
+            # Check if this is a long-running job type
+            try:
+                job_result = db.table("scheduled_jobs").select("job_type").eq(
+                    "id", run["scheduled_job_id"]
+                ).limit(1).execute()
+                job_type = job_result.data[0]["job_type"] if job_result.data else None
+
+                if job_type in LONG_RUNNING_JOB_TYPES:
+                    # Use longer threshold for these jobs
+                    if run["started_at"] > long_cutoff:
+                        continue  # Not yet stuck, skip
+            except Exception:
+                pass  # If lookup fails, use default threshold
+
             logger.warning(f"Recovering stuck run {run['id']} (started {run['started_at']})")
 
             # Mark run as failed
