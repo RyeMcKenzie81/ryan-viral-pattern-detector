@@ -562,9 +562,8 @@ def render_generation_config():
     with col1:
         content_source = st.selectbox(
             "Content source",
-            options=["hooks", "recreate_template", "belief_first", "plan", "angles"],
+            options=["recreate_template", "belief_first", "plan", "angles"],
             format_func=lambda x: {
-                "hooks": "Hooks - headline from hook library",
                 "recreate_template": "Recreate Template - benefits/USPs",
                 "belief_first": "Belief First - angle-driven",
                 "plan": "Plan - belief plan execution",
@@ -774,7 +773,7 @@ def _handle_submit():
         'template_selection_mode': mode,
         'template_count': st.session_state.get('v2_template_count', 3),
         'template_category': st.session_state.v2_category if st.session_state.v2_category != 'all' else None,
-        'content_source': st.session_state.get('v2_content_source', 'hooks'),
+        'content_source': st.session_state.get('v2_content_source', 'recreate_template'),
         'canvas_sizes': st.session_state.get('v2_canvas_sizes', ['1080x1080px']),
         'color_modes': st.session_state.get('v2_color_modes', ['original']),
         'num_variations': st.session_state.get('v2_num_variations', 5),
