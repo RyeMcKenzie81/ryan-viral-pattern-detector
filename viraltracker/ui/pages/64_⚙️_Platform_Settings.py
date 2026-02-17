@@ -706,6 +706,61 @@ with tab_experiments:
             else:
                 st.info("No experiments yet for this brand.")
 
+            # Create new experiment form
+            st.markdown("---")
+            st.markdown("#### Create New Experiment")
+
+            with st.form("create_experiment_form"):
+                exp_name = st.text_input("Experiment Name", placeholder="e.g. Prompt v2 vs v1")
+                exp_hypothesis = st.text_area(
+                    "Hypothesis",
+                    placeholder="e.g. Shorter prompts will increase approval rate",
+                    height=80,
+                )
+                exp_type = st.selectbox(
+                    "Experiment Type",
+                    ["prompt_version", "pipeline_config", "review_rubric", "element_strategy"],
+                )
+                exp_col1, exp_col2 = st.columns(2)
+                with exp_col1:
+                    exp_split = st.slider("Variant Traffic %", 10, 90, 50, 5) / 100.0
+                with exp_col2:
+                    exp_min_sample = st.number_input("Min Sample Size (per arm)", 5, 200, 20, 5)
+
+                exp_control = st.text_area(
+                    "Control Config (JSON)",
+                    value='{"version": "current"}',
+                    height=80,
+                )
+                exp_variant = st.text_area(
+                    "Variant Config (JSON)",
+                    value='{"version": "new"}',
+                    height=80,
+                )
+
+                submitted = st.form_submit_button("Create Experiment", type="primary")
+                if submitted:
+                    try:
+                        import json as _json
+                        ctrl_cfg = _json.loads(exp_control)
+                        var_cfg = _json.loads(exp_variant)
+                        new_exp = exp_svc.create_experiment(
+                            brand_id=UUID(exp_brand_id),
+                            name=exp_name,
+                            experiment_type=exp_type,
+                            control_config=ctrl_cfg,
+                            variant_config=var_cfg,
+                            split_ratio=exp_split,
+                            min_sample_size=exp_min_sample,
+                            hypothesis=exp_hypothesis or None,
+                        )
+                        st.success(f"Experiment created: {new_exp.get('name', exp_name)}")
+                        st.rerun()
+                    except _json.JSONDecodeError as je:
+                        st.error(f"Invalid JSON in config: {je}")
+                    except Exception as e:
+                        st.error(f"Failed to create experiment: {e}")
+
     except Exception as e:
         st.warning(f"Could not load experiment data: {e}")
 

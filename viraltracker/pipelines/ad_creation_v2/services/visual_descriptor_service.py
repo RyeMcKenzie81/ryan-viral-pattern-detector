@@ -59,12 +59,11 @@ Return ONLY a JSON object with these exact keys:
 Return ONLY valid JSON, no other text."""
 
         image_b64 = base64.b64encode(image_data).decode("utf-8")
-        gemini = GeminiService()
+        gemini = GeminiService(model="gemini-2.0-flash")
 
         result = await gemini.analyze_image(
-            image_base64=image_b64,
+            image_data=image_b64,
             prompt=prompt,
-            model="gemini-2.0-flash",
         )
 
         return self._parse_descriptors(result)

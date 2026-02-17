@@ -173,7 +173,7 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                             image_data=image_data,
                         )
                     except Exception as e:
-                        logger.debug(f"Visual embedding storage failed for {ad_uuid_for_ve}: {e}")
+                        logger.warning(f"Visual embedding storage failed for {ad_uuid_for_ve}: {e}")
 
             # Look up congruence score from state
             hook_text = hook.get('adapted_text', '') or hook.get('hook_text', '')

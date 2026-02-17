@@ -364,11 +364,11 @@ class GenerationExperimentService:
         outcomes = []
         for ad_run_id in ad_run_ids:
             ads_result = self.supabase.table("generated_ads").select(
-                "review_status"
+                "final_status"
             ).eq("ad_run_id", ad_run_id).execute()
 
             for ad in (ads_result.data or []):
-                status = ad.get("review_status", "")
+                status = ad.get("final_status", "")
                 outcomes.append(1.0 if status == "approved" else 0.0)
 
         return outcomes

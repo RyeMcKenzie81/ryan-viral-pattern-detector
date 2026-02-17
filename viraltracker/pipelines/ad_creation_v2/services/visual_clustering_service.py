@@ -54,7 +54,7 @@ class VisualClusteringService:
         """
         # Load visual embeddings for this brand
         embeddings_result = self.supabase.table("visual_embeddings").select(
-            "id, generated_ad_id, embedding, descriptors"
+            "id, generated_ad_id, embedding, visual_descriptors"
         ).eq("brand_id", str(brand_id)).execute()
 
         data = embeddings_result.data or []
@@ -87,7 +87,7 @@ class VisualClusteringService:
                 vectors.append(emb)
                 embedding_ids.append(row["id"])
                 ad_ids.append(row.get("generated_ad_id"))
-                descriptors_list.append(row.get("descriptors") or {})
+                descriptors_list.append(row.get("visual_descriptors") or {})
 
         if len(vectors) < min_samples:
             return {
