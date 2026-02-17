@@ -390,32 +390,30 @@ def _render_scored_template_selection(mode: str):
         )
         st.session_state.v2_category = category
 
-    # Smart select has awareness level + asset strictness options
-    awareness_stage = None
+    # Awareness level filter (both roll_the_dice and smart_select)
+    awareness_levels = get_awareness_levels()
+    awareness_options = [None] + [a['value'] for a in awareness_levels]
+    awareness_labels = {None: "All", **{a['value']: a['label'] for a in awareness_levels}}
+    awareness_stage = st.selectbox(
+        "Awareness Level",
+        options=awareness_options,
+        format_func=lambda x: awareness_labels.get(x, str(x)),
+        key="v2_scored_awareness",
+    )
+
+    # Smart select has additional asset strictness option
     asset_strictness = "default"
     if mode == "smart_select":
-        ss_col1, ss_col2 = st.columns(2)
-        with ss_col1:
-            awareness_levels = get_awareness_levels()
-            awareness_options = [None] + [a['value'] for a in awareness_levels]
-            awareness_labels = {None: "All", **{a['value']: a['label'] for a in awareness_levels}}
-            awareness_stage = st.selectbox(
-                "Awareness Level",
-                options=awareness_options,
-                format_func=lambda x: awareness_labels.get(x, str(x)),
-                key="v2_smart_awareness",
-            )
-        with ss_col2:
-            asset_strictness = st.selectbox(
-                "Asset strictness",
-                options=["default", "growth", "premium"],
-                format_func=lambda x: {
-                    "default": "Default - all templates eligible",
-                    "growth": "Growth - basic asset matching required",
-                    "premium": "Premium - strict asset + detection required",
-                }[x],
-                key="v2_asset_strictness",
-            )
+        asset_strictness = st.selectbox(
+            "Asset strictness",
+            options=["default", "growth", "premium"],
+            format_func=lambda x: {
+                "default": "Default - all templates eligible",
+                "growth": "Growth - basic asset matching required",
+                "premium": "Premium - strict asset + detection required",
+            }[x],
+            key="v2_asset_strictness",
+        )
 
     # Preview button
     if st.button("Preview Selection", key="v2_preview_selection"):
