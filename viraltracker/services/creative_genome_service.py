@@ -573,6 +573,35 @@ class CreativeGenomeService:
         except Exception as e:
             logger.debug(f"Interaction data unavailable for advisory: {e}")
 
+        # Phase 8B: Include whitespace opportunities in advisory context
+        whitespace_advisory = None
+        try:
+            from viraltracker.services.whitespace_identification_service import WhitespaceIdentificationService
+            ws_service = WhitespaceIdentificationService()
+            ws_candidates = ws_service.get_whitespace_candidates(brand_id, limit=3)
+            if ws_candidates:
+                whitespace_advisory = ws_service.format_whitespace_advisory(ws_candidates)
+                if whitespace_advisory:
+                    notes.append(whitespace_advisory)
+        except Exception as e:
+            logger.debug(f"Whitespace data unavailable for advisory: {e}")
+
+        # Phase 8B: Include top visual style cluster info
+        top_visual_styles = None
+        try:
+            from viraltracker.pipelines.ad_creation_v2.services.visual_clustering_service import VisualClusteringService
+            vc_service = VisualClusteringService()
+            cluster_summary = vc_service.get_cluster_summary(brand_id)
+            if cluster_summary:
+                top_cluster = cluster_summary[0] if cluster_summary else None
+                if top_cluster and top_cluster.get("avg_reward_score", 0) > 0.5:
+                    descriptors = top_cluster.get("top_descriptors") or {}
+                    if descriptors:
+                        top_visual_styles = f"Top visual style: {descriptors}"
+                        notes.append(top_visual_styles)
+        except Exception as e:
+            logger.debug(f"Visual cluster data unavailable for advisory: {e}")
+
         return {
             "cold_start_level": cold_start_level,
             "total_matured_ads": total_count,
@@ -581,20 +610,33 @@ class CreativeGenomeService:
             "optimization_notes": " | ".join(notes) if notes else None,
             "exploration_rate": self._exploration_rate(total_count),
             "interaction_effects": interaction_context,
+            "whitespace_opportunities": whitespace_advisory,
+            "top_visual_styles": top_visual_styles,
         }
 
     async def get_category_priors(
         self,
         element_name: str,
+        brand_id: Optional[UUID] = None,
     ) -> Tuple[float, float]:
         """Cross-brand aggregate priors with 0.3x shrinkage for cold-start.
 
-        Aggregates all brands' element scores for this element_name,
-        then applies shrinkage toward the uniform prior.
+        Phase 8B: If brand_id is provided, uses org-scoped transfer learning.
+        Only aggregates from brands in the same org with cross_brand_sharing=TRUE.
+        Weights contributions by observations × brand similarity.
 
         Returns:
             (alpha_prior, beta_prior) tuple
         """
+        # Phase 8B: org-scoped transfer if brand_id provided
+        if brand_id:
+            org_brand_ids = self._get_sharing_brand_ids(brand_id)
+            if org_brand_ids:
+                return await self._org_scoped_priors(
+                    element_name, brand_id, org_brand_ids
+                )
+
+        # Fallback: global aggregate (original behavior)
         result = self.supabase.table("creative_element_scores").select(
             "alpha, beta, total_observations"
         ).eq("element_name", element_name).execute()
@@ -618,6 +660,138 @@ class CreativeGenomeService:
         prior_beta = 1.0 + CROSS_BRAND_SHRINKAGE * (avg_beta - 1.0)
 
         return (max(0.5, prior_alpha), max(0.5, prior_beta))
+
+    def _get_sharing_brand_ids(self, brand_id: UUID) -> List[str]:
+        """Get brand IDs in the same org that have opted into cross-brand sharing.
+
+        Returns list of brand_id strings (excluding the requesting brand).
+        """
+        # Find organization for this brand
+        brand_result = self.supabase.table("brands").select(
+            "organization_id"
+        ).eq("id", str(brand_id)).execute()
+
+        if not brand_result.data or not brand_result.data[0].get("organization_id"):
+            return []
+
+        org_id = brand_result.data[0]["organization_id"]
+
+        # Find other brands in same org with sharing enabled
+        sharing_result = self.supabase.table("brands").select(
+            "id"
+        ).eq("organization_id", org_id).eq(
+            "cross_brand_sharing", True
+        ).neq("id", str(brand_id)).execute()
+
+        return [r["id"] for r in (sharing_result.data or [])]
+
+    async def _org_scoped_priors(
+        self,
+        element_name: str,
+        brand_id: UUID,
+        org_brand_ids: List[str],
+    ) -> Tuple[float, float]:
+        """Compute priors from org-scoped brands weighted by similarity."""
+        result = self.supabase.table("creative_element_scores").select(
+            "brand_id, alpha, beta, total_observations"
+        ).eq("element_name", element_name).in_(
+            "brand_id", org_brand_ids
+        ).execute()
+
+        if not result.data:
+            return (1.0, 1.0)
+
+        # Compute brand similarities (cached)
+        similarities = {}
+        for other_id in set(r["brand_id"] for r in result.data):
+            similarities[other_id] = self.compute_brand_similarity(
+                brand_id, UUID(other_id)
+            )
+
+        # Weighted aggregate: observations × brand similarity
+        total_alpha = 0.0
+        total_beta = 0.0
+        total_weight = 0.0
+        for r in result.data:
+            obs = r.get("total_observations", 1)
+            sim = similarities.get(r["brand_id"], 0.5)
+            weight = obs * sim
+            total_alpha += r["alpha"] * weight
+            total_beta += r["beta"] * weight
+            total_weight += weight
+
+        if total_weight == 0:
+            return (1.0, 1.0)
+
+        avg_alpha = total_alpha / total_weight
+        avg_beta = total_beta / total_weight
+
+        prior_alpha = 1.0 + CROSS_BRAND_SHRINKAGE * (avg_alpha - 1.0)
+        prior_beta = 1.0 + CROSS_BRAND_SHRINKAGE * (avg_beta - 1.0)
+
+        return (max(0.5, prior_alpha), max(0.5, prior_beta))
+
+    def compute_brand_similarity(
+        self,
+        brand_a_id: UUID,
+        brand_b_id: UUID,
+    ) -> float:
+        """Cosine similarity of element score mean vectors between two brands.
+
+        Returns similarity in [0, 1]. Cached in-memory (recompute at most hourly).
+        """
+        if not hasattr(self, '_similarity_cache'):
+            self._similarity_cache: Dict[str, Tuple[float, float]] = {}
+
+        import time
+        cache_key = f"{min(str(brand_a_id), str(brand_b_id))}:{max(str(brand_a_id), str(brand_b_id))}"
+        cached = self._similarity_cache.get(cache_key)
+        if cached:
+            sim_val, timestamp = cached
+            if time.time() - timestamp < 3600:  # 1 hour cache
+                return sim_val
+
+        # Load element scores for both brands
+        scores_a = self._load_score_vector(brand_a_id)
+        scores_b = self._load_score_vector(brand_b_id)
+
+        if not scores_a or not scores_b:
+            return 0.5  # neutral when no data
+
+        # Find common elements
+        common_keys = set(scores_a.keys()) & set(scores_b.keys())
+        if not common_keys:
+            return 0.5
+
+        vec_a = [scores_a[k] for k in common_keys]
+        vec_b = [scores_b[k] for k in common_keys]
+
+        # Cosine similarity
+        dot = sum(a * b for a, b in zip(vec_a, vec_b))
+        mag_a = math.sqrt(sum(a * a for a in vec_a))
+        mag_b = math.sqrt(sum(b * b for b in vec_b))
+
+        if mag_a == 0 or mag_b == 0:
+            sim = 0.5
+        else:
+            sim = max(0.0, min(1.0, dot / (mag_a * mag_b)))
+
+        self._similarity_cache[cache_key] = (sim, time.time())
+        return sim
+
+    def _load_score_vector(self, brand_id: UUID) -> Dict[str, float]:
+        """Load element score means as a flat vector for similarity computation."""
+        result = self.supabase.table("creative_element_scores").select(
+            "element_name, element_value, alpha, beta"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        scores = {}
+        for r in (result.data or []):
+            key = f"{r['element_name']}:{r['element_value']}"
+            alpha = r.get("alpha", 1.0)
+            beta = r.get("beta", 1.0)
+            scores[key] = alpha / (alpha + beta) if (alpha + beta) > 0 else 0.5
+        return scores
 
     # =========================================================================
     # 6.4: Monitoring + Validation

@@ -463,6 +463,7 @@ def _run_template_preview(mode, count, category, asset_strictness):
             select_templates_with_fallback, SelectionContext,
             fetch_brand_min_asset_score,
             ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
+            PHASE_8_SCORERS,
         )
         from uuid import UUID
 
@@ -503,7 +504,19 @@ def _run_template_preview(mode, count, category, asset_strictness):
             target_sex=persona_target_sex,
         )
 
-        weights = ROLL_THE_DICE_WEIGHTS if mode == 'roll_the_dice' else SMART_SELECT_WEIGHTS
+        if mode == 'roll_the_dice':
+            weights = ROLL_THE_DICE_WEIGHTS
+        else:
+            # Phase 8B: use learned weights for smart_select preview
+            try:
+                from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+                learning_service = ScorerWeightLearningService()
+                weights = learning_service.get_learned_weights(
+                    UUID(brand_id) if brand_id else UUID(product_id),
+                    mode="smart_select",
+                )
+            except Exception:
+                weights = SMART_SELECT_WEIGHTS
 
         min_asset_score = 0.0
         if asset_strictness == 'growth':
@@ -519,6 +532,7 @@ def _run_template_preview(mode, count, category, asset_strictness):
             weights=weights,
             count=count,
             min_asset_score=min_asset_score,
+            scorers=PHASE_8_SCORERS,
         )
 
         loop.close()

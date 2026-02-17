@@ -84,7 +84,7 @@ def render_model_selector(key: str, label: str):
                 st.rerun()
 
 # Create Tabs
-tab_core, tab_agents, tab_services, tab_pipelines, tab_angle, tab_calibration, tab_interactions, tab_exemplars = st.tabs([
+tab_core, tab_agents, tab_services, tab_pipelines, tab_angle, tab_calibration, tab_interactions, tab_exemplars, tab_weights, tab_experiments, tab_vclusters = st.tabs([
     "Core Capabilities",
     "Social Agents",
     "Backend Services",
@@ -93,6 +93,9 @@ tab_core, tab_agents, tab_services, tab_pipelines, tab_angle, tab_calibration, t
     "Calibration",
     "Interactions",
     "Exemplar Library",
+    "Scorer Weights",
+    "Gen Experiments",
+    "Visual Clusters",
 ])
 
 with tab_core:
@@ -571,6 +574,196 @@ with tab_exemplars:
                 st.info("No exemplars yet. Use Auto-Seed or mark ads as exemplars in the Results Dashboard.")
     except Exception as e:
         st.warning(f"Could not load exemplar data: {e}")
+
+
+# ============================================================================
+# Phase 8B: Scorer Weight Learning Tab
+# ============================================================================
+with tab_weights:
+    st.markdown("### Scorer Weight Learning Status")
+    st.info(
+        "Scorer weights evolve from static presets to learned values via Thompson Sampling. "
+        "cold → warm → hot as observations accumulate."
+    )
+
+    try:
+        from viraltracker.ui.utils import render_brand_selector
+
+        wt_brand_id = render_brand_selector(key="scorer_weights_brand_selector")
+        if wt_brand_id:
+            from uuid import UUID
+            from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+
+            wt_svc = ScorerWeightLearningService()
+            weight_status = wt_svc.get_weight_status(UUID(wt_brand_id))
+
+            if weight_status:
+                import pandas as pd
+                df = pd.DataFrame([{
+                    "Scorer": s["scorer_name"],
+                    "Phase": s["learning_phase"],
+                    "Observations": s["total_observations"],
+                    "Static Weight": s["static_weight"],
+                    "Learned Mean": s["learned_mean"] or "—",
+                    "Effective Weight": s["effective_weight"],
+                    "α": s["alpha"],
+                    "β": s["beta"],
+                } for s in weight_status])
+
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+                # Phase summary
+                phases = [s["learning_phase"] for s in weight_status]
+                cold_count = phases.count("cold")
+                warm_count = phases.count("warm")
+                hot_count = phases.count("hot")
+
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    st.metric("Cold Scorers", cold_count)
+                with pcol2:
+                    st.metric("Warm Scorers", warm_count)
+                with pcol3:
+                    st.metric("Hot Scorers", hot_count)
+            else:
+                st.info("No scorer weight data yet. Posteriors initialize after first template selection.")
+    except Exception as e:
+        st.warning(f"Could not load scorer weight data: {e}")
+
+
+# ============================================================================
+# Phase 8B: Generation Experiments Tab
+# ============================================================================
+with tab_experiments:
+    st.markdown("### Generation Experiments")
+    st.info(
+        "A/B test different prompt versions, pipeline configs, or element strategies. "
+        "Max 1 active experiment per brand."
+    )
+
+    try:
+        from viraltracker.ui.utils import render_brand_selector
+
+        exp_brand_id = render_brand_selector(key="gen_exp_brand_selector")
+        if exp_brand_id:
+            from uuid import UUID
+            from viraltracker.services.generation_experiment_service import GenerationExperimentService
+
+            exp_svc = GenerationExperimentService()
+            experiments = exp_svc.list_experiments(UUID(exp_brand_id))
+
+            if experiments:
+                for exp in experiments:
+                    status_icon = {
+                        "draft": "📝", "active": "🔬",
+                        "completed": "✅", "cancelled": "❌"
+                    }.get(exp["status"], "❓")
+
+                    with st.expander(
+                        f"{status_icon} {exp['name']} — {exp['status']} "
+                        f"({exp.get('experiment_type', 'N/A')})",
+                        expanded=(exp["status"] == "active"),
+                    ):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown(f"**Hypothesis:** {exp.get('hypothesis', 'N/A')}")
+                            st.markdown(f"**Split:** {float(exp.get('split_ratio', 0.5)):.0%} variant")
+                            st.markdown(f"**Min Sample:** {exp.get('min_sample_size', 20)} ads/arm")
+
+                        with col2:
+                            ctrl = exp.get("control_metrics") or {}
+                            var = exp.get("variant_metrics") or {}
+                            st.markdown(f"**Control:** {ctrl.get('ads_approved', 0)}/{ctrl.get('ads_generated', 0)} approved")
+                            st.markdown(f"**Variant:** {var.get('ads_approved', 0)}/{var.get('ads_generated', 0)} approved")
+                            if exp.get("winner"):
+                                st.markdown(f"**Winner:** {exp['winner']} (p={exp.get('confidence', 'N/A')})")
+
+                        # Action buttons
+                        if exp["status"] == "draft":
+                            if st.button("Activate", key=f"activate_exp_{exp['id']}", type="primary"):
+                                try:
+                                    exp_svc.activate_experiment(exp["id"])
+                                    st.success("Experiment activated!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Activation failed: {e}")
+
+                        if exp["status"] == "active":
+                            if st.button("Run Analysis", key=f"analyze_exp_{exp['id']}"):
+                                try:
+                                    analysis = exp_svc.run_analysis(exp["id"])
+                                    st.json(analysis)
+                                except Exception as e:
+                                    st.error(f"Analysis failed: {e}")
+
+                            if st.button("Conclude", key=f"conclude_exp_{exp['id']}"):
+                                try:
+                                    exp_svc.conclude_experiment(exp["id"])
+                                    st.success("Experiment concluded!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Conclude failed: {e}")
+            else:
+                st.info("No experiments yet for this brand.")
+
+    except Exception as e:
+        st.warning(f"Could not load experiment data: {e}")
+
+
+# ============================================================================
+# Phase 8B: Visual Style Clusters Tab
+# ============================================================================
+with tab_vclusters:
+    st.markdown("### Visual Style Clusters")
+    st.info(
+        "DBSCAN clustering of ad visual embeddings, correlated with performance. "
+        "Identifies which visual styles perform best."
+    )
+
+    try:
+        from viraltracker.ui.utils import render_brand_selector
+
+        vc_brand_id = render_brand_selector(key="visual_clusters_brand_selector")
+        if vc_brand_id:
+            from uuid import UUID
+            from viraltracker.pipelines.ad_creation_v2.services.visual_clustering_service import VisualClusteringService
+
+            vc_svc = VisualClusteringService()
+            clusters = vc_svc.get_cluster_summary(UUID(vc_brand_id))
+
+            if clusters:
+                import pandas as pd
+                df = pd.DataFrame([{
+                    "Cluster": c["cluster_label"],
+                    "Size": c["cluster_size"],
+                    "Avg Reward": round(c.get("avg_reward_score") or 0, 3),
+                    "Top Descriptors": str(c.get("top_descriptors", {}))[:100],
+                    "Computed": c.get("computed_at", "N/A")[:10],
+                } for c in clusters])
+
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+                # Best/worst cluster highlight
+                if len(clusters) >= 2:
+                    best = clusters[0]
+                    bcol1, bcol2 = st.columns(2)
+                    with bcol1:
+                        st.success(
+                            f"Best cluster: #{best['cluster_label']} "
+                            f"(reward: {best.get('avg_reward_score', 0):.3f}, "
+                            f"size: {best['cluster_size']})"
+                        )
+                    with bcol2:
+                        worst = clusters[-1]
+                        st.error(
+                            f"Worst cluster: #{worst['cluster_label']} "
+                            f"(reward: {worst.get('avg_reward_score', 0):.3f}, "
+                            f"size: {worst['cluster_size']})"
+                        )
+            else:
+                st.info("No visual clusters yet. Run Genome Validation to trigger clustering.")
+    except Exception as e:
+        st.warning(f"Could not load visual cluster data: {e}")
 
 
 # Display current configuration summary

@@ -278,6 +278,72 @@ class InteractionDetectorService:
 
         return " | ".join(parts) if parts else ""
 
+    async def get_cross_brand_interactions(
+        self,
+        brand_id: UUID,
+        min_own_interactions: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Fallback: pull interaction effects from opted-in brands in same org.
+
+        Phase 8B: Used when a brand has insufficient interaction data of its own.
+        Only transfers from brands with cross_brand_sharing=TRUE in the same org.
+
+        Args:
+            brand_id: Brand UUID requesting interactions.
+            min_own_interactions: Minimum own interactions before skipping transfer.
+
+        Returns:
+            List of transferred interaction dicts with source_brand info.
+        """
+        from viraltracker.core.database import get_supabase_client
+
+        db = get_supabase_client()
+
+        # Check if brand has enough own interactions
+        own_result = db.table("element_interactions").select(
+            "id", count="exact"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        if own_result.count and own_result.count >= min_own_interactions:
+            return []  # Brand has sufficient own data
+
+        # Find org and sharing brands
+        brand_result = db.table("brands").select(
+            "organization_id"
+        ).eq("id", str(brand_id)).execute()
+
+        if not brand_result.data or not brand_result.data[0].get("organization_id"):
+            return []
+
+        org_id = brand_result.data[0]["organization_id"]
+
+        sharing_result = db.table("brands").select(
+            "id"
+        ).eq("organization_id", org_id).eq(
+            "cross_brand_sharing", True
+        ).neq("id", str(brand_id)).execute()
+
+        sharing_ids = [r["id"] for r in (sharing_result.data or [])]
+        if not sharing_ids:
+            return []
+
+        # Aggregate interactions from sharing brands
+        interactions_result = db.table("element_interactions").select(
+            "*"
+        ).in_("brand_id", sharing_ids).order("effect_rank").limit(15).execute()
+
+        transferred = []
+        for row in (interactions_result.data or []):
+            row["source_brand_id"] = row.pop("brand_id", None)
+            row["is_cross_brand"] = True
+            transferred.append(row)
+
+        logger.info(
+            f"Cross-brand interaction transfer for {brand_id}: "
+            f"{len(transferred)} interactions from {len(sharing_ids)} brands"
+        )
+        return transferred
+
     # ========================================================================
     # Internal helpers
     # ========================================================================

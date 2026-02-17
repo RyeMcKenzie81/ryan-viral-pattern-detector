@@ -11,7 +11,9 @@ V2 differences from V1:
 - V1 pipeline is NOT modified — V2 runs in parallel
 """
 
+import hashlib
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 
@@ -86,6 +88,11 @@ async def run_ad_creation_v2(
     image_resolution: str = "2K",
     auto_retry_rejected: bool = False,
     max_retry_attempts: int = 1,
+    # Phase 8B: selection transport (scorer weight learning)
+    selection_weights_used: Optional[Dict[str, float]] = None,
+    selection_scorer_breakdown: Optional[Dict[str, float]] = None,
+    selection_composite_score: Optional[float] = None,
+    selection_mode: Optional[str] = None,
     deps: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
@@ -120,6 +127,10 @@ async def run_ad_creation_v2(
         image_resolution: Image resolution for Gemini (1K, 2K, 4K)
         auto_retry_rejected: If True, auto-retry rejected ads with fresh generation
         max_retry_attempts: Max retries per rejected ad (default: 1)
+        selection_weights_used: Scorer weights at selection time (Phase 8B)
+        selection_scorer_breakdown: Per-scorer raw scores at selection time (Phase 8B)
+        selection_composite_score: Composite score at selection time (Phase 8B)
+        selection_mode: Selection mode at selection time (Phase 8B)
         deps: Optional AgentDependencies (creates if not provided)
 
     Returns:
@@ -173,7 +184,45 @@ async def run_ad_creation_v2(
         image_resolution=image_resolution,
         auto_retry_rejected=auto_retry_rejected,
         max_retry_attempts=max_retry_attempts,
+        # Phase 8B: selection transport
+        selection_weights_used=selection_weights_used,
+        selection_scorer_breakdown=selection_scorer_breakdown,
+        selection_composite_score=selection_composite_score,
+        selection_mode=selection_mode,
     )
+
+    # Phase 8B: Derive experiment seed and check for active generation experiment
+    seed_input = f"{product_id}:{template_id or 'none'}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}"
+    state.experiment_seed = hashlib.sha256(seed_input.encode()).hexdigest()
+
+    try:
+        from viraltracker.services.generation_experiment_service import GenerationExperimentService
+        # Look up brand_id from product for experiment lookup
+        brand_id_for_exp = None
+        try:
+            product_result = deps.ad_creation.supabase.table("products").select(
+                "brand_id"
+            ).eq("id", product_id).single().execute()
+            if product_result.data:
+                brand_id_for_exp = product_result.data["brand_id"]
+        except Exception:
+            pass
+
+        if brand_id_for_exp:
+            gen_exp_service = GenerationExperimentService()
+            assignment = gen_exp_service.assign_arm(brand_id_for_exp, state.experiment_seed)
+            if assignment:
+                state.generation_experiment_id = assignment["experiment_id"]
+                state.generation_experiment_arm = assignment["arm"]
+                state.generation_experiment_config = assignment["config"]
+                logger.info(
+                    f"Experiment assignment: {assignment['arm']} for experiment "
+                    f"{assignment['experiment_id']}"
+                )
+    except ImportError:
+        pass  # Service not yet available
+    except Exception as e:
+        logger.debug(f"Generation experiment assignment skipped: {e}")
 
     try:
         # Run the graph

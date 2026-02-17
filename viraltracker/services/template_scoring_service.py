@@ -825,13 +825,13 @@ def select_templates_with_fallback(
         weights: Scorer weight dict.
         count: Number of templates to select.
         min_asset_score: Asset gate threshold.
-        scorers: Scorer instances (defaults to PHASE_4_SCORERS).
+        scorers: Scorer instances (defaults to PHASE_8_SCORERS).
 
     Returns:
         SelectionResult — check result.empty to see if selection succeeded.
     """
     if scorers is None:
-        scorers = PHASE_4_SCORERS
+        scorers = PHASE_8_SCORERS
 
     # Tier 1: Normal selection
     result = select_templates(

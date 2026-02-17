@@ -102,6 +102,18 @@ class AdCreationPipelineState:
     # ReviewAdsNode
     reviewed_ads: List[Dict[str, Any]] = field(default_factory=list)
 
+    # === PHASE 8B: Selection-time scorer data (set by scheduler/UI, used by CompileResultsNode) ===
+    selection_weights_used: Optional[Dict[str, float]] = None
+    selection_scorer_breakdown: Optional[Dict[str, float]] = None
+    selection_composite_score: Optional[float] = None
+    selection_mode: Optional[str] = None  # 'smart_select' or 'roll_the_dice'
+
+    # === PHASE 8B: Generation experiment assignment (set pre-graph in orchestrator) ===
+    experiment_seed: Optional[str] = None
+    generation_experiment_id: Optional[str] = None
+    generation_experiment_arm: Optional[str] = None  # 'control' or 'variant'
+    generation_experiment_config: Optional[Dict[str, Any]] = None
+
     # === TRACKING ===
     current_step: str = "pending"
     ads_generated: int = 0

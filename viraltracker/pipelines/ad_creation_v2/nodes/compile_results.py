@@ -109,6 +109,12 @@ class CompileResultsNode(BaseNode[AdCreationPipelineState]):
         # Phase 8A: Track element combo usage for fatigue scoring
         await self._record_combo_usage(ctx, reviewed_ads)
 
+        # Phase 8B: Record selection weight snapshot (for scorer weight learning)
+        await self._record_selection_snapshot(ctx)
+
+        # Phase 8B: Record generation experiment outcome
+        await self._record_experiment_outcome(ctx, reviewed_ads)
+
         # Mark workflow complete
         await ctx.deps.ad_creation.update_ad_run(
             ad_run_id=UUID(ctx.state.ad_run_id),
@@ -138,6 +144,88 @@ class CompileResultsNode(BaseNode[AdCreationPipelineState]):
                     f"{rejected_count} rejected, {flagged_count} flagged ===")
 
         return End(result)
+
+    async def _record_selection_snapshot(
+        self,
+        ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies],
+    ) -> None:
+        """Record selection-time weights and scores for scorer weight learning (Phase 8B)."""
+        if not ctx.state.selection_weights_used or not ctx.state.selection_scorer_breakdown:
+            return
+
+        try:
+            from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+            brand_id = str(ctx.state.product_dict.get("brand_id", ""))
+            if not brand_id or not ctx.state.ad_run_id:
+                return
+
+            learning_service = ScorerWeightLearningService()
+            learning_service.record_selection_snapshot(
+                brand_id=UUID(brand_id),
+                ad_run_id=ctx.state.ad_run_id,
+                template_id=ctx.state.template_id,
+                weights_used=ctx.state.selection_weights_used,
+                scorer_breakdown=ctx.state.selection_scorer_breakdown,
+                composite_score=ctx.state.selection_composite_score,
+                selection_mode=ctx.state.selection_mode,
+            )
+            logger.info(f"Recorded selection snapshot for run {ctx.state.ad_run_id}")
+        except Exception as e:
+            logger.warning(f"Failed to record selection snapshot: {e}")
+
+    async def _record_experiment_outcome(
+        self,
+        ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies],
+        reviewed_ads: list,
+    ) -> None:
+        """Record generation experiment outcome (Phase 8B)."""
+        if not ctx.state.generation_experiment_id or not ctx.state.ad_run_id:
+            return
+
+        try:
+            from viraltracker.services.generation_experiment_service import GenerationExperimentService
+
+            approved = sum(1 for ad in reviewed_ads if ad.get('final_status') == 'approved')
+            rejected = sum(1 for ad in reviewed_ads if ad.get('final_status') == 'rejected')
+            flagged = sum(1 for ad in reviewed_ads if ad.get('final_status') == 'flagged')
+            gen_failed = sum(1 for ad in reviewed_ads if ad.get('final_status') == 'generation_failed')
+            total_generated = len(reviewed_ads) - gen_failed
+
+            # Compute defects from defect scan results
+            defects = sum(
+                len(ad.get("defects", []))
+                for ad in reviewed_ads
+                if ad.get("defects")
+            )
+
+            # Compute avg review score
+            review_scores = [
+                ad.get("review_score", 0)
+                for ad in reviewed_ads
+                if ad.get("review_score") is not None and ad.get("final_status") != "generation_failed"
+            ]
+            avg_score = sum(review_scores) / len(review_scores) if review_scores else None
+
+            gen_exp_service = GenerationExperimentService()
+            gen_exp_service.record_outcome(
+                experiment_id=ctx.state.generation_experiment_id,
+                arm=ctx.state.generation_experiment_arm,
+                ad_run_id=ctx.state.ad_run_id,
+                metrics={
+                    "ads_generated": total_generated,
+                    "ads_approved": approved,
+                    "ads_rejected": rejected,
+                    "ads_flagged": flagged,
+                    "defects_found": defects,
+                    "avg_review_score": avg_score,
+                },
+            )
+            logger.info(
+                f"Recorded experiment outcome: {ctx.state.generation_experiment_arm} arm "
+                f"for experiment {ctx.state.generation_experiment_id}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record experiment outcome: {e}")
 
     async def _record_combo_usage(
         self,

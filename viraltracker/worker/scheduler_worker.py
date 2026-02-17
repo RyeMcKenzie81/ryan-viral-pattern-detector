@@ -706,6 +706,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 select_templates_with_fallback, SelectionContext,
                 fetch_brand_min_asset_score,
                 ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
+                PHASE_8_SCORERS,
             )
             from uuid import UUID as _UUID
 
@@ -746,11 +747,21 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 target_sex=persona_target_sex,
             )
 
-            # Choose weight preset
+            # Choose weight preset (Phase 8B: use learned weights for smart_select)
             if template_selection_mode == 'roll_the_dice':
                 weights = ROLL_THE_DICE_WEIGHTS
             else:
-                weights = SMART_SELECT_WEIGHTS
+                try:
+                    from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+                    from uuid import UUID as _LUUID
+                    learning_service = ScorerWeightLearningService()
+                    weights = learning_service.get_learned_weights(
+                        _LUUID(brand_id) if brand_id else _LUUID(product_id),
+                        mode="smart_select",
+                    )
+                except Exception as e:
+                    logger.debug(f"Learned weights unavailable, using static: {e}")
+                    weights = SMART_SELECT_WEIGHTS
 
             # Determine asset gate threshold
             min_asset_score = 0.0
@@ -762,13 +773,14 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
             elif asset_strictness == 'default' and brand_id:
                 min_asset_score = fetch_brand_min_asset_score(brand_id)
 
-            # Select templates with fallback
+            # Select templates with fallback (Phase 8B: use PHASE_8_SCORERS)
             selection = select_templates_with_fallback(
                 candidates=candidates,
                 context=context,
                 weights=weights,
                 count=template_count,
                 min_asset_score=min_asset_score,
+                scorers=PHASE_8_SCORERS,
             )
 
             if selection.empty:
@@ -790,18 +802,23 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                             f"audience={score_dict.get('audience_match', 0):.2f}]")
 
             # Convert to standard template format for the loop
+            # Phase 8B: attach selection-time scores for weight learning transport
             templates = []
-            for tmpl in selection.templates:
+            for i, tmpl in enumerate(selection.templates):
                 storage_path = tmpl.get('storage_path', '')
                 parts = storage_path.split('/', 1) if storage_path else ['scraped-assets', '']
                 bucket = parts[0] if len(parts) == 2 else 'scraped-assets'
                 path = parts[1] if len(parts) == 2 else storage_path
+                score_dict = selection.scores[i] if i < len(selection.scores) else {}
                 templates.append({
                     'id': tmpl['id'],
                     'name': tmpl.get('name', 'Template'),
                     'storage_path': path,
                     'bucket': bucket,
                     'full_storage_path': storage_path,
+                    '_selection_weights': dict(weights),
+                    '_selection_scores': dict(score_dict),
+                    '_selection_mode': template_selection_mode,
                 })
         else:
             raise ValueError(f"Unknown template_selection_mode: {template_selection_mode}")
@@ -865,6 +882,11 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
 
             # Run V2 ad creation pipeline
             try:
+                # Phase 8B: extract selection-time data for weight learning
+                _sel_weights = template.get('_selection_weights')
+                _sel_scores = template.get('_selection_scores', {})
+                _sel_mode = template.get('_selection_mode')
+
                 result = await run_ad_creation_v2(
                     product_id=product_id,
                     reference_ad_base64=template_base64,
@@ -881,6 +903,11 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     offer_variant_id=params.get('offer_variant_id'),
                     additional_instructions=combined_instructions,
                     image_resolution=params.get('image_resolution', '2K'),
+                    # Phase 8B: selection transport
+                    selection_weights_used=_sel_weights,
+                    selection_scorer_breakdown=_sel_scores,
+                    selection_composite_score=_sel_scores.get('composite') if _sel_scores else None,
+                    selection_mode=_sel_mode,
                     deps=deps,
                 )
 
@@ -3535,10 +3562,51 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
             logger.warning(f"Interaction detection failed (non-fatal): {ie}")
             logs.append(f"Interaction detection skipped: {ie}")
 
+        # Phase 8B: Piggyback scorer weight learning on genome validation
+        weight_learning_result = None
+        try:
+            from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+            learning_service = ScorerWeightLearningService()
+            learning_service.initialize_posteriors(brand_uuid)
+            weight_learning_result = await learning_service.update_scorer_posteriors(brand_uuid)
+            logs.append(f"Scorer weight learning: {weight_learning_result.get('ads_processed', 0)} ads processed, "
+                        f"{weight_learning_result.get('updates_applied', 0)} scorers updated")
+        except Exception as wle:
+            logger.warning(f"Scorer weight learning failed (non-fatal): {wle}")
+            logs.append(f"Scorer weight learning skipped: {wle}")
+
+        # Phase 8B: Piggyback whitespace identification on genome validation
+        whitespace_result = None
+        try:
+            from viraltracker.services.whitespace_identification_service import WhitespaceIdentificationService
+            ws_service = WhitespaceIdentificationService()
+            whitespace_result = await ws_service.identify_whitespace(brand_uuid)
+            logs.append(f"Whitespace identification: {whitespace_result.get('candidates_found', 0)} candidates")
+        except Exception as wse:
+            logger.warning(f"Whitespace identification failed (non-fatal): {wse}")
+            logs.append(f"Whitespace identification skipped: {wse}")
+
+        # Phase 8B: Piggyback visual clustering on genome validation
+        clustering_result = None
+        try:
+            from viraltracker.pipelines.ad_creation_v2.services.visual_clustering_service import VisualClusteringService
+            vc_service = VisualClusteringService()
+            clustering_result = await vc_service.cluster_brand_styles(brand_uuid)
+            if clustering_result.get("clusters_found", 0) > 0:
+                await vc_service.correlate_with_performance(brand_uuid)
+            logs.append(f"Visual clustering: {clustering_result.get('clusters_found', 0)} clusters, "
+                        f"{clustering_result.get('noise_count', 0)} noise")
+        except Exception as vce:
+            logger.warning(f"Visual clustering failed (non-fatal): {vce}")
+            logs.append(f"Visual clustering skipped: {vce}")
+
         summary = {
             "metrics": metrics,
             "alerts_created": alerts_created,
             "interactions_found": len(interaction_result.get("interactions", [])) if interaction_result else 0,
+            "weight_learning": weight_learning_result,
+            "whitespace": whitespace_result,
+            "clustering": clustering_result,
         }
 
         update_job_run(run_id, {

@@ -303,9 +303,9 @@ class TestPhase4Scorers:
         assert "audience_match" in names
         assert "belief_clarity" in names
 
-    def test_phase4_is_default(self):
-        """select_templates_with_fallback uses PHASE_4_SCORERS by default."""
-        # Verify by checking the function uses 6 scorers when none provided
+    def test_phase8_is_default(self):
+        """select_templates_with_fallback uses PHASE_8_SCORERS by default (Phase 8B change)."""
+        # Verify by checking the function uses 8 scorers when none provided
         # We do this by calling with a single candidate and checking score keys
         candidates = [
             {
@@ -323,10 +323,12 @@ class TestPhase4Scorers:
             count=1,
         )
         assert not result.empty
-        # Should have all 6 scorer names + composite
+        # Should have all 8 scorer names + composite (Phase 8B: PHASE_8_SCORERS is default)
         score_keys = set(result.scores[0].keys()) - {"composite"}
         assert "belief_clarity" in score_keys
-        assert len(score_keys) == 6
+        assert "performance" in score_keys
+        assert "fatigue" in score_keys
+        assert len(score_keys) == 8
 
     def test_phase3_backward_compat(self):
         """Phase 3 scorer list is still 5 (no belief_clarity)."""
