@@ -3946,6 +3946,10 @@ async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
 
 def main():
     """Entry point for the scheduler worker."""
+    # Initialize Logfire observability (no-op if LOGFIRE_TOKEN not set)
+    from viraltracker.core.observability import setup_logfire
+    setup_logfire(service_name="viraltracker-scheduler-worker")
+
     logger.info("=" * 60)
     logger.info("Scheduler Worker")
     logger.info("=" * 60)

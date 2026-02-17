@@ -112,20 +112,45 @@ Cross-brand transfer →
   → fallback interaction effects from opted-in org peers
 ```
 
-### UI Validation Tests (TODO before merge)
+### UI Validation Tests
 
-| # | Test | Where | Priority | Pass? |
-|---|------|-------|----------|-------|
-| 1 | Run migration `2026-02-16_ad_creator_v2_phase8b.sql` | Supabase SQL editor | **MUST** | |
-| 2 | Platform Settings shows Scorer Weights tab with per-scorer DataFrame | Platform Settings page | HIGH | |
-| 3 | Platform Settings shows Generation Experiments tab (empty state) | Platform Settings page | HIGH | |
-| 4 | Platform Settings shows Visual Clusters tab (empty state) | Platform Settings page | HIGH | |
-| 5 | Brand Manager shows Cross-Brand Sharing toggle | Brand Manager page | HIGH | |
-| 6 | Template selection uses PHASE_8_SCORERS (8 scorers in logs) | Run ad generation, check logs | HIGH | |
-| 7 | Learned weights used when brand has 30+ observations | Run after seeding posteriors | MEDIUM | |
-| 8 | Selection snapshot recorded after pipeline run | Check selection_weight_snapshots table | MEDIUM | |
-| 9 | Whitespace identification runs on genome_validation | Trigger genome validation, check whitespace_candidates | MEDIUM | |
-| 10 | Visual clustering runs on genome_validation | Trigger genome validation, check visual_style_clusters | MEDIUM | |
+#### Completed
+
+| # | Test | Status |
+|---|------|--------|
+| 1 | Run migration `phase8a.sql` | PASS |
+| 2 | Run migration `phase8b.sql` | PASS |
+| 3 | Platform Settings — Calibration Proposals tab | PASS |
+| 4 | Platform Settings — Interaction Effects tab | PASS |
+| 5 | Platform Settings — Exemplar Library tab | PASS |
+| 6 | Auto-seed exemplars for brand with overrides | PASS |
+| 7 | Platform Settings — Scorer Weights tab | PASS |
+| 8 | Platform Settings — Generation Experiments tab | PASS |
+| 9 | Platform Settings — Visual Clusters tab | PASS |
+| 10 | Mark as Exemplar button works | PASS (after fix `5306a87`) |
+| 11 | Remove exemplar from Exemplar Library | PASS (after fix `071361b`) |
+
+#### Remaining (require pipeline run or genome_validation trigger)
+
+| # | Test | Where | How to Verify |
+|---|------|-------|---------------|
+| 12 | 8 scorers in template selection logs | Run ad generation | Check worker logs for 8 scorer names |
+| 13 | Visual embeddings stored after review | Run ad generation | Query `visual_embeddings` table for new rows |
+| 14 | Quality calibration job runs on schedule | Worker logs | Check `scheduled_jobs` for `quality_calibration` type |
+| 15 | Interaction detection on genome_validation | Trigger genome_validation | Query `element_interactions` table |
+| 16 | Cross-Brand Sharing toggle | Brand Manager page | Toggle and save |
+| 17 | Learned weights when 30+ observations | Seed posteriors, run selection | Check Scorer Weights tab shows "warm" phase |
+| 18 | Selection snapshot recorded after run | Run ad generation | Query `selection_weight_snapshots` for new row |
+| 19 | Whitespace on genome_validation | Trigger genome_validation | Query `whitespace_candidates` table |
+| 20 | Clustering on genome_validation | Trigger genome_validation | Query `visual_style_clusters` table |
+| 21 | Experiment create→activate→run→analyze→conclude | Platform Settings > Gen Experiments | Full workflow |
+
+### Bugs Fixed During Testing
+
+| Commit | Bug | Fix |
+|--------|-----|-----|
+| `5306a87` | Mark as Exemplar: `generated_ads.brand_id` doesn't exist, then `ad_runs.brand_id` doesn't exist | Use `st.session_state.v2_brand_id`, fallback to `ad_runs → products(brand_id)` join |
+| `071361b` | Exemplar Library: `generated_ads.weighted_score` doesn't exist | Removed from all queries, compute from `review_check_scores` instead |
 
 ### Dependencies on Phase 8A
 
