@@ -71,6 +71,7 @@ class FeatureKey:
     CONGRUENCE_INSIGHTS = "congruence_insights"
     LANDING_PAGE_ANALYZER = "landing_page_analyzer"
     HOOK_ANALYSIS = "hook_analysis"
+    EXPERIMENTS = "experiments"
     PLAN_LIST = "plan_list"
     PLAN_EXECUTOR = "plan_executor"
     TEMPLATE_QUEUE = "template_queue"
@@ -240,6 +241,7 @@ class FeatureService:
             FeatureKey.CONGRUENCE_INSIGHTS,
             FeatureKey.LANDING_PAGE_ANALYZER,
             FeatureKey.HOOK_ANALYSIS,
+            FeatureKey.EXPERIMENTS,
             FeatureKey.PLAN_LIST,
             FeatureKey.PLAN_EXECUTOR,
             FeatureKey.TEMPLATE_QUEUE,
