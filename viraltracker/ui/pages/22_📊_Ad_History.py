@@ -832,6 +832,16 @@ if 'rerun_generating' not in st.session_state:
 if 'rerun_result' not in st.session_state:
     st.session_state.rerun_result = None
 
+# Winner Evolution state (Phase 7A)
+if 'evolve_ad_id' not in st.session_state:
+    st.session_state.evolve_ad_id = None
+if 'evolve_options' not in st.session_state:
+    st.session_state.evolve_options = None
+if 'evolve_submitting' not in st.session_state:
+    st.session_state.evolve_submitting = False
+if 'evolve_result' not in st.session_state:
+    st.session_state.evolve_result = None
+
 PAGE_SIZE = 25
 
 # Show rerun result from previous run
@@ -1464,6 +1474,137 @@ else:
                                                     st.session_state.edit_ad_id = None
                                                     st.session_state.edit_result = None
                                                     st.rerun()
+
+                                    # Winner Evolution button for approved ads (Phase 7A)
+                                    if ad_status == 'approved' and ad_id and not is_variant:
+                                        is_evolve_modal_open = st.session_state.evolve_ad_id == ad_id
+
+                                        if st.button("✨ Evolve This Ad", key=f"evolve_{ad_id}"):
+                                            if is_evolve_modal_open:
+                                                st.session_state.evolve_ad_id = None
+                                                st.session_state.evolve_options = None
+                                                st.session_state.evolve_result = None
+                                            else:
+                                                st.session_state.evolve_ad_id = ad_id
+                                                st.session_state.evolve_options = None
+                                                st.session_state.evolve_result = None
+                                                # Fetch evolution options
+                                                try:
+                                                    from viraltracker.services.winner_evolution_service import WinnerEvolutionService
+                                                    from uuid import UUID as _EUUID
+                                                    evo_svc = WinnerEvolutionService()
+                                                    import asyncio as _evo_asyncio
+                                                    options = _evo_asyncio.run(evo_svc.get_evolution_options(_EUUID(ad_id)))
+                                                    st.session_state.evolve_options = options
+                                                except Exception as evo_err:
+                                                    st.session_state.evolve_options = {"error": str(evo_err)}
+                                            st.rerun()
+
+                                        # Show evolution modal
+                                        if is_evolve_modal_open and st.session_state.evolve_options:
+                                            options = st.session_state.evolve_options
+
+                                            if options.get("error"):
+                                                st.error(f"Failed to check evolution options: {options['error']}")
+                                            elif not options.get("is_winner"):
+                                                details = options.get("winner_details", {})
+                                                st.warning(f"Not eligible for evolution: {details.get('reason', 'Does not meet winner criteria')}")
+                                                if details.get("reward_score") is not None:
+                                                    st.caption(f"Reward: {details['reward_score']:.3f} | "
+                                                               f"Impressions: {details.get('impressions', 'N/A')} | "
+                                                               f"Threshold: 0.65")
+                                            else:
+                                                winner_details = options.get("winner_details", {})
+                                                st.success(f"Winner! Reward: {winner_details.get('reward_score', 0):.3f}")
+                                                st.caption(
+                                                    f"Iterations: {options.get('iteration_count', 0)}/{options.get('iteration_limit', 5)} | "
+                                                    f"Ancestor rounds: {options.get('ancestor_round', 0)}/{options.get('ancestor_round_limit', 3)}"
+                                                )
+
+                                                # Mode selection
+                                                available_modes = options.get("available_modes", [])
+                                                mode_options = {}
+                                                for m in available_modes:
+                                                    mode_name = m["mode"].replace("_", " ").title()
+                                                    status = "available" if m["available"] else m.get("reason", "unavailable")
+                                                    est = m.get("estimated_variants", 0)
+                                                    label = f"{mode_name} (~{est} variants)" if m["available"] else f"{mode_name} ({status})"
+                                                    mode_options[label] = m
+
+                                                if not any(m["available"] for m in available_modes):
+                                                    st.info("No evolution modes currently available for this ad.")
+                                                else:
+                                                    selected_label = st.radio(
+                                                        "Select Evolution Mode",
+                                                        options=[k for k, v in mode_options.items() if v["available"]],
+                                                        key=f"evolve_mode_{ad_id}",
+                                                    )
+
+                                                    if selected_label:
+                                                        selected_mode = mode_options[selected_label]
+                                                        st.caption(selected_mode.get("reason", ""))
+
+                                                        if selected_mode["mode"] == "cross_size_expansion":
+                                                            untested = selected_mode.get("untested_sizes", [])
+                                                            if untested:
+                                                                st.caption(f"Untested sizes: {', '.join(untested)}")
+
+                                                    # Show result if available
+                                                    if st.session_state.evolve_result:
+                                                        result = st.session_state.evolve_result
+                                                        if result.get("success"):
+                                                            st.success(
+                                                                f"Evolution submitted! "
+                                                                f"Variable: {result.get('variable_changed', 'N/A')} | "
+                                                                f"Children: {len(result.get('child_ad_ids', []))}"
+                                                            )
+                                                        elif result.get("error"):
+                                                            st.error(f"Evolution failed: {result['error']}")
+
+                                                    # Submit button
+                                                    evo_btn_col1, evo_btn_col2 = st.columns(2)
+                                                    with evo_btn_col1:
+                                                        can_submit = (
+                                                            selected_label is not None
+                                                            and not st.session_state.evolve_submitting
+                                                        )
+                                                        if st.button(
+                                                            "🚀 Evolve",
+                                                            key=f"submit_evolve_{ad_id}",
+                                                            disabled=not can_submit,
+                                                            type="primary"
+                                                        ):
+                                                            st.session_state.evolve_submitting = True
+                                                            selected_mode_val = mode_options[selected_label]
+                                                            with st.spinner("Submitting evolution job..."):
+                                                                try:
+                                                                    from viraltracker.services.winner_evolution_service import WinnerEvolutionService
+                                                                    from uuid import UUID as _EUUID2
+                                                                    import asyncio as _evo_asyncio2
+                                                                    evo_svc2 = WinnerEvolutionService()
+                                                                    evo_result = _evo_asyncio2.run(
+                                                                        evo_svc2.evolve_winner(
+                                                                            parent_ad_id=_EUUID2(ad_id),
+                                                                            mode=selected_mode_val["mode"],
+                                                                        )
+                                                                    )
+                                                                    st.session_state.evolve_result = {
+                                                                        "success": True, **evo_result
+                                                                    }
+                                                                except Exception as evo_err2:
+                                                                    st.session_state.evolve_result = {
+                                                                        "success": False,
+                                                                        "error": str(evo_err2),
+                                                                    }
+                                                            st.session_state.evolve_submitting = False
+                                                            st.rerun()
+
+                                                    with evo_btn_col2:
+                                                        if st.button("Cancel", key=f"cancel_evolve_{ad_id}"):
+                                                            st.session_state.evolve_ad_id = None
+                                                            st.session_state.evolve_options = None
+                                                            st.session_state.evolve_result = None
+                                                            st.rerun()
 
                                     # Approve/Reject buttons for pending ads
                                     if ad_id and ad_status == 'pending':

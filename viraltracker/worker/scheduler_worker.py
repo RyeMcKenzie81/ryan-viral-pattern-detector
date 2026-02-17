@@ -582,6 +582,10 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_creative_genome_update_job(job)
     elif job_type == 'genome_validation':
         return await execute_genome_validation_job(job)
+    elif job_type == 'winner_evolution':
+        return await execute_winner_evolution_job(job)
+    elif job_type == 'experiment_analysis':
+        return await execute_experiment_analysis_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -3535,6 +3539,221 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Genome validation failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Winner Evolution job — evolve winning ads into improved variants.
+
+    Phase 7A: Supports three evolution modes:
+    - winner_iteration: Change ONE element, regenerate
+    - anti_fatigue_refresh: Same psychology, fresh visual
+    - cross_size_expansion: Generate winner in untested sizes
+
+    Job parameters (in job['parameters'] JSONB):
+        parent_ad_id: UUID of the winning ad to evolve (REQUIRED)
+        evolution_mode: winner_iteration | anti_fatigue_refresh | cross_size_expansion (REQUIRED)
+        variable_override: Optional element name to force-change (winner_iteration only)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting Winner Evolution job: {job_name} (ID: {job_id})")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for evolution job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.winner_evolution_service import WinnerEvolutionService
+        from uuid import UUID
+
+        parent_ad_id = params.get("parent_ad_id")
+        evolution_mode = params.get("evolution_mode")
+        variable_override = params.get("variable_override")
+
+        if not parent_ad_id:
+            raise ValueError("parent_ad_id is required for winner_evolution")
+        if not evolution_mode:
+            raise ValueError("evolution_mode is required for winner_evolution")
+
+        logs.append(f"Evolving ad {parent_ad_id} | mode={evolution_mode}")
+        if variable_override:
+            logs.append(f"Variable override: {variable_override}")
+
+        evolution_service = WinnerEvolutionService()
+
+        result = await evolution_service.evolve_winner(
+            parent_ad_id=UUID(parent_ad_id),
+            mode=evolution_mode,
+            variable_override=variable_override,
+            job_id=UUID(job_id),
+        )
+
+        child_count = len(result.get("child_ad_ids", []))
+        lineage_count = result.get("lineage_entries", 0)
+        logs.append(f"Generated {child_count} evolved ads")
+        logs.append(f"Recorded {lineage_count} lineage entries")
+        logs.append(f"Variable changed: {result.get('variable_changed')} "
+                     f"({result.get('old_value')} → {result.get('new_value')})")
+        logs.append(f"Iteration round: {result.get('iteration_round')}")
+
+        summary = {
+            "child_ad_ids": result.get("child_ad_ids", []),
+            "ad_run_ids": result.get("ad_run_ids", []),
+            "lineage_entries": lineage_count,
+            "mode": evolution_mode,
+            "variable_changed": result.get("variable_changed"),
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule if recurring
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Winner evolution failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute Bayesian analysis for running experiments.
+
+    Phase 7B: Runs daily analysis for all running/analyzing experiments for a brand.
+    Non-Meta brands are skipped with reason. One experiment failure doesn't block others.
+
+    Job parameters (in job['parameters'] JSONB):
+        experiment_id: Optional UUID — analyze specific experiment (else all running for brand)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting Experiment Analysis job: {job_name} (ID: {job_id})")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for experiment analysis job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.experiment_service import ExperimentService
+        from uuid import UUID
+
+        svc = ExperimentService()
+
+        # Check Meta account
+        if not brand_id or not await svc.has_meta_account(UUID(brand_id)):
+            logs.append("Skipped: no_ad_account_linked")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": {"skipped": True, "reason": "no_ad_account_linked"},
+            })
+            if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+                next_run = calculate_next_run(job['cron_expression'])
+                if next_run:
+                    update_job(job_id, {"next_run_at": next_run.isoformat()})
+            return {"success": True, "skipped": True, "reason": "no_ad_account_linked"}
+
+        # Get experiments to analyze
+        specific_id = params.get("experiment_id")
+        if specific_id:
+            experiments = [await svc.get_experiment(UUID(specific_id))]
+            logs.append(f"Analyzing specific experiment: {specific_id}")
+        else:
+            running = await svc.list_experiments(UUID(brand_id), status="running")
+            analyzing = await svc.list_experiments(UUID(brand_id), status="analyzing")
+            experiments = running + analyzing
+            logs.append(f"Found {len(experiments)} running/analyzing experiments")
+
+        results = []
+        for exp in experiments:
+            exp_id = exp["id"]
+            exp_name = exp.get("name", "unknown")
+            try:
+                analysis = await svc.run_analysis(UUID(exp_id))
+                decision = analysis.get("decision", "unknown")
+                logs.append(f"  {exp_name}: decision={decision}")
+                results.append({
+                    "experiment_id": exp_id,
+                    "name": exp_name,
+                    "decision": decision,
+                    "success": True,
+                })
+            except Exception as e:
+                logger.warning(f"Experiment {exp_id} analysis failed: {e}")
+                logs.append(f"  {exp_name}: ERROR - {e}")
+                results.append({
+                    "experiment_id": exp_id,
+                    "name": exp_name,
+                    "error": str(e),
+                    "success": False,
+                })
+
+        summary = {
+            "experiments_analyzed": len(results),
+            "successes": sum(1 for r in results if r.get("success")),
+            "failures": sum(1 for r in results if not r.get("success")),
+            "results": results,
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule if recurring
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Experiment analysis failed: {e}")
         logs.append(f"ERROR: {e}")
         update_job_run(run_id, {
             "status": "failed",
