@@ -129,21 +129,22 @@ Cross-brand transfer →
 | 9 | Platform Settings — Visual Clusters tab | PASS |
 | 10 | Mark as Exemplar button works | PASS (after fix `5306a87`) |
 | 11 | Remove exemplar from Exemplar Library | PASS (after fix `071361b`) |
+| 12 | Full V2 pipeline end-to-end via worker (2 templates) | PASS — all nodes completed, Logfire traces confirm |
+| 13 | CompileResultsNode records selection snapshot + experiment data | PASS — node completed in 0.1s, no errors |
 
-#### Remaining (require pipeline run or genome_validation trigger)
+#### Remaining (require genome_validation trigger or accumulated data)
 
 | # | Test | Where | How to Verify |
 |---|------|-------|---------------|
-| 12 | 8 scorers in template selection logs | Run ad generation | Check worker logs for 8 scorer names |
-| 13 | Visual embeddings stored after review | Run ad generation | Query `visual_embeddings` table for new rows |
-| 14 | Quality calibration job runs on schedule | Worker logs | Check `scheduled_jobs` for `quality_calibration` type |
-| 15 | Interaction detection on genome_validation | Trigger genome_validation | Query `element_interactions` table |
-| 16 | Cross-Brand Sharing toggle | Brand Manager page | Toggle and save |
-| 17 | Learned weights when 30+ observations | Seed posteriors, run selection | Check Scorer Weights tab shows "warm" phase |
-| 18 | Selection snapshot recorded after run | Run ad generation | Query `selection_weight_snapshots` for new row |
-| 19 | Whitespace on genome_validation | Trigger genome_validation | Query `whitespace_candidates` table |
-| 20 | Clustering on genome_validation | Trigger genome_validation | Query `visual_style_clusters` table |
-| 21 | Experiment create→activate→run→analyze→conclude | Platform Settings > Gen Experiments | Full workflow |
+| 14 | Visual embeddings stored after review | Supabase | Query `visual_embeddings` table for new rows from this run |
+| 15 | Quality calibration job runs on schedule | Worker logs | Check `scheduled_jobs` for `quality_calibration` type |
+| 16 | Interaction detection on genome_validation | Trigger genome_validation | Query `element_interactions` table |
+| 17 | Cross-Brand Sharing toggle | Brand Manager page | Toggle and save |
+| 18 | Selection snapshot in DB | Supabase | Query `selection_weight_snapshots` for new rows |
+| 19 | Learned weights when 30+ observations | Long-term | Check Scorer Weights tab shows "warm" phase |
+| 20 | Whitespace on genome_validation | Trigger genome_validation | Query `whitespace_candidates` table |
+| 21 | Clustering on genome_validation | Trigger genome_validation | Query `visual_style_clusters` table |
+| 22 | Experiment create→activate→run→analyze→conclude | Platform Settings > Gen Experiments | Full workflow |
 
 ### Bugs Fixed During Testing
 
@@ -151,6 +152,15 @@ Cross-brand transfer →
 |--------|-----|-----|
 | `5306a87` | Mark as Exemplar: `generated_ads.brand_id` doesn't exist, then `ad_runs.brand_id` doesn't exist | Use `st.session_state.v2_brand_id`, fallback to `ad_runs → products(brand_id)` join |
 | `071361b` | Exemplar Library: `generated_ads.weighted_score` doesn't exist | Removed from all queries, compute from `review_check_scores` instead |
+| `915e533` | Logfire not initialized on worker server | Added `setup_logfire()` to worker `main()` entry point |
+| N/A | Pipeline stuck at "analyzing" after deploy killed worker mid-run | Deploy restart, not a code bug. Manually cleaned up stuck ad_run + scheduled_job_run |
+
+### Logfire Observability Status
+
+- **Worker**: Logfire active (`viraltracker-scheduler-worker`), capturing PydanticAI spans + pydantic-graph node spans
+- **UI**: Logfire active (`viraltracker`), capturing Pydantic validation spans. Logger output not yet reaching Logfire (known gap — `LogfireLoggingHandler` configured in `app.py` but pipeline logger calls not propagating)
+- **Pipeline node traces visible**: InitializeNode → FetchContextNode → AnalyzeTemplateNode → SelectContentNode → HeadlineCongruenceNode → SelectImagesNode → GenerateAdsNode → DefectScanNode → ReviewAdsNode → RetryRejectedNode → CompileResultsNode
+- **LLM calls visible**: Gemini 3 Pro Image Preview (generation + review), Claude Opus 4.6 (content selection)
 
 ### Dependencies on Phase 8A
 
