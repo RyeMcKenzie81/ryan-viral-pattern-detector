@@ -84,12 +84,15 @@ def render_model_selector(key: str, label: str):
                 st.rerun()
 
 # Create Tabs
-tab_core, tab_agents, tab_services, tab_pipelines, tab_angle = st.tabs([
+tab_core, tab_agents, tab_services, tab_pipelines, tab_angle, tab_calibration, tab_interactions, tab_exemplars = st.tabs([
     "Core Capabilities",
     "Social Agents",
     "Backend Services",
     "Content Pipelines",
-    "Angle Pipeline"
+    "Angle Pipeline",
+    "Calibration",
+    "Interactions",
+    "Exemplar Library",
 ])
 
 with tab_core:
@@ -312,6 +315,263 @@ angle_pipeline.max_ads_per_scheduled_run = {get_system_setting("angle_pipeline.m
 angle_pipeline.cluster_eps = {get_system_setting("angle_pipeline.cluster_eps", 0.3)}
 angle_pipeline.cluster_min_samples = {get_system_setting("angle_pipeline.cluster_min_samples", 2)}
 """, language="properties")
+
+# ============================================================================
+# Phase 8A: Calibration Proposals Tab
+# ============================================================================
+with tab_calibration:
+    st.markdown("### Quality Calibration Proposals")
+    st.info(
+        "Weekly analysis of human overrides proposes threshold adjustments. "
+        "Review proposals below and Activate or Dismiss them."
+    )
+
+    try:
+        import asyncio
+        from viraltracker.services.quality_calibration_service import QualityCalibrationService
+        from viraltracker.ui.auth import get_current_user_id
+
+        cal_svc = QualityCalibrationService()
+        cal_user_id = get_current_user_id()
+
+        loop = asyncio.new_event_loop()
+        pending = loop.run_until_complete(cal_svc.get_pending_proposals())
+
+        if pending:
+            st.markdown(f"**{len(pending)} pending proposal(s)**")
+            for proposal in pending:
+                with st.expander(
+                    f"Proposal {proposal['id'][:8]}... — "
+                    f"Threshold: {proposal.get('proposed_pass_threshold')} | "
+                    f"FP Rate: {proposal.get('false_positive_rate', 'N/A')} | "
+                    f"FN Rate: {proposal.get('false_negative_rate', 'N/A')}",
+                    expanded=True,
+                ):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Current Config**")
+                        st.json({
+                            "pass_threshold": float(proposal.get("current_config_id", "N/A") or "N/A"),
+                        } if proposal.get("current_config_id") else {"status": "using defaults"})
+
+                    with col2:
+                        st.markdown("**Proposed Changes**")
+                        st.json({
+                            "pass_threshold": float(proposal["proposed_pass_threshold"]),
+                            "borderline_range": proposal["proposed_borderline_range"],
+                        })
+
+                    st.markdown(f"**Analysis Window**: {proposal.get('analysis_window_start')} to {proposal.get('analysis_window_end')}")
+                    st.markdown(f"**Overrides Analyzed**: {proposal.get('total_overrides_analyzed', 0)}")
+                    st.markdown(f"**Safety**: min_sample={proposal.get('meets_min_sample_size')}, within_delta={proposal.get('within_delta_bounds')}")
+
+                    acol1, acol2 = st.columns(2)
+                    with acol1:
+                        if st.button("Activate", key=f"cal_activate_{proposal['id']}", type="primary"):
+                            try:
+                                from uuid import UUID
+                                result = loop.run_until_complete(
+                                    cal_svc.activate_proposal(
+                                        UUID(proposal["id"]),
+                                        UUID(cal_user_id) if cal_user_id else UUID("00000000-0000-0000-0000-000000000000"),
+                                    )
+                                )
+                                st.success(f"Activated! New config version: {result.get('version')}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Activation failed: {e}")
+                    with acol2:
+                        dismiss_reason = st.text_input(
+                            "Dismiss reason",
+                            key=f"cal_dismiss_reason_{proposal['id']}",
+                            placeholder="Why dismiss?",
+                        )
+                        if st.button("Dismiss", key=f"cal_dismiss_{proposal['id']}"):
+                            try:
+                                from uuid import UUID
+                                loop.run_until_complete(
+                                    cal_svc.dismiss_proposal(
+                                        UUID(proposal["id"]),
+                                        UUID(cal_user_id) if cal_user_id else UUID("00000000-0000-0000-0000-000000000000"),
+                                        dismiss_reason or "No reason provided",
+                                    )
+                                )
+                                st.success("Proposal dismissed.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Dismiss failed: {e}")
+        else:
+            st.info("No pending calibration proposals.")
+
+        # History
+        st.markdown("---")
+        st.markdown("### Proposal History")
+        history = loop.run_until_complete(cal_svc.get_proposal_history())
+        loop.close()
+
+        if history:
+            for h in history[:10]:
+                status_icon = {"activated": "✅", "dismissed": "❌", "proposed": "⏳", "insufficient_evidence": "⚠️"}.get(h["status"], "❓")
+                st.markdown(
+                    f"{status_icon} **{h['id'][:8]}** — {h['status']} | "
+                    f"Threshold: {h.get('proposed_pass_threshold')} | "
+                    f"Overrides: {h.get('total_overrides_analyzed', 0)} | "
+                    f"Date: {h.get('proposed_at', 'N/A')[:10]}"
+                )
+        else:
+            st.caption("No proposal history yet.")
+
+    except Exception as e:
+        st.warning(f"Could not load calibration data: {e}")
+
+
+# ============================================================================
+# Phase 8A: Interaction Effects Tab
+# ============================================================================
+with tab_interactions:
+    st.markdown("### Element Interaction Effects")
+    st.info(
+        "Top pairwise element interactions detected from creative performance data. "
+        "Synergies boost performance when combined; conflicts reduce it."
+    )
+
+    try:
+        import asyncio
+        from viraltracker.services.interaction_detector_service import InteractionDetectorService
+        from viraltracker.ui.utils import render_brand_selector
+
+        int_brand_id = render_brand_selector(key="interactions_brand_selector")
+        if int_brand_id:
+            from uuid import UUID
+            detector = InteractionDetectorService()
+            loop = asyncio.new_event_loop()
+            interactions = loop.run_until_complete(
+                detector.get_top_interactions(UUID(int_brand_id))
+            )
+            loop.close()
+
+            if interactions:
+                import pandas as pd
+                df = pd.DataFrame([{
+                    "Rank": i.get("effect_rank", ""),
+                    "Element A": f"{i['element_a_name']}={i['element_a_value']}",
+                    "Element B": f"{i['element_b_name']}={i['element_b_value']}",
+                    "Effect": f"{i['interaction_effect']:+.4f}",
+                    "Direction": i["effect_direction"],
+                    "CI": f"[{i.get('confidence_interval_low', 0):.3f}, {i.get('confidence_interval_high', 0):.3f}]",
+                    "N": i["sample_size"],
+                    "p-value": f"{i.get('p_value', 1.0):.3f}",
+                } for i in interactions])
+
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                advisory = detector.format_advisory_context(interactions)
+                if advisory:
+                    st.markdown("**Advisory Summary:**")
+                    st.markdown(advisory)
+            else:
+                st.info("No interaction data yet. Run Genome Validation to detect interactions.")
+    except Exception as e:
+        st.warning(f"Could not load interaction data: {e}")
+
+
+# ============================================================================
+# Phase 8A: Exemplar Library Tab
+# ============================================================================
+with tab_exemplars:
+    st.markdown("### Exemplar Library")
+    st.info(
+        "Curated calibration ads used as few-shot examples in review prompts. "
+        "Gold approve/reject exemplars teach the AI your brand's quality bar."
+    )
+
+    try:
+        import asyncio
+        from viraltracker.pipelines.ad_creation_v2.services.exemplar_service import ExemplarService
+        from viraltracker.ui.utils import render_brand_selector
+
+        ex_brand_id = render_brand_selector(key="exemplar_brand_selector")
+        if ex_brand_id:
+            from uuid import UUID
+            ex_svc = ExemplarService()
+            loop = asyncio.new_event_loop()
+
+            # Stats
+            stats = loop.run_until_complete(ex_svc.get_exemplar_stats(UUID(ex_brand_id)))
+            scol1, scol2, scol3, scol4 = st.columns(4)
+            with scol1:
+                st.metric("Gold Approve", stats.get("gold_approve", 0))
+            with scol2:
+                st.metric("Gold Reject", stats.get("gold_reject", 0))
+            with scol3:
+                st.metric("Edge Case", stats.get("edge_case", 0))
+            with scol4:
+                st.metric("Total", stats.get("total", 0))
+
+            # Auto-seed button
+            if st.button("Auto-Seed from Overrides", key="exemplar_auto_seed"):
+                try:
+                    seed_result = loop.run_until_complete(
+                        ex_svc.auto_seed_exemplars(UUID(ex_brand_id))
+                    )
+                    st.success(
+                        f"Seeded {seed_result['seeded']} exemplars: "
+                        f"{seed_result.get('gold_approve', 0)} approve, "
+                        f"{seed_result.get('gold_reject', 0)} reject, "
+                        f"{seed_result.get('edge_case', 0)} edge"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Auto-seed failed: {e}")
+
+            st.divider()
+
+            # List exemplars
+            exemplars = loop.run_until_complete(
+                ex_svc.get_exemplars(UUID(ex_brand_id))
+            )
+            loop.close()
+
+            if exemplars:
+                for ex in exemplars:
+                    ad_data = ex.get("generated_ads", {})
+                    cat_icon = {
+                        "gold_approve": "✅",
+                        "gold_reject": "❌",
+                        "edge_case": "⚠️",
+                    }.get(ex["category"], "❓")
+
+                    col1, col2, col3 = st.columns([1, 3, 1])
+                    with col1:
+                        st.markdown(f"{cat_icon} **{ex['category']}**")
+                    with col2:
+                        hook = ad_data.get("hook_text", "N/A")
+                        st.markdown(f"\"{hook[:80]}\"")
+                        st.caption(
+                            f"Source: {ex.get('source', 'N/A')} | "
+                            f"Template: {ex.get('template_category', 'N/A')} | "
+                            f"Canvas: {ex.get('canvas_size', 'N/A')} | "
+                            f"Color: {ex.get('color_mode', 'N/A')}"
+                        )
+                    with col3:
+                        if st.button("Remove", key=f"remove_exemplar_{ex['id']}"):
+                            try:
+                                loop2 = asyncio.new_event_loop()
+                                loop2.run_until_complete(
+                                    ex_svc.remove_exemplar(UUID(ex["id"]), "Removed via Settings UI")
+                                )
+                                loop2.close()
+                                st.success("Exemplar removed.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Remove failed: {e}")
+                    st.divider()
+            else:
+                st.info("No exemplars yet. Use Auto-Seed or mark ads as exemplars in the Results Dashboard.")
+    except Exception as e:
+        st.warning(f"Could not load exemplar data: {e}")
+
 
 # Display current configuration summary
 st.markdown("---")

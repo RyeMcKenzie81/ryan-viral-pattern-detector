@@ -206,6 +206,7 @@ class AdReviewService:
         hook_text: str,
         ad_analysis: Dict[str, Any],
         config: Optional[Dict[str, Any]] = None,
+        exemplar_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run 3-stage review pipeline.
 
@@ -219,6 +220,7 @@ class AdReviewService:
             hook_text: Hook text used in ad.
             ad_analysis: Ad analysis dict.
             config: quality_scoring_config dict. If None, uses defaults.
+            exemplar_context: Optional few-shot exemplar context for review calibration (Phase 8A).
 
         Returns:
             Dict with review_check_scores, weighted_score, final_status,
@@ -235,7 +237,8 @@ class AdReviewService:
         # Stage 2: Claude Vision
         try:
             stage2_scores = await self._run_rubric_review_claude(
-                image_data, product_name, hook_text, ad_analysis
+                image_data, product_name, hook_text, ad_analysis,
+                exemplar_context=exemplar_context,
             )
         except Exception as e:
             logger.warning(f"Stage 2 Claude review failed: {e}")
@@ -279,7 +282,8 @@ class AdReviewService:
             # Stage 3: Gemini Vision (same rubric)
             try:
                 stage3_scores = await self._run_rubric_review_gemini(
-                    image_data, product_name, hook_text, ad_analysis
+                    image_data, product_name, hook_text, ad_analysis,
+                    exemplar_context=exemplar_context,
                 )
                 stage3_weighted = compute_weighted_score(stage3_scores, check_weights)
                 stage3_result = {"scores": stage3_scores, "weighted": stage3_weighted}
@@ -309,13 +313,14 @@ class AdReviewService:
         product_name: str,
         hook_text: str,
         ad_analysis: Dict[str, Any],
+        exemplar_context: Optional[str] = None,
     ) -> Dict[str, float]:
         """Run 15-check rubric review with Claude Vision."""
         from pydantic_ai import Agent
         from pydantic_ai.messages import BinaryContent
         from viraltracker.core.config import Config
 
-        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis)
+        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context)
         media_type = _detect_media_type(image_data)
 
         agent = Agent(
@@ -336,12 +341,13 @@ class AdReviewService:
         product_name: str,
         hook_text: str,
         ad_analysis: Dict[str, Any],
+        exemplar_context: Optional[str] = None,
     ) -> Dict[str, float]:
         """Run 15-check rubric review with Gemini Vision."""
         from viraltracker.services.gemini_service import GeminiService
         import base64
 
-        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis)
+        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context)
         image_b64 = base64.b64encode(image_data).decode("utf-8")
 
         gemini = GeminiService()
@@ -451,8 +457,20 @@ def _build_rubric_prompt(
     product_name: str,
     hook_text: str,
     ad_analysis: Dict[str, Any],
+    exemplar_context: Optional[str] = None,
 ) -> str:
-    """Build the 15-check structured rubric prompt."""
+    """Build the 15-check structured rubric prompt.
+
+    Args:
+        product_name: Product name for context.
+        hook_text: Hook text used in ad.
+        ad_analysis: Ad analysis dict.
+        exemplar_context: Optional Phase 8A few-shot calibration examples.
+    """
+    exemplar_section = ""
+    if exemplar_context:
+        exemplar_section = f"\n{exemplar_context}\n"
+
     return f"""Score this generated ad image on 15 quality checks. Each check is scored 0-10.
 
 CONTEXT:
@@ -460,7 +478,7 @@ CONTEXT:
 - Hook/Headline: "{hook_text}"
 - Expected Format: {ad_analysis.get('format_type', 'N/A')}
 - Expected Layout: {ad_analysis.get('layout_structure', 'N/A')}
-
+{exemplar_section}
 VISUAL CHECKS (V1-V9):
 - V1: Product accuracy — product image matches reference exactly (0=wrong product, 10=perfect)
 - V2: Text readability — all text is crisp, readable, no garbling (0=unreadable, 10=perfect)

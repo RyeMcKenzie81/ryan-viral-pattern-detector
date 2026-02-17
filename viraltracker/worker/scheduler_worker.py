@@ -586,6 +586,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_winner_evolution_job(job)
     elif job_type == 'experiment_analysis':
         return await execute_experiment_analysis_job(job)
+    elif job_type == 'quality_calibration':
+        return await execute_quality_calibration_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -3520,7 +3522,24 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Metrics: {metrics}")
         logs.append(f"Alerts created: {alerts_created}")
 
-        summary = {"metrics": metrics, "alerts_created": alerts_created}
+        # Phase 8A: Piggyback interaction detection on genome validation
+        interaction_result = None
+        try:
+            from viraltracker.services.interaction_detector_service import InteractionDetectorService
+            detector = InteractionDetectorService()
+            interaction_result = await detector.detect_interactions(brand_uuid)
+            interactions_found = len(interaction_result.get("interactions", []))
+            logs.append(f"Interaction detection: {interactions_found} interactions found "
+                        f"({interaction_result.get('total_pairs_tested', 0)} pairs tested)")
+        except Exception as ie:
+            logger.warning(f"Interaction detection failed (non-fatal): {ie}")
+            logs.append(f"Interaction detection skipped: {ie}")
+
+        summary = {
+            "metrics": metrics,
+            "alerts_created": alerts_created,
+            "interactions_found": len(interaction_result.get("interactions", [])) if interaction_result else 0,
+        }
 
         update_job_run(run_id, {
             "status": "completed",
@@ -3754,6 +3773,98 @@ async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Experiment analysis failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Quality Calibration job — analyze overrides and propose threshold changes.
+
+    Phase 8A: Runs weekly to analyze false positive/negative rates from
+    ad_review_overrides and propose new quality_scoring_config settings.
+    Proposals require operator approval in Settings before activation.
+
+    Job parameters (in job['parameters'] JSONB):
+        window_days: Number of days to analyze (default: 30)
+    """
+    job_id = job['id']
+    job_name = job['name']
+
+    logger.info(f"Starting Quality Calibration: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for quality calibration job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.quality_calibration_service import QualityCalibrationService
+        from uuid import UUID
+
+        calibration_service = QualityCalibrationService()
+        params = job.get('parameters', {}) or {}
+        window_days = params.get('window_days', 30)
+
+        logs.append(f"Analyzing overrides (window: {window_days} days)...")
+
+        # Run calibration proposal (global — no specific org)
+        result = await calibration_service.propose_calibration(
+            organization_id=None,
+            window_days=window_days,
+            job_run_id=UUID(run_id) if run_id else None,
+        )
+
+        status = result.get("status", "unknown")
+        proposal_id = result.get("proposal_id")
+        metrics = result.get("metrics", {})
+
+        logs.append(f"Result: status={status}, proposal_id={proposal_id}")
+        logs.append(f"Metrics: overrides={metrics.get('total_overrides', 0)}, "
+                     f"fp_rate={metrics.get('false_positive_rate')}, "
+                     f"fn_rate={metrics.get('false_negative_rate')}")
+
+        if status == "proposed":
+            logs.append("Proposal created — awaiting operator review in Settings.")
+        elif status == "insufficient_evidence":
+            reason = result.get("reason", "")
+            logs.append(f"Insufficient evidence: {reason}")
+
+        summary = {
+            "status": status,
+            "proposal_id": proposal_id,
+            "total_overrides": metrics.get("total_overrides", 0),
+            "false_positive_rate": metrics.get("false_positive_rate"),
+            "false_negative_rate": metrics.get("false_negative_rate"),
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Quality calibration failed: {e}")
         logs.append(f"ERROR: {e}")
         update_job_run(run_id, {
             "status": "failed",

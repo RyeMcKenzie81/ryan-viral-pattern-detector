@@ -57,6 +57,7 @@ ROLL_THE_DICE_WEIGHTS: Dict[str, float] = {
     "audience_match": 0.0,
     "belief_clarity": 0.0,
     "performance": 0.0,
+    "fatigue": 0.2,
 }
 
 SMART_SELECT_WEIGHTS: Dict[str, float] = {
@@ -67,6 +68,7 @@ SMART_SELECT_WEIGHTS: Dict[str, float] = {
     "audience_match": 0.4,
     "belief_clarity": 0.6,
     "performance": 0.3,
+    "fatigue": 0.4,
 }
 
 
@@ -316,6 +318,141 @@ class PerformanceScorer(TemplateScorer):
             return 0.5  # neutral on error
 
 
+class FatigueScorer(TemplateScorer):
+    """Hybrid fatigue scorer: template decay + element combo modifier.
+
+    Base decay: e^(-lambda * days_since_template_last_used)
+    Combo modifier: adjusts decay based on element combo staleness
+    Final score: clamp(base_decay * combo_modifier, 0.2, 1.0)
+
+    Falls back to 1.0 (no fatigue) for never-used templates.
+    Falls back to base_decay only when combo data is sparse.
+    """
+    name = "fatigue"
+
+    DECAY_LAMBDA = 0.05  # ~14-day half-life
+    COMBO_DECAY_LAMBDA = 0.03  # Slower combo decay (~23-day half-life)
+    MIN_COMBO_OBSERVATIONS = 3  # Minimum uses before combo modifier applies
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        """Score a template based on fatigue (recency of use).
+
+        Args:
+            template: Template row dict.
+            context: Selection context with brand/product info.
+
+        Returns:
+            Float score in [0.2, 1.0]. 1.0 = never used (no fatigue).
+        """
+        from datetime import datetime, timezone
+
+        # Base score: template-level decay from product_template_usage
+        base_decay = self._compute_template_decay(template, context)
+
+        # Combo modifier: element combo staleness
+        combo_modifier = self._compute_combo_modifier(template, context)
+
+        # Final score: clamped product
+        final = max(0.2, min(1.0, base_decay * combo_modifier))
+        return final
+
+    def _compute_template_decay(
+        self, template: dict, context: SelectionContext
+    ) -> float:
+        """Compute template-level decay from last use date.
+
+        Returns 1.0 for never-used templates.
+        """
+        from datetime import datetime, timezone
+
+        # Check if template has been used (from prefetched data)
+        if template.get("is_unused", True):
+            return 1.0  # Never used = no fatigue
+
+        # Try to get last_used_at from product_template_usage
+        try:
+            from viraltracker.core.database import get_supabase_client
+            db = get_supabase_client()
+
+            result = db.table("product_template_usage").select(
+                "last_used_at"
+            ).eq(
+                "product_id", str(context.product_id)
+            ).eq(
+                "template_id", template.get("id", "")
+            ).limit(1).execute()
+
+            if result.data and result.data[0].get("last_used_at"):
+                last_used_str = result.data[0]["last_used_at"]
+                last_used = datetime.fromisoformat(
+                    last_used_str.replace("Z", "+00:00")
+                )
+                now = datetime.now(timezone.utc)
+                days = (now - last_used).total_seconds() / 86400.0
+                return math.exp(-self.DECAY_LAMBDA * days)
+        except Exception as e:
+            logger.warning(f"FatigueScorer template decay failed: {e}")
+
+        return 0.5  # Fallback when data unavailable
+
+    def _compute_combo_modifier(
+        self, template: dict, context: SelectionContext
+    ) -> float:
+        """Compute element combo modifier from element_combo_usage.
+
+        Returns 1.0 (neutral) when combo data is sparse.
+        """
+        from datetime import datetime, timezone
+
+        # Build combo key from template metadata
+        template_elements = template.get("template_elements") or {}
+        element_tags = template.get("element_tags") or {}
+
+        combo_parts = {}
+        for elem in ["hook_type", "color_mode", "template_category", "awareness_stage"]:
+            val = element_tags.get(elem) or template_elements.get(elem) or template.get(elem)
+            if val:
+                combo_parts[elem] = str(val)
+
+        if not combo_parts:
+            return 1.0  # No combo data → neutral
+
+        # Build canonical combo key
+        combo_key = "|".join(
+            f"{k}={v}" for k, v in sorted(combo_parts.items())
+        )
+
+        try:
+            from viraltracker.core.database import get_supabase_client
+            db = get_supabase_client()
+
+            result = db.table("element_combo_usage").select(
+                "last_used_at, times_used"
+            ).eq(
+                "brand_id", str(context.brand_id)
+            ).eq("combo_key", combo_key).limit(1).execute()
+
+            if result.data:
+                row = result.data[0]
+                times_used = row.get("times_used", 0)
+
+                if times_used < self.MIN_COMBO_OBSERVATIONS:
+                    return 1.0  # Sparse data → neutral
+
+                last_used_str = row.get("last_used_at")
+                if last_used_str:
+                    last_used = datetime.fromisoformat(
+                        last_used_str.replace("Z", "+00:00")
+                    )
+                    now = datetime.now(timezone.utc)
+                    days = (now - last_used).total_seconds() / 86400.0
+                    return math.exp(-self.COMBO_DECAY_LAMBDA * days)
+        except Exception as e:
+            logger.warning(f"FatigueScorer combo modifier failed: {e}")
+
+        return 1.0  # Fallback
+
+
 # Phase 1 scorer instances (kept for backward compat)
 PHASE_1_SCORERS: List[TemplateScorer] = [
     AssetMatchScorer(),
@@ -352,6 +489,9 @@ PHASE_6_SCORERS: List[TemplateScorer] = [
     BeliefClarityScorer(),
     PerformanceScorer(),
 ]
+
+# Phase 8 scorer instances (includes fatigue scorer)
+PHASE_8_SCORERS: List[TemplateScorer] = PHASE_6_SCORERS + [FatigueScorer()]
 
 
 # ============================================================================

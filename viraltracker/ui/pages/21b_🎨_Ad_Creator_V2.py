@@ -983,6 +983,9 @@ def _render_ad_card(ad: dict, run_key: str, org_id: str, user_id: str):
                 placeholder="Override reason...",
             )
 
+        # Phase 8A: Mark as Exemplar button
+        _render_exemplar_button(ad, run_key)
+
 
 def _apply_override(ad_id: str, org_id: str, user_id: str, action: str, override_key: str):
     """Apply override via service and refresh."""
@@ -1000,6 +1003,69 @@ def _apply_override(ad_id: str, org_id: str, user_id: str, action: str, override
         st.rerun()
     except Exception as e:
         st.error(f"Override failed: {e}")
+
+
+def _render_exemplar_button(ad: dict, run_key: str):
+    """Render Phase 8A 'Mark as Exemplar' dropdown for reviewed ads."""
+    ad_id = ad.get("id", "")
+    status = ad.get("final_status", "")
+
+    # Only show for reviewed ads (not generation_failed/review_failed)
+    if status in ("generation_failed", "review_failed") or not ad_id:
+        return
+
+    # Check if already an exemplar
+    exemplar_key = f"exemplar_{run_key}_{ad_id}"
+
+    ecol1, ecol2 = st.columns([2, 3])
+    with ecol1:
+        category = st.selectbox(
+            "Exemplar Category",
+            options=["gold_approve", "gold_reject", "edge_case"],
+            key=f"{exemplar_key}_category",
+            label_visibility="collapsed",
+        )
+    with ecol2:
+        if st.button("Mark as Exemplar", key=f"{exemplar_key}_btn"):
+            try:
+                import asyncio
+                from viraltracker.pipelines.ad_creation_v2.services.exemplar_service import ExemplarService
+                from viraltracker.ui.auth import get_current_user_id
+                from viraltracker.ui.utils import get_current_organization_id
+                from uuid import UUID
+
+                svc = ExemplarService()
+                user_id = get_current_user_id()
+
+                # Get brand_id from ad data
+                brand_id = ad.get("brand_id")
+                if not brand_id:
+                    # Try to get from ad_runs
+                    from viraltracker.core.database import get_supabase_client
+                    db = get_supabase_client()
+                    ad_result = db.table("generated_ads").select(
+                        "brand_id"
+                    ).eq("id", ad_id).limit(1).execute()
+                    if ad_result.data:
+                        brand_id = ad_result.data[0].get("brand_id")
+
+                if not brand_id:
+                    st.error("Could not determine brand for this ad.")
+                    return
+
+                loop = asyncio.new_event_loop()
+                result = loop.run_until_complete(
+                    svc.mark_as_exemplar(
+                        brand_id=UUID(brand_id),
+                        generated_ad_id=UUID(ad_id),
+                        category=category,
+                        created_by=UUID(user_id) if user_id else None,
+                    )
+                )
+                loop.close()
+                st.success(f"Marked as {category} exemplar")
+            except Exception as e:
+                st.error(f"Failed to mark as exemplar: {e}")
 
 
 def render_results():

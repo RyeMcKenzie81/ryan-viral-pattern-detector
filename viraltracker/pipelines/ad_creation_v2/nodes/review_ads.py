@@ -67,6 +67,18 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
         except Exception as e:
             logger.warning(f"Could not load quality config, using defaults: {e}")
 
+        # Phase 8A: Prepare exemplar service for review calibration
+        exemplar_service = None
+        visual_service = None
+        brand_id = ctx.state.product_dict.get("brand_id")
+        try:
+            from ..services.exemplar_service import ExemplarService
+            from ..services.visual_descriptor_service import VisualDescriptorService
+            exemplar_service = ExemplarService()
+            visual_service = VisualDescriptorService()
+        except Exception as e:
+            logger.debug(f"Phase 8A exemplar services unavailable: {e}")
+
         # Build congruence lookup from state
         congruence_lookup = {}
         for cr in (ctx.state.congruence_results or []):
@@ -108,6 +120,30 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
             review_check_scores = None
 
             if image_data:
+                # Phase 8A: Build exemplar context for review calibration
+                exemplar_context = None
+                if exemplar_service and visual_service and brand_id:
+                    try:
+                        from uuid import UUID as _UUID
+                        ad_uuid_for_embed = ad_data.get("ad_uuid")
+                        ad_embedding = None
+                        if ad_uuid_for_embed:
+                            ad_embedding = await visual_service.get_embedding(
+                                _UUID(ad_uuid_for_embed)
+                            )
+                        if ad_embedding is None:
+                            # Extract embedding on-the-fly
+                            descriptors = await visual_service.extract_descriptors(image_data)
+                            ad_embedding = await visual_service.embed_descriptors(descriptors)
+
+                        if ad_embedding:
+                            exemplar_context = await exemplar_service.build_exemplar_context(
+                                _UUID(brand_id) if isinstance(brand_id, str) else brand_id,
+                                ad_embedding,
+                            )
+                    except Exception as e:
+                        logger.debug(f"Exemplar context unavailable for variation {prompt_index}: {e}")
+
                 try:
                     review_result = await review_service.review_ad_staged(
                         image_data=image_data,
@@ -115,6 +151,7 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                         hook_text=hook.get('adapted_text', ''),
                         ad_analysis=ctx.state.ad_analysis or {},
                         config=quality_config,
+                        exemplar_context=exemplar_context,
                     )
                     final_status = review_result.get("final_status", "review_failed")
                     review_check_scores = review_result.get("review_check_scores")
@@ -123,6 +160,20 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                     final_status = "review_failed"
 
             logger.info(f"  Variation {prompt_index}: {final_status}")
+
+            # Phase 8A: Store visual embedding for this ad (non-blocking)
+            if image_data and visual_service and brand_id:
+                ad_uuid_for_ve = ad_data.get("ad_uuid")
+                if ad_uuid_for_ve:
+                    try:
+                        from uuid import UUID as _UUID
+                        await visual_service.extract_and_store(
+                            generated_ad_id=_UUID(ad_uuid_for_ve),
+                            brand_id=_UUID(brand_id) if isinstance(brand_id, str) else brand_id,
+                            image_data=image_data,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Visual embedding storage failed for {ad_uuid_for_ve}: {e}")
 
             # Look up congruence score from state
             hook_text = hook.get('adapted_text', '') or hook.get('hook_text', '')

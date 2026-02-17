@@ -106,6 +106,9 @@ class CompileResultsNode(BaseNode[AdCreationPipelineState]):
 
         summary = "\n".join(summary_parts)
 
+        # Phase 8A: Track element combo usage for fatigue scoring
+        await self._record_combo_usage(ctx, reviewed_ads)
+
         # Mark workflow complete
         await ctx.deps.ad_creation.update_ad_run(
             ad_run_id=UUID(ctx.state.ad_run_id),
@@ -135,3 +138,91 @@ class CompileResultsNode(BaseNode[AdCreationPipelineState]):
                     f"{rejected_count} rejected, {flagged_count} flagged ===")
 
         return End(result)
+
+    async def _record_combo_usage(
+        self,
+        ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies],
+        reviewed_ads: list,
+    ) -> None:
+        """Record element combo usage for fatigue scoring (Phase 8A).
+
+        Uses idempotent upsert with last_ad_run_id dedup to prevent
+        double-counting on retries.
+        """
+        from viraltracker.core.database import get_supabase_client
+
+        try:
+            db = get_supabase_client()
+            ad_run_id = ctx.state.ad_run_id
+            brand_id = str(ctx.state.product_dict.get("brand_id", ""))
+            product_id = str(ctx.state.product_dict.get("id", ""))
+            now = datetime.now().isoformat()
+
+            if not brand_id:
+                return
+
+            combo_count = 0
+            for ad in reviewed_ads:
+                if ad.get("final_status") == "generation_failed":
+                    continue
+
+                # Extract element tags from the ad
+                prompt = ad.get("prompt") or {}
+                element_tags = prompt.get("element_tags") or ad.get("element_tags") or {}
+
+                # Build combo parts from tracked elements
+                combo_parts = {}
+                for elem in ["hook_type", "color_mode", "template_category", "awareness_stage"]:
+                    val = element_tags.get(elem) or ad.get(elem)
+                    if val:
+                        combo_parts[elem] = str(val)
+
+                if not combo_parts:
+                    continue
+
+                # Build canonical combo key (sorted)
+                combo_key = "|".join(
+                    f"{k}={v}" for k, v in sorted(combo_parts.items())
+                )
+
+                # Idempotent upsert with last_ad_run_id dedup
+                db.rpc("exec_sql", {"query": f"""
+                    INSERT INTO element_combo_usage (
+                        brand_id, product_id, combo_key, hook_type,
+                        color_mode, template_category, awareness_stage,
+                        last_used_at, times_used, last_ad_run_id
+                    )
+                    VALUES (
+                        {_sql_val(brand_id)}, {_sql_val(product_id)}, {_sql_val(combo_key)},
+                        {_sql_val(combo_parts.get('hook_type'))},
+                        {_sql_val(combo_parts.get('color_mode'))},
+                        {_sql_val(combo_parts.get('template_category'))},
+                        {_sql_val(combo_parts.get('awareness_stage'))},
+                        {_sql_val(now)}, 1, {_sql_val(ad_run_id)}
+                    )
+                    ON CONFLICT (brand_id, (COALESCE(product_id, '00000000-0000-0000-0000-000000000000'::uuid)), combo_key) DO UPDATE SET
+                        last_used_at = GREATEST(element_combo_usage.last_used_at, EXCLUDED.last_used_at),
+                        times_used = CASE
+                            WHEN element_combo_usage.last_ad_run_id IS DISTINCT FROM EXCLUDED.last_ad_run_id
+                            THEN element_combo_usage.times_used + 1
+                            ELSE element_combo_usage.times_used
+                        END,
+                        last_ad_run_id = EXCLUDED.last_ad_run_id
+                """}).execute()
+                combo_count += 1
+
+            if combo_count > 0:
+                logger.info(f"Recorded {combo_count} element combo usages for run {ad_run_id}")
+
+        except Exception as e:
+            # Non-fatal: combo tracking failure shouldn't block pipeline
+            logger.warning(f"Failed to record combo usage: {e}")
+
+
+def _sql_val(val: str | None) -> str:
+    """Format a value for SQL insertion, handling None as NULL."""
+    if val is None:
+        return "NULL"
+    # Escape single quotes for SQL safety
+    escaped = val.replace("'", "''")
+    return f"'{escaped}'"

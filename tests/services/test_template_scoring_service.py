@@ -243,13 +243,13 @@ class TestWeightPresets:
     def test_roll_the_dice_has_all_keys(self):
         expected_keys = {"asset_match", "unused_bonus", "category_match",
                          "awareness_align", "audience_match", "belief_clarity",
-                         "performance"}
+                         "performance", "fatigue"}
         assert set(ROLL_THE_DICE_WEIGHTS.keys()) == expected_keys
 
     def test_smart_select_has_all_keys(self):
         expected_keys = {"asset_match", "unused_bonus", "category_match",
                          "awareness_align", "audience_match", "belief_clarity",
-                         "performance"}
+                         "performance", "fatigue"}
         assert set(SMART_SELECT_WEIGHTS.keys()) == expected_keys
 
     def test_roll_the_dice_new_scorers_neutral(self):

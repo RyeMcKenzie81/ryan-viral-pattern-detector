@@ -560,6 +560,19 @@ class CreativeGenomeService:
                     f"(score: {data['top_scores'][0]})"
                 )
 
+        # Phase 8A: Include interaction effects in advisory context
+        interaction_context = None
+        try:
+            from viraltracker.services.interaction_detector_service import InteractionDetectorService
+            detector = InteractionDetectorService()
+            interactions = await detector.get_top_interactions(brand_id, limit=6)
+            if interactions:
+                interaction_context = detector.format_advisory_context(interactions)
+                if interaction_context:
+                    notes.append(interaction_context)
+        except Exception as e:
+            logger.debug(f"Interaction data unavailable for advisory: {e}")
+
         return {
             "cold_start_level": cold_start_level,
             "total_matured_ads": total_count,
@@ -567,6 +580,7 @@ class CreativeGenomeService:
             "historical_approval_rate": approval_rate,
             "optimization_notes": " | ".join(notes) if notes else None,
             "exploration_rate": self._exploration_rate(total_count),
+            "interaction_effects": interaction_context,
         }
 
     async def get_category_priors(
