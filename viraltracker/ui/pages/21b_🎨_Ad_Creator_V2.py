@@ -1405,7 +1405,10 @@ with _title_col:
     st.caption("Template-scored generation with Pydantic prompts | Pipeline v2")
 with _guide_col:
     st.markdown("")  # spacer
-    st.page_link("pages/21c_🧠_V2_Intelligence_Guide.py", label="Intelligence Guide", icon="🧠")
+    try:
+        st.page_link("pages/21c_🧠_V2_Intelligence_Guide.py", label="Intelligence Guide", icon="🧠")
+    except Exception:
+        pass  # Page link may not resolve in all deployments
 
 if st.session_state.v2_view == 'results':
     render_results()
