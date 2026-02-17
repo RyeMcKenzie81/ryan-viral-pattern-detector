@@ -361,6 +361,9 @@ class ClassifierService:
         at max_new to prevent runaway costs. Video classifications are
         additionally capped at max_video per run.
 
+        Uses batch-prefetch to load all ad data and existing classifications
+        in bulk queries (4 queries total) instead of per-ad N+1 queries.
+
         Args:
             brand_id: Brand UUID.
             org_id: Organization UUID.
@@ -385,11 +388,18 @@ class ClassifierService:
         spend_order = await self._get_ad_spend_order(brand_id, meta_ad_ids)
         sorted_ids = sorted(meta_ad_ids, key=lambda x: spend_order.get(x, 0), reverse=True)
 
+        # Batch-prefetch all ad data and classifications in bulk (4 queries
+        # instead of ~5 per ad). This reduces 188 ads × 5 queries = 940
+        # sequential HTTP calls down to 4 bulk queries.
+        prefetched_ads, prefetched_classifications = await self._batch_prefetch(
+            brand_id, sorted_ids
+        )
+
         skipped_count = 0
         for i, meta_ad_id in enumerate(sorted_ids):
             try:
-                # Check if already classified (fresh)
-                ad_data = await self._fetch_ad_data(meta_ad_id, brand_id)
+                # Use prefetched data (dict lookup, no HTTP)
+                ad_data = prefetched_ads.get(meta_ad_id, {})
                 thumbnail_url = ad_data.get("thumbnail_url", "")
                 ad_copy = ad_data.get("ad_copy", "")
                 lp_id = ad_data.get("landing_page_id")
@@ -400,8 +410,10 @@ class ClassifierService:
                     video_id=video_id,
                 )
 
-                existing = await self._find_existing_classification(
-                    meta_ad_id, brand_id, current_hash
+                # Check prefetched classifications for cache hit
+                existing = self._match_prefetched_classification(
+                    prefetched_classifications.get(meta_ad_id, []),
+                    current_hash,
                 )
                 if existing:
                     classifications.append(self._row_to_model(existing))
@@ -453,6 +465,206 @@ class ClassifierService:
             skipped_count=skipped_count,
             error_count=error_count,
         )
+
+    async def _batch_prefetch(
+        self,
+        brand_id: UUID,
+        meta_ad_ids: List[str],
+    ) -> tuple:
+        """Batch-prefetch ad data and classifications in bulk queries.
+
+        Replaces per-ad N+1 queries with 4 bulk queries:
+        1. meta_ads_performance (perf data, thumbnails, video info)
+        2. meta_ad_destinations (landing page URLs)
+        3. brand_landing_pages (LP data by canonical URL)
+        4. ad_creative_classifications (existing classifications)
+
+        Plus 1 conditional query for video asset checks.
+
+        Args:
+            brand_id: Brand UUID.
+            meta_ad_ids: List of meta ad IDs.
+
+        Returns:
+            Tuple of (ad_data_map, classifications_map) where:
+            - ad_data_map: Dict[meta_ad_id] -> ad_data dict (same shape as _fetch_ad_data)
+            - classifications_map: Dict[meta_ad_id] -> List[classification rows]
+        """
+        brand_str = str(brand_id)
+        ad_data_map: Dict[str, Dict[str, Any]] = {
+            ad_id: {"meta_ad_id": ad_id} for ad_id in meta_ad_ids
+        }
+
+        # --- Query 1: meta_ads_performance (bulk) ---
+        # Limit high enough to cover all ads (we only keep the latest per ad).
+        # Supabase defaults to 1000 rows; with many dates per ad we may need more.
+        perf_limit = max(1000, len(meta_ad_ids) * 5)
+        try:
+            perf_result = self.supabase.table("meta_ads_performance").select(
+                "meta_ad_id, thumbnail_url, ad_name, ad_copy, meta_campaign_id, "
+                "meta_video_id, is_video, video_views, object_type, date"
+            ).eq(
+                "brand_id", brand_str
+            ).in_(
+                "meta_ad_id", meta_ad_ids
+            ).order("date", desc=True).limit(perf_limit).execute()
+
+            # Keep only the most recent row per ad (ordered by date desc)
+            seen = set()
+            for row in (perf_result.data or []):
+                ad_id = row.get("meta_ad_id")
+                if ad_id in seen:
+                    continue
+                seen.add(ad_id)
+
+                data = ad_data_map.get(ad_id, {})
+                data["thumbnail_url"] = row.get("thumbnail_url", "")
+                data["ad_name"] = row.get("ad_name", "")
+                data["ad_copy"] = row.get("ad_copy") or ""
+                data["campaign_id"] = row.get("meta_campaign_id", "")
+                data["meta_video_id"] = row.get("meta_video_id")
+                data["is_video"] = row.get("is_video", False)
+                data["object_type"] = row.get("object_type", "unknown")
+
+                video_views = _safe_numeric(row.get("video_views"))
+                if not data["meta_video_id"] and video_views and video_views > 0:
+                    data["is_video"] = True
+
+                if not data.get("ad_copy"):
+                    data["ad_copy"] = data.get("ad_name", "")
+
+                ad_data_map[ad_id] = data
+        except Exception as e:
+            logger.warning(f"Batch prefetch perf failed: {e}")
+
+        # --- Query 2: meta_ad_destinations (bulk) ---
+        canonical_urls: Dict[str, str] = {}  # ad_id -> canonical_url
+        try:
+            dest_result = self.supabase.table("meta_ad_destinations").select(
+                "meta_ad_id, canonical_url, destination_url"
+            ).eq(
+                "brand_id", brand_str
+            ).in_(
+                "meta_ad_id", meta_ad_ids
+            ).execute()
+
+            for row in (dest_result.data or []):
+                ad_id = row.get("meta_ad_id")
+                if ad_id and row.get("canonical_url"):
+                    canonical_urls[ad_id] = row["canonical_url"]
+        except Exception as e:
+            logger.warning(f"Batch prefetch destinations failed: {e}")
+
+        # --- Query 3: brand_landing_pages (bulk by canonical URLs) ---
+        if canonical_urls:
+            unique_urls = list(set(canonical_urls.values()))
+            try:
+                lp_result = self.supabase.table("brand_landing_pages").select(
+                    "id, url, page_title, extracted_data, benefits, features, "
+                    "call_to_action, product_name, raw_markdown, canonical_url"
+                ).eq(
+                    "brand_id", brand_str
+                ).in_(
+                    "canonical_url", unique_urls
+                ).execute()
+
+                # Index LPs by canonical_url
+                lp_by_url: Dict[str, Dict] = {}
+                for lp in (lp_result.data or []):
+                    curl = lp.get("canonical_url")
+                    if curl:
+                        lp_by_url[curl] = lp
+
+                # Map back to ads
+                for ad_id, curl in canonical_urls.items():
+                    lp = lp_by_url.get(curl)
+                    if lp:
+                        data = ad_data_map.get(ad_id, {})
+                        data["landing_page_id"] = lp["id"]
+                        data["lp_data"] = lp
+                        ad_data_map[ad_id] = data
+            except Exception as e:
+                logger.warning(f"Batch prefetch landing pages failed: {e}")
+
+        # --- Query 3b: meta_ad_assets for video ads (bulk) ---
+        video_ad_ids = [
+            ad_id for ad_id, data in ad_data_map.items()
+            if data.get("is_video")
+        ]
+        if video_ad_ids:
+            try:
+                asset_result = self.supabase.table("meta_ad_assets").select(
+                    "meta_ad_id"
+                ).eq(
+                    "asset_type", "video"
+                ).eq(
+                    "status", "downloaded"
+                ).in_(
+                    "meta_ad_id", video_ad_ids
+                ).execute()
+
+                video_in_storage = {
+                    row["meta_ad_id"] for row in (asset_result.data or [])
+                }
+                for ad_id in video_ad_ids:
+                    ad_data_map[ad_id]["has_video_in_storage"] = ad_id in video_in_storage
+            except Exception as e:
+                logger.warning(f"Batch prefetch video assets failed: {e}")
+
+        # --- Query 4: ad_creative_classifications (bulk) ---
+        classifications_map: Dict[str, List[Dict]] = {
+            ad_id: [] for ad_id in meta_ad_ids
+        }
+        try:
+            cls_limit = max(1000, len(meta_ad_ids) * 3)
+            cls_result = self.supabase.table("ad_creative_classifications").select(
+                "*"
+            ).eq(
+                "brand_id", brand_str
+            ).eq(
+                "prompt_version", self.CURRENT_PROMPT_VERSION
+            ).eq(
+                "schema_version", self.CURRENT_SCHEMA_VERSION
+            ).in_(
+                "meta_ad_id", meta_ad_ids
+            ).order("classified_at", desc=True).limit(cls_limit).execute()
+
+            for row in (cls_result.data or []):
+                ad_id = row.get("meta_ad_id")
+                if ad_id in classifications_map:
+                    classifications_map[ad_id].append(row)
+        except Exception as e:
+            logger.warning(f"Batch prefetch classifications failed: {e}")
+
+        logger.info(
+            f"Batch prefetch complete for {len(meta_ad_ids)} ads: "
+            f"{len(canonical_urls)} destinations, "
+            f"{len(video_ad_ids)} video ads, "
+            f"{sum(len(v) for v in classifications_map.values())} cached classifications"
+        )
+
+        return ad_data_map, classifications_map
+
+    def _match_prefetched_classification(
+        self,
+        cached_rows: List[Dict],
+        current_input_hash: str,
+    ) -> Optional[Dict]:
+        """Match a prefetched classification by input_hash.
+
+        Args:
+            cached_rows: Prefetched classification rows for this ad
+                (already ordered by classified_at desc).
+            current_input_hash: Current input hash for change detection.
+
+        Returns:
+            Matching classification row or None.
+        """
+        for row in cached_rows:
+            if row.get("input_hash") == current_input_hash:
+                if not self._needs_new_classification(row, current_input_hash, force=False):
+                    return row
+        return None
 
     async def get_latest_classification(
         self,
