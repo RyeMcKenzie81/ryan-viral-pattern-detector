@@ -1372,6 +1372,8 @@ After the final chunk of a phase:
   6. **Whitespace false positives** — Predicted potential based on individual element scores + synergy may not reflect actual pair performance. Novelty bonus inflates scores for untested combos. Top 20 candidates should be treated as suggestions, not guarantees.
   7. **Selection snapshot volume** — Every pipeline run records a `selection_weight_snapshots` row. At high volume (100+ runs/day per brand), table grows quickly. No TTL or cleanup policy. Consider archiving snapshots older than 90 days.
   8. **Experiment arm contamination** — Seed-based assignment uses minute-level timestamp. Two runs within the same minute for the same product+template get the same arm. This is intentional (replay stability) but prevents within-minute randomization.
+- **Known performance issue (pre-existing, Phase 6/8A)**:
+  - **PerformanceScorer + FatigueScorer N+1 query problem** — Both scorers make per-template Supabase queries inside `score()`. With 200+ candidates, this means 400+ DB round-trips during `select_templates_with_fallback()`, causing multi-second hangs in the UI preview and scheduler worker. **Fix needed**: Batch-prefetch all scorer data (element scores, template usage, combo usage) once before scoring loop, pass via `SelectionContext`. This is a Phase 6/8A design issue — the scorer ABC assumes stateless `score(template, context)` calls, but DB-hitting scorers need a prefetch pattern like `prefetch_product_asset_tags()` already uses for `AssetMatchScorer`.
 
 ---
 
