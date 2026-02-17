@@ -1399,8 +1399,13 @@ def render_results_legacy():
 # Main Page
 # ============================================================================
 
-st.title("Ad Creator V2")
-st.caption("Template-scored generation with Pydantic prompts | Pipeline v2")
+_title_col, _guide_col = st.columns([4, 1])
+with _title_col:
+    st.title("Ad Creator V2")
+    st.caption("Template-scored generation with Pydantic prompts | Pipeline v2")
+with _guide_col:
+    st.markdown("")  # spacer
+    st.page_link("pages/21c_🧠_V2_Intelligence_Guide.py", label="Intelligence Guide", icon="🧠")
 
 if st.session_state.v2_view == 'results':
     render_results()
