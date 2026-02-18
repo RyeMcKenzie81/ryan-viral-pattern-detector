@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Valid rubric check IDs
 VALID_CHECK_IDS = [
     "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9",
-    "C1", "C2", "C3", "C4",
+    "C1", "C2", "C3", "C4", "C5",
     "G1", "G2",
 ]
 

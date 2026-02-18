@@ -297,6 +297,13 @@ class AdGenerationService:
                 ),
                 offers=OfferRules(
                     provided_offer=product.get('current_offer'),
+                    no_offer_fallback=(
+                        "CRITICAL: No offer exists for this product. Do NOT include ANY "
+                        "discount, percentage off, free gift, bundle deal, dollar amount, "
+                        "limited-time offer, or promotional language in the ad. Focus on "
+                        "benefits and value proposition ONLY. If the reference template "
+                        "contains offers, REMOVE them entirely."
+                    ) if not product.get('current_offer') else None,
                 ),
                 scale=ScaleRules(
                     product_dimensions=product.get('product_dimensions'),

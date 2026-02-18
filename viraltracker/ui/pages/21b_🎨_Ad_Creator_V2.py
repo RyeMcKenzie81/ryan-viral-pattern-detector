@@ -900,7 +900,7 @@ def _render_rubric_scores(scores: dict):
         return
 
     visual_checks = [f"V{i}" for i in range(1, 10)]
-    content_checks = [f"C{i}" for i in range(1, 5)]
+    content_checks = [f"C{i}" for i in range(1, 6)]  # C1-C5 (C5 = Offer Accuracy)
     congruence_checks = ["G1", "G2"]
 
     for group_name, checks in [

@@ -143,7 +143,7 @@ class CongruenceService:
         if not offer_variant_data and not lp_hero_data and not belief_data:
             return [
                 CongruenceResult(
-                    headline=h.get("hook_text", ""),
+                    headline=h.get("adapted_text") or h.get("hook_text") or h.get("text", ""),
                     overall_score=1.0,
                     dimensions_scored=0,
                 )
@@ -159,7 +159,7 @@ class CongruenceService:
             logger.warning(f"Batch congruence LLM call failed, returning neutral: {e}")
             return [
                 CongruenceResult(
-                    headline=h.get("hook_text", ""),
+                    headline=h.get("adapted_text") or h.get("hook_text") or h.get("text", ""),
                     overall_score=1.0,
                     dimensions_scored=0,
                 )
@@ -200,7 +200,7 @@ class CongruenceService:
         from pydantic_ai import Agent
         from viraltracker.core.config import Config
 
-        headlines = [h.get("hook_text", "") for h in hooks]
+        headlines = [h.get("adapted_text") or h.get("hook_text") or h.get("text", "") for h in hooks]
         prompt = self._build_prompt(
             headlines, offer_variant_data, lp_hero_data, belief_data
         )

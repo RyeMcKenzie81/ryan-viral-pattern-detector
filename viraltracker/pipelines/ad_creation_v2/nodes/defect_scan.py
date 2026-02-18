@@ -53,7 +53,7 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
         ctx: GraphRunContext[AdCreationPipelineState, AgentDependencies]
     ) -> "ReviewAdsNode":
         from .review_ads import ReviewAdsNode
-        from ..services.defect_scan_service import DefectScanService
+        from ..services.defect_scan_service import DefectScanService, DefectScanResult
 
         logger.info(f"Step 6b: Scanning {len(ctx.state.generated_ads)} ads for defects...")
         ctx.state.current_step = "defect_scan"
@@ -106,6 +106,22 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
                 image_base64=image_base64,
                 product_name=product_name,
             )
+
+            # Offer hallucination scan (only if visual scan passed)
+            if result.passed:
+                current_offer = ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None
+                offer_result = await scan_service.scan_for_offer_hallucination(
+                    image_base64=image_base64,
+                    product_name=product_name,
+                    provided_offer=current_offer,
+                )
+                if not offer_result.passed:
+                    result = DefectScanResult(
+                        passed=False,
+                        defects=result.defects + offer_result.defects,
+                        model=f"{result.model}+{offer_result.model}",
+                        latency_ms=result.latency_ms + offer_result.latency_ms,
+                    )
 
             scan_result_dict = result.to_dict()
             scan_result_dict["prompt_index"] = prompt_index
@@ -171,6 +187,7 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
                     "ad_uuid": ad_uuid_str,
                     "canvas_size": ad_data.get("canvas_size"),
                     "color_mode": ad_data.get("color_mode"),
+                    "hook_list_index": ad_data.get("hook_list_index"),
                 })
                 defect_rejected.append(ad_data)
 

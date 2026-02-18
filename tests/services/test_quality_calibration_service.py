@@ -25,15 +25,15 @@ def _org_id():
 class TestValidCheckIDs:
     """Test VALID_CHECK_IDS constant."""
 
-    def test_has_15_checks(self):
-        assert len(VALID_CHECK_IDS) == 15
+    def test_has_16_checks(self):
+        assert len(VALID_CHECK_IDS) == 16
 
     def test_visual_checks(self):
         for v in ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9"]:
             assert v in VALID_CHECK_IDS
 
     def test_content_checks(self):
-        for c in ["C1", "C2", "C3", "C4"]:
+        for c in ["C1", "C2", "C3", "C4", "C5"]:
             assert c in VALID_CHECK_IDS
 
     def test_congruence_checks(self):
@@ -123,8 +123,8 @@ class TestValidateProposal:
         )
         assert any("Invalid auto_reject" in e for e in errors)
 
-    def test_all_15_checks_required(self):
-        """Verify all 15 rubric check keys must be present."""
+    def test_all_16_checks_required(self):
+        """Verify all 16 rubric check keys must be present."""
         for check in VALID_CHECK_IDS:
             weights = {c: 1.0 for c in VALID_CHECK_IDS if c != check}
             errors = self.svc._validate_proposal(

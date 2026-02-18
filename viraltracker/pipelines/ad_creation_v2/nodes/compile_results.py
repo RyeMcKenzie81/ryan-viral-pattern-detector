@@ -87,7 +87,8 @@ class CompileResultsNode(BaseNode[AdCreationPipelineState]):
             "**Results:**",
             f"- Total ads requested: {ctx.state.num_variations} variations x "
             f"{len(ctx.state.canvas_sizes)} size(s) x {len(ctx.state.color_modes)} color(s) "
-            f"= {total_requested}",
+            f"= {total_requested}"
+            + (f" (actually generated/reviewed: {len(reviewed_ads)})" if len(reviewed_ads) != total_requested else ""),
             f"- Approved (production-ready): {approved_count}",
             f"- Rejected (both reviewers): {rejected_count}",
             f"- Flagged (reviewer disagreement): {flagged_count}",

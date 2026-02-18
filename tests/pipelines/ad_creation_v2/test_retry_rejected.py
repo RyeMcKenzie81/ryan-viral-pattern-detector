@@ -164,6 +164,7 @@ def _setup_mocks(mock_gen_cls, mock_defect_cls, mock_review_cls, mock_config,
 
     defect_svc = mock_defect_cls.return_value
     defect_svc.scan_for_defects = AsyncMock(return_value=defect_result or _mock_defect_passed())
+    defect_svc.scan_for_offer_hallucination = AsyncMock(return_value=_mock_defect_passed())
 
     review_svc = mock_review_cls.return_value
     if review_error:
@@ -360,8 +361,8 @@ async def test_retry_review_failure():
 async def test_retry_congruence_lookup():
     """congruence_score looked up from state.congruence_results."""
     state = _make_state(
-        reviewed_ads=[_rejected_ad(hook_text="Buy Now")],
-        congruence_results=[{"headline": "Buy Now", "overall_score": 0.85}],
+        reviewed_ads=[_rejected_ad(hook_text="Buy Now", hook_list_index=0)],
+        congruence_results=[{"hook_index": 0, "headline": "Buy Now", "overall_score": 0.85}],
     )
     ctx = _make_ctx(state)
     node = RetryRejectedNode()

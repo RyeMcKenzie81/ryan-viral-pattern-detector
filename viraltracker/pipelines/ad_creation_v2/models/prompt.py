@@ -48,7 +48,7 @@ class ProductContext(BaseModel):
     founders: Optional[str] = None
     product_dimensions: Optional[str] = None
     variant: Optional[str] = None
-    offer_variant: Optional[str] = None
+    offer_variant: Optional[Dict[str, Any]] = None
     offer_pain_points: Optional[List[str]] = None
 
 
@@ -193,6 +193,7 @@ class OfferRules(BaseModel):
     prohibited_template_offers: List[str] = Field(
         default_factory=lambda: ["Free gift", "Buy 1 Get 1", "Bundle and save", "Autoship", "BOGO"]
     )
+    no_offer_fallback: Optional[str] = None
 
 
 class LightingRules(BaseModel):

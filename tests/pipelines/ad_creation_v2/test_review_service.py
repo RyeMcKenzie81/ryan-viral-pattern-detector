@@ -24,14 +24,14 @@ from viraltracker.pipelines.ad_creation_v2.services.review_service import (
 
 class TestRubricConstants:
     def test_rubric_checks_count(self):
-        assert len(RUBRIC_CHECKS) == 15
+        assert len(RUBRIC_CHECKS) == 16
 
     def test_rubric_visual_checks(self):
         for i in range(1, 10):
             assert f"V{i}" in RUBRIC_CHECKS
 
     def test_rubric_content_checks(self):
-        for i in range(1, 5):
+        for i in range(1, 6):
             assert f"C{i}" in RUBRIC_CHECKS
 
     def test_rubric_congruence_checks(self):
@@ -76,7 +76,7 @@ class TestParseRubricScores:
 
     def test_invalid_json_defaults_all(self):
         scores = _parse_rubric_scores("not json at all")
-        assert len(scores) == 15
+        assert len(scores) == 16
         assert all(s == 5.0 for s in scores.values())
 
     def test_markdown_fences(self):

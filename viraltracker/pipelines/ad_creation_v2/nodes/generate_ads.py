@@ -87,6 +87,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                     selected_image_tags.append(tag)
 
         for i, selected_hook in enumerate(ctx.state.selected_hooks, start=1):
+            hook_list_index = i - 1  # 0-based index for congruence lookup
             for canvas_size in ctx.state.canvas_sizes:
                 for color_mode in ctx.state.color_modes:
                     variant_counter += 1
@@ -179,6 +180,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             "prompt_version": prompt.get("prompt_version", ctx.state.prompt_version),
                             "element_tags": element_tags,
                             "pre_gen_score": pre_gen_score,
+                            "hook_list_index": hook_list_index,
                         })
 
                         ctx.state.ads_generated += 1
@@ -197,6 +199,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             "color_mode": color_mode,
                             "error": str(gen_error),
                             "final_status": "generation_failed",
+                            "hook_list_index": hook_list_index,
                         })
 
         ctx.state.generated_ads = generated_ads

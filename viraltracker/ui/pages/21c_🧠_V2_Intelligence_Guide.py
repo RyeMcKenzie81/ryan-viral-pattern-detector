@@ -301,7 +301,7 @@ st.markdown("""
 <div class="layer-card">
 <span class="layer-badge badge-weekly">Weekly</span>
 <h3>Layer 2 — Quality Calibration</h3>
-<p>The automated review uses a 15-check rubric (9 visual + 4 content + 2 congruence). Sometimes it's wrong. This layer watches your <strong>overrides</strong> and proposes threshold adjustments.</p>
+<p>The automated review uses a 16-check rubric (9 visual + 5 content + 2 congruence). Sometimes it's wrong. This layer watches your <strong>overrides</strong> and proposes threshold adjustments.</p>
 
 <h3>How It Works</h3>
 <ol>

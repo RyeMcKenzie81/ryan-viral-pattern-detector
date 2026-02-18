@@ -37,6 +37,8 @@ class AdContentService:
         count: int = 10,
         persona_data: Optional[Dict[str, Any]] = None,
         docs_service: Optional[Any] = None,
+        offer_variant_data: Optional[Dict[str, Any]] = None,
+        current_offer: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Select diverse hooks using AI to maximize persuasive variety.
@@ -125,6 +127,38 @@ class AdContentService:
         4. Use phrases from Amazon testimonials when adapting hooks
         """
 
+        offer_variant_section = ""
+        if offer_variant_data:
+            ov_pain_points = offer_variant_data.get('pain_points', [])
+            ov_benefits = offer_variant_data.get('benefits', [])
+            ov_target = offer_variant_data.get('target_audience', '')
+            ov_name = offer_variant_data.get('name', 'Unknown')
+            ov_mechanism_name = offer_variant_data.get('mechanism_name', '')
+            ov_disallowed = offer_variant_data.get('disallowed_claims', [])
+
+            offer_variant_section = f"""
+        **OFFER VARIANT OVERRIDE: "{ov_name}" (HIGHEST PRIORITY)**
+        This ad MUST align with this specific landing page angle.
+
+        **Offer Pain Points (SELECT hooks addressing THESE):**
+        {_json_dumps(ov_pain_points[:8], indent=2)}
+
+        **Offer Benefits (SELECT hooks highlighting THESE):**
+        {_json_dumps(ov_benefits[:8], indent=2)}
+
+        {f'**Target Audience Override:** {ov_target}' if ov_target else ''}
+        {f'**Mechanism:** {ov_mechanism_name}' if ov_mechanism_name else ''}
+
+        **DISALLOWED CLAIMS (NEVER use):**
+        {_json_dumps(ov_disallowed) if ov_disallowed else 'None'}
+
+        OVERRIDE RULES:
+        1. Hooks MUST address the offer variant's pain points/benefits, NOT generic product ones
+        2. If the persona data also exists, use the persona's TONE and LANGUAGE style but the offer variant's TOPIC
+        3. When adapting hooks, keep the offer variant topic front and center
+        4. NEVER include claims from the disallowed list
+        """
+
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
@@ -137,6 +171,7 @@ class AdContentService:
         - Authenticity markers: {', '.join(ad_analysis.get('authenticity_markers', []))}
         {knowledge_section}
         {persona_section}
+        {offer_variant_section}
 
         **Available Hooks** ({len(shuffled_hooks)} total):
         {_json_dumps(shuffled_hooks, indent=2)}
@@ -156,6 +191,13 @@ class AdContentService:
            - **CRITICAL: Ensure the adapted text mentions or implies the product category/target audience**
            - Example: If target audience is "dog owners" or "pet owners", the hook should mention "my dog", "my pet", or similar context
            - **CRITICAL: The adapted text must make sense on its own - someone reading it should understand what product category it's about**
+           {f'- **CRITICAL: Adapted text MUST address the offer variant topic, not generic product benefits**' if offer_variant_data else ''}
+
+        {f"""**CRITICAL OFFER RULE:** There is NO offer/discount for this product.
+        Do NOT adapt any hook to include discounts, percentages off, dollar amounts,
+        free items, bundle deals, or promotional language. If a source hook mentions
+        an offer, REMOVE it during adaptation.
+        """ if not current_offer else ""}
 
         Return JSON array with this structure:
         [
@@ -195,6 +237,39 @@ class AdContentService:
 
                 result_text = result_text.strip()
                 selected_hooks = json.loads(result_text)
+
+                # Post-selection offer sanitization (when no offer provided)
+                if not current_offer:
+                    offer_patterns = [
+                        r'\d+%\s*off', r'save\s*\$?\d+', r'discount', r'sale\b',
+                        r'limited\s*time', r'today\s*only', r'act\s*now', r'free\s+(gift|shipping|item)',
+                        r'\$\d+\s*off', r'buy\s+\d+\s+get',
+                    ]
+                    clean_hooks = []
+                    for hook in selected_hooks:
+                        adapted = hook.get('adapted_text', '')
+                        sanitized = adapted
+                        for pattern in offer_patterns:
+                            sanitized = re.sub(pattern, '', sanitized, flags=re.IGNORECASE).strip()
+                        # Revalidate after stripping
+                        still_violating = any(re.search(p, sanitized, re.IGNORECASE) for p in offer_patterns)
+                        if still_violating:
+                            logger.warning(f"Dropping hook after offer sanitization failed: {adapted[:60]}")
+                            hook['offer_sanitized'] = True
+                            hook['dropped'] = True
+                            continue
+                        if sanitized != adapted:
+                            logger.warning(f"Offer stripped from hook: {adapted[:60]} → {sanitized[:60]}")
+                            hook['adapted_text'] = sanitized
+                            hook['offer_sanitized'] = True
+                        clean_hooks.append(hook)
+                    # Guard against empty/near-empty adapted_text after stripping
+                    clean_hooks = [h for h in clean_hooks if len((h.get('adapted_text') or '').strip()) >= 10]
+
+                    if len(clean_hooks) < len(selected_hooks):
+                        dropped_count = len(selected_hooks) - len(clean_hooks)
+                        logger.warning(f"Dropped {dropped_count} hook(s) due to offer sanitization (empty/violating)")
+                    selected_hooks = clean_hooks
 
                 logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
                             f"{[h.get('category') for h in selected_hooks]}")
@@ -344,8 +419,8 @@ class AdContentService:
         **Product:** {product.get('name', 'Product')}
         **Target Audience:** {product.get('offer_target_audience') if product.get('offer_target_audience') else ('General audience - see offer variant pain points below' if using_offer_variant else product.get('target_audience', 'General audience'))}
 
-        **PRODUCT'S ACTUAL OFFER (USE THIS EXACTLY):**
-        {current_offer if current_offer else "No specific offer - do not mention discounts or percentages"}
+        **PRODUCT'S ACTUAL OFFER (ZERO TOLERANCE - VIOLATIONS CAUSE REJECTION):**
+        {current_offer if current_offer else "NO OFFER EXISTS - Do NOT mention ANY discounts, percentages, free items, bundle deals, dollar amounts, limited-time offers, or promotional language. ANY invented offer will cause the ad to be REJECTED."}
 
         **VERIFIED SOCIAL PROOF - USE ONLY THESE (CRITICAL - DO NOT INVENT):**
 
@@ -644,7 +719,8 @@ RULES:
 4. Use first-person if template uses it ("I", "My")
 5. This is variation #{variation_number} - make it unique but on-message
 6. Do NOT invent claims, offers, or timeframes not in the belief
-7. Output ONLY the headline text, nothing else
+7. NEVER add offers, discounts, percentages, free items, or promotional language unless explicitly provided in the belief statement
+8. Output ONLY the headline text, nothing else
 
 Write the adapted headline:"""
 

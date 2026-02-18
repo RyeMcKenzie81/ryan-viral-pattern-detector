@@ -79,11 +79,13 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
         except Exception as e:
             logger.debug(f"Phase 8A exemplar services unavailable: {e}")
 
-        # Build congruence lookup from state
+        # Build congruence lookup from state (keyed by hook_index for stable lookup)
         congruence_lookup = {}
         for cr in (ctx.state.congruence_results or []):
-            headline = cr.get("headline", "")
-            congruence_lookup[headline] = cr.get("overall_score")
+            congruence_lookup[cr.get("hook_index")] = cr.get("overall_score")
+
+        # Extract current_offer once for all reviews
+        current_offer = ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None
 
         reviewed_ads = []
 
@@ -152,6 +154,7 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                         ad_analysis=ctx.state.ad_analysis or {},
                         config=quality_config,
                         exemplar_context=exemplar_context,
+                        current_offer=current_offer,
                     )
                     final_status = review_result.get("final_status", "review_failed")
                     review_check_scores = review_result.get("review_check_scores")
@@ -175,9 +178,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                     except Exception as e:
                         logger.warning(f"Visual embedding storage failed for {ad_uuid_for_ve}: {e}")
 
-            # Look up congruence score from state
-            hook_text = hook.get('adapted_text', '') or hook.get('hook_text', '')
-            congruence_score = congruence_lookup.get(hook_text)
+            # Look up congruence score from state (by hook_list_index)
+            congruence_score = congruence_lookup.get(ad_data.get("hook_list_index"))
 
             # Determine hook_id for database
             if ctx.state.content_source == "hooks":
@@ -231,6 +233,7 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 "color_mode": ad_data.get("color_mode"),
                 "weighted_score": review_result.get("weighted_score") if review_result else None,
                 "congruence_score": congruence_score,
+                "hook_list_index": ad_data.get("hook_list_index"),
             })
 
             ctx.state.ads_reviewed += 1

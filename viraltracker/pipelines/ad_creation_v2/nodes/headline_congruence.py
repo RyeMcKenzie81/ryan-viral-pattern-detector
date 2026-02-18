@@ -59,12 +59,13 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
             logger.info("No offer_variant_id — skipping congruence (pass-through)")
             ctx.state.congruence_results = [
                 {
-                    "headline": h.get("hook_text", ""),
+                    "hook_index": i,
+                    "headline": h.get("adapted_text") or h.get("hook_text") or h.get("text", ""),
                     "overall_score": 1.0,
                     "dimensions_scored": 0,
                     "skipped": True,
                 }
-                for h in ctx.state.selected_hooks
+                for i, h in enumerate(ctx.state.selected_hooks)
             ]
             ctx.state.mark_step_complete("headline_congruence")
             return SelectImagesNode()
@@ -93,6 +94,7 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
             adapted_count = 0
             for i, cr in enumerate(results):
                 result_dict = {
+                    "hook_index": i,
                     "headline": cr.headline,
                     "offer_alignment": cr.offer_alignment,
                     "hero_alignment": cr.hero_alignment,
@@ -103,8 +105,9 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
                 }
 
                 if cr.adapted_headline and i < len(ctx.state.selected_hooks):
-                    original = ctx.state.selected_hooks[i].get("hook_text", "")
+                    original = ctx.state.selected_hooks[i].get("adapted_text") or ctx.state.selected_hooks[i].get("hook_text", "")
                     ctx.state.selected_hooks[i]["hook_text"] = cr.adapted_headline
+                    ctx.state.selected_hooks[i]["adapted_text"] = cr.adapted_headline
                     ctx.state.selected_hooks[i]["original_hook_text"] = original
                     ctx.state.selected_hooks[i]["congruence_adapted"] = True
                     adapted_count += 1
@@ -133,12 +136,13 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
             logger.warning(f"Congruence check failed (non-fatal, passing through): {e}")
             ctx.state.congruence_results = [
                 {
-                    "headline": h.get("hook_text", ""),
+                    "hook_index": i,
+                    "headline": h.get("adapted_text") or h.get("hook_text") or h.get("text", ""),
                     "overall_score": 1.0,
                     "dimensions_scored": 0,
                     "error": str(e),
                 }
-                for h in ctx.state.selected_hooks
+                for i, h in enumerate(ctx.state.selected_hooks)
             ]
             ctx.state.mark_step_complete("headline_congruence")
             return SelectImagesNode()

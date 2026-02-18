@@ -15,10 +15,10 @@ from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# 15-check rubric: V1-V9 (visual), C1-C4 (content), G1-G2 (congruence)
+# 16-check rubric: V1-V9 (visual), C1-C5 (content), G1-G2 (congruence)
 RUBRIC_CHECKS = [
     "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9",
-    "C1", "C2", "C3", "C4",
+    "C1", "C2", "C3", "C4", "C5",
     "G1", "G2",
 ]
 
@@ -27,11 +27,11 @@ DEFAULT_QUALITY_CONFIG: Dict[str, Any] = {
     "check_weights": {
         "V1": 1.5, "V2": 1.5, "V3": 1.0, "V4": 0.8, "V5": 0.8,
         "V6": 1.0, "V7": 1.0, "V8": 0.8, "V9": 1.2,
-        "C1": 1.0, "C2": 0.8, "C3": 0.8, "C4": 0.8,
+        "C1": 1.0, "C2": 0.8, "C3": 0.8, "C4": 0.8, "C5": 1.5,
         "G1": 1.0, "G2": 0.8,
     },
     "borderline_range": {"low": 5.0, "high": 7.0},
-    "auto_reject_checks": ["V9"],
+    "auto_reject_checks": ["V9", "C5"],
 }
 
 
@@ -207,10 +207,11 @@ class AdReviewService:
         ad_analysis: Dict[str, Any],
         config: Optional[Dict[str, Any]] = None,
         exemplar_context: Optional[str] = None,
+        current_offer: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run 3-stage review pipeline.
 
-        Stage 2: Claude Vision with 15-check rubric (V1-V9, C1-C4, G1-G2).
+        Stage 2: Claude Vision with 16-check rubric (V1-V9, C1-C5, G1-G2).
         Stage 3: Conditional Gemini Vision (same rubric) — only if borderline.
         Final decision uses OR logic across stages.
 
@@ -221,6 +222,7 @@ class AdReviewService:
             ad_analysis: Ad analysis dict.
             config: quality_scoring_config dict. If None, uses defaults.
             exemplar_context: Optional few-shot exemplar context for review calibration (Phase 8A).
+            current_offer: Product's actual offer text, or None if no offer exists.
 
         Returns:
             Dict with review_check_scores, weighted_score, final_status,
@@ -239,6 +241,7 @@ class AdReviewService:
             stage2_scores = await self._run_rubric_review_claude(
                 image_data, product_name, hook_text, ad_analysis,
                 exemplar_context=exemplar_context,
+                current_offer=current_offer,
             )
         except Exception as e:
             logger.warning(f"Stage 2 Claude review failed: {e}")
@@ -284,6 +287,7 @@ class AdReviewService:
                 stage3_scores = await self._run_rubric_review_gemini(
                     image_data, product_name, hook_text, ad_analysis,
                     exemplar_context=exemplar_context,
+                    current_offer=current_offer,
                 )
                 stage3_weighted = compute_weighted_score(stage3_scores, check_weights)
                 stage3_result = {"scores": stage3_scores, "weighted": stage3_weighted}
@@ -314,13 +318,14 @@ class AdReviewService:
         hook_text: str,
         ad_analysis: Dict[str, Any],
         exemplar_context: Optional[str] = None,
+        current_offer: Optional[str] = None,
     ) -> Dict[str, float]:
-        """Run 15-check rubric review with Claude Vision."""
+        """Run 16-check rubric review with Claude Vision."""
         from pydantic_ai import Agent
         from pydantic_ai.messages import BinaryContent
         from viraltracker.core.config import Config
 
-        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context)
+        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context, current_offer=current_offer)
         media_type = _detect_media_type(image_data)
 
         agent = Agent(
@@ -342,12 +347,13 @@ class AdReviewService:
         hook_text: str,
         ad_analysis: Dict[str, Any],
         exemplar_context: Optional[str] = None,
+        current_offer: Optional[str] = None,
     ) -> Dict[str, float]:
-        """Run 15-check rubric review with Gemini Vision."""
+        """Run 16-check rubric review with Gemini Vision."""
         from viraltracker.services.gemini_service import GeminiService
         import base64
 
-        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context)
+        prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context, current_offer=current_offer)
         image_b64 = base64.b64encode(image_data).decode("utf-8")
 
         gemini = GeminiService()
@@ -458,26 +464,31 @@ def _build_rubric_prompt(
     hook_text: str,
     ad_analysis: Dict[str, Any],
     exemplar_context: Optional[str] = None,
+    current_offer: Optional[str] = None,
 ) -> str:
-    """Build the 15-check structured rubric prompt.
+    """Build the 16-check structured rubric prompt.
 
     Args:
         product_name: Product name for context.
         hook_text: Hook text used in ad.
         ad_analysis: Ad analysis dict.
         exemplar_context: Optional Phase 8A few-shot calibration examples.
+        current_offer: Product's actual offer text, or None if no offer.
     """
     exemplar_section = ""
     if exemplar_context:
         exemplar_section = f"\n{exemplar_context}\n"
 
-    return f"""Score this generated ad image on 15 quality checks. Each check is scored 0-10.
+    offer_context = current_offer if current_offer else "NONE — no offer exists, any promotional language is hallucinated"
+
+    return f"""Score this generated ad image on 16 quality checks. Each check is scored 0-10.
 
 CONTEXT:
 - Product: {product_name}
 - Hook/Headline: "{hook_text}"
 - Expected Format: {ad_analysis.get('format_type', 'N/A')}
 - Expected Layout: {ad_analysis.get('layout_structure', 'N/A')}
+- Provided Offer: {offer_context}
 {exemplar_section}
 VISUAL CHECKS (V1-V9):
 - V1: Product accuracy — product image matches reference exactly (0=wrong product, 10=perfect)
@@ -490,18 +501,19 @@ VISUAL CHECKS (V1-V9):
 - V8: Font quality — fonts are consistent and professional (0=messy, 10=professional)
 - V9: AI artifacts — no visible AI generation artifacts (extra fingers, distortions) (0=severe artifacts, 10=none)
 
-CONTENT CHECKS (C1-C4):
+CONTENT CHECKS (C1-C5):
 - C1: Hook effectiveness — headline is compelling and relevant (0=irrelevant, 10=compelling)
 - C2: Brand consistency — ad feels on-brand (0=off-brand, 10=perfect fit)
 - C3: CTA clarity — call-to-action is clear if present (0=confusing, 10=clear)
 - C4: Message coherence — all elements tell a coherent story (0=disjointed, 10=cohesive)
+- C5: Offer accuracy — ad contains ONLY the provided offer, no hallucinated discounts/promos (0=invented offers, 10=accurate or no offers present)
 
 CONGRUENCE CHECKS (G1-G2):
 - G1: Headline-offer alignment — headline matches offer/product promise (0=mismatch, 10=aligned)
 - G2: Visual-message alignment — image supports the text message (0=contradicts, 10=reinforces)
 
 Return ONLY a JSON object with check names as keys and scores (0-10) as values:
-{{"V1": 8.5, "V2": 9.0, "V3": 7.5, "V4": 8.0, "V5": 7.0, "V6": 8.5, "V7": 9.0, "V8": 7.5, "V9": 9.5, "C1": 8.0, "C2": 7.5, "C3": 8.5, "C4": 8.0, "G1": 7.0, "G2": 8.0}}
+{{"V1": 8.5, "V2": 9.0, "V3": 7.5, "V4": 8.0, "V5": 7.0, "V6": 8.5, "V7": 9.0, "V8": 7.5, "V9": 9.5, "C1": 8.0, "C2": 7.5, "C3": 8.5, "C4": 8.0, "C5": 9.0, "G1": 7.0, "G2": 8.0}}
 """
 
 

@@ -63,18 +63,32 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
             docs_service = getattr(ctx.deps, 'docs', None)
 
             if content_source == "hooks":
+                # Extract offer variant data for offer-aware hook selection
+                offer_variant_data = None
+                if ctx.state.product_dict:
+                    offer_variant_data = ctx.state.product_dict.get('offer_variant')
+
                 # Select diverse hooks from database
                 logger.info(f"Selecting {ctx.state.num_variations} diverse hooks with AI...")
                 selected_hooks = await content_service.select_hooks(
                     hooks=ctx.state.hooks_list,
                     ad_analysis=ctx.state.ad_analysis,
                     product_name=ctx.state.product_dict.get('name', ''),
-                    target_audience=ctx.state.product_dict.get('target_audience', ''),
+                    target_audience=(
+                        ctx.state.product_dict.get('offer_target_audience')
+                        or ctx.state.product_dict.get('target_audience', '')
+                    ),
                     count=ctx.state.num_variations,
                     persona_data=ctx.state.persona_data,
                     docs_service=docs_service,
+                    offer_variant_data=offer_variant_data,
+                    current_offer=ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None,
                 )
                 ctx.state.selected_hooks = selected_hooks
+                if len(selected_hooks) < ctx.state.num_variations:
+                    logger.warning(
+                        f"Offer sanitization reduced hooks from {ctx.state.num_variations} to {len(selected_hooks)}"
+                    )
 
             elif content_source == "recreate_template":
                 # Extract template angle if not cached

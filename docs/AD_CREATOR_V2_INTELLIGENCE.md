@@ -84,7 +84,7 @@ These weights aren't permanent. Layer 4 (Scorer Weight Learning) gradually adjus
 ## Layer 2: Quality Calibration (Weekly) <a name="layer-2-quality-calibration"></a>
 
 ### What it does
-The automated review system decides whether each generated ad passes or fails based on a 15-check rubric (9 visual checks + 4 content checks + 2 congruence checks). Sometimes it's wrong — it rejects a good ad or approves a bad one.
+The automated review system decides whether each generated ad passes or fails based on a 16-check rubric (9 visual checks + 5 content checks + 2 congruence checks). Sometimes it's wrong — it rejects a good ad or approves a bad one.
 
 Quality Calibration watches your **overrides** (when you manually approve a rejected ad or reject an approved one) and proposes adjustments to the pass/fail thresholds.
 

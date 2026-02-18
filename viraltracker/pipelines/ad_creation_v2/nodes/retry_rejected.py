@@ -104,11 +104,10 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
         except Exception as e:
             logger.warning(f"Could not load quality config, using defaults: {e}")
 
-        # Build congruence lookup from state
+        # Build congruence lookup from state (keyed by hook_index for stable lookup)
         congruence_lookup = {}
         for cr in (ctx.state.congruence_results or []):
-            headline = cr.get("headline", "")
-            congruence_lookup[headline] = cr.get("overall_score")
+            congruence_lookup[cr.get("hook_index")] = cr.get("overall_score")
 
         # Get the next prompt_index (after all existing ads)
         max_index = max(
@@ -207,6 +206,24 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     image_base64=generated_ad['image_base64'],
                     product_name=ctx.state.product_dict.get('name', ''),
                 )
+
+                # Offer hallucination scan (runs when visual scan passes)
+                if defect_result.passed:
+                    current_offer = ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None
+                    offer_result = await defect_service.scan_for_offer_hallucination(
+                        image_base64=generated_ad['image_base64'],
+                        product_name=ctx.state.product_dict.get('name', ''),
+                        provided_offer=current_offer,
+                    )
+                    if not offer_result.passed:
+                        from ..services.defect_scan_service import DefectScanResult
+                        defect_result = DefectScanResult(
+                            passed=False,
+                            defects=defect_result.defects + offer_result.defects,
+                            model=f"{defect_result.model}+{offer_result.model}",
+                            latency_ms=defect_result.latency_ms + offer_result.latency_ms,
+                        )
+
                 defect_scan_result = defect_result.to_dict()
 
                 # Determine hook_id for database
@@ -219,9 +236,9 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                 original_ad_uuid_str = rejected_ad.get('ad_uuid')
                 original_ad_uuid = UUID(original_ad_uuid_str) if original_ad_uuid_str else None
 
-                # Look up congruence score from state
+                # Look up congruence score from state (by hook_list_index)
                 hook_text = selected_hook.get('adapted_text', '')
-                congruence_score = congruence_lookup.get(hook_text)
+                congruence_score = congruence_lookup.get(rejected_ad.get("hook_list_index"))
 
                 if not defect_result.passed:
                     # Defect found → reject immediately (same as DefectScanNode)
@@ -267,6 +284,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                         "color_mode": retry_color_mode,
                         "weighted_score": None,
                         "congruence_score": congruence_score,
+                        "hook_list_index": rejected_ad.get("hook_list_index"),
                         "is_retry": True,
                         "retry_of_index": rejected_ad.get('prompt_index'),
                     })
@@ -282,12 +300,14 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                 review_check_scores = None
 
                 try:
+                    current_offer = ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None
                     review_result = await review_service.review_ad_staged(
                         image_data=image_data,
                         product_name=ctx.state.product_dict.get('name', ''),
                         hook_text=hook_text,
                         ad_analysis=ctx.state.ad_analysis or {},
                         config=quality_config,
+                        current_offer=current_offer,
                     )
                     final_status = review_result.get("final_status", "review_failed")
                     review_check_scores = review_result.get("review_check_scores")
@@ -340,6 +360,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     "color_mode": retry_color_mode,
                     "weighted_score": review_result.get("weighted_score") if review_result else None,
                     "congruence_score": congruence_score,
+                    "hook_list_index": rejected_ad.get("hook_list_index"),
                     "is_retry": True,
                     "retry_of_index": rejected_ad.get('prompt_index'),
                 })

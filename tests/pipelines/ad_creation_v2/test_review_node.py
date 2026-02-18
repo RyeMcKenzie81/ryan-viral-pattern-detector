@@ -286,10 +286,10 @@ class TestCongruenceLookup:
     async def test_congruence_score_from_state(self):
         """Congruence score is looked up from state.congruence_results."""
         state = _make_state(
-            defect_passed_ads=[_ad_entry(1, hook_text="Buy Now")],
+            defect_passed_ads=[_ad_entry(1, hook_text="Buy Now", hook_list_index=0)],
             congruence_results=[
-                {"headline": "Buy Now", "overall_score": 0.85},
-                {"headline": "Other Hook", "overall_score": 0.5},
+                {"hook_index": 0, "headline": "Buy Now", "overall_score": 0.85},
+                {"hook_index": 1, "headline": "Other Hook", "overall_score": 0.5},
             ],
         )
         ctx = _make_ctx(state)
@@ -310,11 +310,11 @@ class TestCongruenceLookup:
 
     @pytest.mark.asyncio
     async def test_congruence_none_when_no_match(self):
-        """Congruence score is None when no matching headline."""
+        """Congruence score is None when no matching hook_index."""
         state = _make_state(
-            defect_passed_ads=[_ad_entry(1, hook_text="Unique Hook")],
+            defect_passed_ads=[_ad_entry(1, hook_text="Unique Hook", hook_list_index=0)],
             congruence_results=[
-                {"headline": "Different Hook", "overall_score": 0.9},
+                {"hook_index": 5, "headline": "Different Hook", "overall_score": 0.9},
             ],
         )
         ctx = _make_ctx(state)
@@ -345,11 +345,11 @@ class TestSaveGeneratedAdParams:
         """save_generated_ad receives review_check_scores, congruence_score, defect_scan_result."""
         state = _make_state(
             defect_passed_ads=[
-                _ad_entry(1, hook_text="Buy Now",
+                _ad_entry(1, hook_text="Buy Now", hook_list_index=0,
                           defect_scan_result={"passed": True, "defects": []}),
             ],
             congruence_results=[
-                {"headline": "Buy Now", "overall_score": 0.9},
+                {"hook_index": 0, "headline": "Buy Now", "overall_score": 0.9},
             ],
         )
         ctx = _make_ctx(state)

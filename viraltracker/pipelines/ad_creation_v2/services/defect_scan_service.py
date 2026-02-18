@@ -25,6 +25,7 @@ DEFECT_TYPES = [
     "PHYSICS_VIOLATION",
     "PACKAGING_TEXT_ERROR",
     "PRODUCT_DISTORTION",
+    "OFFER_HALLUCINATION",
 ]
 
 
@@ -108,6 +109,127 @@ class DefectScanService:
             return DefectScanResult(
                 passed=True,
                 model=model_name,
+                latency_ms=latency_ms,
+            )
+
+    async def scan_for_offer_hallucination(
+        self,
+        image_base64: str,
+        product_name: str,
+        provided_offer: Optional[str] = None,
+        media_type: str = "image/png",
+    ) -> DefectScanResult:
+        """Scan a generated ad image for hallucinated offers/discounts.
+
+        Args:
+            image_base64: Base64-encoded image data.
+            product_name: Product name for context.
+            provided_offer: The actual offer text, or None if no offer exists.
+            media_type: MIME type of the image.
+
+        Returns:
+            DefectScanResult with OFFER_HALLUCINATION defects if found.
+        """
+        from viraltracker.services.gemini_service import GeminiService
+
+        start_time = time.time()
+        model_name = "gemini-2.0-flash"
+
+        try:
+            gemini = GeminiService()
+            prompt = self._build_offer_hallucination_prompt(product_name, provided_offer)
+
+            response = await gemini.analyze_image(
+                image_base64=image_base64,
+                prompt=prompt,
+                media_type=media_type,
+                model=model_name,
+            )
+
+            latency_ms = int((time.time() - start_time) * 1000)
+            return self._parse_offer_hallucination_result(response, model_name, latency_ms)
+
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.warning(f"Offer hallucination scan failed, treating as passed: {e}")
+            return DefectScanResult(
+                passed=True,
+                model=model_name,
+                latency_ms=latency_ms,
+            )
+
+    def _build_offer_hallucination_prompt(
+        self, product_name: str, provided_offer: Optional[str]
+    ) -> str:
+        """Build the offer hallucination detection prompt."""
+        if provided_offer:
+            offer_context = (
+                f'The ONLY valid offer for "{product_name}" is: "{provided_offer}"\n'
+                f"Any OTHER offer, discount, or promotional language is hallucinated."
+            )
+        else:
+            offer_context = (
+                f'There is NO offer/discount for "{product_name}".\n'
+                f"ANY offer, discount, percentage, free item, bundle deal, dollar amount, "
+                f"or promotional language in the ad is hallucinated."
+            )
+
+        return f"""Analyze this ad image and check if it contains any hallucinated offers or promotional language.
+
+{offer_context}
+
+Look for ANY of these in the image text:
+- Percentage discounts (e.g., "40% off", "save 20%")
+- Dollar amounts off (e.g., "$10 off", "save $50")
+- Free items (e.g., "free gift", "free shipping", "free bonus")
+- Bundle deals (e.g., "buy 1 get 1", "BOGO")
+- Limited-time language (e.g., "today only", "limited time", "act now", "ends soon")
+- Promotional language (e.g., "sale", "special offer", "deal")
+
+Return a JSON object with:
+- "passed": true if NO hallucinated offers found, false if ANY hallucinated offer found
+- "defects": array of objects, each with "type": "OFFER_HALLUCINATION" and "description" (what was found)
+
+If the image has no offers or only the valid offer above, return: {{"passed": true, "defects": []}}
+
+Only return the JSON object, no other text."""
+
+    def _parse_offer_hallucination_result(
+        self, raw_output: str, model: str, latency_ms: int
+    ) -> DefectScanResult:
+        """Parse offer hallucination scan result."""
+        try:
+            text = raw_output.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+
+            parsed = json.loads(text)
+            passed = parsed.get("passed", True)
+            defects = []
+            for d in parsed.get("defects", []):
+                if isinstance(d, dict):
+                    defects.append(Defect(
+                        type="OFFER_HALLUCINATION",
+                        description=d.get("description", "Hallucinated offer detected"),
+                    ))
+
+            if defects:
+                passed = False
+
+            return DefectScanResult(
+                passed=passed,
+                defects=defects,
+                model=model,
+                latency_ms=latency_ms,
+            )
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Failed to parse offer hallucination result, treating as passed: {e}")
+            return DefectScanResult(
+                passed=True,
+                model=model,
                 latency_ms=latency_ms,
             )
 

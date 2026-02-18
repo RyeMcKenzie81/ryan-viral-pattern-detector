@@ -98,12 +98,13 @@ class TestDefectScanServiceParsing:
         assert result.passed is False  # Overridden because defects present
 
     def test_defect_types_constant(self):
-        assert len(DEFECT_TYPES) == 5
+        assert len(DEFECT_TYPES) == 6
         assert "TEXT_GARBLED" in DEFECT_TYPES
         assert "ANATOMY_ERROR" in DEFECT_TYPES
         assert "PHYSICS_VIOLATION" in DEFECT_TYPES
         assert "PACKAGING_TEXT_ERROR" in DEFECT_TYPES
         assert "PRODUCT_DISTORTION" in DEFECT_TYPES
+        assert "OFFER_HALLUCINATION" in DEFECT_TYPES
 
 
 # ============================================================================
@@ -155,6 +156,10 @@ class TestDefectScanNode:
 
         with patch(
             "viraltracker.pipelines.ad_creation_v2.services.defect_scan_service.DefectScanService.scan_for_defects",
+            new_callable=AsyncMock,
+            return_value=passed_result,
+        ), patch(
+            "viraltracker.pipelines.ad_creation_v2.services.defect_scan_service.DefectScanService.scan_for_offer_hallucination",
             new_callable=AsyncMock,
             return_value=passed_result,
         ):
@@ -246,10 +251,16 @@ class TestDefectScanNode:
                 return DefectScanResult(passed=False, defects=[Defect("TEXT_GARBLED", "bad")], model="m", latency_ms=100)
             return DefectScanResult(passed=True, model="m", latency_ms=100)
 
+        offer_passed = DefectScanResult(passed=True, model="m", latency_ms=50)
+
         with patch(
             "viraltracker.pipelines.ad_creation_v2.services.defect_scan_service.DefectScanService.scan_for_defects",
             new_callable=AsyncMock,
             side_effect=alternating_scan,
+        ), patch(
+            "viraltracker.pipelines.ad_creation_v2.services.defect_scan_service.DefectScanService.scan_for_offer_hallucination",
+            new_callable=AsyncMock,
+            return_value=offer_passed,
         ):
             node = DefectScanNode()
             await node.run(ctx)
