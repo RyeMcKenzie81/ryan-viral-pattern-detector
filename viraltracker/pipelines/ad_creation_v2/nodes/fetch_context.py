@@ -96,15 +96,20 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                 product_dict['variant'] = None
                 product_dict['display_name'] = product_dict.get('name', 'Product')
 
-            # Fetch offer variant data (optional)
+            # Fetch offer variant data (optional) — with product ownership validation
             if ctx.state.offer_variant_id:
                 try:
                     from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
                     offer_variant_service = ProductOfferVariantService()
-                    offer_variant_data = offer_variant_service.get_offer_variant(
-                        UUID(ctx.state.offer_variant_id)
+
+                    # Validate variant belongs to this product
+                    is_valid, error_msg, offer_variant_data = offer_variant_service.validate_offer_variant_selection(
+                        product_uuid, UUID(ctx.state.offer_variant_id)
                     )
-                    if offer_variant_data:
+                    if not is_valid:
+                        logger.warning(f"Offer variant validation failed: {error_msg}")
+                        product_dict['offer_variant'] = None
+                    elif offer_variant_data:
                         product_dict['offer_variant'] = offer_variant_data
                         if offer_variant_data.get('pain_points'):
                             product_dict['offer_pain_points'] = offer_variant_data['pain_points']
@@ -122,6 +127,13 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                     product_dict['offer_variant'] = None
             else:
                 product_dict['offer_variant'] = None
+
+            # Apply current_offer override if specified
+            override = (ctx.state.current_offer_override or '').strip() or None
+            if override:
+                original = product_dict.get('current_offer', '')
+                product_dict['current_offer'] = override
+                logger.info(f"Overriding current_offer: '{original}' -> '{override}'")
 
             # Fetch brand fonts
             brand_id = product_dict.get('brand_id')

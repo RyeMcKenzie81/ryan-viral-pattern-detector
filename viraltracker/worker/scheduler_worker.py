@@ -929,6 +929,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     persona_id=params.get('persona_id'),
                     variant_id=params.get('variant_id'),
                     offer_variant_id=params.get('offer_variant_id'),
+                    current_offer_override=params.get('current_offer_override'),
                     additional_instructions=combined_instructions,
                     image_resolution=params.get('image_resolution', '2K'),
                     # Phase 8B: selection transport

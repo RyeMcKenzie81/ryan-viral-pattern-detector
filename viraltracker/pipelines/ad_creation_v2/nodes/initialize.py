@@ -66,6 +66,7 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
                 "variant_id": ctx.state.variant_id,
                 "additional_instructions": ctx.state.additional_instructions,
                 "offer_variant_id": ctx.state.offer_variant_id,
+                "current_offer_override": ctx.state.current_offer_override,
                 "image_resolution": ctx.state.image_resolution
             }
 

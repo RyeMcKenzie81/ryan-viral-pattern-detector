@@ -5,10 +5,10 @@
 
 -- Add C5 weight to ALL rows missing it (including custom org configs)
 UPDATE quality_scoring_config
-SET check_weights = check_weights || '{"C5": 1.5}'::jsonb
-WHERE NOT (check_weights ? 'C5');
+SET check_weights = COALESCE(check_weights, '{}'::jsonb) || '{"C5": 1.5}'::jsonb
+WHERE NOT (COALESCE(check_weights, '{}'::jsonb) ? 'C5');
 
 -- Add C5 to auto_reject_checks for ALL rows missing it
 UPDATE quality_scoring_config
-SET auto_reject_checks = auto_reject_checks || '["C5"]'::jsonb
-WHERE NOT auto_reject_checks @> '["C5"]'::jsonb;
+SET auto_reject_checks = COALESCE(auto_reject_checks, '[]'::jsonb) || '["C5"]'::jsonb
+WHERE NOT (COALESCE(auto_reject_checks, '[]'::jsonb) @> '["C5"]'::jsonb);

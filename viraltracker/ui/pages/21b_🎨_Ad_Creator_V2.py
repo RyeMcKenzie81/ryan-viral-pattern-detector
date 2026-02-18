@@ -47,6 +47,10 @@ if 'v2_preview_result' not in st.session_state:
     st.session_state.v2_preview_result = None
 if 'v2_templates_visible' not in st.session_state:
     st.session_state.v2_templates_visible = 30
+if 'v2_offer_variant_id' not in st.session_state:
+    st.session_state.v2_offer_variant_id = None
+if 'v2_current_offer_override' not in st.session_state:
+    st.session_state.v2_current_offer_override = ""
 
 
 # ============================================================================
@@ -68,7 +72,7 @@ def get_products():
         org_id = get_current_organization_id()
 
         query = db.table("products").select(
-            "id, name, brand_id, target_audience, brands(id, name, brand_colors, brand_fonts, organization_id)"
+            "id, name, brand_id, target_audience, current_offer, brands(id, name, brand_colors, brand_fonts, organization_id)"
         )
 
         if not org_id:
@@ -154,6 +158,17 @@ def get_personas_for_product(product_id: str):
         from uuid import UUID
         service = AdCreationService()
         return service.get_personas_for_product(UUID(product_id))
+    except Exception:
+        return []
+
+
+def get_offer_variants_for_product(product_id: str):
+    """Get active offer variants for a product."""
+    try:
+        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+        from uuid import UUID
+        service = ProductOfferVariantService()
+        return service.get_offer_variants(UUID(product_id), active_only=True)
     except Exception:
         return []
 
@@ -566,6 +581,103 @@ def _run_template_preview(mode, count, category, asset_strictness, awareness_sta
 
 
 # ============================================================================
+# Offer Context Section
+# ============================================================================
+
+def render_offer_context(product: dict, product_id: str):
+    """Render offer variant selector and current offer display.
+
+    Only renders if the product has offer variants or a current_offer set.
+    """
+    offer_variants = get_offer_variants_for_product(product_id)
+    current_offer_db = (product.get('current_offer') or '').strip()
+
+    has_variants = len(offer_variants) > 0
+    has_offer = bool(current_offer_db)
+
+    if not has_variants and not has_offer:
+        return
+
+    st.markdown("**Offer Context**")
+
+    # --- Offer Variant Selector ---
+    if has_variants:
+        variant_options = {v['id']: v for v in offer_variants}
+        option_ids = [None] + [v['id'] for v in offer_variants]
+
+        # Auto-select default variant if user hasn't made a choice yet
+        default_index = 0  # "Default product messaging"
+        if st.session_state.get('v2_offer_variant_id') is None:
+            for idx, vid in enumerate(option_ids):
+                if vid and variant_options.get(vid, {}).get('is_default'):
+                    default_index = idx
+                    break
+
+        def format_variant(vid):
+            if vid is None:
+                return "Default product messaging"
+            v = variant_options[vid]
+            label = v['name']
+            if v.get('is_default'):
+                label += " (default)"
+            url = v.get('landing_page_url', '')
+            if url:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                path_preview = parsed.path[:25] + '...' if len(parsed.path) > 25 else parsed.path
+                label += f"  |  {parsed.netloc}{path_preview}"
+            return label
+
+        # Guard stale variant IDs
+        if st.session_state.get('v2_offer_variant_id') not in option_ids:
+            st.session_state.v2_offer_variant_id = None
+
+        st.selectbox(
+            "Offer variant",
+            options=option_ids,
+            index=default_index,
+            format_func=format_variant,
+            key="v2_offer_variant_id",
+            help="Landing page angle — drives hook selection to match this variant's pain points and messaging",
+        )
+
+        # Compact inline preview
+        selected_id = st.session_state.get('v2_offer_variant_id')
+        if selected_id and selected_id in variant_options:
+            variant = variant_options[selected_id]
+            url = variant.get('landing_page_url', '')
+            pain_points = variant.get('pain_points', [])[:3]
+            benefits = variant.get('benefits', [])[:3]
+
+            preview_parts = []
+            if url:
+                preview_parts.append(f"Landing page: `{url}`")
+            if pain_points:
+                preview_parts.append("Pain points: " + " | ".join(str(p) for p in pain_points))
+            if benefits:
+                preview_parts.append("Benefits: " + " | ".join(str(b) for b in benefits))
+
+            if preview_parts:
+                st.caption("  \n".join(preview_parts))
+
+    # --- Current Offer Display + Override ---
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if current_offer_db:
+            st.caption(f"Product offer: **{current_offer_db}**")
+        else:
+            st.caption("Product offer: **None** (anti-hallucination active)")
+    with col2:
+        st.text_input(
+            "Override offer for this run",
+            value="",
+            placeholder="Leave blank to use DB value",
+            key="v2_current_offer_override",
+            help="Temporarily override the product's offer for this run only. Does not change the database.",
+        )
+
+
+# ============================================================================
 # Generation Config Section
 # ============================================================================
 
@@ -796,10 +908,24 @@ def _handle_submit():
         'image_resolution': st.session_state.get('v2_image_resolution', '2K'),
         'persona_id': st.session_state.get('v2_persona_id'),
         'additional_instructions': st.session_state.get('v2_additional_instructions') or None,
+        'offer_variant_id': st.session_state.get('v2_offer_variant_id'),
     }
+
+    # Normalize current_offer_override — strip whitespace, treat empty/blank as None
+    raw_override = st.session_state.get('v2_current_offer_override', '')
+    current_offer_override = raw_override.strip() if raw_override else None
+    if current_offer_override == '':
+        current_offer_override = None
+    if current_offer_override:
+        parameters['current_offer_override'] = current_offer_override
 
     if mode == "smart_select":
         parameters['asset_strictness'] = st.session_state.get('v2_asset_strictness', 'default')
+
+    # Soft warning if variants exist but none selected
+    offer_variants = get_offer_variants_for_product(product_id)
+    if offer_variants and not st.session_state.get('v2_offer_variant_id'):
+        st.warning("This product has offer variants — consider selecting one for targeted messaging.")
 
     # Build job name
     job_name = f"V2 Ad Creation - {product_name} ({mode.replace('_', ' ').title()})"
@@ -1431,6 +1557,16 @@ else:
     st.session_state.v2_product_id = product_id
     st.session_state.v2_brand_id = brand_id or (product.get('brand_id') if product else None)
     st.session_state.v2_product_name = product.get('name', 'Product') if product else 'Product'
+
+    # Reset offer state when product changes to prevent stale carryover
+    if st.session_state.get('_v2_last_product_id') != product_id:
+        st.session_state.v2_offer_variant_id = None
+        st.session_state.v2_current_offer_override = ""
+        st.session_state._v2_last_product_id = product_id
+
+    # Offer context (conditional — only shows when product has variants or current_offer)
+    if product:
+        render_offer_context(product, product_id)
 
     st.divider()
 

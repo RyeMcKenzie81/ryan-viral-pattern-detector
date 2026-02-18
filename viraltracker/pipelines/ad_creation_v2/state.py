@@ -48,6 +48,7 @@ class AdCreationPipelineState:
     persona_id: Optional[str] = None
     variant_id: Optional[str] = None
     offer_variant_id: Optional[str] = None
+    current_offer_override: Optional[str] = None
     additional_instructions: Optional[str] = None
     angle_data: Optional[Dict[str, Any]] = None
     match_template_structure: bool = False
