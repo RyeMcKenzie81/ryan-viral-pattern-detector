@@ -412,6 +412,7 @@ with tab_features:
                 (FeatureKey.BELIEF_CANVAS, "Belief Canvas"),
                 (FeatureKey.RESEARCH_INSIGHTS, "Research Insights"),
                 (FeatureKey.PUBLIC_GALLERY, "Public Gallery"),
+                (FeatureKey.VIDEO_BUCKETS, "Video Buckets"),
             ],
         },
         {
