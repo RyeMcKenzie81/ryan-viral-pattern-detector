@@ -82,16 +82,27 @@ class ContentBucketService:
         """Resolve 'all' superuser org to the actual org owning the product."""
         if org_id != "all":
             return org_id
+        # products has brand_id, not organization_id — join through brands
         result = (
             self._db.table("products")
-            .select("organization_id")
+            .select("brand_id")
             .eq("id", product_id)
             .limit(1)
             .execute()
         )
-        if result.data:
-            return result.data[0]["organization_id"]
-        raise ValueError(f"Product {product_id} not found")
+        if not result.data:
+            raise ValueError(f"Product {product_id} not found")
+        brand_id = result.data[0]["brand_id"]
+        brand_result = (
+            self._db.table("brands")
+            .select("organization_id")
+            .eq("id", brand_id)
+            .limit(1)
+            .execute()
+        )
+        if brand_result.data:
+            return brand_result.data[0]["organization_id"]
+        raise ValueError(f"Brand {brand_id} not found for product {product_id}")
 
     # ─── Bucket CRUD ──────────────────────────────────────────────────
 
