@@ -72,6 +72,7 @@ class FeatureKey:
     LANDING_PAGE_ANALYZER = "landing_page_analyzer"
     HOOK_ANALYSIS = "hook_analysis"
     EXPERIMENTS = "experiments"
+    VIDEO_BUCKETS = "video_buckets"
     PLAN_LIST = "plan_list"
     PLAN_EXECUTOR = "plan_executor"
     TEMPLATE_QUEUE = "template_queue"
