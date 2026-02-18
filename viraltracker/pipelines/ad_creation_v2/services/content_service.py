@@ -159,6 +159,17 @@ class AdContentService:
         4. NEVER include claims from the disallowed list
         """
 
+        offer_variant_adaptation_rule = (
+            '- **CRITICAL: Adapted text MUST address the offer variant topic, not generic product benefits**'
+            if offer_variant_data else ''
+        )
+        no_offer_rule = ""
+        if not current_offer:
+            no_offer_rule = """**CRITICAL OFFER RULE:** There is NO offer/discount for this product.
+        Do NOT adapt any hook to include discounts, percentages off, dollar amounts,
+        free items, bundle deals, or promotional language. If a source hook mentions
+        an offer, REMOVE it during adaptation."""
+
         selection_prompt = f"""
         You are selecting hooks for Facebook ad variations.
 
@@ -191,13 +202,9 @@ class AdContentService:
            - **CRITICAL: Ensure the adapted text mentions or implies the product category/target audience**
            - Example: If target audience is "dog owners" or "pet owners", the hook should mention "my dog", "my pet", or similar context
            - **CRITICAL: The adapted text must make sense on its own - someone reading it should understand what product category it's about**
-           {f'- **CRITICAL: Adapted text MUST address the offer variant topic, not generic product benefits**' if offer_variant_data else ''}
+           {offer_variant_adaptation_rule}
 
-        {f"""**CRITICAL OFFER RULE:** There is NO offer/discount for this product.
-        Do NOT adapt any hook to include discounts, percentages off, dollar amounts,
-        free items, bundle deals, or promotional language. If a source hook mentions
-        an offer, REMOVE it during adaptation.
-        """ if not current_offer else ""}
+        {no_offer_rule}
 
         Return JSON array with this structure:
         [
