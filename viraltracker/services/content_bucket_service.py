@@ -78,6 +78,21 @@ class ContentBucketService:
     def __init__(self):
         self._db = get_supabase_client()
 
+    def _resolve_org_id(self, org_id: str, product_id: str) -> str:
+        """Resolve 'all' superuser org to the actual org owning the product."""
+        if org_id != "all":
+            return org_id
+        result = (
+            self._db.table("products")
+            .select("organization_id")
+            .eq("id", product_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["organization_id"]
+        raise ValueError(f"Product {product_id} not found")
+
     # ─── Bucket CRUD ──────────────────────────────────────────────────
 
     def create_bucket(
@@ -108,8 +123,9 @@ class ContentBucketService:
         Returns:
             Created bucket record.
         """
+        resolved_org = self._resolve_org_id(org_id, product_id)
         data = {
-            "organization_id": org_id,
+            "organization_id": resolved_org,
             "product_id": product_id,
             "name": name,
             "best_for": best_for,
@@ -136,10 +152,10 @@ class ContentBucketService:
             self._db.table("content_buckets")
             .select("*")
             .eq("product_id", product_id)
-            .eq("organization_id", org_id)
-            .order("display_order")
         )
-        result = query.execute()
+        if org_id != "all":
+            query = query.eq("organization_id", org_id)
+        result = query.order("display_order").execute()
         return result.data or []
 
     def update_bucket(self, bucket_id: str, **fields) -> Dict[str, Any]:
@@ -373,6 +389,7 @@ class ContentBucketService:
         Returns:
             List of result dicts for each video.
         """
+        resolved_org = self._resolve_org_id(org_id, product_id)
         results = []
         total = len(files)
 
@@ -393,7 +410,7 @@ class ContentBucketService:
             if "error" in analysis:
                 # Save error record
                 record = {
-                    "organization_id": org_id,
+                    "organization_id": resolved_org,
                     "product_id": product_id,
                     "filename": filename,
                     "status": "error",
@@ -424,7 +441,7 @@ class ContentBucketService:
 
             # Step 3: Save to DB
             record = {
-                "organization_id": org_id,
+                "organization_id": resolved_org,
                 "product_id": product_id,
                 "bucket_id": bucket_id,
                 "filename": filename,
@@ -496,15 +513,14 @@ class ContentBucketService:
         Returns:
             List of dicts with session_id, created_at, video_count.
         """
-        raw = (
+        query = (
             self._db.table("video_bucket_categorizations")
             .select("session_id, created_at")
             .eq("product_id", product_id)
-            .eq("organization_id", org_id)
-            .order("created_at", desc=True)
-            .limit(200)
-            .execute()
         )
+        if org_id != "all":
+            query = query.eq("organization_id", org_id)
+        raw = query.order("created_at", desc=True).limit(200).execute()
         if not raw.data:
             return []
 
