@@ -136,6 +136,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.LANDING_PAGE_ANALYZER: True,
             FeatureKey.HOOK_ANALYSIS: True,
             FeatureKey.EXPERIMENTS: True,
+            FeatureKey.VIDEO_BUCKETS: True,
             FeatureKey.PLAN_LIST: True,
             FeatureKey.PLAN_EXECUTOR: True,
             FeatureKey.TEMPLATE_QUEUE: True,
