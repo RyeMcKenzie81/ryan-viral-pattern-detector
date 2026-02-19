@@ -491,6 +491,23 @@ class ContentBucketService:
 
     # ─── Results ──────────────────────────────────────────────────────
 
+    def delete_categorization(self, session_id: str, filename: str) -> bool:
+        """Delete a categorization record by session + filename (for retry).
+
+        Args:
+            session_id: Session UUID.
+            filename: Original filename of the video.
+
+        Returns:
+            True after deletion.
+        """
+        self._db.table("video_bucket_categorizations") \
+            .delete() \
+            .eq("session_id", session_id) \
+            .eq("filename", filename) \
+            .execute()
+        return True
+
     def get_session_results(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all categorization results for a session.
 

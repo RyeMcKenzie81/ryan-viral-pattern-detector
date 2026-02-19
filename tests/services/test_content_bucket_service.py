@@ -110,6 +110,18 @@ class TestDeleteBucket:
         assert result is True
 
 
+class TestDeleteCategorization:
+    def test_deletes_by_session_and_filename(self, service, mock_db):
+        chain = mock_db.table.return_value.delete.return_value
+        chain.eq.return_value = chain
+        chain.execute.return_value = MagicMock()
+
+        result = service.delete_categorization("sess-1", "video.mp4")
+
+        mock_db.table.assert_called_with("video_bucket_categorizations")
+        assert result is True
+
+
 # ============================================================================
 # Video Analysis
 # ============================================================================

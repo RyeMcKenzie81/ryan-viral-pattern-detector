@@ -35,6 +35,8 @@ if "vb_results" not in st.session_state:
     st.session_state.vb_results = None
 if "vb_processing" not in st.session_state:
     st.session_state.vb_processing = False
+if "vb_file_map" not in st.session_state:
+    st.session_state.vb_file_map = {}
 
 
 # ============================================
@@ -185,6 +187,35 @@ def render_categorize_videos(product_id: str, org_id: str):
         st.warning("You need to create at least one content bucket before categorizing videos. Go to the **Manage Buckets** tab first.")
         return
 
+    def _retry_videos(filenames: list):
+        """Retry failed videos: delete old error records, reprocess, merge results."""
+        file_map = st.session_state.vb_file_map
+        files = [file_map[fn] for fn in filenames if fn in file_map]
+        if not files:
+            st.error("File data no longer available. Please re-upload the videos.")
+            return
+        session_id = st.session_state.vb_session_id
+
+        # Delete old error records
+        for fn in filenames:
+            service.delete_categorization(session_id, fn)
+
+        # Reprocess
+        new_results = service.analyze_and_categorize_batch(
+            files=files,
+            buckets=buckets,
+            product_id=product_id,
+            org_id=org_id,
+            session_id=session_id,
+        )
+
+        # Merge: replace old entries with new results
+        old = st.session_state.vb_results or []
+        retried_names = {r["filename"] for r in new_results}
+        merged = [r for r in old if r["filename"] not in retried_names] + new_results
+        st.session_state.vb_results = merged
+        st.rerun()
+
     st.subheader("Upload & Categorize Videos")
     st.caption(f"{len(buckets)} buckets available. Videos will be analyzed by Gemini and matched to the best bucket.")
 
@@ -215,14 +246,18 @@ def render_categorize_videos(product_id: str, org_id: str):
         progress_bar = st.progress(0)
         status_placeholder = st.empty()
 
-        # Prepare file data
+        # Prepare file data and save to session state for retry
         files = []
+        file_map = {}
         for f in uploaded_files:
-            files.append({
+            file_data = {
                 "bytes": f.getvalue(),
                 "name": f.name,
                 "type": f.type or "video/mp4",
-            })
+            }
+            files.append(file_data)
+            file_map[f.name] = file_data
+        st.session_state.vb_file_map = file_map
 
         def progress_callback(index, total_count, filename, status_msg):
             pct = (index + 1) / total_count
@@ -240,36 +275,60 @@ def render_categorize_videos(product_id: str, org_id: str):
             )
 
             st.session_state.vb_results = results
+            st.session_state.vb_processing = False
             progress_bar.progress(1.0)
             status_placeholder.success(f"Done! {len(results)} video(s) processed.")
-
-            # Show summary
-            categorized = sum(1 for r in results if r.get("status") == "categorized")
-            errors = sum(1 for r in results if r.get("status") == "error")
-
-            cols = st.columns(3)
-            cols[0].metric("Categorized", categorized)
-            cols[1].metric("Errors", errors)
-            cols[2].metric("Session", session_id[:8])
-
-            # Quick results table
-            if results:
-                import pandas as pd
-                df = pd.DataFrame([
-                    {
-                        "Filename": r["filename"],
-                        "Bucket": r.get("bucket_name", "—"),
-                        "Confidence": f"{r.get('confidence_score', 0):.0%}" if r.get("confidence_score") else "—",
-                        "Status": r.get("status", "unknown"),
-                    }
-                    for r in results
-                ])
-                st.dataframe(df, use_container_width=True, hide_index=True)
+            st.rerun()
 
         except Exception as e:
             st.error(f"Batch processing error: {e}")
-        finally:
             st.session_state.vb_processing = False
+
+    # ── Results display (persists across reruns) ──────────────────
+    results = st.session_state.vb_results
+    if not results or not st.session_state.vb_session_id:
+        return
+
+    st.divider()
+
+    # Summary metrics
+    categorized = sum(1 for r in results if r.get("status") == "categorized")
+    error_count = sum(1 for r in results if r.get("status") == "error")
+
+    cols = st.columns(3)
+    cols[0].metric("Categorized", categorized)
+    cols[1].metric("Errors", error_count)
+    cols[2].metric("Session", st.session_state.vb_session_id[:8])
+
+    # Retry All Errors button
+    error_filenames = [r["filename"] for r in results if r.get("status") == "error"]
+    if error_filenames:
+        if st.button(f"Retry All Errors ({len(error_filenames)})", type="primary"):
+            with st.spinner(f"Retrying {len(error_filenames)} video(s)..."):
+                _retry_videos(error_filenames)
+
+    # Results table with per-row retry buttons
+    # Header
+    hdr_cols = st.columns([3, 2, 1, 1, 1])
+    hdr_cols[0].markdown("**Filename**")
+    hdr_cols[1].markdown("**Bucket**")
+    hdr_cols[2].markdown("**Confidence**")
+    hdr_cols[3].markdown("**Status**")
+    hdr_cols[4].markdown("**Action**")
+
+    for i, r in enumerate(results):
+        row_cols = st.columns([3, 2, 1, 1, 1])
+        row_cols[0].text(r["filename"])
+        row_cols[1].text(r.get("bucket_name", "—"))
+        conf = r.get("confidence_score")
+        row_cols[2].text(f"{conf:.0%}" if conf else "—")
+        status = r.get("status", "unknown")
+        row_cols[3].text(status)
+
+        if status == "error":
+            if row_cols[4].button("Retry", key=f"retry_{i}_{r['filename']}"):
+                with st.spinner(f"Retrying {r['filename']}..."):
+                    _retry_videos([r["filename"]])
 
 
 # ============================================
