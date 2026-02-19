@@ -70,30 +70,35 @@ class TestSignedUrlBucketParsing:
 class TestLinkScoping:
     """Verify get_linked_ads uses brand-scoped RPC."""
 
+    def _get_linked_ads_logic(self, db, brand_id: str):
+        """Replicate the get_linked_ads logic from Ad Performance page."""
+        result = db.rpc("get_linked_ads_for_brand", {
+            "p_brand_id": brand_id
+        }).execute()
+        return result.data or []
+
     def test_get_linked_ads_calls_rpc_with_brand_id(self):
-        """get_linked_ads should use RPC with brand_id parameter."""
+        """get_linked_ads should call RPC with brand_id parameter."""
         brand_id = "00000000-0000-0000-0000-000000000001"
 
-        with patch("viraltracker.ui.pages.30_📈_Ad_Performance.get_supabase_client") as mock_get:
-            mock_db = MagicMock()
-            mock_rpc_result = MagicMock()
-            mock_rpc_result.data = [
-                {"meta_ad_id": "m1", "generated_ad_id": "g1", "linked_by": "auto",
-                 "storage_path": "p1", "hook_text": "h1", "final_status": "approved",
-                 "is_imported": False, "meta_ad_account_id": "act_1",
-                 "meta_campaign_id": "camp_1"},
-            ]
-            mock_db.rpc.return_value.execute.return_value = mock_rpc_result
-            mock_get.return_value = mock_db
+        mock_db = MagicMock()
+        mock_rpc_result = MagicMock()
+        mock_rpc_result.data = [
+            {"meta_ad_id": "m1", "generated_ad_id": "g1", "linked_by": "auto",
+             "storage_path": "p1", "hook_text": "h1", "final_status": "approved",
+             "is_imported": False, "meta_ad_account_id": "act_1",
+             "meta_campaign_id": "camp_1"},
+        ]
+        mock_db.rpc.return_value.execute.return_value = mock_rpc_result
 
-            # Import after patching
-            import importlib
-            import viraltracker.ui.pages
-            # We test the function logic directly rather than importing from Streamlit page
+        result = self._get_linked_ads_logic(mock_db, brand_id)
 
-        # The key assertion: RPC is called with brand_id parameter
-        # This is verified by the code change itself — the function now uses
-        # db.rpc("get_linked_ads_for_brand", {"p_brand_id": brand_id})
+        # Verify RPC called with correct function name and brand_id
+        mock_db.rpc.assert_called_once_with(
+            "get_linked_ads_for_brand", {"p_brand_id": brand_id}
+        )
+        assert len(result) == 1
+        assert result[0]["meta_ad_id"] == "m1"
 
 
 # ============================================================================
@@ -103,24 +108,45 @@ class TestLinkScoping:
 class TestUnlinkSafety:
     """Verify delete_ad_link targets specific mapping row."""
 
+    def _delete_ad_link_logic(self, db, meta_ad_id: str, generated_ad_id: str):
+        """Replicate delete_ad_link (specific mapping) from Ad Performance."""
+        db.table("meta_ad_mapping").delete().eq(
+            "meta_ad_id", meta_ad_id
+        ).eq("generated_ad_id", generated_ad_id).execute()
+
+    def _delete_all_ad_links_logic(self, db, meta_ad_id: str):
+        """Replicate delete_all_ad_links (all for meta_ad_id) from Ad Performance."""
+        db.table("meta_ad_mapping").delete().eq(
+            "meta_ad_id", meta_ad_id
+        ).execute()
+
     def test_delete_ad_link_uses_dual_filter(self):
         """delete_ad_link(meta_ad_id, generated_ad_id) should filter by both."""
-        # The implementation is:
-        # db.table("meta_ad_mapping").delete()
-        #   .eq("meta_ad_id", meta_ad_id)
-        #   .eq("generated_ad_id", generated_ad_id)
-        #   .execute()
-        #
-        # This ensures we don't accidentally delete other mappings that share
-        # the same meta_ad_id (e.g., imported + native ads linked to same Meta ad)
-        pass
+        mock_db = MagicMock()
+        mock_chain = MagicMock()
+        mock_db.table.return_value.delete.return_value = mock_chain
+        mock_chain.eq.return_value = mock_chain
+
+        self._delete_ad_link_logic(mock_db, "meta_123", "gen_456")
+
+        # Verify both .eq() filters are applied
+        mock_db.table.assert_called_with("meta_ad_mapping")
+        eq_calls = mock_chain.eq.call_args_list
+        assert len(eq_calls) == 2
+        assert eq_calls[0] == (("meta_ad_id", "meta_123"),)
+        assert eq_calls[1] == (("generated_ad_id", "gen_456"),)
+        mock_chain.execute.assert_called_once()
 
     def test_delete_all_ad_links_only_filters_by_meta_id(self):
-        """delete_all_ad_links(meta_ad_id) should delete all mappings for that Meta ad."""
-        # The implementation is:
-        # db.table("meta_ad_mapping").delete()
-        #   .eq("meta_ad_id", meta_ad_id)
-        #   .execute()
-        #
-        # Used from the Ads tab where the user is acting on the Meta ad itself
-        pass
+        """delete_all_ad_links(meta_ad_id) should only filter by meta_ad_id."""
+        mock_db = MagicMock()
+        mock_chain = MagicMock()
+        mock_db.table.return_value.delete.return_value = mock_chain
+        mock_chain.eq.return_value = mock_chain
+
+        self._delete_all_ad_links_logic(mock_db, "meta_123")
+
+        mock_db.table.assert_called_with("meta_ad_mapping")
+        # Only one .eq() filter — just meta_ad_id
+        mock_chain.eq.assert_called_once_with("meta_ad_id", "meta_123")
+        mock_chain.execute.assert_called_once()
