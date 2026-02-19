@@ -133,9 +133,19 @@ class MetaWinnerImportService:
             perf_row = self._aggregate_rows(rows)
             objective = perf_row.get("campaign_objective", "DEFAULT")
 
+            # Convert CTR and conversion_rate from percentage (Meta API format)
+            # to ratio (baseline format) for reward computation.
+            # Meta stores link_ctr as percentage (0.836 = 0.836%),
+            # baselines use ratio (0.00836 = 0.836%).
+            reward_perf = dict(perf_row)
+            if reward_perf.get("avg_ctr") is not None:
+                reward_perf["avg_ctr"] = reward_perf["avg_ctr"] / 100
+            if reward_perf.get("avg_conversion_rate") is not None:
+                reward_perf["avg_conversion_rate"] = reward_perf["avg_conversion_rate"] / 100
+
             # Compute reward score
             reward_score, components = genome._compute_composite_reward(
-                perf_row, baselines, objective
+                reward_perf, baselines, objective
             )
 
             # Auto-match offer variant
@@ -528,8 +538,16 @@ Return ONLY valid JSON, no markdown formatting."""
         perf = await self._aggregate_performance(brand_id, meta_ad_id)
         objective = perf.get("campaign_objective", "DEFAULT")
 
+        # Convert CTR and conversion_rate from percentage (Meta API format)
+        # to ratio (baseline format) for reward computation
+        reward_perf = dict(perf)
+        if reward_perf.get("avg_ctr") is not None:
+            reward_perf["avg_ctr"] = reward_perf["avg_ctr"] / 100
+        if reward_perf.get("avg_conversion_rate") is not None:
+            reward_perf["avg_conversion_rate"] = reward_perf["avg_conversion_rate"] / 100
+
         reward_score, components = genome._compute_composite_reward(
-            perf, baselines, objective
+            reward_perf, baselines, objective
         )
 
         # Insert into creative_element_rewards (idempotent via UNIQUE on generated_ad_id)

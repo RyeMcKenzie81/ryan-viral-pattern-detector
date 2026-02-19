@@ -3520,7 +3520,7 @@ elif selected_tab == "🏆 Winners":
                             if roas:
                                 metrics_parts.append(f"ROAS: {roas:.1f}x")
                             if ctr:
-                                metrics_parts.append(f"CTR: {ctr*100:.1f}%")
+                                metrics_parts.append(f"CTR: {ctr:.2f}%")
                             metrics_parts.append(f"Spend: ${c.get('total_spend', 0):,.0f}")
                             st.caption(" | ".join(metrics_parts))
 
