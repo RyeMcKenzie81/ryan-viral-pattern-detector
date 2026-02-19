@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Landing Page Mockup — {{ mode | title }} Mode</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ================================================================
+   Landing Page Mockup — Standalone CSS
+   ================================================================ */
+
+:root {
+  --font-stack: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --max-width: 960px;
+
+  /* Brand color overrides (blueprint mode) */
+  {% if brand_style and brand_style.primary is defined %}
+  --brand-primary: {{ brand_style.primary }};
+  {% else %}
+  --brand-primary: #3b82f6;
+  {% endif %}
+  {% if brand_style and brand_style.secondary is defined %}
+  --brand-secondary: {{ brand_style.secondary }};
+  {% else %}
+  --brand-secondary: #1e40af;
+  {% endif %}
+  {% if brand_style and brand_style.accent is defined %}
+  --brand-accent: {{ brand_style.accent }};
+  {% else %}
+  --brand-accent: #f59e0b;
+  {% endif %}
+
+  /* Neutral palette */
+  --bg-white: #ffffff;
+  --bg-light: #f8fafc;
+  --bg-muted: #f1f5f9;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border-color: #e2e8f0;
+  --border-light: #f1f5f9;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-stack);
+  color: var(--text-primary);
+  background: var(--bg-white);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ----------------------------------------------------------------
+   METADATA BAR (top info strip)
+   ---------------------------------------------------------------- */
+
+.mockup-meta-bar {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 12px 24px;
+  font-size: 13px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.mockup-meta-bar strong {
+  color: #f8fafc;
+}
+
+.mockup-meta-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mockup-meta-badge.analysis { background: #3b82f6; color: white; }
+.mockup-meta-badge.blueprint { background: #10b981; color: white; }
+
+/* ----------------------------------------------------------------
+   SECTION WRAPPER
+   ---------------------------------------------------------------- */
+
+.mockup-section {
+  border-left: 4px solid var(--section-accent, #94a3b8);
+  margin: 0;
+  padding: 32px 24px;
+  position: relative;
+}
+
+.mockup-section:nth-child(even) {
+  background: var(--bg-light);
+}
+
+.mockup-section:nth-child(odd) {
+  background: var(--bg-white);
+}
+
+.mockup-section-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.mockup-section-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 16px;
+  color: white;
+}
+
+.mockup-bonus-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: #fbbf24;
+  color: #1e293b;
+  margin-left: 8px;
+}
+
+/* ----------------------------------------------------------------
+   ELEMENT LABELS
+   ---------------------------------------------------------------- */
+
+.mockup-element-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ----------------------------------------------------------------
+   PLACEHOLDERS
+   ---------------------------------------------------------------- */
+
+.mockup-placeholder-box {
+  background: var(--bg-muted);
+  border: 2px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.mockup-placeholder-large {
+  padding: 80px 24px;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mockup-placeholder-inline {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ----------------------------------------------------------------
+   CONTENT STATUS (blueprint mode)
+   ---------------------------------------------------------------- */
+
+.mockup-content-needed {
+  border: 2px dashed #ef4444 !important;
+  border-radius: 8px;
+  padding: 16px;
+  position: relative;
+}
+
+.mockup-content-partial {
+  border: 2px dashed #f59e0b !important;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.mockup-action-items {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.mockup-action-items strong {
+  color: #dc2626;
+}
+
+.mockup-action-items ul {
+  margin: 4px 0 0 16px;
+  padding: 0;
+}
+
+.mockup-action-items li {
+  margin-bottom: 4px;
+}
+
+/* ----------------------------------------------------------------
+   COPY DIRECTION (blueprint mode)
+   ---------------------------------------------------------------- */
+
+.mockup-copy-direction {
+  background: #eff6ff;
+  border-left: 3px solid var(--brand-primary);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border-radius: 0 6px 6px 0;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.mockup-emotional-hook {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  font-style: italic;
+  color: #92400e;
+  font-size: 14px;
+}
+
+.mockup-supporting {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* ----------------------------------------------------------------
+   1. NAV BAR
+   ---------------------------------------------------------------- */
+
+.mockup-nav {
+  background: var(--bg-white);
+  border-bottom: 1px solid var(--border-color);
+  padding: 12px 24px;
+}
+
+.mockup-nav-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mockup-logo {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.mockup-nav-links {
+  display: flex;
+  gap: 8px;
+}
+
+.mockup-nav-pill {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-light);
+}
+
+/* ----------------------------------------------------------------
+   2. ANNOUNCEMENT BAR
+   ---------------------------------------------------------------- */
+
+.mockup-announcement {
+  background: var(--brand-primary);
+  color: white;
+  text-align: center;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------
+   3. HERO BANNER
+   ---------------------------------------------------------------- */
+
+.mockup-hero {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  gap: 40px;
+  align-items: center;
+  padding: 48px 24px;
+}
+
+.mockup-hero-content {
+  flex: 1;
+}
+
+.mockup-hero-image {
+  flex: 1;
+}
+
+.mockup-hero-headline {
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1.15;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+}
+
+.mockup-hero-subheadline {
+  font-size: 18px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+.mockup-hero-cta {
+  margin-top: 8px;
+}
+
+/* ----------------------------------------------------------------
+   4. ICON GRID
+   ---------------------------------------------------------------- */
+
+.mockup-icon-grid {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.mockup-icon-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  justify-content: center;
+}
+
+.mockup-icon-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.mockup-icon-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--bg-muted);
+  border: 2px solid var(--border-color);
+}
+
+/* ----------------------------------------------------------------
+   5. TEXT BLOCK
+   ---------------------------------------------------------------- */
+
+.mockup-text-block {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.mockup-body-text {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+/* ----------------------------------------------------------------
+   6. FEATURE GRID
+   ---------------------------------------------------------------- */
+
+.mockup-feature-grid {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.mockup-features-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.mockup-feature-card {
+  flex: 1;
+  min-width: 200px;
+  background: var(--bg-white);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.mockup-feature-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+  margin: 0 auto 16px;
+  opacity: 0.2;
+}
+
+.mockup-feature-card h4 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.mockup-feature-card p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* ----------------------------------------------------------------
+   7. COMPARISON TABLE
+   ---------------------------------------------------------------- */
+
+.mockup-comparison {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.mockup-comp-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+.mockup-comp-table th,
+.mockup-comp-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 14px;
+}
+
+.mockup-comp-table th {
+  background: var(--bg-muted);
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mockup-comp-us {
+  color: #16a34a;
+  font-weight: 600;
+  text-align: center !important;
+}
+
+.mockup-comp-them {
+  color: #dc2626;
+  font-weight: 600;
+  text-align: center !important;
+}
+
+/* ----------------------------------------------------------------
+   8. TESTIMONIALS
+   ---------------------------------------------------------------- */
+
+.mockup-testimonials {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.mockup-testimonial-grid {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.mockup-testimonial-card {
+  flex: 1;
+  min-width: 240px;
+  background: var(--bg-white);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.mockup-stars {
+  color: #f59e0b;
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+
+.mockup-quote {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  font-style: italic;
+  margin-bottom: 12px;
+}
+
+.mockup-attribution {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------
+   9. PRICING
+   ---------------------------------------------------------------- */
+
+.mockup-pricing {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  text-align: center;
+}
+
+.mockup-pricing-tiers {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.mockup-tier-card {
+  flex: 1;
+  min-width: 200px;
+  max-width: 280px;
+  background: var(--bg-white);
+  border: 2px solid var(--border-color);
+  border-radius: 16px;
+  padding: 32px 24px;
+  position: relative;
+}
+
+.mockup-tier-best {
+  border-color: var(--brand-primary);
+  box-shadow: 0 4px 24px rgba(59, 130, 246, 0.15);
+  transform: scale(1.04);
+}
+
+.mockup-tier-badge {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--brand-primary);
+  color: white;
+  padding: 4px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mockup-tier-card h4 {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.mockup-tier-qty {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.mockup-tier-price {
+  font-size: 36px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 8px 0;
+}
+
+.mockup-tier-per {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+/* ----------------------------------------------------------------
+   10. FINAL CTA
+   ---------------------------------------------------------------- */
+
+.mockup-final-cta {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  text-align: center;
+  padding: 48px 24px;
+}
+
+.mockup-cta-headline {
+  font-size: 28px;
+  font-weight: 800;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+}
+
+.mockup-cta-subtext {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ----------------------------------------------------------------
+   11. FOOTER
+   ---------------------------------------------------------------- */
+
+.mockup-footer {
+  background: #1e293b;
+  color: #94a3b8;
+  padding: 32px 24px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.mockup-footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.mockup-footer-links a {
+  color: #cbd5e1;
+  text-decoration: none;
+}
+
+.mockup-footer-links a:hover {
+  color: white;
+}
+
+.mockup-footer-disclaimer {
+  max-width: 700px;
+  margin: 0 auto 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.mockup-footer-copyright {
+  color: #475569;
+  font-size: 12px;
+}
+
+/* ----------------------------------------------------------------
+   12. EMAIL CAPTURE
+   ---------------------------------------------------------------- */
+
+.mockup-email-capture {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  text-align: center;
+}
+
+.mockup-email-capture p {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.mockup-email-form {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.mockup-email-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--bg-white);
+  color: var(--text-muted);
+}
+
+/* ----------------------------------------------------------------
+   SHARED BUTTONS
+   ---------------------------------------------------------------- */
+
+.mockup-btn-primary {
+  display: inline-block;
+  padding: 14px 32px;
+  background: var(--brand-primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+
+.mockup-btn-large {
+  padding: 18px 48px;
+  font-size: 18px;
+  border-radius: 12px;
+}
+
+/* ----------------------------------------------------------------
+   GENERATION FOOTER
+   ---------------------------------------------------------------- */
+
+.mockup-gen-footer {
+  text-align: center;
+  padding: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-color);
+}
+</style>
+</head>
+<body>
+
+{# ================================================================ #}
+{# METADATA BAR                                                      #}
+{# ================================================================ #}
+
+<div class="mockup-meta-bar">
+  <span class="mockup-meta-badge {{ mode }}">{{ mode | upper }} MOCKUP</span>
+
+  {% if classification %}
+    {% set al = classification.awareness_level if classification.awareness_level is string else (classification.awareness_level.primary if classification.awareness_level is mapping else '') %}
+    {% if al %}
+    <span><strong>Awareness:</strong> {{ al | replace('_', ' ') | title }}</span>
+    {% endif %}
+
+    {% set pa = classification.page_architecture if classification.page_architecture is string else (classification.page_architecture.type if classification.page_architecture is mapping else '') %}
+    {% if pa %}
+    <span><strong>Architecture:</strong> {{ pa | replace('_', ' ') | title }}</span>
+    {% endif %}
+  {% endif %}
+
+  <span style="margin-left: auto;"><strong>Generated:</strong> {{ generated_at }}</span>
+</div>
+
+{# ================================================================ #}
+{# SECTION LOOP                                                       #}
+{# ================================================================ #}
+
+{% from "components.html" import render_element %}
+
+{% for section in sections %}
+<div class="mockup-section" style="--section-accent: {{ section.accent_color }};">
+  <div class="mockup-section-inner">
+
+    {# Section name chip #}
+    <span class="mockup-section-chip" style="background: {{ section.accent_color }};">
+      {{ section.section_name | replace('_', ' ') }}
+    </span>
+    {% if section.is_bonus is defined and section.is_bonus %}
+    <span class="mockup-bonus-tag">Bonus</span>
+    {% endif %}
+
+    {# Render each element in the section #}
+    {% for element in section.elements %}
+      {{ render_element(element) }}
+    {% endfor %}
+
+  </div>
+</div>
+{% endfor %}
+
+{# ================================================================ #}
+{# GENERATION FOOTER                                                  #}
+{# ================================================================ #}
+
+<div class="mockup-gen-footer">
+  Generated by ViralTracker Landing Page Analyzer &middot; {{ generated_at }}
+</div>
+
+</body>
+</html>

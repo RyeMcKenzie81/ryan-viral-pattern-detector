@@ -41,6 +41,11 @@ if "lpa_gap_dismissed" not in st.session_state:
     st.session_state.lpa_gap_dismissed = set()
 if "lpa_gap_overwrite_confirmed" not in st.session_state:
     st.session_state.lpa_gap_overwrite_confirmed = set()
+# Mockup cache state
+if "lpa_mockup_analysis_ids" not in st.session_state:
+    st.session_state.lpa_mockup_analysis_ids = []
+if "lpa_mockup_blueprint_ids" not in st.session_state:
+    st.session_state.lpa_mockup_blueprint_ids = []
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +94,86 @@ def _awareness_badge(level: str) -> str:
         "most_aware": "🟪 Most-Aware",
     }
     return badges.get(level, level or "Unknown")
+
+
+def get_mockup_service():
+    """Lazy-load MockupService."""
+    from viraltracker.services.landing_page_analysis import MockupService
+    return MockupService()
+
+
+def _cache_mockup(cache_type: str, item_id: str, html_str: str):
+    """Cache a mockup in session state with FIFO eviction (max 10 per type)."""
+    ids_key = f"lpa_mockup_{cache_type}_ids"
+    data_key = f"lpa_mockup_{cache_type}_{item_id}"
+
+    # Add to cache
+    st.session_state[data_key] = html_str
+
+    # Track order for FIFO
+    ids = st.session_state.get(ids_key, [])
+    if item_id not in ids:
+        ids.append(item_id)
+    # Evict oldest if over 10
+    while len(ids) > 10:
+        old_id = ids.pop(0)
+        old_key = f"lpa_mockup_{cache_type}_{old_id}"
+        st.session_state.pop(old_key, None)
+    st.session_state[ids_key] = ids
+
+
+def _get_cached_mockup(cache_type: str, item_id: str) -> Optional[str]:
+    """Retrieve a cached mockup from session state."""
+    return st.session_state.get(f"lpa_mockup_{cache_type}_{item_id}")
+
+
+def _render_mockup_preview(html_str: str, key_suffix: str):
+    """Render mockup thumbnail, download button, and open-in-new-tab link."""
+    import base64
+    import streamlit.components.v1 as components
+
+    # Thumbnail preview (scaled down via CSS transform)
+    thumbnail_html = f"""
+    <div style="width:100%; height:400px; overflow:hidden; border:1px solid #e2e8f0;
+                border-radius:8px; background:#fff; position:relative;">
+      <div style="transform:scale(0.35); transform-origin:top left;
+                  width:286%; height:286%; pointer-events:none;">
+        {html_str}
+      </div>
+    </div>
+    """
+    components.html(thumbnail_html, height=410, scrolling=False)
+
+    # Download + Open in New Tab
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "Download HTML Mockup",
+            data=html_str,
+            file_name=f"mockup_{key_suffix}.html",
+            mime="text/html",
+            key=f"lpa_mockup_dl_{key_suffix}",
+        )
+    with col2:
+        # Best-effort: open in new tab via Blob URL
+        html_b64 = base64.b64encode(html_str.encode("utf-8")).decode("ascii")
+        uid = key_suffix.replace("-", "")[:16]
+        open_script = f"""
+        <span id="mb64-{uid}" style="display:none">{html_b64}</span>
+        <button onclick="(function(){{
+          var b=document.getElementById('mb64-{uid}').textContent;
+          var bytes=Uint8Array.from(atob(b),function(c){{return c.charCodeAt(0)}});
+          var html=new TextDecoder('utf-8').decode(bytes);
+          var blob=new Blob([html],{{type:'text/html;charset=utf-8'}});
+          var url=URL.createObjectURL(blob);
+          window.open(url,'_blank');
+          setTimeout(function(){{URL.revokeObjectURL(url)}},5000);
+        }})()" style="padding:8px 20px;border:1px solid #d1d5db;border-radius:6px;
+        background:#fff;cursor:pointer;font-size:14px;color:#374151;">
+        Open in New Tab
+        </button>
+        """
+        components.html(open_script, height=45)
 
 
 # ---------------------------------------------------------------------------
@@ -1118,6 +1203,11 @@ def _render_analysis_row(analysis: dict, service):
 
         _render_analysis_detail(full)
 
+        # --- Mockup Generation ---
+        analysis_id = full.get("id", "")
+        if analysis_id:
+            _render_analysis_mockup_section(full, analysis_id)
+
 
 def _render_analysis_detail(analysis: dict):
     """Render full analysis detail with sub-tabs."""
@@ -1299,6 +1389,95 @@ def _render_analysis_detail(analysis: dict):
                     icon = {"critical": "🔴", "warning": "🟡", "note": "🔵"}.get(severity, "⚪")
                     st.markdown(f"{icon} **{flag.get('issue', '')}** — {flag.get('location', '')}")
                     st.caption(flag.get("recommendation", ""))
+
+
+# ---------------------------------------------------------------------------
+# Mockup helpers
+# ---------------------------------------------------------------------------
+
+def _render_analysis_mockup_section(analysis: dict, analysis_id: str):
+    """Render mockup generation controls for an analysis."""
+    st.markdown("---")
+    st.markdown("**Visual Mockup**")
+
+    cached = _get_cached_mockup("analysis", analysis_id)
+
+    if cached:
+        _render_mockup_preview(cached, f"analysis_{analysis_id}")
+    elif st.button(
+        "Generate Mockup",
+        key=f"lpa_gen_mockup_analysis_{analysis_id}",
+    ):
+        elements = analysis.get("elements", {})
+        classification = analysis.get("classification", {})
+
+        if not elements:
+            st.warning("No element detection data available for this analysis.")
+            return
+
+        try:
+            svc = get_mockup_service()
+            html_str = svc.generate_analysis_mockup(elements, classification)
+            _cache_mockup("analysis", analysis_id, html_str)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Mockup generation failed: {e}")
+
+
+def _render_blueprint_mockup_section(
+    result: dict,
+    blueprint_id: str,
+    brand_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+):
+    """Render mockup generation controls for a blueprint."""
+    cached = _get_cached_mockup("blueprint", blueprint_id)
+
+    if cached:
+        _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+    elif st.button(
+        "Render Mockup",
+        key=f"lpa_gen_mockup_blueprint_{blueprint_id}",
+    ):
+        blueprint = result.get("blueprint", {})
+
+        if not blueprint:
+            st.warning("No blueprint data available.")
+            return
+
+        # Fetch classification from linked analysis if available
+        classification = None
+        analysis_id = result.get("analysis_id")
+        if analysis_id:
+            try:
+                svc = get_analysis_service()
+                linked = svc.get_analysis(analysis_id)
+                if linked:
+                    classification = linked.get("classification", {})
+            except Exception:
+                pass
+
+        # Fetch brand profile for color overrides
+        brand_profile = None
+        if brand_id and product_id:
+            try:
+                from viraltracker.services.landing_page_analysis import BrandProfileService
+                bp_svc = BrandProfileService(get_supabase_client())
+                brand_profile = bp_svc.get_brand_profile(brand_id, product_id)
+            except Exception:
+                pass
+
+        try:
+            svc = get_mockup_service()
+            html_str = svc.generate_blueprint_mockup(
+                blueprint,
+                classification=classification,
+                brand_profile=brand_profile,
+            )
+            _cache_mockup("blueprint", blueprint_id, html_str)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Mockup generation failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1568,7 +1747,7 @@ def _render_blueprint(
 
     # --- Exports ---
     st.markdown("### Export")
-    export_col1, export_col2 = st.columns(2)
+    export_col1, export_col2, export_col3 = st.columns(3)
     with export_col1:
         import json as _json
         json_str = _json.dumps(blueprint, indent=2, ensure_ascii=False)
@@ -1587,6 +1766,15 @@ def _render_blueprint(
             file_name=f"blueprint_{result.get('source_url', 'unknown')[:30].replace('/', '_')}.md",
             mime="text/markdown",
             key=f"lpa_bp_export_md_{key_suffix}",
+        )
+    with export_col3:
+        blueprint_id = result.get("id", key_suffix)
+        st.markdown("**Visual Mockup**")
+        _render_blueprint_mockup_section(
+            result,
+            blueprint_id=blueprint_id,
+            brand_id=brand_id,
+            product_id=product_id,
         )
 
 

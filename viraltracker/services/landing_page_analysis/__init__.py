@@ -31,6 +31,9 @@ from viraltracker.services.landing_page_analysis.content_gap_filler_service impo
     SourceCandidate,
     resolve_gap_key,
 )
+from viraltracker.services.landing_page_analysis.mockup_service import (
+    MockupService,
+)
 
 __all__ = [
     "LandingPageAnalysisService",
@@ -45,4 +48,5 @@ __all__ = [
     "chunk_markdown",
     "pick_chunks_for_fields",
     "extract_deterministic_snippet",
+    "MockupService",
 ]

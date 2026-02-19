@@ -1,0 +1,461 @@
+{#
+  Mockup Component Macros — 12 visual patterns for landing page mockups.
+  Each macro accepts (element, mode) where mode is "analysis" or "blueprint".
+#}
+
+
+{# ------------------------------------------------------------------ #}
+{# CONTENT STATUS WRAPPER (blueprint mode only)                        #}
+{# ------------------------------------------------------------------ #}
+
+{% macro _content_status_class(element) %}
+{%- if element.mode == 'blueprint' and element.content_status == 'CONTENT_NEEDED' -%}
+mockup-content-needed
+{%- elif element.mode == 'blueprint' and element.content_status == 'partial' -%}
+mockup-content-partial
+{%- endif -%}
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 1. NAV BAR                                                          #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_nav_bar(element) %}
+<div class="mockup-nav {{ _content_status_class(element) }}">
+  <div class="mockup-nav-inner">
+    <div class="mockup-logo">
+      {% if element.mode == 'blueprint' and element.copy_direction %}
+        {{ element.copy_direction }}
+      {% else %}
+        <span class="mockup-placeholder-inline">LOGO</span>
+      {% endif %}
+    </div>
+    <div class="mockup-nav-links">
+      <span class="mockup-nav-pill">Home</span>
+      <span class="mockup-nav-pill">Shop</span>
+      <span class="mockup-nav-pill">About</span>
+      <span class="mockup-nav-pill">Contact</span>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 2. ANNOUNCEMENT BAR                                                 #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_announcement_bar(element) %}
+<div class="mockup-announcement {{ _content_status_class(element) }}">
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+    {{ element.copy_direction }}
+  {% elif element.content_summary %}
+    {{ element.content_summary }}
+  {% else %}
+    <span class="mockup-placeholder-inline">Announcement: Limited Time Offer — Free Shipping on All Orders</span>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 3. HERO BANNER (composite: headline + subheadline + image + CTA)    #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_hero_banner(element) %}
+<div class="mockup-hero {{ _content_status_class(element) }}">
+  <div class="mockup-hero-content">
+    <h1 class="mockup-hero-headline">
+      {% if element.mode == 'blueprint' and element.copy_direction %}
+        {{ element.copy_direction }}
+      {% elif element.hero_headline is defined and element.hero_headline %}
+        {{ element.hero_headline }}
+      {% elif element.content_summary %}
+        {{ element.content_summary }}
+      {% else %}
+        Your Compelling Headline Goes Here
+      {% endif %}
+    </h1>
+
+    {% if element.hero_subheadline is defined and element.hero_subheadline %}
+    <p class="mockup-hero-subheadline">{{ element.hero_subheadline }}</p>
+    {% elif element.mode == 'blueprint' and element.brand_mapping is defined %}
+      {% if element.brand_mapping.emotional_hook is defined and element.brand_mapping.emotional_hook %}
+      <p class="mockup-hero-subheadline">{{ element.brand_mapping.emotional_hook }}</p>
+      {% endif %}
+    {% endif %}
+
+    <div class="mockup-hero-cta">
+      <button class="mockup-btn-primary">
+        {% if element.hero_cta_text is defined and element.hero_cta_text %}
+          {{ element.hero_cta_text }}
+        {% else %}
+          Shop Now
+        {% endif %}
+      </button>
+    </div>
+  </div>
+  <div class="mockup-hero-image">
+    <div class="mockup-placeholder-box mockup-placeholder-large">
+      {% if element.hero_image_type is defined %}
+        Hero Image: {{ element.hero_image_type | replace('_', ' ') | title }}
+      {% else %}
+        Hero Image
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 4. ICON GRID (benefits, trust indicators, payment security)         #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_icon_grid(element) %}
+<div class="mockup-icon-grid {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+  {% if element.mode == 'blueprint' and element.brand_mapping is defined and element.brand_mapping.primary_content is defined %}
+  <p class="mockup-body-text">{{ element.brand_mapping.primary_content }}</p>
+  {% endif %}
+  <div class="mockup-icon-row">
+    {% if element.content_summary and element.content_summary | length > 20 %}
+      <div class="mockup-icon-item">
+        <div class="mockup-icon-circle"></div>
+        <span>{{ element.content_summary }}</span>
+      </div>
+    {% else %}
+      {% for label in ['Benefit One', 'Benefit Two', 'Benefit Three', 'Benefit Four'] %}
+      <div class="mockup-icon-item">
+        <div class="mockup-icon-circle"></div>
+        <span>{{ label }}</span>
+      </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 5. TEXT BLOCK (generic text section)                                 #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_text_block(element) %}
+<div class="mockup-text-block {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+
+  {% if element.mode == 'blueprint' %}
+    {# Blueprint mode: show copy direction and brand mapping #}
+    {% if element.copy_direction %}
+    <div class="mockup-copy-direction">
+      <p>{{ element.copy_direction }}</p>
+    </div>
+    {% endif %}
+
+    {% if element.brand_mapping is defined and element.brand_mapping %}
+      {% if element.brand_mapping.primary_content is defined and element.brand_mapping.primary_content %}
+      <p class="mockup-body-text">{{ element.brand_mapping.primary_content }}</p>
+      {% endif %}
+      {% if element.brand_mapping.supporting_data is defined and element.brand_mapping.supporting_data %}
+      <p class="mockup-body-text mockup-supporting">{{ element.brand_mapping.supporting_data }}</p>
+      {% endif %}
+      {% if element.brand_mapping.emotional_hook is defined and element.brand_mapping.emotional_hook %}
+      <div class="mockup-emotional-hook">
+        {{ element.brand_mapping.emotional_hook }}
+      </div>
+      {% endif %}
+    {% endif %}
+
+    {% if element.content_status == 'CONTENT_NEEDED' and element.action_items is defined %}
+    <div class="mockup-action-items">
+      <strong>Content Needed:</strong>
+      <ul>
+        {% for item in element.action_items %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+  {% else %}
+    {# Analysis mode: show content summary or placeholder #}
+    {% if element.content_summary and element.content_summary | length > 20 %}
+    <p class="mockup-body-text">{{ element.content_summary }}</p>
+    {% else %}
+    <div class="mockup-placeholder-box">
+      {{ element.element_name }}: {{ element.element_type or 'Content' }}
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 6. FEATURE GRID (ingredients, how it works)                         #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_feature_grid(element) %}
+<div class="mockup-feature-grid {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+  <p class="mockup-copy-direction">{{ element.copy_direction }}</p>
+  {% endif %}
+
+  <div class="mockup-features-row">
+    {% if element.mode == 'blueprint' and element.brand_mapping is defined and element.brand_mapping.primary_content is defined %}
+    <div class="mockup-feature-card">
+      <div class="mockup-feature-icon"></div>
+      <h4>Feature Details</h4>
+      <p>{{ element.brand_mapping.primary_content }}</p>
+    </div>
+    {% else %}
+    {% for item in ['Feature 1', 'Feature 2', 'Feature 3'] %}
+    <div class="mockup-feature-card">
+      <div class="mockup-feature-icon"></div>
+      <h4>{{ item }}</h4>
+      <p>{{ element.content_summary if element.content_summary and loop.first else 'Description of this feature and its benefits to the customer.' }}</p>
+    </div>
+    {% endfor %}
+    {% endif %}
+  </div>
+
+  {% if element.content_status is defined and element.content_status == 'CONTENT_NEEDED' %}
+  <div class="mockup-action-items">
+    <strong>Content Needed:</strong>
+    <ul>
+      {% for item in element.action_items %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 7. COMPARISON TABLE                                                  #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_comparison_table(element) %}
+<div class="mockup-comparison {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+  <p class="mockup-copy-direction">{{ element.copy_direction }}</p>
+  {% endif %}
+
+  <table class="mockup-comp-table">
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th class="mockup-comp-us">Our Product</th>
+        <th class="mockup-comp-them">Competitors</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for feature in ['Quality Ingredients', 'Money-Back Guarantee', 'Clinical Studies', 'Free Shipping', 'Subscription Option'] %}
+      <tr>
+        <td>{{ feature }}</td>
+        <td class="mockup-comp-us">&#10003;</td>
+        <td class="mockup-comp-them">&#10007;</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 8. TESTIMONIAL BLOCK                                                #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_testimonial_block(element) %}
+<div class="mockup-testimonials {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+  <p class="mockup-copy-direction">{{ element.copy_direction }}</p>
+  {% endif %}
+
+  <div class="mockup-testimonial-grid">
+    {% if element.mode == 'blueprint' and element.brand_mapping is defined and element.brand_mapping.primary_content is defined %}
+    <div class="mockup-testimonial-card">
+      <div class="mockup-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+      <p class="mockup-quote">"{{ element.brand_mapping.primary_content }}"</p>
+      <p class="mockup-attribution">— Verified Customer</p>
+    </div>
+    {% else %}
+    {% for i in range(3) %}
+    <div class="mockup-testimonial-card">
+      <div class="mockup-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+      <p class="mockup-quote">"{{ element.content_summary if element.content_summary and loop.first else 'Amazing product! I saw results within the first week of using it.' }}"</p>
+      <p class="mockup-attribution">— Customer {{ i + 1 }}</p>
+    </div>
+    {% endfor %}
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 9. PRICING BLOCK                                                     #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_pricing_block(element) %}
+<div class="mockup-pricing {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+  <p class="mockup-copy-direction">{{ element.copy_direction }}</p>
+  {% endif %}
+
+  <div class="mockup-pricing-tiers">
+    {% for tier in [{'name': 'Starter', 'qty': '1 Unit', 'price': '$49', 'per': '$49/unit'}, {'name': 'Best Value', 'qty': '3 Units', 'price': '$117', 'per': '$39/unit', 'best': true}, {'name': 'Family Pack', 'qty': '6 Units', 'price': '$174', 'per': '$29/unit'}] %}
+    <div class="mockup-tier-card {{ 'mockup-tier-best' if tier.best is defined }}">
+      {% if tier.best is defined %}<div class="mockup-tier-badge">Most Popular</div>{% endif %}
+      <h4>{{ tier.name }}</h4>
+      <p class="mockup-tier-qty">{{ tier.qty }}</p>
+      <p class="mockup-tier-price">{{ tier.price }}</p>
+      <p class="mockup-tier-per">{{ tier.per }}</p>
+      <button class="mockup-btn-primary">Add to Cart</button>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if element.mode == 'blueprint' and element.brand_mapping is defined and element.brand_mapping.emotional_hook is defined %}
+  <div class="mockup-emotional-hook">
+    {{ element.brand_mapping.emotional_hook }}
+  </div>
+  {% endif %}
+
+  {% if element.content_status is defined and element.content_status == 'CONTENT_NEEDED' %}
+  <div class="mockup-action-items">
+    <strong>Content Needed:</strong>
+    <ul>
+      {% for item in element.action_items %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 10. FINAL CTA BLOCK                                                 #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_final_cta_block(element) %}
+<div class="mockup-final-cta {{ _content_status_class(element) }}">
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+  <h2 class="mockup-cta-headline">{{ element.copy_direction }}</h2>
+  {% else %}
+  <h2 class="mockup-cta-headline">
+    {% if element.content_summary %}
+      {{ element.content_summary }}
+    {% else %}
+      Don't Wait — Transform Your Life Today
+    {% endif %}
+  </h2>
+  {% endif %}
+
+  {% if element.mode == 'blueprint' and element.brand_mapping is defined and element.brand_mapping.emotional_hook is defined %}
+  <p class="mockup-cta-subtext">{{ element.brand_mapping.emotional_hook }}</p>
+  {% else %}
+  <p class="mockup-cta-subtext">Join thousands of satisfied customers. Risk-free with our money-back guarantee.</p>
+  {% endif %}
+
+  <button class="mockup-btn-primary mockup-btn-large">Get Started Now</button>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 11. FOOTER / LEGAL BLOCK                                            #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_footer_legal_block(element) %}
+<div class="mockup-footer {{ _content_status_class(element) }}">
+  <div class="mockup-footer-links">
+    <a href="#">Privacy Policy</a>
+    <a href="#">Terms of Service</a>
+    <a href="#">Refund Policy</a>
+    <a href="#">Contact Us</a>
+  </div>
+  <div class="mockup-footer-disclaimer">
+    {% if element.mode == 'blueprint' and element.copy_direction %}
+      {{ element.copy_direction }}
+    {% elif element.content_summary %}
+      {{ element.content_summary }}
+    {% else %}
+      * These statements have not been evaluated by the FDA. This product is not intended to diagnose, treat, cure, or prevent any disease. Individual results may vary.
+    {% endif %}
+  </div>
+  <div class="mockup-footer-copyright">
+    &copy; {{ "2026" }} Brand Name. All rights reserved.
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# 12. EMAIL CAPTURE BLOCK                                             #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_email_capture_block(element) %}
+<div class="mockup-email-capture {{ _content_status_class(element) }}">
+  <h3 class="mockup-element-label">{{ element.element_name }}</h3>
+  {% if element.mode == 'blueprint' and element.copy_direction %}
+  <p>{{ element.copy_direction }}</p>
+  {% else %}
+  <p>Get exclusive offers and health tips delivered to your inbox.</p>
+  {% endif %}
+  <div class="mockup-email-form">
+    <input type="text" class="mockup-email-input" placeholder="Enter your email" disabled />
+    <button class="mockup-btn-primary">Subscribe</button>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# ------------------------------------------------------------------ #}
+{# DISPATCHER — call the right macro by visual_pattern name             #}
+{# ------------------------------------------------------------------ #}
+
+{% macro render_element(element) %}
+  {% if element.visual_pattern == 'nav_bar' %}
+    {{ render_nav_bar(element) }}
+  {% elif element.visual_pattern == 'announcement_bar' %}
+    {{ render_announcement_bar(element) }}
+  {% elif element.visual_pattern == 'hero_banner' %}
+    {{ render_hero_banner(element) }}
+  {% elif element.visual_pattern == 'icon_grid' %}
+    {{ render_icon_grid(element) }}
+  {% elif element.visual_pattern == 'text_block' %}
+    {{ render_text_block(element) }}
+  {% elif element.visual_pattern == 'feature_grid' %}
+    {{ render_feature_grid(element) }}
+  {% elif element.visual_pattern == 'comparison_table' %}
+    {{ render_comparison_table(element) }}
+  {% elif element.visual_pattern == 'testimonial_block' %}
+    {{ render_testimonial_block(element) }}
+  {% elif element.visual_pattern == 'pricing_block' %}
+    {{ render_pricing_block(element) }}
+  {% elif element.visual_pattern == 'final_cta_block' %}
+    {{ render_final_cta_block(element) }}
+  {% elif element.visual_pattern == 'footer_legal_block' %}
+    {{ render_footer_legal_block(element) }}
+  {% elif element.visual_pattern == 'email_capture_block' %}
+    {{ render_email_capture_block(element) }}
+  {% else %}
+    {{ render_text_block(element) }}
+  {% endif %}
+{% endmacro %}
