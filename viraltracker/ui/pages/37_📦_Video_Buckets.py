@@ -226,65 +226,63 @@ def render_categorize_videos(product_id: str, org_id: str):
         help="Upload 1-20 videos at a time. Each will be analyzed individually.",
     )
 
-    if not uploaded_files:
-        st.info("Upload videos above to begin categorization.")
-        return
+    if uploaded_files and len(uploaded_files) <= 20:
+        # Estimate time
+        est_minutes = (len(uploaded_files) * 12 + 30) // 60  # ~12s per video + buffer
+        st.info(f"**{len(uploaded_files)} video(s)** ready. Estimated time: ~{est_minutes} minute(s).")
 
-    if len(uploaded_files) > 20:
+        if st.button("Analyze & Categorize", type="primary", disabled=st.session_state.vb_processing):
+            session_id = str(uuid4())
+            st.session_state.vb_session_id = session_id
+            st.session_state.vb_processing = True
+
+            progress_bar = st.progress(0)
+            status_placeholder = st.empty()
+
+            # Prepare file data and save to session state for retry
+            files = []
+            file_map = {}
+            for f in uploaded_files:
+                file_data = {
+                    "bytes": f.getvalue(),
+                    "name": f.name,
+                    "type": f.type or "video/mp4",
+                }
+                files.append(file_data)
+                file_map[f.name] = file_data
+            st.session_state.vb_file_map = file_map
+
+            def progress_callback(index, total_count, filename, status_msg):
+                pct = (index + 1) / total_count
+                progress_bar.progress(pct)
+                status_placeholder.markdown(f"**[{index + 1}/{total_count}]** `{filename}` — {status_msg}")
+
+            try:
+                results = service.analyze_and_categorize_batch(
+                    files=files,
+                    buckets=buckets,
+                    product_id=product_id,
+                    org_id=org_id,
+                    session_id=session_id,
+                    progress_callback=progress_callback,
+                )
+
+                st.session_state.vb_results = results
+                st.session_state.vb_processing = False
+                progress_bar.progress(1.0)
+                status_placeholder.success(f"Done! {len(results)} video(s) processed.")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Batch processing error: {e}")
+                st.session_state.vb_processing = False
+
+    elif uploaded_files and len(uploaded_files) > 20:
         st.error("Maximum 20 videos per batch. Please reduce your selection.")
-        return
+    elif not uploaded_files:
+        st.info("Upload videos above to begin categorization.")
 
-    # Estimate time
-    est_minutes = (len(uploaded_files) * 12 + 30) // 60  # ~12s per video + buffer
-    st.info(f"**{len(uploaded_files)} video(s)** ready. Estimated time: ~{est_minutes} minute(s).")
-
-    if st.button("Analyze & Categorize", type="primary", disabled=st.session_state.vb_processing):
-        session_id = str(uuid4())
-        st.session_state.vb_session_id = session_id
-        st.session_state.vb_processing = True
-
-        progress_bar = st.progress(0)
-        status_placeholder = st.empty()
-
-        # Prepare file data and save to session state for retry
-        files = []
-        file_map = {}
-        for f in uploaded_files:
-            file_data = {
-                "bytes": f.getvalue(),
-                "name": f.name,
-                "type": f.type or "video/mp4",
-            }
-            files.append(file_data)
-            file_map[f.name] = file_data
-        st.session_state.vb_file_map = file_map
-
-        def progress_callback(index, total_count, filename, status_msg):
-            pct = (index + 1) / total_count
-            progress_bar.progress(pct)
-            status_placeholder.markdown(f"**[{index + 1}/{total_count}]** `{filename}` — {status_msg}")
-
-        try:
-            results = service.analyze_and_categorize_batch(
-                files=files,
-                buckets=buckets,
-                product_id=product_id,
-                org_id=org_id,
-                session_id=session_id,
-                progress_callback=progress_callback,
-            )
-
-            st.session_state.vb_results = results
-            st.session_state.vb_processing = False
-            progress_bar.progress(1.0)
-            status_placeholder.success(f"Done! {len(results)} video(s) processed.")
-            st.rerun()
-
-        except Exception as e:
-            st.error(f"Batch processing error: {e}")
-            st.session_state.vb_processing = False
-
-    # ── Results display (persists across reruns) ──────────────────
+    # ── Results display (always visible when results exist) ───────
     results = st.session_state.vb_results
     if not results or not st.session_state.vb_session_id:
         return
