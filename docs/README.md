@@ -34,6 +34,7 @@ Welcome to the ViralTracker documentation! Choose your path:
 ### Specialized Guides
 - [Hook Analysis Guide](HOOK_ANALYSIS_GUIDE.md) - Statistical analysis methods
 - [Facebook Ads Ingestion](workflows/facebook_ads_ingestion.md) - FB Ad Library scraping
+- [Video Buckets](VIDEO_BUCKETS.md) - Bulk video categorization, upload tracking, download-per-bucket
 
 ### Product Setup & Onboarding
 - [Onboarding Checklist](../product_setup/ONBOARDING_CHECKLIST.md) - Brand/product onboarding process
