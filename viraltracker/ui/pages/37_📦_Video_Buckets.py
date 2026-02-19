@@ -377,6 +377,46 @@ def render_results(product_id: str, org_id: str):
     cols[2].metric("Buckets Used", len(bucket_names))
     cols[3].metric("Errors", errors)
 
+    # Retry errored videos
+    error_results = [r for r in results if r.get("status") == "error"]
+    if error_results:
+        error_names = [r["filename"] for r in error_results]
+        st.warning(f"**{len(error_results)} video(s) failed:** {', '.join(error_names)}")
+        st.markdown("Re-upload the failed files below to retry.")
+
+        retry_files = st.file_uploader(
+            "Upload failed videos to retry",
+            accept_multiple_files=True,
+            type=["mp4", "mov", "avi", "webm"],
+            key=f"retry_upload_{selected_session[:8]}",
+        )
+
+        if retry_files:
+            # Match uploaded files to error filenames
+            matched = [f for f in retry_files if f.name in error_names]
+            unmatched = [f.name for f in retry_files if f.name not in error_names]
+
+            if unmatched:
+                st.info(f"Skipping files that didn't error: {', '.join(unmatched)}")
+
+            if matched and st.button(f"Retry {len(matched)} Video(s)", type="primary"):
+                buckets = service.get_buckets(product_id, org_id)
+                files = [{"bytes": f.getvalue(), "name": f.name, "type": f.type or "video/mp4"} for f in matched]
+
+                # Delete old error records
+                for f in matched:
+                    service.delete_categorization(selected_session, f.name)
+
+                with st.spinner(f"Retrying {len(matched)} video(s)..."):
+                    service.analyze_and_categorize_batch(
+                        files=files,
+                        buckets=buckets,
+                        product_id=product_id,
+                        org_id=org_id,
+                        session_id=selected_session,
+                    )
+                st.rerun()
+
     # Results table
     import pandas as pd
     df = pd.DataFrame([
