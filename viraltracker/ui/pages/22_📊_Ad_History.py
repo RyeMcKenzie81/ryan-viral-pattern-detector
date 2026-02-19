@@ -146,7 +146,7 @@ def get_ads_for_run(ad_run_id: str):
             "id, prompt_index, storage_path, hook_text, final_status, "
             "claude_review, gemini_review, reviewers_agree, created_at, "
             "model_requested, model_used, generation_time_ms, generation_retries, "
-            "parent_ad_id, variant_size"
+            "parent_ad_id, variant_size, is_imported"
         ).eq("ad_run_id", ad_run_id).order("prompt_index").execute()
         return result.data
     except Exception as e:
@@ -1118,12 +1118,13 @@ else:
 
                                     # Ad info
                                     ad_status = ad.get('final_status', 'pending')
+                                    imported_badge = " `[Imported]`" if ad.get('is_imported') else ""
                                     variant_size = ad.get('variant_size')
                                     if variant_size:
                                         # This is a size variant
-                                        st.markdown(f"**{variant_size} Variant** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
+                                        st.markdown(f"**{variant_size} Variant** - {get_status_badge(ad_status)}{imported_badge}", unsafe_allow_html=True)
                                     else:
-                                        st.markdown(f"**Variation {ad.get('prompt_index', '?')}** - {get_status_badge(ad_status)}", unsafe_allow_html=True)
+                                        st.markdown(f"**Variation {ad.get('prompt_index', '?')}** - {get_status_badge(ad_status)}{imported_badge}", unsafe_allow_html=True)
 
                                     # Hook text (truncated)
                                     hook_text = ad.get('hook_text', '')

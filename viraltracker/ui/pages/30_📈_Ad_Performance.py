@@ -31,7 +31,7 @@ if "ad_perf_selected_campaign" not in st.session_state:
 if "ad_perf_selected_adset" not in st.session_state:
     st.session_state.ad_perf_selected_adset = None  # (id, name) tuple
 if "ad_perf_active_tab" not in st.session_state:
-    st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked, 4=Manual Analysis
+    st.session_state.ad_perf_active_tab = 0  # 0=Campaigns, 1=Ad Sets, 2=Ads, 3=Linked, 4=Winners
 
 # Analysis State
 if "ad_analysis_result" not in st.session_state:
@@ -44,6 +44,14 @@ if "ad_perf_match_suggestions" not in st.session_state:
     st.session_state.ad_perf_match_suggestions = None  # List of match suggestions
 if "ad_perf_linking_ad" not in st.session_state:
     st.session_state.ad_perf_linking_ad = None  # Meta ad being manually linked
+
+# Session state for winner import
+if "winner_import_candidates" not in st.session_state:
+    st.session_state.winner_import_candidates = None
+if "winner_import_filters" not in st.session_state:
+    st.session_state.winner_import_filters = {
+        "min_spend": 50.0, "min_impressions": 1000, "days_back": 90
+    }
 
 # =============================================================================
 # Helper Functions
@@ -190,23 +198,22 @@ def get_performance_data(
         return []
 
 def get_linked_ads(brand_id: str) -> List[Dict]:
-    """Get ads that are linked between ViralTracker and Meta."""
+    """Get ads that are linked between ViralTracker and Meta, scoped by brand."""
     try:
         db = get_supabase_client()
-        result = db.table("meta_ad_mapping").select(
-            "*, generated_ads(id, storage_path, hook_text, final_status)"
-        ).execute()
+        result = db.rpc("get_linked_ads_for_brand", {
+            "p_brand_id": brand_id
+        }).execute()
         return result.data or []
     except Exception as e:
         st.error(f"Failed to fetch linked ads: {e}")
         return []
 
-def get_linked_meta_ad_ids() -> set:
-    """Get set of Meta ad IDs that are already linked."""
+def get_linked_meta_ad_ids(brand_id: str) -> set:
+    """Get set of Meta ad IDs that are already linked, scoped by brand."""
     try:
-        db = get_supabase_client()
-        result = db.table("meta_ad_mapping").select("meta_ad_id").execute()
-        return set(r["meta_ad_id"] for r in (result.data or []))
+        linked = get_linked_ads(brand_id)
+        return set(r["meta_ad_id"] for r in linked)
     except Exception:
         return set()
 
@@ -276,11 +283,23 @@ def create_ad_link(
         st.error(f"Failed to create link: {e}")
         return False
 
-def delete_ad_link(meta_ad_id: str) -> bool:
-    """Remove a link between generated ad and Meta ad."""
+def delete_all_ad_links(meta_ad_id: str) -> bool:
+    """Remove ALL links for a Meta ad ID (used from Ads tab)."""
     try:
         db = get_supabase_client()
         db.table("meta_ad_mapping").delete().eq("meta_ad_id", meta_ad_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to remove link: {e}")
+        return False
+
+def delete_ad_link(meta_ad_id: str, generated_ad_id: str) -> bool:
+    """Remove a specific link between a generated ad and Meta ad."""
+    try:
+        db = get_supabase_client()
+        db.table("meta_ad_mapping").delete().eq(
+            "meta_ad_id", meta_ad_id
+        ).eq("generated_ad_id", generated_ad_id).execute()
         return True
     except Exception as e:
         st.error(f"Failed to remove link: {e}")
@@ -329,6 +348,8 @@ def get_legacy_unmatched_ads(brand_id: str, campaign_name: str) -> List[Dict]:
         st.error(f"Failed to get legacy ads: {e}")
         return []
 
+KNOWN_STORAGE_BUCKETS = {"generated-ads", "meta-ad-assets", "reference-ads"}
+
 def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
     """Get a signed URL for a storage path."""
     if not storage_path:
@@ -336,10 +357,10 @@ def get_signed_url(storage_path: str, expires_in: int = 3600) -> Optional[str]:
     try:
         db = get_supabase_client()
         # Parse bucket and path from storage_path
-        # Format could be "generated-ads/path/to/file.png" or just "path/to/file.png"
-        if storage_path.startswith("generated-ads/"):
-            bucket = "generated-ads"
-            path = storage_path[len("generated-ads/"):]
+        # Supports: "generated-ads/...", "meta-ad-assets/...", "reference-ads/..."
+        parts = storage_path.split("/", 1)
+        if len(parts) == 2 and parts[0] in KNOWN_STORAGE_BUCKETS:
+            bucket, path = parts
         else:
             bucket = "generated-ads"
             path = storage_path
@@ -2457,7 +2478,12 @@ def render_manual_link_modal(meta_ad: Dict, brand_id: str, ad_account_id: str):
                 st.rerun()
 
 def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
-    """Render the Linked ads tab with performance data."""
+    """Render the Linked ads tab with performance data.
+
+    Shows one row per mapping (not collapsed by meta_ad_id) to handle cases
+    where one Meta ad maps to multiple generated ads (imported + native).
+    Uses flat row shape from get_linked_ads_for_brand() RPC.
+    """
     import pandas as pd
 
     if not linked_ads:
@@ -2469,19 +2495,22 @@ def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
         """)
         return
 
-    # Build a map of meta_ad_id -> generated_ad info
-    link_map = {}
+    # Build one entry per mapping row (RPC returns flat rows)
+    link_entries = []
     for link in linked_ads:
         meta_id = link.get("meta_ad_id")
-        gen_ad = link.get("generated_ads") or {}
-        link_map[meta_id] = {
-            "generated_ad_id": gen_ad.get("id", "")[:8] if gen_ad.get("id") else "",
-            "hook_text": gen_ad.get("hook_text", "")[:30],
+        gen_id = link.get("generated_ad_id", "")
+        link_entries.append({
+            "meta_ad_id": meta_id,
+            "generated_ad_id": gen_id,
+            "generated_ad_id_short": str(gen_id)[:8] if gen_id else "",
+            "hook_text": (link.get("hook_text") or "")[:30],
             "linked_by": link.get("linked_by", "manual"),
-        }
+            "is_imported": link.get("is_imported", False),
+        })
 
-    # Filter performance data to linked ads only
-    linked_meta_ids = set(link_map.keys())
+    # Filter performance data to linked meta_ad_ids
+    linked_meta_ids = {e["meta_ad_id"] for e in link_entries}
     linked_perf = [d for d in perf_data if d.get("meta_ad_id") in linked_meta_ids]
 
     if not linked_perf:
@@ -2489,35 +2518,48 @@ def render_linked_ads_table(perf_data: List[Dict], linked_ads: List[Dict]):
         st.caption(f"{len(linked_ads)} ads are linked. Sync data to see their performance.")
         return
 
-    # Aggregate by ad
+    # Aggregate performance by meta_ad_id
     ads = aggregate_by_ad(linked_perf)
+    perf_by_meta = {a.get("meta_ad_id"): a for a in ads}
 
-    # Build table with link info
+    # Build table — one row per mapping
     rows = []
-    for a in ads:
-        meta_id = a.get("meta_ad_id", "")
-        link_info = link_map.get(meta_id, {})
-        link_type = "🤖" if link_info.get("linked_by") == "auto_filename" else "👤"
+    for entry in link_entries:
+        meta_id = entry["meta_ad_id"]
+        perf = perf_by_meta.get(meta_id, {})
+        link_type = "🤖" if entry["linked_by"] == "auto_filename" else "👤"
+        imported_badge = " [I]" if entry.get("is_imported") else ""
 
         rows.append({
             "Link": link_type,
-            "Generated ID": link_info.get("generated_ad_id", "-"),
-            "Meta Ad": (a["ad_name"] or "Unknown")[:35],
-            "Spend": f"${a['spend']:,.2f}",
-            "Impr": f"{a['impressions']:,}",
-            "Clicks": a["link_clicks"],
-            "CTR": f"{a['ctr']:.2f}%",
-            "Purchases": a["purchases"],
-            "ROAS": f"{a['roas']:.2f}x" if a["roas"] else "-",
+            "Generated ID": entry["generated_ad_id_short"] + imported_badge,
+            "Meta Ad": (perf.get("ad_name") or "Unknown")[:35],
+            "Spend": f"${perf.get('spend', 0):,.2f}",
+            "Impr": f"{perf.get('impressions', 0):,}",
+            "Clicks": perf.get("link_clicks", 0),
+            "CTR": f"{perf.get('ctr', 0):.2f}%",
+            "Purchases": perf.get("purchases", 0),
+            "ROAS": f"{perf.get('roas', 0):.2f}x" if perf.get("roas") else "-",
+            "_meta_ad_id": meta_id,
+            "_generated_ad_id": entry["generated_ad_id"],
         })
 
-    df = pd.DataFrame(rows)
+    # Display table
+    display_rows = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
+    df = pd.DataFrame(display_rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Summary
-    total_spend = sum(a["spend"] for a in ads)
-    total_purchases = sum(a["purchases"] for a in ads)
-    st.markdown(f"**{len(ads)} linked ads** · Spend: **${total_spend:,.2f}** · Purchases: **{total_purchases:,}**")
+    # Summary — dedupe by meta_ad_id to avoid double-counting spend
+    seen_meta_ids = set()
+    total_spend = 0
+    total_purchases = 0
+    for a in ads:
+        meta_id = a.get("meta_ad_id")
+        if meta_id not in seen_meta_ids:
+            seen_meta_ids.add(meta_id)
+            total_spend += a.get("spend", 0)
+            total_purchases += a.get("purchases", 0)
+    st.markdown(f"**{len(link_entries)} mappings ({len(seen_meta_ids)} unique Meta ads)** · Spend: **${total_spend:,.2f}** · Purchases: **{total_purchases:,}**")
 
 def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id: str):
     """Render ads table with link/unlink buttons."""
@@ -2536,8 +2578,8 @@ def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id
         st.info("No ad data available." + (" Try clearing filters." if selected_campaign or selected_adset else ""))
         return
 
-    # Get linked ad IDs
-    linked_ids = get_linked_meta_ad_ids()
+    # Get linked ad IDs (brand-scoped)
+    linked_ids = get_linked_meta_ad_ids(brand_id)
 
     # Aggregate by ad
     ads = aggregate_by_ad(data)
@@ -2598,7 +2640,7 @@ def render_ads_table_with_linking(data: List[Dict], brand_id: str, ad_account_id
         with cols[0]:
             if is_linked:
                 if st.button("🔗", key=f"unlink_{i}", help="Click to unlink"):
-                    if delete_ad_link(meta_id):
+                    if delete_all_ad_links(meta_id):
                         st.rerun()
             else:
                 if st.button("○", key=f"link_{i}", help="Click to link"):
@@ -2739,7 +2781,7 @@ with col3:
 render_filter_bar()
 
 # Tab selection (controllable via session state)
-tab_options = ["📁 Campaigns", "📂 Ad Sets", "📄 Ads", "🔗 Linked"]
+tab_options = ["📁 Campaigns", "📂 Ad Sets", "📄 Ads", "🔗 Linked", "🏆 Winners"]
 active_tab = st.session_state.ad_perf_active_tab
 
 selected_tab = st.radio(
@@ -3376,8 +3418,197 @@ elif selected_tab == "🔗 Linked":
         else:
             st.success("✅ All legacy ads are linked!")
 
-elif selected_tab == "🧪 Manual Analysis":
-    render_manual_analysis_tab()
+elif selected_tab == "🏆 Winners":
+    st.subheader("Winner Import & Evolution")
+    st.caption("Import high-performing Meta ads into ViralTracker for evolution and exemplar marking.")
+
+    # Filters
+    with st.expander("Filters", expanded=True):
+        f_cols = st.columns(4)
+        with f_cols[0]:
+            min_spend = st.number_input(
+                "Min Spend ($)", value=st.session_state.winner_import_filters["min_spend"],
+                min_value=0.0, step=10.0, key="winner_min_spend"
+            )
+        with f_cols[1]:
+            min_impressions = st.number_input(
+                "Min Impressions", value=st.session_state.winner_import_filters["min_impressions"],
+                min_value=0, step=100, key="winner_min_impressions"
+            )
+        with f_cols[2]:
+            days_back = st.number_input(
+                "Days Back", value=st.session_state.winner_import_filters["days_back"],
+                min_value=7, max_value=365, step=7, key="winner_days_back"
+            )
+        with f_cols[3]:
+            st.write("")  # spacer
+            st.write("")
+            scan_clicked = st.button("Scan for Winners", type="primary", key="winner_scan_btn")
+
+    if scan_clicked:
+        st.session_state.winner_import_filters = {
+            "min_spend": min_spend,
+            "min_impressions": min_impressions,
+            "days_back": days_back,
+        }
+        with st.spinner("Scanning Meta ads for import candidates..."):
+            import asyncio
+            from viraltracker.services.meta_winner_import_service import MetaWinnerImportService
+
+            service = MetaWinnerImportService()
+            try:
+                candidates = asyncio.run(service.find_import_candidates(
+                    brand_id=UUID(brand_id),
+                    min_impressions=int(min_impressions),
+                    min_spend=float(min_spend),
+                    days_back=int(days_back),
+                ))
+                st.session_state.winner_import_candidates = candidates
+            except Exception as e:
+                st.error(f"Scan failed: {e}")
+                st.session_state.winner_import_candidates = None
+
+    candidates = st.session_state.winner_import_candidates
+
+    if candidates is not None:
+        if not candidates:
+            st.info("No import candidates found matching filters. Try lowering thresholds or expanding date range.")
+        else:
+            st.success(f"Found **{len(candidates)}** import candidates")
+
+            # Group by variant match
+            by_variant: Dict[str, List] = {}
+            for c in candidates:
+                matches = c.get("variant_matches", [])
+                if matches:
+                    vname = matches[0].get("variant_name") or str(matches[0].get("offer_variant_id", ""))[:8]
+                else:
+                    vname = "No Variant Match"
+                if vname not in by_variant:
+                    by_variant[vname] = []
+                by_variant[vname].append(c)
+
+            # Get products for this brand (for manual variant selection)
+            products_result = get_supabase_client().table("products").select(
+                "id, name"
+            ).eq("brand_id", brand_id).execute()
+            products_list = products_result.data or []
+
+            for variant_name, variant_candidates in by_variant.items():
+                with st.expander(f"{variant_name} ({len(variant_candidates)} winners)", expanded=True):
+                    for idx, c in enumerate(variant_candidates):
+                        col_thumb, col_info, col_actions = st.columns([1, 3, 2])
+
+                        with col_thumb:
+                            thumb_url = c.get("thumbnail_url")
+                            if thumb_url:
+                                st.image(thumb_url, width=80)
+                            else:
+                                st.caption("No image")
+
+                        with col_info:
+                            ad_name = c.get("ad_name") or c["meta_ad_id"][:20]
+                            reward = c.get("reward_score", 0)
+                            roas = c.get("avg_roas")
+                            ctr = c.get("avg_ctr")
+
+                            star = "\\u2B50 " if idx == 0 else ""
+                            st.markdown(f"**{star}{ad_name}**")
+                            metrics_parts = []
+                            if reward:
+                                metrics_parts.append(f"Score: {reward:.2f}")
+                            if roas:
+                                metrics_parts.append(f"ROAS: {roas:.1f}x")
+                            if ctr:
+                                metrics_parts.append(f"CTR: {ctr*100:.1f}%")
+                            metrics_parts.append(f"Spend: ${c.get('total_spend', 0):,.0f}")
+                            st.caption(" | ".join(metrics_parts))
+
+                        with col_actions:
+                            matches = c.get("variant_matches", [])
+                            selected_product_id = None
+                            selected_variant_id = None
+
+                            if matches:
+                                selected_product_id = matches[0].get("product_id")
+                                selected_variant_id = matches[0].get("offer_variant_id")
+                            elif products_list:
+                                # Manual product selection for unmatched ads
+                                prod_options = {p["name"]: p["id"] for p in products_list}
+                                selected_prod = st.selectbox(
+                                    "Product",
+                                    options=list(prod_options.keys()),
+                                    key=f"winner_prod_{c['meta_ad_id']}",
+                                    label_visibility="collapsed",
+                                )
+                                selected_product_id = prod_options.get(selected_prod)
+
+                            btn_cols = st.columns(2)
+                            with btn_cols[0]:
+                                if st.button("Import", key=f"import_{c['meta_ad_id']}", disabled=not selected_product_id):
+                                    _do_winner_import(
+                                        brand_id, c, selected_product_id,
+                                        selected_variant_id, mark_exemplar=False
+                                    )
+                            with btn_cols[1]:
+                                if st.button("Exemplar", key=f"exemplar_{c['meta_ad_id']}", disabled=not selected_product_id):
+                                    _do_winner_import(
+                                        brand_id, c, selected_product_id,
+                                        selected_variant_id, mark_exemplar=True
+                                    )
+
+            st.divider()
+
+    # Show already imported ads
+    imported_result = get_supabase_client().table("generated_ads").select(
+        "id, meta_ad_id, storage_path, hook_text, canvas_size, offer_variant_id, created_at"
+    ).eq("is_imported", True).order("created_at", desc=True).limit(50).execute()
+
+    imported_ads = imported_result.data or []
+    if imported_ads:
+        with st.expander(f"Already Imported ({len(imported_ads)})", expanded=False):
+            for ad in imported_ads:
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    ad_url = get_signed_url(ad.get("storage_path", ""))
+                    if ad_url:
+                        st.image(ad_url, width=60)
+                with col2:
+                    hook = ad.get("hook_text") or ad.get("meta_ad_id") or "Unknown"
+                    st.markdown(f"**{hook[:50]}** | {ad.get('canvas_size', '-')} | Imported {str(ad.get('created_at', ''))[:10]}")
+
+
+def _do_winner_import(brand_id: str, candidate: Dict, product_id: str,
+                      variant_id: Optional[str], mark_exemplar: bool):
+    """Execute a winner import from the UI."""
+    import asyncio
+    from viraltracker.services.meta_winner_import_service import MetaWinnerImportService
+
+    with st.spinner(f"Importing {candidate['meta_ad_id'][:20]}..."):
+        try:
+            service = MetaWinnerImportService()
+            result = asyncio.run(service.import_meta_winner(
+                brand_id=UUID(brand_id),
+                meta_ad_id=candidate["meta_ad_id"],
+                product_id=UUID(product_id),
+                meta_ad_account_id=candidate.get("meta_ad_account_id", ""),
+                offer_variant_id=UUID(variant_id) if variant_id else None,
+                mark_as_exemplar=mark_exemplar,
+                exemplar_category="gold_approve",
+            ))
+
+            if result.get("status") == "imported":
+                msg = f"Imported! Reward score: {result.get('reward_score', 0):.2f}"
+                if result.get("warnings"):
+                    msg += f" (warnings: {', '.join(result['warnings'])})"
+                st.success(msg)
+            elif result.get("status") == "already_imported":
+                st.info("Already imported.")
+            else:
+                st.warning(f"Import result: {result.get('status')}")
+        except Exception as e:
+            st.error(f"Import failed: {e}")
+
 
 # Footer with data info
 if perf_data:

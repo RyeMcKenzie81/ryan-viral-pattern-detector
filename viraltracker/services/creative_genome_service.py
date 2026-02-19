@@ -217,12 +217,9 @@ class CreativeGenomeService:
             return []
 
         # Filter to ads with element_tags (Phase 6+ ads)
+        # Brand filtering is done via brand_run_ids set below
         gen_ads = self.supabase.table("generated_ads").select(
             "id, element_tags, ad_run_id"
-        ).eq(
-            "ad_run_id",
-            # We need to filter by brand - get ad_runs for this brand
-            # Actually, let's filter via the ad_runs table
         ).not_.is_("element_tags", "null").execute()
 
         # Get ad_runs for this brand to filter generated_ads
@@ -340,98 +337,135 @@ class CreativeGenomeService:
     # =========================================================================
 
     async def update_element_scores(self, brand_id: UUID) -> Dict[str, Any]:
-        """Update Beta(α,β) distributions from new rewards.
+        """Update Beta(α,β) distributions from new rewards via idempotent score events.
 
-        For each rewarded ad, extracts element_tags and updates the
-        corresponding creative_element_scores rows.
+        Uses creative_element_score_events table for idempotent inserts (UNIQUE
+        constraint on reward_id + element). Derives creative_element_scores
+        totals from the full event set — no incremental mutation to get wrong.
+
+        Imported ads (is_imported=True) are downweighted: weight=0.3 vs 1.0 for
+        native ads. Weight flows through alpha_delta/beta_delta/obs_delta.
 
         Returns:
-            Summary dict with elements_updated count.
+            Summary dict with elements_updated and events_inserted counts.
         """
-        # Get all rewards for this brand that have element_tags
+        # 1. Get unprocessed rewards (score_processed_at IS NULL)
         rewards = self.supabase.table("creative_element_rewards").select(
-            "generated_ad_id, reward_score"
-        ).eq("brand_id", str(brand_id)).execute()
+            "id, generated_ad_id, reward_score"
+        ).eq("brand_id", str(brand_id)).is_(
+            "score_processed_at", "null"
+        ).execute()
 
         if not rewards.data:
-            return {"elements_updated": 0}
+            return {"elements_updated": 0, "events_inserted": 0}
 
-        # Batch-fetch generated_ads element_tags
-        reward_ad_ids = [r["generated_ad_id"] for r in rewards.data]
-        reward_map = {r["generated_ad_id"]: r["reward_score"] for r in rewards.data}
-
-        # Fetch element_tags for rewarded ads
+        # 2. Fetch ads with element_tags + is_imported
+        reward_ad_ids = list({r["generated_ad_id"] for r in rewards.data})
         ads_data = self.supabase.table("generated_ads").select(
-            "id, element_tags"
+            "id, element_tags, is_imported"
         ).in_("id", reward_ad_ids).execute()
+        ads_map = {ad["id"]: ad for ad in (ads_data.data or [])}
 
-        # Build element → reward accumulations
-        element_updates: Dict[str, Dict[str, List[float]]] = {}
-        for ad in (ads_data.data or []):
-            tags = ad.get("element_tags") or {}
-            reward = reward_map.get(ad["id"])
-            if reward is None:
+        # 3. Insert score events (idempotent via UNIQUE constraint)
+        now = datetime.now(timezone.utc).isoformat()
+        events_inserted = 0
+        for reward_row in rewards.data:
+            ad = ads_map.get(reward_row["generated_ad_id"])
+            if not ad:
+                # Orphan reward — stamp as processed, skip
+                self.supabase.table("creative_element_rewards").update(
+                    {"score_processed_at": now}
+                ).eq("id", reward_row["id"]).execute()
                 continue
 
+            tags = ad.get("element_tags") or {}
+            weight = 0.3 if ad.get("is_imported") else 1.0
+            reward_score = reward_row["reward_score"]
+            alpha_delta = weight if reward_score >= 0.5 else 0
+            beta_delta = weight if reward_score < 0.5 else 0
+
+            had_non_duplicate_error = False
             for elem_name in TRACKED_ELEMENTS:
                 elem_val = tags.get(elem_name)
                 if elem_val is None:
                     continue
-                elem_val = str(elem_val)
-
-                key = f"{elem_name}:{elem_val}"
-                if key not in element_updates:
-                    element_updates[key] = {"rewards": []}
-                element_updates[key]["rewards"].append(reward)
-
-        # Upsert creative_element_scores
-        elements_updated = 0
-        for key, data in element_updates.items():
-            elem_name, elem_val = key.split(":", 1)
-            rewards_list = data["rewards"]
-
-            # Calculate alpha/beta increments
-            alpha_inc = sum(1 for r in rewards_list if r >= 0.5)
-            beta_inc = sum(1 for r in rewards_list if r < 0.5)
-            mean_reward = sum(rewards_list) / len(rewards_list) if rewards_list else 0.5
-
-            try:
-                # Try to fetch existing
-                existing = self.supabase.table("creative_element_scores").select(
-                    "id, alpha, beta, total_observations"
-                ).eq("brand_id", str(brand_id)).eq(
-                    "element_name", elem_name
-                ).eq("element_value", elem_val).execute()
-
-                now = datetime.now(timezone.utc).isoformat()
-
-                if existing.data:
-                    row = existing.data[0]
-                    self.supabase.table("creative_element_scores").update({
-                        "alpha": row["alpha"] + alpha_inc,
-                        "beta": row["beta"] + beta_inc,
-                        "total_observations": row["total_observations"] + len(rewards_list),
-                        "mean_reward": mean_reward,
-                        "last_updated": now,
-                    }).eq("id", row["id"]).execute()
-                else:
-                    self.supabase.table("creative_element_scores").insert({
+                try:
+                    self.supabase.table("creative_element_score_events").insert({
+                        "reward_id": reward_row["id"],
                         "brand_id": str(brand_id),
                         "element_name": elem_name,
-                        "element_value": elem_val,
-                        "alpha": 1.0 + alpha_inc,
-                        "beta": 1.0 + beta_inc,
-                        "total_observations": len(rewards_list),
-                        "mean_reward": mean_reward,
-                        "last_updated": now,
+                        "element_value": str(elem_val),
+                        "alpha_delta": alpha_delta,
+                        "beta_delta": beta_delta,
+                        "obs_delta": weight,
+                        "reward_score": reward_score,
                     }).execute()
+                    events_inserted += 1
+                except Exception as e:
+                    if "23505" in str(e):  # unique violation — already inserted
+                        pass
+                    else:
+                        logger.error(f"Failed to insert score event: {e}")
+                        had_non_duplicate_error = True
 
-                elements_updated += 1
+            # Only stamp if all inserts succeeded (or were idempotent duplicates)
+            if not had_non_duplicate_error:
+                self.supabase.table("creative_element_rewards").update(
+                    {"score_processed_at": now}
+                ).eq("id", reward_row["id"]).execute()
+
+        # 4. Recompute creative_element_scores from ALL events for this brand
+        events = self.supabase.table("creative_element_score_events").select(
+            "element_name, element_value, alpha_delta, beta_delta, obs_delta, reward_score"
+        ).eq("brand_id", str(brand_id)).execute()
+
+        # Aggregate by (element_name, element_value)
+        agg: Dict[str, Dict] = {}
+        for e in (events.data or []):
+            key = f"{e['element_name']}:{e['element_value']}"
+            if key not in agg:
+                agg[key] = {"alpha": 0, "beta": 0, "obs": 0, "rewards": [], "obs_deltas": []}
+            agg[key]["alpha"] += e["alpha_delta"]
+            agg[key]["beta"] += e["beta_delta"]
+            agg[key]["obs"] += e["obs_delta"]
+            agg[key]["rewards"].append(e["reward_score"])
+            agg[key]["obs_deltas"].append(e["obs_delta"])
+
+        # Upsert creative_element_scores with derived totals
+        for key, data in agg.items():
+            elem_name, elem_val = key.split(":", 1)
+            # Weighted mean: each reward's score weighted by its obs_delta
+            weights = data["obs_deltas"]
+            total_weight = sum(weights)
+            mean_reward = (
+                sum(r * w for r, w in zip(data["rewards"], weights)) / total_weight
+            ) if total_weight > 0 else 0.5
+
+            self.supabase.table("creative_element_scores").upsert({
+                "brand_id": str(brand_id),
+                "element_name": elem_name,
+                "element_value": elem_val,
+                "alpha": 1.0 + data["alpha"],     # 1.0 = uniform prior
+                "beta": 1.0 + data["beta"],
+                "total_observations": data["obs"],
+                "mean_reward": mean_reward,
+                "last_updated": now,
+            }, on_conflict="brand_id,element_name,element_value").execute()
+
+        # 5. Clean up stale scores (legacy rows with no backing events)
+        if agg:
+            try:
+                self.supabase.rpc("cleanup_stale_element_scores", {
+                    "p_brand_id": str(brand_id)
+                }).execute()
             except Exception as e:
-                logger.error(f"Failed to update element score {key}: {e}")
+                logger.warning(f"Stale score cleanup failed: {e}")
 
-        logger.info(f"Updated {elements_updated} element scores for brand {brand_id}")
-        return {"elements_updated": elements_updated, "brand_id": str(brand_id)}
+        logger.info(
+            f"Updated {len(agg)} element scores for brand {brand_id} "
+            f"({events_inserted} new events)"
+        )
+        return {"elements_updated": len(agg), "events_inserted": events_inserted}
 
     def sample_element_scores(
         self,
@@ -918,18 +952,18 @@ class CreativeGenomeService:
 
             run_ids = [r["id"] for r in runs.data]
 
-            # Count approved and total
+            # Count approved and total (exclude imported ads from health KPIs)
             total = self.supabase.table("generated_ads").select(
                 "id", count="exact"
             ).in_("ad_run_id", run_ids).in_(
                 "final_status", ["approved", "rejected"]
-            ).execute()
+            ).neq("is_imported", True).execute()
 
             approved = self.supabase.table("generated_ads").select(
                 "id", count="exact"
             ).in_("ad_run_id", run_ids).eq(
                 "final_status", "approved"
-            ).execute()
+            ).neq("is_imported", True).execute()
 
             total_count = total.count if total.count else 0
             approved_count = approved.count if approved.count else 0
@@ -958,15 +992,16 @@ class CreativeGenomeService:
 
             run_ids = [r["id"] for r in runs.data]
 
+            # Exclude imported ads from generation success health KPI
             total = self.supabase.table("generated_ads").select(
                 "id", count="exact"
-            ).in_("ad_run_id", run_ids).execute()
+            ).in_("ad_run_id", run_ids).neq("is_imported", True).execute()
 
             failed = self.supabase.table("generated_ads").select(
                 "id", count="exact"
             ).in_("ad_run_id", run_ids).eq(
                 "final_status", "generation_failed"
-            ).execute()
+            ).neq("is_imported", True).execute()
 
             total_count = total.count if total.count else 0
             failed_count = failed.count if failed.count else 0
