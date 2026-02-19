@@ -97,8 +97,18 @@ class CreativeGenomeService:
         for ad in matured_ads:
             try:
                 objective = ad.get("campaign_objective") or "DEFAULT"
+
+                # Convert CTR and conversion_rate from percentage (Meta API
+                # format, e.g. 0.836 = 0.836%) to ratio (baseline format,
+                # e.g. 0.00836 = 0.836%) before reward normalization.
+                reward_ad = dict(ad)
+                if reward_ad.get("avg_ctr") is not None:
+                    reward_ad["avg_ctr"] = reward_ad["avg_ctr"] / 100
+                if reward_ad.get("avg_conversion_rate") is not None:
+                    reward_ad["avg_conversion_rate"] = reward_ad["avg_conversion_rate"] / 100
+
                 reward_score, components = self._compute_composite_reward(
-                    ad, baselines, objective
+                    reward_ad, baselines, objective
                 )
 
                 # Insert into creative_element_rewards
