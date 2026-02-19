@@ -206,6 +206,12 @@ class MockupService:
         """
         if screenshot_b64:
             raw_html = self._generate_via_ai_vision(screenshot_b64)
+            # Strip <style> blocks BEFORE sanitization — bleach strips <style>
+            # tags (not in allowlist) but leaves CSS text content as visible text.
+            raw_html = re.sub(
+                r'<style[^>]*>.*?</style>', '', raw_html,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             html = self._sanitize_html(raw_html)
             return self._wrap_mockup(html, classification, mode="analysis")
         elif page_markdown:
@@ -227,35 +233,53 @@ class MockupService:
         analysis_mockup_html: Optional[str] = None,
         classification: Optional[Dict[str, Any]] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """Generate blueprint mockup by filling analysis template with brand content.
+    ) -> Optional[str]:
+        """Generate blueprint mockup by rewriting analysis HTML with brand copy.
 
-        If analysis_mockup_html provided: swap data-slot content with escaped
-        brand_mapping values. Otherwise: fall back to V1 section-by-section rendering.
-
-        Args:
-            blueprint: Skill 5 output (reconstruction_blueprint dict, wrapped or unwrapped)
-            analysis_mockup_html: Optional cached analysis HTML for template-swap
-            classification: Optional Skill 1 output for metadata bar
-            brand_profile: Optional brand profile for color overrides
-
-        Returns:
-            Standalone HTML string
+        Returns None if no analysis HTML is available (V1 wireframe path is
+        intentionally disabled to prevent leaking strategic instructions).
         """
         if analysis_mockup_html:
-            html = self._template_swap(analysis_mockup_html, blueprint, brand_profile)
-            html = self._sanitize_html(html)
-            return self._wrap_mockup(html, classification, mode="blueprint")
+            rewritten = None
+            if brand_profile:
+                try:
+                    page_body = self._strip_mockup_wrapper(analysis_mockup_html)
+                    if page_body.strip():
+                        logger.info(
+                            "Starting AI rewrite for blueprint mockup "
+                            f"(brand={brand_profile.get('brand_basics', {}).get('name', '?')}, "
+                            f"html_len={len(page_body)})"
+                        )
+                        rewritten = self._rewrite_html_for_brand(
+                            page_body, blueprint, brand_profile
+                        )
+                        logger.info("AI rewrite completed for blueprint mockup")
+                    else:
+                        logger.warning("Stripped page body is empty — skipping AI rewrite")
+                except Exception as e:
+                    logger.warning(f"AI rewrite failed, using analysis HTML as-is: {e}")
+            else:
+                logger.info(
+                    "No brand_profile provided — skipping AI rewrite, "
+                    "using stripped analysis HTML as fallback"
+                )
+
+            if rewritten:
+                inner = self._sanitize_html(rewritten)
+            else:
+                # Fallback: show analysis page content as-is (no instructions leak)
+                inner = self._sanitize_html(
+                    self._strip_mockup_wrapper(analysis_mockup_html)
+                )
+            return self._wrap_mockup(inner, classification, mode="blueprint")
         else:
-            # V1 fallback
-            sections = self._normalize_blueprint_sections(blueprint)
-            brand_style = self._extract_brand_style(brand_profile)
-            return self._render_html(
-                sections=sections,
-                classification=classification,
-                mode="blueprint",
-                brand_style=brand_style,
+            # Do NOT fall back to V1 wireframe — _render_html() renders
+            # brand_mapping fields that contain strategic instructions.
+            logger.warning(
+                "No analysis_mockup_html for blueprint mockup; "
+                "skipping V1 fallback to prevent instruction leak."
             )
+            return None
 
     # ------------------------------------------------------------------
     # Normalization — Element Detection (Phase 1)
@@ -532,6 +556,316 @@ class MockupService:
             css_sanitizer=_CSS_SANITIZER,
             strip=True,
         )
+
+    # ------------------------------------------------------------------
+    # Wrapper Stripping (for nested HTML from _wrap_mockup)
+    # ------------------------------------------------------------------
+
+    # Patterns to remove document-level wrapper elements from cached mockup HTML.
+    # Order matters: strip <head> blocks first (to capture orphaned CSS text inside),
+    # then meta-bar/footer divs, then remaining document-level tags.
+    _WRAPPER_STRIP_PATTERNS = [
+        # 1. Entire <head>...</head> blocks (captures orphaned CSS text left when
+        #    bleach stripped <style> tags but preserved the text content)
+        (r'<head[^>]*>.*?</head>', re.IGNORECASE | re.DOTALL),
+        # 2. <style> blocks that may exist outside <head>
+        (r'<style[^>]*>.*?</style>', re.IGNORECASE | re.DOTALL),
+        # 3. Meta-bar and footer divs from _wrap_mockup
+        (r'<div[^>]*class="mockup-meta-bar"[^>]*>.*?</div>', re.DOTALL),
+        (r'<div[^>]*class="mockup-gen-footer"[^>]*>.*?</div>', re.DOTALL),
+        # 4. Document-level tags (tags only, not content)
+        (r'<!DOCTYPE[^>]*>', re.IGNORECASE),
+        (r'</?html[^>]*>', re.IGNORECASE),
+        (r'</?head[^>]*>', re.IGNORECASE),
+        (r'</?body[^>]*>', re.IGNORECASE),
+        # 5. Stray head-level elements (if <head> block match failed)
+        (r'<title[^>]*>.*?</title>', re.IGNORECASE | re.DOTALL),
+        (r'<meta[^>]*/?>', re.IGNORECASE),
+    ]
+
+    def _strip_mockup_wrapper(self, wrapped_html: str) -> str:
+        """Strip document-level wrapper leaving only div-level page content.
+
+        Removes: _wrap_mockup shell (meta-bar, footer, DOCTYPE, html/head/body),
+        plus any nested html/head/body/style/meta/title tags from the AI vision output.
+        Also removes orphaned CSS text that bleach left behind when stripping <style> tags.
+        """
+        content = wrapped_html
+        for pattern, flags in self._WRAPPER_STRIP_PATTERNS:
+            content = re.sub(pattern, '', content, flags=flags)
+        return content.strip()
+
+    # ------------------------------------------------------------------
+    # Brand Context Building (for AI rewrite prompt)
+    # ------------------------------------------------------------------
+
+    def _build_brand_context(self, brand_profile: Dict[str, Any]) -> str:
+        """Build compact brand summary for AI prompt. Truncates long fields."""
+        bb = brand_profile.get("brand_basics", {})
+        prod = brand_profile.get("product", {})
+        mech = brand_profile.get("mechanism", {})
+        pp = brand_profile.get("pain_points", {})
+        sp = brand_profile.get("social_proof", {})
+        pricing = brand_profile.get("pricing", [])
+        guarantee = brand_profile.get("guarantee", {})
+        personas = brand_profile.get("personas", [])
+        ov = brand_profile.get("offer_variant", {})
+        ingredients = brand_profile.get("ingredients", [])
+        timeline = brand_profile.get("results_timeline", [])
+
+        lines = [
+            f"Brand: {bb.get('name', 'Unknown')}",
+            f"Voice/Tone: {bb.get('voice_tone', 'professional')}",
+            f"Product: {prod.get('name', 'Unknown')}",
+            f"Key Benefits: {', '.join((prod.get('key_benefits') or [])[:5])}",
+            f"Key Problems Solved: {', '.join((prod.get('key_problems_solved') or [])[:5])}",
+        ]
+        if mech.get("name"):
+            lines.append(f"Mechanism: {mech['name']} — {mech.get('solution', '')[:200]}")
+        if pp.get("pain_points"):
+            lines.append(f"Pain Points: {', '.join(pp['pain_points'][:5])}")
+        if pp.get("desires_goals"):
+            lines.append(f"Desires: {', '.join(pp['desires_goals'][:5])}")
+        if guarantee.get("text"):
+            lines.append(f"Guarantee: {guarantee['text'][:200]}")
+        if pricing:
+            price_strs = [f"{p.get('name','')}: ${p.get('price','')}" for p in pricing[:3]]
+            lines.append(f"Pricing: {', '.join(price_strs)}")
+        if ingredients:
+            ing_names = [i.get("name", str(i))[:50] for i in ingredients[:8]]
+            lines.append(f"Ingredients: {', '.join(ing_names)}")
+        if timeline:
+            for t in timeline[:4]:
+                if isinstance(t, dict):
+                    lines.append(f"  Results ({t.get('timeframe', '?')}): {t.get('outcome', '')[:100]}")
+                else:
+                    lines.append(f"  Results: {str(t)[:100]}")
+        quotes = (sp.get("top_positive_quotes") or sp.get("transformation_quotes") or [])[:3]
+        if quotes:
+            lines.append("Customer Quotes:")
+            for q in quotes:
+                text = q if isinstance(q, str) else q.get("quote", q.get("text", str(q)))
+                lines.append(f'  - "{text[:200]}"')
+        if personas:
+            p0 = personas[0]
+            lines.append(f"Target Persona: {p0.get('name', '')} — {p0.get('snapshot', '')[:200]}")
+            if p0.get("pain_points"):
+                pts = p0["pain_points"][:3] if isinstance(p0["pain_points"], list) else []
+                if pts:
+                    lines.append(f"  Persona Pains: {', '.join(str(p)[:80] for p in pts)}")
+        if ov.get("name"):
+            lines.append(f"Offer Variant: {ov['name']}")
+            if ov.get("pain_points"):
+                lines.append(f"  OV Pain Points: {', '.join(str(p)[:80] for p in ov['pain_points'][:3])}")
+            if ov.get("desires_goals"):
+                lines.append(f"  OV Desires: {', '.join(str(d)[:80] for d in ov['desires_goals'][:3])}")
+
+        return "\n".join(lines)
+
+    def _build_blueprint_directions(self, blueprint: Dict[str, Any]) -> str:
+        """Extract strategic directions from blueprint for AI prompt."""
+        rb = blueprint
+        if "reconstruction_blueprint" in rb:
+            rb = rb["reconstruction_blueprint"]
+
+        lines = []
+        ss = rb.get("strategy_summary", {})
+        if ss:
+            lines.append("## PAGE STRATEGY")
+            for key in ("awareness_adaptation", "tone_direction", "target_persona"):
+                if ss.get(key):
+                    lines.append(f"{key}: {ss[key]}")
+            if ss.get("key_differentiators"):
+                lines.append(f"Differentiators: {', '.join(ss['key_differentiators'][:3])}")
+            lines.append("")
+
+        sections = sorted(rb.get("sections", []), key=lambda s: int(s.get("flow_order", 999)))
+        lines.append("## SECTION-BY-SECTION DIRECTIONS")
+        for section in sections:
+            lines.append(f"\n### {section.get('section_name', 'unknown')} (order: {section.get('flow_order')})")
+            if section.get("copy_direction"):
+                lines.append(f"Direction: {section['copy_direction'][:300]}")
+            bm = section.get("brand_mapping", {})
+            if bm.get("primary_content"):
+                lines.append(f"Primary: {bm['primary_content'][:300]}")
+            if bm.get("emotional_hook"):
+                lines.append(f"Hook: {bm['emotional_hook'][:200]}")
+            if bm.get("supporting_data"):
+                lines.append(f"Support: {bm['supporting_data'][:200]}")
+            if section.get("gap_improvement"):
+                lines.append(f"Improve: {section['gap_improvement'][:200]}")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Slot Extraction & Validation
+    # ------------------------------------------------------------------
+
+    def _extract_slot_names(self, html: str) -> List[str]:
+        """Parse HTML and collect all data-slot attribute values in document order."""
+        class _SlotCollector(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.slots: list = []
+                self._seen: set = set()
+            def handle_starttag(self, tag, attrs):
+                for name, value in attrs:
+                    if name == "data-slot" and value and value not in self._seen:
+                        self.slots.append(value)
+                        self._seen.add(value)
+        collector = _SlotCollector()
+        collector.feed(html)
+        return collector.slots
+
+    def _validate_rewrite_structure(self, original_html: str, rewritten_html: str) -> None:
+        """Validate that the rewritten HTML preserved the data-slot structure."""
+        original_slots = set(self._extract_slot_names(original_html))
+        rewritten_slots = set(self._extract_slot_names(rewritten_html))
+
+        missing = original_slots - rewritten_slots
+        if missing:
+            logger.warning(f"AI rewrite lost {len(missing)} data-slots: {missing}")
+
+        if original_slots and len(missing) > len(original_slots) * 0.5:
+            raise ValueError(
+                f"AI rewrite lost >50% of data-slots ({len(missing)}/{len(original_slots)})"
+            )
+
+    # ------------------------------------------------------------------
+    # HTML Truncation
+    # ------------------------------------------------------------------
+
+    def _truncate_html_at_boundary(self, html: str, max_chars: int) -> str:
+        """Truncate HTML at the last closing </section> or </div> before max_chars.
+
+        Falls back to the last '>' character if no section/div boundary found.
+        Prevents cutting mid-tag which would produce invalid HTML.
+        """
+        if len(html) <= max_chars:
+            return html
+
+        search_start = max(0, max_chars - 2000)
+        search_region = html[search_start:max_chars]
+
+        # Prefer </section>, then </div> — major structural boundaries
+        for pattern in (r'</section>', r'</div>'):
+            matches = list(re.finditer(pattern, search_region, re.IGNORECASE))
+            if matches:
+                cut_point = search_start + matches[-1].end()
+                logger.info(f"Truncated HTML at char {cut_point} ({pattern} boundary)")
+                return html[:cut_point]
+
+        # Fallback: last '>' before limit
+        last_gt = html.rfind('>', max(0, max_chars - 500), max_chars)
+        if last_gt > 0:
+            return html[:last_gt + 1]
+
+        # Ultimate fallback: hard cut
+        logger.warning("No safe tag boundary found, hard-truncating HTML")
+        return html[:max_chars]
+
+    # ------------------------------------------------------------------
+    # AI HTML Rewrite (Blueprint Copywriting)
+    # ------------------------------------------------------------------
+
+    _MAX_HTML_CHARS = 80_000
+
+    def _rewrite_html_for_brand(
+        self,
+        page_body: str,
+        blueprint: Dict[str, Any],
+        brand_profile: Dict[str, Any],
+    ) -> str:
+        """Rewrite ALL visible text in the page body HTML for the brand.
+
+        Args:
+            page_body: Stripped div-level page content (no html/head/body wrapper).
+            blueprint: Reconstruction blueprint with strategic directions.
+            brand_profile: Full brand profile from BrandProfileService.
+
+        Returns:
+            Rewritten div-level HTML (no html/head/body wrapper).
+        """
+        from pydantic_ai import Agent
+        from viraltracker.core.config import Config
+        from viraltracker.services.agent_tracking import run_agent_sync_with_tracking
+
+        # Prompt size guardrail — truncate at tag boundary (Fix 3)
+        html_input = page_body
+        if len(html_input) > self._MAX_HTML_CHARS:
+            logger.warning(
+                f"Page body {len(html_input)} chars exceeds {self._MAX_HTML_CHARS}, truncating"
+            )
+            html_input = self._truncate_html_at_boundary(html_input, self._MAX_HTML_CHARS)
+
+        brand_context = self._build_brand_context(brand_profile)
+        directions = self._build_blueprint_directions(blueprint)
+
+        prompt = f"""## ORIGINAL PAGE HTML
+{html_input}
+
+## BLUEPRINT DIRECTIONS
+{directions}
+
+## BRAND DATA
+{brand_context}
+
+## REWRITE RULES
+1. Keep the EXACT same HTML tags, attributes, classes, and inline styles
+2. Replace ALL visible text content with brand-appropriate copy
+3. For elements with data-slot attributes, follow the blueprint directions closely
+4. For elements WITHOUT data-slot, replace competitor content with brand equivalents:
+   - Competitor brand/product names → brand name/product name
+   - Competitor testimonials → brand's customer quotes (use real quotes from Brand Data)
+   - Competitor statistics → brand's actual statistics if available
+   - Competitor ingredients/features → brand's ingredients/features
+   - Urgency/scarcity text → adapt for brand's offer style
+5. Maintain page congruence — every element supports one cohesive argument
+6. Use the brand's voice/tone throughout
+7. DO NOT add, remove, or reorder HTML elements
+8. DO NOT modify CSS styles, classes, or attributes (except text content)
+9. Keep data-slot attributes exactly as they are
+10. Image placeholder labels: update to describe brand-relevant images
+
+OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrapping <html>/<body> tags."""
+
+        agent = Agent(
+            model=Config.get_model("creative"),
+            system_prompt=(
+                "You are an expert direct-response copywriter rewriting a competitor "
+                "landing page for a different brand. Rewrite ALL visible text for the "
+                "brand while keeping the EXACT same HTML structure. Return ONLY the "
+                "rewritten HTML fragment — no explanations, no outer html/body tags."
+            ),
+        )
+
+        result = run_agent_sync_with_tracking(
+            agent, prompt,
+            tracker=self._usage_tracker,
+            user_id=self._user_id,
+            organization_id=self._organization_id,
+            tool_name="mockup_service",
+            operation="blueprint_copy",
+        )
+
+        raw = result.output
+
+        # Strip code fences if present
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines)
+
+        # Strip any html/body wrapper the AI may have added
+        raw = self._strip_mockup_wrapper(raw)
+
+        # Validate structure
+        self._validate_rewrite_structure(page_body, raw)
+
+        return raw
 
     # ------------------------------------------------------------------
     # AI Vision Generation

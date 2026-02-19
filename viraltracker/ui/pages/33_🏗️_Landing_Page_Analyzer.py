@@ -1478,12 +1478,27 @@ def _render_blueprint_mockup_section(
     blueprint_id: str,
     brand_id: Optional[str] = None,
     product_id: Optional[str] = None,
+    org_id: Optional[str] = None,
 ):
     """Render mockup generation controls for a blueprint."""
     cached = _get_cached_mockup("blueprint", blueprint_id)
 
     if cached:
         _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+        if st.button(
+            "Regenerate Mockup",
+            key=f"lpa_regen_mockup_blueprint_{blueprint_id}",
+        ):
+            # Clear stale cache and force regeneration
+            cache_key = f"lpa_mockup_blueprint_{blueprint_id}"
+            st.session_state.pop(cache_key, None)
+            # Also clear analysis cache so it's re-fetched fresh
+            analysis_id = result.get("analysis_id")
+            if analysis_id:
+                analysis_cache_key = f"lpa_mockup_analysis_{analysis_id}"
+                st.session_state.pop(analysis_cache_key, None)
+            st.rerun()
+        return
     elif st.button(
         "Render Mockup",
         key=f"lpa_gen_mockup_blueprint_{blueprint_id}",
@@ -1499,36 +1514,99 @@ def _render_blueprint_mockup_section(
         analysis_id = result.get("analysis_id")
         if analysis_id:
             try:
-                svc = get_analysis_service()
-                linked = svc.get_analysis(analysis_id)
+                analysis_svc = get_analysis_service()
+                linked = analysis_svc.get_analysis(analysis_id)
                 if linked:
                     classification = linked.get("classification", {})
             except Exception:
                 pass
 
-        # Fetch brand profile for color overrides
+        # Fetch brand profile for AI rewrite
         brand_profile = None
         if brand_id and product_id:
             try:
                 from viraltracker.services.landing_page_analysis import BrandProfileService
                 bp_svc = BrandProfileService(get_supabase_client())
                 brand_profile = bp_svc.get_brand_profile(brand_id, product_id)
+                if brand_profile:
+                    logger.info(f"Brand profile loaded for mockup rewrite (brand={brand_id})")
+                else:
+                    logger.warning(f"BrandProfileService returned None (brand={brand_id}, product={product_id})")
+            except Exception as e:
+                logger.warning(f"Failed to load brand profile: {e}")
+        else:
+            logger.warning(f"Missing brand_id={brand_id} or product_id={product_id} — cannot load brand profile")
+
+        # Get cached analysis HTML
+        analysis_html = _get_cached_mockup("analysis", analysis_id) if analysis_id else None
+
+        # If not cached, try regenerating from stored screenshot or page_markdown
+        if not analysis_html and analysis_id:
+            try:
+                analysis_svc = get_analysis_service()
+                linked_record = analysis_svc.get_analysis(analysis_id) or {}
+                screenshot_path = linked_record.get("screenshot_storage_path")
+                page_markdown = linked_record.get("page_markdown")
+
+                screenshot_b64 = None
+                if screenshot_path:
+                    import base64
+                    screenshot_bytes = analysis_svc._load_screenshot(screenshot_path)
+                    if screenshot_bytes:
+                        screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+
+                # Proceed if we have screenshot OR page_markdown
+                if screenshot_b64 or page_markdown:
+                    regen_svc = get_mockup_service()
+                    # Fix 4: set tracking on regen service (calls Gemini AI vision)
+                    if org_id:
+                        try:
+                            from viraltracker.services.usage_tracker import UsageTracker
+                            tracker = UsageTracker(get_supabase_client())
+                            user_id = st.session_state.get("user_id")
+                            regen_svc.set_tracking_context(tracker, user_id, org_id)
+                        except Exception:
+                            pass
+                    analysis_html = regen_svc.generate_analysis_mockup(
+                        screenshot_b64=screenshot_b64,
+                        classification=classification,
+                        page_markdown=page_markdown,
+                    )
+                    if analysis_html:
+                        _cache_mockup("analysis", analysis_id, analysis_html)
+            except Exception as e:
+                logger.warning(f"Failed to regenerate analysis mockup: {e}")
+
+        # Create main mockup service with tracking
+        mockup_svc = get_mockup_service()
+        if org_id:
+            try:
+                from viraltracker.services.usage_tracker import UsageTracker
+                tracker = UsageTracker(get_supabase_client())
+                user_id = st.session_state.get("user_id")
+                mockup_svc.set_tracking_context(tracker, user_id, org_id)
             except Exception:
                 pass
 
-        # Get cached analysis HTML for template-swap
-        analysis_html = _get_cached_mockup("analysis", analysis_id) if analysis_id else None
-
+        # Generate blueprint mockup
         try:
-            svc = get_mockup_service()
-            html_str = svc.generate_blueprint_mockup(
-                blueprint,
-                analysis_mockup_html=analysis_html,
-                classification=classification,
-                brand_profile=brand_profile,
-            )
-            _cache_mockup("blueprint", blueprint_id, html_str)
-            st.rerun()
+            with st.spinner("Generating mockup with brand copy..."):
+                html_str = mockup_svc.generate_blueprint_mockup(
+                    blueprint,
+                    analysis_mockup_html=analysis_html,
+                    classification=classification,
+                    brand_profile=brand_profile,
+                )
+
+            if html_str:
+                _cache_mockup("blueprint", blueprint_id, html_str)
+                st.rerun()
+            else:
+                st.warning(
+                    "Could not generate visual mockup — no analysis page HTML is available. "
+                    "To fix this: go to the **Analyze** tab, generate an analysis mockup "
+                    "for the source page first, then return here to render the blueprint mockup."
+                )
         except Exception as e:
             st.error(f"Mockup generation failed: {e}")
 
@@ -1828,6 +1906,7 @@ def _render_blueprint(
             blueprint_id=blueprint_id,
             brand_id=brand_id,
             product_id=product_id,
+            org_id=org_id,
         )
 
 
