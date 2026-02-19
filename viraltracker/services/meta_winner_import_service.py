@@ -220,7 +220,7 @@ class MetaWinnerImportService:
 
         # Get all offer variants for these products
         variants = self.supabase.table("product_offer_variants").select(
-            "id, product_id, variant_name, landing_page_url"
+            "id, product_id, name, landing_page_url"
         ).in_("product_id", product_ids).not_.is_(
             "landing_page_url", "null"
         ).execute()
@@ -247,7 +247,7 @@ class MetaWinnerImportService:
                 matches.append({
                     "offer_variant_id": variant["id"],
                     "product_id": variant["product_id"],
-                    "variant_name": variant.get("variant_name"),
+                    "variant_name": variant.get("name"),
                     "match_type": match_type,
                 })
 
@@ -323,7 +323,7 @@ class MetaWinnerImportService:
         # Detect canvas size from image dimensions
         canvas_size = await self._detect_canvas_size(storage_path)
 
-        # Get ad copy from meta_ads_ad_copy if available
+        # Get ad copy from meta_ads_performance.ad_copy if available
         ad_copy = await self._get_ad_copy(meta_ad_id)
 
         # Get destination URL
@@ -962,25 +962,18 @@ Return ONLY valid JSON, no markdown formatting."""
             return None
 
     async def _get_ad_copy(self, meta_ad_id: str) -> Optional[str]:
-        """Get ad copy text for a Meta ad."""
+        """Get ad copy text for a Meta ad from meta_ads_performance.ad_copy."""
         try:
-            result = self.supabase.table("meta_ads_ad_copy").select(
-                "body_text, headline, description"
-            ).eq("meta_ad_id", meta_ad_id).limit(1).execute()
+            result = self.supabase.table("meta_ads_performance").select(
+                "ad_copy"
+            ).eq("meta_ad_id", meta_ad_id).not_.is_(
+                "ad_copy", "null"
+            ).limit(1).execute()
 
             if not result.data:
                 return None
 
-            row = result.data[0]
-            parts = []
-            if row.get("headline"):
-                parts.append(row["headline"])
-            if row.get("body_text"):
-                parts.append(row["body_text"])
-            if row.get("description"):
-                parts.append(row["description"])
-
-            return " | ".join(parts) if parts else None
+            return result.data[0].get("ad_copy")
         except Exception as e:
             logger.debug(f"No ad copy found for {meta_ad_id}: {e}")
             return None

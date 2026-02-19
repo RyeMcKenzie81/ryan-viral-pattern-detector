@@ -122,7 +122,7 @@ class TestMatchOfferVariant:
         ])
         variants_chain = _mock_chain(import_service.supabase, data=[
             {"id": variant_id, "product_id": product_id,
-             "variant_name": "Test Variant",
+             "name": "Test Variant",
              "landing_page_url": "https://example.com/offer?utm_source=fb"},
         ])
 
@@ -153,7 +153,7 @@ class TestMatchOfferVariant:
         ])
         variants_chain = _mock_chain(import_service.supabase, data=[
             {"id": str(uuid4()), "product_id": str(PRODUCT_ID),
-             "variant_name": "Variant A",
+             "name": "Variant A",
              "landing_page_url": "https://example.com/totally-different"},
         ])
 
@@ -185,10 +185,6 @@ class TestImportMetaWinner:
         assets_chain = _mock_chain(import_service.supabase, data=[
             {"storage_path": "meta-ad-assets/test.jpg", "status": "downloaded"},
         ])
-        # Mock ad copy
-        copy_chain = _mock_chain(import_service.supabase, data=[
-            {"headline": "Test", "body_text": "Body", "description": "Desc"},
-        ])
         # Mock destination URL
         dest_chain = _mock_chain(import_service.supabase, data=[
             {"destination_url": "https://example.com/offer"},
@@ -219,8 +215,6 @@ class TestImportMetaWinner:
                 return gen_ads_check  # First call: idempotency check
             elif name == "meta_ad_assets":
                 return assets_chain
-            elif name == "meta_ads_ad_copy":
-                return copy_chain
             elif name == "meta_ad_destinations":
                 return dest_chain
             elif name == "meta_ads_performance":
@@ -415,7 +409,6 @@ class TestBestEffortEmbedding:
         assets_chain = _mock_chain(import_service.supabase, data=[
             {"storage_path": "meta-ad-assets/test.jpg", "status": "downloaded"},
         ])
-        copy_chain = _mock_chain(import_service.supabase, data=[])
         dest_chain = _mock_chain(import_service.supabase, data=[])
         perf_chain = _mock_chain(import_service.supabase, data=[
             {"impressions": 1000, "spend": 50, "link_ctr": 0.02,
@@ -434,8 +427,6 @@ class TestBestEffortEmbedding:
                 return gen_ads_check
             elif name == "meta_ad_assets":
                 return assets_chain
-            elif name == "meta_ads_ad_copy":
-                return copy_chain
             elif name == "meta_ad_destinations":
                 return dest_chain
             elif name == "meta_ads_performance":
@@ -501,8 +492,7 @@ class TestBestEffortExemplar:
                  "link_ctr": 0.02, "conversion_rate": 0.01, "roas": 2.0,
                  "campaign_objective": "CONVERSIONS", "meta_campaign_id": "camp_1",
                  "storage_path": "x", "status": "ok",
-                 "headline": "", "body_text": "", "description": "",
-                 "destination_url": ""},
+                 "ad_copy": "", "destination_url": ""},
             ])
 
         import_service.supabase.table.side_effect = table_side
