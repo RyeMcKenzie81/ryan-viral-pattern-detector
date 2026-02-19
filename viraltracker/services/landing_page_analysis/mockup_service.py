@@ -246,7 +246,7 @@ class MockupService:
                 if page_body.strip():
                     logger.info(
                         "Starting AI rewrite for blueprint mockup "
-                        f"(brand={brand_profile.get('brand_basics', {}).get('name', '?')}, "
+                        f"(brand={(brand_profile.get('brand_basics') or {}).get('name') or '?'}, "
                         f"html_len={len(page_body)})"
                     )
                     # Let exceptions propagate — UI will show the error
@@ -599,64 +599,78 @@ class MockupService:
 
     def _build_brand_context(self, brand_profile: Dict[str, Any]) -> str:
         """Build compact brand summary for AI prompt. Truncates long fields."""
-        bb = brand_profile.get("brand_basics", {})
-        prod = brand_profile.get("product", {})
-        mech = brand_profile.get("mechanism", {})
-        pp = brand_profile.get("pain_points", {})
-        sp = brand_profile.get("social_proof", {})
-        pricing = brand_profile.get("pricing", [])
-        guarantee = brand_profile.get("guarantee", {})
-        personas = brand_profile.get("personas", [])
-        ov = brand_profile.get("offer_variant", {})
-        ingredients = brand_profile.get("ingredients", [])
-        timeline = brand_profile.get("results_timeline", [])
+        bb = brand_profile.get("brand_basics") or {}
+        prod = brand_profile.get("product") or {}
+        mech = brand_profile.get("mechanism") or {}
+        pp = brand_profile.get("pain_points") or {}
+        sp = brand_profile.get("social_proof") or {}
+        pricing = brand_profile.get("pricing") or []
+        guarantee = brand_profile.get("guarantee") or {}
+        personas = brand_profile.get("personas") or []
+        ov = brand_profile.get("offer_variant") or {}
+        ingredients = brand_profile.get("ingredients") or []
+        timeline = brand_profile.get("results_timeline") or []
 
         lines = [
-            f"Brand: {bb.get('name', 'Unknown')}",
-            f"Voice/Tone: {bb.get('voice_tone', 'professional')}",
-            f"Product: {prod.get('name', 'Unknown')}",
-            f"Key Benefits: {', '.join((prod.get('key_benefits') or [])[:5])}",
-            f"Key Problems Solved: {', '.join((prod.get('key_problems_solved') or [])[:5])}",
+            f"Brand: {bb.get('name') or 'Unknown'}",
+            f"Voice/Tone: {bb.get('voice_tone') or 'professional'}",
+            f"Product: {prod.get('name') or 'Unknown'}",
+            f"Key Benefits: {', '.join(str(b) for b in (prod.get('key_benefits') or [])[:5])}",
+            f"Key Problems Solved: {', '.join(str(p) for p in (prod.get('key_problems_solved') or [])[:5])}",
         ]
         if mech.get("name"):
-            lines.append(f"Mechanism: {mech['name']} — {mech.get('solution', '')[:200]}")
+            lines.append(f"Mechanism: {mech['name']} — {(mech.get('solution') or '')[:200]}")
         if pp.get("pain_points"):
-            lines.append(f"Pain Points: {', '.join(pp['pain_points'][:5])}")
+            lines.append(f"Pain Points: {', '.join(str(p) for p in (pp.get('pain_points') or [])[:5])}")
         if pp.get("desires_goals"):
-            lines.append(f"Desires: {', '.join(pp['desires_goals'][:5])}")
+            lines.append(f"Desires: {', '.join(str(d) for d in (pp.get('desires_goals') or [])[:5])}")
         if guarantee.get("text"):
-            lines.append(f"Guarantee: {guarantee['text'][:200]}")
+            lines.append(f"Guarantee: {(guarantee.get('text') or '')[:200]}")
         if pricing:
-            price_strs = [f"{p.get('name','')}: ${p.get('price','')}" for p in pricing[:3]]
-            lines.append(f"Pricing: {', '.join(price_strs)}")
+            price_strs = []
+            for p in pricing[:3]:
+                if not isinstance(p, dict):
+                    continue
+                price_strs.append(f"{p.get('name') or ''}: ${p.get('price') or ''}")
+            if price_strs:
+                lines.append(f"Pricing: {', '.join(price_strs)}")
         if ingredients:
-            ing_names = [i.get("name", str(i))[:50] for i in ingredients[:8]]
+            ing_names = [
+                (i.get("name") or str(i))[:50] if isinstance(i, dict) else str(i)[:50]
+                for i in ingredients[:8]
+            ]
             lines.append(f"Ingredients: {', '.join(ing_names)}")
         if timeline:
             for t in timeline[:4]:
                 if isinstance(t, dict):
-                    lines.append(f"  Results ({t.get('timeframe', '?')}): {t.get('outcome', '')[:100]}")
+                    lines.append(f"  Results ({t.get('timeframe') or '?'}): {(t.get('outcome') or '')[:100]}")
                 else:
                     lines.append(f"  Results: {str(t)[:100]}")
         quotes = (sp.get("top_positive_quotes") or sp.get("transformation_quotes") or [])[:3]
         if quotes:
             lines.append("Customer Quotes:")
             for q in quotes:
-                text = q if isinstance(q, str) else q.get("quote", q.get("text", str(q)))
-                lines.append(f'  - "{text[:200]}"')
+                if isinstance(q, str):
+                    text = q
+                elif isinstance(q, dict):
+                    text = (q.get("quote") or q.get("text") or str(q))
+                else:
+                    text = str(q)
+                lines.append(f'  - "{(text or "")[:200]}"')
         if personas:
             p0 = personas[0]
-            lines.append(f"Target Persona: {p0.get('name', '')} — {p0.get('snapshot', '')[:200]}")
-            if p0.get("pain_points"):
-                pts = p0["pain_points"][:3] if isinstance(p0["pain_points"], list) else []
-                if pts:
-                    lines.append(f"  Persona Pains: {', '.join(str(p)[:80] for p in pts)}")
+            if isinstance(p0, dict):
+                lines.append(f"Target Persona: {p0.get('name') or ''} — {(p0.get('snapshot') or '')[:200]}")
+                if p0.get("pain_points"):
+                    pts = p0["pain_points"][:3] if isinstance(p0["pain_points"], list) else []
+                    if pts:
+                        lines.append(f"  Persona Pains: {', '.join(str(p)[:80] for p in pts)}")
         if ov.get("name"):
             lines.append(f"Offer Variant: {ov['name']}")
             if ov.get("pain_points"):
-                lines.append(f"  OV Pain Points: {', '.join(str(p)[:80] for p in ov['pain_points'][:3])}")
+                lines.append(f"  OV Pain Points: {', '.join(str(p)[:80] for p in (ov.get('pain_points') or [])[:3])}")
             if ov.get("desires_goals"):
-                lines.append(f"  OV Desires: {', '.join(str(d)[:80] for d in ov['desires_goals'][:3])}")
+                lines.append(f"  OV Desires: {', '.join(str(d)[:80] for d in (ov.get('desires_goals') or [])[:3])}")
 
         return "\n".join(lines)
 
@@ -667,31 +681,42 @@ class MockupService:
             rb = rb["reconstruction_blueprint"]
 
         lines = []
-        ss = rb.get("strategy_summary", {})
+        ss = rb.get("strategy_summary") or {}
         if ss:
             lines.append("## PAGE STRATEGY")
             for key in ("awareness_adaptation", "tone_direction", "target_persona"):
                 if ss.get(key):
-                    lines.append(f"{key}: {ss[key]}")
-            if ss.get("key_differentiators"):
-                lines.append(f"Differentiators: {', '.join(ss['key_differentiators'][:3])}")
+                    lines.append(f"{key}: {str(ss[key] or '')}")
+            kd = (ss.get("key_differentiators") or [])[:3]
+            if kd:
+                lines.append(f"Differentiators: {', '.join(str(d) for d in kd)}")
             lines.append("")
 
-        sections = sorted(rb.get("sections", []), key=lambda s: int(s.get("flow_order", 999)))
+        def _safe_order(s):
+            if not isinstance(s, dict):
+                return 999
+            try:
+                return int(s.get("flow_order", 999))
+            except (TypeError, ValueError):
+                return 999
+
+        sections = sorted(rb.get("sections") or [], key=_safe_order)
         lines.append("## SECTION-BY-SECTION DIRECTIONS")
         for section in sections:
+            if not isinstance(section, dict):
+                continue
             lines.append(f"\n### {section.get('section_name', 'unknown')} (order: {section.get('flow_order')})")
             if section.get("copy_direction"):
-                lines.append(f"Direction: {section['copy_direction'][:300]}")
-            bm = section.get("brand_mapping", {})
+                lines.append(f"Direction: {(section.get('copy_direction') or '')[:300]}")
+            bm = section.get("brand_mapping") or {}
             if bm.get("primary_content"):
-                lines.append(f"Primary: {bm['primary_content'][:300]}")
+                lines.append(f"Primary: {(bm.get('primary_content') or '')[:300]}")
             if bm.get("emotional_hook"):
-                lines.append(f"Hook: {bm['emotional_hook'][:200]}")
+                lines.append(f"Hook: {(bm.get('emotional_hook') or '')[:200]}")
             if bm.get("supporting_data"):
-                lines.append(f"Support: {bm['supporting_data'][:200]}")
+                lines.append(f"Support: {(bm.get('supporting_data') or '')[:200]}")
             if section.get("gap_improvement"):
-                lines.append(f"Improve: {section['gap_improvement'][:200]}")
+                lines.append(f"Improve: {(section.get('gap_improvement') or '')[:200]}")
 
         return "\n".join(lines)
 
@@ -846,7 +871,19 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             operation="blueprint_copy",
         )
 
+        # Guard result object
+        if result is None:
+            raise ValueError("AI rewrite returned no result object")
+
         raw = result.output
+
+        # Guard output is non-None, is a string, and has content
+        if raw is None:
+            raise ValueError("AI rewrite returned None output")
+        if not isinstance(raw, str):
+            raw = str(raw)
+        if not raw.strip():
+            raise ValueError("AI rewrite returned empty/whitespace-only output")
 
         # Strip code fences if present
         if raw.startswith("```"):

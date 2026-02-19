@@ -1349,3 +1349,294 @@ class TestBuildBlueprintDirections:
         """Empty blueprint produces minimal output."""
         result = service._build_blueprint_directions({"sections": []})
         assert "SECTION-BY-SECTION DIRECTIONS" in result
+
+
+# ---------------------------------------------------------------------------
+# None-safety: _build_brand_context
+# ---------------------------------------------------------------------------
+
+class TestBuildBrandContextNoneSafety:
+    """Test _build_brand_context handles None values in AI-generated JSON."""
+
+    def test_all_top_level_keys_none(self, service):
+        """All brand_profile dict values are explicitly None."""
+        profile = {
+            "brand_basics": None,
+            "product": None,
+            "mechanism": None,
+            "pain_points": None,
+            "social_proof": None,
+            "pricing": None,
+            "guarantee": None,
+            "personas": None,
+            "offer_variant": None,
+            "ingredients": None,
+            "results_timeline": None,
+        }
+        result = service._build_brand_context(profile)
+        assert "Brand: Unknown" in result
+        assert "Product: Unknown" in result
+
+    def test_none_string_fields_in_mechanism(self, service):
+        """mechanism.solution is None — slicing should not crash."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "mechanism": {"name": "MechName", "solution": None},
+        }
+        result = service._build_brand_context(profile)
+        assert "MechName" in result
+
+    def test_none_guarantee_text(self, service):
+        """guarantee.text is None — slicing should not crash."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "guarantee": {"text": None},
+        }
+        # guarantee.text is falsy → block skipped, no crash
+        result = service._build_brand_context(profile)
+        assert "Guarantee" not in result
+
+    def test_non_string_items_in_benefits_list(self, service):
+        """key_benefits contains ints and None — join should not crash."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {
+                "name": "Prod",
+                "key_benefits": ["Good sleep", None, 42, True],
+                "key_problems_solved": [None, 123],
+            },
+        }
+        result = service._build_brand_context(profile)
+        assert "Good sleep" in result
+        assert "42" in result
+
+    def test_non_dict_items_in_pricing(self, service):
+        """pricing list contains a string instead of dict — should not crash."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "pricing": ["not a dict", {"name": "Basic", "price": "29"}],
+        }
+        result = service._build_brand_context(profile)
+        assert "Basic" in result
+
+    def test_non_dict_items_in_ingredients(self, service):
+        """ingredients list contains strings and dicts."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "ingredients": ["Vitamin D", {"name": "Zinc"}, None],
+        }
+        result = service._build_brand_context(profile)
+        assert "Vitamin D" in result
+        assert "Zinc" in result
+
+    def test_non_dict_persona(self, service):
+        """First persona is a string instead of dict — should not crash."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "personas": ["not a dict"],
+        }
+        # Should not raise
+        result = service._build_brand_context(profile)
+        assert "Brand: Test" in result
+
+    def test_persona_with_none_fields(self, service):
+        """Persona dict has None name and snapshot."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "personas": [{"name": None, "snapshot": None, "pain_points": None}],
+        }
+        result = service._build_brand_context(profile)
+        assert "Target Persona" in result
+
+    def test_quotes_with_none_and_non_dict(self, service):
+        """Quote list contains None, int, and dict with None values."""
+        profile = {
+            "brand_basics": {"name": "Test"},
+            "product": {"name": "Prod"},
+            "social_proof": {
+                "top_positive_quotes": [
+                    "A real quote",
+                    None,
+                    42,
+                    {"quote": None, "text": None},
+                ],
+            },
+        }
+        result = service._build_brand_context(profile)
+        assert "A real quote" in result
+
+
+# ---------------------------------------------------------------------------
+# None-safety: _build_blueprint_directions
+# ---------------------------------------------------------------------------
+
+class TestBuildBlueprintDirectionsNoneSafety:
+    """Test _build_blueprint_directions handles None values."""
+
+    def test_none_strategy_summary(self, service):
+        """strategy_summary is None — should not crash."""
+        blueprint = {
+            "strategy_summary": None,
+            "sections": [],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        assert "SECTION-BY-SECTION DIRECTIONS" in result
+
+    def test_none_fields_in_sections(self, service):
+        """Section fields (copy_direction, brand_mapping, etc.) are all None."""
+        blueprint = {
+            "sections": [
+                {
+                    "flow_order": 1,
+                    "section_name": "above_the_fold",
+                    "copy_direction": None,
+                    "brand_mapping": None,
+                    "gap_improvement": None,
+                },
+            ],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        assert "above_the_fold" in result
+
+    def test_none_brand_mapping_fields(self, service):
+        """brand_mapping dict has None values for all text fields."""
+        blueprint = {
+            "sections": [
+                {
+                    "flow_order": 1,
+                    "section_name": "hero",
+                    "copy_direction": "test direction",
+                    "brand_mapping": {
+                        "primary_content": None,
+                        "emotional_hook": None,
+                        "supporting_data": None,
+                    },
+                },
+            ],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        assert "test direction" in result
+        # None fields should be skipped (falsy check)
+        assert "Primary:" not in result
+        assert "Hook:" not in result
+
+    def test_none_flow_order(self, service):
+        """flow_order is None — sort should not crash."""
+        blueprint = {
+            "sections": [
+                {"flow_order": None, "section_name": "a", "copy_direction": "dir_a"},
+                {"flow_order": 2, "section_name": "b", "copy_direction": "dir_b"},
+                {"flow_order": "invalid", "section_name": "c", "copy_direction": "dir_c"},
+            ],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        # Should not crash, all sections present
+        assert "dir_a" in result
+        assert "dir_b" in result
+        assert "dir_c" in result
+
+    def test_non_dict_section_item(self, service):
+        """A section that is not a dict (string, None) — should be skipped."""
+        blueprint = {
+            "sections": [
+                "not a dict",
+                None,
+                {"flow_order": 1, "section_name": "real", "copy_direction": "real dir"},
+            ],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        assert "real dir" in result
+
+    def test_none_key_differentiators(self, service):
+        """key_differentiators is None — should not crash."""
+        blueprint = {
+            "strategy_summary": {
+                "awareness_adaptation": "solution_aware",
+                "key_differentiators": None,
+            },
+            "sections": [],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        assert "solution_aware" in result
+        assert "Differentiators" not in result
+
+    def test_non_string_key_differentiators(self, service):
+        """key_differentiators contains ints — join should not crash."""
+        blueprint = {
+            "strategy_summary": {
+                "key_differentiators": [42, None, "real diff"],
+            },
+            "sections": [],
+        }
+        result = service._build_blueprint_directions(blueprint)
+        assert "42" in result
+        assert "real diff" in result
+
+
+# ---------------------------------------------------------------------------
+# None-safety: _rewrite_html_for_brand
+# ---------------------------------------------------------------------------
+
+class TestRewriteNoneSafety:
+    """Test _rewrite_html_for_brand guards against bad AI output."""
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_none_result_output(self, mock_run, service):
+        """result.output is None → raises ValueError."""
+        mock_result = MagicMock()
+        mock_result.output = None
+        mock_run.return_value = mock_result
+
+        with pytest.raises(ValueError, match="None output"):
+            service._rewrite_html_for_brand(
+                "<div>Test</div>",
+                {"sections": []},
+                {"brand_basics": {"name": "Test"}},
+            )
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_empty_result_output(self, mock_run, service):
+        """result.output is whitespace-only → raises ValueError."""
+        mock_result = MagicMock()
+        mock_result.output = "   \n  "
+        mock_run.return_value = mock_result
+
+        with pytest.raises(ValueError, match="empty/whitespace-only"):
+            service._rewrite_html_for_brand(
+                "<div>Test</div>",
+                {"sections": []},
+                {"brand_basics": {"name": "Test"}},
+            )
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_non_string_result_output(self, mock_run, service):
+        """result.output is an int → coerced to string, processed."""
+        mock_result = MagicMock()
+        mock_result.output = 42
+        mock_run.return_value = mock_result
+
+        # 42 as a string is "42" — non-empty, so it proceeds (no slots to validate)
+        result = service._rewrite_html_for_brand(
+            "<div>Test</div>",
+            {"sections": []},
+            {"brand_basics": {"name": "Test"}},
+        )
+        assert isinstance(result, str)
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_none_result_object(self, mock_run, service):
+        """run_agent_sync_with_tracking returns None → raises ValueError."""
+        mock_run.return_value = None
+
+        with pytest.raises(ValueError, match="no result object"):
+            service._rewrite_html_for_brand(
+                "<div>Test</div>",
+                {"sections": []},
+                {"brand_basics": {"name": "Test"}},
+            )

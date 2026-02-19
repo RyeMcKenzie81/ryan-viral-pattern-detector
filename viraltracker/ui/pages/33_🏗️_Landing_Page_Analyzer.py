@@ -1457,6 +1457,12 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                     classification=analysis.get("classification", {}),
                     page_markdown=analysis.get("page_markdown"),
                 )
+                # Persist to DB for cross-session reuse
+                try:
+                    analysis_svc = get_analysis_service()
+                    analysis_svc.save_analysis_mockup_html(analysis_id, html_str)
+                except Exception as e:
+                    logger.warning(f"Failed to persist analysis mockup HTML: {e}")
                 _cache_mockup("analysis", analysis_id, html_str)
                 st.rerun()
             except Exception as e:
@@ -1515,7 +1521,7 @@ def _render_blueprint_mockup_section(
             st.warning("No blueprint data available.")
             return
 
-        # Fetch classification from linked analysis if available
+        # Validate linked analysis exists
         classification = None
         analysis_id = result.get("analysis_id")
         if not analysis_id:
@@ -1524,14 +1530,15 @@ def _render_blueprint_mockup_section(
                 "Go to the **Analyze** tab and run an analysis first."
             )
             return
-        if analysis_id:
-            try:
-                analysis_svc = get_analysis_service()
-                linked = analysis_svc.get_analysis(analysis_id)
-                if linked:
-                    classification = linked.get("classification", {})
-            except Exception:
-                pass
+
+        # Load analysis record once (used for classification, mockup HTML, and regen fallback)
+        linked_record = None
+        analysis_svc = get_analysis_service()
+        try:
+            linked_record = analysis_svc.get_analysis(analysis_id) or {}
+            classification = linked_record.get("classification", {})
+        except Exception:
+            linked_record = {}
 
         # Fetch brand profile for AI rewrite
         brand_profile = None
@@ -1549,13 +1556,16 @@ def _render_blueprint_mockup_section(
         else:
             logger.warning(f"Missing brand_id={brand_id} or product_id={product_id} — cannot load brand profile")
 
-        # Get cached analysis HTML
-        analysis_html = _get_cached_mockup("analysis", analysis_id) if analysis_id else None
+        # 1. Session cache (instant)
+        analysis_html = _get_cached_mockup("analysis", analysis_id)
 
-        # If not cached, try regenerating from stored screenshot or page_markdown
-        if not analysis_html and analysis_id:
-            analysis_svc = get_analysis_service()
-            linked_record = analysis_svc.get_analysis(analysis_id) or {}
+        # 2. Database column (fast query, no Gemini call)
+        if not analysis_html and linked_record and linked_record.get("analysis_mockup_html"):
+            analysis_html = linked_record["analysis_mockup_html"]
+            _cache_mockup("analysis", analysis_id, analysis_html)
+
+        # 3. Regenerate from screenshot/markdown (expensive — only if DB has no cached mockup)
+        if not analysis_html and linked_record:
             screenshot_path = linked_record.get("screenshot_storage_path")
             page_markdown = linked_record.get("page_markdown")
 
@@ -1588,6 +1598,10 @@ def _render_blueprint_mockup_section(
                         )
                         if analysis_html:
                             _cache_mockup("analysis", analysis_id, analysis_html)
+                            try:
+                                analysis_svc.save_analysis_mockup_html(analysis_id, analysis_html)
+                            except Exception as e:
+                                logger.warning(f"Failed to persist regenerated mockup: {e}")
                     except Exception as e:
                         logger.error(f"Failed to regenerate analysis mockup: {e}")
                         st.error(f"Analysis mockup regeneration failed: {e}")

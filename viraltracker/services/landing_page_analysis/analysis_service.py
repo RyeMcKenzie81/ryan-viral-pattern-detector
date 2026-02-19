@@ -441,7 +441,7 @@ class LandingPageAnalysisService:
         )
 
         self.supabase.table("landing_page_analyses").update(
-            {"screenshot_storage_path": storage_path}
+            {"screenshot_storage_path": storage_path, "analysis_mockup_html": None}
         ).eq("id", analysis_id).execute()
 
         logger.info(f"Stored screenshot: {self.SCREENSHOT_BUCKET}/{storage_path}")
@@ -582,6 +582,13 @@ class LandingPageAnalysisService:
     # ------------------------------------------------------------------
     # Query methods
     # ------------------------------------------------------------------
+
+    def save_analysis_mockup_html(self, analysis_id: str, html: str) -> None:
+        """Persist analysis mockup HTML to the database record."""
+        self.supabase.table("landing_page_analyses").update(
+            {"analysis_mockup_html": html}
+        ).eq("id", analysis_id).execute()
+        logger.info(f"Saved analysis_mockup_html ({len(html)} chars) for {analysis_id}")
 
     def get_analysis(self, analysis_id: str) -> Optional[Dict[str, Any]]:
         """Get a single analysis by ID."""
