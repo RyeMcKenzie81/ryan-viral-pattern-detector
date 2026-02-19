@@ -569,6 +569,54 @@ class ContentBucketService:
         )
         return sorted_sessions[:limit]
 
+    # ─── Uploaded Tracking ─────────────────────────────────────────────
+
+    def mark_as_uploaded(
+        self, categorization_ids: List[str], uploaded: bool = True
+    ) -> int:
+        """Mark categorization records as uploaded (or un-uploaded).
+
+        Args:
+            categorization_ids: List of categorization record IDs.
+            uploaded: True to mark as uploaded, False to unmark.
+
+        Returns:
+            Count of updated records.
+        """
+        if not categorization_ids:
+            return 0
+
+        result = (
+            self._db.table("video_bucket_categorizations")
+            .update({"is_uploaded": uploaded})
+            .in_("id", categorization_ids)
+            .execute()
+        )
+        return len(result.data) if result.data else 0
+
+    def get_uploaded_videos(
+        self, product_id: str, org_id: str
+    ) -> List[Dict[str, Any]]:
+        """Get all videos marked as uploaded for a product.
+
+        Args:
+            product_id: Product ID.
+            org_id: Organization ID for multi-tenant filtering.
+
+        Returns:
+            List of categorization records ordered by bucket_name, filename.
+        """
+        query = (
+            self._db.table("video_bucket_categorizations")
+            .select("*")
+            .eq("product_id", product_id)
+            .eq("is_uploaded", True)
+        )
+        if org_id != "all":
+            query = query.eq("organization_id", org_id)
+        result = query.order("bucket_name").order("filename").execute()
+        return result.data or []
+
     # ─── Helpers ──────────────────────────────────────────────────────
 
     def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:

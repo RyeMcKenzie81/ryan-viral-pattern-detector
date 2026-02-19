@@ -5,14 +5,17 @@ Upload 10-20 videos, Gemini analyzes each one (transcript, text overlays,
 storyboard), and outputs a filename → bucket mapping for efficient
 organization with the right ad copy.
 
-Three tabs:
+Four tabs:
 1. Manage Buckets — CRUD for content bucket definitions
 2. Categorize Videos — Upload and auto-categorize videos
 3. Results — View past categorization sessions
+4. Uploaded — Reference of all videos marked as uploaded
 """
 
+import io
 import streamlit as st
 import json
+import zipfile
 from uuid import uuid4
 
 # Page config (must be first Streamlit call)
@@ -328,6 +331,42 @@ def render_categorize_videos(product_id: str, org_id: str):
                 with st.spinner(f"Retrying {r['filename']}..."):
                     _retry_videos([r["filename"]])
 
+    # ── Download per bucket (ZIP) ──────────────────────────────────
+    file_map = st.session_state.vb_file_map
+    categorized_results = [r for r in results if r.get("status") == "categorized" and r.get("bucket_name")]
+    if categorized_results and file_map:
+        st.divider()
+        st.subheader("Download by Bucket")
+
+        # Group by bucket
+        buckets_map: dict[str, list] = {}
+        for r in categorized_results:
+            bname = r["bucket_name"]
+            if bname not in buckets_map:
+                buckets_map[bname] = []
+            buckets_map[bname].append(r["filename"])
+
+        dl_cols = st.columns(min(len(buckets_map), 3))
+        for idx, (bucket_name, filenames) in enumerate(sorted(buckets_map.items())):
+            # Build ZIP from in-memory file bytes
+            available = [fn for fn in filenames if fn in file_map]
+            if not available:
+                continue
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fn in available:
+                    zf.writestr(fn, file_map[fn]["bytes"])
+            zip_buffer.seek(0)
+
+            col = dl_cols[idx % len(dl_cols)]
+            col.download_button(
+                f"Download {bucket_name} ({len(available)} videos)",
+                data=zip_buffer.getvalue(),
+                file_name=f"{bucket_name.replace(' ', '_')}.zip",
+                mime="application/zip",
+                key=f"dl_bucket_{idx}",
+            )
+
 
 # ============================================
 # TAB 3: RESULTS
@@ -426,6 +465,7 @@ def render_results(product_id: str, org_id: str):
             "Confidence": round(r.get("confidence_score") or 0, 2),
             "Reasoning": r.get("reasoning") or "—",
             "Status": r.get("status", "unknown"),
+            "Uploaded": "Yes" if r.get("is_uploaded") else "No",
         }
         for r in results
     ])
@@ -439,6 +479,38 @@ def render_results(product_id: str, org_id: str):
         file_name=f"video_buckets_{selected_session[:8]}.csv",
         mime="text/csv",
     )
+
+    # ── Mark as Uploaded controls ──────────────────────────────────
+    categorized_results = [r for r in results if r.get("status") == "categorized"]
+    if categorized_results:
+        st.divider()
+        st.subheader("Mark as Uploaded")
+
+        not_uploaded = [r for r in categorized_results if not r.get("is_uploaded")]
+        if not_uploaded:
+            if st.button(
+                f"Mark All as Uploaded ({len(not_uploaded)} videos)",
+                type="primary",
+                key=f"mark_all_{selected_session[:8]}",
+            ):
+                ids = [r["id"] for r in not_uploaded]
+                service.mark_as_uploaded(ids)
+                st.success(f"Marked {len(ids)} video(s) as uploaded.")
+                st.rerun()
+
+        for i, r in enumerate(categorized_results):
+            row_cols = st.columns([4, 2, 1])
+            is_up = r.get("is_uploaded", False)
+            row_cols[0].text(r["filename"])
+            row_cols[1].text(r.get("bucket_name", "—"))
+            if is_up:
+                if row_cols[2].button("Unmark", key=f"unmark_{selected_session[:8]}_{i}"):
+                    service.mark_as_uploaded([r["id"]], uploaded=False)
+                    st.rerun()
+            else:
+                if row_cols[2].button("Mark Uploaded", key=f"mark_{selected_session[:8]}_{i}"):
+                    service.mark_as_uploaded([r["id"]])
+                    st.rerun()
 
     # Per-video details
     st.subheader("Video Details")
@@ -465,6 +537,42 @@ def render_results(product_id: str, org_id: str):
                         st.json(analysis)
             if r.get("error_message"):
                 st.error(f"Error: {r['error_message']}")
+
+
+# ============================================
+# TAB 4: UPLOADED
+# ============================================
+
+def render_uploaded(product_id: str, org_id: str):
+    """Render a reference list of all videos marked as uploaded, grouped by bucket."""
+    service = get_service()
+    uploaded = service.get_uploaded_videos(product_id, org_id)
+
+    if not uploaded:
+        st.info("No videos have been marked as uploaded yet. Use the **Results** tab to mark videos after uploading them to Facebook.")
+        return
+
+    # Group by bucket
+    buckets_map: dict[str, list] = {}
+    for r in uploaded:
+        bname = r.get("bucket_name") or "Uncategorized"
+        if bname not in buckets_map:
+            buckets_map[bname] = []
+        buckets_map[bname].append(r)
+
+    st.subheader(f"Uploaded Videos ({len(uploaded)} total)")
+
+    for bucket_name in sorted(buckets_map.keys()):
+        videos = buckets_map[bucket_name]
+        with st.expander(f"**{bucket_name}** ({len(videos)} videos)", expanded=True):
+            for i, r in enumerate(videos):
+                row_cols = st.columns([4, 2, 1])
+                row_cols[0].text(r["filename"])
+                conf = r.get("confidence_score")
+                row_cols[1].text(f"{conf:.0%}" if conf else "—")
+                if row_cols[2].button("Unmark", key=f"uploaded_unmark_{r['id']}_{i}"):
+                    service.mark_as_uploaded([r["id"]], uploaded=False)
+                    st.rerun()
 
 
 # ============================================
@@ -509,7 +617,7 @@ if not org_id:
     st.stop()
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["Manage Buckets", "Categorize Videos", "Results"])
+tab1, tab2, tab3, tab4 = st.tabs(["Manage Buckets", "Categorize Videos", "Results", "Uploaded"])
 
 with tab1:
     render_manage_buckets(product_id, org_id)
@@ -519,3 +627,6 @@ with tab2:
 
 with tab3:
     render_results(product_id, org_id)
+
+with tab4:
+    render_uploaded(product_id, org_id)

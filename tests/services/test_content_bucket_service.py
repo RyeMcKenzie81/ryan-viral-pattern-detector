@@ -439,3 +439,105 @@ class TestParseJsonResponse:
         result = service._parse_json_response(json.dumps(data))
         assert result["bucket_name"] == "Test"
         assert result["confidence_score"] == 0.9
+
+
+# ============================================================================
+# Mark as Uploaded
+# ============================================================================
+
+class TestMarkAsUploaded:
+    def test_marks_single_record(self, service, mock_db):
+        chain = mock_db.table.return_value.update.return_value
+        chain.in_.return_value.execute.return_value = MagicMock(
+            data=[{"id": "cat-1", "is_uploaded": True}]
+        )
+
+        count = service.mark_as_uploaded(["cat-1"])
+
+        mock_db.table.assert_called_with("video_bucket_categorizations")
+        mock_db.table.return_value.update.assert_called_with({"is_uploaded": True})
+        chain.in_.assert_called_with("id", ["cat-1"])
+        assert count == 1
+
+    def test_marks_multiple_records(self, service, mock_db):
+        chain = mock_db.table.return_value.update.return_value
+        chain.in_.return_value.execute.return_value = MagicMock(
+            data=[
+                {"id": "cat-1", "is_uploaded": True},
+                {"id": "cat-2", "is_uploaded": True},
+                {"id": "cat-3", "is_uploaded": True},
+            ]
+        )
+
+        count = service.mark_as_uploaded(["cat-1", "cat-2", "cat-3"])
+        assert count == 3
+
+    def test_unmarks_records(self, service, mock_db):
+        chain = mock_db.table.return_value.update.return_value
+        chain.in_.return_value.execute.return_value = MagicMock(
+            data=[{"id": "cat-1", "is_uploaded": False}]
+        )
+
+        count = service.mark_as_uploaded(["cat-1"], uploaded=False)
+
+        mock_db.table.return_value.update.assert_called_with({"is_uploaded": False})
+        assert count == 1
+
+    def test_returns_zero_for_empty_list(self, service, mock_db):
+        count = service.mark_as_uploaded([])
+        assert count == 0
+        mock_db.table.assert_not_called()
+
+    def test_returns_zero_when_no_data(self, service, mock_db):
+        chain = mock_db.table.return_value.update.return_value
+        chain.in_.return_value.execute.return_value = MagicMock(data=None)
+
+        count = service.mark_as_uploaded(["cat-1"])
+        assert count == 0
+
+
+# ============================================================================
+# Get Uploaded Videos
+# ============================================================================
+
+class TestGetUploadedVideos:
+    def test_returns_uploaded_videos_filtered(self, service, mock_db):
+        chain = mock_db.table.return_value.select.return_value
+        chain.eq.return_value = chain
+        chain.order.return_value = chain
+        chain.execute.return_value = MagicMock(
+            data=[
+                {"id": "r1", "filename": "a.mp4", "bucket_name": "B1", "is_uploaded": True},
+                {"id": "r2", "filename": "b.mp4", "bucket_name": "B1", "is_uploaded": True},
+            ]
+        )
+
+        results = service.get_uploaded_videos("prod-1", "org-1")
+
+        mock_db.table.assert_called_with("video_bucket_categorizations")
+        assert len(results) == 2
+        assert results[0]["bucket_name"] == "B1"
+
+    def test_returns_empty_list_when_none(self, service, mock_db):
+        chain = mock_db.table.return_value.select.return_value
+        chain.eq.return_value = chain
+        chain.order.return_value = chain
+        chain.execute.return_value = MagicMock(data=None)
+
+        results = service.get_uploaded_videos("prod-1", "org-1")
+        assert results == []
+
+    def test_skips_org_filter_for_superuser(self, service, mock_db):
+        chain = mock_db.table.return_value.select.return_value
+        chain.eq.return_value = chain
+        chain.order.return_value = chain
+        chain.execute.return_value = MagicMock(data=[])
+
+        service.get_uploaded_videos("prod-1", "all")
+
+        # Verify eq was called with product_id and is_uploaded but NOT org_id
+        eq_calls = chain.eq.call_args_list
+        eq_args = [(c[0][0], c[0][1]) for c in eq_calls]
+        assert ("product_id", "prod-1") in eq_args
+        assert ("is_uploaded", True) in eq_args
+        assert not any(arg[0] == "organization_id" for arg in eq_args)
