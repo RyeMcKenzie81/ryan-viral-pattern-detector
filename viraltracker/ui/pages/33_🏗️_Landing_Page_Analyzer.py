@@ -2142,6 +2142,7 @@ def _render_blueprint_history(org_id: str, brand_id: str):
             # Build a result-like dict for _render_blueprint
             result_like = {
                 "id": bp["id"],
+                "analysis_id": full.get("analysis_id") or bp.get("analysis_id"),
                 "blueprint": full.get("blueprint", {}),
                 "source_url": full.get("source_url", ""),
                 "brand_profile_gaps": full.get("content_gaps", []),
