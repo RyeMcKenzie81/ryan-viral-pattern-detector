@@ -1512,6 +1512,12 @@ def _render_blueprint_mockup_section(
         # Fetch classification from linked analysis if available
         classification = None
         analysis_id = result.get("analysis_id")
+        if not analysis_id:
+            st.warning(
+                "This blueprint has no linked analysis. "
+                "Go to the **Analyze** tab and run an analysis first."
+            )
+            return
         if analysis_id:
             try:
                 analysis_svc = get_analysis_service()
@@ -1542,40 +1548,52 @@ def _render_blueprint_mockup_section(
 
         # If not cached, try regenerating from stored screenshot or page_markdown
         if not analysis_html and analysis_id:
-            try:
-                analysis_svc = get_analysis_service()
-                linked_record = analysis_svc.get_analysis(analysis_id) or {}
-                screenshot_path = linked_record.get("screenshot_storage_path")
-                page_markdown = linked_record.get("page_markdown")
+            analysis_svc = get_analysis_service()
+            linked_record = analysis_svc.get_analysis(analysis_id) or {}
+            screenshot_path = linked_record.get("screenshot_storage_path")
+            page_markdown = linked_record.get("page_markdown")
 
-                screenshot_b64 = None
-                if screenshot_path:
-                    import base64
-                    screenshot_bytes = analysis_svc._load_screenshot(screenshot_path)
-                    if screenshot_bytes:
-                        screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+            screenshot_b64 = None
+            if screenshot_path:
+                import base64
+                screenshot_bytes = analysis_svc._load_screenshot(screenshot_path)
+                if screenshot_bytes:
+                    screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+                else:
+                    logger.warning(f"Screenshot download returned empty for {screenshot_path}")
 
-                # Proceed if we have screenshot OR page_markdown
-                if screenshot_b64 or page_markdown:
-                    regen_svc = get_mockup_service()
-                    # Fix 4: set tracking on regen service (calls Gemini AI vision)
-                    if org_id:
-                        try:
-                            from viraltracker.services.usage_tracker import UsageTracker
-                            tracker = UsageTracker(get_supabase_client())
-                            user_id = st.session_state.get("user_id")
-                            regen_svc.set_tracking_context(tracker, user_id, org_id)
-                        except Exception:
-                            pass
-                    analysis_html = regen_svc.generate_analysis_mockup(
-                        screenshot_b64=screenshot_b64,
-                        classification=classification,
-                        page_markdown=page_markdown,
-                    )
-                    if analysis_html:
-                        _cache_mockup("analysis", analysis_id, analysis_html)
-            except Exception as e:
-                logger.warning(f"Failed to regenerate analysis mockup: {e}")
+            if screenshot_b64 or page_markdown:
+                source = "screenshot (AI vision)" if screenshot_b64 else "page markdown"
+                with st.spinner(f"Rebuilding analysis mockup from {source}..."):
+                    try:
+                        regen_svc = get_mockup_service()
+                        if org_id:
+                            try:
+                                from viraltracker.services.usage_tracker import UsageTracker
+                                tracker = UsageTracker(get_supabase_client())
+                                user_id = st.session_state.get("user_id")
+                                regen_svc.set_tracking_context(tracker, user_id, org_id)
+                            except Exception:
+                                pass
+                        analysis_html = regen_svc.generate_analysis_mockup(
+                            screenshot_b64=screenshot_b64,
+                            classification=classification,
+                            page_markdown=page_markdown,
+                        )
+                        if analysis_html:
+                            _cache_mockup("analysis", analysis_id, analysis_html)
+                    except Exception as e:
+                        logger.error(f"Failed to regenerate analysis mockup: {e}")
+                        st.error(f"Analysis mockup regeneration failed: {e}")
+            else:
+                logger.warning(
+                    f"Analysis {analysis_id} has no screenshot "
+                    f"(path={screenshot_path}) and no page_markdown"
+                )
+                st.warning(
+                    "No screenshot or page content found for the linked analysis. "
+                    "Go to the **Analyze** tab and re-analyze the URL to capture a screenshot."
+                )
 
         # Create main mockup service with tracking
         mockup_svc = get_mockup_service()
