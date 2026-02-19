@@ -298,9 +298,15 @@ def _render_gap_fixer(
             st.session_state.lpa_gap_sources = {}
             st.session_state.lpa_gap_dismissed = set()
             st.session_state.lpa_gap_overwrite_confirmed = set()
-            # Re-run blueprint with current selections
+            # Re-run blueprint with current selections.
+            # Prefer session state, but fall back to the existing blueprint's
+            # analysis_id (session state may be empty after a rerun).
+            regen_analysis_id = (
+                st.session_state.get("lpa_bp_analysis")
+                or (st.session_state.get("lpa_latest_blueprint") or {}).get("analysis_id", "")
+            )
             _run_blueprint_generation(
-                analysis_id=st.session_state.get("lpa_bp_analysis", ""),
+                analysis_id=regen_analysis_id,
                 brand_id=brand_id,
                 product_id=product_id,
                 offer_variant_id=offer_variant_id,
