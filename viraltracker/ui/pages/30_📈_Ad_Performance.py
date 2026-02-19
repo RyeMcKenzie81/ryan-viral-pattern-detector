@@ -3522,6 +3522,12 @@ elif selected_tab == "🏆 Winners":
                             if ctr:
                                 metrics_parts.append(f"CTR: {ctr:.2f}%")
                             metrics_parts.append(f"Spend: ${c.get('total_spend', 0):,.0f}")
+                            purchases = c.get("total_purchases", 0)
+                            if purchases:
+                                metrics_parts.append(f"Sales: {int(purchases)}")
+                            purchase_value = c.get("total_purchase_value", 0)
+                            if purchase_value:
+                                metrics_parts.append(f"Revenue: ${purchase_value:,.0f}")
                             st.caption(" | ".join(metrics_parts))
 
                         with col_actions:

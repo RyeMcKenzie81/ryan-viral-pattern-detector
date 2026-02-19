@@ -73,6 +73,7 @@ class MetaWinnerImportService:
         perf_result = self.supabase.table("meta_ads_performance").select(
             "meta_ad_id, meta_ad_account_id, meta_campaign_id, "
             "impressions, spend, link_ctr, conversion_rate, roas, "
+            "purchases, purchase_value, "
             "campaign_objective, is_video, thumbnail_url, ad_name"
         ).eq(
             "brand_id", str(brand_id)
@@ -125,6 +126,8 @@ class MetaWinnerImportService:
             rows = agg["rows"]
             total_impressions = sum(r.get("impressions") or 0 for r in rows)
             total_spend = sum(r.get("spend") or 0 for r in rows)
+            total_purchases = sum(r.get("purchases") or 0 for r in rows)
+            total_purchase_value = sum(r.get("purchase_value") or 0 for r in rows)
 
             if total_impressions < min_impressions or total_spend < min_spend:
                 continue
@@ -158,6 +161,8 @@ class MetaWinnerImportService:
                 "thumbnail_url": agg.get("thumbnail_url"),
                 "total_impressions": total_impressions,
                 "total_spend": total_spend,
+                "total_purchases": total_purchases,
+                "total_purchase_value": total_purchase_value,
                 "avg_ctr": perf_row.get("avg_ctr"),
                 "avg_roas": perf_row.get("avg_roas"),
                 "avg_conversion_rate": perf_row.get("avg_conversion_rate"),
