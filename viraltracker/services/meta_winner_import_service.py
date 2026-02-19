@@ -190,7 +190,7 @@ class MetaWinnerImportService:
 
         # Get destination URLs for this meta ad
         dest_result = self.supabase.table("meta_ad_destinations").select(
-            "original_url, canonical_url"
+            "destination_url, canonical_url"
         ).eq("meta_ad_id", meta_ad_id).execute()
 
         if not dest_result.data:
@@ -202,8 +202,8 @@ class MetaWinnerImportService:
         for dest in dest_result.data:
             if dest.get("canonical_url"):
                 dest_canonical_urls.add(dest["canonical_url"])
-            if dest.get("original_url"):
-                dest_original_urls.add(dest["original_url"])
+            if dest.get("destination_url"):
+                dest_original_urls.add(dest["destination_url"])
 
         if not dest_canonical_urls and not dest_original_urls:
             return []
@@ -989,11 +989,11 @@ Return ONLY valid JSON, no markdown formatting."""
         """Get destination URL for a Meta ad."""
         try:
             result = self.supabase.table("meta_ad_destinations").select(
-                "original_url"
+                "destination_url"
             ).eq("meta_ad_id", meta_ad_id).limit(1).execute()
 
             if result.data:
-                return result.data[0].get("original_url")
+                return result.data[0].get("destination_url")
         except Exception as e:
             logger.debug(f"No destination URL for {meta_ad_id}: {e}")
         return None

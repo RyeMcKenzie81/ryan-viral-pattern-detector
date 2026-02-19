@@ -114,7 +114,7 @@ class TestMatchOfferVariant:
         product_id = str(PRODUCT_ID)
 
         dest_chain = _mock_chain(import_service.supabase, data=[
-            {"original_url": "https://example.com/offer?utm_source=fb",
+            {"destination_url": "https://example.com/offer?utm_source=fb",
              "canonical_url": "https://example.com/offer"},
         ])
         products_chain = _mock_chain(import_service.supabase, data=[
@@ -145,7 +145,7 @@ class TestMatchOfferVariant:
     async def test_no_match_returns_empty_list(self, import_service):
         """URLs that don't match any variant return empty list."""
         dest_chain = _mock_chain(import_service.supabase, data=[
-            {"original_url": "https://unrelated.com/page",
+            {"destination_url": "https://unrelated.com/page",
              "canonical_url": "https://unrelated.com/page"},
         ])
         products_chain = _mock_chain(import_service.supabase, data=[
@@ -191,7 +191,7 @@ class TestImportMetaWinner:
         ])
         # Mock destination URL
         dest_chain = _mock_chain(import_service.supabase, data=[
-            {"original_url": "https://example.com/offer"},
+            {"destination_url": "https://example.com/offer"},
         ])
         # Mock performance data
         perf_chain = _mock_chain(import_service.supabase, data=[
@@ -502,7 +502,7 @@ class TestBestEffortExemplar:
                  "campaign_objective": "CONVERSIONS", "meta_campaign_id": "camp_1",
                  "storage_path": "x", "status": "ok",
                  "headline": "", "body_text": "", "description": "",
-                 "original_url": ""},
+                 "destination_url": ""},
             ])
 
         import_service.supabase.table.side_effect = table_side
