@@ -242,22 +242,20 @@ class MockupService:
         if analysis_mockup_html:
             rewritten = None
             if brand_profile:
-                try:
-                    page_body = self._strip_mockup_wrapper(analysis_mockup_html)
-                    if page_body.strip():
-                        logger.info(
-                            "Starting AI rewrite for blueprint mockup "
-                            f"(brand={brand_profile.get('brand_basics', {}).get('name', '?')}, "
-                            f"html_len={len(page_body)})"
-                        )
-                        rewritten = self._rewrite_html_for_brand(
-                            page_body, blueprint, brand_profile
-                        )
-                        logger.info("AI rewrite completed for blueprint mockup")
-                    else:
-                        logger.warning("Stripped page body is empty — skipping AI rewrite")
-                except Exception as e:
-                    logger.warning(f"AI rewrite failed, using analysis HTML as-is: {e}")
+                page_body = self._strip_mockup_wrapper(analysis_mockup_html)
+                if page_body.strip():
+                    logger.info(
+                        "Starting AI rewrite for blueprint mockup "
+                        f"(brand={brand_profile.get('brand_basics', {}).get('name', '?')}, "
+                        f"html_len={len(page_body)})"
+                    )
+                    # Let exceptions propagate — UI will show the error
+                    rewritten = self._rewrite_html_for_brand(
+                        page_body, blueprint, brand_profile
+                    )
+                    logger.info("AI rewrite completed for blueprint mockup")
+                else:
+                    logger.warning("Stripped page body is empty — skipping AI rewrite")
             else:
                 logger.info(
                     "No brand_profile provided — skipping AI rewrite, "

@@ -1116,8 +1116,8 @@ class TestAICopywriting:
             service._validate_rewrite_structure(original, rewritten)
 
     @patch.object(MockupService, "_rewrite_html_for_brand", side_effect=Exception("AI down"))
-    def test_failure_falls_back_no_instructions(self, mock_rewrite, service):
-        """AI raises → output contains analysis content, no blueprint instruction text."""
+    def test_failure_propagates_to_caller(self, mock_rewrite, service):
+        """AI raises → exception propagates so UI can show clear error."""
         blueprint = {
             "sections": [
                 {
@@ -1131,17 +1131,12 @@ class TestAICopywriting:
         brand_profile = {"brand_basics": {"name": "Test"}}
         analysis_html = '<div data-slot="headline">Competitor Original</div>'
 
-        html = service.generate_blueprint_mockup(
-            blueprint,
-            analysis_mockup_html=analysis_html,
-            brand_profile=brand_profile,
-        )
-
-        assert html is not None
-        # Should contain the analysis content (competitor text), not instructions
-        assert "Competitor Original" in html
-        # Should NOT contain the strategic instruction from brand_mapping
-        assert "Lead with the persona" not in html
+        with pytest.raises(Exception, match="AI down"):
+            service.generate_blueprint_mockup(
+                blueprint,
+                analysis_mockup_html=analysis_html,
+                brand_profile=brand_profile,
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -1608,7 +1608,7 @@ def _render_blueprint_mockup_section(
 
         # Generate blueprint mockup
         try:
-            with st.spinner("Generating mockup with brand copy..."):
+            with st.spinner("Rewriting page copy for your brand (AI)..."):
                 html_str = mockup_svc.generate_blueprint_mockup(
                     blueprint,
                     analysis_mockup_html=analysis_html,
@@ -1626,7 +1626,8 @@ def _render_blueprint_mockup_section(
                     "for the source page first, then return here to render the blueprint mockup."
                 )
         except Exception as e:
-            st.error(f"Mockup generation failed: {e}")
+            st.error(f"AI copy rewrite failed: {e}")
+            logger.error(f"Blueprint mockup generation failed: {e}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
