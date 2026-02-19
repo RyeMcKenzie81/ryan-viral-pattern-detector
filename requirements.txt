@@ -114,3 +114,7 @@ opentelemetry-semantic-conventions==0.59b0
 opentelemetry-util-http==0.59b0
 streamlit-aggrid
 streamlit-aggrid>=0.3.4
+
+# HTML sanitization & markdown rendering (Landing Page Mockup V2)
+bleach[css]>=6.0
+markdown-it-py>=3.0

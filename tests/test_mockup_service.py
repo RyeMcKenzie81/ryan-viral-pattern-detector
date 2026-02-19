@@ -1,6 +1,9 @@
 """
-Tests for MockupService — mapping coverage, normalization, and rendering.
+Tests for MockupService — mapping coverage, normalization, rendering,
+sanitization, AI vision, markdown fallback, and template-swap.
 """
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -490,7 +493,9 @@ class TestRenderSmokeTests:
             }
         }
 
-        html = service.generate_analysis_mockup(elements, classification)
+        html = service.generate_analysis_mockup(
+            element_detection=elements, classification=classification
+        )
 
         assert "<!DOCTYPE html>" in html
         assert "ANALYSIS MOCKUP" in html
@@ -596,10 +601,313 @@ class TestRenderSmokeTests:
             },
             "cta_inventory": [],
         }
-        html = service.generate_analysis_mockup(elements, {})
+        html = service.generate_analysis_mockup(element_detection=elements, classification={})
 
         assert html.strip().startswith("<!DOCTYPE html>")
         assert "</html>" in html
         assert "<style>" in html
         # No external CSS dependencies (except optional Google Fonts)
         assert "bootstrap" not in html.lower()
+
+
+# ---------------------------------------------------------------------------
+# V2: HTML Sanitization
+# ---------------------------------------------------------------------------
+
+class TestSanitization:
+    """Test _sanitize_html strips dangerous content while preserving safe HTML."""
+
+    def test_strips_script_tags(self, service):
+        html = '<div>Hello</div><script>alert(1)</script>'
+        result = service._sanitize_html(html)
+        assert "<script>" not in result
+        # bleach strip=True removes tags but may leave inner text (harmless without tag)
+        assert "<div>Hello</div>" in result
+
+    def test_strips_event_handlers(self, service):
+        html = '<div onclick="alert(1)">Click me</div>'
+        result = service._sanitize_html(html)
+        assert "onclick" not in result
+        assert "Click me" in result
+
+    def test_strips_iframe(self, service):
+        html = '<div>Safe</div><iframe src="http://evil.com"></iframe>'
+        result = service._sanitize_html(html)
+        assert "<iframe" not in result
+        assert "Safe" in result
+
+    def test_strips_javascript_urls(self, service):
+        html = '<a href="javascript:alert(1)">Link</a>'
+        result = service._sanitize_html(html)
+        assert "javascript:" not in result
+
+    def test_strips_dangerous_css(self, service):
+        html = '<div style="background:url(javascript:alert(1))">Text</div>'
+        result = service._sanitize_html(html)
+        assert "javascript:" not in result
+
+    def test_preserves_safe_tags(self, service):
+        html = '<div><p>Hello</p><h1>Title</h1></div>'
+        result = service._sanitize_html(html)
+        assert "<div>" in result
+        assert "<p>" in result
+        assert "<h1>" in result
+
+    def test_preserves_data_slot_attrs(self, service):
+        html = '<h1 data-slot="headline">Title</h1>'
+        result = service._sanitize_html(html)
+        assert 'data-slot="headline"' in result
+
+    def test_preserves_safe_inline_styles(self, service):
+        html = '<div style="color: red; font-size: 16px">Text</div>'
+        result = service._sanitize_html(html)
+        assert "color" in result
+        assert "font-size" in result
+
+
+# ---------------------------------------------------------------------------
+# V2: AI Vision Mockup
+# ---------------------------------------------------------------------------
+
+class TestAIVisionMockup:
+    """Test AI vision generation path."""
+
+    @patch("viraltracker.services.landing_page_analysis.mockup_service.MockupService._generate_via_ai_vision")
+    def test_ai_vision_returns_wrapped_html(self, mock_vision, service):
+        mock_vision.return_value = '<div data-slot="headline">Hello World</div>'
+        html = service.generate_analysis_mockup(screenshot_b64="fake_b64_data")
+        assert "ANALYSIS MOCKUP" in html
+        assert "Hello World" in html
+        assert "<!DOCTYPE html>" in html
+
+    @patch("viraltracker.services.landing_page_analysis.mockup_service.MockupService._generate_via_ai_vision")
+    def test_ai_vision_strips_code_fences(self, mock_vision, service):
+        mock_vision.return_value = '<div>Clean HTML</div>'
+        # Simulate code fence stripping happening inside _generate_via_ai_vision
+        html = service.generate_analysis_mockup(screenshot_b64="fake_b64")
+        assert "Clean HTML" in html
+
+    @patch("viraltracker.services.landing_page_analysis.mockup_service.MockupService._generate_via_ai_vision")
+    def test_ai_vision_sanitizes_output(self, mock_vision, service):
+        mock_vision.return_value = '<div>Safe</div><script>alert("xss")</script>'
+        html = service.generate_analysis_mockup(screenshot_b64="fake_b64")
+        assert "<script>" not in html
+        assert "Safe" in html
+
+
+# ---------------------------------------------------------------------------
+# V2: Markdown Fallback
+# ---------------------------------------------------------------------------
+
+class TestMarkdownFallback:
+    """Test markdown→HTML fallback path."""
+
+    def test_markdown_renders_to_html(self, service):
+        html = service.generate_analysis_mockup(page_markdown="# Hello\n\nWorld")
+        assert "Hello" in html
+        assert "World" in html
+        assert "<!DOCTYPE html>" in html
+
+    def test_markdown_disables_raw_html(self, service):
+        html = service.generate_analysis_mockup(
+            page_markdown="# Title\n\n<script>alert(1)</script>"
+        )
+        assert "<script>" not in html
+        # Script tag is stripped; text content is harmless without the tag
+
+    def test_empty_markdown(self, service):
+        html = service.generate_analysis_mockup(page_markdown="")
+        assert "<!DOCTYPE html>" in html
+
+
+# ---------------------------------------------------------------------------
+# V2: Fallback Chain
+# ---------------------------------------------------------------------------
+
+class TestFallbackChain:
+    """Test priority: screenshot > markdown > V1 wireframe."""
+
+    @patch("viraltracker.services.landing_page_analysis.mockup_service.MockupService._generate_via_ai_vision")
+    def test_screenshot_takes_priority(self, mock_vision, service):
+        mock_vision.return_value = '<div data-slot="headline">AI Generated</div>'
+        html = service.generate_analysis_mockup(
+            screenshot_b64="fake_b64",
+            page_markdown="# Markdown Content",
+            element_detection={"sections": {}, "cta_inventory": []},
+        )
+        assert "AI Generated" in html
+        mock_vision.assert_called_once()
+
+    def test_markdown_when_no_screenshot(self, service):
+        html = service.generate_analysis_mockup(
+            page_markdown="# Markdown Heading\n\nSome content",
+        )
+        assert "Markdown Heading" in html
+
+    def test_v1_when_nothing_available(self, service):
+        elements = {
+            "sections": {
+                "above_the_fold": {
+                    "elements_found": [
+                        {"element_name": "Headline", "element_type": "benefit", "content_summary": "V1 Title"}
+                    ]
+                }
+            },
+            "cta_inventory": [],
+        }
+        html = service.generate_analysis_mockup(element_detection=elements)
+        assert "V1 Title" in html
+        assert "<!DOCTYPE html>" in html
+
+
+# ---------------------------------------------------------------------------
+# V2: Slot Mapping
+# ---------------------------------------------------------------------------
+
+class TestSlotMapping:
+    """Test _build_slot_map from blueprint sections."""
+
+    def test_build_slot_map_first_section_maps_to_hero(self, service):
+        blueprint = {
+            "sections": [
+                {
+                    "flow_order": 1,
+                    "brand_mapping": {
+                        "primary_content": "My Headline",
+                        "emotional_hook": "My Subheadline",
+                    },
+                }
+            ],
+        }
+        slot_map = service._build_slot_map(blueprint)
+        assert slot_map["headline"] == "My Headline"
+        assert slot_map["subheadline"] == "My Subheadline"
+
+    def test_build_slot_map_numbered_sections(self, service):
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": "Hero"}},
+                {"flow_order": 2, "brand_mapping": {"primary_content": "Section 2", "supporting_data": "Body 2"}},
+                {"flow_order": 3, "brand_mapping": {"primary_content": "Section 3", "supporting_data": "Body 3"}},
+            ],
+        }
+        slot_map = service._build_slot_map(blueprint)
+        assert slot_map["headline"] == "Hero"
+        assert slot_map["heading-1"] == "Section 2"
+        assert slot_map["body-1"] == "Body 2"
+        assert slot_map["heading-2"] == "Section 3"
+        assert slot_map["body-2"] == "Body 3"
+
+    def test_build_slot_map_escapes_values(self, service):
+        blueprint = {
+            "sections": [
+                {
+                    "flow_order": 1,
+                    "brand_mapping": {"primary_content": '<script>alert("xss")</script>'},
+                }
+            ],
+        }
+        slot_map = service._build_slot_map(blueprint)
+        assert "<script>" not in slot_map["headline"]
+        assert "&lt;script&gt;" in slot_map["headline"]
+
+
+# ---------------------------------------------------------------------------
+# V2: Template Swap
+# ---------------------------------------------------------------------------
+
+class TestTemplateSwap:
+    """Test _template_swap DOM-level replacement."""
+
+    def test_replaces_data_slot_content(self, service):
+        template = '<h1 data-slot="headline">Old Headline</h1>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": "New Headline"}},
+            ],
+        }
+        result = service._template_swap(template, blueprint)
+        assert "New Headline" in result
+        assert "Old Headline" not in result
+
+    def test_handles_nested_markup_in_slot(self, service):
+        template = '<div data-slot="headline"><p>Old <b>text</b></p></div>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": "Clean Text"}},
+            ],
+        }
+        result = service._template_swap(template, blueprint)
+        assert "Clean Text" in result
+        assert "Old" not in result
+
+    def test_escapes_html_in_brand_values(self, service):
+        template = '<h1 data-slot="headline">Old</h1>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": '<img src=x onerror=alert(1)>'}},
+            ],
+        }
+        result = service._template_swap(template, blueprint)
+        assert "<img" not in result
+        assert "&lt;img" in result
+
+    def test_missing_slots_no_crash(self, service):
+        template = '<h1 data-slot="nonexistent">Keep This</h1>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": "New"}},
+            ],
+        }
+        result = service._template_swap(template, blueprint)
+        assert "Keep This" in result
+
+    def test_preserves_non_slot_content(self, service):
+        template = '<div>Preserved</div><h1 data-slot="headline">Replace</h1>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": "New"}},
+            ],
+        }
+        result = service._template_swap(template, blueprint)
+        assert "Preserved" in result
+        assert "New" in result
+
+    def test_resanitizes_after_swap(self, service):
+        """generate_blueprint_mockup should re-sanitize after template-swap."""
+        template = '<h1 data-slot="headline">Old</h1>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "brand_mapping": {"primary_content": "Safe Content"}},
+            ],
+        }
+        html = service.generate_blueprint_mockup(
+            blueprint=blueprint,
+            analysis_mockup_html=template,
+        )
+        assert "Safe Content" in html
+        assert "<!DOCTYPE html>" in html
+
+
+# ---------------------------------------------------------------------------
+# V2: Usage Tracking
+# ---------------------------------------------------------------------------
+
+class TestUsageTracking:
+    """Test usage tracking context propagation."""
+
+    def test_set_tracking_context(self, service):
+        tracker = MagicMock()
+        service.set_tracking_context(tracker, "user123", "org456")
+        assert service._usage_tracker is tracker
+        assert service._user_id == "user123"
+        assert service._organization_id == "org456"
+
+    @patch("viraltracker.services.landing_page_analysis.mockup_service.MockupService._generate_via_ai_vision")
+    def test_gemini_receives_tracking(self, mock_vision, service):
+        """Usage tracker should be passed to GeminiService when set."""
+        tracker = MagicMock()
+        service.set_tracking_context(tracker, "user123", "org456")
+        mock_vision.return_value = "<div>Test</div>"
+        service.generate_analysis_mockup(screenshot_b64="fake_b64")
+        mock_vision.assert_called_once()

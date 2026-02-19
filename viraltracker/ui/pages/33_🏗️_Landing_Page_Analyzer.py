@@ -13,10 +13,13 @@ Tab 2: Results — View past analyses with expandable detail
 Tab 3: Blueprint — Generate brand-specific reconstruction blueprints
 """
 
+import logging
 import streamlit as st
 import asyncio
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Landing Page Analyzer", page_icon="🏗️", layout="wide")
 
@@ -1166,10 +1169,10 @@ def render_results_tab(org_id: str):
         return
 
     for analysis in analyses:
-        _render_analysis_row(analysis, service)
+        _render_analysis_row(analysis, service, org_id)
 
 
-def _render_analysis_row(analysis: dict, service):
+def _render_analysis_row(analysis: dict, service, org_id: str):
     """Render a single analysis as an expandable row."""
     url = analysis.get("url", "Unknown")
     grade = analysis.get("overall_grade", "—")
@@ -1206,7 +1209,7 @@ def _render_analysis_row(analysis: dict, service):
         # --- Mockup Generation ---
         analysis_id = full.get("id", "")
         if analysis_id:
-            _render_analysis_mockup_section(full, analysis_id)
+            _render_analysis_mockup_section(full, analysis_id, org_id)
 
 
 def _render_analysis_detail(analysis: dict):
@@ -1395,7 +1398,7 @@ def _render_analysis_detail(analysis: dict):
 # Mockup helpers
 # ---------------------------------------------------------------------------
 
-def _render_analysis_mockup_section(analysis: dict, analysis_id: str):
+def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: str):
     """Render mockup generation controls for an analysis."""
     st.markdown("---")
     st.markdown("**Visual Mockup**")
@@ -1404,24 +1407,70 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str):
 
     if cached:
         _render_mockup_preview(cached, f"analysis_{analysis_id}")
-    elif st.button(
+        return
+
+    screenshot_path = analysis.get("screenshot_storage_path")
+    screenshot_b64 = None
+
+    if screenshot_path:
+        try:
+            service = get_analysis_service()
+            screenshot_bytes = service._load_screenshot(screenshot_path)
+            if screenshot_bytes:
+                import base64
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+        except Exception as e:
+            logger.warning(f"Failed to load screenshot: {e}")
+
+    if not screenshot_path and not analysis.get("page_markdown") and not analysis.get("elements"):
+        st.info("No screenshot or page content available for mockup.")
+        if st.button("Capture Screenshot", key=f"rescrape_{analysis_id}"):
+            _rescrape_for_screenshot(analysis, analysis_id, org_id)
+        return
+
+    if st.button(
         "Generate Mockup",
         key=f"lpa_gen_mockup_analysis_{analysis_id}",
     ):
-        elements = analysis.get("elements", {})
-        classification = analysis.get("classification", {})
-
-        if not elements:
-            st.warning("No element detection data available for this analysis.")
-            return
-
+        svc = get_mockup_service()
+        # Wire up usage tracking
         try:
-            svc = get_mockup_service()
-            html_str = svc.generate_analysis_mockup(elements, classification)
-            _cache_mockup("analysis", analysis_id, html_str)
-            st.rerun()
+            from viraltracker.services.usage_tracker import UsageTracker
+            tracker = UsageTracker(get_supabase_client())
+            user_id = st.session_state.get("user_id")
+            svc.set_tracking_context(tracker, user_id, org_id)
+        except Exception:
+            pass
+
+        spinner_text = "Generating page mockup..." if screenshot_b64 else "Rendering page content..."
+        with st.spinner(spinner_text):
+            try:
+                html_str = svc.generate_analysis_mockup(
+                    screenshot_b64=screenshot_b64,
+                    element_detection=analysis.get("elements", {}),
+                    classification=analysis.get("classification", {}),
+                    page_markdown=analysis.get("page_markdown"),
+                )
+                _cache_mockup("analysis", analysis_id, html_str)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Mockup generation failed: {e}")
+
+
+def _rescrape_for_screenshot(analysis: dict, analysis_id: str, org_id: str):
+    """Re-scrape URL to capture screenshot only."""
+    with st.spinner("Capturing page screenshot..."):
+        try:
+            service = get_analysis_service()
+            page_data = service.scrape_landing_page(analysis.get("url", ""))
+            ss_b64 = page_data.get("screenshot")
+            if ss_b64:
+                service._store_screenshot(analysis_id, org_id, ss_b64)
+                st.rerun()
+            else:
+                st.error("Failed to capture screenshot.")
         except Exception as e:
-            st.error(f"Mockup generation failed: {e}")
+            st.error(f"Re-scrape failed: {e}")
 
 
 def _render_blueprint_mockup_section(
@@ -1467,10 +1516,14 @@ def _render_blueprint_mockup_section(
             except Exception:
                 pass
 
+        # Get cached analysis HTML for template-swap
+        analysis_html = _get_cached_mockup("analysis", analysis_id) if analysis_id else None
+
         try:
             svc = get_mockup_service()
             html_str = svc.generate_blueprint_mockup(
                 blueprint,
+                analysis_mockup_html=analysis_html,
                 classification=classification,
                 brand_profile=brand_profile,
             )

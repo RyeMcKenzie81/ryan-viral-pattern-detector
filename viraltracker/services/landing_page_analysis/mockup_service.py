@@ -2,20 +2,80 @@
 Mockup Service — Generates standalone HTML/CSS mockup files from
 landing page analysis and blueprint data.
 
-Two modes:
-- Analysis Mockup (Phase 1): Renders detected page structure with filler content
-- Blueprint Mockup (Phase 2): Renders blueprint copy_direction + brand_mapping content
+Three generation modes (fallback chain):
+1. AI Vision: Screenshot → Gemini → faithful HTML recreation with data-slot markers
+2. Markdown: Page markdown → markdown-it → sanitized HTML
+3. V1 Wireframe: Element detection → section-by-section pattern rendering
+
+Two output modes:
+- Analysis Mockup: Renders competitor page structure (from screenshot or elements)
+- Blueprint Mockup: Swaps data-slot content with brand_mapping values
 """
 
+import html as _html_module
 import logging
 import os
 import re
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
+import bleach
+from bleach.css_sanitizer import CSSSanitizer
 import jinja2
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# HTML sanitization allowlists
+# ---------------------------------------------------------------------------
+
+_ALLOWED_TAGS = [
+    # Structure
+    "html", "head", "body", "title", "meta",
+    # Layout
+    "div", "span", "section", "header", "footer", "nav", "main", "article", "aside",
+    # Text
+    "p", "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "b", "i", "u", "small", "sup", "sub",
+    "br", "hr", "blockquote", "pre", "code",
+    # Lists
+    "ul", "ol", "li",
+    # Tables
+    "table", "tr", "td", "th", "thead", "tbody",
+    # Media (images only, no external loading)
+    "img", "figure", "figcaption",
+    # Interactive (display only)
+    "a", "button",
+    # Forms (display only)
+    "input", "label", "select", "option", "textarea", "form",
+]
+
+_ALLOWED_ATTRS = {
+    "*": ["class", "id", "style", "data-slot", "data-section", "role", "aria-label"],
+    "a": ["href", "target", "rel"],
+    "img": ["src", "alt", "width", "height"],
+    "meta": ["charset", "name", "content"],
+    "input": ["type", "placeholder", "value", "name"],
+    "td": ["colspan", "rowspan"],
+    "th": ["colspan", "rowspan"],
+}
+
+_ALLOWED_CSS_PROPERTIES = [
+    "color", "background-color", "background", "font-size", "font-weight",
+    "font-family", "text-align", "text-decoration", "line-height",
+    "margin", "margin-top", "margin-bottom", "margin-left", "margin-right",
+    "padding", "padding-top", "padding-bottom", "padding-left", "padding-right",
+    "border", "border-radius", "border-color", "border-width", "border-style",
+    "width", "max-width", "min-width", "height", "max-height", "min-height",
+    "display", "flex-direction", "justify-content", "align-items", "gap", "flex-wrap", "flex",
+    "grid-template-columns", "grid-gap",
+    "position", "top", "bottom", "left", "right",
+    "overflow", "opacity", "box-shadow", "letter-spacing",
+    "list-style", "list-style-type",
+]
+
+_CSS_SANITIZER = CSSSanitizer(allowed_css_properties=_ALLOWED_CSS_PROPERTIES)
 
 # ---------------------------------------------------------------------------
 # Element Name → Visual Pattern mapping (34 elements → 12 patterns)
@@ -105,55 +165,97 @@ class MockupService:
 
     _jinja_env: Optional[jinja2.Environment] = None
 
+    def __init__(self):
+        self._usage_tracker = None
+        self._user_id: Optional[str] = None
+        self._organization_id: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Usage tracking
+    # ------------------------------------------------------------------
+
+    def set_tracking_context(self, usage_tracker, user_id: str, organization_id: str):
+        """Set usage tracking context for AI calls."""
+        self._usage_tracker = usage_tracker
+        self._user_id = user_id
+        self._organization_id = organization_id
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def generate_analysis_mockup(
         self,
-        element_detection: Dict[str, Any],
-        classification: Dict[str, Any],
+        screenshot_b64: Optional[str] = None,
+        element_detection: Optional[Dict[str, Any]] = None,
+        classification: Optional[Dict[str, Any]] = None,
+        page_markdown: Optional[str] = None,
     ) -> str:
-        """Phase 1: Render page structure from element detection with filler content.
+        """Generate a faithful HTML recreation of the analyzed page.
+
+        Fallback chain: screenshot→AI vision > page_markdown→HTML > V1 wireframe.
 
         Args:
+            screenshot_b64: Optional base64 screenshot for AI vision recreation
             element_detection: Skill 2 output (element_detection dict, wrapped or unwrapped)
             classification: Skill 1 output (page_classifier dict, wrapped or unwrapped)
+            page_markdown: Optional page markdown for fallback rendering
 
         Returns:
             Standalone HTML string
         """
-        sections = self._normalize_elements(element_detection)
-        return self._render_html(
-            sections=sections,
-            classification=classification,
-            mode="analysis",
-        )
+        if screenshot_b64:
+            raw_html = self._generate_via_ai_vision(screenshot_b64)
+            html = self._sanitize_html(raw_html)
+            return self._wrap_mockup(html, classification, mode="analysis")
+        elif page_markdown:
+            raw_html = self._markdown_to_html(page_markdown)
+            html = self._sanitize_html(raw_html)
+            return self._wrap_mockup(html, classification, mode="analysis")
+        else:
+            # V1 fallback: wireframe from element_detection
+            sections = self._normalize_elements(element_detection or {})
+            return self._render_html(
+                sections=sections,
+                classification=classification,
+                mode="analysis",
+            )
 
     def generate_blueprint_mockup(
         self,
         blueprint: Dict[str, Any],
+        analysis_mockup_html: Optional[str] = None,
         classification: Optional[Dict[str, Any]] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Phase 2: Render page with blueprint copy_direction and brand content.
+        """Generate blueprint mockup by filling analysis template with brand content.
+
+        If analysis_mockup_html provided: swap data-slot content with escaped
+        brand_mapping values. Otherwise: fall back to V1 section-by-section rendering.
 
         Args:
             blueprint: Skill 5 output (reconstruction_blueprint dict, wrapped or unwrapped)
+            analysis_mockup_html: Optional cached analysis HTML for template-swap
             classification: Optional Skill 1 output for metadata bar
             brand_profile: Optional brand profile for color overrides
 
         Returns:
             Standalone HTML string
         """
-        sections = self._normalize_blueprint_sections(blueprint)
-        brand_style = self._extract_brand_style(brand_profile)
-        return self._render_html(
-            sections=sections,
-            classification=classification,
-            mode="blueprint",
-            brand_style=brand_style,
-        )
+        if analysis_mockup_html:
+            html = self._template_swap(analysis_mockup_html, blueprint, brand_profile)
+            html = self._sanitize_html(html)
+            return self._wrap_mockup(html, classification, mode="blueprint")
+        else:
+            # V1 fallback
+            sections = self._normalize_blueprint_sections(blueprint)
+            brand_style = self._extract_brand_style(brand_profile)
+            return self._render_html(
+                sections=sections,
+                classification=classification,
+                mode="blueprint",
+                brand_style=brand_style,
+            )
 
     # ------------------------------------------------------------------
     # Normalization — Element Detection (Phase 1)
@@ -415,7 +517,319 @@ class MockupService:
         return ELEMENT_VISUAL_MAP.get(canonical, "text_block")
 
     # ------------------------------------------------------------------
-    # Rendering
+    # HTML Sanitization
+    # ------------------------------------------------------------------
+
+    def _sanitize_html(self, raw_html: str) -> str:
+        """Sanitize AI-generated HTML. Strips scripts, iframes, event handlers, dangerous CSS.
+
+        Uses bleach with tag/attr allowlist + CSSSanitizer for inline style filtering.
+        """
+        return bleach.clean(
+            raw_html,
+            tags=_ALLOWED_TAGS,
+            attributes=_ALLOWED_ATTRS,
+            css_sanitizer=_CSS_SANITIZER,
+            strip=True,
+        )
+
+    # ------------------------------------------------------------------
+    # AI Vision Generation
+    # ------------------------------------------------------------------
+
+    def _generate_via_ai_vision(self, screenshot_b64: str) -> str:
+        """Send screenshot to Gemini, get back HTML. Sync wrapper around async."""
+        import asyncio
+        from viraltracker.services.gemini_service import GeminiService
+
+        gemini = GeminiService()
+        if self._usage_tracker:
+            gemini.set_tracking_context(
+                self._usage_tracker, self._user_id, self._organization_id
+            )
+
+        prompt = (
+            "Analyze this landing page screenshot and generate a standalone HTML document "
+            "with inline CSS that faithfully recreates:\n"
+            "- The visual layout and section structure\n"
+            "- Typography (font sizes, weights, colors) using inline styles\n"
+            "- Color scheme and backgrounds\n"
+            "- Content placement and spacing\n"
+            "- All visible text content (verbatim)\n\n"
+            "Use colored placeholder divs with labels for images.\n\n"
+            "IMPORTANT — Slot Marking Contract:\n"
+            "Mark each replaceable text element with a data-slot attribute using "
+            "this EXACT naming convention (numbered sequentially top-to-bottom):\n"
+            '- data-slot="headline" — the main hero headline\n'
+            '- data-slot="subheadline" — the hero subheadline\n'
+            '- data-slot="cta-1", "cta-2", etc. — call-to-action buttons\n'
+            '- data-slot="heading-1", "heading-2", etc. — section headings\n'
+            '- data-slot="body-1", "body-2", etc. — section body text\n'
+            '- data-slot="testimonial-1", etc. — testimonial quotes\n'
+            '- data-slot="feature-1", etc. — feature descriptions\n'
+            '- data-slot="price" — pricing text\n'
+            '- data-slot="guarantee" — guarantee/risk-reversal text\n\n'
+            "Output ONLY the complete HTML document, no explanation."
+        )
+
+        # Sync wrapper — handles both running and non-running event loops
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                raw = pool.submit(asyncio.run, gemini.analyze_image(screenshot_b64, prompt)).result()
+        else:
+            raw = asyncio.run(gemini.analyze_image(screenshot_b64, prompt))
+
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines)
+
+        return raw
+
+    # ------------------------------------------------------------------
+    # Markdown Fallback
+    # ------------------------------------------------------------------
+
+    def _markdown_to_html(self, markdown_text: str) -> str:
+        """Convert page markdown to HTML. Raw HTML passthrough is disabled for safety."""
+        from markdown_it import MarkdownIt
+        md = MarkdownIt().disable("html_block").disable("html_inline")
+        return md.render(markdown_text)
+
+    # ------------------------------------------------------------------
+    # Template Swap (Blueprint mode)
+    # ------------------------------------------------------------------
+
+    def _build_slot_map(self, blueprint: Dict) -> Dict[str, str]:
+        """Build slot_name→escaped_content map from blueprint sections."""
+        rb = blueprint
+        if "reconstruction_blueprint" in rb:
+            rb = rb["reconstruction_blueprint"]
+
+        slot_content: Dict[str, str] = {}
+        sections = sorted(
+            rb.get("sections", []),
+            key=lambda s: int(s.get("flow_order", 999))
+        )
+
+        for i, section in enumerate(sections):
+            bm = section.get("brand_mapping", {})
+            primary = bm.get("primary_content", "")
+            supporting = bm.get("supporting_data", "")
+            hook = bm.get("emotional_hook", "")
+
+            if i == 0:
+                if primary:
+                    slot_content["headline"] = _html_module.escape(primary)
+                if hook:
+                    slot_content["subheadline"] = _html_module.escape(hook)
+            else:
+                if primary:
+                    slot_content[f"heading-{i}"] = _html_module.escape(primary)
+                if supporting:
+                    slot_content[f"body-{i}"] = _html_module.escape(supporting)
+
+        return slot_content
+
+    def _template_swap(
+        self,
+        template_html: str,
+        blueprint: Dict,
+        brand_profile: Optional[Dict] = None,
+    ) -> str:
+        """Replace data-slot content using DOM-aware parsing.
+
+        Uses HTMLParser to walk the HTML tree. When a data-slot element is found
+        whose name matches a blueprint slot, all inner content (including nested
+        tags) is discarded and replaced with the escaped brand_mapping value.
+        """
+        slot_content = self._build_slot_map(blueprint)
+        if not slot_content:
+            return template_html
+
+        class _SlotReplacer(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.parts: list = []
+                self._skip_depth: int = 0
+                self._skip_tag: str = ""
+
+            def handle_starttag(self, tag, attrs):
+                if self._skip_depth > 0:
+                    if tag == self._skip_tag:
+                        self._skip_depth += 1
+                    return
+
+                attr_dict = dict(attrs)
+                slot_name = attr_dict.get("data-slot")
+                if slot_name and slot_name in slot_content:
+                    self.parts.append(self.get_starttag_text())
+                    self.parts.append(slot_content[slot_name])
+                    self._skip_depth = 1
+                    self._skip_tag = tag
+                    return
+
+                self.parts.append(self.get_starttag_text())
+
+            def handle_endtag(self, tag):
+                if self._skip_depth > 0:
+                    if tag == self._skip_tag:
+                        self._skip_depth -= 1
+                    if self._skip_depth == 0:
+                        self.parts.append(f"</{tag}>")
+                        self._skip_tag = ""
+                    return
+                self.parts.append(f"</{tag}>")
+
+            def handle_startendtag(self, tag, attrs):
+                if self._skip_depth > 0:
+                    return
+                self.parts.append(self.get_starttag_text())
+
+            def handle_data(self, data):
+                if self._skip_depth == 0:
+                    self.parts.append(data)
+
+            def handle_entityref(self, name):
+                if self._skip_depth == 0:
+                    self.parts.append(f"&{name};")
+
+            def handle_charref(self, name):
+                if self._skip_depth == 0:
+                    self.parts.append(f"&#{name};")
+
+            def handle_comment(self, data):
+                if self._skip_depth == 0:
+                    self.parts.append(f"<!--{data}-->")
+
+            def handle_decl(self, decl):
+                self.parts.append(f"<!{decl}>")
+
+            def unknown_decl(self, data):
+                self.parts.append(f"<!{data}>")
+
+            def get_result(self) -> str:
+                return "".join(self.parts)
+
+        replacer = _SlotReplacer()
+        replacer.feed(template_html)
+        result = replacer.get_result()
+
+        # Apply brand colors as inline styles
+        brand_style = self._extract_brand_style(brand_profile)
+        if brand_style:
+            primary = brand_style.get("primary", "")
+            if primary and _CSS_COLOR_RE.match(primary):
+                if 'style="' in result.split("<body", 1)[-1].split(">", 1)[0] if "<body" in result else False:
+                    # Merge with existing style attribute on body
+                    result = re.sub(
+                        r'(<body[^>]*style=")',
+                        rf'\1background-color:{primary};',
+                        result,
+                        count=1,
+                    )
+                else:
+                    result = result.replace(
+                        "<body", f'<body style="background-color:{primary}"', 1
+                    )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Mockup Wrapping (for AI vision / markdown output)
+    # ------------------------------------------------------------------
+
+    def _wrap_mockup(
+        self,
+        inner_html: str,
+        classification: Optional[Dict[str, Any]],
+        mode: str,
+    ) -> str:
+        """Wrap AI-generated or markdown HTML in the mockup shell (metadata bar + footer)."""
+        cls_data = classification or {}
+        if "page_classifier" in cls_data:
+            cls_data = cls_data["page_classifier"]
+
+        al = ""
+        pa = ""
+        if cls_data:
+            al_raw = cls_data.get("awareness_level", "")
+            if isinstance(al_raw, dict):
+                al = al_raw.get("primary", "")
+            else:
+                al = al_raw
+            pa_raw = cls_data.get("page_architecture", "")
+            if isinstance(pa_raw, dict):
+                pa = pa_raw.get("type", "")
+            else:
+                pa = pa_raw
+
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        mode_upper = mode.upper()
+        mode_class = mode.lower()
+
+        # Build awareness/architecture display strings
+        awareness_html = ""
+        if al:
+            al_display = _html_module.escape(al.replace("_", " ").title())
+            awareness_html = f'<span><strong>Awareness:</strong> {al_display}</span>'
+        arch_html = ""
+        if pa:
+            pa_display = _html_module.escape(pa.replace("_", " ").title())
+            arch_html = f'<span><strong>Architecture:</strong> {pa_display}</span>'
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Landing Page Mockup — {_html_module.escape(mode.title())} Mode</title>
+<style>
+.mockup-meta-bar {{
+  background: #1e293b; color: #e2e8f0; padding: 12px 24px;
+  font-size: 13px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+}}
+.mockup-meta-bar strong {{ color: #f8fafc; }}
+.mockup-meta-badge {{
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+}}
+.mockup-meta-badge.analysis {{ background: #3b82f6; color: white; }}
+.mockup-meta-badge.blueprint {{ background: #10b981; color: white; }}
+.mockup-gen-footer {{
+  text-align: center; padding: 16px; font-size: 11px;
+  color: #94a3b8; border-top: 1px solid #e2e8f0;
+}}
+</style>
+</head>
+<body>
+<div class="mockup-meta-bar">
+  <span class="mockup-meta-badge {mode_class}">{mode_upper} MOCKUP</span>
+  {awareness_html}
+  {arch_html}
+  <span style="margin-left: auto;"><strong>Generated:</strong> {generated_at}</span>
+</div>
+
+{inner_html}
+
+<div class="mockup-gen-footer">
+  Generated by ViralTracker Landing Page Analyzer &middot; {generated_at}
+</div>
+</body>
+</html>"""
+
+    # ------------------------------------------------------------------
+    # Rendering (V1 wireframe fallback)
     # ------------------------------------------------------------------
 
     def _get_jinja_env(self) -> jinja2.Environment:

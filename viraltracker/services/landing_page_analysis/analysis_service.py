@@ -45,6 +45,8 @@ class LandingPageAnalysisService:
         )
     """
 
+    SCREENSHOT_BUCKET = "landing-page-screenshots"
+
     def __init__(self, supabase=None):
         from viraltracker.core.database import get_supabase_client
         self.supabase = supabase or get_supabase_client()
@@ -182,6 +184,13 @@ class LandingPageAnalysisService:
             page_markdown=page_content,
             screenshot_storage_path=None,
         )
+
+        # Store screenshot after row exists (non-blocking on failure)
+        if screenshot_b64:
+            try:
+                self._store_screenshot(analysis_id, org_id, screenshot_b64)
+            except Exception as e:
+                logger.warning(f"Failed to store screenshot for {analysis_id}: {e}")
 
         try:
             # --- Skill 1: Page Classifier ---
@@ -410,6 +419,78 @@ class LandingPageAnalysisService:
         prompt = f"{system_prompt}\n\nPage content:\n{text_content}"
         response = await gemini.analyze_image(screenshot_b64, prompt)
         return _parse_llm_json(response)
+
+    # ------------------------------------------------------------------
+    # Screenshot storage
+    # ------------------------------------------------------------------
+
+    def _store_screenshot(self, analysis_id: str, org_id: str, screenshot_b64: str) -> Optional[str]:
+        """Upload screenshot to Supabase Storage. Returns bucket-relative path or None."""
+        import base64
+
+        image_bytes = base64.b64decode(screenshot_b64)
+        image_bytes, fmt = self._prepare_screenshot(image_bytes, max_bytes=4_000_000)
+
+        ext = "jpg" if fmt == "JPEG" else "png"
+        content_type = "image/jpeg" if fmt == "JPEG" else "image/png"
+        storage_path = f"{org_id}/{analysis_id}.{ext}"
+
+        self.supabase.storage.from_(self.SCREENSHOT_BUCKET).upload(
+            storage_path, image_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+
+        self.supabase.table("landing_page_analyses").update(
+            {"screenshot_storage_path": storage_path}
+        ).eq("id", analysis_id).execute()
+
+        logger.info(f"Stored screenshot: {self.SCREENSHOT_BUCKET}/{storage_path}")
+        return storage_path
+
+    def _prepare_screenshot(self, image_bytes: bytes, max_bytes: int = 4_000_000) -> tuple:
+        """Resize/compress screenshot to fit within max_bytes.
+
+        Always re-encodes through PIL to ensure format matches the returned label.
+
+        Returns:
+            (processed_bytes, format_str) where format_str is "PNG" or "JPEG"
+        """
+        from PIL import Image
+        import io
+
+        img = Image.open(io.BytesIO(image_bytes))
+
+        # Always scale down width to 1200px max for storage efficiency
+        if img.width > 1200:
+            ratio = 1200 / img.width
+            img = img.resize((1200, int(img.height * ratio)), Image.Resampling.LANCZOS)
+
+        # Try PNG with optimize first
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        result = buf.getvalue()
+        if len(result) <= max_bytes:
+            return result, "PNG"
+
+        # Fall back to JPEG with iterative quality reduction
+        for quality in (85, 70, 50):
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=quality)
+            result = buf.getvalue()
+            if len(result) <= max_bytes:
+                return result, "JPEG"
+
+        # Final guard: return best-effort JPEG even if still over limit
+        logger.warning(f"Screenshot still {len(result)} bytes after compression (max {max_bytes})")
+        return result, "JPEG"
+
+    def _load_screenshot(self, storage_path: str) -> Optional[bytes]:
+        """Download screenshot bytes from Supabase Storage."""
+        try:
+            return self.supabase.storage.from_(self.SCREENSHOT_BUCKET).download(storage_path)
+        except Exception as e:
+            logger.warning(f"Failed to download screenshot {storage_path}: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Persistence
