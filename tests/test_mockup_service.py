@@ -12,6 +12,7 @@ from viraltracker.services.landing_page_analysis.mockup_service import (
     SECTION_ACCENT_COLORS,
     MockupService,
     _DEFAULT_ACCENT,
+    _sanitize_dashes,
 )
 
 
@@ -1640,3 +1641,41 @@ class TestRewriteNoneSafety:
                 {"sections": []},
                 {"brand_basics": {"name": "Test"}},
             )
+
+
+# ---------------------------------------------------------------------------
+# Dash Sanitization
+# ---------------------------------------------------------------------------
+
+class TestDashSanitization:
+    """Test _sanitize_dashes strips em/en dashes from text."""
+
+    def test_em_dash_replaced(self):
+        assert "\u2014" not in _sanitize_dashes("Buy now \u2014 save 50%")
+        assert _sanitize_dashes("Buy now \u2014 save 50%") == "Buy now  -  save 50%"
+
+    def test_en_dash_replaced(self):
+        assert "\u2013" not in _sanitize_dashes("Pages 1\u201310")
+        assert _sanitize_dashes("Pages 1\u201310") == "Pages 1-10"
+
+    def test_no_dashes_unchanged(self):
+        assert _sanitize_dashes("No dashes here") == "No dashes here"
+
+    def test_both_dashes(self):
+        result = _sanitize_dashes("A\u2014B\u2013C")
+        assert "\u2014" not in result
+        assert "\u2013" not in result
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_rewrite_output_sanitized(self, mock_run, service):
+        """AI rewrite output should have em dashes stripped."""
+        mock_result = MagicMock()
+        mock_result.output = '<div data-slot="headline">Wake up \u2014 refreshed</div>'
+        mock_run.return_value = mock_result
+
+        result = service._rewrite_html_for_brand(
+            '<div data-slot="headline">Original</div>',
+            {"sections": []},
+            {"brand_basics": {"name": "Test"}},
+        )
+        assert "\u2014" not in result

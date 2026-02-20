@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 CONGRUENCE_THRESHOLD = 0.6
 
 
+def _sanitize_dashes(text: str) -> str:
+    """Replace em dashes and en dashes with regular dashes/commas."""
+    text = text.replace("\u2014", " - ")   # em dash
+    text = text.replace("\u2013", "-")     # en dash
+    return text
+
+
 @dataclass
 class CongruenceResult:
     """Result from congruence check for a single headline.
@@ -272,6 +279,8 @@ For EACH headline, return a JSON object with:
 {chr(10).join(f"  - {d}" for d in dimensions)}
   - "adapted_headline": string or null (suggested rewrite if any score < 0.6)
 
+When suggesting adapted_headline rewrites, NEVER use em dashes (\u2014). Use commas, periods, or dashes (-) instead.
+
 Return a JSON array of objects, one per headline, in the same order.
 Only return the JSON array, no other text.
 """
@@ -289,10 +298,15 @@ Only return the JSON array, no other text.
 
             parsed = json.loads(text)
             if isinstance(parsed, list) and len(parsed) > 0:
-                return parsed[0]
-            if isinstance(parsed, dict):
-                return parsed
-            return {}
+                result = parsed[0]
+            elif isinstance(parsed, dict):
+                result = parsed
+            else:
+                return {}
+            # Sanitize adapted_headline
+            if result.get("adapted_headline"):
+                result["adapted_headline"] = _sanitize_dashes(result["adapted_headline"])
+            return result
         except (json.JSONDecodeError, IndexError) as e:
             logger.warning(f"Failed to parse congruence result: {e}")
             return {}
@@ -344,7 +358,7 @@ Only return the JSON array, no other text.
 
             adapted = None
             if overall < CONGRUENCE_THRESHOLD and scores.get("adapted_headline"):
-                adapted = scores["adapted_headline"]
+                adapted = _sanitize_dashes(scores["adapted_headline"])
 
             results.append(CongruenceResult(
                 headline=headline,

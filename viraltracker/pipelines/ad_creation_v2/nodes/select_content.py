@@ -162,7 +162,8 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
                         )
                         content_type = "belief_angle_templated"
                     else:
-                        adapted_text = belief_text
+                        from ..services.content_service import _sanitize_dashes
+                        adapted_text = _sanitize_dashes(belief_text)
                         content_type = "belief_angle"
 
                     selected_hooks.append({

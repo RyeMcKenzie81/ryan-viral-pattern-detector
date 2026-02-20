@@ -202,6 +202,7 @@ class AdContentService:
            - **CRITICAL: Ensure the adapted text mentions or implies the product category/target audience**
            - Example: If target audience is "dog owners" or "pet owners", the hook should mention "my dog", "my pet", or similar context
            - **CRITICAL: The adapted text must make sense on its own - someone reading it should understand what product category it's about**
+           - **CRITICAL: Never use em dashes (\u2014). Use commas, periods, or dashes (-) instead**
            {offer_variant_adaptation_rule}
 
         {no_offer_rule}
@@ -277,6 +278,11 @@ class AdContentService:
                         dropped_count = len(selected_hooks) - len(clean_hooks)
                         logger.warning(f"Dropped {dropped_count} hook(s) due to offer sanitization (empty/violating)")
                     selected_hooks = clean_hooks
+
+                # Sanitize em/en dashes from all adapted text
+                for hook in selected_hooks:
+                    if hook.get('adapted_text'):
+                        hook['adapted_text'] = _sanitize_dashes(hook['adapted_text'])
 
                 logger.info(f"Selected {len(selected_hooks)} hooks with categories: "
                             f"{[h.get('category') for h in selected_hooks]}")
@@ -460,6 +466,7 @@ class AdContentService:
         **FORMATTING RULES:**
         - Do NOT use markdown formatting (no asterisks for bold like *word*)
         - Write plain text only - the rendering system will handle formatting
+        - NEVER use em dashes (\u2014). Use commas, periods, colons, or semicolons instead.
 
         **Template Angle (from successful reference ad):**
         - Type: {template_angle.get('angle_type')}
@@ -641,7 +648,7 @@ class AdContentService:
                         "framework": f"Recreate Template ({template_angle.get('angle_type', 'unknown')})",
                         "impact_score": 15,
                         "reasoning": var.get('reasoning', ''),
-                        "adapted_text": adapted_text
+                        "adapted_text": _sanitize_dashes(adapted_text)
                     })
 
                 # Validate for hallucinated content
@@ -728,6 +735,7 @@ RULES:
 6. Do NOT invent claims, offers, or timeframes not in the belief
 7. NEVER add offers, discounts, percentages, free items, or promotional language unless explicitly provided in the belief statement
 8. Output ONLY the headline text, nothing else
+9. NEVER use em dashes (\u2014). Use commas, periods, or dashes (-) instead.
 
 Write the adapted headline:"""
 
@@ -737,7 +745,7 @@ Write the adapted headline:"""
         )
 
         result = await agent.run(prompt)
-        return result.output.strip().strip('"').strip("'")
+        return _sanitize_dashes(result.output.strip().strip('"').strip("'"))
 
     def select_product_images(
         self,
@@ -942,6 +950,13 @@ def _calculate_image_match_score(
         score += 0.05
 
     return min(score, 1.0), reasons
+
+
+def _sanitize_dashes(text: str) -> str:
+    """Replace em dashes and en dashes with regular dashes/commas."""
+    text = text.replace("\u2014", " - ")   # em dash
+    text = text.replace("\u2013", "-")     # en dash
+    return text
 
 
 def _strip_markdown(text: str) -> str:

@@ -322,6 +322,21 @@ class TestCongruenceParsing:
     def test_safe_float_invalid(self):
         assert CongruenceService._safe_float("abc") is None
 
+    def test_parse_single_result_sanitizes_em_dash(self):
+        """_parse_single_result sanitizes em dashes in adapted_headline."""
+        raw = '[{"offer_alignment": 0.3, "adapted_headline": "Better \u2014 headline"}]'
+        result = self.service._parse_single_result(raw)
+        assert "\u2014" not in result.get("adapted_headline", "")
+        assert " - " in result["adapted_headline"]
+
+    def test_parse_batch_result_sanitizes_em_dash(self):
+        """_parse_batch_result sanitizes em dashes in adapted_headline."""
+        raw = '[{"offer_alignment": 0.3, "adapted_headline": "Fixed \u2014 copy"}]'
+        results = self.service._parse_batch_result(raw, ["H1"])
+        assert len(results) == 1
+        assert results[0].adapted_headline is not None
+        assert "\u2014" not in results[0].adapted_headline
+
 
 # ============================================================================
 # HeadlineCongruenceNode

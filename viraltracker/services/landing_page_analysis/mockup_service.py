@@ -160,6 +160,13 @@ _CSS_COLOR_RE = re.compile(
 )
 
 
+def _sanitize_dashes(text: str) -> str:
+    """Replace em dashes and en dashes with regular dashes/commas."""
+    text = text.replace("\u2014", " - ")   # em dash
+    text = text.replace("\u2013", "-")     # en dash
+    return text
+
+
 class MockupService:
     """Generates standalone HTML/CSS mockup files from analysis and blueprint data."""
 
@@ -619,7 +626,7 @@ class MockupService:
             f"Key Problems Solved: {', '.join(str(p) for p in (prod.get('key_problems_solved') or [])[:5])}",
         ]
         if mech.get("name"):
-            lines.append(f"Mechanism: {mech['name']} — {(mech.get('solution') or '')[:200]}")
+            lines.append(f"Mechanism: {mech['name']} - {(mech.get('solution') or '')[:200]}")
         if pp.get("pain_points"):
             lines.append(f"Pain Points: {', '.join(str(p) for p in (pp.get('pain_points') or [])[:5])}")
         if pp.get("desires_goals"):
@@ -660,7 +667,7 @@ class MockupService:
         if personas:
             p0 = personas[0]
             if isinstance(p0, dict):
-                lines.append(f"Target Persona: {p0.get('name') or ''} — {(p0.get('snapshot') or '')[:200]}")
+                lines.append(f"Target Persona: {p0.get('name') or ''} - {(p0.get('snapshot') or '')[:200]}")
                 if p0.get("pain_points"):
                     pts = p0["pain_points"][:3] if isinstance(p0["pain_points"], list) else []
                     if pts:
@@ -843,12 +850,13 @@ class MockupService:
    - Competitor statistics → brand's actual statistics if available
    - Competitor ingredients/features → brand's ingredients/features
    - Urgency/scarcity text → adapt for brand's offer style
-5. Maintain page congruence — every element supports one cohesive argument
+5. Maintain page congruence: every element supports one cohesive argument
 6. Use the brand's voice/tone throughout
 7. DO NOT add, remove, or reorder HTML elements
 8. DO NOT modify CSS styles, classes, or attributes (except text content)
 9. Keep data-slot attributes exactly as they are
 10. Image placeholder labels: update to describe brand-relevant images
+11. NEVER use em dashes (\u2014). Use commas, periods, colons, or semicolons instead.
 
 OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrapping <html>/<body> tags."""
 
@@ -858,7 +866,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 "You are an expert direct-response copywriter rewriting a competitor "
                 "landing page for a different brand. Rewrite ALL visible text for the "
                 "brand while keeping the EXACT same HTML structure. Return ONLY the "
-                "rewritten HTML fragment — no explanations, no outer html/body tags."
+                "rewritten HTML fragment. No explanations, no outer html/body tags."
             ),
         )
 
@@ -896,6 +904,9 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         # Strip any html/body wrapper the AI may have added
         raw = self._strip_mockup_wrapper(raw)
+
+        # Sanitize em/en dashes from AI-generated copy
+        raw = _sanitize_dashes(raw)
 
         # Validate structure
         self._validate_rewrite_structure(page_body, raw)
