@@ -2364,3 +2364,173 @@ class TestBackwardCompatibility:
         html = service.generate_analysis_mockup(screenshot_b64="fake_b64")
         assert 'class="page-css"' in html
         assert "color: red" in html
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Prompt Hardening (anti-hallucination, image sizing, layout fidelity)
+# ---------------------------------------------------------------------------
+
+class TestPromptHardening:
+    """Test Phase 2 prompt improvements for fidelity."""
+
+    def test_anti_hallucination_language(self, service):
+        """Prompt contains strong anti-hallucination instructions."""
+        prompt = service._build_vision_prompt()
+        assert "NO HALLUCINATION" in prompt
+        assert "Do NOT add, summarize, or rephrase" in prompt
+        assert "OMIT the text rather than invent" in prompt
+
+    def test_image_sizing_section(self, service):
+        """Prompt contains image sizing guidance."""
+        prompt = service._build_vision_prompt()
+        assert "IMAGE SIZING" in prompt
+        assert "border-radius: 50%" in prompt
+        assert "Do NOT render small images as full-width" in prompt
+
+    def test_layout_fidelity_instructions(self, service):
+        """Prompt contains layout fidelity guidance."""
+        prompt = service._build_vision_prompt()
+        assert "1440px" in prompt
+        assert "compact sections stay compact" in prompt
+        assert "do NOT stack vertically" in prompt
+
+    def test_page_text_strict_wording(self, service):
+        """PAGE TEXT CONTENT section uses strict source-of-truth language."""
+        prompt = service._build_vision_prompt(page_markdown="# Test\n\nContent here")
+        assert "source of truth for text" in prompt
+        assert "Do NOT rephrase, summarize, or add transitions" in prompt
+        # Should NOT contain the old "reference" wording
+        assert "Use this as reference for exact text" not in prompt
+
+    def test_image_urls_sizing_hint(self, service):
+        """Image URL section includes sizing guidance."""
+        images = [{"alt": "Author avatar", "url": "https://example.com/avatar.jpg"}]
+        prompt = service._build_vision_prompt(image_urls=images)
+        assert "Do NOT make all images full-width" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: CSS Allowlist Additions
+# ---------------------------------------------------------------------------
+
+class TestCssAllowlistAdditions:
+    """Test CSS properties added in Phase 2."""
+
+    def test_aspect_ratio_allowed(self):
+        """aspect-ratio should be in the CSS allowlist."""
+        from viraltracker.services.landing_page_analysis.mockup_service import _ALLOWED_CSS_PROPERTIES
+        assert "aspect-ratio" in _ALLOWED_CSS_PROPERTIES
+
+    def test_row_gap_column_gap_allowed(self):
+        """row-gap and column-gap should be in the CSS allowlist."""
+        from viraltracker.services.landing_page_analysis.mockup_service import _ALLOWED_CSS_PROPERTIES
+        assert "row-gap" in _ALLOWED_CSS_PROPERTIES
+        assert "column-gap" in _ALLOWED_CSS_PROPERTIES
+
+    def test_text_shadow_allowed(self):
+        """text-shadow should be in the CSS allowlist."""
+        from viraltracker.services.landing_page_analysis.mockup_service import _ALLOWED_CSS_PROPERTIES
+        assert "text-shadow" in _ALLOWED_CSS_PROPERTIES
+
+    def test_cursor_allowed(self):
+        """cursor should be in the CSS allowlist."""
+        from viraltracker.services.landing_page_analysis.mockup_service import _ALLOWED_CSS_PROPERTIES
+        assert "cursor" in _ALLOWED_CSS_PROPERTIES
+
+    def test_gradient_not_stripped_by_css_sanitizer(self):
+        """linear-gradient should survive CSS block sanitization."""
+        css = ".hero { background: linear-gradient(135deg, #ff6b6b 0%, #4ecdc4 100%); }"
+        result = _sanitize_css_block(css)
+        assert "linear-gradient" in result
+        assert "#ff6b6b" in result
+
+    def test_radial_gradient_not_stripped(self):
+        """radial-gradient should survive CSS block sanitization."""
+        css = ".bg { background-image: radial-gradient(circle, #fff 0%, #000 100%); }"
+        result = _sanitize_css_block(css)
+        assert "radial-gradient" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Content Fidelity Verification
+# ---------------------------------------------------------------------------
+
+class TestContentFidelityVerification:
+    """Test _verify_content_fidelity and helpers."""
+
+    def test_extract_visible_text_basic(self, service):
+        """Extracts visible text from simple HTML."""
+        html = '<div><h1>Hello World</h1><p>Some paragraph text here.</p></div>'
+        texts = service._extract_visible_text(html)
+        assert "Hello World" in texts
+        assert "Some paragraph text here." in texts
+
+    def test_extract_visible_text_skips_style(self, service):
+        """Does not extract text from style tags."""
+        html = '<style>.x { color: red; }</style><p>Visible</p>'
+        texts = service._extract_visible_text(html)
+        assert "Visible" in texts
+        assert not any("color" in t for t in texts)
+
+    def test_extract_visible_text_skips_script(self, service):
+        """Does not extract text from script tags."""
+        html = '<script>var x = 1;</script><p>Visible</p>'
+        texts = service._extract_visible_text(html)
+        assert "Visible" in texts
+        assert not any("var" in t for t in texts)
+
+    def test_normalize_for_comparison(self, service):
+        """Normalizes text for comparison."""
+        assert service._normalize_for_comparison("Hello, World!") == "hello world"
+        assert service._normalize_for_comparison("  Multiple   Spaces  ") == "multiple spaces"
+
+    def test_matching_content_returns_no_suspects(self, service):
+        """Content that matches markdown returns no suspects."""
+        html = '<h1>Welcome to Our Site</h1><p>This is a paragraph about our great product that helps you.</p>'
+        markdown = "# Welcome to Our Site\n\nThis is a paragraph about our great product that helps you."
+        matched, suspect = service._verify_content_fidelity(html, markdown)
+        assert len(suspect) == 0
+        assert len(matched) > 0
+
+    def test_hallucinated_content_flagged(self, service):
+        """Content NOT in markdown is flagged as suspect."""
+        html = (
+            '<h1>Welcome to Our Site</h1>'
+            '<p>In this comprehensive guide, we will explore the many benefits of healthy eating '
+            'and how it can transform your daily life in remarkable ways.</p>'
+        )
+        markdown = "# Welcome to Our Site\n\nBuy our product today."
+        matched, suspect = service._verify_content_fidelity(html, markdown)
+        assert len(suspect) >= 1
+        assert any("comprehensive guide" in s for s in suspect)
+
+    def test_no_markdown_returns_empty(self, service):
+        """No markdown means no verification possible."""
+        html = '<p>Some text</p>'
+        matched, suspect = service._verify_content_fidelity(html, None)
+        assert matched == []
+        assert suspect == []
+
+    def test_short_text_not_flagged(self, service):
+        """Short text chunks (< 20 chars) are not flagged as suspect."""
+        html = '<button>Buy Now</button><p>This very long paragraph does not exist in the markdown at all and should be flagged.</p>'
+        markdown = "# Page\n\nCompletely different content here."
+        matched, suspect = service._verify_content_fidelity(html, markdown)
+        # "Buy Now" is short, should not be suspect
+        assert not any("Buy Now" in s for s in suspect)
+
+    @patch.object(MockupService, "_generate_via_ai_vision")
+    def test_content_fidelity_called_in_pipeline(self, mock_vision, service):
+        """Content fidelity check runs during generate_analysis_mockup with markdown."""
+        mock_vision.return_value = (
+            '<div data-slot="headline">Test Headline</div>'
+            '<div data-slot="cta-1">Buy Now</div>'
+            '<div data-slot="body-1">Some body text</div>'
+        )
+        with patch.object(service, "_verify_content_fidelity") as mock_verify:
+            mock_verify.return_value = ([], [])
+            service.generate_analysis_mockup(
+                screenshot_b64="fake_b64",
+                page_markdown="# Test\n\nSome content"
+            )
+            mock_verify.assert_called_once()
