@@ -387,6 +387,8 @@ class MockupService:
         classification: Optional[Dict[str, Any]] = None,
         page_markdown: Optional[str] = None,
         page_url: Optional[str] = None,
+        use_multipass: bool = False,
+        progress_callback: Optional[Any] = None,
     ) -> str:
         """Generate a faithful HTML recreation of the analyzed page.
 
@@ -398,17 +400,31 @@ class MockupService:
             classification: Skill 1 output (page_classifier dict, wrapped or unwrapped)
             page_markdown: Optional page markdown for fallback rendering
             page_url: Optional page URL for resolving relative image URLs
+            use_multipass: If True, use 5-phase multipass pipeline (~60s, higher fidelity)
+            progress_callback: Optional callable(phase: int, message: str) for progress
 
         Returns:
             Standalone HTML string
         """
-        if screenshot_b64:
+        if screenshot_b64 and use_multipass:
+            raw_html = self._generate_via_multipass(
+                screenshot_b64,
+                page_markdown=page_markdown,
+                page_url=page_url,
+                element_detection=element_detection,
+                progress_callback=progress_callback,
+            )
+        elif screenshot_b64:
             raw_html = self._generate_via_ai_vision(
                 screenshot_b64,
                 page_markdown=page_markdown,
                 page_url=page_url,
             )
-            # Extract, sanitize, and strip <style> blocks in one pass
+        else:
+            raw_html = None
+
+        if raw_html is not None:
+            # SINGLE post-processing pipeline for BOTH paths
             body_html, sanitized_css = self._extract_and_sanitize_css(raw_html)
             html = self._sanitize_html(body_html)
 
@@ -425,9 +441,26 @@ class MockupService:
                     html = self._sanitize_html(fallback_html)
                     sanitized_css = ""  # Markdown fallback has no CSS
 
-            # Validate slot coverage (retry once if unusable)
+            # Validate slot coverage (retry once if unusable, single-pass only)
             severity, report = self._validate_analysis_slots(html)
-            if severity == "unusable" and not getattr(self, '_slot_retry_used', False):
+
+            # CATASTROPHIC ESCAPE (multipass only)
+            if use_multipass and (severity == "unusable" or not is_complete):
+                logger.warning(
+                    "Multipass produced unusable artifact (severity=%s, complete=%s), "
+                    "falling back to single-pass", severity, is_complete
+                )
+                raw_html = self._generate_via_ai_vision(
+                    screenshot_b64,
+                    page_markdown=page_markdown,
+                    page_url=page_url,
+                )
+                body_html, sanitized_css = self._extract_and_sanitize_css(raw_html)
+                html = self._sanitize_html(body_html)
+                is_complete, issues = self._validate_html_completeness(html)
+                severity, report = self._validate_analysis_slots(html)
+
+            if not use_multipass and severity == "unusable" and not getattr(self, '_slot_retry_used', False):
                 logger.info(f"Slot validation unusable, retrying with reinforced prompt")
                 self._slot_retry_used = True
                 try:
@@ -1493,6 +1526,66 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         parts.append("Output ONLY the complete HTML document, no explanation or code fences.")
 
         return ''.join(parts)
+
+    def _generate_via_multipass(
+        self,
+        screenshot_b64: str,
+        page_markdown: Optional[str] = None,
+        page_url: Optional[str] = None,
+        element_detection: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Any] = None,
+    ) -> str:
+        """Run the 5-phase multipass pipeline via ThreadPoolExecutor + asyncio.run().
+
+        Returns raw HTML only -- no sanitization, no validation, no wrapping.
+        All post-processing is owned by generate_analysis_mockup().
+        """
+        import asyncio
+        import concurrent.futures
+        from viraltracker.services.gemini_service import GeminiService
+        from .multipass.pipeline import MultiPassPipeline
+
+        gemini = GeminiService()
+        if self._usage_tracker:
+            gemini.set_tracking_context(
+                self._usage_tracker, self._user_id, self._organization_id
+            )
+
+        pipeline = MultiPassPipeline(
+            gemini_service=gemini,
+            progress_callback=progress_callback,
+        )
+
+        async def _run():
+            return await pipeline.generate(
+                screenshot_b64=screenshot_b64,
+                page_markdown=page_markdown or "",
+                page_url=page_url,
+                element_detection=element_detection,
+            )
+
+        # Sync wrapper -- same pattern as _generate_via_ai_vision
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                raw = pool.submit(asyncio.run, _run()).result()
+        else:
+            raw = asyncio.run(_run())
+
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines)
+
+        return raw
 
     def _generate_via_ai_vision(
         self,

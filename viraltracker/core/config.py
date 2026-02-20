@@ -29,6 +29,7 @@ class Config:
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
     GEMINI_VIDEO_MODEL: str = 'models/gemini-2.5-pro'  # Gemini 2.5 Pro for video analysis
     GEMINI_IMAGE_MODEL: str = 'models/gemini-3-pro-image-preview'  # Updated to Gemini 3 Pro
+    GEMINI_TEXT_MODEL: str = 'models/gemini-2.5-flash'  # Text-only model for cheaper calls
 
     # OpenAI / Sora
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')

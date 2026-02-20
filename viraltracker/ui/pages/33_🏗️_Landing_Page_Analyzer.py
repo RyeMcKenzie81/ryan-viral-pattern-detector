@@ -1434,6 +1434,16 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
             _rescrape_for_screenshot(analysis, analysis_id, org_id)
         return
 
+    # High-fidelity mode toggle (multipass pipeline)
+    use_multipass = False
+    if screenshot_b64:
+        use_multipass = st.checkbox(
+            "High-fidelity mode",
+            value=False,
+            help="5-phase pipeline with visual refinement. ~60 seconds, higher quality.",
+            key=f"multipass_toggle_{analysis_id}",
+        )
+
     if st.button(
         "Generate Mockup",
         key=f"lpa_gen_mockup_analysis_{analysis_id}",
@@ -1448,7 +1458,33 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
         except Exception:
             pass
 
-        spinner_text = "Generating page mockup..." if screenshot_b64 else "Rendering page content..."
+        # Progress indicator for multipass
+        progress_placeholder = st.empty()
+        phase_names = {
+            0: "Extracting design system...",
+            1: "Building layout skeleton...",
+            2: "Injecting content and slots...",
+            3: "Refining sections visually...",
+            4: "Applying visual patches...",
+            5: "Complete!",
+        }
+
+        def _progress_callback(phase: int, message: str):
+            """Update the progress display."""
+            phase_label = phase_names.get(phase, message)
+            progress_pct = min(phase / 5, 1.0)
+            progress_placeholder.progress(
+                progress_pct,
+                text=f"Phase {phase}/4: {phase_label}",
+            )
+
+        if use_multipass:
+            spinner_text = "Running multi-pass pipeline (this takes ~60 seconds)..."
+        elif screenshot_b64:
+            spinner_text = "Generating page mockup..."
+        else:
+            spinner_text = "Rendering page content..."
+
         with st.spinner(spinner_text):
             try:
                 html_str = svc.generate_analysis_mockup(
@@ -1457,7 +1493,10 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                     classification=analysis.get("classification", {}),
                     page_markdown=analysis.get("page_markdown"),
                     page_url=analysis.get("url", ""),
+                    use_multipass=use_multipass,
+                    progress_callback=_progress_callback if use_multipass else None,
                 )
+                progress_placeholder.empty()
                 # Persist to DB for cross-session reuse
                 try:
                     analysis_svc = get_analysis_service()
@@ -1467,6 +1506,7 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                 _cache_mockup("analysis", analysis_id, html_str)
                 st.rerun()
             except Exception as e:
+                progress_placeholder.empty()
                 st.error(f"Mockup generation failed: {e}")
 
 
