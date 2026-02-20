@@ -1493,7 +1493,19 @@ def _render_blueprint_mockup_section(
     org_id: Optional[str] = None,
 ):
     """Render mockup generation controls for a blueprint."""
+    # 1. Session cache
     cached = _get_cached_mockup("blueprint", blueprint_id)
+
+    # 2. Database (cross-session persistence)
+    if not cached:
+        try:
+            bp_svc = get_blueprint_service()
+            bp_record = bp_svc.get_blueprint(blueprint_id)
+            if bp_record and bp_record.get("blueprint_mockup_html"):
+                cached = bp_record["blueprint_mockup_html"]
+                _cache_mockup("blueprint", blueprint_id, cached)
+        except Exception:
+            pass
 
     if cached:
         _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
@@ -1509,6 +1521,12 @@ def _render_blueprint_mockup_section(
             if analysis_id:
                 analysis_cache_key = f"lpa_mockup_analysis_{analysis_id}"
                 st.session_state.pop(analysis_cache_key, None)
+            # Clear DB cache
+            try:
+                bp_svc = get_blueprint_service()
+                bp_svc.clear_blueprint_mockup_html(blueprint_id)
+            except Exception:
+                pass
             st.rerun()
         return
     elif st.button(
@@ -1637,6 +1655,12 @@ def _render_blueprint_mockup_section(
                 )
 
             if html_str:
+                # Persist to DB for cross-session reuse
+                try:
+                    bp_svc = get_blueprint_service()
+                    bp_svc.save_blueprint_mockup_html(blueprint_id, html_str)
+                except Exception as e:
+                    logger.warning(f"Failed to persist blueprint mockup HTML: {e}")
                 _cache_mockup("blueprint", blueprint_id, html_str)
                 st.rerun()
             else:

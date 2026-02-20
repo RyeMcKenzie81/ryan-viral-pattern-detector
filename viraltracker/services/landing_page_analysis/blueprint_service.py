@@ -625,6 +625,19 @@ class ReconstructionBlueprintService:
     # Query methods
     # ------------------------------------------------------------------
 
+    def save_blueprint_mockup_html(self, blueprint_id: str, html: str) -> None:
+        """Persist blueprint mockup HTML to the database record."""
+        self.supabase.table("landing_page_blueprints").update(
+            {"blueprint_mockup_html": html}
+        ).eq("id", blueprint_id).execute()
+        logger.info(f"Saved blueprint_mockup_html ({len(html)} chars) for {blueprint_id}")
+
+    def clear_blueprint_mockup_html(self, blueprint_id: str) -> None:
+        """Clear persisted blueprint mockup HTML (e.g. on regeneration)."""
+        self.supabase.table("landing_page_blueprints").update(
+            {"blueprint_mockup_html": None}
+        ).eq("id", blueprint_id).execute()
+
     def get_blueprint(self, blueprint_id: str) -> Optional[Dict[str, Any]]:
         """Get a single blueprint by ID."""
         try:
