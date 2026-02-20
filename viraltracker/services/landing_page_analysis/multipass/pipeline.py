@@ -15,7 +15,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from viraltracker.core.config import Config
+from viraltracker.core.observability import get_logfire
 from viraltracker.services.gemini_service import GeminiService, RateLimitError
+
+logfire = get_logfire()
 
 from .cropper import (
     NormalizedBox,
@@ -510,103 +513,125 @@ class MultiPassPipeline:
         sections = segment_markdown(page_markdown, element_detection)
         section_count = len(sections)
 
-        # Compute API call budget
-        phase_budgets = {
-            0: 2,
-            1: 2,
-            2: 2,
-            3: section_count + 2,
-            4: 2,
-        }
-        max_api_calls = sum(phase_budgets.values())
+        with logfire.span(
+            "multipass_pipeline",
+            page_url=page_url or "unknown",
+            section_count=section_count,
+        ):
+            # Compute API call budget
+            phase_budgets = {
+                0: 2,
+                1: 2,
+                2: 2,
+                3: section_count + 2,
+                4: 2,
+            }
+            max_api_calls = sum(phase_budgets.values())
+            logfire.info(
+                "Pipeline started: {section_count} sections, budget={max_api_calls}",
+                section_count=section_count,
+                max_api_calls=max_api_calls,
+            )
 
-        # Decode screenshot for cropping
-        screenshot_bytes = base64.b64decode(screenshot_b64)
+            # Decode screenshot for cropping
+            screenshot_bytes = base64.b64decode(screenshot_b64)
 
-        # Truncate markdown for prompts
-        truncated_md = _truncate_markdown(page_markdown)
+            # Truncate markdown for prompts
+            truncated_md = _truncate_markdown(page_markdown)
 
-        # ---------------------------------------------------------------
-        # Phase 0: Design System Extraction
-        # ---------------------------------------------------------------
-        self._report_progress(0, "Extracting design system...")
-        design_system = await self._run_phase_0(screenshot_b64, truncated_md)
-        if self._budget_exceeded(max_api_calls):
-            return _build_fallback_skeleton(sections)
+            # -----------------------------------------------------------
+            # Phase 0: Design System Extraction
+            # -----------------------------------------------------------
+            self._report_progress(0, "Extracting design system...")
+            design_system = await self._run_phase_0(screenshot_b64, truncated_md)
+            if self._budget_exceeded(max_api_calls):
+                logfire.warning("Budget exceeded after Phase 0, returning fallback skeleton")
+                return _build_fallback_skeleton(sections)
 
-        # ---------------------------------------------------------------
-        # Phase 1: Layout Skeleton + Bounding Boxes
-        # ---------------------------------------------------------------
-        self._report_progress(1, "Building layout skeleton...")
-        skeleton_html, section_map = await self._run_phase_1(
-            screenshot_b64, design_system, sections
-        )
-        if self._budget_exceeded(max_api_calls):
-            return skeleton_html
+            # -----------------------------------------------------------
+            # Phase 1: Layout Skeleton + Bounding Boxes
+            # -----------------------------------------------------------
+            self._report_progress(1, "Building layout skeleton...")
+            skeleton_html, section_map = await self._run_phase_1(
+                screenshot_b64, design_system, sections
+            )
+            if self._budget_exceeded(max_api_calls):
+                logfire.warning("Budget exceeded after Phase 1, returning skeleton")
+                return skeleton_html
 
-        # ---------------------------------------------------------------
-        # Phase 2: Content Injection + Slot Creation
-        # ---------------------------------------------------------------
-        self._report_progress(2, "Injecting content and slots...")
-        content_html = await self._run_phase_2(skeleton_html, truncated_md)
+            # -----------------------------------------------------------
+            # Phase 2: Content Injection + Slot Creation
+            # -----------------------------------------------------------
+            self._report_progress(2, "Injecting content and slots...")
+            content_html = await self._run_phase_2(skeleton_html, truncated_md)
 
-        # Ensure minimum slots
-        content_html = _ensure_minimum_slots(content_html)
+            # Ensure minimum slots
+            content_html = _ensure_minimum_slots(content_html)
 
-        # Capture invariant baselines
-        baseline = capture_pipeline_invariants(content_html)
+            # Capture invariant baselines
+            baseline = capture_pipeline_invariants(content_html)
 
-        if self._budget_exceeded(max_api_calls):
-            return content_html
+            if self._budget_exceeded(max_api_calls):
+                logfire.warning("Budget exceeded after Phase 2, returning content HTML")
+                return content_html
 
-        # ---------------------------------------------------------------
-        # Phase 3: Per-Section Visual Refinement
-        # ---------------------------------------------------------------
-        self._report_progress(3, "Refining sections visually...")
-        refined_html, stats = await self._run_phase_3(
-            content_html,
-            screenshot_bytes,
-            screenshot_b64,
-            section_map,
-            sections,
-            design_system,
-            baseline,
-            page_url,
-            page_markdown,
-        )
+            # -----------------------------------------------------------
+            # Phase 3: Per-Section Visual Refinement
+            # -----------------------------------------------------------
+            self._report_progress(3, "Refining sections visually...")
+            refined_html, stats = await self._run_phase_3(
+                content_html,
+                screenshot_bytes,
+                screenshot_b64,
+                section_map,
+                sections,
+                design_system,
+                baseline,
+                page_url,
+                page_markdown,
+            )
 
-        if self._budget_exceeded(max_api_calls):
-            return refined_html
+            if self._budget_exceeded(max_api_calls):
+                logfire.warning("Budget exceeded after Phase 3, returning refined HTML")
+                return refined_html
 
-        # ---------------------------------------------------------------
-        # Phase 4: Targeted Patch Pass
-        # ---------------------------------------------------------------
-        self._report_progress(4, "Applying visual patches...")
-        patched_html = await self._run_phase_4(
-            refined_html,
-            screenshot_b64,
-            section_map,
-            baseline,
-        )
+            # -----------------------------------------------------------
+            # Phase 4: Targeted Patch Pass
+            # -----------------------------------------------------------
+            self._report_progress(4, "Applying visual patches...")
+            patched_html = await self._run_phase_4(
+                refined_html,
+                screenshot_b64,
+                section_map,
+                baseline,
+            )
 
-        # ---------------------------------------------------------------
-        # Popup Filter
-        # ---------------------------------------------------------------
-        popup_filter = PopupFilter()
-        final_html = popup_filter.filter(
-            patched_html,
-            detected_overlays=design_system.get("overlays", []),
-        )
+            # -----------------------------------------------------------
+            # Popup Filter
+            # -----------------------------------------------------------
+            popup_filter = PopupFilter()
+            final_html = popup_filter.filter(
+                patched_html,
+                detected_overlays=design_system.get("overlays", []),
+            )
 
-        elapsed = time.time() - self._start_time
-        logger.info(
-            f"MultiPass pipeline complete: "
-            f"phases=0-4, api_calls={self._limiter.call_count}, "
-            f"wall_clock={elapsed:.1f}s"
-        )
-        self._report_progress(5, "Complete!")
+            elapsed = time.time() - self._start_time
+            logfire.info(
+                "MultiPass pipeline complete: phases=0-4, "
+                "api_calls={api_calls}, wall_clock={elapsed:.1f}s, "
+                "output_chars={output_chars}",
+                api_calls=self._limiter.call_count,
+                elapsed=elapsed,
+                output_chars=len(final_html),
+            )
+            logger.info(
+                f"MultiPass pipeline complete: "
+                f"phases=0-4, api_calls={self._limiter.call_count}, "
+                f"wall_clock={elapsed:.1f}s"
+            )
+            self._report_progress(5, "Complete!")
 
-        return final_html
+            return final_html
 
     # -------------------------------------------------------------------
     # Phase implementations
@@ -620,27 +645,34 @@ class MultiPassPipeline:
         """Phase 0: Design System Extraction."""
         prompt = build_phase_0_prompt(markdown_preview)
 
-        try:
-            response = await self._call_gemini_vision(
-                PHASE_MODELS[0], screenshot_b64, prompt
-            )
-            design_system = _parse_json_response(response)
-            logger.info("Phase 0: Design system extracted successfully")
-            return design_system
-        except RateLimitError:
-            # One retry with backoff
+        with logfire.span("multipass_phase_0", phase="design_system_extraction"):
             try:
-                await asyncio.sleep(3)
                 response = await self._call_gemini_vision(
                     PHASE_MODELS[0], screenshot_b64, prompt
                 )
-                return _parse_json_response(response)
+                design_system = _parse_json_response(response)
+                colors_found = len(design_system.get("colors", {}))
+                overlays_found = len(design_system.get("overlays", []))
+                logfire.info(
+                    "Phase 0 OK: {colors_found} colors, {overlays_found} overlays detected",
+                    colors_found=colors_found,
+                    overlays_found=overlays_found,
+                )
+                return design_system
+            except RateLimitError:
+                logfire.warning("Phase 0: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[0], screenshot_b64, prompt
+                    )
+                    return _parse_json_response(response)
+                except Exception as e:
+                    logfire.warning("Phase 0 retry failed: {error}, using defaults", error=str(e))
+                    return dict(DEFAULT_DESIGN_SYSTEM)
             except Exception as e:
-                logger.warning(f"Phase 0 retry failed: {e}, using defaults")
+                logfire.warning("Phase 0 failed: {error}, using defaults", error=str(e))
                 return dict(DEFAULT_DESIGN_SYSTEM)
-        except Exception as e:
-            logger.warning(f"Phase 0 failed: {e}, using defaults")
-            return dict(DEFAULT_DESIGN_SYSTEM)
 
     async def _run_phase_1(
         self,
@@ -660,50 +692,63 @@ class MultiPassPipeline:
             len(sections),
         )
 
-        try:
-            response = await self._call_gemini_vision(
-                PHASE_MODELS[1], screenshot_b64, prompt
-            )
-            result = _parse_json_response(response)
-
-            phase1_sections = result.get("sections", [])
-            raw_skeleton = result.get("skeleton_html", "")
-
-            if not raw_skeleton:
-                raise ValueError("No skeleton_html in Phase 1 response")
-
-            raw_skeleton = _strip_code_fences(raw_skeleton)
-
-            section_map, rewritten_skeleton = _reconcile_sections(
-                sections, phase1_sections, raw_skeleton
-            )
-
-            logger.info(
-                f"Phase 1: Skeleton with {len(section_map)} sections"
-            )
-            return rewritten_skeleton, section_map
-
-        except RateLimitError:
+        with logfire.span(
+            "multipass_phase_1",
+            phase="layout_skeleton",
+            segmenter_section_count=len(sections),
+        ):
             try:
-                await asyncio.sleep(3)
                 response = await self._call_gemini_vision(
                     PHASE_MODELS[1], screenshot_b64, prompt
                 )
                 result = _parse_json_response(response)
-                phase1_sections = result.get("sections", [])
-                raw_skeleton = _strip_code_fences(result.get("skeleton_html", ""))
-                if raw_skeleton:
-                    section_map, rewritten = _reconcile_sections(
-                        sections, phase1_sections, raw_skeleton
-                    )
-                    return rewritten, section_map
-            except Exception as e:
-                logger.warning(f"Phase 1 retry failed: {e}")
 
-            return self._phase_1_fallback(sections)
-        except Exception as e:
-            logger.warning(f"Phase 1 failed: {e}, using fallback skeleton")
-            return self._phase_1_fallback(sections)
+                phase1_sections = result.get("sections", [])
+                raw_skeleton = result.get("skeleton_html", "")
+
+                if not raw_skeleton:
+                    raise ValueError("No skeleton_html in Phase 1 response")
+
+                raw_skeleton = _strip_code_fences(raw_skeleton)
+
+                section_map, rewritten_skeleton = _reconcile_sections(
+                    sections, phase1_sections, raw_skeleton
+                )
+
+                logfire.info(
+                    "Phase 1 OK: {section_count} sections, "
+                    "skeleton_chars={skeleton_chars}, "
+                    "model_sections={model_sections}, reconciled={reconciled}",
+                    section_count=len(section_map),
+                    skeleton_chars=len(rewritten_skeleton),
+                    model_sections=len(phase1_sections),
+                    reconciled=len(phase1_sections) != len(sections),
+                )
+                return rewritten_skeleton, section_map
+
+            except RateLimitError:
+                logfire.warning("Phase 1: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[1], screenshot_b64, prompt
+                    )
+                    result = _parse_json_response(response)
+                    phase1_sections = result.get("sections", [])
+                    raw_skeleton = _strip_code_fences(result.get("skeleton_html", ""))
+                    if raw_skeleton:
+                        section_map, rewritten = _reconcile_sections(
+                            sections, phase1_sections, raw_skeleton
+                        )
+                        return rewritten, section_map
+                except Exception as e:
+                    logger.warning(f"Phase 1 retry failed: {e}")
+
+                logfire.warning("Phase 1 using fallback skeleton (char-ratio)")
+                return self._phase_1_fallback(sections)
+            except Exception as e:
+                logfire.warning("Phase 1 failed: {error}, using fallback", error=str(e))
+                return self._phase_1_fallback(sections)
 
     def _phase_1_fallback(
         self, sections: List[SegmenterSection]
@@ -722,22 +767,30 @@ class MultiPassPipeline:
         """Phase 2: Content Injection + Slot Creation."""
         prompt = build_phase_2_prompt(skeleton_html, page_markdown)
 
-        try:
-            response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
-            html = _strip_code_fences(response)
-            logger.info(f"Phase 2: Content injected ({len(html)} chars)")
-            return html
-        except RateLimitError:
+        with logfire.span("multipass_phase_2", phase="content_injection"):
             try:
-                await asyncio.sleep(3)
                 response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
-                return _strip_code_fences(response)
+                html = _strip_code_fences(response)
+                from .invariants import _extract_slots
+                slot_count = len(_extract_slots(html))
+                logfire.info(
+                    "Phase 2 OK: {output_chars} chars, {slot_count} slots",
+                    output_chars=len(html),
+                    slot_count=slot_count,
+                )
+                return html
+            except RateLimitError:
+                logfire.warning("Phase 2: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
+                    return _strip_code_fences(response)
+                except Exception as e:
+                    logfire.warning("Phase 2 retry failed: {error}, using markdown fallback", error=str(e))
+                    return self._phase_2_fallback(skeleton_html, page_markdown)
             except Exception as e:
-                logger.warning(f"Phase 2 retry failed: {e}, using markdown injection")
+                logfire.warning("Phase 2 failed: {error}, using markdown fallback", error=str(e))
                 return self._phase_2_fallback(skeleton_html, page_markdown)
-        except Exception as e:
-            logger.warning(f"Phase 2 failed: {e}, using markdown injection")
-            return self._phase_2_fallback(skeleton_html, page_markdown)
 
     def _phase_2_fallback(self, skeleton_html: str, page_markdown: str) -> str:
         """Fallback: inject markdown as HTML into skeleton placeholders."""
@@ -774,146 +827,172 @@ class MultiPassPipeline:
         Returns:
             (refined_html, stats_dict)
         """
-        # Extract per-section HTML from content_html
-        from .invariants import _SectionParser
-        parser = _SectionParser()
-        parser.feed(content_html)
-        section_htmls = parser.sections
+        with logfire.span(
+            "multipass_phase_3",
+            phase="section_refinement",
+            total_sections=len(section_map),
+        ):
+            # Extract per-section HTML from content_html
+            from .invariants import _SectionParser
+            parser = _SectionParser()
+            parser.feed(content_html)
+            section_htmls = parser.sections
 
-        # Compact design system for per-section prompts
-        compact_ds = json.dumps({
-            "colors": design_system.get("colors", {}),
-            "typography": design_system.get("typography", {}),
-        })
-
-        # Extract image URLs if available
-        image_urls = None
-        if page_url and page_markdown:
-            try:
-                from ..mockup_service import MockupService
-                svc = MockupService()
-                image_urls = svc._extract_image_urls(page_markdown, page_url)
-            except Exception as e:
-                logger.debug(f"Image URL extraction failed (non-fatal): {e}")
-
-        # Build tasks for parallel execution
-        tasks = []
-        section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
-
-        for sec_id in section_ids:
-            if sec_id not in section_htmls:
-                continue
-
-            box = section_map[sec_id]
-
-            # Crop screenshot for this section
-            try:
-                cropped_bytes = crop_section(screenshot_bytes, box)
-                cropped_b64 = base64.b64encode(cropped_bytes).decode('utf-8')
-            except Exception as e:
-                logger.warning(f"Failed to crop {sec_id}: {e}")
-                continue
-
-            section_html = (
-                f'<section data-section="{sec_id}">'
-                f'{section_htmls[sec_id]}'
-                f'</section>'
-            )
-
-            prompt = build_phase_3_prompt(
-                sec_id,
-                section_html,
-                compact_ds,
-                image_urls,
-            )
-
-            tasks.append({
-                "section_id": sec_id,
-                "cropped_b64": cropped_b64,
-                "prompt": prompt,
-                "original_html": section_html,
+            # Compact design system for per-section prompts
+            compact_ds = json.dumps({
+                "colors": design_system.get("colors", {}),
+                "typography": design_system.get("typography", {}),
             })
 
-        # Execute all sections in parallel with rate limiting
-        refined_sections = {}
-        rejected = 0
+            # Extract image URLs if available
+            image_urls = None
+            if page_url and page_markdown:
+                try:
+                    from ..mockup_service import MockupService
+                    svc = MockupService()
+                    image_urls = svc._extract_image_urls(page_markdown, page_url)
+                except Exception as e:
+                    logger.debug(f"Image URL extraction failed (non-fatal): {e}")
 
-        async def refine_section(task: Dict) -> Tuple[str, str]:
-            """Refine a single section. Returns (section_id, refined_html)."""
-            sec_id = task["section_id"]
-            try:
-                response = await self._call_gemini_vision(
-                    PHASE_MODELS[3], task["cropped_b64"], task["prompt"]
-                )
-                refined = _strip_code_fences(response)
+            # Build tasks for parallel execution
+            tasks = []
+            section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
 
-                # Per-section invariant check
-                report = check_section_invariant(refined, sec_id, baseline)
-                if not report.passed:
-                    logger.warning(
-                        f"Phase 3 section {sec_id} rejected: {report.issues}"
-                    )
-                    return sec_id, task["original_html"]
-
-                return sec_id, refined
-            except Exception as e:
-                logger.warning(f"Phase 3 section {sec_id} failed: {e}")
-                return sec_id, task["original_html"]
-
-        # Gather all section refinements
-        if tasks:
-            results = await asyncio.gather(
-                *[refine_section(t) for t in tasks],
-                return_exceptions=True,
-            )
-
-            # Shared retry pool: 2 retries for any failed sections
-            retry_pool = 2
-            failed_tasks = []
-
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.warning(f"Phase 3 task exception: {result}")
+            for sec_id in section_ids:
+                if sec_id not in section_htmls:
+                    logfire.info("Phase 3: section {sec_id} not in parsed HTML, skipping", sec_id=sec_id)
                     continue
-                sec_id, html = result
-                refined_sections[sec_id] = html
-                if html == next(
-                    (t["original_html"] for t in tasks if t["section_id"] == sec_id),
-                    None,
-                ):
-                    failed_tasks.append(sec_id)
 
-            # Retry failed sections from shared pool
-            for sec_id in failed_tasks:
-                if retry_pool <= 0:
-                    break
-                task = next((t for t in tasks if t["section_id"] == sec_id), None)
-                if task:
-                    retry_pool -= 1
-                    sec_id_result, html = await refine_section(task)
-                    if html != task["original_html"]:
-                        refined_sections[sec_id_result] = html
-                        rejected -= 1  # Un-reject
+                box = section_map[sec_id]
 
-        # Reassemble HTML
-        assembled = content_html
-        for sec_id, refined in refined_sections.items():
-            # Replace the entire section in the assembled HTML
-            section_re = re.compile(
-                rf'<section\s+data-section="{re.escape(sec_id)}"[^>]*>.*?</section>',
-                re.DOTALL,
+                # Crop screenshot for this section
+                try:
+                    cropped_bytes = crop_section(screenshot_bytes, box)
+                    cropped_b64 = base64.b64encode(cropped_bytes).decode('utf-8')
+                except Exception as e:
+                    logfire.warning("Phase 3: failed to crop {sec_id}: {error}", sec_id=sec_id, error=str(e))
+                    continue
+
+                section_html = (
+                    f'<section data-section="{sec_id}">'
+                    f'{section_htmls[sec_id]}'
+                    f'</section>'
+                )
+
+                prompt = build_phase_3_prompt(
+                    sec_id,
+                    section_html,
+                    compact_ds,
+                    image_urls,
+                )
+
+                tasks.append({
+                    "section_id": sec_id,
+                    "cropped_b64": cropped_b64,
+                    "prompt": prompt,
+                    "original_html": section_html,
+                })
+
+            logfire.info(
+                "Phase 3: dispatching {task_count} section refinement calls",
+                task_count=len(tasks),
             )
-            assembled = section_re.sub(refined, assembled, count=1)
 
-        stats = {
-            "sections_refined": len(refined_sections),
-            "sections_rejected": rejected,
-        }
-        logger.info(
-            f"Phase 3: {stats['sections_refined']} sections refined, "
-            f"{stats['sections_rejected']} rejected"
-        )
-        return assembled, stats
+            # Execute all sections in parallel with rate limiting
+            refined_sections = {}
+            rejected = 0
+
+            async def refine_section(task: Dict) -> Tuple[str, str]:
+                """Refine a single section. Returns (section_id, refined_html)."""
+                sec_id = task["section_id"]
+                with logfire.span("multipass_phase_3_section", section_id=sec_id):
+                    try:
+                        response = await self._call_gemini_vision(
+                            PHASE_MODELS[3], task["cropped_b64"], task["prompt"]
+                        )
+                        refined = _strip_code_fences(response)
+
+                        # Per-section invariant check
+                        report = check_section_invariant(refined, sec_id, baseline)
+                        if not report.passed:
+                            logfire.warning(
+                                "Phase 3 section {sec_id} REJECTED: {issues}",
+                                sec_id=sec_id,
+                                issues=str(report.issues),
+                            )
+                            return sec_id, task["original_html"]
+
+                        logfire.info(
+                            "Phase 3 section {sec_id} refined OK ({chars} chars)",
+                            sec_id=sec_id,
+                            chars=len(refined),
+                        )
+                        return sec_id, refined
+                    except Exception as e:
+                        logfire.warning(
+                            "Phase 3 section {sec_id} FAILED: {error}",
+                            sec_id=sec_id,
+                            error=str(e),
+                        )
+                        return sec_id, task["original_html"]
+
+            # Gather all section refinements
+            if tasks:
+                results = await asyncio.gather(
+                    *[refine_section(t) for t in tasks],
+                    return_exceptions=True,
+                )
+
+                # Shared retry pool: 2 retries for any failed sections
+                retry_pool = 2
+                failed_tasks = []
+
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.warning(f"Phase 3 task exception: {result}")
+                        continue
+                    sec_id, html = result
+                    refined_sections[sec_id] = html
+                    if html == next(
+                        (t["original_html"] for t in tasks if t["section_id"] == sec_id),
+                        None,
+                    ):
+                        failed_tasks.append(sec_id)
+
+                # Retry failed sections from shared pool
+                for sec_id in failed_tasks:
+                    if retry_pool <= 0:
+                        break
+                    task = next((t for t in tasks if t["section_id"] == sec_id), None)
+                    if task:
+                        retry_pool -= 1
+                        logfire.info("Phase 3: retrying {sec_id} from shared pool", sec_id=sec_id)
+                        sec_id_result, html = await refine_section(task)
+                        if html != task["original_html"]:
+                            refined_sections[sec_id_result] = html
+                            rejected -= 1  # Un-reject
+
+            # Reassemble HTML
+            assembled = content_html
+            for sec_id, refined in refined_sections.items():
+                # Replace the entire section in the assembled HTML
+                section_re = re.compile(
+                    rf'<section\s+data-section="{re.escape(sec_id)}"[^>]*>.*?</section>',
+                    re.DOTALL,
+                )
+                assembled = section_re.sub(refined, assembled, count=1)
+
+            stats = {
+                "sections_refined": len(refined_sections),
+                "sections_rejected": rejected,
+            }
+            logfire.info(
+                "Phase 3 complete: {refined} refined, {rejected} rejected, {failed} failed",
+                refined=stats["sections_refined"],
+                rejected=stats["sections_rejected"],
+                failed=len(failed_tasks) if tasks else 0,
+            )
+            return assembled, stats
 
     async def _run_phase_4(
         self,
@@ -926,56 +1005,59 @@ class MultiPassPipeline:
         section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
         prompt = build_phase_4_prompt(assembled_html, section_ids)
 
-        try:
-            response = await self._call_gemini_vision(
-                PHASE_MODELS[4], screenshot_b64, prompt
-            )
-            patches = _parse_json_response(response)
-
-            if not isinstance(patches, list):
-                logger.warning("Phase 4: response is not a list, skipping patches")
-                return assembled_html
-
-            # Cap at 15 patches
-            patches = patches[:15]
-
-            # Apply patches
-            applier = PatchApplier()
-            patched = applier.apply_patches(assembled_html, patches)
-
-            # Global invariant check
-            report = check_global_invariants(patched, baseline)
-            if not report.passed:
-                logger.warning(
-                    f"Phase 4 global invariant FAILED: {report.issues}, "
-                    f"reverting all patches"
-                )
-                return assembled_html
-
-            logger.info(f"Phase 4: {len(patches)} patches applied successfully")
-            return patched
-
-        except RateLimitError:
+        with logfire.span("multipass_phase_4", phase="patch_pass"):
             try:
-                await asyncio.sleep(3)
                 response = await self._call_gemini_vision(
                     PHASE_MODELS[4], screenshot_b64, prompt
                 )
                 patches = _parse_json_response(response)
-                if isinstance(patches, list):
-                    patches = patches[:15]
-                    applier = PatchApplier()
-                    patched = applier.apply_patches(assembled_html, patches)
-                    report = check_global_invariants(patched, baseline)
-                    if report.passed:
-                        return patched
-                return assembled_html
+
+                if not isinstance(patches, list):
+                    logfire.warning("Phase 4: response is not a list, skipping patches")
+                    return assembled_html
+
+                # Cap at 15 patches
+                patches = patches[:15]
+                logfire.info("Phase 4: applying {patch_count} patches", patch_count=len(patches))
+
+                # Apply patches
+                applier = PatchApplier()
+                patched = applier.apply_patches(assembled_html, patches)
+
+                # Global invariant check
+                report = check_global_invariants(patched, baseline)
+                if not report.passed:
+                    logfire.warning(
+                        "Phase 4 global invariant FAILED, reverting all patches: {issues}",
+                        issues=str(report.issues),
+                    )
+                    return assembled_html
+
+                logfire.info("Phase 4 OK: {patch_count} patches applied", patch_count=len(patches))
+                return patched
+
+            except RateLimitError:
+                logfire.warning("Phase 4: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[4], screenshot_b64, prompt
+                    )
+                    patches = _parse_json_response(response)
+                    if isinstance(patches, list):
+                        patches = patches[:15]
+                        applier = PatchApplier()
+                        patched = applier.apply_patches(assembled_html, patches)
+                        report = check_global_invariants(patched, baseline)
+                        if report.passed:
+                            return patched
+                    return assembled_html
+                except Exception as e:
+                    logfire.warning("Phase 4 retry failed: {error}, skipping patches", error=str(e))
+                    return assembled_html
             except Exception as e:
-                logger.warning(f"Phase 4 retry failed: {e}, skipping patches")
+                logfire.warning("Phase 4 failed: {error}, skipping patches", error=str(e))
                 return assembled_html
-        except Exception as e:
-            logger.warning(f"Phase 4 failed: {e}, skipping patches")
-            return assembled_html
 
     # -------------------------------------------------------------------
     # Gemini call helpers
@@ -986,35 +1068,77 @@ class MultiPassPipeline:
     ) -> str:
         """Call Gemini vision API with rate limiting."""
         await self._limiter.acquire()
-        try:
-            result = await self._gemini.analyze_image_async(
-                image_b64, prompt,
-                model=model,
-                skip_internal_rate_limit=True,
-            )
-            self._limiter.release(success=True)
-            return result
-        except RateLimitError:
-            self._limiter.release(rate_limited=True)
-            raise
-        except Exception:
-            self._limiter.release(success=False)
-            raise
+        with logfire.span(
+            "multipass_gemini_call",
+            call_type="vision",
+            model=model,
+            call_number=self._limiter.call_count,
+        ):
+            try:
+                result = await self._gemini.analyze_image_async(
+                    image_b64, prompt,
+                    model=model,
+                    skip_internal_rate_limit=True,
+                )
+                self._limiter.release(success=True)
+                logfire.info(
+                    "Gemini vision call #{call_number} OK: {response_chars} chars",
+                    call_number=self._limiter.call_count,
+                    response_chars=len(result),
+                )
+                return result
+            except RateLimitError:
+                self._limiter.release(rate_limited=True)
+                logfire.warning(
+                    "Gemini vision call #{call_number} RATE LIMITED (RPM now {rpm})",
+                    call_number=self._limiter.call_count,
+                    rpm=self._limiter._current_rpm,
+                )
+                raise
+            except Exception as e:
+                self._limiter.release(success=False)
+                logfire.error(
+                    "Gemini vision call #{call_number} FAILED: {error}",
+                    call_number=self._limiter.call_count,
+                    error=str(e),
+                )
+                raise
 
     async def _call_gemini_text(self, model: str, prompt: str) -> str:
         """Call Gemini text API with rate limiting."""
         await self._limiter.acquire()
-        try:
-            result = await self._gemini.analyze_text_async(
-                "", prompt,
-                model=model,
-                skip_internal_rate_limit=True,
-            )
-            self._limiter.release(success=True)
-            return result
-        except RateLimitError:
-            self._limiter.release(rate_limited=True)
-            raise
-        except Exception:
-            self._limiter.release(success=False)
-            raise
+        with logfire.span(
+            "multipass_gemini_call",
+            call_type="text",
+            model=model,
+            call_number=self._limiter.call_count,
+        ):
+            try:
+                result = await self._gemini.analyze_text_async(
+                    "", prompt,
+                    model=model,
+                    skip_internal_rate_limit=True,
+                )
+                self._limiter.release(success=True)
+                logfire.info(
+                    "Gemini text call #{call_number} OK: {response_chars} chars",
+                    call_number=self._limiter.call_count,
+                    response_chars=len(result),
+                )
+                return result
+            except RateLimitError:
+                self._limiter.release(rate_limited=True)
+                logfire.warning(
+                    "Gemini text call #{call_number} RATE LIMITED (RPM now {rpm})",
+                    call_number=self._limiter.call_count,
+                    rpm=self._limiter._current_rpm,
+                )
+                raise
+            except Exception as e:
+                self._limiter.release(success=False)
+                logfire.error(
+                    "Gemini text call #{call_number} FAILED: {error}",
+                    call_number=self._limiter.call_count,
+                    error=str(e),
+                )
+                raise

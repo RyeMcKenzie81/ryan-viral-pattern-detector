@@ -446,6 +446,14 @@ class MockupService:
 
             # CATASTROPHIC ESCAPE (multipass only)
             if use_multipass and (severity == "unusable" or not is_complete):
+                from viraltracker.core.observability import get_logfire
+                _lf = get_logfire()
+                _lf.warning(
+                    "Multipass CATASTROPHIC ESCAPE: severity={severity}, complete={is_complete}, "
+                    "falling back to single-pass",
+                    severity=severity,
+                    is_complete=is_complete,
+                )
                 logger.warning(
                     "Multipass produced unusable artifact (severity=%s, complete=%s), "
                     "falling back to single-pass", severity, is_complete
@@ -1542,8 +1550,12 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         """
         import asyncio
         import concurrent.futures
+        from viraltracker.core.observability import get_logfire
         from viraltracker.services.gemini_service import GeminiService
         from .multipass.pipeline import MultiPassPipeline
+
+        lf = get_logfire()
+        lf.info("Starting multipass pipeline", page_url=page_url or "unknown")
 
         gemini = GeminiService()
         if self._usage_tracker:
@@ -1585,6 +1597,10 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 lines = lines[:-1]
             raw = "\n".join(lines)
 
+        lf.info(
+            "Multipass pipeline returned {output_chars} chars",
+            output_chars=len(raw),
+        )
         return raw
 
     def _generate_via_ai_vision(
