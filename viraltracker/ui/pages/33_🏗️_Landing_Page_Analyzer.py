@@ -1456,6 +1456,7 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                     element_detection=analysis.get("elements", {}),
                     classification=analysis.get("classification", {}),
                     page_markdown=analysis.get("page_markdown"),
+                    page_url=analysis.get("url", ""),
                 )
                 # Persist to DB for cross-session reuse
                 try:
@@ -1613,6 +1614,7 @@ def _render_blueprint_mockup_section(
                             screenshot_b64=screenshot_b64,
                             classification=classification,
                             page_markdown=page_markdown,
+                            page_url=linked_record.get("url", ""),
                         )
                         if analysis_html:
                             _cache_mockup("analysis", analysis_id, analysis_html)

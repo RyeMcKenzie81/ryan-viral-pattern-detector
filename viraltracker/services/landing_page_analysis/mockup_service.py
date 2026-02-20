@@ -18,13 +18,180 @@ import os
 import re
 from datetime import datetime
 from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 import bleach
 from bleach.css_sanitizer import CSSSanitizer
 import jinja2
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# CSS block sanitizer (for <style> block content — distinct from bleach inline)
+# ---------------------------------------------------------------------------
+
+_CSS_MAX_SIZE = 100_000  # 100KB cap for CSS blocks
+
+# Patterns for dangerous CSS constructs
+_STYLE_BREAKOUT_RE = re.compile(r'<\s*/\s*style\b', re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r'<!')
+_HTML_TAG_RE = re.compile(r'<[a-zA-Z][^>]*>')
+_CSS_IMPORT_RE = re.compile(r'@import\b[^;]*;?', re.IGNORECASE)
+_CSS_CHARSET_RE = re.compile(r'@charset\b[^;]*;?', re.IGNORECASE)
+_CSS_URL_RE = re.compile(
+    r'\burl\s*\('
+    r'(?:'
+    r'"[^"]*"'       # double-quoted
+    r"|'[^']*'"      # single-quoted
+    r'|[^)]*'        # unquoted
+    r')\)',
+    re.IGNORECASE,
+)
+_CSS_EXPRESSION_RE = re.compile(r'\bexpression\s*\(', re.IGNORECASE)
+_CSS_MOZ_BINDING_RE = re.compile(r'-moz-binding\s*:', re.IGNORECASE)
+_CSS_BEHAVIOR_RE = re.compile(r'\bbehavior\s*:', re.IGNORECASE)
+
+
+def _sanitize_css_block(raw_css: str) -> str:
+    """Sanitize CSS content from <style> blocks.
+
+    Strips known attack vectors while preserving layout-critical CSS
+    (media queries, keyframes, pseudo-selectors, gradients).
+
+    Returns empty string if the block is fully rejected (breakout/HTML injection).
+    """
+    if not raw_css or not raw_css.strip():
+        return ""
+
+    # Cap size
+    if len(raw_css) > _CSS_MAX_SIZE:
+        logger.warning(
+            f"CSS block exceeds {_CSS_MAX_SIZE} bytes ({len(raw_css)}), truncating"
+        )
+        raw_css = raw_css[:_CSS_MAX_SIZE]
+
+    # REJECT entire block if contains </style breakout
+    if _STYLE_BREAKOUT_RE.search(raw_css):
+        logger.warning("CSS block rejected: contains </style breakout pattern")
+        return ""
+
+    # REJECT if contains <! (HTML comments/CDATA) or <tag...> patterns
+    if _HTML_COMMENT_RE.search(raw_css):
+        logger.warning("CSS block rejected: contains <! HTML pattern")
+        return ""
+    if _HTML_TAG_RE.search(raw_css):
+        logger.warning("CSS block rejected: contains HTML tag pattern")
+        return ""
+
+    # STRIP dangerous at-rules
+    css = _CSS_IMPORT_RE.sub('', raw_css)
+    css = _CSS_CHARSET_RE.sub('', css)
+
+    # STRIP url() values (run until stable to handle nested/repeated patterns)
+    for _ in range(10):
+        new_css = _CSS_URL_RE.sub('/* url-stripped */', css)
+        if new_css == css:
+            break
+        css = new_css
+
+    # STRIP legacy JS vectors
+    css = _CSS_EXPRESSION_RE.sub('/* expression-stripped */ (', css)
+    css = _CSS_MOZ_BINDING_RE.sub('/* moz-binding-stripped */:', css)
+    css = _CSS_BEHAVIOR_RE.sub('/* behavior-stripped */:', css)
+
+    return css
+
+
+# ---------------------------------------------------------------------------
+# url() post-sanitization for inline styles (parser-based)
+# ---------------------------------------------------------------------------
+
+# Reuse _CSS_URL_RE from above for inline style url() stripping
+
+class _InlineStyleUrlStripper(HTMLParser):
+    """HTMLParser that rewrites style attributes to strip url() values.
+
+    Handles both style="..." and style='...' quoting, as well as
+    case variations like STYLE=. Only modifies style attribute values,
+    never touches visible text content.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.parts: list = []
+
+    def _strip_url_from_style(self, style_value: str) -> str:
+        """Strip url() from a style attribute value (run until stable)."""
+        result = style_value
+        for _ in range(10):
+            new_result = _CSS_URL_RE.sub('/* url-stripped */', result)
+            if new_result == result:
+                break
+            result = new_result
+        return result
+
+    def _rebuild_attrs(self, attrs: list) -> str:
+        """Rebuild attribute string, stripping url() from style values."""
+        parts = []
+        for name, value in attrs:
+            if value is None:
+                parts.append(f' {name}')
+            elif name.lower() == 'style':
+                cleaned = self._strip_url_from_style(value)
+                parts.append(f' {name}="{_html_module.escape(cleaned, quote=True)}"')
+            else:
+                parts.append(f' {name}="{_html_module.escape(value, quote=True)}"')
+        return ''.join(parts)
+
+    def handle_starttag(self, tag, attrs):
+        self.parts.append(f'<{tag}{self._rebuild_attrs(attrs)}>')
+
+    def handle_endtag(self, tag):
+        self.parts.append(f'</{tag}>')
+
+    def handle_startendtag(self, tag, attrs):
+        self.parts.append(f'<{tag}{self._rebuild_attrs(attrs)} />')
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+    def handle_entityref(self, name):
+        self.parts.append(f'&{name};')
+
+    def handle_charref(self, name):
+        self.parts.append(f'&#{name};')
+
+    def handle_comment(self, data):
+        self.parts.append(f'<!--{data}-->')
+
+    def handle_decl(self, decl):
+        self.parts.append(f'<!{decl}>')
+
+    def unknown_decl(self, data):
+        self.parts.append(f'<!{data}>')
+
+    def get_result(self) -> str:
+        return ''.join(self.parts)
+
+
+def _strip_url_from_inline_styles(html: str) -> str:
+    """Strip url() only within style attribute values.
+
+    Uses parser-based style attribute rewriting to handle all quoting
+    styles and edge cases. Does NOT alter visible text content.
+    """
+    if 'url(' not in html.lower():
+        return html  # Fast path: no url() anywhere
+
+    stripper = _InlineStyleUrlStripper()
+    try:
+        stripper.feed(html)
+        return stripper.get_result()
+    except Exception:
+        # Parser failure — fall back to returning html as-is
+        logger.warning("HTMLParser failed in _strip_url_from_inline_styles, returning as-is")
+        return html
 
 # ---------------------------------------------------------------------------
 # HTML sanitization allowlists
@@ -62,16 +229,35 @@ _ALLOWED_ATTRS = {
 }
 
 _ALLOWED_CSS_PROPERTIES = [
-    "color", "background-color", "background", "font-size", "font-weight",
-    "font-family", "text-align", "text-decoration", "line-height",
+    # Text
+    "color", "font-size", "font-weight", "font-family", "font-style",
+    "text-align", "text-decoration", "text-transform", "line-height",
+    "letter-spacing", "word-spacing", "white-space",
+    # Background
+    "background", "background-color", "background-image", "background-size",
+    "background-position", "background-repeat",
+    # Box model
     "margin", "margin-top", "margin-bottom", "margin-left", "margin-right",
     "padding", "padding-top", "padding-bottom", "padding-left", "padding-right",
     "border", "border-radius", "border-color", "border-width", "border-style",
+    "border-top", "border-bottom", "border-left", "border-right",
+    "box-sizing",
+    # Sizing
     "width", "max-width", "min-width", "height", "max-height", "min-height",
-    "display", "flex-direction", "justify-content", "align-items", "gap", "flex-wrap", "flex",
-    "grid-template-columns", "grid-gap",
-    "position", "top", "bottom", "left", "right",
-    "overflow", "opacity", "box-shadow", "letter-spacing",
+    # Flexbox
+    "display", "flex-direction", "justify-content", "align-items", "gap",
+    "flex-wrap", "flex", "flex-grow", "flex-shrink", "flex-basis",
+    "align-self", "order",
+    # Grid
+    "grid-template-columns", "grid-template-rows", "grid-gap",
+    "grid-column", "grid-row",
+    # Position & layout
+    "position", "top", "bottom", "left", "right", "z-index",
+    "float", "clear", "vertical-align",
+    # Visual
+    "overflow", "opacity", "box-shadow", "transform",
+    "object-fit", "object-position",
+    # Lists
     "list-style", "list-style-type",
 ]
 
@@ -197,6 +383,7 @@ class MockupService:
         element_detection: Optional[Dict[str, Any]] = None,
         classification: Optional[Dict[str, Any]] = None,
         page_markdown: Optional[str] = None,
+        page_url: Optional[str] = None,
     ) -> str:
         """Generate a faithful HTML recreation of the analyzed page.
 
@@ -207,20 +394,63 @@ class MockupService:
             element_detection: Skill 2 output (element_detection dict, wrapped or unwrapped)
             classification: Skill 1 output (page_classifier dict, wrapped or unwrapped)
             page_markdown: Optional page markdown for fallback rendering
+            page_url: Optional page URL for resolving relative image URLs
 
         Returns:
             Standalone HTML string
         """
         if screenshot_b64:
-            raw_html = self._generate_via_ai_vision(screenshot_b64)
-            # Strip <style> blocks BEFORE sanitization — bleach strips <style>
-            # tags (not in allowlist) but leaves CSS text content as visible text.
-            raw_html = re.sub(
-                r'<style[^>]*>.*?</style>', '', raw_html,
-                flags=re.IGNORECASE | re.DOTALL,
+            raw_html = self._generate_via_ai_vision(
+                screenshot_b64,
+                page_markdown=page_markdown,
+                page_url=page_url,
             )
-            html = self._sanitize_html(raw_html)
-            return self._wrap_mockup(html, classification, mode="analysis")
+            # Extract, sanitize, and strip <style> blocks in one pass
+            body_html, sanitized_css = self._extract_and_sanitize_css(raw_html)
+            html = self._sanitize_html(body_html)
+
+            # Validate HTML completeness
+            is_complete, issues = self._validate_html_completeness(html)
+            if not is_complete:
+                logger.warning(f"HTML completeness issues: {issues}")
+                if page_markdown:
+                    logger.warning(
+                        "Truncation fallback to markdown - "
+                        "blueprint slot targeting unavailable"
+                    )
+                    fallback_html = self._markdown_to_html(page_markdown)
+                    html = self._sanitize_html(fallback_html)
+                    sanitized_css = ""  # Markdown fallback has no CSS
+
+            # Validate slot coverage (retry once if unusable)
+            severity, report = self._validate_analysis_slots(html)
+            if severity == "unusable" and not getattr(self, '_slot_retry_used', False):
+                logger.info(f"Slot validation unusable, retrying with reinforced prompt")
+                self._slot_retry_used = True
+                try:
+                    retry_html = self._generate_via_ai_vision(
+                        screenshot_b64,
+                        page_markdown=page_markdown,
+                        reinforce_slots=True,
+                        page_url=page_url,
+                    )
+                    retry_body, retry_css = self._extract_and_sanitize_css(retry_html)
+                    retry_sanitized = self._sanitize_html(retry_body)
+                    retry_severity, retry_report = self._validate_analysis_slots(retry_sanitized)
+                    if retry_severity != "unusable":
+                        html = retry_sanitized
+                        sanitized_css = retry_css
+                        logger.info(f"Slot retry improved: {retry_report}")
+                    else:
+                        logger.warning(f"Slot retry still unusable, using original")
+                except Exception as e:
+                    logger.warning(f"Slot retry failed: {e}, using original")
+                finally:
+                    self._slot_retry_used = False
+            elif severity == "unusable":
+                logger.warning(f"Slot validation: {report}")
+
+            return self._wrap_mockup(html, classification, mode="analysis", page_css=sanitized_css)
         elif page_markdown:
             raw_html = self._markdown_to_html(page_markdown)
             html = self._sanitize_html(raw_html)
@@ -243,26 +473,28 @@ class MockupService:
     ) -> Optional[str]:
         """Generate blueprint mockup by rewriting analysis HTML with brand copy.
 
+        Carries CSS from the analysis mockup through the rewrite pipeline.
         Returns None if no analysis HTML is available (V1 wireframe path is
         intentionally disabled to prevent leaking strategic instructions).
         """
         if analysis_mockup_html:
+            # Extract CSS before stripping (re-sanitized for defense-in-depth)
+            page_body, page_css = self._extract_page_css_and_strip(analysis_mockup_html)
+
             rewritten = None
-            if brand_profile:
-                page_body = self._strip_mockup_wrapper(analysis_mockup_html)
-                if page_body.strip():
-                    logger.info(
-                        "Starting AI rewrite for blueprint mockup "
-                        f"(brand={(brand_profile.get('brand_basics') or {}).get('name') or '?'}, "
-                        f"html_len={len(page_body)})"
-                    )
-                    # Let exceptions propagate — UI will show the error
-                    rewritten = self._rewrite_html_for_brand(
-                        page_body, blueprint, brand_profile
-                    )
-                    logger.info("AI rewrite completed for blueprint mockup")
-                else:
-                    logger.warning("Stripped page body is empty — skipping AI rewrite")
+            if brand_profile and page_body.strip():
+                logger.info(
+                    "Starting AI rewrite for blueprint mockup "
+                    f"(brand={(brand_profile.get('brand_basics') or {}).get('name') or '?'}, "
+                    f"html_len={len(page_body)})"
+                )
+                # Let exceptions propagate — UI will show the error
+                rewritten = self._rewrite_html_for_brand(
+                    page_body, blueprint, brand_profile
+                )
+                logger.info("AI rewrite completed for blueprint mockup")
+            elif brand_profile:
+                logger.warning("Stripped page body is empty — skipping AI rewrite")
             else:
                 logger.info(
                     "No brand_profile provided — skipping AI rewrite, "
@@ -272,11 +504,11 @@ class MockupService:
             if rewritten:
                 inner = self._sanitize_html(rewritten)
             else:
-                # Fallback: show analysis page content as-is (no instructions leak)
-                inner = self._sanitize_html(
-                    self._strip_mockup_wrapper(analysis_mockup_html)
-                )
-            return self._wrap_mockup(inner, classification, mode="blueprint")
+                # Fallback: use analysis body as-is (STILL inject page_css)
+                inner = self._sanitize_html(page_body)
+
+            # page_css injected in ALL paths
+            return self._wrap_mockup(inner, classification, mode="blueprint", page_css=page_css)
         else:
             # Do NOT fall back to V1 wireframe — _render_html() renders
             # brand_mapping fields that contain strategic instructions.
@@ -553,14 +785,20 @@ class MockupService:
         """Sanitize AI-generated HTML. Strips scripts, iframes, event handlers, dangerous CSS.
 
         Uses bleach with tag/attr allowlist + CSSSanitizer for inline style filtering.
+        After bleach, strips url() from inline style attributes and validates img src.
         """
-        return bleach.clean(
+        cleaned = bleach.clean(
             raw_html,
             tags=_ALLOWED_TAGS,
             attributes=_ALLOWED_ATTRS,
             css_sanitizer=_CSS_SANITIZER,
             strip=True,
         )
+        # Strip url() from inline style attrs only (not from visible text)
+        cleaned = _strip_url_from_inline_styles(cleaned)
+        # Validate img src attributes (safety check for URLs)
+        cleaned = self._sanitize_img_src(cleaned)
+        return cleaned
 
     # ------------------------------------------------------------------
     # Wrapper Stripping (for nested HTML from _wrap_mockup)
@@ -762,6 +1000,64 @@ class MockupService:
             )
 
     # ------------------------------------------------------------------
+    # Output Quality Guards
+    # ------------------------------------------------------------------
+
+    def _validate_analysis_slots(self, html: str) -> Tuple[str, str]:
+        """Validate data-slot coverage in generated HTML.
+
+        Returns:
+            (severity, report) where severity is "ok", "degraded", or "unusable".
+        """
+        slots = self._extract_slot_names(html)
+        slot_set = set(slots)
+
+        has_headline = "headline" in slot_set
+        has_cta = any(s.startswith("cta-") for s in slot_set)
+        total = len(slots)
+
+        if total >= 3 and has_headline and has_cta:
+            return "ok", f"Slot validation OK: {total} slots, headline={has_headline}, cta={has_cta}"
+        elif total > 0:
+            report = (
+                f"Slot validation DEGRADED: {total} slots, "
+                f"headline={has_headline}, cta={has_cta}"
+            )
+            logger.warning(report)
+            return "degraded", report
+        else:
+            report = "Slot validation UNUSABLE: 0 data-slot attributes found"
+            logger.warning(report)
+            return "unusable", report
+
+    def _validate_html_completeness(self, html: str) -> Tuple[bool, List[str]]:
+        """Check for truncation/structural issues in generated HTML.
+
+        Returns:
+            (is_complete, list_of_issues). is_complete=True means HTML looks structurally OK.
+        """
+        issues = []
+
+        # Minimum length check
+        if len(html) < 200:
+            issues.append(f"HTML too short ({len(html)} chars)")
+
+        # Mid-tag truncation: last '<' has no matching '>'
+        last_lt = html.rfind('<')
+        last_gt = html.rfind('>')
+        if last_lt > last_gt:
+            issues.append("Mid-tag truncation detected (unclosed < at end)")
+
+        # Structural tag imbalance
+        for tag in ('div', 'section', 'body'):
+            opens = len(re.findall(rf'<{tag}[\s>]', html, re.IGNORECASE))
+            closes = len(re.findall(rf'</{tag}>', html, re.IGNORECASE))
+            if opens > 0 and closes < opens - 2:
+                issues.append(f"Tag imbalance: <{tag}> opened {opens}x, closed {closes}x")
+
+        return (len(issues) == 0, issues)
+
+    # ------------------------------------------------------------------
     # HTML Truncation
     # ------------------------------------------------------------------
 
@@ -854,6 +1150,7 @@ class MockupService:
 6. Use the brand's voice/tone throughout
 7. DO NOT add, remove, or reorder HTML elements
 8. DO NOT modify CSS styles, classes, or attributes (except text content)
+8b. Preserve ALL class names exactly as they appear (e.g., class="hero-section") - their styling definitions are maintained separately
 9. Keep data-slot attributes exactly as they are
 10. Image placeholder labels: update to describe brand-relevant images
 11. NEVER use em dashes (\u2014). Use commas, periods, colons, or semicolons instead.
@@ -917,8 +1214,149 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     # AI Vision Generation
     # ------------------------------------------------------------------
 
-    def _generate_via_ai_vision(self, screenshot_b64: str) -> str:
-        """Send screenshot to Gemini, get back HTML. Sync wrapper around async."""
+    _MARKDOWN_TEXT_BUDGET = 30_000  # Max chars for page markdown in prompt
+    _PROMPT_TEXT_BUDGET = 40_000   # Total text budget before image
+
+    def _truncate_markdown_for_prompt(self, markdown: str, max_chars: int) -> str:
+        """Truncate markdown at a heading boundary to preserve complete sections."""
+        if len(markdown) <= max_chars:
+            return markdown
+        # Find last heading boundary before max_chars
+        search_region = markdown[:max_chars]
+        for pattern in (r'\n## ', r'\n### ', r'\n# '):
+            matches = list(re.finditer(pattern, search_region))
+            if matches:
+                cut_point = matches[-1].start()
+                if cut_point > max_chars // 2:  # Don't cut too early
+                    return markdown[:cut_point] + "\n\n[... content truncated ...]"
+        # Fallback: cut at last paragraph break
+        last_break = search_region.rfind('\n\n')
+        if last_break > max_chars // 2:
+            return markdown[:last_break] + "\n\n[... content truncated ...]"
+        return markdown[:max_chars] + "\n\n[... content truncated ...]"
+
+    def _build_vision_prompt(
+        self,
+        page_markdown: Optional[str] = None,
+        reinforce_slots: bool = False,
+        image_urls: Optional[List[Dict]] = None,
+    ) -> str:
+        """Build the prompt for Gemini vision HTML generation.
+
+        Args:
+            page_markdown: Optional scraped page text to include as reference.
+            reinforce_slots: If True, add extra emphasis on slot marking (retry mode).
+            image_urls: Optional validated image URLs from page markdown.
+        """
+        parts = []
+
+        # Core instructions (never truncated)
+        parts.append(
+            "Analyze this landing page screenshot and generate a faithful HTML/CSS recreation.\n\n"
+            "## LAYOUT REQUIREMENTS\n"
+            "- Use semantic HTML: <section>, <header>, <nav>, <footer>, <article>\n"
+            "- Add data-section attributes to top-level sections (e.g., data-section=\"hero\")\n"
+            "- Center content with max-width: 1200px; margin: 0 auto on main containers\n"
+            "- Use flexbox for row layouts (display: flex; gap: ...; align-items: center)\n"
+            "- Use CSS grid for card/feature grids (grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)))\n\n"
+            "## TYPOGRAPHY\n"
+            "- Use system font stack: font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif\n"
+            "- h1: font-size 2.5-3.5rem, font-weight 700-800\n"
+            "- h2: font-size 1.8-2.2rem, font-weight 600-700\n"
+            "- h3: font-size 1.3-1.6rem, font-weight 600\n"
+            "- Body text: font-size 1-1.1rem, line-height 1.6-1.8\n"
+            "- Extract EXACT hex colors from the screenshot for text, backgrounds, and accents\n\n"
+            "## SPACING & VISUAL\n"
+            "- Consistent section padding: 60-80px vertical, 20-40px horizontal\n"
+            "- Element margins: 16-24px between paragraphs, 32-48px between groups\n"
+            "- Reproduce button styles precisely: padding, border-radius, background color, hover states\n"
+            "- Reproduce background colors/gradients for each section\n\n"
+            "## CSS APPROACH\n"
+            "- Use a <style> block in <head> for shared/repeated styles (classes, section styles)\n"
+            "- Use inline style= for one-off overrides (specific colors, unique spacing)\n"
+            "- Prefer class-based CSS for maintainability\n\n"
+            "## TEXT CONTENT\n"
+            "- Reproduce ALL visible text content VERBATIM from the screenshot\n"
+            "- If text is hard to read, use the PAGE TEXT CONTENT section below as reference\n\n"
+        )
+
+        # Slot marking contract (never truncated)
+        parts.append(
+            "## SLOT MARKING CONTRACT (CRITICAL)\n"
+            "Mark each replaceable text element with a data-slot attribute using "
+            "this EXACT naming convention (numbered sequentially top-to-bottom):\n"
+            '- data-slot="headline" on the main hero headline\n'
+            '- data-slot="subheadline" on the hero subheadline\n'
+            '- data-slot="cta-1", "cta-2", etc. on call-to-action buttons\n'
+            '- data-slot="heading-1", "heading-2", etc. on section headings\n'
+            '- data-slot="body-1", "body-2", etc. on section body text\n'
+            '- data-slot="testimonial-1", etc. on testimonial quotes\n'
+            '- data-slot="feature-1", etc. on feature descriptions\n'
+            '- data-slot="price" on pricing text\n'
+            '- data-slot="guarantee" on guarantee/risk-reversal text\n\n'
+        )
+
+        # Slot reinforcement (retry mode)
+        if reinforce_slots:
+            parts.append(
+                "## IMPORTANT: SLOT MARKING REINFORCEMENT\n"
+                "Your previous output was missing data-slot attributes. This is CRITICAL.\n"
+                "EVERY piece of replaceable text MUST have a data-slot attribute.\n"
+                "At minimum, include: headline, subheadline, at least one cta, "
+                "and body text slots.\n\n"
+            )
+
+        # Image URLs section
+        if image_urls:
+            parts.append("## ACTUAL IMAGE URLs\n")
+            parts.append(
+                "Use actual <img> tags with these validated URLs where they match "
+                "content visible in the screenshot. For images without a matching URL, "
+                "use colored placeholder divs with descriptive labels.\n\n"
+            )
+            for img in image_urls[:20]:
+                alt = img.get("alt", "")[:80]
+                url = img.get("url", "")
+                parts.append(f'- {alt}: {url}\n')
+            parts.append("\n")
+        else:
+            parts.append(
+                "## IMAGES\n"
+                "Use colored placeholder divs with descriptive labels for all images.\n\n"
+            )
+
+        # Page markdown (truncated to budget)
+        if page_markdown and page_markdown.strip():
+            truncated = self._truncate_markdown_for_prompt(
+                page_markdown, self._MARKDOWN_TEXT_BUDGET
+            )
+            parts.append(
+                "## PAGE TEXT CONTENT\n"
+                "Use this as reference for exact text, headings, and structure. "
+                "The screenshot is the visual authority; this text fills in "
+                "anything hard to read.\n\n"
+                f"{truncated}\n\n"
+            )
+
+        parts.append("Output ONLY the complete HTML document, no explanation or code fences.")
+
+        return ''.join(parts)
+
+    def _generate_via_ai_vision(
+        self,
+        screenshot_b64: str,
+        page_markdown: Optional[str] = None,
+        reinforce_slots: bool = False,
+        page_url: Optional[str] = None,
+    ) -> str:
+        """Send screenshot (+optional markdown) to Gemini, get back HTML.
+
+        Args:
+            screenshot_b64: Base64-encoded screenshot.
+            page_markdown: Optional scraped page text for multi-modal input.
+            reinforce_slots: If True, add extra slot emphasis (retry mode).
+            page_url: Optional page URL for resolving relative image URLs.
+        """
         import asyncio
         from viraltracker.services.gemini_service import GeminiService
 
@@ -928,28 +1366,15 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 self._usage_tracker, self._user_id, self._organization_id
             )
 
-        prompt = (
-            "Analyze this landing page screenshot and generate a standalone HTML document "
-            "with inline CSS that faithfully recreates:\n"
-            "- The visual layout and section structure\n"
-            "- Typography (font sizes, weights, colors) using inline styles\n"
-            "- Color scheme and backgrounds\n"
-            "- Content placement and spacing\n"
-            "- All visible text content (verbatim)\n\n"
-            "Use colored placeholder divs with labels for images.\n\n"
-            "IMPORTANT — Slot Marking Contract:\n"
-            "Mark each replaceable text element with a data-slot attribute using "
-            "this EXACT naming convention (numbered sequentially top-to-bottom):\n"
-            '- data-slot="headline" — the main hero headline\n'
-            '- data-slot="subheadline" — the hero subheadline\n'
-            '- data-slot="cta-1", "cta-2", etc. — call-to-action buttons\n'
-            '- data-slot="heading-1", "heading-2", etc. — section headings\n'
-            '- data-slot="body-1", "body-2", etc. — section body text\n'
-            '- data-slot="testimonial-1", etc. — testimonial quotes\n'
-            '- data-slot="feature-1", etc. — feature descriptions\n'
-            '- data-slot="price" — pricing text\n'
-            '- data-slot="guarantee" — guarantee/risk-reversal text\n\n'
-            "Output ONLY the complete HTML document, no explanation."
+        # Extract and validate image URLs from markdown
+        image_urls = None
+        if page_markdown and page_url:
+            image_urls = self._extract_image_urls(page_markdown, page_url)
+
+        prompt = self._build_vision_prompt(
+            page_markdown=page_markdown,
+            reinforce_slots=reinforce_slots,
+            image_urls=image_urls,
         )
 
         # Sync wrapper — handles both running and non-running event loops
@@ -985,6 +1410,272 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         from markdown_it import MarkdownIt
         md = MarkdownIt().disable("html_block").disable("html_inline")
         return md.render(markdown_text)
+
+    # ------------------------------------------------------------------
+    # CSS Extraction & Style Block Handling
+    # ------------------------------------------------------------------
+
+    def _extract_and_sanitize_css(self, raw_html: str) -> Tuple[str, str]:
+        """Extract <style> blocks from HTML, sanitize them, and return both.
+
+        Returns (html_without_styles, sanitized_css). This is the single source
+        of both extraction AND removal, ensuring atomicity.
+        """
+        # Extract all <style> block contents
+        style_contents = re.findall(
+            r'<style[^>]*>(.*?)</style>',
+            raw_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        # Sanitize each block
+        sanitized_parts = []
+        for content in style_contents:
+            sanitized = _sanitize_css_block(content)
+            if sanitized.strip():
+                sanitized_parts.append(sanitized)
+        sanitized_css = '\n'.join(sanitized_parts)
+
+        # Strip all <style> blocks from HTML (atomically with extraction)
+        html_without_styles = re.sub(
+            r'<style[^>]*>.*?</style>', '', raw_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        return html_without_styles, sanitized_css
+
+    def _extract_page_css_and_strip(self, wrapped_html: str) -> Tuple[str, str]:
+        """Extract page CSS and strip wrapper. Returns (body, sanitized_css).
+
+        Unlike _strip_mockup_wrapper() which returns str, this method
+        returns a tuple for use in blueprint generation where CSS
+        must be carried through.
+        """
+        # 1. Extract <style class="page-css"> content
+        css_matches = re.findall(
+            r'<style[^>]*class=["\'][^"\']*\bpage-css\b[^"\']*["\'][^>]*>(.*?)</style>',
+            wrapped_html, flags=re.IGNORECASE | re.DOTALL,
+        )
+        page_css = '\n'.join(css_matches) if css_matches else ""
+
+        # 2. Re-sanitize CSS (defense-in-depth: DB rows may be old/pre-sanitization)
+        if page_css:
+            page_css = _sanitize_css_block(page_css)
+
+        # 3. Strip wrapper normally
+        body = self._strip_mockup_wrapper(wrapped_html)
+
+        return body, page_css
+
+    # ------------------------------------------------------------------
+    # Image URL Extraction & Validation
+    # ------------------------------------------------------------------
+
+    # Known tracking pixel domains
+    _TRACKING_DOMAINS = frozenset([
+        'doubleclick.net', 'facebook.com', 'google-analytics.com',
+        'googleadservices.com', 'googlesyndication.com',
+    ])
+    _TRACKING_PREFIXES = ('pixel.', 'beacon.', 'track.')
+
+    # Safe data URI image types (NO svg — script risk)
+    _SAFE_DATA_IMAGE_TYPES = frozenset([
+        'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+    ])
+    _DATA_URI_MAX_SIZE = 500_000  # 500KB
+
+    _MARKDOWN_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+
+    def _extract_image_urls(
+        self, page_markdown: str, page_url: str
+    ) -> List[Dict[str, str]]:
+        """Parse ![alt](url) patterns from markdown, resolve relative URLs.
+
+        Returns list of dicts with 'alt' and 'url' keys, capped at 20 images.
+        """
+        results = []
+        for match in self._MARKDOWN_IMAGE_RE.finditer(page_markdown):
+            if len(results) >= 20:
+                break
+            alt = match.group(1).strip()
+            raw_url = match.group(2).strip()
+
+            # Resolve relative URLs
+            if page_url and not raw_url.startswith(('http://', 'https://', 'data:')):
+                resolved = urljoin(page_url, raw_url)
+            else:
+                resolved = raw_url
+
+            # Validate
+            is_safe, safe_url, reason = self._validate_image_url(resolved)
+            if is_safe:
+                results.append({"alt": alt or "image", "url": safe_url})
+            else:
+                logger.debug(f"Image URL rejected: {reason} — {raw_url[:100]}")
+
+        return results
+
+    def _validate_image_url(self, url: str) -> Tuple[bool, str, str]:
+        """Validate an image URL for safety.
+
+        Returns (is_safe, url, reason).
+        """
+        if not url:
+            return False, "", "empty URL"
+
+        # Handle data: URIs
+        if url.startswith('data:'):
+            return self._validate_data_uri(url)
+
+        # Parse URL
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False, "", "invalid URL format"
+
+        # HTTPS only
+        if parsed.scheme not in ('https',):
+            return False, "", f"non-HTTPS scheme: {parsed.scheme}"
+
+        hostname = (parsed.hostname or "").lower()
+
+        # Block private/internal IPs
+        if hostname in ('localhost', '127.0.0.1', '0.0.0.0', '::1'):
+            return False, "", "private IP: localhost"
+        if hostname.startswith(('192.168.', '10.', '169.254.')):
+            return False, "", f"private IP: {hostname}"
+        # 172.16.0.0 - 172.31.255.255
+        if hostname.startswith('172.'):
+            parts = hostname.split('.')
+            if len(parts) >= 2:
+                try:
+                    second = int(parts[1])
+                    if 16 <= second <= 31:
+                        return False, "", f"private IP: {hostname}"
+                except ValueError:
+                    pass
+
+        # Block tracking pixels
+        for domain in self._TRACKING_DOMAINS:
+            if hostname == domain or hostname.endswith('.' + domain):
+                return False, "", f"tracking domain: {hostname}"
+        for prefix in self._TRACKING_PREFIXES:
+            if hostname.startswith(prefix):
+                return False, "", f"tracking prefix: {hostname}"
+
+        return True, url, "OK"
+
+    def _validate_data_uri(self, uri: str) -> Tuple[bool, str, str]:
+        """Validate a data: URI for safe image content."""
+        # Parse: data:[<mediatype>][;base64],<data>
+        if not uri.startswith('data:'):
+            return False, "", "not a data URI"
+
+        # Extract media type
+        header_end = uri.find(',')
+        if header_end < 0:
+            return False, "", "malformed data URI (no comma)"
+
+        header = uri[5:header_end].lower()  # Strip "data:" prefix
+
+        # Check media type against safe list
+        media_type = header.split(';')[0].strip()
+        if media_type not in self._SAFE_DATA_IMAGE_TYPES:
+            return False, "", f"unsafe data URI type: {media_type}"
+
+        # Size check (approximate: base64 is ~4/3 of binary)
+        data_part = uri[header_end + 1:]
+        if len(data_part) > self._DATA_URI_MAX_SIZE:
+            return False, "", f"data URI too large: {len(data_part)} bytes"
+
+        return True, uri, "OK"
+
+    # ------------------------------------------------------------------
+    # Post-Sanitization for <img src> (parser-based)
+    # ------------------------------------------------------------------
+
+    class _SrcSanitizer(HTMLParser):
+        """Parse HTML and validate/rewrite img[src] attributes.
+
+        Validates each src against _validate_image_url() and clears unsafe ones.
+        Also handles data: URI preservation through bleach (which strips non-HTTPS).
+        """
+
+        def __init__(self, validator):
+            super().__init__(convert_charrefs=False)
+            self.parts: list = []
+            self._validator = validator
+
+        def _process_attrs(self, tag, attrs):
+            """Validate src attributes on img tags."""
+            if tag.lower() != 'img':
+                return attrs
+            new_attrs = []
+            for name, value in attrs:
+                if name.lower() == 'src' and value:
+                    is_safe, safe_url, reason = self._validator(value)
+                    if is_safe:
+                        new_attrs.append((name, safe_url))
+                    else:
+                        logger.debug(f"img src stripped: {reason}")
+                        new_attrs.append((name, ""))
+                else:
+                    new_attrs.append((name, value))
+            return new_attrs
+
+        def _build_attrs(self, attrs):
+            parts = []
+            for name, value in attrs:
+                if value is None:
+                    parts.append(f' {name}')
+                else:
+                    parts.append(f' {name}="{_html_module.escape(value, quote=True)}"')
+            return ''.join(parts)
+
+        def handle_starttag(self, tag, attrs):
+            processed = self._process_attrs(tag, attrs)
+            self.parts.append(f'<{tag}{self._build_attrs(processed)}>')
+
+        def handle_endtag(self, tag):
+            self.parts.append(f'</{tag}>')
+
+        def handle_startendtag(self, tag, attrs):
+            processed = self._process_attrs(tag, attrs)
+            self.parts.append(f'<{tag}{self._build_attrs(processed)} />')
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+        def handle_entityref(self, name):
+            self.parts.append(f'&{name};')
+
+        def handle_charref(self, name):
+            self.parts.append(f'&#{name};')
+
+        def handle_comment(self, data):
+            self.parts.append(f'<!--{data}-->')
+
+        def handle_decl(self, decl):
+            self.parts.append(f'<!{decl}>')
+
+        def unknown_decl(self, data):
+            self.parts.append(f'<!{data}>')
+
+        def get_result(self) -> str:
+            return ''.join(self.parts)
+
+    def _sanitize_img_src(self, html: str) -> str:
+        """Validate all <img src> attributes using parser-based rewriting."""
+        if '<img' not in html.lower():
+            return html  # Fast path
+
+        sanitizer = self._SrcSanitizer(self._validate_image_url)
+        try:
+            sanitizer.feed(html)
+            return sanitizer.get_result()
+        except Exception:
+            logger.warning("HTMLParser failed in _sanitize_img_src, returning as-is")
+            return html
 
     # ------------------------------------------------------------------
     # Template Swap (Blueprint mode)
@@ -1134,8 +1825,16 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         inner_html: str,
         classification: Optional[Dict[str, Any]],
         mode: str,
+        page_css: str = "",
     ) -> str:
-        """Wrap AI-generated or markdown HTML in the mockup shell (metadata bar + footer)."""
+        """Wrap AI-generated or markdown HTML in the mockup shell (metadata bar + footer).
+
+        Args:
+            inner_html: Sanitized page body HTML.
+            classification: Optional page classification data.
+            mode: "analysis" or "blueprint".
+            page_css: Optional sanitized CSS from AI-generated <style> blocks.
+        """
         cls_data = classification or {}
         if "page_classifier" in cls_data:
             cls_data = cls_data["page_classifier"]
@@ -1168,6 +1867,13 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             pa_display = _html_module.escape(pa.replace("_", " ").title())
             arch_html = f'<span><strong>Architecture:</strong> {pa_display}</span>'
 
+        # Build page CSS block if present
+        page_css_block = ""
+        if page_css and page_css.strip():
+            page_css_block = f"""<style class="page-css">
+{page_css}
+</style>"""
+
         return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1191,6 +1897,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
   color: #94a3b8; border-top: 1px solid #e2e8f0;
 }}
 </style>
+{page_css_block}
 </head>
 <body>
 <div class="mockup-meta-bar">

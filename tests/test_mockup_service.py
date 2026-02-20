@@ -12,7 +12,9 @@ from viraltracker.services.landing_page_analysis.mockup_service import (
     SECTION_ACCENT_COLORS,
     MockupService,
     _DEFAULT_ACCENT,
+    _sanitize_css_block,
     _sanitize_dashes,
+    _strip_url_from_inline_styles,
 )
 
 
@@ -737,7 +739,12 @@ class TestFallbackChain:
 
     @patch("viraltracker.services.landing_page_analysis.mockup_service.MockupService._generate_via_ai_vision")
     def test_screenshot_takes_priority(self, mock_vision, service):
-        mock_vision.return_value = '<div data-slot="headline">AI Generated</div>'
+        mock_vision.return_value = (
+            '<div data-slot="headline">AI Generated</div>'
+            '<p data-slot="body-1">Body text content that makes this long enough</p>'
+            '<button data-slot="cta-1">Buy Now</button>'
+            + '<p>Filler content to pass minimum length check.</p>' * 5
+        )
         html = service.generate_analysis_mockup(
             screenshot_b64="fake_b64",
             page_markdown="# Markdown Content",
@@ -923,7 +930,12 @@ class TestUsageTracking:
         """Usage tracker should be passed to GeminiService when set."""
         tracker = MagicMock()
         service.set_tracking_context(tracker, "user123", "org456")
-        mock_vision.return_value = "<div>Test</div>"
+        mock_vision.return_value = (
+            '<div data-slot="headline">Test</div>'
+            '<p data-slot="body-1">Body content for length</p>'
+            '<button data-slot="cta-1">Buy Now</button>'
+            + '<p>Filler content to pass minimum length check.</p>' * 5
+        )
         service.generate_analysis_mockup(screenshot_b64="fake_b64")
         mock_vision.assert_called_once()
 
@@ -1679,3 +1691,676 @@ class TestDashSanitization:
             {"brand_basics": {"name": "Test"}},
         )
         assert "\u2014" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: CSS Block Sanitizer
+# ---------------------------------------------------------------------------
+
+class TestSanitizeCssBlock:
+    """Test _sanitize_css_block for <style> block content safety."""
+
+    def test_style_breakout_rejected(self):
+        """</style> breakout pattern causes entire block to be rejected."""
+        css = "body { color: red; } </style><script>alert(1)</script>"
+        assert _sanitize_css_block(css) == ""
+
+    def test_style_breakout_whitespace_tolerant(self):
+        """< / style> with spaces still caught."""
+        css = "body { color: red; } < / style ><script>alert(1)</script>"
+        assert _sanitize_css_block(css) == ""
+
+    def test_html_tags_rejected(self):
+        """HTML tags in CSS cause entire block rejection."""
+        css = "body { color: red; } <div>injected</div>"
+        assert _sanitize_css_block(css) == ""
+
+    def test_html_comment_rejected(self):
+        """<! patterns in CSS cause entire block rejection."""
+        css = "body { color: red; } <!-- comment -->"
+        assert _sanitize_css_block(css) == ""
+
+    def test_import_stripped(self):
+        """@import rules are stripped, other rules preserved."""
+        css = '@import url("evil.css"); body { color: red; }'
+        result = _sanitize_css_block(css)
+        assert "@import" not in result
+        assert "color: red" in result
+
+    def test_charset_stripped(self):
+        """@charset rules are stripped."""
+        css = '@charset "UTF-8"; body { margin: 0; }'
+        result = _sanitize_css_block(css)
+        assert "@charset" not in result
+        assert "margin: 0" in result
+
+    def test_url_stripped(self):
+        """url() values are stripped."""
+        css = "body { background: url('evil.com/track.png'); color: blue; }"
+        result = _sanitize_css_block(css)
+        assert "url(" not in result.lower()
+        assert "color: blue" in result
+
+    def test_url_double_quoted_stripped(self):
+        """url() with double quotes stripped."""
+        css = '.hero { background-image: url("https://example.com/bg.jpg"); }'
+        result = _sanitize_css_block(css)
+        assert "url(" not in result.lower()
+
+    def test_url_unquoted_stripped(self):
+        """url() unquoted value stripped."""
+        css = ".hero { background: url(https://example.com/bg.jpg); }"
+        result = _sanitize_css_block(css)
+        assert "url(" not in result.lower()
+
+    def test_url_case_insensitive(self):
+        """URL() and Url() also stripped."""
+        css = ".a { background: URL(evil.com); } .b { background: Url(evil.com); }"
+        result = _sanitize_css_block(css)
+        assert "url(" not in result.lower()
+
+    def test_expression_stripped(self):
+        """expression() (IE JS-in-CSS) stripped."""
+        css = "body { width: expression(document.body.clientWidth); }"
+        result = _sanitize_css_block(css)
+        assert "expression" not in result.lower() or "expression-stripped" in result.lower()
+
+    def test_moz_binding_stripped(self):
+        """-moz-binding: (Firefox JS-in-CSS) stripped."""
+        css = "body { -moz-binding: url(evil.xbl); }"
+        result = _sanitize_css_block(css)
+        assert "-moz-binding" not in result.lower() or "moz-binding-stripped" in result.lower()
+
+    def test_behavior_stripped(self):
+        """behavior: (IE JS-in-CSS) stripped."""
+        css = "body { behavior: url(evil.htc); }"
+        result = _sanitize_css_block(css)
+        assert "behavior:" not in result.lower() or "behavior-stripped" in result.lower()
+
+    def test_gradient_preserved(self):
+        """linear-gradient() is NOT a url() call and should survive."""
+        css = ".hero { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }"
+        result = _sanitize_css_block(css)
+        assert "linear-gradient" in result
+        assert "#667eea" in result
+
+    def test_radial_gradient_preserved(self):
+        """radial-gradient() preserved."""
+        css = ".bg { background: radial-gradient(circle, #fff, #000); }"
+        result = _sanitize_css_block(css)
+        assert "radial-gradient" in result
+
+    def test_media_queries_preserved(self):
+        """@media queries pass through."""
+        css = "@media (max-width: 768px) { .hero { font-size: 1.5rem; } }"
+        result = _sanitize_css_block(css)
+        assert "@media" in result
+        assert "768px" in result
+
+    def test_keyframes_preserved(self):
+        """@keyframes pass through."""
+        css = "@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }"
+        result = _sanitize_css_block(css)
+        assert "@keyframes" in result
+        assert "fadeIn" in result
+
+    def test_size_cap(self):
+        """CSS exceeding 100KB is truncated."""
+        css = "a" * 200_000
+        result = _sanitize_css_block(css)
+        assert len(result) <= 100_001  # Allow small overhead from stripping
+
+    def test_empty_returns_empty(self):
+        """Empty/whitespace input returns empty string."""
+        assert _sanitize_css_block("") == ""
+        assert _sanitize_css_block("   ") == ""
+        assert _sanitize_css_block(None) == ""
+
+    def test_bare_less_than_not_rejected(self):
+        """Bare < (valid in CSS range syntax) should NOT cause rejection."""
+        # CSS range syntax can use < in @counter-style, etc.
+        css = "body { color: red; } /* comment with 1 < 2 */"
+        result = _sanitize_css_block(css)
+        assert "color: red" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: Inline Style url() Stripping
+# ---------------------------------------------------------------------------
+
+class TestStripUrlFromInlineStyles:
+    """Test _strip_url_from_inline_styles parser-based url() removal."""
+
+    def test_strips_url_from_style_attr(self):
+        """url() in style attribute is stripped."""
+        html = '<div style="background-image: url(evil.com)">Text</div>'
+        result = _strip_url_from_inline_styles(html)
+        assert "url(" not in result.lower() or "url-stripped" in result.lower()
+        assert "Text" in result
+
+    def test_preserves_visible_text_with_url(self):
+        """Text content containing 'url(' is NOT altered."""
+        html = '<p>Visit url(example.com) for details</p>'
+        result = _strip_url_from_inline_styles(html)
+        assert "url(example.com)" in result
+
+    def test_no_url_fast_path(self):
+        """HTML without url() returns unchanged."""
+        html = '<div style="color: red">Hello</div>'
+        result = _strip_url_from_inline_styles(html)
+        assert result == html
+
+    def test_single_quote_style(self):
+        """Handles STYLE='...' with single quotes."""
+        html = "<div style='background: url(evil.com)'>Text</div>"
+        result = _strip_url_from_inline_styles(html)
+        assert "evil.com" not in result
+        assert "Text" in result
+
+    def test_case_insensitive_url(self):
+        """URL() and Url() in styles also stripped."""
+        html = '<div style="background: URL(evil.com)">Text</div>'
+        result = _strip_url_from_inline_styles(html)
+        assert "evil.com" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Output Quality Guards
+# ---------------------------------------------------------------------------
+
+class TestValidateAnalysisSlots:
+    """Test _validate_analysis_slots severity tiers."""
+
+    def test_ok_severity(self, service):
+        """3+ slots including headline and CTA = ok."""
+        html = (
+            '<h1 data-slot="headline">Title</h1>'
+            '<p data-slot="body-1">Text</p>'
+            '<button data-slot="cta-1">Buy</button>'
+        )
+        severity, report = service._validate_analysis_slots(html)
+        assert severity == "ok"
+
+    def test_degraded_severity(self, service):
+        """Has slots but missing key ones = degraded."""
+        html = '<h1 data-slot="headline">Title</h1>'  # No CTA, only 1 slot
+        severity, report = service._validate_analysis_slots(html)
+        assert severity == "degraded"
+
+    def test_unusable_severity(self, service):
+        """0 slots = unusable."""
+        html = '<div>No slots at all</div>'
+        severity, report = service._validate_analysis_slots(html)
+        assert severity == "unusable"
+
+    def test_degraded_no_headline(self, service):
+        """Has CTA but no headline = degraded."""
+        html = (
+            '<p data-slot="body-1">Text</p>'
+            '<button data-slot="cta-1">Buy</button>'
+            '<p data-slot="body-2">More</p>'
+        )
+        severity, report = service._validate_analysis_slots(html)
+        assert severity == "degraded"
+
+
+class TestValidateHtmlCompleteness:
+    """Test _validate_html_completeness structural checks."""
+
+    def test_complete_html(self, service):
+        """Well-formed HTML passes."""
+        html = (
+            '<div><section><h1>Title</h1><p>Text content that is long enough</p>'
+            '<p>More content to ensure we pass the minimum length check of 200 chars</p>'
+            '<p>And even more content to really make sure this is well above the threshold</p>'
+            '</section></div>'
+        )
+        is_complete, issues = service._validate_html_completeness(html)
+        assert is_complete
+        assert issues == []
+
+    def test_too_short(self, service):
+        """HTML under 200 chars flagged."""
+        html = '<div>Short</div>'
+        is_complete, issues = service._validate_html_completeness(html)
+        assert not is_complete
+        assert any("too short" in i for i in issues)
+
+    def test_mid_tag_truncation(self, service):
+        """Last < without matching > detected."""
+        html = 'x' * 300 + '<div>Content</div><div class='
+        is_complete, issues = service._validate_html_completeness(html)
+        assert not is_complete
+        assert any("Mid-tag" in i for i in issues)
+
+    def test_tag_imbalance(self, service):
+        """Severe div open/close imbalance detected."""
+        html = '<div>' * 10 + 'x' * 200 + '</div>' * 3
+        is_complete, issues = service._validate_html_completeness(html)
+        assert not is_complete
+        assert any("imbalance" in i.lower() for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Style Block Preservation & Blueprint CSS Round-Trip
+# ---------------------------------------------------------------------------
+
+class TestExtractAndSanitizeCss:
+    """Test _extract_and_sanitize_css extraction and sanitization."""
+
+    def test_extracts_style_blocks(self, service):
+        """Style blocks extracted and HTML cleaned."""
+        html = '<style>.hero { color: red; }</style><div>Content</div>'
+        body, css = service._extract_and_sanitize_css(html)
+        assert "<style>" not in body
+        assert "Content" in body
+        assert "color: red" in css
+
+    def test_multiple_style_blocks(self, service):
+        """Multiple style blocks concatenated."""
+        html = (
+            '<style>.a { color: red; }</style>'
+            '<div>Between</div>'
+            '<style>.b { margin: 0; }</style>'
+        )
+        body, css = service._extract_and_sanitize_css(html)
+        assert "color: red" in css
+        assert "margin: 0" in css
+        assert "<style>" not in body
+
+    def test_sanitizes_css_during_extraction(self, service):
+        """url() in style blocks stripped during extraction."""
+        html = '<style>.hero { background: url(evil.com); color: blue; }</style><div>OK</div>'
+        body, css = service._extract_and_sanitize_css(html)
+        assert "url(" not in css.lower() or "url-stripped" in css.lower()
+        assert "color: blue" in css
+
+    def test_no_style_blocks(self, service):
+        """HTML without style blocks returns empty CSS."""
+        html = '<div style="color: red">Content</div>'
+        body, css = service._extract_and_sanitize_css(html)
+        assert css == ""
+        assert "Content" in body
+
+
+class TestExtractPageCssAndStrip:
+    """Test _extract_page_css_and_strip for blueprint CSS carry-through."""
+
+    def test_extracts_page_css(self, service):
+        """Extracts CSS from <style class="page-css"> blocks."""
+        wrapped = (
+            '<!DOCTYPE html><html><head>'
+            '<style>.mockup-meta-bar { background: #1e293b; }</style>'
+            '<style class="page-css">.hero { color: red; }</style>'
+            '</head><body>'
+            '<div class="mockup-meta-bar"><span>META</span></div>'
+            '<div class="hero">Content</div>'
+            '<div class="mockup-gen-footer">Footer</div>'
+            '</body></html>'
+        )
+        body, css = service._extract_page_css_and_strip(wrapped)
+        assert "color: red" in css
+        assert "Content" in body
+        assert "mockup-meta-bar" not in body
+
+    def test_no_page_css_returns_empty(self, service):
+        """Old-format HTML without page-css style block returns empty CSS."""
+        wrapped = (
+            '<!DOCTYPE html><html><head>'
+            '<style>.mockup-meta-bar { background: #1e293b; }</style>'
+            '</head><body>'
+            '<div class="mockup-meta-bar"><span>META</span></div>'
+            '<div>Content</div>'
+            '</body></html>'
+        )
+        body, css = service._extract_page_css_and_strip(wrapped)
+        assert css == ""
+        assert "Content" in body
+
+    def test_resanitizes_css_on_read(self, service):
+        """CSS containing url() is re-sanitized on extraction (defense-in-depth)."""
+        wrapped = (
+            '<!DOCTYPE html><html><head>'
+            '<style class="page-css">.evil { background: url(evil.com); color: blue; }</style>'
+            '</head><body><div>Content</div></body></html>'
+        )
+        body, css = service._extract_page_css_and_strip(wrapped)
+        assert "url(" not in css.lower() or "url-stripped" in css.lower()
+        assert "color: blue" in css
+
+    def test_multi_class_page_css(self, service):
+        """Handles class="foo page-css bar" multi-class attribute."""
+        wrapped = (
+            '<!DOCTYPE html><html><head>'
+            '<style class="foo page-css bar">.hero { margin: 0; }</style>'
+            '</head><body><div>Content</div></body></html>'
+        )
+        body, css = service._extract_page_css_and_strip(wrapped)
+        assert "margin: 0" in css
+
+
+class TestBlueprintCssRoundTrip:
+    """Test that CSS survives the full analysis→blueprint round-trip."""
+
+    @patch.object(MockupService, "_rewrite_html_for_brand")
+    def test_css_carried_through_rewrite(self, mock_rewrite, service):
+        """CSS from analysis mockup appears in blueprint output."""
+        mock_rewrite.return_value = '<div class="hero" data-slot="headline">Rewritten</div>'
+
+        # Simulate analysis mockup with page CSS
+        analysis_html = service._wrap_mockup(
+            '<div class="hero" data-slot="headline">Original</div>',
+            None,
+            "analysis",
+            page_css=".hero { color: red; font-size: 2rem; }",
+        )
+
+        blueprint_html = service.generate_blueprint_mockup(
+            blueprint={"sections": [], "bonus_sections": []},
+            analysis_mockup_html=analysis_html,
+            brand_profile={"brand_basics": {"name": "Test"}},
+        )
+
+        assert blueprint_html is not None
+        assert 'class="page-css"' in blueprint_html
+        assert "color: red" in blueprint_html
+        assert "Rewritten" in blueprint_html
+
+    def test_css_carried_through_no_rewrite(self, service):
+        """CSS preserved even when rewrite is skipped (no brand_profile)."""
+        analysis_html = service._wrap_mockup(
+            '<div class="hero">Content</div>',
+            None,
+            "analysis",
+            page_css=".hero { background: #f0f0f0; }",
+        )
+
+        blueprint_html = service.generate_blueprint_mockup(
+            blueprint={"sections": [], "bonus_sections": []},
+            analysis_mockup_html=analysis_html,
+            brand_profile=None,  # No rewrite
+        )
+
+        assert blueprint_html is not None
+        assert "background: #f0f0f0" in blueprint_html
+
+    @patch.object(MockupService, "_rewrite_html_for_brand", side_effect=Exception("AI fail"))
+    def test_css_carried_through_on_failure(self, mock_rewrite, service):
+        """CSS preserved even when rewrite fails (exception path)."""
+        analysis_html = service._wrap_mockup(
+            '<div class="hero" data-slot="headline">Content</div>',
+            None,
+            "analysis",
+            page_css=".hero { padding: 20px; }",
+        )
+
+        with pytest.raises(Exception, match="AI fail"):
+            service.generate_blueprint_mockup(
+                blueprint={"sections": [], "bonus_sections": []},
+                analysis_mockup_html=analysis_html,
+                brand_profile={"brand_basics": {"name": "Test"}},
+            )
+
+
+class TestWrapMockupPageCss:
+    """Test _wrap_mockup with page_css parameter."""
+
+    def test_no_page_css_default(self, service):
+        """Default page_css="" produces no extra style block."""
+        html = service._wrap_mockup('<div>Content</div>', None, "analysis")
+        assert 'class="page-css"' not in html
+        assert "Content" in html
+
+    def test_page_css_injected(self, service):
+        """page_css parameter creates <style class="page-css"> block."""
+        html = service._wrap_mockup(
+            '<div>Content</div>', None, "analysis",
+            page_css=".hero { color: red; }",
+        )
+        assert 'class="page-css"' in html
+        assert "color: red" in html
+
+    def test_empty_page_css_ignored(self, service):
+        """Empty/whitespace page_css produces no extra style block."""
+        html = service._wrap_mockup(
+            '<div>Content</div>', None, "analysis",
+            page_css="   ",
+        )
+        assert 'class="page-css"' not in html
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Image URL Validation
+# ---------------------------------------------------------------------------
+
+class TestValidateImageUrl:
+    """Test _validate_image_url safety checks."""
+
+    def test_https_url_allowed(self, service):
+        """HTTPS URL is allowed."""
+        is_safe, url, reason = service._validate_image_url("https://example.com/image.jpg")
+        assert is_safe
+        assert url == "https://example.com/image.jpg"
+
+    def test_http_url_rejected(self, service):
+        """HTTP URL is rejected."""
+        is_safe, url, reason = service._validate_image_url("http://example.com/image.jpg")
+        assert not is_safe
+        assert "non-HTTPS" in reason
+
+    def test_javascript_url_rejected(self, service):
+        """javascript: URL is rejected."""
+        is_safe, url, reason = service._validate_image_url("javascript:alert(1)")
+        assert not is_safe
+
+    def test_data_png_allowed(self, service):
+        """data:image/png;base64,... is allowed."""
+        small_data = "data:image/png;base64," + "A" * 100
+        is_safe, url, reason = service._validate_image_url(small_data)
+        assert is_safe
+
+    def test_data_jpeg_allowed(self, service):
+        """data:image/jpeg;base64,... is allowed."""
+        small_data = "data:image/jpeg;base64," + "A" * 100
+        is_safe, url, reason = service._validate_image_url(small_data)
+        assert is_safe
+
+    def test_data_svg_rejected(self, service):
+        """data:image/svg+xml;base64,... is rejected (script risk)."""
+        svg_data = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
+        is_safe, url, reason = service._validate_image_url(svg_data)
+        assert not is_safe
+        assert "unsafe" in reason
+
+    def test_data_uri_too_large(self, service):
+        """data: URI > 500KB is rejected."""
+        large_data = "data:image/png;base64," + "A" * 600_000
+        is_safe, url, reason = service._validate_image_url(large_data)
+        assert not is_safe
+        assert "too large" in reason
+
+    def test_tracking_pixel_rejected(self, service):
+        """Known tracking domains are rejected."""
+        is_safe, url, reason = service._validate_image_url(
+            "https://www.facebook.com/tr?id=123&ev=PageView"
+        )
+        assert not is_safe
+        assert "tracking" in reason
+
+    def test_doubleclick_rejected(self, service):
+        """doubleclick.net tracking domain rejected."""
+        is_safe, url, reason = service._validate_image_url(
+            "https://ad.doubleclick.net/pixel.gif"
+        )
+        assert not is_safe
+
+    def test_google_analytics_rejected(self, service):
+        """google-analytics.com rejected."""
+        is_safe, url, reason = service._validate_image_url(
+            "https://www.google-analytics.com/collect"
+        )
+        assert not is_safe
+
+    def test_private_ip_localhost_rejected(self, service):
+        """localhost URLs rejected."""
+        is_safe, url, reason = service._validate_image_url("https://localhost/img.png")
+        assert not is_safe
+        assert "private" in reason
+
+    def test_private_ip_192_168_rejected(self, service):
+        """192.168.x.x URLs rejected."""
+        is_safe, url, reason = service._validate_image_url("https://192.168.1.1/img.png")
+        assert not is_safe
+
+    def test_private_ip_10_rejected(self, service):
+        """10.x.x.x URLs rejected."""
+        is_safe, url, reason = service._validate_image_url("https://10.0.0.1/img.png")
+        assert not is_safe
+
+    def test_private_ip_172_16_rejected(self, service):
+        """172.16-31.x.x URLs rejected."""
+        is_safe, url, reason = service._validate_image_url("https://172.16.0.1/img.png")
+        assert not is_safe
+
+    def test_empty_url_rejected(self, service):
+        """Empty URL rejected."""
+        is_safe, url, reason = service._validate_image_url("")
+        assert not is_safe
+
+    def test_pixel_prefix_rejected(self, service):
+        """pixel.* hostname prefix rejected."""
+        is_safe, url, reason = service._validate_image_url("https://pixel.example.com/t.gif")
+        assert not is_safe
+
+
+class TestExtractImageUrls:
+    """Test _extract_image_urls markdown image parsing."""
+
+    def test_basic_extraction(self, service):
+        """Extracts ![alt](url) patterns from markdown."""
+        md = "# Title\n\n![Hero image](https://example.com/hero.jpg)\n\nText"
+        urls = service._extract_image_urls(md, "https://example.com")
+        assert len(urls) == 1
+        assert urls[0]["alt"] == "Hero image"
+        assert urls[0]["url"] == "https://example.com/hero.jpg"
+
+    def test_resolves_relative_urls(self, service):
+        """Relative URLs resolved against page_url."""
+        md = "![Logo](/images/logo.png)"
+        urls = service._extract_image_urls(md, "https://example.com/page")
+        assert len(urls) == 1
+        assert urls[0]["url"] == "https://example.com/images/logo.png"
+
+    def test_caps_at_20(self, service):
+        """Max 20 images extracted."""
+        md = "\n".join(f"![img{i}](https://example.com/{i}.jpg)" for i in range(30))
+        urls = service._extract_image_urls(md, "https://example.com")
+        assert len(urls) == 20
+
+    def test_rejects_unsafe_urls(self, service):
+        """HTTP and tracking URLs are filtered out."""
+        md = (
+            "![Good](https://example.com/good.jpg)\n"
+            "![Bad](http://example.com/bad.jpg)\n"
+            "![Tracker](https://www.facebook.com/tr/pixel.gif)\n"
+        )
+        urls = service._extract_image_urls(md, "https://example.com")
+        assert len(urls) == 1
+        assert urls[0]["alt"] == "Good"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Prompt Building
+# ---------------------------------------------------------------------------
+
+class TestBuildVisionPrompt:
+    """Test _build_vision_prompt construction."""
+
+    def test_basic_prompt(self, service):
+        """Basic prompt without markdown or images."""
+        prompt = service._build_vision_prompt()
+        assert "SLOT MARKING CONTRACT" in prompt
+        assert "LAYOUT REQUIREMENTS" in prompt
+        assert "Output ONLY" in prompt
+
+    def test_includes_markdown(self, service):
+        """Page markdown included in prompt."""
+        prompt = service._build_vision_prompt(page_markdown="# Hello World\n\nSome content")
+        assert "PAGE TEXT CONTENT" in prompt
+        assert "Hello World" in prompt
+
+    def test_slot_reinforcement(self, service):
+        """reinforce_slots adds extra emphasis."""
+        prompt = service._build_vision_prompt(reinforce_slots=True)
+        assert "SLOT MARKING REINFORCEMENT" in prompt
+
+    def test_image_urls_included(self, service):
+        """Image URLs listed in prompt."""
+        images = [{"alt": "Hero", "url": "https://example.com/hero.jpg"}]
+        prompt = service._build_vision_prompt(image_urls=images)
+        assert "ACTUAL IMAGE URLs" in prompt
+        assert "example.com/hero.jpg" in prompt
+
+    def test_markdown_truncation(self, service):
+        """Very long markdown is truncated."""
+        long_md = "# Heading\n\n" + "word " * 10_000
+        prompt = service._build_vision_prompt(page_markdown=long_md)
+        assert "truncated" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Backward Compatibility Tests
+# ---------------------------------------------------------------------------
+
+class TestBackwardCompatibility:
+    """Ensure existing behavior is preserved after changes."""
+
+    def test_strip_mockup_wrapper_unchanged_return_type(self, service):
+        """_strip_mockup_wrapper still returns str (not tuple)."""
+        wrapped = (
+            '<!DOCTYPE html><html><head><style>.x{}</style></head><body>'
+            '<div class="mockup-meta-bar"><span>META</span></div>'
+            '<div>Content</div>'
+            '<div class="mockup-gen-footer">Footer</div>'
+            '</body></html>'
+        )
+        result = service._strip_mockup_wrapper(wrapped)
+        assert isinstance(result, str)
+        assert "Content" in result
+
+    def test_wrap_mockup_no_page_css_default(self, service):
+        """_wrap_mockup works without page_css argument (default)."""
+        html = service._wrap_mockup('<div>Content</div>', None, "analysis")
+        assert "<!DOCTYPE html>" in html
+        assert "Content" in html
+
+    @patch.object(MockupService, "_generate_via_ai_vision")
+    def test_generate_analysis_mockup_no_page_url(self, mock_vision, service):
+        """generate_analysis_mockup works without page_url (backward compat)."""
+        mock_vision.return_value = '<div data-slot="headline">Test</div>'
+        html = service.generate_analysis_mockup(screenshot_b64="fake_b64")
+        assert "Test" in html
+        mock_vision.assert_called_once()
+
+    @patch.object(MockupService, "_generate_via_ai_vision")
+    def test_ai_vision_strips_style_blocks(self, mock_vision, service):
+        """Style blocks from AI vision output are extracted, not left as text."""
+        mock_vision.return_value = (
+            '<style>.hero { font-size: 2rem; }</style>'
+            '<div class="hero" data-slot="headline">Hello</div>'
+        )
+        html = service.generate_analysis_mockup(screenshot_b64="fake_b64")
+        assert "Hello" in html
+        # CSS should be in page-css block, not as visible text
+        assert "font-size: 2rem" in html  # In the page-css style block
+
+    @patch.object(MockupService, "_generate_via_ai_vision")
+    def test_ai_vision_preserves_css_in_wrapper(self, mock_vision, service):
+        """CSS from vision output appears in page-css style block in final output."""
+        mock_vision.return_value = (
+            '<style>.hero { color: red; }</style>'
+            '<div class="hero" data-slot="headline">Content</div>'
+        )
+        html = service.generate_analysis_mockup(screenshot_b64="fake_b64")
+        assert 'class="page-css"' in html
+        assert "color: red" in html
