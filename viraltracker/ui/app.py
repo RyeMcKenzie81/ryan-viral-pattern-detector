@@ -62,6 +62,10 @@ def init_observability():
             send_to_logfire=True,
             console=False,
         )
+        # Set the global flag so get_logfire() returns the real module
+        # (app.py configures logfire directly, not via setup_logfire())
+        import viraltracker.core.observability as _obs
+        _obs._logfire_configured = True
         print("LOGFIRE: Configured", file=sys.stderr, flush=True)
 
         logging.basicConfig(
