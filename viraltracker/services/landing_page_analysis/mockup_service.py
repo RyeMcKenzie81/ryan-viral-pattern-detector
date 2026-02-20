@@ -1557,6 +1557,14 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         lf = get_logfire()
         lf.info("Starting multipass pipeline", page_url=page_url or "unknown")
 
+        # Capture OpenTelemetry context from the main thread so spans
+        # created in the child thread are parented correctly in Logfire
+        try:
+            from opentelemetry import context as otel_context
+            parent_ctx = otel_context.get_current()
+        except ImportError:
+            parent_ctx = None
+
         gemini = GeminiService()
         if self._usage_tracker:
             gemini.set_tracking_context(
@@ -1569,6 +1577,10 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         )
 
         async def _run():
+            # Attach parent OTel context in child thread so logfire spans
+            # are parented to the main trace
+            if parent_ctx is not None:
+                otel_context.attach(parent_ctx)
             return await pipeline.generate(
                 screenshot_b64=screenshot_b64,
                 page_markdown=page_markdown or "",

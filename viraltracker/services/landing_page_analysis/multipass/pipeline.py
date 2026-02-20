@@ -18,8 +18,6 @@ from viraltracker.core.config import Config
 from viraltracker.core.observability import get_logfire
 from viraltracker.services.gemini_service import GeminiService, RateLimitError
 
-logfire = get_logfire()
-
 from .cropper import (
     NormalizedBox,
     boxes_from_char_ratios,
@@ -466,6 +464,9 @@ class MultiPassPipeline:
         self._limiter = PipelineRateLimiter()
         self._start_time = 0.0
         self._cache: Dict[str, str] = {}
+        # Lazily resolve logfire at runtime, not import time,
+        # to ensure it's configured before we use it
+        self._lf = get_logfire()
 
     def _report_progress(self, phase: int, message: str):
         """Report progress via callback if available."""
@@ -513,7 +514,7 @@ class MultiPassPipeline:
         sections = segment_markdown(page_markdown, element_detection)
         section_count = len(sections)
 
-        with logfire.span(
+        with self._lf.span(
             "multipass_pipeline",
             page_url=page_url or "unknown",
             section_count=section_count,
@@ -527,7 +528,7 @@ class MultiPassPipeline:
                 4: 2,
             }
             max_api_calls = sum(phase_budgets.values())
-            logfire.info(
+            self._lf.info(
                 "Pipeline started: {section_count} sections, budget={max_api_calls}",
                 section_count=section_count,
                 max_api_calls=max_api_calls,
@@ -545,7 +546,7 @@ class MultiPassPipeline:
             self._report_progress(0, "Extracting design system...")
             design_system = await self._run_phase_0(screenshot_b64, truncated_md)
             if self._budget_exceeded(max_api_calls):
-                logfire.warning("Budget exceeded after Phase 0, returning fallback skeleton")
+                self._lf.warning("Budget exceeded after Phase 0, returning fallback skeleton")
                 return _build_fallback_skeleton(sections)
 
             # -----------------------------------------------------------
@@ -556,7 +557,7 @@ class MultiPassPipeline:
                 screenshot_b64, design_system, sections
             )
             if self._budget_exceeded(max_api_calls):
-                logfire.warning("Budget exceeded after Phase 1, returning skeleton")
+                self._lf.warning("Budget exceeded after Phase 1, returning skeleton")
                 return skeleton_html
 
             # -----------------------------------------------------------
@@ -572,7 +573,7 @@ class MultiPassPipeline:
             baseline = capture_pipeline_invariants(content_html)
 
             if self._budget_exceeded(max_api_calls):
-                logfire.warning("Budget exceeded after Phase 2, returning content HTML")
+                self._lf.warning("Budget exceeded after Phase 2, returning content HTML")
                 return content_html
 
             # -----------------------------------------------------------
@@ -592,7 +593,7 @@ class MultiPassPipeline:
             )
 
             if self._budget_exceeded(max_api_calls):
-                logfire.warning("Budget exceeded after Phase 3, returning refined HTML")
+                self._lf.warning("Budget exceeded after Phase 3, returning refined HTML")
                 return refined_html
 
             # -----------------------------------------------------------
@@ -616,7 +617,7 @@ class MultiPassPipeline:
             )
 
             elapsed = time.time() - self._start_time
-            logfire.info(
+            self._lf.info(
                 "MultiPass pipeline complete: phases=0-4, "
                 "api_calls={api_calls}, wall_clock={elapsed:.1f}s, "
                 "output_chars={output_chars}",
@@ -645,7 +646,7 @@ class MultiPassPipeline:
         """Phase 0: Design System Extraction."""
         prompt = build_phase_0_prompt(markdown_preview)
 
-        with logfire.span("multipass_phase_0", phase="design_system_extraction"):
+        with self._lf.span("multipass_phase_0", phase="design_system_extraction"):
             try:
                 response = await self._call_gemini_vision(
                     PHASE_MODELS[0], screenshot_b64, prompt
@@ -653,14 +654,14 @@ class MultiPassPipeline:
                 design_system = _parse_json_response(response)
                 colors_found = len(design_system.get("colors", {}))
                 overlays_found = len(design_system.get("overlays", []))
-                logfire.info(
+                self._lf.info(
                     "Phase 0 OK: {colors_found} colors, {overlays_found} overlays detected",
                     colors_found=colors_found,
                     overlays_found=overlays_found,
                 )
                 return design_system
             except RateLimitError:
-                logfire.warning("Phase 0: rate limited, retrying with 3s backoff")
+                self._lf.warning("Phase 0: rate limited, retrying with 3s backoff")
                 try:
                     await asyncio.sleep(3)
                     response = await self._call_gemini_vision(
@@ -668,10 +669,10 @@ class MultiPassPipeline:
                     )
                     return _parse_json_response(response)
                 except Exception as e:
-                    logfire.warning("Phase 0 retry failed: {error}, using defaults", error=str(e))
+                    self._lf.warning("Phase 0 retry failed: {error}, using defaults", error=str(e))
                     return dict(DEFAULT_DESIGN_SYSTEM)
             except Exception as e:
-                logfire.warning("Phase 0 failed: {error}, using defaults", error=str(e))
+                self._lf.warning("Phase 0 failed: {error}, using defaults", error=str(e))
                 return dict(DEFAULT_DESIGN_SYSTEM)
 
     async def _run_phase_1(
@@ -692,7 +693,7 @@ class MultiPassPipeline:
             len(sections),
         )
 
-        with logfire.span(
+        with self._lf.span(
             "multipass_phase_1",
             phase="layout_skeleton",
             segmenter_section_count=len(sections),
@@ -715,7 +716,7 @@ class MultiPassPipeline:
                     sections, phase1_sections, raw_skeleton
                 )
 
-                logfire.info(
+                self._lf.info(
                     "Phase 1 OK: {section_count} sections, "
                     "skeleton_chars={skeleton_chars}, "
                     "model_sections={model_sections}, reconciled={reconciled}",
@@ -727,7 +728,7 @@ class MultiPassPipeline:
                 return rewritten_skeleton, section_map
 
             except RateLimitError:
-                logfire.warning("Phase 1: rate limited, retrying with 3s backoff")
+                self._lf.warning("Phase 1: rate limited, retrying with 3s backoff")
                 try:
                     await asyncio.sleep(3)
                     response = await self._call_gemini_vision(
@@ -744,10 +745,10 @@ class MultiPassPipeline:
                 except Exception as e:
                     logger.warning(f"Phase 1 retry failed: {e}")
 
-                logfire.warning("Phase 1 using fallback skeleton (char-ratio)")
+                self._lf.warning("Phase 1 using fallback skeleton (char-ratio)")
                 return self._phase_1_fallback(sections)
             except Exception as e:
-                logfire.warning("Phase 1 failed: {error}, using fallback", error=str(e))
+                self._lf.warning("Phase 1 failed: {error}, using fallback", error=str(e))
                 return self._phase_1_fallback(sections)
 
     def _phase_1_fallback(
@@ -767,29 +768,29 @@ class MultiPassPipeline:
         """Phase 2: Content Injection + Slot Creation."""
         prompt = build_phase_2_prompt(skeleton_html, page_markdown)
 
-        with logfire.span("multipass_phase_2", phase="content_injection"):
+        with self._lf.span("multipass_phase_2", phase="content_injection"):
             try:
                 response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
                 html = _strip_code_fences(response)
                 from .invariants import _extract_slots
                 slot_count = len(_extract_slots(html))
-                logfire.info(
+                self._lf.info(
                     "Phase 2 OK: {output_chars} chars, {slot_count} slots",
                     output_chars=len(html),
                     slot_count=slot_count,
                 )
                 return html
             except RateLimitError:
-                logfire.warning("Phase 2: rate limited, retrying with 3s backoff")
+                self._lf.warning("Phase 2: rate limited, retrying with 3s backoff")
                 try:
                     await asyncio.sleep(3)
                     response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
                     return _strip_code_fences(response)
                 except Exception as e:
-                    logfire.warning("Phase 2 retry failed: {error}, using markdown fallback", error=str(e))
+                    self._lf.warning("Phase 2 retry failed: {error}, using markdown fallback", error=str(e))
                     return self._phase_2_fallback(skeleton_html, page_markdown)
             except Exception as e:
-                logfire.warning("Phase 2 failed: {error}, using markdown fallback", error=str(e))
+                self._lf.warning("Phase 2 failed: {error}, using markdown fallback", error=str(e))
                 return self._phase_2_fallback(skeleton_html, page_markdown)
 
     def _phase_2_fallback(self, skeleton_html: str, page_markdown: str) -> str:
@@ -827,7 +828,7 @@ class MultiPassPipeline:
         Returns:
             (refined_html, stats_dict)
         """
-        with logfire.span(
+        with self._lf.span(
             "multipass_phase_3",
             phase="section_refinement",
             total_sections=len(section_map),
@@ -860,7 +861,7 @@ class MultiPassPipeline:
 
             for sec_id in section_ids:
                 if sec_id not in section_htmls:
-                    logfire.info("Phase 3: section {sec_id} not in parsed HTML, skipping", sec_id=sec_id)
+                    self._lf.info("Phase 3: section {sec_id} not in parsed HTML, skipping", sec_id=sec_id)
                     continue
 
                 box = section_map[sec_id]
@@ -870,7 +871,7 @@ class MultiPassPipeline:
                     cropped_bytes = crop_section(screenshot_bytes, box)
                     cropped_b64 = base64.b64encode(cropped_bytes).decode('utf-8')
                 except Exception as e:
-                    logfire.warning("Phase 3: failed to crop {sec_id}: {error}", sec_id=sec_id, error=str(e))
+                    self._lf.warning("Phase 3: failed to crop {sec_id}: {error}", sec_id=sec_id, error=str(e))
                     continue
 
                 section_html = (
@@ -893,7 +894,7 @@ class MultiPassPipeline:
                     "original_html": section_html,
                 })
 
-            logfire.info(
+            self._lf.info(
                 "Phase 3: dispatching {task_count} section refinement calls",
                 task_count=len(tasks),
             )
@@ -902,10 +903,13 @@ class MultiPassPipeline:
             refined_sections = {}
             rejected = 0
 
+            # Capture self._lf for use in nested function
+            _lf = self._lf
+
             async def refine_section(task: Dict) -> Tuple[str, str]:
                 """Refine a single section. Returns (section_id, refined_html)."""
                 sec_id = task["section_id"]
-                with logfire.span("multipass_phase_3_section", section_id=sec_id):
+                with _lf.span("multipass_phase_3_section", section_id=sec_id):
                     try:
                         response = await self._call_gemini_vision(
                             PHASE_MODELS[3], task["cropped_b64"], task["prompt"]
@@ -915,21 +919,21 @@ class MultiPassPipeline:
                         # Per-section invariant check
                         report = check_section_invariant(refined, sec_id, baseline)
                         if not report.passed:
-                            logfire.warning(
+                            _lf.warning(
                                 "Phase 3 section {sec_id} REJECTED: {issues}",
                                 sec_id=sec_id,
                                 issues=str(report.issues),
                             )
                             return sec_id, task["original_html"]
 
-                        logfire.info(
+                        _lf.info(
                             "Phase 3 section {sec_id} refined OK ({chars} chars)",
                             sec_id=sec_id,
                             chars=len(refined),
                         )
                         return sec_id, refined
                     except Exception as e:
-                        logfire.warning(
+                        _lf.warning(
                             "Phase 3 section {sec_id} FAILED: {error}",
                             sec_id=sec_id,
                             error=str(e),
@@ -966,7 +970,7 @@ class MultiPassPipeline:
                     task = next((t for t in tasks if t["section_id"] == sec_id), None)
                     if task:
                         retry_pool -= 1
-                        logfire.info("Phase 3: retrying {sec_id} from shared pool", sec_id=sec_id)
+                        self._lf.info("Phase 3: retrying {sec_id} from shared pool", sec_id=sec_id)
                         sec_id_result, html = await refine_section(task)
                         if html != task["original_html"]:
                             refined_sections[sec_id_result] = html
@@ -986,7 +990,7 @@ class MultiPassPipeline:
                 "sections_refined": len(refined_sections),
                 "sections_rejected": rejected,
             }
-            logfire.info(
+            self._lf.info(
                 "Phase 3 complete: {refined} refined, {rejected} rejected, {failed} failed",
                 refined=stats["sections_refined"],
                 rejected=stats["sections_rejected"],
@@ -1005,7 +1009,7 @@ class MultiPassPipeline:
         section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
         prompt = build_phase_4_prompt(assembled_html, section_ids)
 
-        with logfire.span("multipass_phase_4", phase="patch_pass"):
+        with self._lf.span("multipass_phase_4", phase="patch_pass"):
             try:
                 response = await self._call_gemini_vision(
                     PHASE_MODELS[4], screenshot_b64, prompt
@@ -1013,12 +1017,12 @@ class MultiPassPipeline:
                 patches = _parse_json_response(response)
 
                 if not isinstance(patches, list):
-                    logfire.warning("Phase 4: response is not a list, skipping patches")
+                    self._lf.warning("Phase 4: response is not a list, skipping patches")
                     return assembled_html
 
                 # Cap at 15 patches
                 patches = patches[:15]
-                logfire.info("Phase 4: applying {patch_count} patches", patch_count=len(patches))
+                self._lf.info("Phase 4: applying {patch_count} patches", patch_count=len(patches))
 
                 # Apply patches
                 applier = PatchApplier()
@@ -1027,17 +1031,17 @@ class MultiPassPipeline:
                 # Global invariant check
                 report = check_global_invariants(patched, baseline)
                 if not report.passed:
-                    logfire.warning(
+                    self._lf.warning(
                         "Phase 4 global invariant FAILED, reverting all patches: {issues}",
                         issues=str(report.issues),
                     )
                     return assembled_html
 
-                logfire.info("Phase 4 OK: {patch_count} patches applied", patch_count=len(patches))
+                self._lf.info("Phase 4 OK: {patch_count} patches applied", patch_count=len(patches))
                 return patched
 
             except RateLimitError:
-                logfire.warning("Phase 4: rate limited, retrying with 3s backoff")
+                self._lf.warning("Phase 4: rate limited, retrying with 3s backoff")
                 try:
                     await asyncio.sleep(3)
                     response = await self._call_gemini_vision(
@@ -1053,10 +1057,10 @@ class MultiPassPipeline:
                             return patched
                     return assembled_html
                 except Exception as e:
-                    logfire.warning("Phase 4 retry failed: {error}, skipping patches", error=str(e))
+                    self._lf.warning("Phase 4 retry failed: {error}, skipping patches", error=str(e))
                     return assembled_html
             except Exception as e:
-                logfire.warning("Phase 4 failed: {error}, skipping patches", error=str(e))
+                self._lf.warning("Phase 4 failed: {error}, skipping patches", error=str(e))
                 return assembled_html
 
     # -------------------------------------------------------------------
@@ -1068,7 +1072,7 @@ class MultiPassPipeline:
     ) -> str:
         """Call Gemini vision API with rate limiting."""
         await self._limiter.acquire()
-        with logfire.span(
+        with self._lf.span(
             "multipass_gemini_call",
             call_type="vision",
             model=model,
@@ -1081,7 +1085,7 @@ class MultiPassPipeline:
                     skip_internal_rate_limit=True,
                 )
                 self._limiter.release(success=True)
-                logfire.info(
+                self._lf.info(
                     "Gemini vision call #{call_number} OK: {response_chars} chars",
                     call_number=self._limiter.call_count,
                     response_chars=len(result),
@@ -1089,7 +1093,7 @@ class MultiPassPipeline:
                 return result
             except RateLimitError:
                 self._limiter.release(rate_limited=True)
-                logfire.warning(
+                self._lf.warning(
                     "Gemini vision call #{call_number} RATE LIMITED (RPM now {rpm})",
                     call_number=self._limiter.call_count,
                     rpm=self._limiter._current_rpm,
@@ -1097,7 +1101,7 @@ class MultiPassPipeline:
                 raise
             except Exception as e:
                 self._limiter.release(success=False)
-                logfire.error(
+                self._lf.error(
                     "Gemini vision call #{call_number} FAILED: {error}",
                     call_number=self._limiter.call_count,
                     error=str(e),
@@ -1107,7 +1111,7 @@ class MultiPassPipeline:
     async def _call_gemini_text(self, model: str, prompt: str) -> str:
         """Call Gemini text API with rate limiting."""
         await self._limiter.acquire()
-        with logfire.span(
+        with self._lf.span(
             "multipass_gemini_call",
             call_type="text",
             model=model,
@@ -1120,7 +1124,7 @@ class MultiPassPipeline:
                     skip_internal_rate_limit=True,
                 )
                 self._limiter.release(success=True)
-                logfire.info(
+                self._lf.info(
                     "Gemini text call #{call_number} OK: {response_chars} chars",
                     call_number=self._limiter.call_count,
                     response_chars=len(result),
@@ -1128,7 +1132,7 @@ class MultiPassPipeline:
                 return result
             except RateLimitError:
                 self._limiter.release(rate_limited=True)
-                logfire.warning(
+                self._lf.warning(
                     "Gemini text call #{call_number} RATE LIMITED (RPM now {rpm})",
                     call_number=self._limiter.call_count,
                     rpm=self._limiter._current_rpm,
@@ -1136,7 +1140,7 @@ class MultiPassPipeline:
                 raise
             except Exception as e:
                 self._limiter.release(success=False)
-                logfire.error(
+                self._lf.error(
                     "Gemini text call #{call_number} FAILED: {error}",
                     call_number=self._limiter.call_count,
                     error=str(e),
