@@ -203,9 +203,14 @@ IMPORTANT: Slot numbers are GLOBAL across the document (never reset per section)
 Every piece of replaceable text MUST have a data-slot attribute.
 At minimum include: headline, subheadline, at least one cta, and body text slots.
 
+## CRITICAL: PRESERVE STRUCTURE
+- Every <section data-section="sec_N"> tag MUST remain in the output with its data-section attribute INTACT.
+- Do NOT remove, rename, or omit any data-section="sec_N" attributes.
+- Do NOT change <section> tags to <div> or any other tag.
+- Keep all existing <style> blocks unchanged.
+
 ## OUTPUT
 Return ONLY the complete HTML (no explanation, no code fences).
-Keep all existing <style> blocks and data-section attributes unchanged.
 Do NOT add new <style> blocks -- only fill in content within section containers."""
 
 

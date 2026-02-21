@@ -221,6 +221,111 @@ def _parse_json_response(text: str) -> Any:
     return json.loads(_strip_code_fences(text))
 
 
+def _ensure_section_attributes(
+    html: str,
+    section_map: Dict[str, Any],
+    lf: Any = None,
+) -> str:
+    """Re-inject data-section attributes if Phase 2 stripped them.
+
+    Phase 2 (Gemini text model) sometimes drops data-section attributes
+    from the skeleton HTML. Without them, Phase 3 can't find sections
+    to refine. This function deterministically re-adds them.
+    """
+    from .invariants import _SectionParser
+
+    # Check if sections are already present
+    parser = _SectionParser()
+    parser.feed(html)
+    expected = len(section_map)
+
+    if len(parser.sections) >= expected:
+        return html  # All sections present, nothing to do
+
+    if lf:
+        lf.warning(
+            "Phase 2 dropped data-section attrs: found {found}/{expected}, re-injecting",
+            found=len(parser.sections),
+            expected=expected,
+        )
+
+    # Strategy: find bare <section> tags (without data-section) and add attrs
+    # in top-to-bottom order. Also handle cases where model used <div> instead.
+    section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
+
+    # First pass: try adding data-section to bare <section> tags
+    bare_section_re = re.compile(
+        r'<section(?!\s[^>]*data-section)(\s[^>]*)?>', re.IGNORECASE
+    )
+    matches = list(bare_section_re.finditer(html))
+
+    if len(matches) >= expected:
+        # Enough bare <section> tags -- assign IDs top-to-bottom
+        offset = 0
+        for i, match in enumerate(matches):
+            if i >= expected:
+                break
+            sec_id = section_ids[i]
+            old_tag = match.group(0)
+            new_tag = old_tag.replace('<section', f'<section data-section="{sec_id}"', 1)
+            pos = match.start() + offset
+            html = html[:pos] + new_tag + html[pos + len(old_tag):]
+            offset += len(new_tag) - len(old_tag)
+
+        if lf:
+            lf.info(
+                "Re-injected data-section attrs into {count} bare <section> tags",
+                count=min(len(matches), expected),
+            )
+        return html
+
+    # Second pass: if not enough <section> tags, wrap content in sections.
+    # Split HTML at major heading boundaries and wrap each chunk.
+    heading_re = re.compile(r'(?=<h[1-3][\s>])', re.IGNORECASE)
+    chunks = heading_re.split(html)
+
+    # Filter out empty/whitespace-only chunks
+    chunks = [c for c in chunks if c.strip()]
+
+    if len(chunks) < 2:
+        # Can't split meaningfully, return as-is
+        if lf:
+            lf.warning("Cannot re-inject sections: no heading boundaries found")
+        return html
+
+    # Assign section IDs to chunks (cap at expected count)
+    parts = []
+    # Keep any leading <style> block outside sections
+    style_match = re.match(r'(<style[\s\S]*?</style>\s*)', html, re.IGNORECASE)
+    if style_match:
+        parts.append(style_match.group(1))
+        # Remove style from first chunk if it starts with it
+        if chunks and chunks[0].startswith(style_match.group(1)):
+            chunks[0] = chunks[0][len(style_match.group(1)):]
+
+    for i, chunk in enumerate(chunks):
+        if i < expected:
+            sec_id = section_ids[i]
+            parts.append(
+                f'<section data-section="{sec_id}" class="section">'
+                f'{chunk}</section>'
+            )
+        else:
+            # Merge remaining chunks into last section
+            parts[-1] = parts[-1].replace(
+                '</section>',
+                f'{chunk}</section>',
+                1,
+            )
+
+    if lf:
+        lf.info(
+            "Wrapped content in {count} <section> tags at heading boundaries",
+            count=min(len(chunks), expected),
+        )
+    return ''.join(parts)
+
+
 def _ensure_minimum_slots(html: str) -> str:
     """Deterministic slotizer: add data-slot attributes if < 3 present.
 
@@ -565,6 +670,11 @@ class MultiPassPipeline:
             # -----------------------------------------------------------
             self._report_progress(2, "Injecting content and slots...")
             content_html = await self._run_phase_2(skeleton_html, truncated_md)
+
+            # Re-inject data-section attributes if Phase 2 stripped them
+            content_html = _ensure_section_attributes(
+                content_html, section_map, self._lf
+            )
 
             # Ensure minimum slots
             content_html = _ensure_minimum_slots(content_html)
