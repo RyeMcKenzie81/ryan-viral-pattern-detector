@@ -259,14 +259,28 @@ def _ensure_section_attributes(
     # This prevents nested data-section tags from corrupting the parser.
     html = re.sub(r'\s*data-section="[^"]*"', '', html)
 
-    # Step 2: Find all <section> tags (now all bare) and assign IDs
-    all_section_re = re.compile(r'<section(\s[^>]*)?>',  re.IGNORECASE)
-    matches = list(all_section_re.finditer(html))
+    # Step 2: Find TOP-LEVEL <section> tags only (skip nested ones).
+    # Use depth tracking to distinguish top-level from nested.
+    all_section_re = re.compile(r'</?section[\s>]', re.IGNORECASE)
+    open_section_re = re.compile(r'<section(\s[^>]*)?>',  re.IGNORECASE)
+    depth = 0
+    top_level_matches = []
+    for m in open_section_re.finditer(html):
+        # Count how many <section> opens vs </section> closes before this position
+        depth = 0
+        for tag_m in all_section_re.finditer(html[:m.start()]):
+            tag_text = tag_m.group(0)
+            if tag_text.startswith('</'):
+                depth = max(0, depth - 1)
+            else:
+                depth += 1
+        if depth == 0:
+            top_level_matches.append(m)
 
-    if len(matches) >= expected:
-        # Enough <section> tags -- assign IDs top-to-bottom
+    if len(top_level_matches) >= expected:
+        # Enough top-level <section> tags -- assign IDs top-to-bottom
         offset = 0
-        for i, match in enumerate(matches):
+        for i, match in enumerate(top_level_matches):
             if i >= expected:
                 break
             sec_id = section_ids[i]
@@ -278,8 +292,8 @@ def _ensure_section_attributes(
 
         if lf:
             lf.info(
-                "Re-injected data-section attrs into {count} <section> tags (strip+reassign)",
-                count=min(len(matches), expected),
+                "Re-injected data-section attrs into {count} top-level <section> tags",
+                count=min(len(top_level_matches), expected),
             )
         return html
 

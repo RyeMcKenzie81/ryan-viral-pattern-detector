@@ -96,7 +96,9 @@ class _SectionParser(HTMLParser):
         attrs_dict = dict(attrs)
         section_id = attrs_dict.get('data-section')
 
-        if section_id and tag == 'section':
+        # Only start tracking a new section if we're NOT already inside one.
+        # Nested <section data-section> tags are treated as regular content.
+        if section_id and tag == 'section' and self._current_section is None:
             self._current_section = section_id
             self._depth = 1
             self._raw_parts = []
