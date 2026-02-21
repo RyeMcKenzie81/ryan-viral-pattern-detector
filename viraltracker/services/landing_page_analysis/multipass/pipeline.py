@@ -57,7 +57,7 @@ PHASE_MODELS = {
 }
 
 # Hard limits
-MAX_WALL_CLOCK = 120  # seconds
+MAX_WALL_CLOCK = 240  # seconds
 MAX_SECTIONS = 8
 MARKDOWN_BUDGET = 30_000
 
@@ -101,8 +101,8 @@ class PipelineRateLimiter:
 
     def __init__(
         self,
-        initial_rpm: int = 15,
-        max_rpm: int = 30,
+        initial_rpm: int = 30,
+        max_rpm: int = 60,
         min_rpm: int = 5,
         max_concurrent: int = 3,
     ):
