@@ -81,8 +81,19 @@ class _SlotExtractor(HTMLParser):
                 self.slots.append(value)
 
 
+_VOID_ELEMENTS = frozenset([
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+    'link', 'meta', 'param', 'source', 'track', 'wbr',
+])
+
+
 class _SectionParser(HTMLParser):
-    """Parse HTML to extract per-section content."""
+    """Parse HTML to extract per-section content.
+
+    Depth tracking only counts <section> tags so that void elements
+    (img, br, etc.) which never receive handle_endtag don't corrupt
+    the section boundary detection.
+    """
 
     def __init__(self):
         super().__init__()
@@ -105,7 +116,11 @@ class _SectionParser(HTMLParser):
             return
 
         if self._current_section:
-            self._depth += 1
+            # Only increment depth for <section> tags — void elements
+            # (img, br, etc.) never get handle_endtag calls, so counting
+            # them would cause depth to grow unbounded.
+            if tag == 'section':
+                self._depth += 1
             # Reconstruct the tag
             attr_str = ''
             for name, value in attrs:
@@ -122,8 +137,23 @@ class _SectionParser(HTMLParser):
                 self._current_section = None
                 self._depth = 0
                 return
-            self._depth -= 1
-            self._raw_parts.append(f'</{tag}>')
+            if tag == 'section':
+                self._depth -= 1
+            # Skip close-tag reconstruction for void elements (they have
+            # no close tag in valid HTML; the parser may synthesize one).
+            if tag not in _VOID_ELEMENTS:
+                self._raw_parts.append(f'</{tag}>')
+
+    def handle_startendtag(self, tag, attrs):
+        """Handle self-closing tags like <img/> and <br/>."""
+        if self._current_section:
+            attr_str = ''
+            for name, value in attrs:
+                if value is not None:
+                    attr_str += f' {name}="{value}"'
+                else:
+                    attr_str += f' {name}'
+            self._raw_parts.append(f'<{tag}{attr_str}/>')
 
     def handle_data(self, data):
         if self._current_section:
@@ -315,7 +345,8 @@ def check_global_invariants(
             f"Section count changed: {baseline.section_count} -> {len(section_htmls)}"
         )
 
-    passed = not slot_loss and similarity >= TEXT_SIMILARITY_THRESHOLD
+    section_count_ok = len(section_htmls) == baseline.section_count
+    passed = not slot_loss and similarity >= TEXT_SIMILARITY_THRESHOLD and section_count_ok
 
     if not passed:
         logger.warning(f"Global invariant FAILED: {issues}")

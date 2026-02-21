@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 # Prompt versions -- bump on prompt changes to invalidate caches
 PHASE_0_PROMPT_VERSION = "v1"
-PHASE_1_PROMPT_VERSION = "v1"
+PHASE_1_PROMPT_VERSION = "v2"
 PHASE_2_PROMPT_VERSION = "v1"
 PHASE_3_PROMPT_VERSION = "v2"
 PHASE_4_PROMPT_VERSION = "v1"
@@ -139,6 +139,13 @@ REQUIREMENTS:
 - Center content with max-width: 1200px; margin: 0 auto
 - Match section HEIGHT proportions from the screenshot
 - Side-by-side layouts MUST remain side-by-side (flexbox or grid)
+
+## CRITICAL FORMAT CONSTRAINTS
+- Each <section> tag MUST have a data-section attribute: <section data-section="sec_N">
+- NEVER omit the data-section attribute from any section tag
+- Use ONLY the exact pattern {{{{sec_N}}}} for placeholders (e.g., {{{{sec_0}}}}, {{{{sec_1}}}})
+- NEVER use variants like {{{{sec_0_part1}}}}, {{{{sec_0_header}}}}, or {{{{hero_content}}}}
+- Each section must contain exactly ONE placeholder matching its data-section ID
 
 Example skeleton:
 ```html

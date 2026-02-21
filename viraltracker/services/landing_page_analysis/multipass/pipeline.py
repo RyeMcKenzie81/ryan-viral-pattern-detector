@@ -26,6 +26,7 @@ from .cropper import (
 )
 from .invariants import (
     PipelineInvariants,
+    _parse_sections,
     capture_pipeline_invariants,
     check_global_invariants,
     check_section_invariant,
@@ -264,7 +265,8 @@ def _ensure_section_attributes(
 
     # Step 1: Strip ALL existing data-section attributes to start clean.
     # This prevents nested data-section tags from corrupting the parser.
-    html = re.sub(r'\s*data-section="[^"]*"', '', html)
+    # Handle both single- and double-quoted attributes.
+    html = re.sub(r'''\s*data-section=["'][^"']*["']''', '', html)
 
     # Step 2: Find TOP-LEVEL <section> tags only (skip nested ones).
     # Use depth tracking to distinguish top-level from nested.
@@ -305,13 +307,56 @@ def _ensure_section_attributes(
         return html
 
     # Step 3: Not enough <section> tags at all. Split at heading boundaries
-    # and wrap in new <section> tags. Extract <style> block first.
+    # and wrap in new <section> tags.
+    # Extract .lp-mockup wrapper and <style> blocks first so they don't
+    # end up trapped inside the first section.
+    lp_open = ''
+    lp_close = ''
     style_block = ""
     body_html = html
-    style_match = re.match(r'(<style[\s\S]*?</style>\s*)', html, re.IGNORECASE)
-    if style_match:
-        style_block = style_match.group(1)
-        body_html = html[len(style_block):]
+
+    # 3a: Extract .lp-mockup wrapper if present
+    lp_match = re.match(
+        r'(\s*<div\b[^>]*\bclass=["\'][^"\']*\blp-mockup\b[^"\']*["\'][^>]*>)\s*',
+        body_html,
+        re.IGNORECASE,
+    )
+    if lp_match:
+        lp_open_candidate = lp_match.group(1)
+        inner = body_html[lp_match.end():]
+        # Find matching </div> by tracking open/close depth
+        depth = 1
+        found_close = False
+        close_pos = len(inner)
+        for dm in re.finditer(r'<div\b[^>]*>|</div\s*>', inner, re.IGNORECASE):
+            if dm.group().lower().startswith('</'):
+                depth -= 1
+                if depth == 0:
+                    close_pos = dm.start()
+                    found_close = True
+                    break
+            else:
+                depth += 1
+        if found_close:
+            lp_open = lp_open_candidate
+            lp_close = '</div>'
+            body_html = inner[:close_pos]
+        else:
+            if lf:
+                lf.warning(
+                    "lp-mockup wrapper detected but matching </div> not found, skipping unwrap"
+                )
+
+    # 3b: Extract <style> block(s)
+    style_blocks = []
+    while True:
+        style_match = re.match(r'(\s*<style[\s\S]*?</style>\s*)', body_html, re.IGNORECASE)
+        if style_match:
+            style_blocks.append(style_match.group(1))
+            body_html = body_html[len(style_match.group(0)):]
+        else:
+            break
+    style_block = ''.join(style_blocks)
 
     heading_re = re.compile(r'(?=<h[1-6][\s>])', re.IGNORECASE)
     chunks = heading_re.split(body_html)
@@ -322,7 +367,11 @@ def _ensure_section_attributes(
             lf.warning("Cannot re-inject sections: no heading boundaries found")
         return html
 
-    parts = [style_block] if style_block else []
+    parts = []
+    if lp_open:
+        parts.append(lp_open + '\n')
+    if style_block:
+        parts.append(style_block)
     for i, chunk in enumerate(chunks):
         if i < expected:
             sec_id = section_ids[i]
@@ -340,6 +389,8 @@ def _ensure_section_attributes(
                 f'{clean}</section>',
                 1,
             )
+    if lp_close:
+        parts.append('\n' + lp_close)
 
     if lf:
         lf.info(
@@ -534,28 +585,96 @@ def _char_ratio_fallback(
 
 
 def _rewrite_skeleton(skeleton_html: str, section_count: int) -> str:
-    """Rewrite skeleton HTML to have exactly sec_0..sec_{n-1} IDs and placeholders."""
-    # Remove all existing section markers and placeholders
+    """Rewrite skeleton HTML to have exactly sec_0..sec_{n-1} IDs and placeholders.
+
+    Handles both single- and double-quoted data-section attributes, adds
+    data-section to bare <section> tags if needed, normalizes placeholder
+    variants like {{sec_3_part1}} to {{sec_3}}, and deduplicates placeholders.
+    """
     html = skeleton_html
 
-    # Replace any data-section="..." with sequential IDs
-    existing_sections = re.findall(r'data-section="([^"]*)"', html)
+    # Step A: Match both quote styles for data-section attributes
+    existing_sections = re.findall(r'data-section=["\']([^"\']+)["\']', html)
 
     for i, old_id in enumerate(existing_sections):
         if i < section_count:
             new_id = f"sec_{i}"
+            # Replace both quote styles
             html = html.replace(f'data-section="{old_id}"', f'data-section="{new_id}"', 1)
+            html = html.replace(f"data-section='{old_id}'", f'data-section="{new_id}"', 1)
             # Also replace placeholder patterns
             html = html.replace(f'{{{{{old_id}}}}}', f'{{{{{new_id}}}}}')
 
-    # Replace any remaining {{section-*}} or {{sec_*}} patterns
-    html = re.sub(
-        r'\{\{(?:section-?\d+|sec_\d+)\}\}',
-        lambda m: m.group(0),  # Keep as-is for now
-        html,
-    )
+    # Step B: If no data-section attributes found, add to bare <section> tags
+    if not existing_sections:
+        open_section_re = re.compile(r'<section(\s[^>]*)?>',  re.IGNORECASE)
+        matches = list(open_section_re.finditer(html))
+        offset = 0
+        for i, match in enumerate(matches):
+            if i >= section_count:
+                break
+            sec_id = f"sec_{i}"
+            old_tag = match.group(0)
+            if 'data-section' not in old_tag.lower():
+                new_tag = old_tag.replace('<section', f'<section data-section="{sec_id}"', 1)
+                pos = match.start() + offset
+                html = html[:pos] + new_tag + html[pos + len(old_tag):]
+                offset += len(new_tag) - len(old_tag)
+
+    # Step C: Normalize all placeholder variants (e.g. {{sec_3_part1}} → {{sec_3}})
+    html = re.sub(r'\{\{(sec_\d+)[^}]*\}\}', lambda m: f'{{{{{m.group(1)}}}}}', html)
+
+    # Step D: Deduplicate placeholders (keep first occurrence per section)
+    seen: set = set()
+
+    def _dedup(m: re.Match) -> str:
+        pid = m.group(0)
+        if pid in seen:
+            return ''
+        seen.add(pid)
+        return pid
+
+    html = re.sub(r'\{\{sec_\d+\}\}', _dedup, html)
+
+    # Step E: Ensure each section has its placeholder inside the correct section body.
+    # Parse section boundaries and verify placeholder placement.
+    from .invariants import _SectionParser
+    parser = _SectionParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        pass
+
+    for i in range(section_count):
+        sec_id = f"sec_{i}"
+        placeholder = f"{{{{{sec_id}}}}}"
+        section_inner = parser.sections.get(sec_id, "")
+
+        if placeholder not in section_inner and sec_id in parser.sections:
+            # Placeholder is missing from this section's body — inject after opening tag
+            tag_re = re.compile(
+                rf'(<section\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>)',
+                re.IGNORECASE,
+            )
+            tag_match = tag_re.search(html)
+            if tag_match:
+                insert_pos = tag_match.end()
+                html = html[:insert_pos] + placeholder + html[insert_pos:]
 
     return html
+
+
+def _strip_unresolved_placeholders(html: str) -> Tuple[str, int]:
+    """Strip only unresolved {{sec_N...}} placeholders. Returns (html, removal_count)."""
+    count = 0
+
+    def _remove(m: re.Match) -> str:
+        nonlocal count
+        count += 1
+        return ''
+
+    result = re.sub(r'\{\{sec_\d+[^}]*\}\}', _remove, html)
+    return result, count
 
 
 def _build_fallback_skeleton(sections: List[SegmenterSection]) -> str:
@@ -792,6 +911,51 @@ class MultiPassPipeline:
             # Ensure minimum slots
             content_html = _ensure_minimum_slots(content_html)
 
+            # -----------------------------------------------------------
+            # Pre-Phase-3 gate: verify sections are parseable
+            # -----------------------------------------------------------
+            gate_sections = _parse_sections(content_html)
+            expected_ids = set(section_map.keys())
+            parsed_ids = set(gate_sections.keys())
+            missing_ids = expected_ids - parsed_ids
+
+            if missing_ids:
+                self._lf.warning(
+                    "Pre-Phase-3 gate: {missing}/{expected} sections not parseable, "
+                    "rebuilding from fallback skeleton",
+                    missing=len(missing_ids),
+                    expected=len(expected_ids),
+                )
+                # Rebuild: use fallback skeleton + re-run content assembly
+                fallback_skeleton = _build_fallback_skeleton(sections)
+                fallback_skeleton = f'<div class="lp-mockup">\n{fallback_skeleton}\n</div>'
+                content_html = assemble_content(
+                    fallback_skeleton, sections, section_map, image_registry
+                )
+                content_html = _ensure_section_attributes(
+                    content_html, section_map, self._lf
+                )
+                content_html = _ensure_minimum_slots(content_html)
+
+                # Re-validate after rebuild
+                gate_sections2 = _parse_sections(content_html)
+                still_missing = expected_ids - set(gate_sections2.keys())
+                if still_missing:
+                    self._lf.warning(
+                        "Pre-Phase-3 gate: rebuild still missing {count} sections, "
+                        "short-circuiting to deterministic output (skip Phase 3/4)",
+                        count=len(still_missing),
+                    )
+                    content_html, removals = _strip_unresolved_placeholders(
+                        content_html
+                    )
+                    if removals:
+                        self._lf.warning(
+                            "Short-circuit cleanup: stripped {n} placeholders",
+                            n=removals,
+                        )
+                    return content_html
+
             # Capture invariant baselines
             baseline = capture_pipeline_invariants(content_html)
 
@@ -833,6 +997,23 @@ class MultiPassPipeline:
             )
 
             # -----------------------------------------------------------
+            # Scoped placeholder cleanup
+            # -----------------------------------------------------------
+            cleaned, removals = _strip_unresolved_placeholders(patched_html)
+            if removals:
+                logger.warning(
+                    f"Stripped {removals} unresolved section placeholders"
+                )
+                cleanup_report = check_global_invariants(cleaned, baseline)
+                if not cleanup_report.passed:
+                    logger.warning(
+                        f"Post-cleanup invariant FAILED: "
+                        f"{cleanup_report.issues}, keeping original"
+                    )
+                    cleaned = patched_html
+            patched_html = cleaned
+
+            # -----------------------------------------------------------
             # Popup Filter
             # -----------------------------------------------------------
             popup_filter = PopupFilter()
@@ -840,6 +1021,18 @@ class MultiPassPipeline:
                 patched_html,
                 detected_overlays=design_system.get("overlays", []),
             )
+
+            # -----------------------------------------------------------
+            # Post-popup-filter invariant check (Fix 7)
+            # -----------------------------------------------------------
+            final_report = check_global_invariants(final_html, baseline)
+            if not final_report.passed:
+                self._lf.warning(
+                    "Post-popup-filter invariant FAILED: {issues}, "
+                    "reverting to pre-filter HTML",
+                    issues=str(final_report.issues),
+                )
+                final_html = patched_html
 
             elapsed = time.time() - self._start_time
             self._lf.info(

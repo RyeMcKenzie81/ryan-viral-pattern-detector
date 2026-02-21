@@ -11,6 +11,13 @@ B7: PatchApplier *= selector
 B8: CSS injection fallback chain
 B9: Background image marker survival + restoration
 B10: page_html size guardrail
+B11: _SectionParser void element depth tracking (Fix 1)
+B12: _rewrite_skeleton hardening (Fix 2)
+B13: _ensure_section_attributes lp-mockup + single quotes (Fix 3)
+B14: Scoped placeholder cleanup (Fix 4)
+B15: Phase 1 prompt constraints (Fix 5)
+B16: Global invariant section-count (Fix 8)
+B17: Integration test — full failure chain reproduction
 """
 
 import re
@@ -880,3 +887,454 @@ class TestPageHtmlGuardrail:
         result = CSSExtractor.extract(head_only)
         assert "--brand" in result.custom_properties
         assert "max-width: 768px" in result.media_queries
+
+
+# ---------------------------------------------------------------------------
+# B11: _SectionParser void element depth tracking (Fix 1)
+# ---------------------------------------------------------------------------
+
+
+class TestSectionParserVoidElements:
+    """Fix 1: _SectionParser must handle void elements without depth corruption."""
+
+    def test_void_elements_non_self_closing(self):
+        """img and br without self-closing slash must not corrupt depth."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<h1>Title</h1><img src="test.jpg"><br><p>Content</p>'
+            '</section>'
+            '<section data-section="sec_1">'
+            '<p>More content</p><img src="other.jpg">'
+            '</section>'
+        )
+        sections = _parse_sections(html)
+        assert "sec_0" in sections
+        assert "sec_1" in sections
+        assert "Title" in sections["sec_0"]
+        assert "More content" in sections["sec_1"]
+
+    def test_self_closing_void_elements(self):
+        """img/ and br/ must also work correctly."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<h1>Title</h1><img src="test.jpg"/><br/><p>Content</p>'
+            '</section>'
+        )
+        sections = _parse_sections(html)
+        assert "sec_0" in sections
+        assert "Title" in sections["sec_0"]
+
+    def test_nested_sections(self):
+        """Nested <section> tags should not break the parser."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<section class="inner"><p>Nested</p></section>'
+            '</section>'
+            '<section data-section="sec_1">'
+            '<p>After</p>'
+            '</section>'
+        )
+        sections = _parse_sections(html)
+        assert "sec_0" in sections
+        assert "sec_1" in sections
+        assert "Nested" in sections["sec_0"]
+
+    def test_many_void_elements_no_depth_corruption(self):
+        """Sections with many void elements must still close correctly."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<img src="a.jpg"><img src="b.jpg"><br><hr>'
+            '<input type="text"><link rel="stylesheet">'
+            '<p>Content</p>'
+            '</section>'
+        )
+        sections = _parse_sections(html)
+        assert "sec_0" in sections
+        assert "Content" in sections["sec_0"]
+
+
+# ---------------------------------------------------------------------------
+# B12: _rewrite_skeleton hardening (Fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestRewriteSkeleton:
+    """Fix 2: _rewrite_skeleton handles missing attrs, single quotes, variants."""
+
+    def test_single_quoted_data_section(self):
+        """Single-quoted data-section attributes should be recognized."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _rewrite_skeleton,
+        )
+
+        html = (
+            "<section data-section='hero'>{{hero}}</section>"
+            "<section data-section='features'>{{features}}</section>"
+        )
+        result = _rewrite_skeleton(html, 2)
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+
+    def test_missing_data_section_attrs(self):
+        """Bare <section> tags without data-section get attributes added."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _rewrite_skeleton,
+        )
+
+        html = (
+            "<section><p>Section 1</p></section>"
+            "<section><p>Section 2</p></section>"
+        )
+        result = _rewrite_skeleton(html, 2)
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+
+    def test_variant_placeholders_normalized(self):
+        """{{sec_3_part1}} and similar variants get normalized to {{sec_3}}."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _rewrite_skeleton,
+        )
+
+        html = (
+            '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+            '<section data-section="sec_1"><div>{{sec_1_header}}</div></section>'
+            '<section data-section="sec_2"><div>{{sec_2_part1}}</div></section>'
+        )
+        result = _rewrite_skeleton(html, 3)
+        assert "{{sec_0}}" in result
+        assert "{{sec_1}}" in result
+        assert "{{sec_2}}" in result
+        assert "{{sec_1_header}}" not in result
+        assert "{{sec_2_part1}}" not in result
+
+    def test_duplicate_placeholders_deduplicated(self):
+        """Multiple occurrences of same placeholder keep only the first."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _rewrite_skeleton,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<div>{{sec_0}}</div><div>{{sec_0}}</div>'
+            '</section>'
+        )
+        result = _rewrite_skeleton(html, 1)
+        assert result.count("{{sec_0}}") == 1
+
+
+# ---------------------------------------------------------------------------
+# B13: _ensure_section_attributes with lp-mockup + single quotes (Fix 3)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureSectionAttributesExtended:
+    """Fix 3: lp-mockup handling and single-quote stripping."""
+
+    def test_single_quoted_data_section_stripped(self):
+        """Single-quoted data-section attrs must be stripped during re-injection.
+
+        We need 2 expected sections but only 1 parseable section so the
+        early-return check (len >= expected) is False and the strip+re-inject
+        path is triggered.  The second <section> lacks data-section entirely.
+        """
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _ensure_section_attributes,
+        )
+
+        html = (
+            "<section data-section='old_0'>"
+            "<h2>Title</h2><p>Content A</p>"
+            "</section>"
+            "<section>"
+            "<h2>Title 2</h2><p>Content B</p>"
+            "</section>"
+        )
+        section_map = {"sec_0": MagicMock(), "sec_1": MagicMock()}
+        lf = MagicMock()
+        result = _ensure_section_attributes(html, section_map, lf)
+        # The single-quoted old attr must be gone
+        assert "data-section='old_0'" not in result
+        # Both sections should have double-quoted sec_N attrs
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+
+    def test_lp_mockup_wrapper_preserved(self):
+        """The .lp-mockup wrapper must survive the strip+wrap path."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _ensure_section_attributes,
+        )
+
+        html = (
+            '<div class="lp-mockup">'
+            '<style>.section { padding: 20px; }</style>'
+            '<h2>Title 1</h2><p>Content 1</p>'
+            '<h2>Title 2</h2><p>Content 2</p>'
+            '</div>'
+        )
+        section_map = {"sec_0": MagicMock(), "sec_1": MagicMock()}
+        lf = MagicMock()
+        result = _ensure_section_attributes(html, section_map, lf)
+        # lp-mockup wrapper should be re-added
+        assert 'lp-mockup' in result
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+
+
+# ---------------------------------------------------------------------------
+# B14: Scoped placeholder cleanup (Fix 4)
+# ---------------------------------------------------------------------------
+
+
+class TestScopedPlaceholderCleanup:
+    """Fix 4: Only {{sec_N...}} placeholders are stripped."""
+
+    def test_strips_sec_placeholders(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _strip_unresolved_placeholders,
+        )
+
+        html = '<p>Before</p>{{sec_3_part1}}<p>Middle</p>{{sec_5}}<p>After</p>'
+        result, count = _strip_unresolved_placeholders(html)
+        assert count == 2
+        assert "{{sec_3" not in result
+        assert "{{sec_5}}" not in result
+        assert "Before" in result
+        assert "Middle" in result
+        assert "After" in result
+
+    def test_preserves_non_sec_placeholders(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _strip_unresolved_placeholders,
+        )
+
+        html = '<p>{{hero_content}}</p><p>{{sec_0}}</p><p>{{cta_button}}</p>'
+        result, count = _strip_unresolved_placeholders(html)
+        assert count == 1
+        assert "{{hero_content}}" in result
+        assert "{{cta_button}}" in result
+        assert "{{sec_0}}" not in result
+
+    def test_zero_removals_for_clean_html(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _strip_unresolved_placeholders,
+        )
+
+        html = '<p>Clean HTML with no placeholders</p>'
+        result, count = _strip_unresolved_placeholders(html)
+        assert count == 0
+        assert result == html
+
+
+# ---------------------------------------------------------------------------
+# B15: Phase 1 prompt constraints (Fix 5)
+# ---------------------------------------------------------------------------
+
+
+class TestPhase1PromptConstraints:
+    """Fix 5: Phase 1 prompt includes format constraints."""
+
+    def test_prompt_includes_critical_format_constraints(self):
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            PHASE_1_PROMPT_VERSION,
+            build_phase_1_prompt,
+        )
+
+        prompt = build_phase_1_prompt(
+            design_system_json='{"colors": {}}',
+            section_names=["Hero", "Features"],
+            section_count=2,
+        )
+        assert "CRITICAL FORMAT CONSTRAINTS" in prompt
+        assert "NEVER omit the data-section attribute" in prompt
+        assert "NEVER use variants" in prompt
+        assert PHASE_1_PROMPT_VERSION == "v2"
+
+    def test_prompt_version_bumped(self):
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            PROMPT_VERSIONS,
+        )
+
+        assert PROMPT_VERSIONS[1] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# B16: Global invariant section-count check (Fix 8)
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalInvariantSectionCount:
+    """Fix 8: Section count mismatch must fail global invariants."""
+
+    def test_section_count_mismatch_fails(self):
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            capture_pipeline_invariants,
+            check_global_invariants,
+        )
+
+        # Baseline with 2 sections
+        baseline_html = (
+            '<section data-section="sec_0"><p data-slot="body-1">A</p></section>'
+            '<section data-section="sec_1"><p data-slot="body-2">B</p></section>'
+        )
+        baseline = capture_pipeline_invariants(baseline_html)
+        assert baseline.section_count == 2
+
+        # Changed HTML with 1 section (section lost)
+        changed_html = (
+            '<section data-section="sec_0"><p data-slot="body-1">A</p></section>'
+            '<div><p data-slot="body-2">B</p></div>'
+        )
+        report = check_global_invariants(changed_html, baseline)
+        assert not report.passed
+        assert any("Section count" in issue for issue in report.issues)
+
+    def test_section_count_match_passes(self):
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            capture_pipeline_invariants,
+            check_global_invariants,
+        )
+
+        html = (
+            '<section data-section="sec_0"><p data-slot="body-1">A</p></section>'
+            '<section data-section="sec_1"><p data-slot="body-2">B</p></section>'
+        )
+        baseline = capture_pipeline_invariants(html)
+        report = check_global_invariants(html, baseline)
+        assert report.passed
+
+
+# ---------------------------------------------------------------------------
+# B17: Integration test — full pipeline failure chain reproduction
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineIntegration:
+    """Integration test reproducing the exact failure chain from bobanutrition."""
+
+    def test_full_chain_with_void_elements_and_lp_mockup(self):
+        """Construct skeleton with void elements, wrap in lp-mockup,
+        run through _ensure_section_attributes and _parse_sections.
+        All sections must be parseable."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _ensure_section_attributes,
+            _strip_unresolved_placeholders,
+        )
+
+        # Simulate Phase 2 output with void elements inside sections
+        content = (
+            '<div class="lp-mockup">'
+            '<style>.section { padding: 20px; }</style>'
+            '<section data-section="sec_0">'
+            '<h1 data-slot="headline">Hero</h1>'
+            '<img src="hero.jpg"><br>'
+            '<p data-slot="body-1">Description</p>'
+            '</section>'
+            '<section data-section="sec_1">'
+            '<h2 data-slot="heading-1">Features</h2>'
+            '<img src="feat.jpg"><hr>'
+            '<p data-slot="body-2">Feature text</p>'
+            '</section>'
+            '<section data-section="sec_2">'
+            '<h2 data-slot="heading-2">CTA</h2>'
+            '<p data-slot="body-3">Call to action</p>'
+            '</section>'
+            '</div>'
+        )
+
+        section_map = {
+            "sec_0": MagicMock(),
+            "sec_1": MagicMock(),
+            "sec_2": MagicMock(),
+        }
+        lf = MagicMock()
+
+        # _ensure_section_attributes should preserve existing attrs
+        result = _ensure_section_attributes(content, section_map, lf)
+
+        # _parse_sections must find all 3 sections
+        sections = _parse_sections(result)
+        assert "sec_0" in sections, f"sec_0 missing from parsed sections: {list(sections.keys())}"
+        assert "sec_1" in sections, f"sec_1 missing from parsed sections: {list(sections.keys())}"
+        assert "sec_2" in sections, f"sec_2 missing from parsed sections: {list(sections.keys())}"
+
+        # No unresolved placeholders
+        _, removals = _strip_unresolved_placeholders(result)
+        assert removals == 0
+
+    def test_variant_placeholders_through_rewrite(self):
+        """Non-standard placeholders get normalized by _rewrite_skeleton."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _rewrite_skeleton,
+            _strip_unresolved_placeholders,
+        )
+
+        skeleton = (
+            '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+            '<section data-section="sec_1"><div>{{sec_1_header}}</div></section>'
+            '<section data-section="sec_2"><div>{{sec_2_part1}}</div><div>{{sec_2_part2}}</div></section>'
+        )
+
+        rewritten = _rewrite_skeleton(skeleton, 3)
+
+        # All variant placeholders normalized
+        assert "{{sec_1_header}}" not in rewritten
+        assert "{{sec_2_part1}}" not in rewritten
+        assert "{{sec_2_part2}}" not in rewritten
+
+        # Standard placeholders present
+        assert "{{sec_0}}" in rewritten
+        assert "{{sec_1}}" in rewritten
+        assert "{{sec_2}}" in rewritten
+
+        # All sections parseable
+        sections = _parse_sections(rewritten)
+        assert len(sections) == 3
+
+    def test_strip_and_wrap_produces_parseable_sections(self):
+        """Content without data-section attrs gets strip+wrapped correctly."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _ensure_section_attributes,
+        )
+
+        # Simulate Phase 2 output without data-section attributes
+        html = (
+            '<style>.section { padding: 20px; }</style>'
+            '<h1>Hero Headline</h1>'
+            '<p>Hero body text</p>'
+            '<h2>Features</h2>'
+            '<p>Feature descriptions</p>'
+        )
+
+        section_map = {"sec_0": MagicMock(), "sec_1": MagicMock()}
+        lf = MagicMock()
+
+        result = _ensure_section_attributes(html, section_map, lf)
+
+        # Must produce parseable sections
+        sections = _parse_sections(result)
+        assert len(sections) >= 2, f"Expected >= 2 sections, got {len(sections)}: {list(sections.keys())}"
