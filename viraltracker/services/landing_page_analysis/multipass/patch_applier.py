@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 _ATTR_SELECTOR_RE = re.compile(
     r'^\[([a-zA-Z_-]+)=[\'"]([^"\']+)[\'"]\]$'
 )
+_ATTR_CONTAINS_RE = re.compile(
+    r'^\[([a-zA-Z_-]+)\*=[\'"]([^"\']+)[\'"]\]$'
+)
 _CLASS_SELECTOR_RE = re.compile(r'^\.([a-zA-Z_-][a-zA-Z0-9_-]*)$')
 _ID_SELECTOR_RE = re.compile(r'^#([a-zA-Z_-][a-zA-Z0-9_-]*)$')
 _TAG_SELECTOR_RE = re.compile(r'^([a-zA-Z][a-zA-Z0-9]*)$')
@@ -25,6 +28,12 @@ _TAG_CLASS_RE = re.compile(
 _TAG_ATTR_RE = re.compile(
     r'^([a-zA-Z][a-zA-Z0-9]*)\[([a-zA-Z_-]+)=[\'"]([^"\']+)[\'"]\]$'
 )
+_TAG_ATTR_CONTAINS_RE = re.compile(
+    r'^([a-zA-Z][a-zA-Z0-9]*)\[([a-zA-Z_-]+)\*=[\'"]([^"\']+)[\'"]\]$'
+)
+
+# Max elements a *= selector can match before being skipped
+_CONTAINS_MATCH_CAP = 5
 
 # Protected attributes that patches must never modify
 _PROTECTED_ATTRS = frozenset(['data-slot', 'data-section'])
@@ -38,6 +47,7 @@ class ParsedSelector:
     class_name: Optional[str] = None
     attr_name: Optional[str] = None
     attr_value: Optional[str] = None
+    match_mode: str = "exact"  # "exact" or "contains"
 
 
 def parse_selector(selector: str) -> ParsedSelector:
@@ -58,7 +68,14 @@ def parse_selector(selector: str) -> ParsedSelector:
     if not selector:
         raise ValueError("Empty selector")
 
-    # [attr='value']
+    # [attr*='value'] (contains match)
+    m = _ATTR_CONTAINS_RE.match(selector)
+    if m:
+        return ParsedSelector(
+            attr_name=m.group(1), attr_value=m.group(2), match_mode="contains"
+        )
+
+    # [attr='value'] (exact match)
     m = _ATTR_SELECTOR_RE.match(selector)
     if m:
         return ParsedSelector(attr_name=m.group(1), attr_value=m.group(2))
@@ -78,7 +95,15 @@ def parse_selector(selector: str) -> ParsedSelector:
     if m:
         return ParsedSelector(tag=m.group(1), class_name=m.group(2))
 
-    # tag[attr='value']
+    # tag[attr*='value'] (contains match)
+    m = _TAG_ATTR_CONTAINS_RE.match(selector)
+    if m:
+        return ParsedSelector(
+            tag=m.group(1), attr_name=m.group(2), attr_value=m.group(3),
+            match_mode="contains"
+        )
+
+    # tag[attr='value'] (exact match)
     m = _TAG_ATTR_RE.match(selector)
     if m:
         return ParsedSelector(tag=m.group(1), attr_name=m.group(2), attr_value=m.group(3))
@@ -111,8 +136,15 @@ def _element_matches(
             return False
 
     if selector.attr_name:
-        if attrs_dict.get(selector.attr_name) != selector.attr_value:
+        actual_value = attrs_dict.get(selector.attr_name)
+        if actual_value is None:
             return False
+        if selector.match_mode == "contains":
+            if selector.attr_value not in actual_value:
+                return False
+        else:
+            if actual_value != selector.attr_value:
+                return False
 
     return True
 
@@ -224,6 +256,15 @@ class PatchApplier:
 
     def _apply_css_fix(self, html: str, selector: ParsedSelector, css_value: str) -> str:
         """Apply CSS style fix to all matching elements."""
+        # Guard: cap *= selector matches at 5 to prevent mass-modification
+        if selector.match_mode == "contains":
+            matches = self._find_matches(html, selector)
+            if len(matches) > _CONTAINS_MATCH_CAP:
+                logger.warning(
+                    f"*= selector too broad: matched {len(matches)} elements "
+                    f"(cap={_CONTAINS_MATCH_CAP}), skipping patch"
+                )
+                return html
         return self._modify_elements(html, selector, 'all', 'style', css_value)
 
     def _apply_add_element(self, html: str, selector: ParsedSelector, payload: str) -> str:

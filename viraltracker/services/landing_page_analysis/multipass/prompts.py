@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 PHASE_0_PROMPT_VERSION = "v1"
 PHASE_1_PROMPT_VERSION = "v1"
 PHASE_2_PROMPT_VERSION = "v1"
-PHASE_3_PROMPT_VERSION = "v1"
+PHASE_3_PROMPT_VERSION = "v2"
 PHASE_4_PROMPT_VERSION = "v1"
 
 PROMPT_VERSIONS = {
@@ -219,6 +219,8 @@ def build_phase_3_prompt(
     section_html: str,
     design_system_compact: str,
     image_urls: Optional[List[Dict]] = None,
+    section_images: Optional[List] = None,
+    original_css_snippet: Optional[str] = None,
 ) -> str:
     """Phase 3: Per-Section Visual Refinement.
 
@@ -229,16 +231,51 @@ def build_phase_3_prompt(
         section_id: Section ID (e.g., "sec_0").
         section_html: Current HTML for this section from Phase 2.
         design_system_compact: Compact design system JSON (colors + typography only).
-        image_urls: Optional image URLs relevant to this section.
+        image_urls: Optional legacy image URLs (fallback if no section_images).
+        section_images: Optional per-section PageImage list from ImageRegistry (v4).
+        original_css_snippet: Optional CSS snippet from original page (v4).
     """
     images_section = ""
-    if image_urls:
+    if section_images:
+        # v4 path: per-section images with dimensions and type hints
+        img_lines = []
+        for img in section_images[:10]:
+            dims = ""
+            if img.width and img.height:
+                dims = f" ({img.width}x{img.height})"
+            type_hint = ""
+            if img.is_icon:
+                type_hint = " [icon/logo]"
+            elif img.is_background:
+                type_hint = " [hero/banner]"
+            alt = (img.alt or "image")[:60]
+            img_lines.append(f'  - {alt}: {img.url}{dims}{type_hint}')
+        images_section = (
+            f"\n## SECTION IMAGES (for {section_id} only)\n"
+            + "\n".join(img_lines)
+            + "\n"
+            + "\n## IMAGE RULES\n"
+            + "- ONLY use images listed above. Do NOT add images from other sections.\n"
+            + "- Match image dimensions exactly: icons/logos stay small (32-80px), heroes full-width.\n"
+            + "- Keep <img> tags for all images (even background-like ones). Use width/height attributes.\n"
+            + "- Do NOT use background-image CSS with url() (it will be stripped by sanitizer).\n"
+        )
+    elif image_urls:
+        # Legacy path: global image list
         img_lines = []
         for img in image_urls[:10]:
             alt = img.get("alt", "")[:60]
             url = img.get("url", "")
             img_lines.append(f'  - {alt}: {url}')
         images_section = f"\n## ACTUAL IMAGE URLs\n" + "\n".join(img_lines) + "\n"
+
+    css_section = ""
+    if original_css_snippet:
+        css_section = (
+            f"\n## ORIGINAL PAGE CSS REFERENCE\n"
+            f"Use these values to match the original page's style:\n"
+            f"```css\n{original_css_snippet}\n```\n"
+        )
 
     return f"""Compare this screenshot crop with the current HTML for section {section_id}.
 Refine the HTML to match the screenshot's visual details more closely.
@@ -248,7 +285,7 @@ Refine the HTML to match the screenshot's visual details more closely.
 
 ## DESIGN SYSTEM
 {design_system_compact}
-{images_section}
+{images_section}{css_section}
 ## REFINEMENT RULES
 1. Match visual layout from the screenshot: element positions, sizes, spacing
 2. Match colors, fonts, backgrounds from the screenshot
@@ -256,12 +293,15 @@ Refine the HTML to match the screenshot's visual details more closely.
 4. For images without URLs, use colored placeholder divs with descriptive labels
 5. Match image SIZES to their proportions in the screenshot
 6. Small images (avatars, icons) must stay small (48-80px)
+7. Keep ALL images as <img> tags — do NOT convert to CSS background-image url()
 
 ## CRITICAL CONSTRAINTS (DO NOT VIOLATE)
 - Do NOT change any text content -- keep ALL text exactly as-is
 - Do NOT remove or rename any data-slot attributes
 - Do NOT remove or rename any data-section attributes
 - Do NOT add new text that isn't in the current HTML
+- Do NOT use background-image: url(...) in CSS (it will be stripped by the sanitizer)
+- Keep data-bg-image="true" on images that have it
 - ONLY adjust: CSS styles, layout properties, image elements, structural wrappers
 
 ## OUTPUT

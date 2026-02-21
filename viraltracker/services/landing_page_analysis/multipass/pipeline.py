@@ -30,6 +30,13 @@ from .invariants import (
     check_global_invariants,
     check_section_invariant,
 )
+from .content_assembler import assemble_content, phase_2_fallback
+from .html_extractor import (
+    CSSExtractor,
+    ImageRegistry,
+    ResponsiveCSS,
+    _scope_css_under_class,
+)
 from .patch_applier import PatchApplier
 from .popup_filter import PopupFilter
 from .prompts import (
@@ -617,6 +624,7 @@ class MultiPassPipeline:
         page_markdown: str,
         page_url: Optional[str] = None,
         element_detection: Optional[Dict] = None,
+        page_html: Optional[str] = None,
     ) -> str:
         """Run the full 5-phase multipass pipeline.
 
@@ -625,6 +633,7 @@ class MultiPassPipeline:
             page_markdown: Full page markdown text.
             page_url: Optional page URL for image resolution.
             element_detection: Optional element detection for section hints.
+            page_html: Optional full page HTML for image/CSS extraction (v4).
 
         Returns:
             Complete HTML string (raw, no post-processing).
@@ -640,11 +649,11 @@ class MultiPassPipeline:
             page_url=page_url or "unknown",
             section_count=section_count,
         ):
-            # Compute API call budget
+            # Compute API call budget (Phase 2 is now deterministic — 0 API calls)
             phase_budgets = {
                 0: 2,
                 1: 2,
-                2: 2,
+                2: 0,  # Deterministic assembly — no LLM call
                 3: section_count + 2,
                 4: 2,
             }
@@ -660,6 +669,47 @@ class MultiPassPipeline:
 
             # Truncate markdown for prompts
             truncated_md = _truncate_markdown(page_markdown)
+
+            # -----------------------------------------------------------
+            # Harvest: Extract images + CSS from original HTML (v4)
+            # -----------------------------------------------------------
+            image_registry = None
+            responsive_css = ResponsiveCSS()
+
+            if page_html:
+                with self._lf.span("multipass_harvest", phase="html_extraction"):
+                    try:
+                        image_registry = ImageRegistry.build(
+                            page_html, sections, page_url or ""
+                        )
+                        self._lf.info(
+                            "Harvest: {img_count} images, {section_map_count} section mappings",
+                            img_count=len(image_registry.images),
+                            section_map_count=sum(
+                                len(v) for v in image_registry.section_map.values()
+                            ),
+                        )
+                    except Exception as e:
+                        self._lf.warning(
+                            "Image registry build failed: {error}", error=str(e)
+                        )
+                        image_registry = None
+
+                    try:
+                        responsive_css = CSSExtractor.extract(
+                            page_html, page_url or ""
+                        )
+                        css_size = len(responsive_css.to_css_block())
+                        if css_size > 0:
+                            self._lf.info(
+                                "Harvest: {css_size} bytes of responsive CSS extracted",
+                                css_size=css_size,
+                            )
+                    except Exception as e:
+                        self._lf.warning(
+                            "CSS extraction failed: {error}", error=str(e)
+                        )
+                        responsive_css = ResponsiveCSS()
 
             # -----------------------------------------------------------
             # Phase 0: Design System Extraction
@@ -682,12 +732,59 @@ class MultiPassPipeline:
                 return skeleton_html
 
             # -----------------------------------------------------------
-            # Phase 2: Content Injection + Slot Creation
+            # Inject scoped responsive CSS after Phase 1 skeleton
             # -----------------------------------------------------------
-            self._report_progress(2, "Injecting content and slots...")
-            content_html = await self._run_phase_2(skeleton_html, truncated_md)
+            css_block_str = responsive_css.to_css_block()
+            if css_block_str:
+                scoped_css = _scope_css_under_class(css_block_str, ".lp-mockup")
+                css_tag = f'<style class="responsive-css">\n{scoped_css}\n</style>'
 
-            # Re-inject data-section attributes if Phase 2 stripped them
+                # Deterministic insertion with fallback chain
+                if '</style>' in skeleton_html:
+                    skeleton_html = skeleton_html.replace(
+                        "</style>", f"</style>\n{css_tag}", 1
+                    )
+                elif '</head>' in skeleton_html.lower():
+                    skeleton_html = re.sub(
+                        r'(</head>)',
+                        f'{css_tag}\n\\1',
+                        skeleton_html,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                else:
+                    skeleton_html = f'{css_tag}\n{skeleton_html}'
+
+            # Wrap skeleton in .lp-mockup div for CSS scoping
+            skeleton_html = f'<div class="lp-mockup">\n{skeleton_html}\n</div>'
+
+            # -----------------------------------------------------------
+            # Phase 2: Deterministic Content Assembly (v4)
+            # -----------------------------------------------------------
+            self._report_progress(2, "Assembling content (deterministic)...")
+            with self._lf.span("multipass_phase_2", phase="deterministic_assembly"):
+                try:
+                    content_html = assemble_content(
+                        skeleton_html,
+                        sections,
+                        section_map,
+                        image_registry,
+                    )
+                    from .invariants import _extract_slots
+                    slot_count = len(_extract_slots(content_html))
+                    self._lf.info(
+                        "Phase 2 OK (deterministic): {output_chars} chars, {slot_count} slots",
+                        output_chars=len(content_html),
+                        slot_count=slot_count,
+                    )
+                except Exception as e:
+                    self._lf.warning(
+                        "Deterministic Phase 2 failed: {error}, using fallback",
+                        error=str(e),
+                    )
+                    content_html = phase_2_fallback(skeleton_html, sections)
+
+            # Re-inject data-section attributes if needed
             content_html = _ensure_section_attributes(
                 content_html, section_map, self._lf
             )
@@ -716,6 +813,8 @@ class MultiPassPipeline:
                 baseline,
                 page_url,
                 page_markdown,
+                image_registry=image_registry,
+                responsive_css=responsive_css,
             )
 
             if self._budget_exceeded(max_api_calls):
@@ -948,6 +1047,8 @@ class MultiPassPipeline:
         baseline: PipelineInvariants,
         page_url: Optional[str],
         page_markdown: str,
+        image_registry: Optional["ImageRegistry"] = None,
+        responsive_css: Optional["ResponsiveCSS"] = None,
     ) -> Tuple[str, Dict]:
         """Phase 3: Per-Section Visual Refinement.
 
@@ -971,15 +1072,22 @@ class MultiPassPipeline:
                 "typography": design_system.get("typography", {}),
             })
 
-            # Extract image URLs if available
+            # Fallback: extract image URLs from markdown (old path)
             image_urls = None
-            if page_url and page_markdown:
+            if not image_registry and page_url and page_markdown:
                 try:
                     from ..mockup_service import MockupService
                     svc = MockupService()
                     image_urls = svc._extract_image_urls(page_markdown, page_url)
                 except Exception as e:
                     logger.debug(f"Image URL extraction failed (non-fatal): {e}")
+
+            # Prepare CSS snippet for per-section prompts
+            css_snippet = None
+            if responsive_css:
+                css_block = responsive_css.to_css_block()
+                if css_block:
+                    css_snippet = css_block[:2048]  # Cap at 2KB per plan
 
             # Build tasks for parallel execution
             tasks = []
@@ -1006,11 +1114,23 @@ class MultiPassPipeline:
                     f'</section>'
                 )
 
+                # Per-section images (v4) or fallback to global image list
+                section_images = None
+                if image_registry:
+                    section_images = image_registry.get_section_images(sec_id)
+                    self._lf.info(
+                        "Phase 3: {sec_id} has {img_count} section-specific images",
+                        sec_id=sec_id,
+                        img_count=len(section_images),
+                    )
+
                 prompt = build_phase_3_prompt(
                     sec_id,
                     section_html,
                     compact_ds,
                     image_urls,
+                    section_images=section_images,
+                    original_css_snippet=css_snippet,
                 )
 
                 tasks.append({

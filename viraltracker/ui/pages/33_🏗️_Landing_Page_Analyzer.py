@@ -135,6 +135,15 @@ def _render_mockup_preview(html_str: str, key_suffix: str):
     import base64
     import streamlit.components.v1 as components
 
+    # Convert background image markers to CSS backgrounds for display
+    try:
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            restore_background_images,
+        )
+        html_str = restore_background_images(html_str)
+    except Exception:
+        pass  # Non-fatal: markers stay as <img> tags
+
     # Thumbnail preview (scaled down via CSS transform)
     thumbnail_html = f"""
     <div style="width:100%; height:400px; overflow:hidden; border:1px solid #e2e8f0;
@@ -1117,6 +1126,7 @@ def _run_analysis(service, page_data: dict, org_id: str, progress):
             source_type=page_data.get("source_type", "url"),
             source_id=page_data.get("source_id"),
             progress_callback=on_progress,
+            page_html=page_data.get("page_html"),
         )
     )
 
@@ -1495,6 +1505,7 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                     page_url=analysis.get("url", ""),
                     use_multipass=use_multipass,
                     progress_callback=_progress_callback if use_multipass else None,
+                    page_html=analysis.get("page_html"),
                 )
                 progress_placeholder.empty()
                 # Persist to DB for cross-session reuse

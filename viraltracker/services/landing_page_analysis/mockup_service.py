@@ -211,7 +211,7 @@ _ALLOWED_TAGS = [
     # Tables
     "table", "tr", "td", "th", "thead", "tbody",
     # Media (images only, no external loading)
-    "img", "figure", "figcaption",
+    "img", "figure", "figcaption", "picture", "source",
     # Interactive (display only)
     "a", "button",
     # Forms (display only)
@@ -221,7 +221,9 @@ _ALLOWED_TAGS = [
 _ALLOWED_ATTRS = {
     "*": ["class", "id", "style", "data-slot", "data-section", "role", "aria-label"],
     "a": ["href", "target", "rel"],
-    "img": ["src", "alt", "width", "height"],
+    "img": ["src", "alt", "width", "height", "srcset", "sizes", "loading", "data-bg-image"],
+    "source": ["srcset", "sizes", "media", "type"],
+    "picture": [],
     "meta": ["charset", "name", "content"],
     "input": ["type", "placeholder", "value", "name"],
     "td": ["colspan", "rowspan"],
@@ -389,6 +391,7 @@ class MockupService:
         page_url: Optional[str] = None,
         use_multipass: bool = False,
         progress_callback: Optional[Any] = None,
+        page_html: Optional[str] = None,
     ) -> str:
         """Generate a faithful HTML recreation of the analyzed page.
 
@@ -402,6 +405,7 @@ class MockupService:
             page_url: Optional page URL for resolving relative image URLs
             use_multipass: If True, use 5-phase multipass pipeline (~60s, higher fidelity)
             progress_callback: Optional callable(phase: int, message: str) for progress
+            page_html: Optional full page HTML for multipass v4 image/CSS extraction
 
         Returns:
             Standalone HTML string
@@ -413,6 +417,7 @@ class MockupService:
                 page_url=page_url,
                 element_detection=element_detection,
                 progress_callback=progress_callback,
+                page_html=page_html,
             )
         elif screenshot_b64:
             raw_html = self._generate_via_ai_vision(
@@ -1542,6 +1547,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         page_url: Optional[str] = None,
         element_detection: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Any] = None,
+        page_html: Optional[str] = None,
     ) -> str:
         """Run the 5-phase multipass pipeline via ThreadPoolExecutor + asyncio.run().
 
@@ -1586,6 +1592,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 page_markdown=page_markdown or "",
                 page_url=page_url,
                 element_detection=element_detection,
+                page_html=page_html,
             )
 
         # Sync wrapper -- same pattern as _generate_via_ai_vision
@@ -1868,11 +1875,13 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     # ------------------------------------------------------------------
 
     class _SrcSanitizer(HTMLParser):
-        """Parse HTML and validate/rewrite img[src] attributes.
+        """Parse HTML and validate/rewrite img[src] and source[srcset] attributes.
 
-        Validates each src against _validate_image_url() and clears unsafe ones.
+        Validates each src/srcset against _validate_image_url() and clears unsafe ones.
         Also handles data: URI preservation through bleach (which strips non-HTTPS).
         """
+
+        _SRCSET_TAGS = {'img', 'source'}  # Tags whose srcset URLs must be validated
 
         def __init__(self, validator):
             super().__init__(convert_charrefs=False)
@@ -1880,8 +1889,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             self._validator = validator
 
         def _process_attrs(self, tag, attrs):
-            """Validate src attributes on img tags."""
-            if tag.lower() != 'img':
+            """Validate src and srcset attributes on img/source tags."""
+            if tag.lower() not in self._SRCSET_TAGS:
                 return attrs
             new_attrs = []
             for name, value in attrs:
@@ -1892,6 +1901,19 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     else:
                         logger.debug(f"img src stripped: {reason}")
                         new_attrs.append((name, ""))
+                elif name.lower() == 'srcset' and value:
+                    # Validate each URL in srcset
+                    from .multipass.html_extractor import _parse_srcset
+                    safe_parts = []
+                    for url, descriptor in _parse_srcset(value):
+                        if url.startswith('data:'):
+                            continue  # data: URIs not valid in srcset
+                        is_safe, safe_url, _ = self._validator(url)
+                        if is_safe:
+                            safe_parts.append(f"{safe_url} {descriptor}".strip())
+                    if safe_parts:
+                        new_attrs.append((name, ", ".join(safe_parts)))
+                    # If NO parts are safe, drop the entire srcset attr
                 else:
                     new_attrs.append((name, value))
             return new_attrs

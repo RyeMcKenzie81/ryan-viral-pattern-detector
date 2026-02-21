@@ -16,6 +16,16 @@ from .invariants import (
 )
 from .patch_applier import PatchApplier, ParsedSelector, parse_selector
 from .popup_filter import PopupFilter
+from .html_extractor import (
+    ImageRegistry,
+    PageImage,
+    CSSExtractor,
+    ResponsiveCSS,
+    restore_background_images,
+    check_scrape_consistency,
+)
+from .content_assembler import assemble_content, phase_2_fallback
+from ._url_validator import validate_image_url
 
 __all__ = [
     "MultiPassPipeline",
@@ -34,4 +44,13 @@ __all__ = [
     "ParsedSelector",
     "parse_selector",
     "PopupFilter",
+    "ImageRegistry",
+    "PageImage",
+    "CSSExtractor",
+    "ResponsiveCSS",
+    "restore_background_images",
+    "check_scrape_consistency",
+    "assemble_content",
+    "phase_2_fallback",
+    "validate_image_url",
 ]

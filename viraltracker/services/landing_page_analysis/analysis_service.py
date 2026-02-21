@@ -64,21 +64,58 @@ class LandingPageAnalysisService:
     # Input methods
     # ------------------------------------------------------------------
 
+    # Max page_html size before extracting <head> only
+    _MAX_PAGE_HTML_SIZE = 2 * 1024 * 1024  # 2MB
+
     def scrape_landing_page(self, url: str) -> Dict[str, Any]:
-        """Scrape a URL via FireCrawl, returning markdown + screenshot (base64)."""
+        """Scrape a URL via FireCrawl, returning markdown + screenshot + page HTML."""
         import base64
         import httpx
         from firecrawl.v2.types import ScreenshotFormat
         from viraltracker.services.web_scraping_service import WebScrapingService
 
         scraper = WebScrapingService()
+
+        # Primary scrape: markdown + screenshot (main content only)
         result = scraper.scrape_url(
             url,
             formats=["markdown", ScreenshotFormat(full_page=True)],
+            only_main_content=True,
         )
 
         if not result.success:
             raise ValueError(f"Failed to scrape {url}: {result.error}")
+
+        # Second scrape: full HTML with <head> CSS (v4)
+        page_html = ""
+        try:
+            html_result = scraper.scrape_url(
+                url,
+                formats=["html"],
+                only_main_content=False,
+            )
+            page_html = html_result.html or ""
+        except Exception as e:
+            logger.warning(f"HTML scrape failed (non-fatal): {e}")
+
+        # Dual-scrape consistency check
+        if page_html and result.markdown:
+            from .multipass.html_extractor import check_scrape_consistency
+            if not check_scrape_consistency(page_html, result.markdown, url):
+                logger.warning("Dual-scrape drift detected, discarding page_html")
+                page_html = ""
+
+        # Size guardrail for page_html
+        if page_html and len(page_html) > self._MAX_PAGE_HTML_SIZE:
+            logger.warning(
+                f"page_html too large ({len(page_html)} chars), extracting <head> only"
+            )
+            from .multipass.html_extractor import _extract_head_section
+            head_html = _extract_head_section(page_html)
+            if head_html and len(head_html) < self._MAX_PAGE_HTML_SIZE:
+                page_html = head_html
+            else:
+                page_html = ""
 
         # FireCrawl v4 returns a URL for screenshots — download and convert to base64
         screenshot_b64 = None
@@ -96,6 +133,7 @@ class LandingPageAnalysisService:
             "url": url,
             "markdown": result.markdown or "",
             "screenshot": screenshot_b64,
+            "page_html": page_html,
             "source_type": "url",
             "source_id": None,
         }
@@ -151,6 +189,7 @@ class LandingPageAnalysisService:
         source_type: str = "url",
         source_id: Optional[str] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        page_html: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the full 4-skill analysis pipeline.
 
@@ -162,6 +201,7 @@ class LandingPageAnalysisService:
             source_type: 'url', 'competitor_lp', or 'brand_lp'
             source_id: FK to source table if applicable
             progress_callback: Called with (step_number, status_message)
+            page_html: Optional full page HTML for multipass v4 extraction
 
         Returns:
             Dict with analysis_id and all skill results
@@ -183,6 +223,7 @@ class LandingPageAnalysisService:
             source_id=source_id,
             page_markdown=page_content,
             screenshot_storage_path=None,
+            page_html=page_html,
         )
 
         # Store screenshot after row exists (non-blocking on failure)
@@ -504,6 +545,7 @@ class LandingPageAnalysisService:
         source_id: Optional[str],
         page_markdown: Optional[str],
         screenshot_storage_path: Optional[str],
+        page_html: Optional[str] = None,
     ) -> str:
         """Create initial analysis record, return its ID."""
         record = {
@@ -516,6 +558,8 @@ class LandingPageAnalysisService:
         }
         if source_id:
             record["source_id"] = source_id
+        if page_html:
+            record["page_html"] = page_html
 
         result = self.supabase.table("landing_page_analyses").insert(record).execute()
         return result.data[0]["id"]

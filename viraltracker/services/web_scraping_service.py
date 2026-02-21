@@ -114,8 +114,11 @@ class WebScrapingService:
         try:
             client = self._get_client()
 
-            # Call scrape with formats directly
-            result = client.scrape(url, formats=formats)
+            # Call scrape with formats + optional params
+            scrape_params = {"formats": formats}
+            if not only_main_content:
+                scrape_params["onlyMainContent"] = False
+            result = client.scrape(url, **scrape_params)
 
             # FireCrawl returns a Document object, not a dict
             # Use getattr to safely access attributes
