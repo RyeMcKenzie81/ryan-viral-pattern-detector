@@ -57,7 +57,7 @@ PHASE_MODELS = {
 }
 
 # Hard limits
-MAX_WALL_CLOCK = 240  # seconds
+MAX_WALL_CLOCK = 420  # seconds (7 min — 8 sections × ~30s each + phases 0-2 + phase 4)
 MAX_SECTIONS = 8
 MARKDOWN_BUDGET = 30_000
 
