@@ -1475,11 +1475,11 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
             progress_pct = min(phase / 5, 1.0)
             progress_placeholder.progress(
                 progress_pct,
-                text=f"Phase {phase}/4: {phase_label}",
+                text=f"Phase {phase + 1}/5: {phase_label}",
             )
 
         if use_multipass:
-            spinner_text = "Running multi-pass pipeline (this takes ~60 seconds)..."
+            spinner_text = "Running multi-pass pipeline (this takes 3-5 minutes)..."
         elif screenshot_b64:
             spinner_text = "Generating page mockup..."
         else:
