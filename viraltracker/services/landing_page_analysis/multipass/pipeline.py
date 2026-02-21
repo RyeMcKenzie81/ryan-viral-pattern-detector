@@ -231,6 +231,10 @@ def _ensure_section_attributes(
     Phase 2 (Gemini text model) sometimes drops data-section attributes
     from the skeleton HTML. Without them, Phase 3 can't find sections
     to refine. This function deterministically re-adds them.
+
+    Strategy: strip ALL existing data-section attrs, then reassign
+    sec_0..sec_N to the <section> tags top-to-bottom. This avoids
+    the partial-presence bug where nested sections corrupt the parser.
     """
     from .invariants import _SectionParser
 
@@ -249,18 +253,18 @@ def _ensure_section_attributes(
             expected=expected,
         )
 
-    # Strategy: find bare <section> tags (without data-section) and add attrs
-    # in top-to-bottom order. Also handle cases where model used <div> instead.
     section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
 
-    # First pass: try adding data-section to bare <section> tags
-    bare_section_re = re.compile(
-        r'<section(?!\s[^>]*data-section)(\s[^>]*)?>', re.IGNORECASE
-    )
-    matches = list(bare_section_re.finditer(html))
+    # Step 1: Strip ALL existing data-section attributes to start clean.
+    # This prevents nested data-section tags from corrupting the parser.
+    html = re.sub(r'\s*data-section="[^"]*"', '', html)
+
+    # Step 2: Find all <section> tags (now all bare) and assign IDs
+    all_section_re = re.compile(r'<section(\s[^>]*)?>',  re.IGNORECASE)
+    matches = list(all_section_re.finditer(html))
 
     if len(matches) >= expected:
-        # Enough bare <section> tags -- assign IDs top-to-bottom
+        # Enough <section> tags -- assign IDs top-to-bottom
         offset = 0
         for i, match in enumerate(matches):
             if i >= expected:
@@ -274,53 +278,51 @@ def _ensure_section_attributes(
 
         if lf:
             lf.info(
-                "Re-injected data-section attrs into {count} bare <section> tags",
+                "Re-injected data-section attrs into {count} <section> tags (strip+reassign)",
                 count=min(len(matches), expected),
             )
         return html
 
-    # Second pass: if not enough <section> tags, wrap content in sections.
-    # Split HTML at major heading boundaries and wrap each chunk.
-    heading_re = re.compile(r'(?=<h[1-3][\s>])', re.IGNORECASE)
-    chunks = heading_re.split(html)
+    # Step 3: Not enough <section> tags at all. Split at heading boundaries
+    # and wrap in new <section> tags. Extract <style> block first.
+    style_block = ""
+    body_html = html
+    style_match = re.match(r'(<style[\s\S]*?</style>\s*)', html, re.IGNORECASE)
+    if style_match:
+        style_block = style_match.group(1)
+        body_html = html[len(style_block):]
 
-    # Filter out empty/whitespace-only chunks
+    heading_re = re.compile(r'(?=<h[1-6][\s>])', re.IGNORECASE)
+    chunks = heading_re.split(body_html)
     chunks = [c for c in chunks if c.strip()]
 
     if len(chunks) < 2:
-        # Can't split meaningfully, return as-is
         if lf:
             lf.warning("Cannot re-inject sections: no heading boundaries found")
         return html
 
-    # Assign section IDs to chunks (cap at expected count)
-    parts = []
-    # Keep any leading <style> block outside sections
-    style_match = re.match(r'(<style[\s\S]*?</style>\s*)', html, re.IGNORECASE)
-    if style_match:
-        parts.append(style_match.group(1))
-        # Remove style from first chunk if it starts with it
-        if chunks and chunks[0].startswith(style_match.group(1)):
-            chunks[0] = chunks[0][len(style_match.group(1)):]
-
+    parts = [style_block] if style_block else []
     for i, chunk in enumerate(chunks):
         if i < expected:
             sec_id = section_ids[i]
+            # Strip any <section> / </section> tags from chunk to avoid nesting
+            clean = re.sub(r'</?section[^>]*>', '', chunk, flags=re.IGNORECASE)
             parts.append(
                 f'<section data-section="{sec_id}" class="section">'
-                f'{chunk}</section>'
+                f'{clean}</section>\n'
             )
         else:
             # Merge remaining chunks into last section
+            clean = re.sub(r'</?section[^>]*>', '', chunk, flags=re.IGNORECASE)
             parts[-1] = parts[-1].replace(
                 '</section>',
-                f'{chunk}</section>',
+                f'{clean}</section>',
                 1,
             )
 
     if lf:
         lf.info(
-            "Wrapped content in {count} <section> tags at heading boundaries",
+            "Wrapped content in {count} <section> tags at heading boundaries (strip+wrap)",
             count=min(len(chunks), expected),
         )
     return ''.join(parts)
