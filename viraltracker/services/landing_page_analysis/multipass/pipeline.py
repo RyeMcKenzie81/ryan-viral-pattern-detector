@@ -1186,13 +1186,24 @@ class MultiPassPipeline:
                                 extracted_css.inlined_html = ""
 
             # -----------------------------------------------------------
+            # Template pipeline guard: fall back when no page_html
+            # -----------------------------------------------------------
+            use_templates_this_run = USE_TEMPLATE_PIPELINE
+            if USE_TEMPLATE_PIPELINE and not page_html:
+                self._lf.warning(
+                    "Template pipeline enabled but no page_html — "
+                    "falling back to original pipeline path"
+                )
+                use_templates_this_run = False
+
+            # -----------------------------------------------------------
             # Phase 0: Design System Extraction
             # -----------------------------------------------------------
             self._report_progress(0, "Extracting design system...")
             design_system = await self._run_phase_0(screenshot_b64, truncated_md)
 
             # Phase 0 augmentation: merge deterministic CSS tokens
-            if USE_TEMPLATE_PIPELINE and extracted_css and extracted_css.design_tokens:
+            if use_templates_this_run and extracted_css and extracted_css.design_tokens:
                 self.phase_snapshots["phase_0_design_system"] = _wrap_json_as_html(design_system)
                 design_system = _augment_design_system(design_system, extracted_css.design_tokens)
                 self.phase_snapshots["phase_0_augmented"] = _wrap_json_as_html(design_system)
@@ -1206,7 +1217,7 @@ class MultiPassPipeline:
             # -----------------------------------------------------------
             layout_map = {}  # Populated by template pipeline path
 
-            if USE_TEMPLATE_PIPELINE:
+            if use_templates_this_run:
                 # Template pipeline: classification + deterministic skeleton
                 self._report_progress(1, "Classifying layouts...")
                 skeleton_html, section_map, layout_map = await self._run_phase_1_classify(
@@ -1265,8 +1276,8 @@ class MultiPassPipeline:
                         sections,
                         section_map,
                         image_registry,
-                        layout_map=layout_map if USE_TEMPLATE_PIPELINE else None,
-                        extracted_css=extracted_css if USE_TEMPLATE_PIPELINE else None,
+                        layout_map=layout_map if use_templates_this_run else None,
+                        extracted_css=extracted_css if use_templates_this_run else None,
                     )
                     from .invariants import _extract_slots
                     slot_count = len(_extract_slots(content_html))
@@ -1348,12 +1359,12 @@ class MultiPassPipeline:
             # -----------------------------------------------------------
             # Phase 3: Visual Refinement
             # -----------------------------------------------------------
-            if USE_TEMPLATE_PIPELINE and MULTIPASS_PHASE3_MODE == "disabled":
+            if use_templates_this_run and MULTIPASS_PHASE3_MODE == "disabled":
                 # Template pipeline with Phase 3 disabled — skip entirely
                 self._report_progress(3, "Phase 3 disabled (template mode)...")
                 refined_html = content_html
                 self.phase_snapshots["phase_3_refined"] = content_html
-            elif USE_TEMPLATE_PIPELINE and MULTIPASS_PHASE3_MODE in ("fullpage", "per_section"):
+            elif use_templates_this_run and MULTIPASS_PHASE3_MODE in ("fullpage", "per_section"):
                 # Template pipeline: CSS-only Phase 3
                 self._report_progress(3, "Applying CSS refinements...")
                 refined_html = await self._run_phase_3_css(

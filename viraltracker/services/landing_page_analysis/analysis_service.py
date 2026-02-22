@@ -93,6 +93,7 @@ class LandingPageAnalysisService:
                 url,
                 formats=["html"],
                 only_main_content=False,
+                wait_for=2000,
             )
             page_html = html_result.html or ""
         except Exception as e:

@@ -18,6 +18,7 @@ B14: Scoped placeholder cleanup (Fix 4)
 B15: Phase 1 prompt constraints (Fix 5)
 B16: Global invariant section-count (Fix 8)
 B17: Integration test — full failure chain reproduction
+B18: wait_for forwarded to FireCrawl + template pipeline guard fallback
 """
 
 import re
@@ -2532,3 +2533,206 @@ class TestPatchApplierCommaSelectors:
         result = applier.apply_patches(html, patches)
         # Should NOT be applied (descendant combinator unsupported)
         assert "font-size: 3rem" not in result
+
+
+# ===========================================================================
+# B18: wait_for passed to FireCrawl + template pipeline guard
+# ===========================================================================
+
+
+class TestWaitForPassedToFireCrawl:
+    """B18a: web_scraping_service.py — waitFor is forwarded to FireCrawl."""
+
+    def test_wait_for_passed_to_firecrawl_sync(self):
+        """Sync scrape_url passes waitFor when wait_for > 0."""
+        from viraltracker.services.web_scraping_service import WebScrapingService
+
+        svc = WebScrapingService(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_result = MagicMock()
+        mock_result.markdown = "hello"
+        mock_result.html = "<p>hello</p>"
+        mock_result.links = []
+        mock_result.metadata = {}
+        mock_result.screenshot = None
+        mock_client.scrape.return_value = mock_result
+
+        svc._client = mock_client
+
+        svc.scrape_url("https://example.com", formats=["html"], wait_for=2000)
+
+        mock_client.scrape.assert_called_once()
+        call_kwargs = mock_client.scrape.call_args
+        # waitFor should appear in the kwargs
+        assert call_kwargs[1].get("waitFor") == 2000 or \
+            call_kwargs.kwargs.get("waitFor") == 2000
+
+    def test_wait_for_zero_not_passed(self):
+        """Sync scrape_url does NOT pass waitFor when wait_for=0 (default)."""
+        from viraltracker.services.web_scraping_service import WebScrapingService
+
+        svc = WebScrapingService(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_result = MagicMock()
+        mock_result.markdown = "hello"
+        mock_result.html = None
+        mock_result.links = None
+        mock_result.metadata = None
+        mock_result.screenshot = None
+        mock_client.scrape.return_value = mock_result
+
+        svc._client = mock_client
+
+        svc.scrape_url("https://example.com", formats=["markdown"])
+
+        call_kwargs = mock_client.scrape.call_args
+        # Flatten all kwargs passed via **scrape_params
+        all_kwargs = {**call_kwargs.kwargs}
+        assert "waitFor" not in all_kwargs
+
+
+class TestWaitForAsyncPassedToFireCrawl:
+    """B18b: web_scraping_service.py — async waitFor forwarded to FireCrawl."""
+
+    @pytest.mark.asyncio
+    async def test_wait_for_async_passed_to_firecrawl(self):
+        """Async scrape_url_async passes waitFor when wait_for > 0."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from viraltracker.services.web_scraping_service import WebScrapingService
+
+        svc = WebScrapingService(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_result = MagicMock()
+        mock_result.markdown = None
+        mock_result.html = "<p>hello</p>"
+        mock_result.links = None
+        mock_result.metadata = None
+        mock_result.screenshot = None
+        mock_client.scrape = AsyncMock(return_value=mock_result)
+
+        svc._async_client = mock_client
+
+        await svc.scrape_url_async(
+            "https://example.com", formats=["html"], wait_for=3000
+        )
+
+        mock_client.scrape.assert_called_once()
+        call_kwargs = mock_client.scrape.call_args
+        all_kwargs = {**call_kwargs.kwargs}
+        assert all_kwargs.get("waitFor") == 3000
+
+    @pytest.mark.asyncio
+    async def test_wait_for_async_only_main_content_false(self):
+        """Async scrape_url_async passes onlyMainContent=False."""
+        from unittest.mock import AsyncMock
+        from viraltracker.services.web_scraping_service import WebScrapingService
+
+        svc = WebScrapingService(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_result = MagicMock()
+        mock_result.markdown = None
+        mock_result.html = "<p>hello</p>"
+        mock_result.links = None
+        mock_result.metadata = None
+        mock_result.screenshot = None
+        mock_client.scrape = AsyncMock(return_value=mock_result)
+
+        svc._async_client = mock_client
+
+        await svc.scrape_url_async(
+            "https://example.com",
+            formats=["html"],
+            only_main_content=False,
+        )
+
+        call_kwargs = mock_client.scrape.call_args
+        all_kwargs = {**call_kwargs.kwargs}
+        assert all_kwargs.get("onlyMainContent") is False
+
+
+class TestTemplateGuardFallback:
+    """B18c: pipeline.py — template pipeline falls back without page_html."""
+
+    @pytest.mark.asyncio
+    async def test_template_guard_falls_back_without_page_html(self):
+        """When USE_TEMPLATE_PIPELINE=True but page_html is None,
+        pipeline should use _run_phase_1 (original) not _run_phase_1_classify."""
+        import base64
+        from unittest.mock import AsyncMock
+
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            MultiPassPipeline,
+        )
+
+        # Minimal 1x1 white PNG for screenshot_b64
+        tiny_png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00"
+            b"\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00"
+            b"\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        screenshot_b64 = base64.b64encode(tiny_png).decode()
+
+        mock_gemini = MagicMock()
+        pipeline = MultiPassPipeline(gemini_service=mock_gemini)
+
+        # Track which Phase 1 path was called
+        phase_1_original_called = False
+        phase_1_classify_called = False
+
+        async def mock_phase_0(*args, **kwargs):
+            return '{"colors": [], "fonts": []}'
+
+        async def mock_phase_1(*args, **kwargs):
+            nonlocal phase_1_original_called
+            phase_1_original_called = True
+            skeleton = '<div data-section="sec_0">Mock</div>'
+            section_map = {"sec_0": 0}
+            return skeleton, section_map
+
+        async def mock_phase_1_classify(*args, **kwargs):
+            nonlocal phase_1_classify_called
+            phase_1_classify_called = True
+            skeleton = '<div data-section="sec_0">Mock</div>'
+            section_map = {"sec_0": 0}
+            layout_map = {}
+            return skeleton, section_map, layout_map
+
+        # Patch all LLM-calling methods to avoid real API calls
+        pipeline._run_phase_0 = mock_phase_0
+        pipeline._run_phase_1 = mock_phase_1
+        pipeline._run_phase_1_classify = mock_phase_1_classify
+        pipeline._report_progress = lambda *a, **kw: None
+
+        # Return False after Phase 0, True after Phase 1 to force early exit
+        budget_call_count = 0
+
+        def fake_budget_exceeded(max_calls):
+            nonlocal budget_call_count
+            budget_call_count += 1
+            # First call is after Phase 0 — allow; second is after Phase 1 — stop
+            return budget_call_count > 1
+
+        pipeline._budget_exceeded = fake_budget_exceeded
+
+        with patch(
+            "viraltracker.services.landing_page_analysis.multipass.pipeline.USE_TEMPLATE_PIPELINE",
+            True,
+        ):
+            result = await pipeline.generate(
+                screenshot_b64=screenshot_b64,
+                page_markdown="# Hello\nSome content here",
+                page_html=None,  # <-- no page_html
+            )
+
+        assert phase_1_original_called, (
+            "Expected _run_phase_1 (original) to be called when page_html is None"
+        )
+        assert not phase_1_classify_called, (
+            "Expected _run_phase_1_classify NOT to be called when page_html is None"
+        )
