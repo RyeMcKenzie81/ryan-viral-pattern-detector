@@ -117,9 +117,9 @@ class WebScrapingService:
             # Call scrape with formats + optional params
             scrape_params = {"formats": formats}
             if not only_main_content:
-                scrape_params["onlyMainContent"] = False
+                scrape_params["only_main_content"] = False
             if wait_for > 0:
-                scrape_params["waitFor"] = wait_for
+                scrape_params["wait_for"] = wait_for
             result = client.scrape(url, **scrape_params)
 
             # FireCrawl returns a Document object, not a dict
@@ -174,9 +174,9 @@ class WebScrapingService:
             # Call scrape with formats + optional params
             scrape_params = {"formats": formats}
             if not only_main_content:
-                scrape_params["onlyMainContent"] = False
+                scrape_params["only_main_content"] = False
             if wait_for > 0:
-                scrape_params["waitFor"] = wait_for
+                scrape_params["wait_for"] = wait_for
             result = await client.scrape(url, **scrape_params)
 
             # FireCrawl returns a Document object, not a dict

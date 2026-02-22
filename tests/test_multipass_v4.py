@@ -2541,10 +2541,10 @@ class TestPatchApplierCommaSelectors:
 
 
 class TestWaitForPassedToFireCrawl:
-    """B18a: web_scraping_service.py — waitFor is forwarded to FireCrawl."""
+    """B18a: web_scraping_service.py — wait_for is forwarded to FireCrawl."""
 
     def test_wait_for_passed_to_firecrawl_sync(self):
-        """Sync scrape_url passes waitFor when wait_for > 0."""
+        """Sync scrape_url passes wait_for when wait_for > 0."""
         from viraltracker.services.web_scraping_service import WebScrapingService
 
         svc = WebScrapingService(api_key="fake")
@@ -2564,12 +2564,12 @@ class TestWaitForPassedToFireCrawl:
 
         mock_client.scrape.assert_called_once()
         call_kwargs = mock_client.scrape.call_args
-        # waitFor should appear in the kwargs
-        assert call_kwargs[1].get("waitFor") == 2000 or \
-            call_kwargs.kwargs.get("waitFor") == 2000
+        # wait_for should appear in the kwargs (SDK uses snake_case)
+        assert call_kwargs[1].get("wait_for") == 2000 or \
+            call_kwargs.kwargs.get("wait_for") == 2000
 
     def test_wait_for_zero_not_passed(self):
-        """Sync scrape_url does NOT pass waitFor when wait_for=0 (default)."""
+        """Sync scrape_url does NOT pass wait_for when wait_for=0 (default)."""
         from viraltracker.services.web_scraping_service import WebScrapingService
 
         svc = WebScrapingService(api_key="fake")
@@ -2590,15 +2590,15 @@ class TestWaitForPassedToFireCrawl:
         call_kwargs = mock_client.scrape.call_args
         # Flatten all kwargs passed via **scrape_params
         all_kwargs = {**call_kwargs.kwargs}
-        assert "waitFor" not in all_kwargs
+        assert "wait_for" not in all_kwargs
 
 
 class TestWaitForAsyncPassedToFireCrawl:
-    """B18b: web_scraping_service.py — async waitFor forwarded to FireCrawl."""
+    """B18b: web_scraping_service.py — async wait_for forwarded to FireCrawl."""
 
     @pytest.mark.asyncio
     async def test_wait_for_async_passed_to_firecrawl(self):
-        """Async scrape_url_async passes waitFor when wait_for > 0."""
+        """Async scrape_url_async passes wait_for when wait_for > 0."""
         import asyncio
         from unittest.mock import AsyncMock
         from viraltracker.services.web_scraping_service import WebScrapingService
@@ -2623,11 +2623,11 @@ class TestWaitForAsyncPassedToFireCrawl:
         mock_client.scrape.assert_called_once()
         call_kwargs = mock_client.scrape.call_args
         all_kwargs = {**call_kwargs.kwargs}
-        assert all_kwargs.get("waitFor") == 3000
+        assert all_kwargs.get("wait_for") == 3000
 
     @pytest.mark.asyncio
     async def test_wait_for_async_only_main_content_false(self):
-        """Async scrape_url_async passes onlyMainContent=False."""
+        """Async scrape_url_async passes only_main_content=False."""
         from unittest.mock import AsyncMock
         from viraltracker.services.web_scraping_service import WebScrapingService
 
@@ -2652,7 +2652,7 @@ class TestWaitForAsyncPassedToFireCrawl:
 
         call_kwargs = mock_client.scrape.call_args
         all_kwargs = {**call_kwargs.kwargs}
-        assert all_kwargs.get("onlyMainContent") is False
+        assert all_kwargs.get("only_main_content") is False
 
 
 class TestTemplateGuardFallback:
