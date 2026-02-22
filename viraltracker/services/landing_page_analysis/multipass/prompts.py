@@ -14,6 +14,10 @@ PHASE_2_PROMPT_VERSION = "v1"
 PHASE_3_PROMPT_VERSION = "v2"
 PHASE_4_PROMPT_VERSION = "v1"
 
+# Template pipeline prompt versions (used when USE_TEMPLATE_PIPELINE=True)
+PHASE_1_CLASSIFY_PROMPT_VERSION = "v4"
+PHASE_3_CSS_PROMPT_VERSION = "v3"
+
 PROMPT_VERSIONS = {
     0: PHASE_0_PROMPT_VERSION,
     1: PHASE_1_PROMPT_VERSION,
@@ -392,3 +396,219 @@ SECTIONS IN THIS HTML: {sections_str}
 
 ## OUTPUT
 Return ONLY the JSON array of patches."""
+
+
+# ---------------------------------------------------------------------------
+# Template pipeline prompts (used when USE_TEMPLATE_PIPELINE=True)
+# ---------------------------------------------------------------------------
+
+# Layout types available for Phase 1 classification
+_LAYOUT_TYPES_DESC = """
+Available layout_type values:
+- "nav_bar": Navigation bar with logo and links
+- "hero_centered": Hero section with centered text, large padding
+- "hero_split": Hero with 2-column layout (text + image side by side)
+- "feature_grid": Section header + N-column grid of feature cards
+- "testimonial_cards": Header + N-column testimonial/review cards
+- "cta_banner": Colored background, centered call-to-action
+- "faq_list": Header + question/answer pairs
+- "pricing_table": Header + N-column pricing cards
+- "logo_bar": Optional header + horizontal row of logos
+- "stats_row": Optional header + N-column statistics/metrics
+- "content_block": Single column prose with optional image
+- "footer_columns": N-column footer with links
+- "generic": Single column container (use when no specific layout matches)
+"""
+
+
+def build_phase_1_classify_prompt(
+    design_system_json: str,
+    section_names: List[str],
+    section_count: int,
+    layout_hints: Optional[Dict[str, str]] = None,
+) -> str:
+    """Phase 1 (Template Pipeline): Layout Classification + Bounding Boxes.
+
+    Vision model classifies layout_type per section from predefined list.
+    Does NOT generate skeleton HTML — templates handle that deterministically.
+
+    Args:
+        design_system_json: JSON string from Phase 0.
+        section_names: List of section names from segmenter.
+        section_count: Number of sections expected.
+        layout_hints: Optional dict of sec_id → suggested layout_type from HTML analysis.
+    """
+    sections_list = "\n".join(f"  {i}. {name}" for i, name in enumerate(section_names))
+
+    hints_section = ""
+    if layout_hints:
+        hint_lines = []
+        for sec_id, hint in layout_hints.items():
+            if hasattr(hint, 'layout_type'):
+                hint_lines.append(
+                    f"  - {sec_id}: suggested={hint.layout_type} "
+                    f"(confidence={hint.confidence:.2f}, signals={hint.detection_signals})"
+                )
+        if hint_lines:
+            hints_section = (
+                "\n## HTML ANALYSIS HINTS (from deterministic analysis)\n"
+                "These are suggestions — override if the screenshot shows otherwise:\n"
+                + "\n".join(hint_lines) + "\n"
+            )
+
+    return f"""Analyze this landing page screenshot and classify the layout of each section.
+
+The page content has been segmented into {section_count} sections:
+{sections_list}
+
+DESIGN SYSTEM (from Phase 0):
+{design_system_json}
+{hints_section}
+{_LAYOUT_TYPES_DESC}
+
+Return ONLY valid JSON (no explanation, no code fences) with this exact structure:
+{{
+  "sections": [
+    {{
+      "name": "human readable name",
+      "y_start_pct": 0.0,
+      "y_end_pct": 0.15,
+      "layout_type": "hero_split",
+      "layout_params": {{
+        "column_count": 2,
+        "text_position": "left",
+        "has_image": true
+      }}
+    }}
+  ]
+}}
+
+REQUIREMENTS:
+
+## SECTIONS (Bounding Boxes)
+- Map each visible page section to a y_start_pct / y_end_pct range (0.0 to 1.0)
+- y_start_pct = top edge of section as fraction of total page height
+- y_end_pct = bottom edge of section as fraction of total page height
+- Sections MUST be in top-to-bottom order
+- Sections MUST NOT overlap
+- First section should start near 0.0, last should end near 1.0
+- Target approximately {section_count} sections (may differ slightly)
+
+## LAYOUT CLASSIFICATION
+- For each section, choose the BEST layout_type from the list above
+- Set layout_params based on what you see:
+  - column_count: Number of columns in grids (2-4)
+  - text_position: "left" or "right" for hero_split
+  - has_image: true if section contains a prominent image
+- If unsure, use "generic"
+
+## CRITICAL: DO NOT generate skeleton HTML
+- Only return the JSON with sections array
+- Templates will build the HTML from your classifications
+
+Output ONLY the JSON, no explanation."""
+
+
+def build_phase_3_css_prompt_fullpage(
+    assembled_html: str,
+    section_ids: List[str],
+) -> str:
+    """Phase 3 (Template Pipeline): Full-page CSS-only refinement.
+
+    Single LLM call with full screenshot + assembled HTML.
+    Returns CSS patches only — cannot change text.
+
+    Args:
+        assembled_html: Complete HTML after Phase 2 content assembly.
+        section_ids: List of section IDs present in the HTML.
+    """
+    sections_str = ", ".join(section_ids)
+
+    return f"""Compare this screenshot with the assembled HTML below.
+Produce CSS-only patches to improve visual fidelity.
+
+## ASSEMBLED HTML
+{assembled_html}
+
+## SECTIONS IN THIS HTML
+{sections_str}
+
+## OUTPUT FORMAT
+Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches:
+[
+  {{
+    "selector": "[data-section='sec_0']",
+    "css": "background-color: #f5f5f5; padding: 80px 20px;"
+  }},
+  {{
+    "selector": "[data-section='sec_1'] h2",
+    "css": "font-size: 2.5rem; color: #333;"
+  }}
+]
+
+## SELECTOR GRAMMAR (ONLY these patterns are supported)
+- [data-section='sec_N'] - match by section ID
+- [data-slot='name'] - match by slot name
+- .classname - match by CSS class
+- tag - match by HTML tag
+- tag.classname - match by tag and class
+- tag[data-section='sec_N'] - match by tag and section ID
+
+## RULES
+- Do NOT return HTML. Return ONLY CSS patches.
+- Do NOT change any text content.
+- Do NOT remove or rename any data-slot or data-section attributes.
+- Focus on: colors, spacing, sizing, backgrounds, borders, fonts.
+- Maximum 20 patches.
+- Return empty list [] if the HTML already looks good.
+
+## OUTPUT
+Return ONLY the JSON array of CSS patches."""
+
+
+def build_phase_3_css_prompt_section(
+    section_id: str,
+    section_html: str,
+    design_system_compact: str,
+) -> str:
+    """Phase 3 (Template Pipeline): Per-section CSS-only refinement.
+
+    Per-section mode — called with cropped screenshot.
+    Returns CSS patches only — cannot change text.
+
+    Args:
+        section_id: Section ID (e.g., "sec_0").
+        section_html: Current HTML for this section.
+        design_system_compact: Compact design system JSON.
+    """
+    return f"""Compare this screenshot crop with the HTML for section {section_id}.
+Produce CSS-only patches to improve visual fidelity.
+
+## CURRENT HTML FOR {section_id}
+{section_html}
+
+## DESIGN SYSTEM
+{design_system_compact}
+
+## OUTPUT FORMAT
+Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches:
+[
+  {{
+    "selector": "[data-section='{section_id}']",
+    "css": "background-color: #f5f5f5;"
+  }},
+  {{
+    "selector": "[data-section='{section_id}'] h2",
+    "css": "font-size: 2rem; color: #333;"
+  }}
+]
+
+## RULES
+- Do NOT return HTML. Return ONLY CSS patches.
+- Do NOT change any text content.
+- Focus on: colors, spacing, sizing, backgrounds, borders, fonts.
+- Maximum 5 patches per section.
+- Return empty list [] if this section already looks good.
+
+## OUTPUT
+Return ONLY the JSON array of CSS patches."""

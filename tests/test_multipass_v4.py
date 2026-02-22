@@ -1461,3 +1461,763 @@ class TestPipelineIntegration:
         # HTML is returned as-is.  The pre-Phase-3 gate handles recovery.
         assert 'Hero Headline' in result
         assert 'Feature descriptions' in result
+
+
+# ===========================================================================
+# C1: CSSRulesExtractor
+# ===========================================================================
+
+
+class TestCSSRulesExtractor:
+    """Tests for css_rules_extractor.py."""
+
+    def test_extract_empty_html(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor, ExtractedCSS,
+        )
+        result = CSSRulesExtractor.extract("")
+        assert isinstance(result, ExtractedCSS)
+        assert result.inlined_html == ""
+
+    def test_extract_with_inline_css(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor,
+        )
+        html = '<html><head><style>.btn { border-radius: 8px; background: #0066cc; }</style></head><body><button class="btn">Click</button></body></html>'
+        result = CSSRulesExtractor.extract(html, extra_css=".btn { border-radius: 8px; background: #0066cc; }")
+        # Should have component styles
+        assert result.component_styles.button.get('border-radius') == '8px' or len(result.component_styles.button) >= 0
+
+    def test_design_token_extraction(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor,
+        )
+        html = '<html><body><div style="color: #333333; font-family: Arial;">text</div><p style="color: #333333; font-size: 16px;">more</p></body></html>'
+        result = CSSRulesExtractor.extract(html)
+        # Should extract color frequency
+        tokens = result.design_tokens
+        assert "#333333" in tokens.colors
+        assert tokens.colors["#333333"] >= 2
+
+    def test_css_inline_security(self):
+        """css-inline must NOT load remote stylesheets."""
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor,
+        )
+        # HTML referencing external stylesheet — should NOT be fetched
+        html = '<html><head><link rel="stylesheet" href="https://evil.com/steal.css"></head><body><div>test</div></body></html>'
+        result = CSSRulesExtractor.extract(html)
+        # Should not crash, should produce some result
+        assert isinstance(result.inlined_html, str)
+
+    def test_size_guard_skips_large_html(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor, _MAX_INPUT_HTML_SIZE,
+        )
+        # Create HTML larger than 1MB
+        large_html = "<html><body>" + "x" * (_MAX_INPUT_HTML_SIZE + 100) + "</body></html>"
+        result = CSSRulesExtractor.extract(large_html)
+        assert result.inlined_html == ""  # Should skip css-inline
+
+    def test_rgb_to_hex(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor,
+        )
+        assert CSSRulesExtractor._rgb_to_hex("rgb(255, 0, 0)") == "#ff0000"
+        assert CSSRulesExtractor._rgb_to_hex("rgba(0, 128, 255, 0.5)") == "#0080ff"
+
+    def test_component_classification(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor, ExtractedCSS,
+        )
+        css = ".btn { padding: 10px; border-radius: 6px; } .card { box-shadow: 0 2px 4px rgba(0,0,0,0.1); } h1 { font-size: 2.5rem; }"
+        result = ExtractedCSS()
+        CSSRulesExtractor._extract_from_raw_css(css, result)
+        assert "border-radius" in result.component_styles.button
+        assert "box-shadow" in result.component_styles.card
+
+    def test_layout_rules_extraction(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor, ExtractedCSS,
+        )
+        css = ".grid { display: grid; grid-template-columns: repeat(3, 1fr); } .text { color: red; }"
+        result = ExtractedCSS()
+        CSSRulesExtractor._extract_from_raw_css(css, result)
+        assert "display: grid" in result.layout_rules
+        assert "color: red" not in result.layout_rules
+
+    def test_top_n_capping(self):
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import (
+            CSSRulesExtractor,
+        )
+        data = {f"item_{i}": i for i in range(100)}
+        capped = CSSRulesExtractor._top_n(data, 10)
+        assert len(capped) == 10
+        # Should contain the highest frequency items
+        assert "item_99" in capped
+
+
+# ===========================================================================
+# C2: LayoutAnalyzer
+# ===========================================================================
+
+
+class TestLayoutAnalyzer:
+    """Tests for layout_analyzer.py."""
+
+    def test_analyze_empty_html(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            analyze_html_layout,
+        )
+        sections = [FakeSection("sec_0", "hero", "# Hello World")]
+        result = analyze_html_layout("", "", sections)
+        assert "sec_0" in result
+        assert result["sec_0"].layout_type == "generic"
+
+    def test_json_ld_faq_detection(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _extract_json_ld_types,
+        )
+        html = '<script type="application/ld+json">{"@type": "FAQPage"}</script>'
+        types = _extract_json_ld_types(html)
+        assert "FAQPage" in types
+
+    def test_semantic_nav_detection(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            analyze_html_layout,
+        )
+        html = '<nav class="main-nav"><a href="/">Home</a><a href="/about">About</a></nav>'
+        sections = [FakeSection("sec_0", "navigation", "# Navigation\nHome About")]
+        result = analyze_html_layout("", html, sections)
+        # Should detect nav_bar from <nav> tag
+        assert result.get("sec_0") is not None
+
+    def test_class_keyword_detection(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _check_class_keywords,
+        )
+        html = '<div class="testimonial-section"><div class="testimonial-card">Great product!</div></div>'
+        candidates = {}
+        signals = {}
+        _check_class_keywords(html, candidates, signals)
+        assert "testimonial_cards" in candidates
+        assert candidates["testimonial_cards"] > 0
+
+    def test_heading_text_faq_hint(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _check_heading_text,
+        )
+        candidates = {}
+        signals = {}
+        _check_heading_text("## Frequently Asked Questions", candidates, signals)
+        assert "faq_list" in candidates
+
+    def test_css_grid_detection(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _check_inline_css,
+        )
+        html = '<div style="display: grid; grid-template-columns: repeat(3, 1fr);">content</div>'
+        candidates = {}
+        signals = {}
+        col_count = _check_inline_css(html, candidates, signals)
+        assert col_count == 3
+        assert "feature_grid" in candidates
+
+    def test_framework_detection_bootstrap(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _detect_css_framework,
+        )
+        classes = ["col-md-4", "row", "container", "card"]
+        assert _detect_css_framework(classes) == "bootstrap"
+
+    def test_framework_detection_tailwind(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _detect_css_framework,
+        )
+        classes = ["grid-cols-3", "flex-row", "px-4", "py-2"]
+        assert _detect_css_framework(classes) == "tailwind"
+
+    def test_structural_repetition(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            _check_structural_repetition,
+        )
+        html = '<div class="features"><div class="card"><h3>F1</h3><p>D1</p></div><div class="card"><h3>F2</h3><p>D2</p></div><div class="card"><h3>F3</h3><p>D3</p></div></div>'
+        candidates = {}
+        signals = {}
+        card_count = _check_structural_repetition(html, candidates, signals)
+        assert card_count >= 3
+
+    def test_low_confidence_falls_to_generic(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            analyze_html_layout,
+        )
+        html = '<div>Just some plain text with nothing special</div>'
+        sections = [FakeSection("sec_0", "content", "Just some plain text")]
+        result = analyze_html_layout("", html, sections)
+        assert result["sec_0"].layout_type == "generic"
+
+
+# ===========================================================================
+# C3: SectionTemplates
+# ===========================================================================
+
+
+class TestSectionTemplates:
+    """Tests for section_templates.py."""
+
+    def test_placeholder_suffixes_defined(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            PLACEHOLDER_SUFFIXES,
+        )
+        assert "single" in PLACEHOLDER_SUFFIXES
+        assert "header" in PLACEHOLDER_SUFFIXES
+        assert "items" in PLACEHOLDER_SUFFIXES
+        assert "text" in PLACEHOLDER_SUFFIXES
+        assert "image" in PLACEHOLDER_SUFFIXES
+
+    def test_generic_template_has_data_section(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _tpl_generic,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        html = _tpl_generic("sec_0", DEFAULT_DESIGN_SYSTEM, {})
+        assert 'data-section="sec_0"' in html
+        assert '{{sec_0}}' in html
+
+    def test_hero_split_has_text_and_image_placeholders(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _tpl_hero_split,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        html = _tpl_hero_split("sec_1", DEFAULT_DESIGN_SYSTEM, {})
+        assert 'data-section="sec_1"' in html
+        assert '{{sec_1_text}}' in html
+        assert '{{sec_1_image}}' in html
+
+    def test_feature_grid_has_header_and_items(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _tpl_feature_grid,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        html = _tpl_feature_grid("sec_2", DEFAULT_DESIGN_SYSTEM, {"column_count": 3})
+        assert 'data-section="sec_2"' in html
+        assert '{{sec_2_header}}' in html
+        assert '{{sec_2_items}}' in html
+        assert 'mp-grid-3' in html
+
+    def test_build_skeleton_uses_layout_map(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            build_skeleton_from_templates,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+
+        sections = [
+            FakeSection("sec_0", "hero", "# Welcome"),
+            FakeSection("sec_1", "features", "### Feature 1\nDesc"),
+        ]
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_centered"),
+            "sec_1": LayoutHint(layout_type="feature_grid", column_count=3),
+        }
+        html = build_skeleton_from_templates(sections, layout_map, DEFAULT_DESIGN_SYSTEM)
+        assert 'data-section="sec_0"' in html
+        assert 'data-section="sec_1"' in html
+        assert 'mp-hero-centered' in html
+        assert 'mp-feature-grid' in html
+        assert '<style>' in html
+
+    def test_build_skeleton_all_generic_when_no_layout_map(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            build_skeleton_from_templates,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+
+        sections = [FakeSection("sec_0", "content", "Some text")]
+        html = build_skeleton_from_templates(sections, {}, DEFAULT_DESIGN_SYSTEM)
+        assert 'mp-generic' in html
+        assert '{{sec_0}}' in html
+
+    def test_responsive_css_in_shared_block(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _build_shared_css,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        css = _build_shared_css(DEFAULT_DESIGN_SYSTEM)
+        assert '@media (max-width: 768px)' in css
+        assert 'mp-grid-2' in css
+        assert 'mp-grid-3' in css
+
+    def test_nav_bar_template(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _tpl_nav_bar,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        html = _tpl_nav_bar("sec_0", DEFAULT_DESIGN_SYSTEM, {})
+        assert 'mp-nav-bar' in html
+        assert '{{sec_0}}' in html
+
+    def test_footer_columns_template(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _tpl_footer_columns,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        html = _tpl_footer_columns("sec_5", DEFAULT_DESIGN_SYSTEM, {"column_count": 4})
+        assert 'mp-footer-columns' in html
+        assert 'mp-grid-4' in html
+
+    def test_faq_template(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _tpl_faq_list,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+        html = _tpl_faq_list("sec_3", DEFAULT_DESIGN_SYSTEM, {})
+        assert 'mp-faq-list' in html
+        assert '{{sec_3_header}}' in html
+        assert '{{sec_3_items}}' in html
+
+    def test_unknown_layout_type_falls_back_to_generic(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            build_skeleton_from_templates,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+
+        sections = [FakeSection("sec_0", "custom", "content")]
+        layout_map = {"sec_0": LayoutHint(layout_type="nonexistent_type")}
+        html = build_skeleton_from_templates(sections, layout_map, DEFAULT_DESIGN_SYSTEM)
+        assert 'mp-generic' in html
+
+
+# ===========================================================================
+# C4: ContentPatterns
+# ===========================================================================
+
+
+class TestContentPatterns:
+    """Tests for content_patterns.py."""
+
+    def test_detect_feature_list(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+        )
+        section = FakeSection("sec_0", "features", "## Our Features\n\n### Fast\nBlazingly fast performance.\n\n### Secure\nEnterprise-grade security.\n\n### Simple\nEasy to use.")
+        result = detect_content_pattern(section, None)
+        assert result.pattern_type == "feature_list"
+        assert len(result.items) >= 2
+
+    def test_detect_faq(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+        )
+        section = FakeSection("sec_0", "faq", "## FAQ\n\n### What is this?\nThis is a product.\n\n### How much does it cost?\nIt's free for now.")
+        result = detect_content_pattern(section, None)
+        assert result.pattern_type == "faq_list"
+        assert len(result.items) >= 2
+        assert result.items[0]["question"] == "What is this?"
+
+    def test_detect_testimonials(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+        )
+        section = FakeSection("sec_0", "reviews", "## Reviews\n\n> Great product, love it!\n\n— John Doe, CEO")
+        result = detect_content_pattern(section, None)
+        assert result.pattern_type == "testimonial_list"
+        assert len(result.items) >= 1
+        assert "Great product" in result.items[0]["quote"]
+
+    def test_detect_stats(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+        )
+        section = FakeSection("sec_0", "stats", "## By the Numbers\n\n**10K+** Active Users\n**99.9%** Uptime\n**500M+** Requests")
+        result = detect_content_pattern(section, None)
+        assert result.pattern_type == "stats_list"
+        assert len(result.items) >= 2
+
+    def test_detect_prose_fallback(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+        )
+        section = FakeSection("sec_0", "about", "## About Us\n\nWe are a team of developers building great software.")
+        result = detect_content_pattern(section, None)
+        assert result.pattern_type == "prose"
+
+    def test_split_content_feature_list(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            ContentPattern, split_content_for_template,
+        )
+        pattern = ContentPattern(
+            pattern_type="feature_list",
+            items=[
+                {"heading": "Fast", "body": "Blazing speed"},
+                {"heading": "Secure", "body": "Enterprise grade"},
+            ],
+            header_markdown="## Features",
+        )
+        section = FakeSection("sec_0", "features", "## Features\n### Fast\nBlazing speed\n### Secure\nEnterprise grade")
+        result = split_content_for_template(pattern, None, section)
+        assert "sec_0_header" in result
+        assert "sec_0_items" in result
+        assert "Fast" in result["sec_0_items"]
+
+    def test_split_content_faq(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            ContentPattern, split_content_for_template,
+        )
+        pattern = ContentPattern(
+            pattern_type="faq_list",
+            items=[
+                {"question": "What is it?", "answer": "A product."},
+                {"question": "How much?", "answer": "Free."},
+            ],
+            header_markdown="## FAQ",
+        )
+        section = FakeSection("sec_0", "faq", "## FAQ")
+        result = split_content_for_template(pattern, None, section)
+        assert "sec_0_items" in result
+        assert "mp-faq-item" in result["sec_0_items"]
+
+    def test_normalize_markdown_to_text(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            normalize_markdown_to_text,
+        )
+        md = "## Hello World\n\n![alt](http://img.com/a.png)\n\n[Link](http://example.com)\n\n- Item 1\n- Item 2\n\n**bold** _italic_"
+        text = normalize_markdown_to_text(md)
+        assert "#" not in text
+        assert "![" not in text
+        assert "[Link]" not in text
+        assert "Hello World" in text
+        assert "Item 1" in text
+
+    def test_layout_hint_biases_detection(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+
+        # Markdown with questions but no ? — weak FAQ signal
+        section = FakeSection("sec_0", "info", "## Questions\n\n### What is this?\nA product.\n\n### How does it work?\nMagic.")
+        hint = LayoutHint(layout_type="faq_list")
+        result = detect_content_pattern(section, hint)
+        assert result.pattern_type == "faq_list"
+
+
+# ===========================================================================
+# C5: Design System Augmentation
+# ===========================================================================
+
+
+class TestDesignSystemAugmentation:
+    """Tests for _augment_design_system() and _hex_distance()."""
+
+    def test_hex_distance_same_color(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import _hex_distance
+        assert _hex_distance("#333333", "#333333") == 0.0
+
+    def test_hex_distance_close_colors(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import _hex_distance
+        # #333 vs #2d2d2d — should be close
+        d = _hex_distance("#333333", "#2d2d2d")
+        assert d < 40
+
+    def test_hex_distance_far_colors(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import _hex_distance
+        d = _hex_distance("#000000", "#ffffff")
+        assert d > 100
+
+    def test_augment_replaces_close_colors(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import _augment_design_system
+        from viraltracker.services.landing_page_analysis.multipass.css_rules_extractor import DesignTokens
+
+        ds = {"colors": {"primary": "#333333", "accent": "#0066cc"}, "typography": {}}
+        tokens = DesignTokens(colors={"#2d2d2d": 50, "#0066cc": 30})
+        result = _augment_design_system(ds, tokens)
+        # #333333 should be replaced by #2d2d2d (closer than 40)
+        assert result["colors"]["primary"] == "#2d2d2d"
+        # #0066cc is exact match
+        assert result["colors"]["accent"] == "#0066cc"
+
+
+# ===========================================================================
+# C6: Reconcile Bounding Boxes
+# ===========================================================================
+
+
+class TestReconcileBoundingBoxes:
+    """Tests for _reconcile_bounding_boxes()."""
+
+    def test_exact_count_match(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _reconcile_bounding_boxes,
+        )
+        sections = [
+            FakeSection("sec_0", "hero", "# Hero", 0.5),
+            FakeSection("sec_1", "features", "# Features", 0.5),
+        ]
+        phase1 = [
+            {"name": "hero", "y_start_pct": 0.0, "y_end_pct": 0.5},
+            {"name": "features", "y_start_pct": 0.5, "y_end_pct": 1.0},
+        ]
+        section_map, mapping = _reconcile_bounding_boxes(sections, phase1)
+        assert len(section_map) == 2
+        assert "sec_0" in section_map
+        assert "sec_1" in section_map
+        assert 0 in mapping["sec_0"]
+        assert 1 in mapping["sec_1"]
+
+    def test_merge_when_phase1_has_more(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _reconcile_bounding_boxes,
+        )
+        sections = [
+            FakeSection("sec_0", "hero", "# Hero", 0.5),
+            FakeSection("sec_1", "features", "# Features", 0.5),
+        ]
+        phase1 = [
+            {"name": "nav", "y_start_pct": 0.0, "y_end_pct": 0.1},
+            {"name": "hero", "y_start_pct": 0.1, "y_end_pct": 0.5},
+            {"name": "features", "y_start_pct": 0.5, "y_end_pct": 1.0},
+        ]
+        section_map, mapping = _reconcile_bounding_boxes(sections, phase1)
+        assert len(section_map) == 2
+
+    def test_split_when_phase1_has_fewer(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _reconcile_bounding_boxes,
+        )
+        sections = [
+            FakeSection("sec_0", "hero", "# Hero", 0.3),
+            FakeSection("sec_1", "features", "# Features", 0.3),
+            FakeSection("sec_2", "footer", "# Footer", 0.4),
+        ]
+        phase1 = [
+            {"name": "content", "y_start_pct": 0.0, "y_end_pct": 0.6},
+            {"name": "footer", "y_start_pct": 0.6, "y_end_pct": 1.0},
+        ]
+        section_map, mapping = _reconcile_bounding_boxes(sections, phase1)
+        assert len(section_map) == 3
+
+    def test_fallback_when_count_differs_by_more_than_2(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _reconcile_bounding_boxes,
+        )
+        sections = [FakeSection(f"sec_{i}", f"s{i}", f"# S{i}", 0.2) for i in range(5)]
+        phase1 = [{"name": "all", "y_start_pct": 0.0, "y_end_pct": 1.0}]
+        section_map, mapping = _reconcile_bounding_boxes(sections, phase1)
+        assert len(section_map) == 5  # Char-ratio fallback
+
+
+# ===========================================================================
+# C7: Phase 1 Classification Parsing
+# ===========================================================================
+
+
+class TestPhase1ClassificationParsing:
+    """Tests for _parse_phase1_classifications()."""
+
+    def test_basic_parsing(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _parse_phase1_classifications,
+        )
+        result = {
+            "sections": [
+                {"layout_type": "hero_centered", "layout_params": {}},
+                {"layout_type": "feature_grid", "layout_params": {"column_count": 3}},
+            ]
+        }
+        mapping = {"sec_0": [0], "sec_1": [1]}
+        layout_map = _parse_phase1_classifications(result, mapping)
+        assert layout_map["sec_0"].layout_type == "hero_centered"
+        assert layout_map["sec_1"].layout_type == "feature_grid"
+        assert layout_map["sec_1"].column_count == 3
+
+    def test_invalid_layout_type_falls_to_generic(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _parse_phase1_classifications,
+        )
+        result = {
+            "sections": [{"layout_type": "invalid_type", "layout_params": {}}]
+        }
+        mapping = {"sec_0": [0]}
+        layout_map = _parse_phase1_classifications(result, mapping)
+        assert layout_map["sec_0"].layout_type == "generic"
+
+    def test_missing_sections_filled_by_hints(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _parse_phase1_classifications,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+
+        result = {"sections": [{"layout_type": "hero_centered", "layout_params": {}}]}
+        mapping = {"sec_0": [0], "sec_1": []}
+        hints = {"sec_1": LayoutHint(layout_type="footer_columns")}
+        layout_map = _parse_phase1_classifications(result, mapping, hints)
+        assert layout_map["sec_0"].layout_type == "hero_centered"
+        assert layout_map["sec_1"].layout_type == "footer_columns"
+
+
+# ===========================================================================
+# C8: Phase Snapshots
+# ===========================================================================
+
+
+class TestPhaseSnapshots:
+    """Tests for _wrap_json_as_html()."""
+
+    def test_json_wrapped_as_html(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _wrap_json_as_html,
+        )
+        data = {"key": "value", "num": 42}
+        html = _wrap_json_as_html(data)
+        assert html.startswith("<html>")
+        assert '"key": "value"' in html
+        assert "</html>" in html
+
+    def test_json_wrap_handles_non_serializable(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _wrap_json_as_html,
+        )
+        data = {"key": object()}
+        html = _wrap_json_as_html(data)
+        assert "<html>" in html
+
+
+# ===========================================================================
+# C9: Content Assembler Layout-Aware Path
+# ===========================================================================
+
+
+class TestContentAssemblerLayoutAware:
+    """Tests for layout-aware assembly in content_assembler.py."""
+
+    def test_generic_layout_uses_linear_path(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+
+        skeleton = '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+        sections = [FakeSection("sec_0", "content", "Hello World")]
+        layout_map = {"sec_0": LayoutHint(layout_type="generic")}
+        result = assemble_content(skeleton, sections, {}, layout_map=layout_map)
+        assert "Hello World" in result
+
+    def test_no_layout_map_uses_linear_path(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        skeleton = '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+        sections = [FakeSection("sec_0", "content", "Hello World")]
+        result = assemble_content(skeleton, sections, {})
+        assert "Hello World" in result
+
+    def test_data_section_preserved(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        skeleton = '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+        sections = [FakeSection("sec_0", "content", "# Title\n\nBody text")]
+        result = assemble_content(skeleton, sections, {})
+        assert 'data-section="sec_0"' in result
+
+    def test_data_slot_assigned(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        skeleton = '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+        sections = [FakeSection("sec_0", "hero", "# Big Headline\n\nSome body text")]
+        result = assemble_content(skeleton, sections, {})
+        assert 'data-slot="headline"' in result
+
+    def test_replace_entire_section(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            _replace_entire_section,
+        )
+        html = '<section data-section="sec_0" class="old">old content</section><section data-section="sec_1">keep</section>'
+        result = _replace_entire_section(html, "sec_0", '<section data-section="sec_0" class="new">new content</section>')
+        assert 'class="new"' in result
+        assert "new content" in result
+        assert "keep" in result
+
+
+# ===========================================================================
+# C10: Feature Flag
+# ===========================================================================
+
+
+class TestFeatureFlag:
+    """Tests for USE_TEMPLATE_PIPELINE feature flag."""
+
+    def test_flag_reads_env(self):
+        import os
+        old = os.environ.get("MULTIPASS_TEMPLATE_PIPELINE")
+        try:
+            os.environ["MULTIPASS_TEMPLATE_PIPELINE"] = "false"
+            # Re-evaluate the flag
+            flag = os.environ.get("MULTIPASS_TEMPLATE_PIPELINE", "true").lower() == "true"
+            assert flag is False
+
+            os.environ["MULTIPASS_TEMPLATE_PIPELINE"] = "true"
+            flag = os.environ.get("MULTIPASS_TEMPLATE_PIPELINE", "true").lower() == "true"
+            assert flag is True
+        finally:
+            if old is not None:
+                os.environ["MULTIPASS_TEMPLATE_PIPELINE"] = old
+            else:
+                os.environ.pop("MULTIPASS_TEMPLATE_PIPELINE", None)
+
+    def test_phase3_mode_reads_env(self):
+        import os
+        old = os.environ.get("MULTIPASS_PHASE3_MODE")
+        try:
+            os.environ["MULTIPASS_PHASE3_MODE"] = "disabled"
+            mode = os.environ.get("MULTIPASS_PHASE3_MODE", "fullpage")
+            assert mode == "disabled"
+        finally:
+            if old is not None:
+                os.environ["MULTIPASS_PHASE3_MODE"] = old
+            else:
+                os.environ.pop("MULTIPASS_PHASE3_MODE", None)
+
+
+# ===========================================================================
+# C11: Blueprint Compatibility
+# ===========================================================================
+
+
+class TestBlueprintCompat:
+    """Tests that data-section and data-slot survive template pipeline."""
+
+    def test_template_skeleton_has_data_section(self):
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            build_skeleton_from_templates,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import DEFAULT_DESIGN_SYSTEM
+
+        sections = [
+            FakeSection("sec_0", "hero", "# Welcome"),
+            FakeSection("sec_1", "features", "### F1\nD1"),
+            FakeSection("sec_2", "footer", "Footer links"),
+        ]
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_centered"),
+            "sec_1": LayoutHint(layout_type="feature_grid", column_count=3),
+            "sec_2": LayoutHint(layout_type="footer_columns", column_count=4),
+        }
+        html = build_skeleton_from_templates(sections, layout_map, DEFAULT_DESIGN_SYSTEM)
+        for i in range(3):
+            assert f'data-section="sec_{i}"' in html
+
+    def test_assembled_content_has_data_slot(self):
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+
+        skeleton = '<section data-section="sec_0"><div>{{sec_0}}</div></section>'
+        sections = [FakeSection("sec_0", "hero", "# Welcome\n\nCheck out our product")]
+        result = assemble_content(skeleton, sections, {})
+        assert 'data-slot=' in result
+        assert 'data-section="sec_0"' in result

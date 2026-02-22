@@ -118,3 +118,6 @@ streamlit-aggrid>=0.3.4
 # HTML sanitization & markdown rendering (Landing Page Mockup V2)
 bleach[css]>=6.0
 markdown-it-py>=3.0
+
+# CSS cascade resolution (Multipass template pipeline)
+css-inline>=0.20.0

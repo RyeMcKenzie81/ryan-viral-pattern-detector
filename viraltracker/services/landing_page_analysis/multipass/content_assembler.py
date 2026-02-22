@@ -21,15 +21,23 @@ def assemble_content(
     sections: list,  # List[SegmenterSection]
     section_map: Dict,  # Dict[str, NormalizedBox]
     image_registry: Optional[ImageRegistry] = None,
+    layout_map: Optional[Dict] = None,
+    extracted_css: Optional[object] = None,
 ) -> str:
     """Deterministic Phase 2: convert per-section markdown -> HTML,
     inject images with dimensions, assign data-slots, fill skeleton.
 
+    When layout_map is provided, uses structured content assembly for
+    non-generic sections (feature grids, testimonial cards, FAQ lists, etc.).
+    Falls back to linear dump for generic sections or when coverage is low.
+
     Args:
-        skeleton_html: Phase 1 output with {{sec_N}} placeholders.
+        skeleton_html: Phase 1 output with {{sec_N}} or sub-placeholders.
         sections: SegmenterSection list.
         section_map: Dict of section_id -> NormalizedBox from Phase 1.
         image_registry: Optional ImageRegistry for image enhancement.
+        layout_map: Optional Dict of sec_id -> LayoutHint for structured assembly.
+        extracted_css: Optional ExtractedCSS (unused directly, reserved for future).
 
     Returns:
         Complete HTML with all placeholders replaced.
@@ -47,38 +55,131 @@ def assemble_content(
 
     for section in sections:
         sec_id = section.section_id
-        placeholder = f"{{{{{sec_id}}}}}"
+        layout = layout_map.get(sec_id) if layout_map else None
+        layout_type = ""
+        if layout and hasattr(layout, 'layout_type'):
+            layout_type = layout.layout_type
 
-        if placeholder not in html:
-            logger.debug(f"Placeholder {placeholder} not in skeleton, skipping")
-            continue
+        used_structured = False
 
-        # Step 1: Convert markdown to HTML
-        section_html = md.render(section.markdown)
+        if layout and layout_type and layout_type != "generic":
+            # NEW PATH: Structured content assembly for non-generic layouts
+            try:
+                from .content_patterns import (
+                    detect_content_pattern,
+                    normalize_markdown_to_text,
+                    split_content_for_template,
+                )
 
-        # Step 2: Enhance images with dimensions from registry
-        if image_registry:
-            section_html = _enhance_images(section_html, sec_id, image_registry)
+                pattern = detect_content_pattern(section, layout)
+                sub_values = split_content_for_template(
+                    pattern, layout, section, image_registry
+                )
 
-            # Inject background images as <img data-bg-image="true">
-            section_html = _inject_background_images(
-                section_html, sec_id, image_registry
+                if sub_values:
+                    # Coverage check: compare rendered text vs source text
+                    rendered_text_only = re.sub(
+                        r'<[^>]+>', '', "".join(sub_values.values())
+                    )
+                    source_text_only = normalize_markdown_to_text(section.markdown)
+
+                    if (
+                        len(rendered_text_only.strip()) >= 0.6 * len(source_text_only.strip())
+                        or not source_text_only.strip()
+                    ):
+                        # Coverage OK — inject sub-values into template placeholders
+                        for key, rendered_html in sub_values.items():
+                            # Enhance images in each sub-value
+                            if image_registry:
+                                rendered_html = _enhance_images(
+                                    rendered_html, sec_id, image_registry
+                                )
+                            placeholder = "{{" + key + "}}"
+                            html = html.replace(placeholder, rendered_html, 1)
+
+                        # Inject background images for this section
+                        if image_registry:
+                            # Find the section tag and inject after it
+                            section_tag_re = re.compile(
+                                rf'(<(?:section|footer|header|nav|article|aside|main)\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>)',
+                                re.IGNORECASE,
+                            )
+                            tag_match = section_tag_re.search(html)
+                            if tag_match:
+                                bg_html = _build_bg_images_html(sec_id, image_registry)
+                                if bg_html:
+                                    insert_pos = tag_match.end()
+                                    html = html[:insert_pos] + bg_html + html[insert_pos:]
+
+                        # Assign data-slots on this section's rendered fragment
+                        section_rendered = _extract_section_html(html, sec_id)
+                        if section_rendered:
+                            slotted, heading_counter, body_counter, cta_counter, found_h1, found_h2 = (
+                                _assign_data_slots(
+                                    section_rendered,
+                                    heading_counter,
+                                    body_counter,
+                                    cta_counter,
+                                    found_h1,
+                                    found_h2,
+                                )
+                            )
+                            html = html.replace(section_rendered, slotted, 1)
+                        used_structured = True
+                    else:
+                        logger.info(
+                            f"Coverage check failed for {sec_id} "
+                            f"({len(rendered_text_only)}/{len(source_text_only)} chars), "
+                            f"falling back to linear dump"
+                        )
+                        # Fallback: replace entire section with generic template
+                        section_html = md.render(section.markdown)
+                        if image_registry:
+                            section_html = _enhance_images(section_html, sec_id, image_registry)
+                            section_html = _inject_background_images(section_html, sec_id, image_registry)
+                        section_html, heading_counter, body_counter, cta_counter, found_h1, found_h2 = (
+                            _assign_data_slots(section_html, heading_counter, body_counter, cta_counter, found_h1, found_h2)
+                        )
+                        fallback_html = _build_generic_fallback(sec_id, section_html)
+                        html = _replace_entire_section(html, sec_id, fallback_html)
+                        used_structured = True  # We handled this section
+
+            except Exception as e:
+                logger.warning(f"Structured assembly failed for {sec_id}: {e}")
+                used_structured = False
+
+        if not used_structured:
+            # EXISTING PATH: Linear content dump (unchanged)
+            placeholder = "{{" + sec_id + "}}"
+
+            if placeholder not in html:
+                logger.debug(f"Placeholder {placeholder} not in skeleton, skipping")
+                continue
+
+            # Step 1: Convert markdown to HTML
+            section_html = md.render(section.markdown)
+
+            # Step 2: Enhance images with dimensions from registry
+            if image_registry:
+                section_html = _enhance_images(section_html, sec_id, image_registry)
+                section_html = _inject_background_images(
+                    section_html, sec_id, image_registry
+                )
+
+            # Step 3: Assign data-slots
+            section_html, heading_counter, body_counter, cta_counter, found_h1, found_h2 = (
+                _assign_data_slots(
+                    section_html,
+                    heading_counter,
+                    body_counter,
+                    cta_counter,
+                    found_h1,
+                    found_h2,
+                )
             )
 
-        # Step 3: Assign data-slots
-        section_html, heading_counter, body_counter, cta_counter, found_h1, found_h2 = (
-            _assign_data_slots(
-                section_html,
-                heading_counter,
-                body_counter,
-                cta_counter,
-                found_h1,
-                found_h2,
-            )
-        )
-
-        # Step 4: Replace placeholder (only first occurrence)
-        html = html.replace(placeholder, section_html, 1)
+            # Step 4: Replace placeholder (only first occurrence)
+            html = html.replace(placeholder, section_html, 1)
 
     return html
 
@@ -232,3 +333,65 @@ def _assign_data_slots(
     result = pattern.sub(_add_slot, html)
 
     return result, heading_counter, body_counter, cta_counter, found_h1, found_h2
+
+
+# ---------------------------------------------------------------------------
+# Layout-aware assembly helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_section_html(html: str, sec_id: str) -> Optional[str]:
+    """Extract the inner HTML of a section by data-section attribute."""
+    # Match the section and its content
+    pattern = re.compile(
+        rf'(<(?:section|footer|header|nav|article|aside|main)\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>)(.*?)(</(?:section|footer|header|nav|article|aside|main)>)',
+        re.DOTALL | re.IGNORECASE,
+    )
+    match = pattern.search(html)
+    if match:
+        return match.group(2)
+    return None
+
+
+def _replace_entire_section(html: str, sec_id: str, replacement: str) -> str:
+    """Replace the entire <section data-section="sec_N">...</section> block."""
+    pattern = re.compile(
+        rf'<(?:section|footer|header|nav|article|aside|main)\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>.*?</(?:section|footer|header|nav|article|aside|main)>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    return pattern.sub(replacement, html, count=1)
+
+
+def _build_generic_fallback(sec_id: str, content_html: str) -> str:
+    """Build a generic section wrapper for coverage-check fallback."""
+    return (
+        f'<section data-section="{sec_id}" class="mp-generic"'
+        f' style="padding: 70px 30px;">'
+        f'<div class="mp-container">{content_html}</div>'
+        f'</section>'
+    )
+
+
+def _build_bg_images_html(sec_id: str, registry: ImageRegistry) -> str:
+    """Build background image HTML for injection after section opening tag."""
+    section_images = registry.get_section_images(sec_id)
+    bg_images = [img for img in section_images if img.is_background]
+
+    if not bg_images:
+        return ""
+
+    bg_tags: List[str] = []
+    for img in bg_images:
+        attrs = [
+            f'src="{img.url}"',
+            'alt="background"',
+            'data-bg-image="true"',
+            'style="width: 100%; height: auto; object-fit: cover; display: block;"',
+        ]
+        if img.width:
+            attrs.append(f'width="{img.width}"')
+        if img.height:
+            attrs.append(f'height="{img.height}"')
+        bg_tags.append(f'<img {" ".join(attrs)}>')
+
+    return "\n".join(bg_tags) + "\n"

@@ -1430,9 +1430,16 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                 st.caption("Download intermediate HTML from each pipeline phase.")
                 cols = st.columns(len(snapshots))
                 phase_labels = {
+                    "phase_0_design_system": "Phase 0: Design System",
+                    "phase_0_augmented": "Phase 0: Augmented DS",
+                    "harvest_layout_hints": "Harvest: Layout Hints",
+                    "harvest_design_tokens": "Harvest: Design Tokens",
                     "phase_1_skeleton": "Phase 1: Skeleton",
+                    "phase_1_raw_classifications": "Phase 1: Classifications",
+                    "phase_1_layout_map": "Phase 1: Layout Map",
                     "phase_2_content": "Phase 2: Content",
                     "phase_3_refined": "Phase 3: Refined",
+                    "phase_3_css_patches": "Phase 3: CSS Patches",
                     "phase_4_final": "Phase 4: Final",
                 }
                 for col, (key, html) in zip(cols, snapshots.items()):

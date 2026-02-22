@@ -6,9 +6,11 @@ adaptive rate control, and phase-local degradation.
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -44,11 +46,22 @@ from .prompts import (
     PROMPT_VERSIONS,
     build_phase_0_prompt,
     build_phase_1_prompt,
+    build_phase_1_classify_prompt,
     build_phase_2_prompt,
     build_phase_3_prompt,
+    build_phase_3_css_prompt_fullpage,
+    build_phase_3_css_prompt_section,
     build_phase_4_prompt,
 )
 from .segmenter import SegmenterSection, segment_markdown
+
+# Feature flag: template pipeline (strict binary compat when False)
+USE_TEMPLATE_PIPELINE = os.environ.get(
+    "MULTIPASS_TEMPLATE_PIPELINE", "true"
+).lower() == "true"
+
+# Phase 3 mode: "fullpage" (1 LLM call), "per_section" (N calls), "disabled"
+MULTIPASS_PHASE3_MODE = os.environ.get("MULTIPASS_PHASE3_MODE", "fullpage")
 
 logger = logging.getLogger(__name__)
 
@@ -601,6 +614,251 @@ def _rewrite_skeleton(skeleton_html: str, section_count: int) -> str:
     return html
 
 
+def _reconcile_bounding_boxes(
+    segmenter_sections: List[SegmenterSection],
+    phase1_sections: List[Dict],
+) -> Tuple[Dict[str, NormalizedBox], Dict[str, List[int]]]:
+    """Reconcile Phase 1 bounding boxes with segmenter sections (no skeleton rewriting).
+
+    Template-path only. Returns bounding boxes and a mapping of which source
+    Phase 1 indices contributed to each reconciled section.
+
+    Returns:
+        (section_map, reconcile_mapping)
+        section_map: Dict[str, NormalizedBox] keyed by sec_N IDs
+        reconcile_mapping: reconciled_sec_id → list of source Phase 1 indices
+    """
+    seg_count = len(segmenter_sections)
+    p1_count = len(phase1_sections)
+
+    raw_boxes = [
+        {
+            "section_id": f"sec_{i}",
+            "name": sec.get("name", "section"),
+            "y_start_pct": sec.get("y_start_pct", 0),
+            "y_end_pct": sec.get("y_end_pct", 0),
+        }
+        for i, sec in enumerate(phase1_sections)
+    ]
+
+    # Track which source indices map to each reconciled section
+    # Start with 1:1 mapping
+    index_tracking = [[i] for i in range(p1_count)]
+
+    if abs(p1_count - seg_count) > 2:
+        logger.warning(
+            f"Phase 1 section count ({p1_count}) differs from segmenter ({seg_count}) "
+            f"by > 2, using char-ratio fallback for bounding boxes"
+        )
+        boxes = boxes_from_char_ratios(segmenter_sections)
+        section_map = {box.section_id: box for box in boxes}
+        # No source indices for char-ratio fallback
+        reconcile_mapping = {f"sec_{i}": [] for i in range(len(boxes))}
+        return section_map, reconcile_mapping
+
+    normalized = normalize_bounding_boxes(raw_boxes)
+    if normalized is None:
+        logger.warning("Bounding box normalization failed, using char-ratio fallback")
+        boxes = boxes_from_char_ratios(segmenter_sections)
+        section_map = {box.section_id: box for box in boxes}
+        reconcile_mapping = {f"sec_{i}": [] for i in range(len(boxes))}
+        return section_map, reconcile_mapping
+
+    if p1_count == seg_count:
+        final_boxes = list(normalized[:seg_count])
+        final_tracking = index_tracking[:seg_count]
+    elif p1_count > seg_count:
+        boxes_list = list(normalized)
+        tracking = list(index_tracking)
+        while len(boxes_list) > seg_count and len(boxes_list) > 1:
+            min_combined = float("inf")
+            min_idx = 0
+            for i in range(len(boxes_list) - 1):
+                height_i = boxes_list[i].y_end_pct - boxes_list[i].y_start_pct
+                height_j = boxes_list[i + 1].y_end_pct - boxes_list[i + 1].y_start_pct
+                combined = height_i + height_j
+                if combined < min_combined:
+                    min_combined = combined
+                    min_idx = i
+            merged = NormalizedBox(
+                section_id=boxes_list[min_idx].section_id,
+                name=boxes_list[min_idx].name,
+                y_start_pct=boxes_list[min_idx].y_start_pct,
+                y_end_pct=boxes_list[min_idx + 1].y_end_pct,
+            )
+            merged_tracking = tracking[min_idx] + tracking[min_idx + 1]
+            boxes_list = boxes_list[:min_idx] + [merged] + boxes_list[min_idx + 2:]
+            tracking = tracking[:min_idx] + [merged_tracking] + tracking[min_idx + 2:]
+        final_boxes = boxes_list
+        final_tracking = tracking
+    else:
+        boxes_list = list(normalized)
+        tracking = list(index_tracking)
+        while len(boxes_list) < seg_count:
+            max_height = 0
+            max_idx = 0
+            for i, box in enumerate(boxes_list):
+                height = box.y_end_pct - box.y_start_pct
+                if height > max_height:
+                    max_height = height
+                    max_idx = i
+            box = boxes_list[max_idx]
+            mid = (box.y_start_pct + box.y_end_pct) / 2
+            top_half = NormalizedBox(
+                section_id=box.section_id,
+                name=box.name,
+                y_start_pct=box.y_start_pct,
+                y_end_pct=mid,
+            )
+            bottom_half = NormalizedBox(
+                section_id=f"sec_{len(boxes_list)}",
+                name="section",
+                y_start_pct=mid,
+                y_end_pct=box.y_end_pct,
+            )
+            parent_tracking = tracking[max_idx]
+            boxes_list = boxes_list[:max_idx] + [top_half, bottom_half] + boxes_list[max_idx + 1:]
+            tracking = tracking[:max_idx] + [parent_tracking, parent_tracking] + tracking[max_idx + 1:]
+        final_boxes = boxes_list
+        final_tracking = tracking
+
+    # Renumber all sections deterministically
+    section_map = {}
+    reconcile_mapping = {}
+    for i, box in enumerate(final_boxes):
+        new_id = f"sec_{i}"
+        section_map[new_id] = NormalizedBox(
+            section_id=new_id,
+            name=box.name,
+            y_start_pct=box.y_start_pct,
+            y_end_pct=box.y_end_pct,
+        )
+        reconcile_mapping[new_id] = final_tracking[i] if i < len(final_tracking) else []
+
+    return section_map, reconcile_mapping
+
+
+def _augment_design_system(
+    design_system: Dict,
+    design_tokens: Any,
+) -> Dict:
+    """Merge deterministic CSS-extracted tokens into LLM-generated design system.
+
+    Replaces LLM-guessed colors with CSS ground-truth when they closely match
+    (Euclidean RGB distance < 40). For fonts, uses case-insensitive substring matching.
+    """
+    ds = copy.deepcopy(design_system)
+
+    if not design_tokens:
+        return ds
+
+    # Color augmentation
+    if hasattr(design_tokens, 'colors') and design_tokens.colors:
+        # Get top-3 CSS colors by frequency
+        sorted_colors = sorted(
+            design_tokens.colors.items(), key=lambda x: x[1], reverse=True
+        )[:10]
+
+        colors = ds.get("colors", {})
+        for key, llm_hex in list(colors.items()):
+            for css_hex, _ in sorted_colors:
+                if _hex_distance(llm_hex, css_hex) < 40:
+                    colors[key] = css_hex
+                    break
+        ds["colors"] = colors
+
+    # Font augmentation
+    if hasattr(design_tokens, 'fonts') and design_tokens.fonts:
+        sorted_fonts = sorted(
+            design_tokens.fonts.items(), key=lambda x: x[1], reverse=True
+        )[:3]
+
+        typography = ds.get("typography", {})
+        if sorted_fonts:
+            top_font = sorted_fonts[0][0]
+            for key in ("heading_font", "body_font"):
+                llm_font = typography.get(key, "")
+                # If CSS font is a substring of LLM font stack, keep LLM version
+                # Otherwise, if LLM used a generic stack, replace with CSS font
+                if top_font.lower() not in llm_font.lower():
+                    if "system" in llm_font.lower() or "sans-serif" == llm_font.lower():
+                        typography[key] = top_font
+        ds["typography"] = typography
+
+    return ds
+
+
+def _hex_distance(hex1: str, hex2: str) -> float:
+    """Euclidean distance in RGB space between two hex colors."""
+    try:
+        h1 = hex1.lstrip('#')
+        h2 = hex2.lstrip('#')
+        if len(h1) == 3:
+            h1 = h1[0]*2 + h1[1]*2 + h1[2]*2
+        if len(h2) == 3:
+            h2 = h2[0]*2 + h2[1]*2 + h2[2]*2
+        r1, g1, b1 = int(h1[0:2], 16), int(h1[2:4], 16), int(h1[4:6], 16)
+        r2, g2, b2 = int(h2[0:2], 16), int(h2[2:4], 16), int(h2[4:6], 16)
+        return ((r1-r2)**2 + (g1-g2)**2 + (b1-b2)**2) ** 0.5
+    except (ValueError, IndexError):
+        return 999.0
+
+
+def _wrap_json_as_html(json_data: Any) -> str:
+    """Wrap JSON payload as viewable HTML string for phase_snapshots."""
+    json_str = json.dumps(json_data, indent=2, default=str)
+    return f"<html><body><pre><code>{json_str}</code></pre></body></html>"
+
+
+def _parse_phase1_classifications(
+    result: Dict,
+    reconcile_mapping: Dict[str, List[int]],
+    layout_hints: Optional[Dict] = None,
+) -> Dict:
+    """Parse Phase 1 classification response into layout_map.
+
+    Shared between happy path and retry path.
+
+    Args:
+        result: Parsed JSON from Phase 1 response.
+        reconcile_mapping: sec_id → list of source Phase 1 indices.
+        layout_hints: Optional HTML analysis hints for fallback.
+
+    Returns:
+        layout_map: Dict of sec_id → LayoutHint.
+    """
+    from .layout_analyzer import LayoutHint
+
+    raw_sections = result.get("sections", [])
+    layout_map = {}
+
+    for sec_id, source_indices in reconcile_mapping.items():
+        if source_indices and source_indices[0] < len(raw_sections):
+            sec = raw_sections[source_indices[0]]
+            params = sec.get("layout_params", {})
+            layout_type = sec.get("layout_type", "generic")
+            if layout_type not in (
+                "nav_bar", "hero_centered", "hero_split", "feature_grid",
+                "testimonial_cards", "cta_banner", "faq_list", "pricing_table",
+                "logo_bar", "stats_row", "content_block", "footer_columns", "generic",
+            ):
+                layout_type = "generic"
+            layout_map[sec_id] = LayoutHint(
+                layout_type=layout_type,
+                column_count=params.get("column_count", 1),
+                text_position=params.get("text_position", "left"),
+                has_image=params.get("has_image", False),
+            )
+
+    # Merge HTML analysis hints (fill gaps, don't override vision)
+    if layout_hints:
+        for sec_id, html_hint in layout_hints.items():
+            if sec_id not in layout_map:
+                layout_map[sec_id] = html_hint
+
+    return layout_map
+
+
 def _strip_unresolved_placeholders(html: str) -> Tuple[str, int]:
     """Strip only unresolved {{sec_N...}} placeholders. Returns (html, removal_count)."""
     count = 0
@@ -734,6 +992,8 @@ class MultiPassPipeline:
             # -----------------------------------------------------------
             image_registry = None
             responsive_css = ResponsiveCSS()
+            extracted_css = None
+            layout_hints = {}
 
             if page_html:
                 with self._lf.span("multipass_harvest", phase="html_extraction"):
@@ -770,11 +1030,97 @@ class MultiPassPipeline:
                         )
                         responsive_css = ResponsiveCSS()
 
+                    # Template pipeline: enhanced CSS extraction + layout analysis
+                    if USE_TEMPLATE_PIPELINE:
+                        # Head-only guard: skip if HTML has no <body>
+                        has_body = '<body' in page_html.lower()[:50000]
+
+                        if has_body:
+                            try:
+                                from .css_rules_extractor import CSSRulesExtractor
+
+                                # Build extra_css from inline + external sheets
+                                inline_css_parts = []
+                                for m in re.finditer(
+                                    r'<style[^>]*>(.*?)</style>',
+                                    page_html, re.DOTALL | re.IGNORECASE
+                                ):
+                                    inline_css_parts.append(m.group(1))
+                                extra_css = "\n".join(inline_css_parts)
+
+                                extracted_css = CSSRulesExtractor.extract(
+                                    page_html,
+                                    extra_css=extra_css,
+                                    page_url=page_url or "",
+                                )
+                                if extracted_css.design_tokens and extracted_css.design_tokens.colors:
+                                    self._lf.info(
+                                        "Harvest: {color_count} design token colors, "
+                                        "{font_count} fonts extracted",
+                                        color_count=len(extracted_css.design_tokens.colors),
+                                        font_count=len(extracted_css.design_tokens.fonts),
+                                    )
+                                    self.phase_snapshots["harvest_design_tokens"] = _wrap_json_as_html({
+                                        "colors": extracted_css.design_tokens.colors,
+                                        "fonts": extracted_css.design_tokens.fonts,
+                                        "font_sizes": extracted_css.design_tokens.font_sizes,
+                                    })
+                            except Exception as e:
+                                self._lf.warning(
+                                    "Enhanced CSS extraction failed: {error}", error=str(e)
+                                )
+                                extracted_css = None
+
+                            try:
+                                from .layout_analyzer import analyze_html_layout
+
+                                inlined_html = ""
+                                if extracted_css and extracted_css.inlined_html:
+                                    inlined_html = extracted_css.inlined_html
+
+                                layout_hints = analyze_html_layout(
+                                    inlined_html=inlined_html,
+                                    original_html=page_html,
+                                    sections=sections,
+                                    css_rules=extracted_css,
+                                    page_url=page_url or "",
+                                )
+                                if layout_hints:
+                                    self._lf.info(
+                                        "Harvest: layout hints for {count} sections",
+                                        count=len(layout_hints),
+                                    )
+                                    self.phase_snapshots["harvest_layout_hints"] = _wrap_json_as_html({
+                                        sec_id: {
+                                            "layout_type": h.layout_type,
+                                            "confidence": h.confidence,
+                                            "signals": h.detection_signals,
+                                            "column_count": h.column_count,
+                                        }
+                                        for sec_id, h in layout_hints.items()
+                                    })
+                            except Exception as e:
+                                self._lf.warning(
+                                    "Layout analysis failed: {error}", error=str(e)
+                                )
+                                layout_hints = {}
+
+                            # Free inlined_html after layout analysis
+                            if extracted_css:
+                                extracted_css.inlined_html = ""
+
             # -----------------------------------------------------------
             # Phase 0: Design System Extraction
             # -----------------------------------------------------------
             self._report_progress(0, "Extracting design system...")
             design_system = await self._run_phase_0(screenshot_b64, truncated_md)
+
+            # Phase 0 augmentation: merge deterministic CSS tokens
+            if USE_TEMPLATE_PIPELINE and extracted_css and extracted_css.design_tokens:
+                self.phase_snapshots["phase_0_design_system"] = _wrap_json_as_html(design_system)
+                design_system = _augment_design_system(design_system, extracted_css.design_tokens)
+                self.phase_snapshots["phase_0_augmented"] = _wrap_json_as_html(design_system)
+
             if self._budget_exceeded(max_api_calls):
                 self._lf.warning("Budget exceeded after Phase 0, returning fallback skeleton")
                 return _build_fallback_skeleton(sections)
@@ -782,10 +1128,22 @@ class MultiPassPipeline:
             # -----------------------------------------------------------
             # Phase 1: Layout Skeleton + Bounding Boxes
             # -----------------------------------------------------------
-            self._report_progress(1, "Building layout skeleton...")
-            skeleton_html, section_map = await self._run_phase_1(
-                screenshot_b64, design_system, sections
-            )
+            layout_map = {}  # Populated by template pipeline path
+
+            if USE_TEMPLATE_PIPELINE:
+                # Template pipeline: classification + deterministic skeleton
+                self._report_progress(1, "Classifying layouts...")
+                skeleton_html, section_map, layout_map = await self._run_phase_1_classify(
+                    screenshot_b64, design_system, sections,
+                    layout_hints=layout_hints,
+                    extracted_css=extracted_css,
+                )
+            else:
+                # Original path: LLM-generated skeleton
+                self._report_progress(1, "Building layout skeleton...")
+                skeleton_html, section_map = await self._run_phase_1(
+                    screenshot_b64, design_system, sections
+                )
             if self._budget_exceeded(max_api_calls):
                 self._lf.warning("Budget exceeded after Phase 1, returning skeleton")
                 return skeleton_html
@@ -831,6 +1189,8 @@ class MultiPassPipeline:
                         sections,
                         section_map,
                         image_registry,
+                        layout_map=layout_map if USE_TEMPLATE_PIPELINE else None,
+                        extracted_css=extracted_css if USE_TEMPLATE_PIPELINE else None,
                     )
                     from .invariants import _extract_slots
                     slot_count = len(_extract_slots(content_html))
@@ -910,25 +1270,43 @@ class MultiPassPipeline:
                 return content_html
 
             # -----------------------------------------------------------
-            # Phase 3: Per-Section Visual Refinement
+            # Phase 3: Visual Refinement
             # -----------------------------------------------------------
-            self._report_progress(3, "Refining sections visually...")
-            refined_html, stats = await self._run_phase_3(
-                content_html,
-                screenshot_bytes,
-                screenshot_b64,
-                section_map,
-                sections,
-                design_system,
-                baseline,
-                page_url,
-                page_markdown,
-                image_registry=image_registry,
-                responsive_css=responsive_css,
-            )
-
-            # Snapshot: Phase 3 refined (after per-section visual refinement)
-            self.phase_snapshots["phase_3_refined"] = refined_html
+            if USE_TEMPLATE_PIPELINE and MULTIPASS_PHASE3_MODE == "disabled":
+                # Template pipeline with Phase 3 disabled — skip entirely
+                self._report_progress(3, "Phase 3 disabled (template mode)...")
+                refined_html = content_html
+                self.phase_snapshots["phase_3_refined"] = content_html
+            elif USE_TEMPLATE_PIPELINE and MULTIPASS_PHASE3_MODE in ("fullpage", "per_section"):
+                # Template pipeline: CSS-only Phase 3
+                self._report_progress(3, "Applying CSS refinements...")
+                refined_html = await self._run_phase_3_css(
+                    content_html,
+                    screenshot_bytes,
+                    screenshot_b64,
+                    section_map,
+                    sections,
+                    design_system,
+                    baseline,
+                )
+                self.phase_snapshots["phase_3_refined"] = refined_html
+            else:
+                # Original path: per-section HTML refinement
+                self._report_progress(3, "Refining sections visually...")
+                refined_html, stats = await self._run_phase_3(
+                    content_html,
+                    screenshot_bytes,
+                    screenshot_b64,
+                    section_map,
+                    sections,
+                    design_system,
+                    baseline,
+                    page_url,
+                    page_markdown,
+                    image_registry=image_registry,
+                    responsive_css=responsive_css,
+                )
+                self.phase_snapshots["phase_3_refined"] = refined_html
 
             if self._budget_exceeded(max_api_calls):
                 self._lf.warning("Budget exceeded after Phase 3, returning refined HTML")
@@ -1129,6 +1507,245 @@ class MultiPassPipeline:
         boxes = boxes_from_char_ratios(sections)
         section_map = {box.section_id: box for box in boxes}
         return skeleton, section_map
+
+    def _phase_1_fallback_classify(
+        self, sections: List[SegmenterSection]
+    ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
+        """Fallback for template pipeline: returns 3-tuple with empty layout_map."""
+        skeleton = _build_fallback_skeleton(sections)
+        boxes = boxes_from_char_ratios(sections)
+        section_map = {box.section_id: box for box in boxes}
+        return skeleton, section_map, {}
+
+    async def _run_phase_1_classify(
+        self,
+        screenshot_b64: str,
+        design_system: Dict,
+        sections: List[SegmenterSection],
+        layout_hints: Optional[Dict] = None,
+        extracted_css: Optional[object] = None,
+    ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
+        """Phase 1 (Template Pipeline): Layout Classification + Bounding Boxes.
+
+        Returns:
+            (skeleton_html, section_map, layout_map)
+        """
+        from .section_templates import build_skeleton_from_templates
+
+        section_names = [s.name for s in sections]
+        prompt = build_phase_1_classify_prompt(
+            json.dumps(design_system, indent=2),
+            section_names,
+            len(sections),
+            layout_hints=layout_hints,
+        )
+
+        with self._lf.span(
+            "multipass_phase_1_classify",
+            phase="layout_classification",
+            segmenter_section_count=len(sections),
+        ):
+            try:
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[1], screenshot_b64, prompt
+                )
+                result = _parse_json_response(response)
+
+                # Store raw classifications for debugging
+                self.phase_snapshots["phase_1_raw_classifications"] = _wrap_json_as_html(result)
+
+                phase1_sections = result.get("sections", [])
+
+                # Step 1: Reconcile bounding boxes (no skeleton rewriting)
+                section_map, reconcile_mapping = _reconcile_bounding_boxes(
+                    sections, phase1_sections
+                )
+
+                # Step 2: Parse layout classifications via shared helper
+                layout_map = _parse_phase1_classifications(
+                    result, reconcile_mapping, layout_hints
+                )
+
+                # Store layout map for debugging
+                self.phase_snapshots["phase_1_layout_map"] = _wrap_json_as_html({
+                    sec_id: {
+                        "layout_type": h.layout_type,
+                        "column_count": h.column_count,
+                        "has_image": h.has_image,
+                    }
+                    for sec_id, h in layout_map.items()
+                })
+
+                # Step 3: Build skeleton from templates (NO _rewrite_skeleton)
+                skeleton_html = build_skeleton_from_templates(
+                    sections, layout_map, design_system, extracted_css
+                )
+
+                self._lf.info(
+                    "Phase 1 classify OK: {section_count} sections, "
+                    "{layout_count} layouts classified",
+                    section_count=len(section_map),
+                    layout_count=len(layout_map),
+                )
+                return skeleton_html, section_map, layout_map
+
+            except RateLimitError:
+                self._lf.warning("Phase 1 classify: rate limited, retrying")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[1], screenshot_b64, prompt
+                    )
+                    result = _parse_json_response(response)
+                    phase1_sections = result.get("sections", [])
+                    section_map, reconcile_mapping = _reconcile_bounding_boxes(
+                        sections, phase1_sections
+                    )
+                    layout_map = _parse_phase1_classifications(
+                        result, reconcile_mapping, layout_hints
+                    )
+                    skeleton_html = build_skeleton_from_templates(
+                        sections, layout_map, design_system, extracted_css
+                    )
+                    return skeleton_html, section_map, layout_map
+                except Exception as e:
+                    logger.warning(f"Phase 1 classify retry failed: {e}")
+
+                self._lf.warning("Phase 1 classify using fallback")
+                return self._phase_1_fallback_classify(sections)
+            except Exception as e:
+                self._lf.warning(
+                    "Phase 1 classify failed: {error}, using fallback", error=str(e)
+                )
+                return self._phase_1_fallback_classify(sections)
+
+    async def _run_phase_3_css(
+        self,
+        content_html: str,
+        screenshot_bytes: bytes,
+        screenshot_b64: str,
+        section_map: Dict[str, NormalizedBox],
+        sections: List[SegmenterSection],
+        design_system: Dict,
+        baseline: PipelineInvariants,
+    ) -> str:
+        """Phase 3 (Template Pipeline): CSS-Only Refinement.
+
+        Returns CSS patches (not HTML fragments). Text cannot be changed.
+        """
+        with self._lf.span(
+            "multipass_phase_3_css",
+            phase="css_refinement",
+            mode=MULTIPASS_PHASE3_MODE,
+        ):
+            all_patches = []
+
+            if MULTIPASS_PHASE3_MODE == "fullpage":
+                # Single LLM call with full screenshot
+                section_ids = sorted(
+                    section_map.keys(), key=lambda x: int(x.split("_")[1])
+                )
+                prompt = build_phase_3_css_prompt_fullpage(content_html, section_ids)
+
+                try:
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[3], screenshot_b64, prompt
+                    )
+                    raw_patches = _parse_json_response(response)
+                    if isinstance(raw_patches, list):
+                        all_patches = raw_patches
+                except Exception as e:
+                    self._lf.warning(
+                        "Phase 3 CSS fullpage failed: {error}", error=str(e)
+                    )
+
+            elif MULTIPASS_PHASE3_MODE == "per_section":
+                # Per-section LLM calls with cropped screenshots
+                compact_ds = json.dumps({
+                    "colors": design_system.get("colors", {}),
+                    "typography": design_system.get("typography", {}),
+                })
+
+                section_ids = sorted(
+                    section_map.keys(), key=lambda x: int(x.split("_")[1])
+                )
+                from .invariants import _SectionParser
+                parser = _SectionParser()
+                parser.feed(content_html)
+                section_htmls = parser.sections
+
+                for sec_id in section_ids:
+                    if sec_id not in section_htmls:
+                        continue
+                    box = section_map[sec_id]
+                    try:
+                        cropped_bytes = crop_section(screenshot_bytes, box)
+                        cropped_b64 = base64.b64encode(cropped_bytes).decode('utf-8')
+                    except Exception:
+                        continue
+
+                    section_html_frag = (
+                        f'<section data-section="{sec_id}">'
+                        f'{section_htmls[sec_id]}'
+                        f'</section>'
+                    )
+                    prompt = build_phase_3_css_prompt_section(
+                        sec_id, section_html_frag, compact_ds
+                    )
+
+                    try:
+                        response = await self._call_gemini_vision(
+                            PHASE_MODELS[3], cropped_b64, prompt
+                        )
+                        raw_patches = _parse_json_response(response)
+                        if isinstance(raw_patches, list):
+                            all_patches.extend(raw_patches)
+                    except Exception as e:
+                        self._lf.warning(
+                            "Phase 3 CSS section {sec_id} failed: {error}",
+                            sec_id=sec_id, error=str(e),
+                        )
+
+            # Store raw patches
+            if all_patches:
+                self.phase_snapshots["phase_3_css_patches"] = _wrap_json_as_html(all_patches)
+
+            if not all_patches:
+                self._lf.info("Phase 3 CSS: no patches to apply")
+                return content_html
+
+            # Map to PatchApplier format: {selector, css} → {type, selector, value}
+            mapped_patches = [
+                {
+                    "type": "css_fix",
+                    "selector": p.get("selector", ""),
+                    "value": p.get("css", ""),
+                }
+                for p in all_patches
+                if p.get("selector") and p.get("css")
+            ]
+
+            if not mapped_patches:
+                return content_html
+
+            # Apply patches
+            applier = PatchApplier()
+            patched = applier.apply_patches(content_html, mapped_patches[:20])
+
+            # Invariant check (simplified — CSS patches can't change text)
+            report = check_global_invariants(patched, baseline)
+            if not report.passed:
+                self._lf.warning(
+                    "Phase 3 CSS patches failed invariant check: {issues}, reverting",
+                    issues=str(report.issues),
+                )
+                return content_html
+
+            self._lf.info(
+                "Phase 3 CSS: {count} patches applied",
+                count=len(mapped_patches),
+            )
+            return patched
 
     async def _run_phase_2(
         self,
