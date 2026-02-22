@@ -325,3 +325,58 @@ class TestBuildGenerationPrompts:
             brand_profile={"brand_basics": {"colors": ["#2ECC71", "#1ABC9C"]}},
         )
         assert "#2ECC71" in slot.prompt
+
+    def test_product_description_in_prompt(self):
+        """Product benefits/problems should appear so AI knows what the product IS."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(0, "product_shot")
+        svc.build_generation_prompts(
+            [slot],
+            product_info={
+                "name": "CortiControl",
+                "key_benefits": ["reduces cortisol levels"],
+                "key_problems_solved": ["chronic stress and fatigue"],
+            },
+        )
+        assert "CortiControl" in slot.prompt
+        assert "cortisol" in slot.prompt.lower() or "stress" in slot.prompt.lower()
+
+    def test_infographic_clears_original_ref(self):
+        """Infographics should NOT use the original image as composition ref."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(0, "infographic")
+        slot.original_base64 = "fake_base64_data"
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "CortiControl"},
+        )
+        assert slot.original_base64 is None  # cleared
+        assert "infographic" in slot.prompt.lower()
+        assert "competitor" not in slot.prompt.lower() or "no competitor" in slot.prompt.lower()
+
+    def test_competitor_subject_not_in_prompt(self):
+        """Vision 'subject' (competitor product) should NOT leak into prompts."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(0, "lifestyle", has_people=True)
+        # Vision detected competitor's product
+        slot.image_analysis["subject"] = "woman holding a green shake bottle"
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "CortiControl Supplement"},
+            persona={"demographics": {"age_range": "35-44", "gender": "female"}},
+        )
+        assert "shake" not in slot.prompt.lower()
+        assert "CortiControl" in slot.prompt
+
+    def test_style_cues_extraction(self):
+        """Only lighting/angle/mood from composition, not product descriptions."""
+        from viraltracker.services.landing_page_analysis.blueprint_image_service import (
+            BlueprintImageService,
+        )
+        result = BlueprintImageService._extract_style_cues(
+            "bright natural lighting, shake bottle on marble counter, warm tones"
+        )
+        assert "lighting" in result.lower()
+        assert "warm tones" in result.lower()
+        assert "shake" not in result.lower()
+        assert "marble" not in result.lower()

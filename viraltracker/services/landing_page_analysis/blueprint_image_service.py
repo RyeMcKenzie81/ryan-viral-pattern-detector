@@ -419,8 +419,26 @@ class BlueprintImageService:
         persona: Optional[Dict[str, Any]] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
     ) -> List[ImageSlot]:
-        """Build narrative-style prompts for each image slot."""
+        """Build narrative-style prompts for each image slot.
+
+        Prompts are grounded in the TARGET brand's product info, persona, and
+        brand profile — NOT the competitor's original image content.  Vision
+        analysis is used only for *composition style* (lighting, angle, layout)
+        never for product-specific subject matter.
+        """
         product_name = product_info.get("name", "the product")
+
+        # Build a short product description from brand profile fields so
+        # the prompt describes the ACTUAL product, not the competitor's.
+        product_desc_parts = []
+        benefits = product_info.get("key_benefits", [])
+        if benefits:
+            product_desc_parts.append(benefits[0])
+        problems = product_info.get("key_problems_solved", [])
+        if problems:
+            product_desc_parts.append(f"helps with {problems[0].lower()}")
+        product_desc = f" ({', '.join(product_desc_parts)})" if product_desc_parts else ""
+
         brand_colors = ""
         if brand_profile:
             basics = brand_profile.get("brand_basics", {})
@@ -428,13 +446,18 @@ class BlueprintImageService:
             if colors:
                 brand_colors = ", ".join(colors[:3])
 
-        # Persona demographics
+        # Persona demographics + context
         persona_age = ""
         persona_gender = ""
+        persona_context = ""
         if persona:
             demographics = persona.get("demographics", {})
             persona_age = demographics.get("age_range", "")
             persona_gender = demographics.get("gender", "")
+            # Use desired_self_image for aspirational lifestyle shots
+            desired = persona.get("desired_self_image", "")
+            if desired:
+                persona_context = desired[:100]
 
         for slot in slots:
             if not slot.selected:
@@ -442,13 +465,17 @@ class BlueprintImageService:
 
             analysis = slot.image_analysis or {}
             image_type = analysis.get("image_type", "unknown")
-            subject = analysis.get("subject", "")
+            # Only use Vision for composition STYLE, not product subject
             composition = analysis.get("composition", "")
             has_people = analysis.get("has_people", False)
             people_desc = analysis.get("people_description", "")
             context = slot.surrounding_text[:200] if slot.surrounding_text else ""
 
-            # Person description: prefer persona, fall back to Vision
+            # Extract only style cues from composition (lighting, angle, mood)
+            # — strip anything that describes the competitor product itself
+            style_cues = self._extract_style_cues(composition)
+
+            # Person description: prefer persona, fall back to Vision demographics only
             person_desc = ""
             if persona_age and persona_gender:
                 person_desc = f"a {persona_age} {persona_gender}"
@@ -458,25 +485,26 @@ class BlueprintImageService:
             color_note = f", brand colors {brand_colors}" if brand_colors else ""
 
             if image_type == "lifestyle":
+                activity = persona_context or "enjoying their daily wellness routine"
                 slot.prompt = (
                     f"Realistic iPhone photo of {person_desc or 'a person'} "
-                    f"{composition or 'in a natural setting'}, "
-                    f"{product_name} product visible nearby{color_note}, "
-                    f"natural lighting, candid natural moment, warm tones"
+                    f"{activity}, "
+                    f"{product_name}{product_desc} visible nearby{color_note}, "
+                    f"{style_cues or 'natural lighting'}, candid natural moment, warm tones"
                 )
 
             elif image_type == "product_shot":
                 slot.prompt = (
-                    f"Professional product photography of {product_name} on a clean surface, "
-                    f"studio lighting, {composition or 'sharp focus'}{color_note}, "
-                    f"shot from a flattering angle, no text overlays"
+                    f"Professional product photography of {product_name}{product_desc} "
+                    f"on a clean surface, studio lighting{color_note}, "
+                    f"{style_cues or 'sharp focus'}, shot from a flattering angle, no text overlays"
                 )
 
             elif image_type == "hero_banner":
                 slot.prompt = (
-                    f"Wide cinematic hero image for {product_name}, "
-                    f"{composition or 'dramatic composition'}{color_note} prominent, "
-                    f"{context[:100] or 'commercial photography quality'}, no text overlays"
+                    f"Wide cinematic hero image for {product_name}{product_desc}, "
+                    f"{style_cues or 'dramatic composition'}{color_note} prominent, "
+                    f"commercial photography quality, no text overlays"
                 )
 
             elif image_type == "testimonial_photo":
@@ -487,21 +515,63 @@ class BlueprintImageService:
                 )
 
             elif image_type == "before_after":
+                problem = ""
+                if problems:
+                    problem = problems[0].lower()
                 slot.prompt = (
                     f"Side-by-side comparison image showing transformation, "
-                    f"left side: {subject or 'before state'}, right side: improved with {product_name}, "
+                    f"left side: {problem or 'before state'}, "
+                    f"right side: improved wellness with {product_name}, "
                     f"clean layout{color_note}"
                 )
 
-            else:
-                # Default / unknown / infographic / ingredient / background_texture
+            elif image_type == "infographic":
+                # Infographics contain competitor branding — generate from
+                # scratch based on the SECTION CONTEXT, not the original image.
+                # Do NOT pass the original image as a composition reference.
+                slot.original_base64 = None  # clear so generate_images won't use it
                 slot.prompt = (
-                    f"High-quality commercial photograph for {product_name}, "
-                    f"{subject or 'product showcase'}, {composition or 'professional lighting'}"
+                    f"Clean modern infographic layout for {product_name}{product_desc}, "
+                    f"showing key benefits and features, "
+                    f"{color_note or 'professional color scheme'}, "
+                    f"minimal clean design, no competitor branding, no text overlays"
+                )
+
+            else:
+                # Default / unknown / ingredient / background_texture
+                slot.prompt = (
+                    f"High-quality commercial photograph for {product_name}{product_desc}, "
+                    f"{style_cues or 'professional lighting'}"
                     f"{color_note}, no text overlays"
                 )
 
         return slots
+
+    @staticmethod
+    def _extract_style_cues(composition: str) -> str:
+        """Extract lighting/angle/mood cues from Vision composition, dropping product refs.
+
+        Vision describes the competitor image: "bright natural lighting, shake bottle
+        on marble counter, warm tones". We want "bright natural lighting, warm tones"
+        but NOT "shake bottle on marble counter".
+        """
+        if not composition:
+            return ""
+        # Keep only style-related phrases
+        style_keywords = {
+            "lighting", "light", "lit", "bright", "dark", "soft", "warm", "cool",
+            "tone", "tones", "mood", "angle", "overhead", "close-up", "wide",
+            "cinematic", "natural", "studio", "dramatic", "minimalist", "clean",
+            "blur", "blurred", "bokeh", "shallow", "depth", "vibrant", "muted",
+            "pastel", "neutral", "candid", "posed", "symmetr", "centered",
+        }
+        parts = [p.strip() for p in composition.split(",")]
+        kept = []
+        for part in parts:
+            words = part.lower().split()
+            if any(kw in word for word in words for kw in style_keywords):
+                kept.append(part.strip())
+        return ", ".join(kept[:3]) if kept else ""
 
     async def generate_images(
         self,
