@@ -227,24 +227,38 @@ class PatchApplier:
                     skipped += 1
                     continue
 
-                try:
-                    selector = parse_selector(selector_str)
-                except ValueError as e:
-                    logger.warning(f"Unsupported selector '{selector_str}': {e}, skipping patch")
+                # Split comma-separated selectors into individual sub-selectors
+                sub_selectors = [s.strip() for s in selector_str.split(',')]
+                sub_selectors = [s for s in sub_selectors if s]
+
+                if not sub_selectors:
+                    logger.warning(f"Selector resolved to empty after split: '{selector_str}', skipping")
                     skipped += 1
                     continue
 
-                if patch_type == 'css_fix':
-                    result = self._apply_css_fix(result, selector, value)
-                    applied += 1
-                elif patch_type == 'add_element':
-                    result = self._apply_add_element(result, selector, value)
-                    applied += 1
-                elif patch_type == 'remove_element':
-                    result = self._apply_remove_element(result, selector)
+                sub_applied = False
+                for sub_sel_str in sub_selectors:
+                    try:
+                        selector = parse_selector(sub_sel_str)
+                    except ValueError as e:
+                        logger.warning(f"Unsupported selector '{sub_sel_str}': {e}, skipping sub-selector")
+                        continue
+
+                    if patch_type == 'css_fix':
+                        result = self._apply_css_fix(result, selector, value)
+                        sub_applied = True
+                    elif patch_type == 'add_element':
+                        result = self._apply_add_element(result, selector, value)
+                        sub_applied = True
+                    elif patch_type == 'remove_element':
+                        result = self._apply_remove_element(result, selector)
+                        sub_applied = True
+                    else:
+                        logger.warning(f"Unknown patch type '{patch_type}', skipping")
+
+                if sub_applied:
                     applied += 1
                 else:
-                    logger.warning(f"Unknown patch type '{patch_type}', skipping")
                     skipped += 1
 
             except Exception as e:

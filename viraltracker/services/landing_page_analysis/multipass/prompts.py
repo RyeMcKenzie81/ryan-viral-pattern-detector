@@ -541,7 +541,7 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches
     "css": "background-color: #f5f5f5; padding: 80px 20px;"
   }},
   {{
-    "selector": "[data-section='sec_1'] h2",
+    "selector": "h2",
     "css": "font-size: 2.5rem; color: #333;"
   }}
 ]
@@ -558,6 +558,9 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches
 - Do NOT return HTML. Return ONLY CSS patches.
 - Do NOT change any text content.
 - Do NOT remove or rename any data-slot or data-section attributes.
+- Use ONE simple selector per entry from the grammar above.
+- Do NOT combine selectors with commas.
+- Do NOT use descendant/child combinators (spaces or >).
 - Focus on: colors, spacing, sizing, backgrounds, borders, fonts.
 - Maximum 20 patches.
 - Return empty list [] if the HTML already looks good.
@@ -598,14 +601,25 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches
     "css": "background-color: #f5f5f5;"
   }},
   {{
-    "selector": "[data-section='{section_id}'] h2",
+    "selector": "h2",
     "css": "font-size: 2rem; color: #333;"
   }}
 ]
 
+## SELECTOR GRAMMAR (ONLY these patterns are supported)
+- [data-section='sec_N'] - match by section ID
+- [data-slot='name'] - match by slot name
+- .classname - match by CSS class
+- tag - match by HTML tag
+- tag.classname - match by tag and class
+- tag[data-section='sec_N'] - match by tag and section ID
+
 ## RULES
 - Do NOT return HTML. Return ONLY CSS patches.
 - Do NOT change any text content.
+- Use ONE simple selector per entry from the grammar above.
+- Do NOT combine selectors with commas.
+- Do NOT use descendant/child combinators (spaces or >).
 - Focus on: colors, spacing, sizing, backgrounds, borders, fonts.
 - Maximum 5 patches per section.
 - Return empty list [] if this section already looks good.

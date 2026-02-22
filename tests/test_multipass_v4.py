@@ -2446,3 +2446,89 @@ class TestBestEffortReconcile:
             assert len(reconcile_mapping[sec.section_id]) >= 1, (
                 f"{sec.section_id} has empty indices in normalization-failure fallback"
             )
+
+
+# ===========================================================================
+# D3: Bug 3 — PatchApplier comma-separated selectors
+# ===========================================================================
+
+
+class TestPatchApplierCommaSelectors:
+    """Bug 3: PatchApplier handles comma-separated selectors."""
+
+    def test_comma_separated_selectors(self):
+        """Comma-separated selectors apply CSS to both sections."""
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = (
+            '<section data-section="sec_4"><p>Section 4</p></section>'
+            '<section data-section="sec_5"><p>Section 5</p></section>'
+        )
+        patches = [
+            {
+                "type": "css_fix",
+                "selector": "[data-section='sec_4'], [data-section='sec_5']",
+                "value": "background: #f0f0f0",
+            }
+        ]
+        applier = PatchApplier()
+        result = applier.apply_patches(html, patches)
+        # Both sections should get the style
+        assert result.count("background: #f0f0f0") == 2
+
+    def test_comma_trailing(self):
+        """Trailing comma does not crash (empty segment filtered)."""
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<h2>Title</h2>'
+        patches = [
+            {
+                "type": "css_fix",
+                "selector": "h2, ",
+                "value": "color: blue",
+            }
+        ]
+        applier = PatchApplier()
+        result = applier.apply_patches(html, patches)
+        assert "color: blue" in result
+
+    def test_single_selector_unchanged(self):
+        """Regression: single selector still works identically."""
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<div data-section="sec_0">Content</div>'
+        patches = [
+            {
+                "type": "css_fix",
+                "selector": "[data-section='sec_0']",
+                "value": "color: red",
+            }
+        ]
+        applier = PatchApplier()
+        result = applier.apply_patches(html, patches)
+        assert "color: red" in result
+
+    def test_descendant_combinator_still_rejected(self):
+        """Descendant combinator selectors are still rejected (expected)."""
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<section data-section="sec_1"><h2>Title</h2></section>'
+        patches = [
+            {
+                "type": "css_fix",
+                "selector": "[data-section='sec_1'] h2",
+                "value": "font-size: 3rem",
+            }
+        ]
+        applier = PatchApplier()
+        result = applier.apply_patches(html, patches)
+        # Should NOT be applied (descendant combinator unsupported)
+        assert "font-size: 3rem" not in result
