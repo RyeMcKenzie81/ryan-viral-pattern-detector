@@ -1727,6 +1727,11 @@ def _render_generate_images_section(
             current_prompt = slot_meta.get("prompt", "")
 
             with st.expander(f"Slot {idx_str}: {img_type}", expanded=False):
+                # Show current generated image
+                storage_url = slot_meta.get("storage_url")
+                if storage_url:
+                    st.image(storage_url, width=300)
+
                 edited_prompt = st.text_area(
                     "Prompt",
                     value=current_prompt,
@@ -1779,8 +1784,8 @@ def _render_image_analysis_table(meta: dict, blueprint_id: str):
         if not analysis:
             continue
 
-        col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
-        with col1:
+        col_sel, col_thumb, col_info, col_ratio = st.columns([0.5, 1.5, 3, 0.8])
+        with col_sel:
             checked = st.checkbox(
                 f"#{idx_str}",
                 value=True,
@@ -1788,12 +1793,19 @@ def _render_image_analysis_table(meta: dict, blueprint_id: str):
             )
             if checked:
                 selected_indices.append(int(idx_str))
-        with col2:
+        with col_thumb:
+            original_src = data.get("original_src", "")
+            if original_src and original_src.startswith("http"):
+                try:
+                    st.image(original_src, width=120)
+                except Exception:
+                    st.caption("(preview unavailable)")
+            else:
+                st.caption("—")
+        with col_info:
             st.caption(f"**{analysis.get('image_type', 'unknown')}**")
-            st.caption(analysis.get("subject", "")[:80])
-        with col3:
-            st.caption(analysis.get("composition", "")[:80])
-        with col4:
+            st.caption(analysis.get("subject", "")[:100])
+        with col_ratio:
             st.caption(data.get("aspect_ratio", "?"))
 
     # Store selected indices in session state
