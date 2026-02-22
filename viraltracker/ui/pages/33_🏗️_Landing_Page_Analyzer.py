@@ -17,7 +17,7 @@ import logging
 import streamlit as st
 import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1661,6 +1661,14 @@ def _render_generate_images_section(
         selected_key = f"lpa_img_selected_{blueprint_id}"
         selected_indices = st.session_state.get(selected_key, list(range(len(existing_meta))))
 
+        # Prompt editor (expandable) — let users tweak before generating
+        with st.expander("Edit prompts before generating", expanded=False):
+            st.caption("Prompts are auto-generated from your brand profile. Edit any you'd like to customize.")
+            _render_prompt_editors(existing_meta, blueprint_id, brand_profile, persona_id)
+
+        # Collect any user-edited prompts
+        prompt_overrides = _collect_prompt_overrides(existing_meta, blueprint_id)
+
         n_selected = len(selected_indices)
         est_cost = n_selected * 0.02
         st.markdown(f"**Generate {n_selected} selected images** — estimated cost: ~${est_cost:.2f}")
@@ -1693,6 +1701,7 @@ def _render_generate_images_section(
                             persona_id=persona_id,
                             brand_profile=brand_profile,
                             selected_indices=selected_indices,
+                            prompt_overrides=prompt_overrides if prompt_overrides else None,
                             progress_cb=on_progress,
                         )
                     )
@@ -1705,20 +1714,30 @@ def _render_generate_images_section(
                     logger.error(f"Image generation failed: {e}", exc_info=True)
             st.rerun()
     else:
-        # Per-image regeneration buttons
+        # Per-image regeneration
         st.markdown("**Per-image regeneration**")
+        st.caption("Edit the prompt to adjust what gets generated, then click Regen.")
         for idx_str, slot_meta in sorted(existing_meta.items(), key=lambda x: int(x[0])):
             if not isinstance(slot_meta, dict):
                 continue
             if not slot_meta.get("storage_url"):
                 continue
 
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                img_type = (slot_meta.get("analysis") or {}).get("image_type", "image")
-                st.caption(f"Slot {idx_str}: {img_type}")
-            with col2:
+            img_type = (slot_meta.get("analysis") or {}).get("image_type", "image")
+            current_prompt = slot_meta.get("prompt", "")
+
+            with st.expander(f"Slot {idx_str}: {img_type}", expanded=False):
+                edited_prompt = st.text_area(
+                    "Prompt",
+                    value=current_prompt,
+                    key=f"lpa_regen_prompt_{blueprint_id}_{idx_str}",
+                    height=80,
+                    label_visibility="collapsed",
+                )
                 if st.button("Regen", key=f"lpa_regen_img_{blueprint_id}_{idx_str}"):
+                    # Use edited prompt if changed, otherwise None (auto-generate)
+                    prompt_override = edited_prompt if edited_prompt != current_prompt else None
+
                     svc = get_blueprint_image_service()
                     if org_id:
                         try:
@@ -1738,6 +1757,7 @@ def _render_generate_images_section(
                                     product_id=product_id,
                                     persona_id=persona_id,
                                     brand_profile=brand_profile,
+                                    prompt_override=prompt_override,
                                 )
                             )
                             if success:
@@ -1778,6 +1798,70 @@ def _render_image_analysis_table(meta: dict, blueprint_id: str):
 
     # Store selected indices in session state
     st.session_state[f"lpa_img_selected_{blueprint_id}"] = selected_indices
+
+
+def _render_prompt_editors(meta: dict, blueprint_id: str, brand_profile: Optional[dict] = None, persona_id: Optional[str] = None):
+    """Render editable prompt text areas for each image slot (pre-generation)."""
+    # Build auto-generated prompts so users see the default
+    from viraltracker.services.landing_page_analysis.blueprint_image_service import (
+        BlueprintImageService,
+        ImageSlot,
+    )
+    svc = BlueprintImageService.__new__(BlueprintImageService)
+
+    product_info = {}
+    if brand_profile:
+        product_info = brand_profile.get("product", {})
+    if not product_info.get("name"):
+        product_info["name"] = "the product"
+
+    persona_data = None
+    if persona_id:
+        try:
+            from uuid import UUID
+            from viraltracker.services.persona_service import PersonaService
+            persona_data = PersonaService().export_for_ad_generation(UUID(persona_id))
+        except Exception:
+            pass
+
+    # Build slots + prompts to show defaults
+    slots = []
+    for idx_str, data in sorted(meta.items(), key=lambda x: int(x[0])):
+        if not isinstance(data, dict) or not data.get("analysis"):
+            continue
+        slot = ImageSlot(
+            index=int(idx_str),
+            original_src=data.get("original_src", ""),
+            alt_text=data.get("alt_text", ""),
+            surrounding_text=data.get("surrounding_text", ""),
+            section_heading=data.get("section_heading", ""),
+            image_analysis=data.get("analysis"),
+            aspect_ratio=data.get("aspect_ratio"),
+            selected=True,
+        )
+        slots.append(slot)
+
+    svc.build_generation_prompts(slots, product_info, persona_data, brand_profile)
+
+    for slot in slots:
+        img_type = (slot.image_analysis or {}).get("image_type", "image")
+        st.text_area(
+            f"#{slot.index} ({img_type})",
+            value=slot.prompt or "",
+            key=f"lpa_prompt_edit_{blueprint_id}_{slot.index}",
+            height=68,
+        )
+
+
+def _collect_prompt_overrides(meta: dict, blueprint_id: str) -> Dict[int, str]:
+    """Collect any user-edited prompts from session state."""
+    overrides = {}
+    for idx_str in meta:
+        key = f"lpa_prompt_edit_{blueprint_id}_{idx_str}"
+        val = st.session_state.get(key, "")
+        if val and val.strip():
+            overrides[int(idx_str)] = val.strip()
+    return overrides
 
 
 def _render_blueprint_mockup_section(

@@ -726,9 +726,14 @@ class BlueprintImageService:
         persona_id: Optional[str] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
         selected_indices: Optional[List[int]] = None,
+        prompt_overrides: Optional[Dict[int, str]] = None,
         progress_cb: Optional[Callable] = None,
     ) -> Tuple[str, int, int]:
         """Phase 2: Generate AI images and replace in HTML.
+
+        Args:
+            prompt_overrides: Dict mapping slot index → custom prompt string.
+                Overrides the auto-generated prompt for those slots.
 
         Returns (new_html, generated_count, failed_count).
         """
@@ -783,6 +788,12 @@ class BlueprintImageService:
         # Build prompts
         self.build_generation_prompts(slots, product_info, persona_data, brand_profile)
 
+        # Apply user prompt overrides
+        if prompt_overrides:
+            for slot in slots:
+                if slot.index in prompt_overrides and prompt_overrides[slot.index].strip():
+                    slot.prompt = prompt_overrides[slot.index].strip()
+
         # Create generation service
         gen_svc = GeminiService()
         if self._tracker:
@@ -812,6 +823,7 @@ class BlueprintImageService:
         product_id: str,
         persona_id: Optional[str] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
+        prompt_override: Optional[str] = None,
         progress_cb: Optional[Callable] = None,
     ) -> Tuple[str, bool]:
         """Regenerate a single image slot. Returns (new_html, success)."""
@@ -879,8 +891,11 @@ class BlueprintImageService:
         if not product_info.get("name"):
             product_info["name"] = "the product"
 
-        # Build prompt
-        self.build_generation_prompts([slot], product_info, persona_data, brand_profile)
+        # Build prompt (user override takes precedence)
+        if prompt_override and prompt_override.strip():
+            slot.prompt = prompt_override.strip()
+        else:
+            self.build_generation_prompts([slot], product_info, persona_data, brand_profile)
 
         if not slot.prompt:
             return existing_html, False
