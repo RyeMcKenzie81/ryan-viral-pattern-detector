@@ -1,0 +1,989 @@
+"""
+BlueprintImageService — Context-aware AI image replacement for blueprint mockups.
+
+Two-phase workflow:
+1. ANALYZE: Extract image slots from HTML, download originals, run Vision analysis
+2. GENERATE: Build narrative prompts, generate with Gemini 3 Pro, replace in HTML
+
+Each image slot tracks its own metadata for selective per-image regeneration.
+"""
+
+import asyncio
+import base64
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from io import BytesIO
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+
+# Standard aspect ratios for snapping detected dimensions
+STANDARD_RATIOS = {
+    (16, 9): "16:9",
+    (9, 16): "9:16",
+    (4, 3): "4:3",
+    (3, 4): "3:4",
+    (3, 2): "3:2",
+    (2, 3): "2:3",
+    (1, 1): "1:1",
+    (21, 9): "21:9",
+}
+
+
+def snap_aspect_ratio(width: int, height: int) -> str:
+    """Snap image dimensions to the nearest standard aspect ratio."""
+    if width <= 0 or height <= 0:
+        return "1:1"
+    ratio = width / height
+    best = "1:1"
+    best_diff = float("inf")
+    for (w, h), label in STANDARD_RATIOS.items():
+        diff = abs(ratio - w / h)
+        if diff < best_diff:
+            best_diff = diff
+            best = label
+    return best
+
+
+@dataclass
+class ImageSlot:
+    """Represents a single <img> tag in the blueprint HTML."""
+
+    index: int
+    original_src: str
+    alt_text: str
+    surrounding_text: str
+    section_heading: str
+    original_base64: Optional[str] = None
+    image_analysis: Optional[dict] = None
+    aspect_ratio: Optional[str] = None
+    prompt: Optional[str] = None
+    generated_base64: Optional[str] = None
+    storage_url: Optional[str] = None
+    error: Optional[str] = None
+    selected: bool = True
+
+
+# ---------------------------------------------------------------------------
+# HTML Parsers
+# ---------------------------------------------------------------------------
+
+class _ImageContextExtractor(HTMLParser):
+    """Walk HTML, extract <img> tags with surrounding text context."""
+
+    def __init__(self):
+        super().__init__()
+        self.slots: List[ImageSlot] = []
+        self._img_index = 0
+        self._current_section_text: List[str] = []
+        self._current_heading = ""
+        self._in_heading = False
+        self._heading_tag = ""
+
+    def handle_starttag(self, tag: str, attrs: list):
+        attrs_dict = dict(attrs)
+
+        # Track section headings
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._in_heading = True
+            self._heading_tag = tag
+
+        # Track data-section for context
+        if attrs_dict.get("data-slot", "").startswith("heading-"):
+            # This is a heading slot — capture text
+            pass
+
+        if tag == "img":
+            src = attrs_dict.get("src", "")
+            alt = attrs_dict.get("alt", "")
+            width = attrs_dict.get("width", "")
+            height = attrs_dict.get("height", "")
+
+            # Filter out small icons
+            try:
+                if width and height and int(width) < 48 and int(height) < 48:
+                    return
+            except (ValueError, TypeError):
+                pass
+
+            # Validate URL
+            if not src:
+                return
+            if not self._is_valid_image_url(src):
+                return
+
+            slot = ImageSlot(
+                index=self._img_index,
+                original_src=src,
+                alt_text=alt,
+                surrounding_text=" ".join(self._current_section_text[-20:]).strip()[:500],
+                section_heading=self._current_heading,
+            )
+            self.slots.append(slot)
+            self._img_index += 1
+
+    def handle_endtag(self, tag: str):
+        if tag == self._heading_tag and self._in_heading:
+            self._in_heading = False
+            self._heading_tag = ""
+
+    def handle_data(self, data: str):
+        text = data.strip()
+        if text:
+            self._current_section_text.append(text)
+            if self._in_heading:
+                self._current_heading = text
+
+    def _is_valid_image_url(self, url: str) -> bool:
+        """Check if URL is a valid, safe image URL."""
+        from viraltracker.services.landing_page_analysis.multipass._url_validator import (
+            validate_image_url,
+        )
+
+        # Skip remote SVGs (not useful for image generation)
+        parsed = urlparse(url)
+        if parsed.path.lower().endswith(".svg"):
+            return False
+
+        is_safe, _, reason = validate_image_url(url)
+        if not is_safe:
+            logger.debug(f"Skipping image URL: {reason} — {url[:80]}")
+            return False
+        return True
+
+
+class _SrcReplacer(HTMLParser):
+    """Replace <img> src attributes by DOM-order index."""
+
+    def __init__(self, replacements: Dict[int, str]):
+        super().__init__()
+        self._replacements = replacements
+        self._img_index = 0
+        self._output_parts: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list):
+        if tag == "img":
+            if self._img_index in self._replacements:
+                # Rebuild <img> with new src, preserving all other attrs
+                new_attrs = []
+                for name, value in attrs:
+                    if name == "src":
+                        new_attrs.append(("src", self._replacements[self._img_index]))
+                    else:
+                        new_attrs.append((name, value))
+                attr_str = " ".join(
+                    f'{n}="{v}"' if v is not None else n for n, v in new_attrs
+                )
+                self._output_parts.append(f"<img {attr_str}>")
+            else:
+                self._output_parts.append(self._reconstruct_tag(tag, attrs))
+            self._img_index += 1
+        else:
+            self._output_parts.append(self._reconstruct_tag(tag, attrs))
+
+    def handle_endtag(self, tag: str):
+        self._output_parts.append(f"</{tag}>")
+
+    def handle_data(self, data: str):
+        self._output_parts.append(data)
+
+    def handle_startendtag(self, tag: str, attrs: list):
+        if tag == "img":
+            if self._img_index in self._replacements:
+                new_attrs = []
+                for name, value in attrs:
+                    if name == "src":
+                        new_attrs.append(("src", self._replacements[self._img_index]))
+                    else:
+                        new_attrs.append((name, value))
+                attr_str = " ".join(
+                    f'{n}="{v}"' if v is not None else n for n, v in new_attrs
+                )
+                self._output_parts.append(f"<img {attr_str} />")
+            else:
+                self._output_parts.append(self._reconstruct_tag(tag, attrs, self_closing=True))
+            self._img_index += 1
+        else:
+            self._output_parts.append(self._reconstruct_tag(tag, attrs, self_closing=True))
+
+    def handle_comment(self, data: str):
+        self._output_parts.append(f"<!--{data}-->")
+
+    def handle_decl(self, decl: str):
+        self._output_parts.append(f"<!{decl}>")
+
+    def handle_entityref(self, name: str):
+        self._output_parts.append(f"&{name};")
+
+    def handle_charref(self, name: str):
+        self._output_parts.append(f"&#{name};")
+
+    @staticmethod
+    def _reconstruct_tag(tag: str, attrs: list, self_closing: bool = False) -> str:
+        attr_str = ""
+        if attrs:
+            parts = []
+            for name, value in attrs:
+                if value is not None:
+                    parts.append(f'{name}="{value}"')
+                else:
+                    parts.append(name)
+            attr_str = " " + " ".join(parts)
+        close = " /" if self_closing else ""
+        return f"<{tag}{attr_str}{close}>"
+
+    def get_output(self) -> str:
+        return "".join(self._output_parts)
+
+
+def replace_image_sources(html: str, replacements: Dict[int, str]) -> str:
+    """Replace <img> src attrs by DOM-order index using HTMLParser (not regex)."""
+    replacer = _SrcReplacer(replacements)
+    replacer.feed(html)
+    return replacer.get_output()
+
+
+# ---------------------------------------------------------------------------
+# Main Service
+# ---------------------------------------------------------------------------
+
+VISION_ANALYSIS_PROMPT = """Analyze this image and return a JSON object with these fields:
+{
+  "image_type": "product_shot|lifestyle|hero_banner|infographic|testimonial_photo|before_after|ingredient|background_texture",
+  "subject": "what's in the image",
+  "composition": "layout style, colors, mood",
+  "has_people": true/false,
+  "people_description": "demographics if people present, else empty string",
+  "aspect_ratio": "estimated aspect ratio like 16:9"
+}
+Return ONLY the JSON, no markdown fences or explanation."""
+
+
+class BlueprintImageService:
+    """Context-aware AI image replacement for blueprint mockups."""
+
+    def __init__(self, supabase=None):
+        from viraltracker.core.database import get_supabase_client
+
+        self.supabase = supabase or get_supabase_client()
+        self._tracker = None
+        self._user_id: Optional[str] = None
+        self._org_id: Optional[str] = None
+
+    def set_tracking_context(self, tracker, user_id: Optional[str], org_id: str):
+        """Set usage tracking context for billing."""
+        self._tracker = tracker
+        self._user_id = user_id
+        self._org_id = org_id
+
+    # ------------------------------------------------------------------
+    # Phase 1: Analyze
+    # ------------------------------------------------------------------
+
+    def extract_image_slots(self, html: str) -> List[ImageSlot]:
+        """Parse HTML and extract <img> tags with surrounding context."""
+        parser = _ImageContextExtractor()
+        parser.feed(html)
+        return parser.slots
+
+    async def download_images_parallel(
+        self, slots: List[ImageSlot], progress_cb: Optional[Callable] = None
+    ) -> int:
+        """Download all original images in parallel. Returns count of successful downloads."""
+        import httpx
+        from PIL import Image
+
+        from viraltracker.services.landing_page_analysis.multipass._url_validator import (
+            validate_image_url,
+        )
+
+        success_count = 0
+
+        async def _download_one(slot: ImageSlot):
+            nonlocal success_count
+
+            # Pre-validate URL
+            parsed = urlparse(slot.original_src)
+            if parsed.path.lower().endswith(".svg"):
+                logger.debug(f"Skipping SVG: {slot.original_src[:80]}")
+                return
+            is_safe, _, reason = validate_image_url(slot.original_src)
+            if not is_safe:
+                logger.debug(f"Skipping unsafe URL: {reason}")
+                return
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                    resp = await client.get(slot.original_src)
+                    resp.raise_for_status()
+                    img_bytes = resp.content
+
+                # Detect aspect ratio from image dimensions
+                try:
+                    img = Image.open(BytesIO(img_bytes))
+                    slot.aspect_ratio = snap_aspect_ratio(img.width, img.height)
+                except Exception:
+                    slot.aspect_ratio = "1:1"
+
+                slot.original_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                success_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to download image {slot.index}: {e}")
+
+        tasks = [_download_one(slot) for slot in slots]
+        await asyncio.gather(*tasks)
+
+        if progress_cb:
+            progress_cb(-1, len(slots), f"Downloaded {success_count}/{len(slots)} images")
+
+        return success_count
+
+    async def analyze_original_images(
+        self,
+        slots: List[ImageSlot],
+        gemini_service,
+        progress_cb: Optional[Callable] = None,
+    ) -> List[ImageSlot]:
+        """Run Vision analysis on each downloaded image (parallel with semaphore)."""
+        sem = asyncio.Semaphore(5)
+
+        async def _analyze_one(slot: ImageSlot):
+            if not slot.original_base64:
+                # Fallback: use alt text + surrounding context
+                slot.image_analysis = {
+                    "image_type": "unknown",
+                    "subject": slot.alt_text or "unknown",
+                    "composition": "unknown",
+                    "has_people": False,
+                    "people_description": "",
+                    "aspect_ratio": slot.aspect_ratio or "1:1",
+                }
+                return
+
+            async with sem:
+                try:
+                    if progress_cb:
+                        progress_cb(slot.index, len(slots), f"Analyzing image {slot.index + 1}/{len(slots)}")
+
+                    raw = await gemini_service.analyze_image_async(
+                        slot.original_base64,
+                        VISION_ANALYSIS_PROMPT,
+                        skip_internal_rate_limit=True,
+                    )
+
+                    # Parse JSON response
+                    try:
+                        # Strip markdown fences if present
+                        text = raw.strip()
+                        if text.startswith("```"):
+                            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                            if text.endswith("```"):
+                                text = text[:-3]
+                        slot.image_analysis = json.loads(text.strip())
+                    except (json.JSONDecodeError, ValueError):
+                        slot.image_analysis = {
+                            "image_type": "unknown",
+                            "subject": raw[:200] if raw else slot.alt_text,
+                            "composition": "unknown",
+                            "has_people": False,
+                            "people_description": "",
+                            "aspect_ratio": slot.aspect_ratio or "1:1",
+                        }
+                except Exception as e:
+                    logger.warning(f"Vision analysis failed for slot {slot.index}: {e}")
+                    slot.image_analysis = {
+                        "image_type": "unknown",
+                        "subject": slot.alt_text or "unknown",
+                        "composition": "unknown",
+                        "has_people": False,
+                        "people_description": "",
+                        "aspect_ratio": slot.aspect_ratio or "1:1",
+                    }
+
+        tasks = [_analyze_one(slot) for slot in slots]
+        await asyncio.gather(*tasks)
+        return slots
+
+    # ------------------------------------------------------------------
+    # Phase 2: Generate
+    # ------------------------------------------------------------------
+
+    def build_generation_prompts(
+        self,
+        slots: List[ImageSlot],
+        product_info: Dict[str, Any],
+        persona: Optional[Dict[str, Any]] = None,
+        brand_profile: Optional[Dict[str, Any]] = None,
+    ) -> List[ImageSlot]:
+        """Build narrative-style prompts for each image slot."""
+        product_name = product_info.get("name", "the product")
+        brand_colors = ""
+        if brand_profile:
+            basics = brand_profile.get("brand_basics", {})
+            colors = basics.get("colors", [])
+            if colors:
+                brand_colors = ", ".join(colors[:3])
+
+        # Persona demographics
+        persona_age = ""
+        persona_gender = ""
+        if persona:
+            demographics = persona.get("demographics", {})
+            persona_age = demographics.get("age_range", "")
+            persona_gender = demographics.get("gender", "")
+
+        for slot in slots:
+            if not slot.selected:
+                continue
+
+            analysis = slot.image_analysis or {}
+            image_type = analysis.get("image_type", "unknown")
+            subject = analysis.get("subject", "")
+            composition = analysis.get("composition", "")
+            has_people = analysis.get("has_people", False)
+            people_desc = analysis.get("people_description", "")
+            context = slot.surrounding_text[:200] if slot.surrounding_text else ""
+
+            # Person description: prefer persona, fall back to Vision
+            person_desc = ""
+            if persona_age and persona_gender:
+                person_desc = f"a {persona_age} {persona_gender}"
+            elif has_people and people_desc:
+                person_desc = people_desc
+
+            color_note = f", brand colors {brand_colors}" if brand_colors else ""
+
+            if image_type == "lifestyle":
+                slot.prompt = (
+                    f"Realistic iPhone photo of {person_desc or 'a person'} "
+                    f"{composition or 'in a natural setting'}, "
+                    f"{product_name} product visible nearby{color_note}, "
+                    f"natural lighting, candid natural moment, warm tones"
+                )
+
+            elif image_type == "product_shot":
+                slot.prompt = (
+                    f"Professional product photography of {product_name} on a clean surface, "
+                    f"studio lighting, {composition or 'sharp focus'}{color_note}, "
+                    f"shot from a flattering angle, no text overlays"
+                )
+
+            elif image_type == "hero_banner":
+                slot.prompt = (
+                    f"Wide cinematic hero image for {product_name}, "
+                    f"{composition or 'dramatic composition'}{color_note} prominent, "
+                    f"{context[:100] or 'commercial photography quality'}, no text overlays"
+                )
+
+            elif image_type == "testimonial_photo":
+                slot.prompt = (
+                    f"Realistic natural headshot of {person_desc or 'a satisfied customer'}, "
+                    f"genuine warm smile, soft natural lighting, slightly blurred background, "
+                    f"authentic feel"
+                )
+
+            elif image_type == "before_after":
+                slot.prompt = (
+                    f"Side-by-side comparison image showing transformation, "
+                    f"left side: {subject or 'before state'}, right side: improved with {product_name}, "
+                    f"clean layout{color_note}"
+                )
+
+            else:
+                # Default / unknown / infographic / ingredient / background_texture
+                slot.prompt = (
+                    f"High-quality commercial photograph for {product_name}, "
+                    f"{subject or 'product showcase'}, {composition or 'professional lighting'}"
+                    f"{color_note}, no text overlays"
+                )
+
+        return slots
+
+    async def generate_images(
+        self,
+        slots: List[ImageSlot],
+        gemini_service,
+        reference_images_b64: List[str],
+        progress_cb: Optional[Callable] = None,
+    ) -> List[ImageSlot]:
+        """Generate images sequentially via Gemini 3 Pro."""
+        from viraltracker.services.gemini_service import SafetyFilterError
+
+        selected = [s for s in slots if s.selected and s.prompt]
+        total = len(selected)
+
+        for i, slot in enumerate(selected):
+            if progress_cb:
+                progress_cb(i, total, f"Generating image {i + 1}/{total}: {slot.image_analysis.get('image_type', 'image')}...")
+
+            # Build reference images: original first, then product refs
+            refs = []
+            if slot.original_base64:
+                refs.append(slot.original_base64)
+            refs.extend(reference_images_b64[:3])
+
+            try:
+                result = await gemini_service.generate_image(
+                    slot.prompt,
+                    reference_images=refs if refs else None,
+                    return_metadata=True,
+                    aspect_ratio=slot.aspect_ratio,
+                )
+                slot.generated_base64 = result["image_base64"]
+            except SafetyFilterError as e:
+                logger.warning(f"Safety filter for slot {slot.index}: {e}")
+                # Retry with product-only prompt if people were involved
+                if slot.image_analysis and slot.image_analysis.get("has_people"):
+                    try:
+                        fallback_prompt = (
+                            f"Professional product photography of a wellness product on a clean surface, "
+                            f"studio lighting, neutral background, sharp focus, no people, no text overlays"
+                        )
+                        result = await gemini_service.generate_image(
+                            fallback_prompt,
+                            reference_images=reference_images_b64[:3] if reference_images_b64 else None,
+                            return_metadata=True,
+                            aspect_ratio=slot.aspect_ratio,
+                        )
+                        slot.generated_base64 = result["image_base64"]
+                    except Exception as retry_err:
+                        logger.error(f"Safety fallback also failed for slot {slot.index}: {retry_err}")
+                        slot.error = f"Blocked by safety filter (retry failed): {retry_err}"
+                else:
+                    slot.error = f"Blocked by safety filter: {e}"
+            except Exception as e:
+                logger.error(f"Image generation failed for slot {slot.index}: {e}")
+                slot.error = str(e)
+
+        return slots
+
+    async def upload_and_replace_html(
+        self,
+        slots: List[ImageSlot],
+        html: str,
+        blueprint_id: str,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Upload generated PNGs and replace image sources in HTML."""
+        replacements: Dict[int, str] = {}
+        meta: Dict[str, Any] = {}
+        bucket = self.supabase.storage.from_("generated-ads")
+
+        for slot in slots:
+            if not slot.generated_base64:
+                # Store analysis meta even for non-generated slots
+                meta[str(slot.index)] = self._build_slot_meta(slot)
+                continue
+
+            ts = int(time.time() * 1000)
+            file_path = f"blueprint-images/{blueprint_id}/img_{slot.index}_{ts}.png"
+            img_bytes = base64.b64decode(slot.generated_base64)
+
+            try:
+                # Upload to Supabase storage
+                await asyncio.to_thread(
+                    bucket.upload,
+                    file_path,
+                    img_bytes,
+                    {"content-type": "image/png"},
+                )
+
+                # Get public URL
+                public_url_resp = bucket.get_public_url(file_path)
+                slot.storage_url = public_url_resp
+
+                replacements[slot.index] = slot.storage_url
+            except Exception as e:
+                logger.error(f"Upload failed for slot {slot.index}: {e}")
+                slot.error = f"Upload failed: {e}"
+
+            meta[str(slot.index)] = self._build_slot_meta(slot, storage_path=file_path)
+
+        # Replace image sources in HTML
+        new_html = replace_image_sources(html, replacements) if replacements else html
+
+        return new_html, meta
+
+    # ------------------------------------------------------------------
+    # Orchestrators
+    # ------------------------------------------------------------------
+
+    async def analyze_blueprint_images(
+        self,
+        blueprint_id: str,
+        html: str,
+        progress_cb: Optional[Callable] = None,
+    ) -> Tuple[List[ImageSlot], int]:
+        """Phase 1: Extract, download, and analyze images. Saves analysis to DB."""
+        from viraltracker.services.gemini_service import GeminiService
+
+        if progress_cb:
+            progress_cb(0, 1, "Extracting image slots...")
+
+        slots = self.extract_image_slots(html)
+        if not slots:
+            return [], 0
+
+        if progress_cb:
+            progress_cb(0, len(slots), f"Downloading {len(slots)} images...")
+
+        success = await self.download_images_parallel(slots, progress_cb)
+
+        # Create Vision service (Flash for cheap analysis)
+        vision_svc = GeminiService(model="gemini-2.5-flash")
+        if self._tracker:
+            vision_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
+
+        await self.analyze_original_images(slots, vision_svc, progress_cb)
+
+        # Build and save analysis meta
+        meta = {}
+        for slot in slots:
+            meta[str(slot.index)] = self._build_slot_meta(slot)
+
+        self.save_analysis(blueprint_id, meta)
+
+        return slots, success
+
+    async def generate_blueprint_images(
+        self,
+        blueprint_id: str,
+        html: str,
+        product_id: str,
+        persona_id: Optional[str] = None,
+        brand_profile: Optional[Dict[str, Any]] = None,
+        selected_indices: Optional[List[int]] = None,
+        progress_cb: Optional[Callable] = None,
+    ) -> Tuple[str, int, int]:
+        """Phase 2: Generate AI images and replace in HTML.
+
+        Returns (new_html, generated_count, failed_count).
+        """
+        from viraltracker.services.gemini_service import GeminiService
+
+        # Load cached analysis
+        bp = self.supabase.table("landing_page_blueprints").select(
+            "generated_images_meta"
+        ).eq("id", blueprint_id).single().execute()
+        existing_meta = (bp.data or {}).get("generated_images_meta", {})
+
+        # Rebuild slots from cached meta, or re-analyze if empty
+        if existing_meta:
+            slots = self._rebuild_slots_from_meta(existing_meta)
+        else:
+            slots, _ = await self.analyze_blueprint_images(blueprint_id, html, progress_cb)
+            # Re-read meta after analysis
+            bp = self.supabase.table("landing_page_blueprints").select(
+                "generated_images_meta"
+            ).eq("id", blueprint_id).single().execute()
+            existing_meta = (bp.data or {}).get("generated_images_meta", {})
+
+        if not slots:
+            return html, 0, 0
+
+        # Apply selection filter
+        if selected_indices is not None:
+            for slot in slots:
+                slot.selected = slot.index in selected_indices
+
+        # Load product reference images
+        product_refs_b64 = await self._load_product_images(product_id)
+
+        # Load persona
+        persona_data = None
+        if persona_id:
+            try:
+                from uuid import UUID
+                from viraltracker.services.persona_service import PersonaService
+
+                persona_data = PersonaService().export_for_ad_generation(UUID(persona_id))
+            except (ValueError, Exception) as e:
+                logger.warning(f"Failed to load persona {persona_id}: {e}")
+
+        # Product info from brand profile
+        product_info = {}
+        if brand_profile:
+            product_info = brand_profile.get("product", {})
+        if not product_info.get("name"):
+            product_info["name"] = "the product"
+
+        # Build prompts
+        self.build_generation_prompts(slots, product_info, persona_data, brand_profile)
+
+        # Create generation service
+        gen_svc = GeminiService()
+        if self._tracker:
+            gen_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
+
+        # Generate images
+        await self.generate_images(slots, gen_svc, product_refs_b64, progress_cb)
+
+        # Upload and replace
+        new_html, meta = await self.upload_and_replace_html(slots, html, blueprint_id)
+
+        # Merge meta: keep analysis for non-generated slots, update generated ones
+        merged_meta = {**existing_meta, **meta}
+
+        # Save to DB
+        self.save_generated_images(blueprint_id, new_html, merged_meta)
+
+        generated = sum(1 for s in slots if s.selected and s.generated_base64)
+        failed = sum(1 for s in slots if s.selected and s.error)
+
+        return new_html, generated, failed
+
+    async def regenerate_single_image(
+        self,
+        blueprint_id: str,
+        slot_index: int,
+        product_id: str,
+        persona_id: Optional[str] = None,
+        brand_profile: Optional[Dict[str, Any]] = None,
+        progress_cb: Optional[Callable] = None,
+    ) -> Tuple[str, bool]:
+        """Regenerate a single image slot. Returns (new_html, success)."""
+        from viraltracker.services.gemini_service import GeminiService
+
+        # Load existing data
+        bp = self.supabase.table("landing_page_blueprints").select(
+            "generated_images_meta, blueprint_mockup_html_with_images"
+        ).eq("id", blueprint_id).single().execute()
+
+        if not bp.data:
+            raise ValueError(f"Blueprint {blueprint_id} not found")
+
+        existing_meta = bp.data.get("generated_images_meta", {})
+        existing_html = bp.data.get("blueprint_mockup_html_with_images")
+        slot_key = str(slot_index)
+
+        if slot_key not in existing_meta:
+            raise ValueError(f"No metadata for slot {slot_index}")
+
+        if not existing_html:
+            raise ValueError("No existing generated HTML to update")
+
+        # Rebuild slot from stored meta
+        slot_data = existing_meta[slot_key]
+        slot = ImageSlot(
+            index=slot_index,
+            original_src=slot_data.get("original_src", ""),
+            alt_text=slot_data.get("alt_text", ""),
+            surrounding_text=slot_data.get("surrounding_text", ""),
+            section_heading=slot_data.get("section_heading", ""),
+            image_analysis=slot_data.get("analysis"),
+            aspect_ratio=slot_data.get("aspect_ratio"),
+            selected=True,
+        )
+
+        # Re-download original for composition reference
+        if slot.original_src:
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                    resp = await client.get(slot.original_src)
+                    resp.raise_for_status()
+                    slot.original_base64 = base64.b64encode(resp.content).decode("utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to re-download original for regen: {e}")
+
+        # Load product refs + persona + product info
+        product_refs_b64 = await self._load_product_images(product_id)
+
+        persona_data = None
+        if persona_id:
+            try:
+                from uuid import UUID
+                from viraltracker.services.persona_service import PersonaService
+
+                persona_data = PersonaService().export_for_ad_generation(UUID(persona_id))
+            except (ValueError, Exception) as e:
+                logger.warning(f"Failed to load persona for regen: {e}")
+
+        product_info = {}
+        if brand_profile:
+            product_info = brand_profile.get("product", {})
+        if not product_info.get("name"):
+            product_info["name"] = "the product"
+
+        # Build prompt
+        self.build_generation_prompts([slot], product_info, persona_data, brand_profile)
+
+        if not slot.prompt:
+            return existing_html, False
+
+        # Generate
+        gen_svc = GeminiService()
+        if self._tracker:
+            gen_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
+
+        if progress_cb:
+            progress_cb(0, 1, "Generating replacement image...")
+
+        await self.generate_images([slot], gen_svc, product_refs_b64, progress_cb)
+
+        if not slot.generated_base64:
+            return existing_html, False
+
+        # Upload
+        ts = int(time.time() * 1000)
+        file_path = f"blueprint-images/{blueprint_id}/img_{slot_index}_{ts}.png"
+        img_bytes = base64.b64decode(slot.generated_base64)
+        bucket = self.supabase.storage.from_("generated-ads")
+
+        try:
+            await asyncio.to_thread(
+                bucket.upload,
+                file_path,
+                img_bytes,
+                {"content-type": "image/png"},
+            )
+            slot.storage_url = bucket.get_public_url(file_path)
+        except Exception as e:
+            logger.error(f"Upload failed for regen slot {slot_index}: {e}")
+            return existing_html, False
+
+        # Replace in existing generated HTML
+        new_html = replace_image_sources(existing_html, {slot_index: slot.storage_url})
+
+        # Build slot meta and merge
+        slot_meta = self._build_slot_meta(slot, storage_path=file_path)
+
+        self.save_single_slot(blueprint_id, slot_index, new_html, slot_meta)
+
+        # Best-effort delete old storage file
+        old_path = slot_data.get("storage_path")
+        if old_path:
+            try:
+                await asyncio.to_thread(bucket.remove, [old_path])
+            except Exception as e:
+                logger.warning(f"Failed to delete old image {old_path}: {e}")
+
+        return new_html, True
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def save_analysis(self, blueprint_id: str, meta: dict):
+        """Save Vision analysis results (Phase 1 cache)."""
+        self.supabase.table("landing_page_blueprints").update({
+            "generated_images_meta": meta,
+        }).eq("id", blueprint_id).execute()
+
+    def save_generated_images(self, blueprint_id: str, html: str, meta: dict):
+        """Save generated images HTML and metadata."""
+        self.supabase.table("landing_page_blueprints").update({
+            "blueprint_mockup_html_with_images": html,
+            "generated_images_meta": meta,
+        }).eq("id", blueprint_id).execute()
+
+    def save_single_slot(self, blueprint_id: str, slot_index: int, html: str, slot_meta: dict):
+        """Merge a single regenerated slot into existing data."""
+        bp = self.supabase.table("landing_page_blueprints").select(
+            "generated_images_meta"
+        ).eq("id", blueprint_id).single().execute()
+        existing_meta = bp.data.get("generated_images_meta", {}) if bp.data else {}
+        existing_meta[str(slot_index)] = slot_meta
+        self.supabase.table("landing_page_blueprints").update({
+            "blueprint_mockup_html_with_images": html,
+            "generated_images_meta": existing_meta,
+        }).eq("id", blueprint_id).execute()
+
+    def clear_generated_images(self, blueprint_id: str):
+        """Clear generated images when base mockup is regenerated."""
+        # Delete storage objects
+        try:
+            prefix = f"blueprint-images/{blueprint_id}/"
+            bucket = self.supabase.storage.from_("generated-ads")
+            while True:
+                files = bucket.list(prefix, {"limit": 100})
+                if not files:
+                    break
+                paths = [f"{prefix}{f['name']}" for f in files]
+                bucket.remove(paths)
+                if len(files) < 100:
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to clean storage for {blueprint_id}: {e}")
+
+        # Clear DB columns
+        self.supabase.table("landing_page_blueprints").update({
+            "blueprint_mockup_html_with_images": None,
+            "generated_images_meta": {},
+        }).eq("id", blueprint_id).execute()
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    async def _load_product_images(self, product_id: str) -> List[str]:
+        """Load top 3 product reference images as base64."""
+        image_extensions = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+        try:
+            result = self.supabase.table("product_images").select(
+                "storage_path, is_main"
+            ).eq("product_id", product_id).order("is_main", desc=True).execute()
+
+            images = [
+                img for img in (result.data or [])
+                if img["storage_path"].lower().endswith(image_extensions)
+            ][:3]
+
+            refs = []
+            for img in images:
+                try:
+                    storage_path = img["storage_path"]
+                    parts = storage_path.split("/", 1)
+                    bucket_name = parts[0]
+                    file_path = parts[1] if len(parts) > 1 else storage_path
+
+                    data = await asyncio.to_thread(
+                        self.supabase.storage.from_(bucket_name).download,
+                        file_path,
+                    )
+                    refs.append(base64.b64encode(data).decode("utf-8"))
+                except Exception as e:
+                    logger.warning(f"Failed to download product image: {e}")
+
+            return refs
+        except Exception as e:
+            logger.warning(f"Failed to load product images for {product_id}: {e}")
+            return []
+
+    def _rebuild_slots_from_meta(self, meta: Dict[str, Any]) -> List[ImageSlot]:
+        """Rebuild ImageSlot list from stored metadata."""
+        slots = []
+        for idx_str, data in sorted(meta.items(), key=lambda x: int(x[0])):
+            slot = ImageSlot(
+                index=int(idx_str),
+                original_src=data.get("original_src", ""),
+                alt_text=data.get("alt_text", ""),
+                surrounding_text=data.get("surrounding_text", ""),
+                section_heading=data.get("section_heading", ""),
+                image_analysis=data.get("analysis"),
+                aspect_ratio=data.get("aspect_ratio"),
+                selected=True,
+            )
+            slots.append(slot)
+        return slots
+
+    def _build_slot_meta(
+        self, slot: ImageSlot, storage_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Build metadata dict for a single slot."""
+        return {
+            "original_src": slot.original_src,
+            "alt_text": slot.alt_text,
+            "surrounding_text": slot.surrounding_text,
+            "section_heading": slot.section_heading,
+            "aspect_ratio": slot.aspect_ratio,
+            "analysis": slot.image_analysis,
+            "prompt": slot.prompt,
+            "storage_path": storage_path,
+            "storage_url": slot.storage_url,
+            "error": slot.error,
+        }

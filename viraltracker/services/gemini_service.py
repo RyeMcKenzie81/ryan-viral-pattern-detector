@@ -28,6 +28,11 @@ class RateLimitError(Exception):
     pass
 
 
+class SafetyFilterError(Exception):
+    """Raised when Gemini blocks generation due to safety filters."""
+    pass
+
+
 # Hook types from Hook Intelligence framework
 HOOK_TYPES = [
     "relatable_slice", "shock_violation", "listicle_howto", "hot_take",
@@ -563,7 +568,8 @@ Generate the article now:"""
         max_retries: int = 3,
         return_metadata: bool = False,
         temperature: float = 0.4,
-        image_size: str = "2K"
+        image_size: str = "2K",
+        aspect_ratio: str = None,
     ) -> str | dict:
         """
         Generate an image using Gemini 3 Pro Image Preview API.
@@ -578,6 +584,7 @@ Generate the article now:"""
             return_metadata: If True, return dict with image and generation metadata
             temperature: Generation temperature (0.0-1.0). Lower = more deterministic. Default 0.4.
             image_size: Output resolution - "1K", "2K", or "4K". Default "2K" for better text quality.
+            aspect_ratio: Output aspect ratio - "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9". Default None (uses image_size).
 
         Returns:
             If return_metadata=False: Base64-encoded generated image (string)
@@ -589,6 +596,7 @@ Generate the article now:"""
                 - retries: Number of retries needed
 
         Raises:
+            SafetyFilterError: If generation is blocked by safety filters
             Exception: If all retries fail or non-retryable error occurs
         """
         self._check_usage_limit()
@@ -648,15 +656,17 @@ Generate the article now:"""
                 # Use dedicated image generation model (not the default text model)
                 # Temperature controls randomness - lower = more deterministic
                 # image_size controls output resolution: "1K", "2K", or "4K"
+                image_config_kwargs = {"image_size": image_size}
+                if aspect_ratio:
+                    image_config_kwargs["aspect_ratio"] = aspect_ratio
+
                 response = self.client.models.generate_content(
                     model="gemini-3-pro-image-preview",
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=temperature,
                         response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
-                        image_config=types.ImageConfig(
-                            image_size=image_size
-                        )
+                        image_config=types.ImageConfig(**image_config_kwargs)
                     )
                 )
 
@@ -675,6 +685,22 @@ Generate the article now:"""
                         model_used = model_requested
                 except Exception:
                     model_used = model_requested
+
+                # Check for blocked or empty response (safety filters)
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    raise SafetyFilterError(f"Image generation blocked by safety filter: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None, types.FinishReason.STOP, types.FinishReason.MAX_TOKENS
+                ):
+                    raise SafetyFilterError(f"Image generation blocked: finish_reason={candidate.finish_reason}")
+
+                if not hasattr(candidate, 'content') or not candidate.content:
+                    raise SafetyFilterError("Image generation returned empty content")
+                if not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+                    raise SafetyFilterError("Image generation returned no parts")
 
                 # Extract generated image from response
                 # Look for parts with inline_data

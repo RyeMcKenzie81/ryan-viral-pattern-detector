@@ -105,6 +105,12 @@ def get_mockup_service():
     return MockupService()
 
 
+def get_blueprint_image_service():
+    """Fresh instance per call — carries mutable tracking context."""
+    from viraltracker.services.landing_page_analysis import BlueprintImageService
+    return BlueprintImageService()
+
+
 def _cache_mockup(cache_type: str, item_id: str, html_str: str):
     """Cache a mockup in session state with FIFO eviction (max 10 per type)."""
     ids_key = f"lpa_mockup_{cache_type}_ids"
@@ -1571,6 +1577,209 @@ def _rescrape_for_screenshot(analysis: dict, analysis_id: str, org_id: str):
             st.error(f"Re-scrape failed: {e}")
 
 
+def _render_generate_images_section(
+    blueprint_id: str,
+    mockup_html: str,
+    product_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+    brand_profile: Optional[dict] = None,
+    bp_record: Optional[dict] = None,
+):
+    """Render the two-phase AI image generation section below the mockup preview."""
+    if not product_id:
+        return
+
+    st.markdown("---")
+    st.markdown("**AI Image Generation**")
+    st.caption(
+        "AI-generated images approximate your brand aesthetic. "
+        "Review and regenerate as needed."
+    )
+
+    # Resolve persona_id and brand_profile
+    persona_id = st.session_state.get("lpa_bp_persona_id")
+    if not persona_id and bp_record:
+        persona_id = bp_record.get("persona_id")
+
+    if not brand_profile and bp_record:
+        brand_profile = bp_record.get("brand_profile_snapshot")
+
+    # Check for existing analysis in meta
+    existing_meta = {}
+    if bp_record:
+        existing_meta = bp_record.get("generated_images_meta") or {}
+
+    has_analysis = bool(existing_meta) and any(
+        v.get("analysis") for v in existing_meta.values() if isinstance(v, dict)
+    )
+    has_generated = bp_record and bp_record.get("blueprint_mockup_html_with_images")
+
+    # --- Phase 1: Analyze ---
+    if has_analysis:
+        # Show analysis results table
+        st.markdown("**Image Analysis** (cached)")
+        _render_image_analysis_table(existing_meta, blueprint_id)
+    else:
+        if st.button(
+            "Analyze Images",
+            key=f"lpa_analyze_images_{blueprint_id}",
+            help="Free — uses Vision to classify images before generation",
+        ):
+            svc = get_blueprint_image_service()
+            if org_id:
+                try:
+                    from viraltracker.services.usage_tracker import UsageTracker
+                    tracker = UsageTracker(get_supabase_client())
+                    user_id = st.session_state.get("user_id")
+                    svc.set_tracking_context(tracker, user_id, org_id)
+                except Exception:
+                    pass
+
+            with st.status("Analyzing images...", expanded=True) as status:
+                def on_progress(idx, total, msg):
+                    status.update(label=msg)
+
+                try:
+                    slots, download_count = asyncio.run(
+                        svc.analyze_blueprint_images(blueprint_id, mockup_html, on_progress)
+                    )
+                    if not slots:
+                        st.info("No replaceable images found in the mockup.")
+                    else:
+                        status.update(label=f"Analyzed {len(slots)} images ({download_count} downloaded)", state="complete")
+                        if download_count < len(slots) * 0.5:
+                            st.warning("Over 50% of image downloads failed. Consider re-running page analysis for fresh URLs.")
+                except Exception as e:
+                    st.error(f"Image analysis failed: {e}")
+                    logger.error(f"Image analysis failed: {e}", exc_info=True)
+            st.rerun()
+        return
+
+    # --- Phase 2: Generate ---
+    if not has_generated:
+        # Collect selected indices from checkboxes
+        selected_key = f"lpa_img_selected_{blueprint_id}"
+        selected_indices = st.session_state.get(selected_key, list(range(len(existing_meta))))
+
+        n_selected = len(selected_indices)
+        est_cost = n_selected * 0.02
+        st.markdown(f"**Generate {n_selected} selected images** — estimated cost: ~${est_cost:.2f}")
+
+        if st.button(
+            "Generate Selected Images",
+            key=f"lpa_generate_images_{blueprint_id}",
+            disabled=n_selected == 0,
+        ):
+            svc = get_blueprint_image_service()
+            if org_id:
+                try:
+                    from viraltracker.services.usage_tracker import UsageTracker
+                    tracker = UsageTracker(get_supabase_client())
+                    user_id = st.session_state.get("user_id")
+                    svc.set_tracking_context(tracker, user_id, org_id)
+                except Exception:
+                    pass
+
+            with st.status("Generating images...", expanded=True) as status:
+                def on_progress(idx, total, msg):
+                    status.update(label=msg)
+
+                try:
+                    new_html, generated, failed = asyncio.run(
+                        svc.generate_blueprint_images(
+                            blueprint_id=blueprint_id,
+                            html=mockup_html,
+                            product_id=product_id,
+                            persona_id=persona_id,
+                            brand_profile=brand_profile,
+                            selected_indices=selected_indices,
+                            progress_cb=on_progress,
+                        )
+                    )
+                    status.update(
+                        label=f"Generated {generated} images ({failed} failed)",
+                        state="complete",
+                    )
+                except Exception as e:
+                    st.error(f"Image generation failed: {e}")
+                    logger.error(f"Image generation failed: {e}", exc_info=True)
+            st.rerun()
+    else:
+        # Per-image regeneration buttons
+        st.markdown("**Per-image regeneration**")
+        for idx_str, slot_meta in sorted(existing_meta.items(), key=lambda x: int(x[0])):
+            if not isinstance(slot_meta, dict):
+                continue
+            if not slot_meta.get("storage_url"):
+                continue
+
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                img_type = (slot_meta.get("analysis") or {}).get("image_type", "image")
+                st.caption(f"Slot {idx_str}: {img_type}")
+            with col2:
+                if st.button("Regen", key=f"lpa_regen_img_{blueprint_id}_{idx_str}"):
+                    svc = get_blueprint_image_service()
+                    if org_id:
+                        try:
+                            from viraltracker.services.usage_tracker import UsageTracker
+                            tracker = UsageTracker(get_supabase_client())
+                            user_id = st.session_state.get("user_id")
+                            svc.set_tracking_context(tracker, user_id, org_id)
+                        except Exception:
+                            pass
+
+                    with st.spinner(f"Regenerating image {idx_str}..."):
+                        try:
+                            new_html, success = asyncio.run(
+                                svc.regenerate_single_image(
+                                    blueprint_id=blueprint_id,
+                                    slot_index=int(idx_str),
+                                    product_id=product_id,
+                                    persona_id=persona_id,
+                                    brand_profile=brand_profile,
+                                )
+                            )
+                            if success:
+                                st.success(f"Image {idx_str} regenerated!")
+                            else:
+                                st.warning(f"Image {idx_str} regeneration failed.")
+                        except Exception as e:
+                            st.error(f"Regeneration error: {e}")
+                    st.rerun()
+
+
+def _render_image_analysis_table(meta: dict, blueprint_id: str):
+    """Render analysis results as a table with selection checkboxes."""
+    selected_indices = []
+    for idx_str, data in sorted(meta.items(), key=lambda x: int(x[0])):
+        if not isinstance(data, dict):
+            continue
+        analysis = data.get("analysis", {})
+        if not analysis:
+            continue
+
+        col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
+        with col1:
+            checked = st.checkbox(
+                f"#{idx_str}",
+                value=True,
+                key=f"lpa_img_sel_{blueprint_id}_{idx_str}",
+            )
+            if checked:
+                selected_indices.append(int(idx_str))
+        with col2:
+            st.caption(f"**{analysis.get('image_type', 'unknown')}**")
+            st.caption(analysis.get("subject", "")[:80])
+        with col3:
+            st.caption(analysis.get("composition", "")[:80])
+        with col4:
+            st.caption(data.get("aspect_ratio", "?"))
+
+    # Store selected indices in session state
+    st.session_state[f"lpa_img_selected_{blueprint_id}"] = selected_indices
+
+
 def _render_blueprint_mockup_section(
     result: dict,
     blueprint_id: str,
@@ -1594,7 +1803,32 @@ def _render_blueprint_mockup_section(
             pass
 
     if cached:
-        _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+        # Check for generated-images HTML (toggle between views)
+        bp_record_for_images = None
+        try:
+            bp_svc_img = get_blueprint_service()
+            bp_record_for_images = bp_svc_img.get_blueprint(blueprint_id)
+        except Exception:
+            pass
+
+        images_html = None
+        if bp_record_for_images:
+            images_html = bp_record_for_images.get("blueprint_mockup_html_with_images")
+
+        if images_html:
+            view_mode = st.radio(
+                "View",
+                ["Brand Images", "Original Images"],
+                key=f"lpa_img_view_{blueprint_id}",
+                horizontal=True,
+            )
+            if view_mode == "Brand Images":
+                _render_mockup_preview(images_html, f"blueprint_{blueprint_id}_images")
+            else:
+                _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+        else:
+            _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+
         if st.button(
             "Regenerate Mockup",
             key=f"lpa_regen_mockup_blueprint_{blueprint_id}",
@@ -1613,7 +1847,24 @@ def _render_blueprint_mockup_section(
                 bp_svc.clear_blueprint_mockup_html(blueprint_id)
             except Exception:
                 pass
+            # Clear generated images (stale when base mockup changes)
+            try:
+                bp_img_svc = get_blueprint_image_service()
+                bp_img_svc.clear_generated_images(blueprint_id)
+                st.session_state.pop(f"lpa_blueprint_images_{blueprint_id}", None)
+            except Exception:
+                pass
             st.rerun()
+
+        # Image generation section
+        _render_generate_images_section(
+            blueprint_id=blueprint_id,
+            mockup_html=cached,
+            product_id=product_id,
+            org_id=org_id,
+            brand_profile=None,
+            bp_record=bp_record_for_images,
+        )
         return
     elif st.button(
         "Render Mockup",
@@ -1838,6 +2089,7 @@ def render_blueprint_tab(brand_id: str, org_id: str):
             key="lpa_bp_persona",
         )
         persona_id = persona_options[selected_persona_label]
+        st.session_state["lpa_bp_persona_id"] = persona_id
 
     # Analysis selector
     service = get_analysis_service()
@@ -2050,7 +2302,7 @@ def _render_blueprint(
             key=f"lpa_bp_export_md_{key_suffix}",
         )
     with export_col3:
-        blueprint_id = result.get("id", key_suffix)
+        blueprint_id = result.get("id") or result.get("blueprint_id") or key_suffix
         st.markdown("**Visual Mockup**")
         _render_blueprint_mockup_section(
             result,
