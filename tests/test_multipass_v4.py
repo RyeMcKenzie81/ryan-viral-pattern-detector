@@ -2289,3 +2289,160 @@ class TestPageHtmlStorage:
 
         inserted = mock_table.insert.call_args[0][0]
         assert "page_html" not in inserted, "None page_html should not be in record"
+
+
+# ===========================================================================
+# D2: Bug 1 — _best_effort_reconcile layout mapping
+# ===========================================================================
+
+
+class TestBestEffortReconcile:
+    """Bug 1: _best_effort_reconcile maps sections when counts diverge."""
+
+    def test_name_matching(self):
+        """10 P1 sections vs 6 segmenter sections — name-based matches work."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _best_effort_reconcile,
+        )
+
+        seg_sections = [
+            FakeSection("sec_0", "Navigation", "nav content"),
+            FakeSection("sec_1", "Hero Section", "hero content"),
+            FakeSection("sec_2", "Features", "features content"),
+            FakeSection("sec_3", "Testimonials", "testimonials"),
+            FakeSection("sec_4", "Pricing", "pricing"),
+            FakeSection("sec_5", "Footer", "footer"),
+        ]
+        p1_sections = [
+            {"name": "Nav Bar"},
+            {"name": "Announcement"},
+            {"name": "Hero Section"},
+            {"name": "Benefits"},
+            {"name": "Features List"},
+            {"name": "Social Proof"},
+            {"name": "Testimonials"},
+            {"name": "Pricing Table"},
+            {"name": "FAQ"},
+            {"name": "Footer Links"},
+        ]
+
+        result = _best_effort_reconcile(seg_sections, p1_sections)
+
+        # Every section must have at least one source index
+        for sec in seg_sections:
+            assert sec.section_id in result, f"{sec.section_id} missing from mapping"
+            assert len(result[sec.section_id]) >= 1, f"{sec.section_id} has empty indices"
+
+        # Name matches should work: "Navigation" ↔ "Nav Bar" may not match (low jaccard),
+        # but "Hero Section" ↔ "Hero Section" should
+        assert result["sec_1"] == [2], "Hero Section should match P1 index 2"
+        # "Testimonials" ↔ "Testimonials" should match
+        assert result["sec_3"] == [6], "Testimonials should match P1 index 6"
+
+    def test_proportional_generic_names(self):
+        """All generic names — proportional mapping produces non-empty indices."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _best_effort_reconcile,
+        )
+
+        seg_sections = [
+            FakeSection(f"sec_{i}", "section", f"content {i}")
+            for i in range(5)
+        ]
+        p1_sections = [{"name": "section"} for _ in range(8)]
+
+        result = _best_effort_reconcile(seg_sections, p1_sections)
+
+        for sec in seg_sections:
+            assert sec.section_id in result
+            assert len(result[sec.section_id]) >= 1
+
+    def test_zero_p1_sections(self):
+        """0 P1 sections, 5 segmenter sections — all map to index 0 without crash."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _best_effort_reconcile,
+        )
+
+        seg_sections = [
+            FakeSection(f"sec_{i}", f"Section {i}", f"content {i}")
+            for i in range(5)
+        ]
+
+        result = _best_effort_reconcile(seg_sections, [])
+
+        for sec in seg_sections:
+            assert sec.section_id in result
+            assert result[sec.section_id] == [0]
+
+    def test_one_segmenter_many_p1(self):
+        """1 segmenter section, 8 P1 sections — maps to index 0, no division-by-zero."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _best_effort_reconcile,
+        )
+
+        seg_sections = [FakeSection("sec_0", "Hero", "hero content")]
+        p1_sections = [{"name": f"Section {i}"} for i in range(8)]
+
+        result = _best_effort_reconcile(seg_sections, p1_sections)
+
+        assert "sec_0" in result
+        assert len(result["sec_0"]) >= 1
+
+    def test_none_and_empty_names(self):
+        """P1 sections with None or empty names — no crash, positional fill used."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _best_effort_reconcile,
+        )
+
+        seg_sections = [
+            FakeSection("sec_0", "Hero", "hero"),
+            FakeSection("sec_1", "", "content"),
+            FakeSection("sec_2", "Footer", "footer"),
+        ]
+        p1_sections = [
+            {"name": None},
+            {"name": ""},
+            {"name": "Hero Banner"},
+            {"name": None},
+            {"name": "Footer"},
+        ]
+
+        result = _best_effort_reconcile(seg_sections, p1_sections)
+
+        for sec in seg_sections:
+            assert sec.section_id in result
+            assert len(result[sec.section_id]) >= 1
+
+    def test_normalization_failure_fallback_uses_best_effort(self):
+        """Verify the normalization-failure fallback path calls _best_effort_reconcile."""
+        from unittest.mock import patch as mock_patch
+
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _reconcile_bounding_boxes,
+        )
+
+        seg_sections = [
+            FakeSection("sec_0", "Hero", "hero"),
+            FakeSection("sec_1", "Features", "features"),
+        ]
+        # Same count — won't hit the >2 divergence guard
+        p1_sections = [
+            {"name": "Hero", "y_start_pct": 0, "y_end_pct": 50},
+            {"name": "Features", "y_start_pct": 50, "y_end_pct": 100},
+        ]
+
+        # Force normalize_bounding_boxes to return None
+        with mock_patch(
+            "viraltracker.services.landing_page_analysis.multipass.pipeline.normalize_bounding_boxes",
+            return_value=None,
+        ):
+            section_map, reconcile_mapping = _reconcile_bounding_boxes(
+                seg_sections, p1_sections
+            )
+
+        # All sections should have non-empty source indices
+        for sec in seg_sections:
+            assert sec.section_id in reconcile_mapping
+            assert len(reconcile_mapping[sec.section_id]) >= 1, (
+                f"{sec.section_id} has empty indices in normalization-failure fallback"
+            )

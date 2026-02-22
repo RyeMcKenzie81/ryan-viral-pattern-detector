@@ -39,6 +39,7 @@ from .html_extractor import (
     ImageRegistry,
     ResponsiveCSS,
     _scope_css_under_class,
+    _word_jaccard,
 )
 from .patch_applier import PatchApplier
 from .popup_filter import PopupFilter
@@ -652,8 +653,7 @@ def _reconcile_bounding_boxes(
         )
         boxes = boxes_from_char_ratios(segmenter_sections)
         section_map = {box.section_id: box for box in boxes}
-        # No source indices for char-ratio fallback
-        reconcile_mapping = {f"sec_{i}": [] for i in range(len(boxes))}
+        reconcile_mapping = _best_effort_reconcile(segmenter_sections, phase1_sections)
         return section_map, reconcile_mapping
 
     normalized = normalize_bounding_boxes(raw_boxes)
@@ -661,7 +661,7 @@ def _reconcile_bounding_boxes(
         logger.warning("Bounding box normalization failed, using char-ratio fallback")
         boxes = boxes_from_char_ratios(segmenter_sections)
         section_map = {box.section_id: box for box in boxes}
-        reconcile_mapping = {f"sec_{i}": [] for i in range(len(boxes))}
+        reconcile_mapping = _best_effort_reconcile(segmenter_sections, phase1_sections)
         return section_map, reconcile_mapping
 
     if p1_count == seg_count:
@@ -736,6 +736,82 @@ def _reconcile_bounding_boxes(
         reconcile_mapping[new_id] = final_tracking[i] if i < len(final_tracking) else []
 
     return section_map, reconcile_mapping
+
+
+def _best_effort_reconcile(
+    segmenter_sections: List[SegmenterSection],
+    phase1_sections: List[Dict],
+) -> Dict[str, List[int]]:
+    """Best-effort mapping when section counts diverge.
+
+    Uses name-based Jaccard matching first, then positional fill for leftovers.
+    Every sec_id is guaranteed at least one P1 index in the result.
+
+    Args:
+        segmenter_sections: SegmenterSection objects from segmenter.
+        phase1_sections: Phase 1 dicts with "name" key.
+
+    Returns:
+        {sec_id: [p1_index, ...]} — every sec_id gets at least one index.
+    """
+    seg_count = len(segmenter_sections)
+    p1_count = len(phase1_sections)
+
+    # Guard: if no P1 sections, map everything to index 0 (defensive)
+    if p1_count == 0:
+        return {sec.section_id: [0] for sec in segmenter_sections}
+
+    mapping: Dict[str, List[int]] = {}
+    used_p1: set = set()
+
+    # Strategy 1: Word-Jaccard name matching (greedy, in section order)
+    for sec in segmenter_sections:
+        sec_name = (sec.name or "").lower().strip()
+        if not sec_name:
+            continue
+
+        best_score = 0.0
+        best_idx = -1
+        for j, p1 in enumerate(phase1_sections):
+            if j in used_p1:
+                continue
+            p1_name = (p1.get("name") or "").lower().strip()
+            if not p1_name:
+                continue
+            score = _word_jaccard(sec_name, p1_name)
+            if score > best_score:
+                best_score = score
+                best_idx = j
+
+        if best_score >= 0.3 and best_idx >= 0:
+            mapping[sec.section_id] = [best_idx]
+            used_p1.add(best_idx)
+
+    # Strategy 2: Endpoint-to-endpoint positional fill for unmatched sections
+    for i, sec in enumerate(segmenter_sections):
+        if sec.section_id in mapping:
+            continue
+        target = round(i * (p1_count - 1) / max(seg_count - 1, 1))
+        # Find closest unused P1 index, or fall back to target if all used
+        if target not in used_p1:
+            chosen = target
+        else:
+            # Search outward from target for nearest unused
+            chosen = target
+            for offset in range(1, p1_count):
+                if target + offset < p1_count and (target + offset) not in used_p1:
+                    chosen = target + offset
+                    break
+                if target - offset >= 0 and (target - offset) not in used_p1:
+                    chosen = target - offset
+                    break
+            else:
+                # All used — reuse target anyway (guarantee non-empty)
+                chosen = target
+        mapping[sec.section_id] = [chosen]
+        used_p1.add(chosen)
+
+    return mapping
 
 
 def _augment_design_system(
