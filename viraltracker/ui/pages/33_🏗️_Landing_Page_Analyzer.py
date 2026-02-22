@@ -1423,6 +1423,28 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
 
     if cached:
         _render_mockup_preview(cached, f"analysis_{analysis_id}")
+        # Phase snapshot downloads (multipass debugging)
+        snapshots = st.session_state.get(f"phase_snapshots_{analysis_id}", {})
+        if snapshots:
+            with st.expander("Phase Snapshots (debugging)", expanded=False):
+                st.caption("Download intermediate HTML from each pipeline phase.")
+                cols = st.columns(len(snapshots))
+                phase_labels = {
+                    "phase_1_skeleton": "Phase 1: Skeleton",
+                    "phase_2_content": "Phase 2: Content",
+                    "phase_3_refined": "Phase 3: Refined",
+                    "phase_4_final": "Phase 4: Final",
+                }
+                for col, (key, html) in zip(cols, snapshots.items()):
+                    label = phase_labels.get(key, key)
+                    with col:
+                        st.download_button(
+                            label,
+                            data=html,
+                            file_name=f"{key}_{analysis_id[:8]}.html",
+                            mime="text/html",
+                            key=f"snap_{key}_{analysis_id}",
+                        )
         return
 
     screenshot_path = analysis.get("screenshot_storage_path")
@@ -1514,6 +1536,11 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
                     analysis_svc.save_analysis_mockup_html(analysis_id, html_str)
                 except Exception as e:
                     logger.warning(f"Failed to persist analysis mockup HTML: {e}")
+                # Save phase snapshots for debugging (multipass only)
+                if use_multipass:
+                    snapshots = svc.get_phase_snapshots()
+                    if snapshots:
+                        st.session_state[f"phase_snapshots_{analysis_id}"] = snapshots
                 _cache_mockup("analysis", analysis_id, html_str)
                 st.rerun()
             except Exception as e:

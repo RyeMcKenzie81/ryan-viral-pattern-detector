@@ -11,9 +11,9 @@ B7: PatchApplier *= selector
 B8: CSS injection fallback chain
 B9: Background image marker survival + restoration
 B10: page_html size guardrail
-B11: _SectionParser void element depth tracking (Fix 1)
-B12: _rewrite_skeleton hardening (Fix 2)
-B13: _ensure_section_attributes lp-mockup + single quotes (Fix 3)
+B11: _SectionParser void element depth tracking (Fix 1) + semantic tag support
+B12: _rewrite_skeleton hardening (Fix 2) + semantic tag Step B
+B13: _ensure_section_attributes semantic tags + heading-boundary-split removal (Fix 3)
 B14: Scoped placeholder cleanup (Fix 4)
 B15: Phase 1 prompt constraints (Fix 5)
 B16: Global invariant section-count (Fix 8)
@@ -968,6 +968,82 @@ class TestSectionParserVoidElements:
         assert "sec_0" in sections
         assert "Content" in sections["sec_0"]
 
+    def test_footer_with_data_section(self):
+        """<footer data-section> must be parsed as a section."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<h1>Hero</h1><p>Content</p>'
+            '</section>'
+            '<footer data-section="sec_1">'
+            '<p>Footer content</p>'
+            '</footer>'
+        )
+        sections = _parse_sections(html)
+        assert "sec_0" in sections
+        assert "sec_1" in sections
+        assert "Hero" in sections["sec_0"]
+        assert "Footer content" in sections["sec_1"]
+
+    def test_header_with_data_section(self):
+        """<header data-section> must be parsed as a section."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<header data-section="sec_0">'
+            '<nav>Navigation</nav>'
+            '</header>'
+            '<section data-section="sec_1">'
+            '<p>Main content</p>'
+            '</section>'
+        )
+        sections = _parse_sections(html)
+        assert "sec_0" in sections
+        assert "sec_1" in sections
+        assert "Navigation" in sections["sec_0"]
+
+    def test_mixed_tag_types(self):
+        """Mix of <section>, <header>, <footer>, <nav> all parsed correctly."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<header data-section="sec_0"><h1>Header</h1></header>'
+            '<section data-section="sec_1"><p>Body</p></section>'
+            '<nav data-section="sec_2"><a>Link</a></nav>'
+            '<footer data-section="sec_3"><p>Footer</p></footer>'
+        )
+        sections = _parse_sections(html)
+        assert len(sections) == 4
+        assert "Header" in sections["sec_0"]
+        assert "Body" in sections["sec_1"]
+        assert "Footer" in sections["sec_3"]
+
+    def test_nested_footer_inside_section_not_tracked(self):
+        """A <footer data-section> nested inside another section is content, not separate."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            _parse_sections,
+        )
+
+        html = (
+            '<section data-section="sec_0">'
+            '<p>Outer</p>'
+            '<footer data-section="sec_1"><p>Nested footer</p></footer>'
+            '</section>'
+        )
+        sections = _parse_sections(html)
+        # sec_0 should capture everything, sec_1 not separately parsed
+        assert "sec_0" in sections
+        assert "Nested footer" in sections["sec_0"]
+        # sec_1 should NOT be found (nested inside sec_0)
+        assert "sec_1" not in sections
+
 
 # ---------------------------------------------------------------------------
 # B12: _rewrite_skeleton hardening (Fix 2)
@@ -1000,6 +1076,20 @@ class TestRewriteSkeleton:
         html = (
             "<section><p>Section 1</p></section>"
             "<section><p>Section 2</p></section>"
+        )
+        result = _rewrite_skeleton(html, 2)
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+
+    def test_bare_footer_gets_data_section(self):
+        """Bare <footer> tags without data-section get attributes added (Step B)."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _rewrite_skeleton,
+        )
+
+        html = (
+            "<section><p>Section 1</p></section>"
+            "<footer><p>Footer</p></footer>"
         )
         result = _rewrite_skeleton(html, 2)
         assert 'data-section="sec_0"' in result
@@ -1074,8 +1164,8 @@ class TestEnsureSectionAttributesExtended:
         assert 'data-section="sec_0"' in result
         assert 'data-section="sec_1"' in result
 
-    def test_lp_mockup_wrapper_preserved(self):
-        """The .lp-mockup wrapper must survive the strip+wrap path."""
+    def test_lp_mockup_no_sections_returns_unchanged(self):
+        """When no section-like tags exist, return as-is (defers to pre-Phase-3 gate)."""
         from viraltracker.services.landing_page_analysis.multipass.pipeline import (
             _ensure_section_attributes,
         )
@@ -1090,10 +1180,45 @@ class TestEnsureSectionAttributesExtended:
         section_map = {"sec_0": MagicMock(), "sec_1": MagicMock()}
         lf = MagicMock()
         result = _ensure_section_attributes(html, section_map, lf)
-        # lp-mockup wrapper should be re-added
+        # No section-like tags to inject into — returns original HTML.
+        # Pre-Phase-3 gate handles recovery via fallback skeleton.
         assert 'lp-mockup' in result
+        # Since heading-boundary split is removed, no data-section attrs are added
+        # when there are zero section-like tags.
+
+    def test_footer_section_gets_data_section(self):
+        """<footer> tags should be recognized as section candidates."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _ensure_section_attributes,
+        )
+
+        html = (
+            '<section><h1>Hero</h1><p>Content</p></section>'
+            '<footer><p>Footer content</p></footer>'
+        )
+        section_map = {"sec_0": MagicMock(), "sec_1": MagicMock()}
+        lf = MagicMock()
+        result = _ensure_section_attributes(html, section_map, lf)
         assert 'data-section="sec_0"' in result
         assert 'data-section="sec_1"' in result
+
+    def test_mixed_semantic_tags(self):
+        """Mix of <section>, <header>, <footer> all get data-section attrs."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _ensure_section_attributes,
+        )
+
+        html = (
+            '<header><h1>Nav</h1></header>'
+            '<section><p>Content</p></section>'
+            '<footer><p>Footer</p></footer>'
+        )
+        section_map = {"sec_0": MagicMock(), "sec_1": MagicMock(), "sec_2": MagicMock()}
+        lf = MagicMock()
+        result = _ensure_section_attributes(html, section_map, lf)
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+        assert 'data-section="sec_2"' in result
 
 
 # ---------------------------------------------------------------------------
@@ -1163,14 +1288,14 @@ class TestPhase1PromptConstraints:
         assert "CRITICAL FORMAT CONSTRAINTS" in prompt
         assert "NEVER omit the data-section attribute" in prompt
         assert "NEVER use variants" in prompt
-        assert PHASE_1_PROMPT_VERSION == "v2"
+        assert PHASE_1_PROMPT_VERSION == "v3"
 
     def test_prompt_version_bumped(self):
         from viraltracker.services.landing_page_analysis.multipass.prompts import (
             PROMPT_VERSIONS,
         )
 
-        assert PROMPT_VERSIONS[1] == "v2"
+        assert PROMPT_VERSIONS[1] == "v3"
 
 
 # ---------------------------------------------------------------------------
@@ -1312,16 +1437,13 @@ class TestPipelineIntegration:
         sections = _parse_sections(rewritten)
         assert len(sections) == 3
 
-    def test_strip_and_wrap_produces_parseable_sections(self):
-        """Content without data-section attrs gets strip+wrapped correctly."""
-        from viraltracker.services.landing_page_analysis.multipass.invariants import (
-            _parse_sections,
-        )
+    def test_no_sections_defers_to_gate(self):
+        """Content without any section-like tags returns as-is (defers to gate)."""
         from viraltracker.services.landing_page_analysis.multipass.pipeline import (
             _ensure_section_attributes,
         )
 
-        # Simulate Phase 2 output without data-section attributes
+        # Simulate Phase 2 output without any section-like tags
         html = (
             '<style>.section { padding: 20px; }</style>'
             '<h1>Hero Headline</h1>'
@@ -1335,6 +1457,7 @@ class TestPipelineIntegration:
 
         result = _ensure_section_attributes(html, section_map, lf)
 
-        # Must produce parseable sections
-        sections = _parse_sections(result)
-        assert len(sections) >= 2, f"Expected >= 2 sections, got {len(sections)}: {list(sections.keys())}"
+        # With no section-like tags and heading-boundary split removed,
+        # HTML is returned as-is.  The pre-Phase-3 gate handles recovery.
+        assert 'Hero Headline' in result
+        assert 'Feature descriptions' in result

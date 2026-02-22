@@ -268,14 +268,18 @@ def _ensure_section_attributes(
     # Handle both single- and double-quoted attributes.
     html = re.sub(r'''\s*data-section=["'][^"']*["']''', '', html)
 
-    # Step 2: Find TOP-LEVEL <section> tags only (skip nested ones).
-    # Use depth tracking to distinguish top-level from nested.
+    # Step 2: Find section-like tags (including semantic elements like
+    # <footer>, <header>, etc.) that Phase 1 may have used instead of
+    # <section>.  Use <section> depth tracking to skip nested ones.
+    _SECTION_TAGS = r'section|footer|header|nav|article|aside|main'
     all_section_re = re.compile(r'</?section[\s>]', re.IGNORECASE)
-    open_section_re = re.compile(r'<section(\s[^>]*)?>',  re.IGNORECASE)
-    depth = 0
+    open_section_re = re.compile(
+        rf'<({_SECTION_TAGS})(\s[^>]*)?>',  re.IGNORECASE
+    )
     top_level_matches = []
     for m in open_section_re.finditer(html):
-        # Count how many <section> opens vs </section> closes before this position
+        # Count <section> depth before this position to determine nesting.
+        # Semantic tags (<footer> etc.) are only nested if inside a <section>.
         depth = 0
         for tag_m in all_section_re.finditer(html[:m.start()]):
             tag_text = tag_m.group(0)
@@ -287,117 +291,42 @@ def _ensure_section_attributes(
             top_level_matches.append(m)
 
     if len(top_level_matches) >= expected:
-        # Enough top-level <section> tags -- assign IDs top-to-bottom
+        # Enough section-like tags -- assign IDs top-to-bottom
         offset = 0
         for i, match in enumerate(top_level_matches):
             if i >= expected:
                 break
             sec_id = section_ids[i]
             old_tag = match.group(0)
-            new_tag = old_tag.replace('<section', f'<section data-section="{sec_id}"', 1)
+            tag_name = match.group(1)  # 'section', 'footer', etc.
+            new_tag = old_tag.replace(
+                f'<{tag_name}', f'<{tag_name} data-section="{sec_id}"', 1
+            )
             pos = match.start() + offset
             html = html[:pos] + new_tag + html[pos + len(old_tag):]
             offset += len(new_tag) - len(old_tag)
 
         if lf:
+            tag_types = [m.group(1).lower() for m in top_level_matches[:expected]]
             lf.info(
-                "Re-injected data-section attrs into {count} top-level <section> tags",
+                "Re-injected data-section attrs into {count} tags ({tags})",
                 count=min(len(top_level_matches), expected),
+                tags=", ".join(tag_types),
             )
         return html
 
-    # Step 3: Not enough <section> tags at all. Split at heading boundaries
-    # and wrap in new <section> tags.
-    # Extract .lp-mockup wrapper and <style> blocks first so they don't
-    # end up trapped inside the first section.
-    lp_open = ''
-    lp_close = ''
-    style_block = ""
-    body_html = html
-
-    # 3a: Extract .lp-mockup wrapper if present
-    lp_match = re.match(
-        r'(\s*<div\b[^>]*\bclass=["\'][^"\']*\blp-mockup\b[^"\']*["\'][^>]*>)\s*',
-        body_html,
-        re.IGNORECASE,
-    )
-    if lp_match:
-        lp_open_candidate = lp_match.group(1)
-        inner = body_html[lp_match.end():]
-        # Find matching </div> by tracking open/close depth
-        depth = 1
-        found_close = False
-        close_pos = len(inner)
-        for dm in re.finditer(r'<div\b[^>]*>|</div\s*>', inner, re.IGNORECASE):
-            if dm.group().lower().startswith('</'):
-                depth -= 1
-                if depth == 0:
-                    close_pos = dm.start()
-                    found_close = True
-                    break
-            else:
-                depth += 1
-        if found_close:
-            lp_open = lp_open_candidate
-            lp_close = '</div>'
-            body_html = inner[:close_pos]
-        else:
-            if lf:
-                lf.warning(
-                    "lp-mockup wrapper detected but matching </div> not found, skipping unwrap"
-                )
-
-    # 3b: Extract <style> block(s)
-    style_blocks = []
-    while True:
-        style_match = re.match(r'(\s*<style[\s\S]*?</style>\s*)', body_html, re.IGNORECASE)
-        if style_match:
-            style_blocks.append(style_match.group(1))
-            body_html = body_html[len(style_match.group(0)):]
-        else:
-            break
-    style_block = ''.join(style_blocks)
-
-    heading_re = re.compile(r'(?=<h[1-6][\s>])', re.IGNORECASE)
-    chunks = heading_re.split(body_html)
-    chunks = [c for c in chunks if c.strip()]
-
-    if len(chunks) < 2:
-        if lf:
-            lf.warning("Cannot re-inject sections: no heading boundaries found")
-        return html
-
-    parts = []
-    if lp_open:
-        parts.append(lp_open + '\n')
-    if style_block:
-        parts.append(style_block)
-    for i, chunk in enumerate(chunks):
-        if i < expected:
-            sec_id = section_ids[i]
-            # Strip any <section> / </section> tags from chunk to avoid nesting
-            clean = re.sub(r'</?section[^>]*>', '', chunk, flags=re.IGNORECASE)
-            parts.append(
-                f'<section data-section="{sec_id}" class="section">'
-                f'{clean}</section>\n'
-            )
-        else:
-            # Merge remaining chunks into last section
-            clean = re.sub(r'</?section[^>]*>', '', chunk, flags=re.IGNORECASE)
-            parts[-1] = parts[-1].replace(
-                '</section>',
-                f'{clean}</section>',
-                1,
-            )
-    if lp_close:
-        parts.append('\n' + lp_close)
-
+    # Step 3: Not enough section-like tags found. Do NOT attempt the
+    # destructive heading-boundary split — it produces broken HTML with
+    # leaked tags.  Return as-is and let the pre-Phase-3 gate rebuild
+    # from the fallback skeleton.
     if lf:
-        lf.info(
-            "Wrapped content in {count} <section> tags at heading boundaries (strip+wrap)",
-            count=min(len(chunks), expected),
+        lf.warning(
+            "Cannot re-inject sections: found {found} section-like tags but "
+            "need {expected}. Deferring to pre-Phase-3 gate for recovery.",
+            found=len(top_level_matches),
+            expected=expected,
         )
-    return ''.join(parts)
+    return html
 
 
 def _ensure_minimum_slots(html: str) -> str:
@@ -605,9 +534,13 @@ def _rewrite_skeleton(skeleton_html: str, section_count: int) -> str:
             # Also replace placeholder patterns
             html = html.replace(f'{{{{{old_id}}}}}', f'{{{{{new_id}}}}}')
 
-    # Step B: If no data-section attributes found, add to bare <section> tags
+    # Step B: If no data-section attributes found, add to bare section-like tags
+    # (including <footer>, <header>, etc. that Phase 1 may use).
     if not existing_sections:
-        open_section_re = re.compile(r'<section(\s[^>]*)?>',  re.IGNORECASE)
+        _SECTION_TAGS = r'section|footer|header|nav|article|aside|main'
+        open_section_re = re.compile(
+            rf'<({_SECTION_TAGS})(\s[^>]*)?>',  re.IGNORECASE
+        )
         matches = list(open_section_re.finditer(html))
         offset = 0
         for i, match in enumerate(matches):
@@ -615,8 +548,11 @@ def _rewrite_skeleton(skeleton_html: str, section_count: int) -> str:
                 break
             sec_id = f"sec_{i}"
             old_tag = match.group(0)
+            tag_name = match.group(1)
             if 'data-section' not in old_tag.lower():
-                new_tag = old_tag.replace('<section', f'<section data-section="{sec_id}"', 1)
+                new_tag = old_tag.replace(
+                    f'<{tag_name}', f'<{tag_name} data-section="{sec_id}"', 1
+                )
                 pos = match.start() + offset
                 html = html[:pos] + new_tag + html[pos + len(old_tag):]
                 offset += len(new_tag) - len(old_tag)
@@ -651,9 +587,10 @@ def _rewrite_skeleton(skeleton_html: str, section_count: int) -> str:
         section_inner = parser.sections.get(sec_id, "")
 
         if placeholder not in section_inner and sec_id in parser.sections:
-            # Placeholder is missing from this section's body — inject after opening tag
+            # Placeholder is missing from this section's body — inject after opening tag.
+            # Match any tag type (section, footer, header, etc.) with data-section.
             tag_re = re.compile(
-                rf'(<section\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>)',
+                rf'(<(?:section|footer|header|nav|article|aside|main)\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>)',
                 re.IGNORECASE,
             )
             tag_match = tag_re.search(html)
@@ -711,6 +648,9 @@ class MultiPassPipeline:
         self._limiter = PipelineRateLimiter()
         self._start_time = 0.0
         self._cache: Dict[str, str] = {}
+        #: Phase snapshots for debugging: phase_name -> raw HTML at that stage.
+        #: Populated during generate() so callers can inspect intermediate output.
+        self.phase_snapshots: Dict[str, str] = {}
         # Lazily resolve logfire at runtime, not import time,
         # to ensure it's configured before we use it
         self._lf = get_logfire()
@@ -877,6 +817,9 @@ class MultiPassPipeline:
             # Wrap skeleton in .lp-mockup div for CSS scoping
             skeleton_html = f'<div class="lp-mockup">\n{skeleton_html}\n</div>'
 
+            # Snapshot: Phase 1 skeleton (with CSS + .lp-mockup wrapping)
+            self.phase_snapshots["phase_1_skeleton"] = skeleton_html
+
             # -----------------------------------------------------------
             # Phase 2: Deterministic Content Assembly (v4)
             # -----------------------------------------------------------
@@ -956,6 +899,9 @@ class MultiPassPipeline:
                         )
                     return content_html
 
+            # Snapshot: Phase 2 content (after assembly + section attr fix + slots)
+            self.phase_snapshots["phase_2_content"] = content_html
+
             # Capture invariant baselines
             baseline = capture_pipeline_invariants(content_html)
 
@@ -980,6 +926,9 @@ class MultiPassPipeline:
                 image_registry=image_registry,
                 responsive_css=responsive_css,
             )
+
+            # Snapshot: Phase 3 refined (after per-section visual refinement)
+            self.phase_snapshots["phase_3_refined"] = refined_html
 
             if self._budget_exceeded(max_api_calls):
                 self._lf.warning("Budget exceeded after Phase 3, returning refined HTML")
@@ -1033,6 +982,9 @@ class MultiPassPipeline:
                     issues=str(final_report.issues),
                 )
                 final_html = patched_html
+
+            # Snapshot: Phase 4 final (after patches + popup filter)
+            self.phase_snapshots["phase_4_final"] = final_html
 
             elapsed = time.time() - self._start_time
             self._lf.info(

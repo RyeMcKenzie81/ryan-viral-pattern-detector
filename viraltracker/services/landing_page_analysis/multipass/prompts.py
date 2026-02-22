@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 # Prompt versions -- bump on prompt changes to invalidate caches
 PHASE_0_PROMPT_VERSION = "v1"
-PHASE_1_PROMPT_VERSION = "v2"
+PHASE_1_PROMPT_VERSION = "v3"
 PHASE_2_PROMPT_VERSION = "v1"
 PHASE_3_PROMPT_VERSION = "v2"
 PHASE_4_PROMPT_VERSION = "v1"
@@ -131,7 +131,8 @@ REQUIREMENTS:
 - Target approximately {section_count} sections (may differ slightly)
 
 ## SKELETON HTML
-- Use semantic HTML: <section>, <header>, <nav>, <footer>
+- ALWAYS use <section> tags for ALL page sections (including header, footer, nav areas)
+- NEVER use <header>, <footer>, <nav>, or <article> as section wrappers
 - Each section: <section data-section="sec_N"> where N is 0-indexed top-to-bottom
 - Inside each section, place a placeholder: {{{{sec_N}}}}
 - Apply the design system colors and spacing from above

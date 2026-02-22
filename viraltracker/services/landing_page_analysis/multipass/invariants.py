@@ -90,15 +90,17 @@ _VOID_ELEMENTS = frozenset([
 class _SectionParser(HTMLParser):
     """Parse HTML to extract per-section content.
 
-    Depth tracking only counts <section> tags so that void elements
-    (img, br, etc.) which never receive handle_endtag don't corrupt
-    the section boundary detection.
+    Tracks ANY tag with a data-section attribute (not just <section>),
+    so <footer data-section="sec_7"> is parsed correctly.  Depth tracking
+    counts only the *same tag type* that opened the section, so void
+    elements (img, br, etc.) don't corrupt boundary detection.
     """
 
     def __init__(self):
         super().__init__()
         self.sections: Dict[str, str] = {}  # section_id -> inner HTML
         self._current_section: Optional[str] = None
+        self._current_tag: Optional[str] = None  # tag type that opened section
         self._depth = 0
         self._parts: List[str] = []
         self._raw_parts: List[str] = []
@@ -107,19 +109,20 @@ class _SectionParser(HTMLParser):
         attrs_dict = dict(attrs)
         section_id = attrs_dict.get('data-section')
 
-        # Only start tracking a new section if we're NOT already inside one.
-        # Nested <section data-section> tags are treated as regular content.
-        if section_id and tag == 'section' and self._current_section is None:
+        # Start tracking a new section on ANY tag with data-section,
+        # but only if we're NOT already inside one.
+        if section_id and self._current_section is None:
             self._current_section = section_id
+            self._current_tag = tag
             self._depth = 1
             self._raw_parts = []
             return
 
         if self._current_section:
-            # Only increment depth for <section> tags — void elements
-            # (img, br, etc.) never get handle_endtag calls, so counting
-            # them would cause depth to grow unbounded.
-            if tag == 'section':
+            # Only increment depth for the same tag type that opened
+            # the section — void elements never get handle_endtag calls,
+            # so counting them would cause depth to grow unbounded.
+            if tag == self._current_tag:
                 self._depth += 1
             # Reconstruct the tag
             attr_str = ''
@@ -132,12 +135,13 @@ class _SectionParser(HTMLParser):
 
     def handle_endtag(self, tag):
         if self._current_section:
-            if tag == 'section' and self._depth == 1:
+            if tag == self._current_tag and self._depth == 1:
                 self.sections[self._current_section] = ''.join(self._raw_parts)
                 self._current_section = None
+                self._current_tag = None
                 self._depth = 0
                 return
-            if tag == 'section':
+            if tag == self._current_tag:
                 self._depth -= 1
             # Skip close-tag reconstruction for void elements (they have
             # no close tag in valid HTML; the parser may synthesize one).

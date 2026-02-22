@@ -1540,6 +1540,14 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         return ''.join(parts)
 
+    def get_phase_snapshots(self) -> Dict[str, str]:
+        """Return phase snapshots from the last multipass run.
+
+        Keys: phase_1_skeleton, phase_2_content, phase_3_refined, phase_4_final.
+        Each value is raw HTML at that pipeline stage.
+        """
+        return getattr(self, '_last_phase_snapshots', {})
+
     def _generate_via_multipass(
         self,
         screenshot_b64: str,
@@ -1616,9 +1624,17 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 lines = lines[:-1]
             raw = "\n".join(lines)
 
+        # Expose phase snapshots for debugging/evaluation
+        self._last_phase_snapshots = dict(pipeline.phase_snapshots)
+        snapshot_summary = {
+            k: len(v) for k, v in self._last_phase_snapshots.items()
+        }
+
         lf.info(
-            "Multipass pipeline returned {output_chars} chars",
+            "Multipass pipeline returned {output_chars} chars, "
+            "snapshots: {snapshot_summary}",
             output_chars=len(raw),
+            snapshot_summary=snapshot_summary,
         )
         return raw
 
