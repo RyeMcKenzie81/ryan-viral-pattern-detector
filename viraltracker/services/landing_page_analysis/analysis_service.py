@@ -558,7 +558,7 @@ class LandingPageAnalysisService:
         }
         if source_id:
             record["source_id"] = source_id
-        if page_html:
+        if page_html is not None:
             record["page_html"] = page_html
 
         result = self.supabase.table("landing_page_analyses").insert(record).execute()

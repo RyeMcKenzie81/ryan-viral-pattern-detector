@@ -1700,6 +1700,7 @@ def _render_blueprint_mockup_section(
                             classification=classification,
                             page_markdown=page_markdown,
                             page_url=linked_record.get("url", ""),
+                            page_html=linked_record.get("page_html"),
                         )
                         if analysis_html:
                             _cache_mockup("analysis", analysis_id, analysis_html)

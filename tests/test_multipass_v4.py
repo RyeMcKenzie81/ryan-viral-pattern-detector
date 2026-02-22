@@ -2221,3 +2221,71 @@ class TestBlueprintCompat:
         result = assemble_content(skeleton, sections, {})
         assert 'data-slot=' in result
         assert 'data-section="sec_0"' in result
+
+
+# ===========================================================================
+# D1: Bug 2 — page_html storage (empty string vs None)
+# ===========================================================================
+
+
+class TestPageHtmlStorage:
+    """Bug 2: analysis_service stores empty page_html, skips None."""
+
+    def test_create_analysis_record_stores_empty_page_html(self):
+        """page_html='' should be included in the record dict (not skipped)."""
+        from unittest.mock import MagicMock, patch
+
+        from viraltracker.services.landing_page_analysis.analysis_service import (
+            LandingPageAnalysisService,
+        )
+
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.insert.return_value.execute.return_value.data = [{"id": "test-id"}]
+
+        svc = LandingPageAnalysisService.__new__(LandingPageAnalysisService)
+        svc.supabase = mock_supabase
+
+        svc._create_analysis_record(
+            org_id="org-1",
+            url="https://example.com",
+            source_type="manual",
+            source_id=None,
+            page_markdown="# Test",
+            screenshot_storage_path=None,
+            page_html="",
+        )
+
+        inserted = mock_table.insert.call_args[0][0]
+        assert "page_html" in inserted, "Empty string page_html should be stored"
+        assert inserted["page_html"] == ""
+
+    def test_create_analysis_record_skips_none_page_html(self):
+        """page_html=None should NOT insert a page_html key."""
+        from unittest.mock import MagicMock
+
+        from viraltracker.services.landing_page_analysis.analysis_service import (
+            LandingPageAnalysisService,
+        )
+
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.insert.return_value.execute.return_value.data = [{"id": "test-id"}]
+
+        svc = LandingPageAnalysisService.__new__(LandingPageAnalysisService)
+        svc.supabase = mock_supabase
+
+        svc._create_analysis_record(
+            org_id="org-1",
+            url="https://example.com",
+            source_type="manual",
+            source_id=None,
+            page_markdown="# Test",
+            screenshot_storage_path=None,
+            page_html=None,
+        )
+
+        inserted = mock_table.insert.call_args[0][0]
+        assert "page_html" not in inserted, "None page_html should not be in record"
