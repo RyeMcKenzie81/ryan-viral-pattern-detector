@@ -466,6 +466,7 @@ class TestSceneDirection:
             "setting": "bedroom at dawn",
             "activity": "sleeping peacefully",
             "key_element_from_copy": "better sleep",
+            "show_product": True,
         }
         svc.build_generation_prompts(
             [slot],
@@ -479,6 +480,27 @@ class TestSceneDirection:
         # Should NOT be the generic template "enjoying their daily wellness routine"
         assert "enjoying their daily wellness routine" not in slot.prompt
 
+    def test_scene_directed_prompt_omits_product_when_show_product_false(self):
+        """When show_product is false, product name should NOT appear in prompt."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(has_people=True)
+        slot.scene_direction = {
+            "narrative_role": "problem_state",
+            "scene_description": "Exhausted person staring at ceiling unable to sleep",
+            "emotional_tone": "frustrated",
+            "setting": "dark bedroom",
+            "activity": "lying awake",
+            "key_element_from_copy": "energy crash",
+            "show_product": False,
+        }
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "SleepWell"},
+        )
+        assert slot.prompt is not None
+        assert "SleepWell" not in slot.prompt
+        assert "staring at ceiling" in slot.prompt
+
     def test_scene_directed_prompt_preserves_persona_logic(self):
         """Scene-directed path still clears original_base64 when people + persona."""
         svc = BlueprintImageService.__new__(BlueprintImageService)
@@ -491,6 +513,7 @@ class TestSceneDirection:
             "setting": "gym",
             "activity": "resting",
             "key_element_from_copy": "recovery",
+            "show_product": False,
         }
         svc.build_generation_prompts(
             [slot],

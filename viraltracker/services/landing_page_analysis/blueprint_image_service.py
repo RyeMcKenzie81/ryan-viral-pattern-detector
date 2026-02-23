@@ -265,26 +265,27 @@ Return ONLY the JSON, no markdown fences or explanation."""
 
 
 SCENE_DIRECTOR_PROMPT = """You are a Scene Director for commercial photography on a landing page.
-Decide what scene an image should depict based on the text it accompanies.
+Your #1 job: make each image illustrate EXACTLY what the surrounding copy says.
+Read the heading and copy below LITERALLY — the scene must match THAT SPECIFIC text,
+not the general product theme.
 
-CONTEXT:
+SURROUNDING COPY (this is what the image must illustrate):
 - Section heading: "{section_heading}"
 - Surrounding copy: "{surrounding_text}"
+
+IMAGE CONTEXT:
 - Original image was: "{alt_text}" (type: {image_type})
 - Has people in original: {has_people}
 
-PRODUCT:
+PRODUCT (for reference only — do NOT default every scene to this):
 - Name: {product_name}
 - Benefits: {benefits}
 - Problems solved: {problems}
 
-TARGET CUSTOMER:
+TARGET CUSTOMER (use for demographics when showing people):
 - Demographics: {persona_demographics}
 - Pain symptoms: {pain_symptoms}
 - Desired self-image: {desired_self_image}
-
-Based on the surrounding copy, describe what this image should show to effectively
-support the text. The image must feel like a natural visual companion — not generic stock.
 
 Return ONLY JSON:
 {{
@@ -293,14 +294,22 @@ Return ONLY JSON:
   "emotional_tone": "One or two words: peaceful, energetic, confident, relieved, etc.",
   "setting": "Where: bedroom at dawn, modern kitchen, gym, etc.",
   "activity": "What the subject is doing",
-  "key_element_from_copy": "The specific claim from the surrounding text this illustrates"
+  "key_element_from_copy": "The specific claim from the surrounding text this illustrates",
+  "show_product": true/false
 }}
 
-RULES:
-- Scene MUST relate to what the surrounding copy says
-- If copy mentions sleep → show peaceful sleep scene, NOT someone holding a product
-- If copy mentions energy → show vibrant activity
-- If copy is a testimonial → show authentic-looking person
+CRITICAL RULES:
+- Each image on the page MUST be visually DIFFERENT — do NOT make every image the same theme
+- Read the heading LITERALLY:
+  - "Two Capsules" → show capsules/pills in a hand (product_showcase), NOT a lifestyle scene
+  - "Sleep Better" → show someone sleeping peacefully
+  - "Real Results" with a quote → show an authentic person (social_proof)
+  - "How It Works" → show a process or diagram (educational)
+  - "Energy crash" → show the problem state, NOT the solution
+- If copy talks about the product form (capsules, pills, powder, dosage, protocol) → use product_showcase
+- If copy talks about a symptom or problem → use problem_state, show the struggle
+- If copy is a testimonial or quote → use social_proof, show a real person
+- set show_product to true ONLY when the copy specifically mentions the product or its usage
 - If no surrounding text, fall back to image_type and alt_text
 - Be specific about demographics only if persona info is provided"""
 
@@ -813,6 +822,9 @@ class BlueprintImageService:
 
         color_note = f", brand colors {brand_colors}" if brand_colors else ""
 
+        # Should the product be shown? Respect the LLM's decision.
+        show_product = scene.get("show_product", False)
+
         # Compose prompt
         parts = [style_prefix]
         if person_desc and role not in ("product_showcase", "educational"):
@@ -823,8 +835,12 @@ class BlueprintImageService:
             parts.append(f"Setting: {setting}.")
         if emotional_tone:
             parts.append(f"Mood: {emotional_tone}.")
-        if product_name and role != "social_proof":
-            parts.append(f"{product_name}{product_desc} visible nearby.")
+        # Only mention the product when the scene calls for it
+        if show_product and product_name:
+            if role == "product_showcase":
+                parts.append(f"Featuring {product_name}{product_desc}.")
+            else:
+                parts.append(f"{product_name}{product_desc} visible nearby.")
         if style_cues:
             parts.append(f"Style: {style_cues}.")
         if color_note:
