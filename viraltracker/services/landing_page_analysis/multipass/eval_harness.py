@@ -135,6 +135,9 @@ def score_visual_fidelity(
     import io
     import numpy as np
 
+    # Allow large screenshots (long landing pages can exceed default 178M pixel limit)
+    Image.MAX_IMAGE_PIXELS = 300_000_000
+
     img_orig = Image.open(io.BytesIO(original_screenshot)).convert('L')
     img_out = Image.open(io.BytesIO(output_screenshot)).convert('L')
 

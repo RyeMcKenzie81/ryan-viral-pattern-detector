@@ -389,3 +389,10 @@ def check_global_invariants(
         text_similarity=similarity,
         issues=issues,
     )
+
+
+# Resolve public aliases
+tokenize_visible_text = _tokenize_visible_text
+text_similarity = _text_similarity
+extract_slots = _extract_slots
+parse_sections = _parse_sections

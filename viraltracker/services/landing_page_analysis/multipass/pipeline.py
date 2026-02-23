@@ -1204,9 +1204,11 @@ class MultiPassPipeline:
             self._report_progress(0, "Extracting design system...")
             design_system = await self._run_phase_0(screenshot_b64, truncated_md)
 
+            # Snapshot: Phase 0 design system (unconditional — before augmentation)
+            self.phase_snapshots["phase_0_design_system"] = _wrap_json_as_html(design_system)
+
             # Phase 0 augmentation: merge deterministic CSS tokens
             if use_templates_this_run and extracted_css and extracted_css.design_tokens:
-                self.phase_snapshots["phase_0_design_system"] = _wrap_json_as_html(design_system)
                 design_system = _augment_design_system(design_system, extracted_css.design_tokens)
                 self.phase_snapshots["phase_0_augmented"] = _wrap_json_as_html(design_system)
 
@@ -1235,6 +1237,7 @@ class MultiPassPipeline:
                 )
             if self._budget_exceeded(max_api_calls):
                 self._lf.warning("Budget exceeded after Phase 1, returning skeleton")
+                self.phase_snapshots["phase_1_skeleton"] = skeleton_html
                 return skeleton_html
 
             # -----------------------------------------------------------
@@ -1303,6 +1306,9 @@ class MultiPassPipeline:
             # Ensure minimum slots
             content_html = _ensure_minimum_slots(content_html)
 
+            # Snapshot: Phase 2 content (after assembly + section attr fix + slots)
+            self.phase_snapshots["phase_2_content"] = content_html
+
             # -----------------------------------------------------------
             # Pre-Phase-3 gate: verify sections are parseable
             # -----------------------------------------------------------
@@ -1347,9 +1353,6 @@ class MultiPassPipeline:
                             n=removals,
                         )
                     return content_html
-
-            # Snapshot: Phase 2 content (after assembly + section attr fix + slots)
-            self.phase_snapshots["phase_2_content"] = content_html
 
             # Capture invariant baselines
             baseline = capture_pipeline_invariants(content_html)
@@ -1598,13 +1601,21 @@ class MultiPassPipeline:
         return skeleton, section_map
 
     def _phase_1_fallback_classify(
-        self, sections: List[SegmenterSection]
+        self,
+        sections: List[SegmenterSection],
+        layout_hints: Optional[Dict] = None,
     ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
-        """Fallback for template pipeline: returns 3-tuple with empty layout_map."""
+        """Fallback for template pipeline: uses layout_hints if available."""
         skeleton = _build_fallback_skeleton(sections)
         boxes = boxes_from_char_ratios(sections)
         section_map = {box.section_id: box for box in boxes}
-        return skeleton, section_map, {}
+        # Preserve layout hints — filter to sections that actually exist
+        section_ids = {s.section_id for s in sections}
+        layout_map = {
+            sid: hint for sid, hint in (layout_hints or {}).items()
+            if sid in section_ids
+        }
+        return skeleton, section_map, layout_map
 
     async def _run_phase_1_classify(
         self,
@@ -1701,12 +1712,12 @@ class MultiPassPipeline:
                     logger.warning(f"Phase 1 classify retry failed: {e}")
 
                 self._lf.warning("Phase 1 classify using fallback")
-                return self._phase_1_fallback_classify(sections)
+                return self._phase_1_fallback_classify(sections, layout_hints=layout_hints)
             except Exception as e:
                 self._lf.warning(
                     "Phase 1 classify failed: {error}, using fallback", error=str(e)
                 )
-                return self._phase_1_fallback_classify(sections)
+                return self._phase_1_fallback_classify(sections, layout_hints=layout_hints)
 
     async def _run_phase_3_css(
         self,

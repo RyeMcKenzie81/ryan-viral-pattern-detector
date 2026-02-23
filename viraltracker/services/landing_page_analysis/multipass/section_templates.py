@@ -322,6 +322,9 @@ def _build_shared_css(ds: Dict) -> str:
 .mp-stat-number {{ font-size: 2.5rem; font-weight: 700; color: {accent}; display: block; }}
 .mp-stat-label {{ font-size: 0.9rem; opacity: 0.8; display: block; }}
 
+/* Overflow content alongside structured items (spans full grid width) */
+.mp-overflow {{ grid-column: 1 / -1; text-align: left; margin-top: 24px; }}
+
 /* Logo bar */
 .mp-logo-bar img {{ max-height: 48px; object-fit: contain; }}
 

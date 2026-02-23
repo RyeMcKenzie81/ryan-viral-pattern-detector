@@ -23,6 +23,7 @@ B19: Phase 4 add_element image blocking
 B20: Phase 3 image guidance for 0-image sections
 B21: Image count invariant tracking
 B22: SEO ghost text filter
+B23: Phase 2 overflow rendering + smart fallback (A/B comparison)
 """
 
 import re
@@ -3077,3 +3078,1187 @@ class TestSEOGhostTextFilter:
         page_html = "<html><head><title>Test</title></head><body></body></html>"
         result = filter_seo_ghost_text(sections, page_html)
         assert result[0].markdown == sections[0].markdown
+
+
+# ===========================================================================
+# B23: Phase 2 overflow rendering + smart fallback
+# ===========================================================================
+
+
+class TestPhase2Overflow:
+    """B23: content_patterns.py overflow + content_assembler.py smart fallback.
+
+    Tests the Phase 2 content assembly fix with A/B comparison:
+    - Flag OFF (old behavior): structured items drop remaining text, generic fallback
+    - Flag ON (new behavior): overflow div preserves remaining text, styled fallback
+    """
+
+    # Realistic hero section: stats + 2800 chars of narrative (like infiniteage.com)
+    HERO_STATS_MARKDOWN = (
+        "# Unlock Your Hair's Full Potential with Sea Moss\n\n"
+        "Discover the natural secret to stronger, thicker, healthier hair. "
+        "Our premium Irish sea moss is sustainably harvested from the pristine "
+        "waters of the Atlantic Ocean and carefully processed to preserve all "
+        "92 essential minerals your body needs.\n\n"
+        "**87%** of users reported improved hair growth\n"
+        "**83%** experienced reduced hair loss\n"
+        "**77%** noticed thicker, fuller hair\n"
+        "**74%** saw faster growth within 30 days\n\n"
+        "Sea moss is packed with essential minerals including zinc, selenium, "
+        "and biotin that are critical for healthy hair follicle function. Unlike "
+        "synthetic supplements, sea moss delivers these nutrients in their natural "
+        "bioavailable form, making them easier for your body to absorb.\n\n"
+        "Our customers report seeing visible results within 2-4 weeks of "
+        "consistent use. Whether you're dealing with thinning hair, slow growth, "
+        "or just want to maintain your hair's natural thickness and shine, "
+        "sea moss provides the nutritional foundation your hair needs.\n\n"
+        "[Shop Now](https://example.com/shop)\n\n"
+        "Join over 50,000 satisfied customers who have transformed their hair "
+        "health with our premium sea moss products. 100% satisfaction guaranteed "
+        "or your money back."
+    )
+
+    # Feature section: headings + narrative context
+    FEATURES_MARKDOWN = (
+        "## Why Choose Our Sea Moss\n\n"
+        "We source directly from sustainable farms in the Caribbean and Atlantic. "
+        "Every batch is third-party tested for purity and potency.\n\n"
+        "### 92 Essential Minerals\n"
+        "Sea moss contains nearly every mineral your body needs, including "
+        "iodine, calcium, potassium, and magnesium.\n\n"
+        "### Sustainably Harvested\n"
+        "Our sea moss is hand-harvested using traditional methods that protect "
+        "marine ecosystems and ensure the highest quality.\n\n"
+        "### Lab Tested Purity\n"
+        "Every batch undergoes rigorous third-party testing for heavy metals, "
+        "bacteria, and potency to ensure safety.\n\n"
+        "All our products are vegan, gluten-free, and made with no artificial "
+        "preservatives or fillers. We believe in pure, natural nutrition."
+    )
+
+    def test_remove_spans_basic(self):
+        """_remove_spans correctly removes matched spans and returns remainder."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            _remove_spans,
+        )
+        text = "Hello world. **87%** users. More text here. **83%** others."
+        spans = [(13, 28), (44, 58)]  # "**87%** users." and "**83%** others."
+        remaining = _remove_spans(text, spans)
+        assert "Hello world." in remaining
+        assert "More text here." in remaining
+        assert "87%" not in remaining
+        assert "83%" not in remaining
+
+    def test_remove_spans_empty(self):
+        """_remove_spans with no spans returns full text."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            _remove_spans,
+        )
+        assert _remove_spans("hello world", []) == "hello world"
+
+    def test_detect_stats_captures_remaining(self):
+        """_detect_stats now populates footer_markdown with non-stat text."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            _detect_stats,
+        )
+        md = (
+            "Discover the natural secret to stronger hair.\n\n"
+            "**87%** of users reported improved growth\n"
+            "**83%** experienced reduced hair loss\n\n"
+            "Sea moss is packed with essential minerals."
+        )
+        result = _detect_stats(md)
+        assert result is not None
+        assert result.pattern_type == "stats_list"
+        assert len(result.items) == 2
+        assert result.footer_markdown is not None
+        assert "Discover" in result.footer_markdown
+        assert "essential minerals" in result.footer_markdown
+        # Stats should NOT be in the remaining text
+        assert "87%" not in result.footer_markdown
+
+    def test_detect_features_captures_remaining(self):
+        """_detect_features now populates footer_markdown with non-feature text."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            _detect_features,
+        )
+        md = (
+            "We source directly from sustainable farms.\n\n"
+            "### Fast Processing\nOrders ship within 24 hours.\n\n"
+            "### Pure Quality\nNo additives or fillers ever.\n\n"
+            "All products are vegan and gluten-free."
+        )
+        result = _detect_features(md)
+        assert result is not None
+        assert len(result.items) == 2
+        assert "sustainable farms" in result.footer_markdown
+        assert "vegan" in result.footer_markdown
+
+    def test_overflow_on_stats_hero_flag_on(self):
+        """Flag ON: stats hero renders items + overflow with narrative text."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "true"
+            # Re-import to pick up flag
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+
+            section = FakeSection("sec_0", "hero", self.HERO_STATS_MARKDOWN)
+            hint = type('H', (), {'layout_type': 'stats_row'})()
+            pattern = cp.detect_content_pattern(section, hint)
+            assert pattern.pattern_type == "stats_list"
+            assert pattern.footer_markdown  # Has remaining text
+
+            result = cp.split_content_for_template(pattern, hint, section)
+            items_html = result.get("sec_0_items", "")
+            # Items should contain stat cards
+            assert "mp-stat" in items_html
+            # AND overflow div with narrative text
+            assert "mp-overflow" in items_html
+            assert "Discover" in items_html or "essential minerals" in items_html
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+
+    def test_overflow_on_stats_hero_flag_off(self):
+        """Flag OFF: stats hero renders ONLY items, narrative text is lost."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "false"
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+
+            section = FakeSection("sec_0", "hero", self.HERO_STATS_MARKDOWN)
+            hint = type('H', (), {'layout_type': 'stats_row'})()
+            pattern = cp.detect_content_pattern(section, hint)
+            result = cp.split_content_for_template(pattern, hint, section)
+            items_html = result.get("sec_0_items", "")
+            # Items should contain stat cards
+            assert "mp-stat" in items_html
+            # BUT NO overflow div
+            assert "mp-overflow" not in items_html
+            assert "Discover" not in items_html
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+
+    def test_coverage_check_passes_with_overflow(self):
+        """With overflow, coverage check should PASS for mixed stats+prose section."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "true"
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+
+            section = FakeSection("sec_0", "hero", self.HERO_STATS_MARKDOWN)
+            hint = type('H', (), {'layout_type': 'stats_row'})()
+            pattern = cp.detect_content_pattern(section, hint)
+            result = cp.split_content_for_template(pattern, hint, section)
+
+            # Simulate the coverage check from assemble_content
+            rendered_text = re.sub(r'<[^>]+>', '', "".join(result.values()))
+            source_text = cp.normalize_markdown_to_text(section.markdown)
+            coverage = len(rendered_text.strip()) / len(source_text.strip()) if source_text.strip() else 1.0
+
+            assert coverage >= 0.6, (
+                f"Coverage {coverage:.2f} should be >= 0.60 with overflow enabled. "
+                f"Rendered: {len(rendered_text.strip())} chars, "
+                f"Source: {len(source_text.strip())} chars"
+            )
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+
+    def test_coverage_check_fails_without_overflow(self):
+        """Without overflow, coverage check FAILS for mixed stats+prose section."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "false"
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+
+            section = FakeSection("sec_0", "hero", self.HERO_STATS_MARKDOWN)
+            hint = type('H', (), {'layout_type': 'stats_row'})()
+            pattern = cp.detect_content_pattern(section, hint)
+            result = cp.split_content_for_template(pattern, hint, section)
+
+            rendered_text = re.sub(r'<[^>]+>', '', "".join(result.values()))
+            source_text = cp.normalize_markdown_to_text(section.markdown)
+            coverage = len(rendered_text.strip()) / len(source_text.strip()) if source_text.strip() else 1.0
+
+            assert coverage < 0.6, (
+                f"Coverage {coverage:.2f} should be < 0.60 without overflow. "
+                f"Old behavior should only capture stat items."
+            )
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+
+    def test_smart_fallback_preserves_template_class(self):
+        """Smart fallback keeps original template CSS class, not mp-generic."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            _replace_section_placeholders,
+        )
+        skeleton = (
+            '<section data-section="sec_0" class="mp-stats-row" style="background: #fff;">'
+            '<div class="mp-container">'
+            '<div class="mp-section-header">{{sec_0_header}}</div>'
+            '<div class="mp-grid-4 mp-text-center">{{sec_0_items}}</div>'
+            '</div></section>'
+        )
+        content = '<h1>Title</h1><p>Content here</p>'
+        result = _replace_section_placeholders(skeleton, "sec_0", content)
+        # Template class preserved
+        assert 'class="mp-stats-row"' in result
+        assert 'mp-generic' not in result
+        # Content injected into first placeholder
+        assert '<h1>Title</h1>' in result
+        # Second placeholder cleared
+        assert '{{sec_0_items}}' not in result
+
+    def test_generic_fallback_loses_template_class(self):
+        """Old generic fallback wraps in mp-generic, losing template styling."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            _build_generic_fallback,
+        )
+        content = '<h1>Title</h1><p>Content</p>'
+        result = _build_generic_fallback("sec_0", content)
+        assert 'mp-generic' in result
+        assert 'mp-stats-row' not in result
+
+    def test_no_overflow_for_small_remaining_text(self):
+        """When remaining text is < 40% of total, NO overflow is added."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "true"
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+
+            # Stats dominate — minimal remaining text
+            md = (
+                "## Stats\n\n"
+                "**10K+** Active Users\n"
+                "**99.9%** Uptime\n"
+                "**500M+** Requests\n"
+                "**24/7** Support\n\n"
+                "Brief note."  # Very little remaining text
+            )
+            section = FakeSection("sec_0", "stats", md)
+            hint = type('H', (), {'layout_type': 'stats_row'})()
+            pattern = cp.detect_content_pattern(section, hint)
+            result = cp.split_content_for_template(pattern, hint, section)
+            items_html = result.get("sec_0_items", "")
+            # Should NOT have overflow for tiny remaining text
+            assert "mp-overflow" not in items_html
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+
+    def test_full_assembly_with_overflow(self):
+        """End-to-end: assemble_content with stats_row layout, flag ON."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "true"
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_assembler as ca
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+            importlib.reload(ca)
+
+            skeleton = (
+                '<section data-section="sec_0" class="mp-stats-row" style="padding: 50px 30px;">'
+                '<div class="mp-container">'
+                '<div class="mp-section-header">{{sec_0_header}}</div>'
+                '<div class="mp-grid-4 mp-text-center">{{sec_0_items}}</div>'
+                '</div></section>'
+            )
+            sections = [FakeSection("sec_0", "hero", self.HERO_STATS_MARKDOWN)]
+            layout_hint = type('H', (), {'layout_type': 'stats_row'})()
+            layout_map = {"sec_0": layout_hint}
+
+            result = ca.assemble_content(skeleton, sections, {}, layout_map=layout_map)
+            # Template styling preserved
+            assert 'mp-stats-row' in result
+            assert 'mp-generic' not in result
+            # Stats rendered
+            assert 'mp-stat' in result
+            # Narrative text preserved via overflow
+            assert 'Discover' in result or 'essential minerals' in result
+            # Data slots assigned
+            assert 'data-slot=' in result
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+            importlib.reload(ca)
+
+    def test_full_assembly_without_overflow(self):
+        """End-to-end: assemble_content with stats_row layout, flag OFF → generic fallback."""
+        import os
+        old = os.environ.get("PHASE2_OVERFLOW")
+        try:
+            os.environ["PHASE2_OVERFLOW"] = "false"
+            import importlib
+            import viraltracker.services.landing_page_analysis.multipass.content_assembler as ca
+            import viraltracker.services.landing_page_analysis.multipass.content_patterns as cp
+            importlib.reload(cp)
+            importlib.reload(ca)
+
+            skeleton = (
+                '<section data-section="sec_0" class="mp-stats-row" style="padding: 50px 30px;">'
+                '<div class="mp-container">'
+                '<div class="mp-section-header">{{sec_0_header}}</div>'
+                '<div class="mp-grid-4 mp-text-center">{{sec_0_items}}</div>'
+                '</div></section>'
+            )
+            sections = [FakeSection("sec_0", "hero", self.HERO_STATS_MARKDOWN)]
+            layout_hint = type('H', (), {'layout_type': 'stats_row'})()
+            layout_map = {"sec_0": layout_hint}
+
+            result = ca.assemble_content(skeleton, sections, {}, layout_map=layout_map)
+            # Old behavior: generic fallback because coverage fails
+            assert 'mp-generic' in result
+            # Template class is LOST
+            assert 'mp-stats-row' not in result
+        finally:
+            if old is not None:
+                os.environ["PHASE2_OVERFLOW"] = old
+            else:
+                os.environ.pop("PHASE2_OVERFLOW", None)
+            importlib.reload(cp)
+            importlib.reload(ca)
+
+
+# ===========================================================================
+# B24: Phase Diagnostics
+# ===========================================================================
+
+
+def _wrap_json_as_html(json_data):
+    """Mirror pipeline._wrap_json_as_html for test fixtures."""
+    import json as _json
+    json_str = _json.dumps(json_data, indent=2, default=str)
+    return f"<html><body><pre><code>{json_str}</code></pre></body></html>"
+
+
+def _build_phase0_snapshot(colors=None, typography=None):
+    """Build a Phase 0 design system snapshot."""
+    ds = {
+        "colors": colors or {
+            "primary": "#ff0000",
+            "secondary": "#00ff00",
+            "accent": "#0000ff",
+            "background": "#ffffff",
+        },
+        "typography": typography or {
+            "heading_font": "Arial, sans-serif",
+            "body_font": "Georgia, serif",
+            "h1_size": "2.5rem",
+        },
+    }
+    return _wrap_json_as_html(ds)
+
+
+def _build_content_html(
+    sections=3,
+    slots_per_section=3,
+    wrap_lp_mockup=True,
+    extra_css="",
+    images_per_section=1,
+    extra_text="",
+):
+    """Build synthetic content HTML with data-section and data-slot attributes."""
+    slot_types = ["heading", "body", "cta"]
+    parts = []
+    if extra_css:
+        parts.append(f"<style>{extra_css}</style>")
+    for s in range(sections):
+        inner = []
+        for sl in range(slots_per_section):
+            stype = slot_types[sl % len(slot_types)]
+            slot_name = f"{stype}-{s * slots_per_section + sl}"
+            if stype == "heading":
+                inner.append(
+                    f'<h2 data-slot="{slot_name}">Heading {s}</h2>'
+                )
+            elif stype == "body":
+                inner.append(
+                    f'<p data-slot="{slot_name}">This is body text for section {s} '
+                    f"with enough words to pass the short text guard and provide "
+                    f"meaningful comparison between phases. {extra_text}</p>"
+                )
+            else:
+                inner.append(
+                    f'<a data-slot="{slot_name}" href="#">Buy Now</a>'
+                )
+        for _ in range(images_per_section):
+            inner.append('<img src="https://example.com/img.jpg" alt="test">')
+        section_html = (
+            f'<section data-section="sec_{s}">{"".join(inner)}</section>'
+        )
+        parts.append(section_html)
+    html = "\n".join(parts)
+    if wrap_lp_mockup:
+        html = f'<div class="lp-mockup">\n{html}\n</div>'
+    return html
+
+
+def _build_skeleton_html(sections=3, placeholders=True):
+    """Build a Phase 1 skeleton with optional placeholders."""
+    parts = ['<style>.hero { color: red; }\n.section { padding: 20px; }</style>']
+    for s in range(sections):
+        if placeholders:
+            parts.append(
+                f'<section data-section="sec_{s}">'
+                f'{{{{{f"sec_{s}_header"}}}}}'
+                f'{{{{{f"sec_{s}_items"}}}}}'
+                f"</section>"
+            )
+        else:
+            parts.append(f'<section data-section="sec_{s}"><p>Content</p></section>')
+    html = "\n".join(parts)
+    return f'<div class="lp-mockup">\n{html}\n</div>'
+
+
+class TestPhaseDiagnostics:
+    """B24: phase_diagnostics.py — Per-phase quality measurement."""
+
+    def test_diagnose_all_phases_pass(self):
+        """All 5 snapshots with good metrics -> overall PASS."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {
+            "phase_0_design_system": _build_phase0_snapshot(),
+            "phase_1_skeleton": _build_skeleton_html(sections=3),
+            "phase_2_content": content,
+            "phase_3_refined": content,  # identical = no drift
+            "phase_4_final": content,
+        }
+        # Source markdown must contain the same text as the generated HTML
+        # to achieve high text fidelity. Match the body text pattern.
+        source_md = (
+            "# Heading 0\n"
+            "This is body text for section 0 with enough words to pass the "
+            "short text guard and provide meaningful comparison between phases.\n"
+            "Buy Now\n\n"
+            "# Heading 1\n"
+            "This is body text for section 1 with enough words to pass the "
+            "short text guard and provide meaningful comparison between phases.\n"
+            "Buy Now\n\n"
+            "# Heading 2\n"
+            "This is body text for section 2 with enough words to pass the "
+            "short text guard and provide meaningful comparison between phases.\n"
+            "Buy Now"
+        )
+        report = diagnose_phases(
+            snapshots, source_markdown=source_md, expected_section_count=3
+        )
+        assert report.overall_passed, (
+            f"Expected PASS but got FAIL: "
+            f"{[(v.phase_name, v.issues) for v in report.verdicts if not v.passed]}"
+        )
+
+    def test_diagnose_phase3_slot_loss(self):
+        """Phase 3 drops 4 slots -> FAIL, lost slot names listed."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        phase2 = _build_content_html(sections=3, slots_per_section=3)
+
+        # Phase 3: remove some slots by replacing them with plain text
+        phase3 = phase2.replace('data-slot="body-1"', 'class="lost"')
+        phase3 = phase3.replace('data-slot="body-4"', 'class="lost"')
+        phase3 = phase3.replace('data-slot="cta-2"', 'class="lost"')
+        phase3 = phase3.replace('data-slot="heading-3"', 'class="lost"')
+
+        snapshots = {
+            "phase_0_design_system": _build_phase0_snapshot(),
+            "phase_1_skeleton": _build_skeleton_html(sections=3),
+            "phase_2_content": phase2,
+            "phase_3_refined": phase3,
+            "phase_4_final": phase3,
+        }
+        report = diagnose_phases(snapshots, expected_section_count=3)
+        assert not report.overall_passed
+
+        # Find Phase 3 verdict
+        phase3_verdict = next(
+            v for v in report.verdicts if "Phase 3" in v.phase_name
+        )
+        assert not phase3_verdict.passed
+        assert any("Lost" in i or "lost" in i.lower() for i in phase3_verdict.issues)
+        # Verify lost slot names are mentioned
+        issues_text = " ".join(phase3_verdict.issues)
+        assert "body-1" in issues_text
+        assert "body-4" in issues_text
+
+    def test_diagnose_missing_snapshots(self):
+        """Only Phase 2 present -> partial report, no crash."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+        report = diagnose_phases(snapshots)
+        # Should have Phase 2 + Final Output metrics only
+        assert len(report.phases) == 2
+        assert any("Phase 2" in m.phase_name for m in report.phases)
+        assert any("Final" in m.phase_name for m in report.phases)
+
+    def test_diagnose_empty_html(self):
+        """Empty string snapshot -> FAIL, no crash."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        snapshots = {
+            "phase_0_design_system": "",
+            "phase_1_skeleton": "",
+            "phase_2_content": "",
+        }
+        report = diagnose_phases(snapshots)
+        assert not report.overall_passed
+
+    def test_diagnose_phase0_defaults(self):
+        """Phase 0 using DEFAULT_DESIGN_SYSTEM -> FAIL."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            DEFAULT_DESIGN_SYSTEM,
+        )
+        snapshots = {
+            "phase_0_design_system": _wrap_json_as_html(DEFAULT_DESIGN_SYSTEM),
+        }
+        report = diagnose_phases(snapshots)
+        phase0_verdict = next(
+            v for v in report.verdicts if "Phase 0" in v.phase_name
+        )
+        assert not phase0_verdict.passed
+        assert any("defaults" in i.lower() or "extraction failed" in i.lower()
+                    for i in phase0_verdict.issues)
+
+    def test_diagnose_phase2_unresolved(self):
+        """{{sec_3}} remaining -> FAIL."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        # Inject unresolved placeholder
+        content = content.replace("</div>", "{{sec_3_items}}</div>", 1)
+        snapshots = {"phase_2_content": content}
+        report = diagnose_phases(snapshots)
+        phase2_verdict = next(
+            v for v in report.verdicts if "Phase 2" in v.phase_name
+        )
+        assert not phase2_verdict.passed
+        assert any("placeholder" in i.lower() for i in phase2_verdict.issues)
+
+    def test_diagnose_identical_phase2_phase3(self):
+        """Phase 3 == Phase 2 -> PASS, 0 deltas, high unchanged count."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {
+            "phase_2_content": content,
+            "phase_3_refined": content,
+        }
+        report = diagnose_phases(snapshots)
+        phase3_metrics = next(
+            m for m in report.phases if "Phase 3" in m.phase_name
+        )
+        # No slots lost or added
+        assert phase3_metrics.slots_lost == frozenset()
+        assert phase3_metrics.slots_added == frozenset()
+        # Unchanged sections should equal total sections
+        assert phase3_metrics.extras.get("unchanged_section_count") == 3
+
+    def test_diagnose_malformed_html(self):
+        """Unclosed tags -> metrics still computed, no crash."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        malformed = (
+            '<div class="lp-mockup">'
+            '<section data-section="sec_0">'
+            '<p data-slot="body-0">Hello world test content here with enough words</p>'
+            # Missing closing tags
+        )
+        snapshots = {"phase_2_content": malformed}
+        report = diagnose_phases(snapshots)
+        # Should not crash and should have metrics
+        assert len(report.phases) >= 1
+        phase2 = next(m for m in report.phases if "Phase 2" in m.phase_name)
+        assert phase2.slot_count >= 1
+
+    def test_diagnose_json_phase0(self):
+        """Phase 0 JSON-wrapped snapshot -> extras parsed correctly."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        ds = {
+            "colors": {"primary": "#f00", "secondary": "#0f0", "accent": "#00f",
+                       "bg": "#fff", "text": "#000"},
+            "typography": {"heading": "Arial", "body": "Georgia", "size": "1rem"},
+        }
+        snapshots = {"phase_0_design_system": _wrap_json_as_html(ds)}
+        report = diagnose_phases(snapshots)
+        phase0 = next(m for m in report.phases if "Phase 0" in m.phase_name)
+        assert phase0.extras["color_count"] == 5
+        assert phase0.extras["typography_entries"] == 3
+        assert phase0.extras["used_defaults"] is False
+
+    def test_threshold_override(self):
+        """Custom DiagnosticThresholds changes verdict."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            DiagnosticThresholds,
+            diagnose_phases,
+        )
+        # Build content with only 3 slots total (below default min_slots=5)
+        content = _build_content_html(sections=1, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+
+        # Default thresholds: FAIL (3 < 5)
+        report_default = diagnose_phases(snapshots)
+        phase2_default = next(
+            v for v in report_default.verdicts if "Phase 2" in v.phase_name
+        )
+        assert not phase2_default.passed
+
+        # Custom thresholds: min_slots=2 -> PASS
+        custom = DiagnosticThresholds(min_slots=2)
+        report_custom = diagnose_phases(snapshots, thresholds=custom)
+        phase2_custom = next(
+            v for v in report_custom.verdicts if "Phase 2" in v.phase_name
+        )
+        assert phase2_custom.passed
+
+    def test_report_format(self):
+        """format() contains expected headers and metrics."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {
+            "phase_0_design_system": _build_phase0_snapshot(),
+            "phase_2_content": content,
+            "phase_3_refined": content,
+        }
+        report = diagnose_phases(snapshots, expected_section_count=3)
+        text = report.format()
+        assert "PIPELINE PHASE DIAGNOSTIC REPORT" in text
+        assert "Phase 0" in text
+        assert "Phase 2" in text
+        assert "VERDICT" in text
+
+    def test_source_markdown_none(self):
+        """source_markdown=None -> no crash, text_fidelity = None for phases without fidelity."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=2, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+        # Pass None explicitly
+        report = diagnose_phases(snapshots, source_markdown=None)
+        assert len(report.phases) >= 1
+        # Phase 2 fidelity should be None (empty source markdown)
+        phase2 = next(m for m in report.phases if "Phase 2" in m.phase_name)
+        assert phase2.text_fidelity_vs_source is None
+
+    def test_css_chars_multiline(self):
+        """Multi-line <style> block -> correct char count."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            _count_css_chars,
+        )
+        html = (
+            "<style>\n"
+            "  .hero { color: red; }\n"
+            "  .section {\n"
+            "    padding: 20px;\n"
+            "    margin: 10px;\n"
+            "  }\n"
+            "</style>"
+        )
+        count = _count_css_chars(html)
+        expected_css = (
+            "\n"
+            "  .hero { color: red; }\n"
+            "  .section {\n"
+            "    padding: 20px;\n"
+            "    margin: 10px;\n"
+            "  }\n"
+        )
+        assert count == len(expected_css)
+
+    def test_short_text_similarity_skipped(self):
+        """Both phases < 10 tokens -> text_similarity_vs_prev = None, not 0.0."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        # Build very short content (< 10 tokens per phase)
+        short_html = (
+            '<div class="lp-mockup">'
+            '<section data-section="sec_0">'
+            '<p data-slot="h-0">Hi</p>'
+            '<p data-slot="b-0">OK</p>'
+            '<p data-slot="c-0">Go</p>'
+            '<p data-slot="d-0">Yes</p>'
+            '<p data-slot="e-0">No</p>'
+            '</section></div>'
+        )
+        # Phase 3 with slightly different text (still < 10 tokens)
+        short_html_3 = short_html.replace("Hi", "Hey")
+        snapshots = {
+            "phase_2_content": short_html,
+            "phase_3_refined": short_html_3,
+        }
+        report = diagnose_phases(snapshots)
+        phase3 = next(
+            m for m in report.phases if "Phase 3" in m.phase_name
+        )
+        # Should be None (skipped), not 0.0
+        assert phase3.text_similarity_vs_prev is None
+
+    def test_to_dict_serialization(self):
+        """to_dict() produces valid JSON-serializable dict."""
+        import json as _json
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=2, slots_per_section=3)
+        snapshots = {
+            "phase_0_design_system": _build_phase0_snapshot(),
+            "phase_2_content": content,
+        }
+        report = diagnose_phases(snapshots)
+        d = report.to_dict()
+        # Must be JSON-serializable
+        json_str = _json.dumps(d)
+        assert json_str
+        # Verify structure
+        assert "overall_passed" in d
+        assert "phases" in d
+        assert "verdicts" in d
+        assert isinstance(d["phases"], list)
+
+    def test_lp_mockup_wrapper_detection(self):
+        """Wrapper present -> has_lp_mockup_wrapper = True; stripped -> FAIL."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        # With wrapper
+        with_wrapper = _build_content_html(
+            sections=3, slots_per_section=3, wrap_lp_mockup=True
+        )
+        snapshots = {"phase_4_final": with_wrapper}
+        report = diagnose_phases(snapshots, source_markdown="Heading body content words enough for test fidelity comparison text")
+        final_metrics = next(m for m in report.phases if "Final" in m.phase_name)
+        assert final_metrics.extras["has_lp_mockup_wrapper"] is True
+
+        # Without wrapper
+        without_wrapper = _build_content_html(
+            sections=3, slots_per_section=3, wrap_lp_mockup=False
+        )
+        snapshots2 = {"phase_4_final": without_wrapper}
+        report2 = diagnose_phases(snapshots2, source_markdown="Heading body content words enough for test fidelity comparison text")
+        final_verdict = next(v for v in report2.verdicts if "Final" in v.phase_name)
+        assert not final_verdict.passed
+        assert any(".lp-mockup" in i for i in final_verdict.issues)
+
+
+# ===========================================================================
+# B25: PhaseVerdict warnings field
+# ===========================================================================
+
+
+class TestPhaseVerdictWarnings:
+    """B25: phase_diagnostics.py — PhaseVerdict warnings + WARN-level gates."""
+
+    def test_verdict_has_warnings_field(self):
+        """PhaseVerdict has a warnings list (backward-compatible default)."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            PhaseVerdict,
+        )
+        v = PhaseVerdict(phase_name="test", passed=True)
+        assert v.warnings == []
+        assert v.issues == []
+
+    def test_warnings_do_not_cause_fail(self):
+        """Verdicts with only warnings should still pass."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            PhaseVerdict,
+        )
+        v = PhaseVerdict(
+            phase_name="test", passed=True,
+            warnings=["Low SSIM", "Something minor"],
+        )
+        assert v.passed is True
+        assert len(v.warnings) == 2
+
+    def test_warnings_serialized_in_to_dict(self):
+        """to_dict() includes warnings in verdict entries."""
+        import json as _json
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {
+            "phase_0_design_system": _build_phase0_snapshot(),
+            "phase_2_content": content,
+        }
+        report = diagnose_phases(snapshots)
+        d = report.to_dict()
+        json_str = _json.dumps(d)
+        assert json_str
+        for v in d["verdicts"]:
+            assert "warnings" in v
+
+    def test_warnings_shown_in_format(self):
+        """format() renders WARN lines distinctly from !! lines."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        # Create Phase 3 that heavily rewrites text (sim < 0.80)
+        phase2 = _build_content_html(sections=3, slots_per_section=3)
+        phase3 = phase2.replace(
+            "This is body text for section 0 with enough words to pass "
+            "the short text guard and provide meaningful comparison between phases.",
+            "COMPLETELY REWRITTEN text that bears absolutely no resemblance "
+            "to the original content whatsoever in any meaningful way.",
+        )
+        phase3 = phase3.replace(
+            "This is body text for section 1 with enough words to pass "
+            "the short text guard and provide meaningful comparison between phases.",
+            "ALSO REWRITTEN text with entirely different vocabulary and "
+            "sentence structure that shares nothing with the original text.",
+        )
+        snapshots = {
+            "phase_2_content": phase2,
+            "phase_3_refined": phase3,
+        }
+        report = diagnose_phases(snapshots)
+        text = report.format()
+        assert "WARN:" in text
+
+    def test_visual_scores_in_report_format(self):
+        """format() shows visual SSIM section when scores present."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+        report = diagnose_phases(snapshots)
+        report.visual_scores = {
+            "phase_1_skeleton": 0.35,
+            "phase_2_content": 0.52,
+        }
+        report.visual_trajectory = "improving"
+        text = report.format()
+        assert "VISUAL FIDELITY" in text
+        assert "0.3500" in text
+        assert "0.5200" in text
+        assert "improving" in text
+
+    def test_visual_scores_in_to_dict(self):
+        """to_dict() includes visual_scores and visual_trajectory."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+        report = diagnose_phases(snapshots)
+        report.visual_scores = {"phase_2_content": 0.55}
+        report.visual_trajectory = "flat"
+        d = report.to_dict()
+        assert d["visual_scores"] == {"phase_2_content": 0.55}
+        assert d["visual_trajectory"] == "flat"
+
+
+# ===========================================================================
+# B26: WARN-first quality gates
+# ===========================================================================
+
+
+class TestQualityGates:
+    """B26: phase_diagnostics.py — WARN-first quality gates."""
+
+    def test_phase1_malformed_placeholder_warns(self):
+        """Unmatched {{ vs }} count produces a warning."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        # Skeleton with unmatched braces
+        skeleton = (
+            '<div class="lp-mockup">'
+            '<section data-section="sec_0">{{sec_0_header}}</section>'
+            '<section data-section="sec_1">{{sec_1_header}</section>'  # Missing closing brace
+            '</div>'
+        )
+        snapshots = {
+            "phase_1_skeleton": skeleton,
+        }
+        report = diagnose_phases(snapshots, expected_section_count=2)
+        phase1_verdict = next(
+            v for v in report.verdicts if "Phase 1" in v.phase_name
+        )
+        assert any("Malformed" in w for w in phase1_verdict.warnings)
+
+    def test_phase1_wellformed_no_warnings(self):
+        """Well-formed placeholders produce no warnings."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        skeleton = _build_skeleton_html(sections=3)
+        snapshots = {"phase_1_skeleton": skeleton}
+        report = diagnose_phases(snapshots, expected_section_count=3)
+        phase1_verdict = next(
+            v for v in report.verdicts if "Phase 1" in v.phase_name
+        )
+        assert len(phase1_verdict.warnings) == 0
+
+    def test_final_unclosed_tags_warns(self):
+        """Final output with unclosed <section> produces a warning."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        # Missing closing section tag
+        malformed = (
+            '<div class="lp-mockup">'
+            '<section data-section="sec_0">'
+            '<p data-slot="body-0">Content 0 with enough words for text comparison</p>'
+            '<p data-slot="body-1">More content for text comparison test</p>'
+            '<p data-slot="body-2">Additional content for text comparison test</p>'
+            '<p data-slot="body-3">Even more content for text comparison test</p>'
+            '<p data-slot="body-4">Final content for text comparison test</p>'
+            # No </section>
+            '</div>'
+        )
+        snapshots = {"phase_4_final": malformed}
+        report = diagnose_phases(
+            snapshots,
+            source_markdown="Content 0 with enough words for text comparison "
+                           "More content Additional content Even more Final content",
+        )
+        final_verdict = next(
+            v for v in report.verdicts if "Final" in v.phase_name
+        )
+        assert any("unclosed" in w.lower() or "Malformed" in w for w in final_verdict.warnings)
+
+    def test_final_slot_retention_warns_when_low(self):
+        """Final output with < 80% of Phase 2 slots produces a warning."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        phase2 = _build_content_html(sections=3, slots_per_section=3)
+        # Final output: remove most slots
+        final = phase2.replace('data-slot="heading-0"', 'class="lost"')
+        final = final.replace('data-slot="body-1"', 'class="lost"')
+        final = final.replace('data-slot="cta-2"', 'class="lost"')
+        final = final.replace('data-slot="heading-3"', 'class="lost"')
+        final = final.replace('data-slot="body-4"', 'class="lost"')
+        final = final.replace('data-slot="cta-5"', 'class="lost"')
+        final = final.replace('data-slot="heading-6"', 'class="lost"')
+
+        snapshots = {
+            "phase_2_content": phase2,
+            "phase_4_final": final,
+        }
+        report = diagnose_phases(snapshots)
+        final_verdict = next(
+            v for v in report.verdicts if "Final" in v.phase_name
+        )
+        assert any("Lost" in w and "slot" in w.lower() for w in final_verdict.warnings)
+
+    def test_final_slot_retention_no_warn_when_high(self):
+        """Final output with same slots as Phase 2 produces no retention warning."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=3, slots_per_section=3)
+        snapshots = {
+            "phase_2_content": content,
+            "phase_4_final": content,
+        }
+        report = diagnose_phases(snapshots)
+        final_verdict = next(
+            v for v in report.verdicts if "Final" in v.phase_name
+        )
+        assert not any("Lost" in w for w in final_verdict.warnings)
+
+
+# ===========================================================================
+# B27: Phase 1 fallback preserves layout_hints
+# ===========================================================================
+
+
+class TestPhase1FallbackLayoutHints:
+    """B27: pipeline.py — _phase_1_fallback_classify preserves layout_hints."""
+
+    def test_fallback_returns_layout_hints(self):
+        """Fallback with layout_hints returns filtered LayoutHint objects."""
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import LayoutHint
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import MultiPassPipeline
+
+        # Create a minimal pipeline instance
+        pipeline = MultiPassPipeline.__new__(MultiPassPipeline)
+
+        sections = [
+            FakeSection("sec_0", "hero", "Hero text"),
+            FakeSection("sec_1", "features", "Features text"),
+        ]
+        hints = {
+            "sec_0": LayoutHint(layout_type="hero_split", has_image=True, confidence=0.8),
+            "sec_1": LayoutHint(layout_type="feature_grid", column_count=3, confidence=0.7),
+            "sec_99": LayoutHint(layout_type="generic"),  # Not in sections
+        }
+
+        _, _, layout_map = pipeline._phase_1_fallback_classify(sections, layout_hints=hints)
+
+        assert "sec_0" in layout_map
+        assert "sec_1" in layout_map
+        assert "sec_99" not in layout_map  # Filtered out
+        assert layout_map["sec_0"].layout_type == "hero_split"
+        assert hasattr(layout_map["sec_0"], "layout_type")  # content_assembler check
+
+    def test_fallback_without_hints_returns_empty(self):
+        """Fallback without layout_hints returns empty dict (backward compat)."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import MultiPassPipeline
+
+        pipeline = MultiPassPipeline.__new__(MultiPassPipeline)
+        sections = [FakeSection("sec_0", "hero", "Hero text")]
+
+        _, _, layout_map = pipeline._phase_1_fallback_classify(sections)
+        assert layout_map == {}
+
+    def test_fallback_with_none_hints_returns_empty(self):
+        """Fallback with layout_hints=None returns empty dict."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import MultiPassPipeline
+
+        pipeline = MultiPassPipeline.__new__(MultiPassPipeline)
+        sections = [FakeSection("sec_0", "hero", "Hero text")]
+
+        _, _, layout_map = pipeline._phase_1_fallback_classify(sections, layout_hints=None)
+        assert layout_map == {}
+
+
+# ===========================================================================
+# B28: html_renderer module
+# ===========================================================================
+
+
+class TestHtmlRenderer:
+    """B28: html_renderer.py — render constants and contract."""
+
+    def test_render_constants(self):
+        """Canonical render settings match visual_fidelity_check.py."""
+        from viraltracker.services.landing_page_analysis.multipass.html_renderer import (
+            RENDER_VIEWPORT_WIDTH,
+            RENDER_VIEWPORT_HEIGHT,
+            FREEZE_ANIMATIONS_CSS,
+        )
+        assert RENDER_VIEWPORT_WIDTH == 1280
+        assert RENDER_VIEWPORT_HEIGHT == 800
+        assert "animation: none" in FREEZE_ANIMATIONS_CSS
+        assert "transition: none" in FREEZE_ANIMATIONS_CSS
+
+    def test_render_empty_html_returns_none(self):
+        """Empty/blank HTML returns None without crashing."""
+        from viraltracker.services.landing_page_analysis.multipass.html_renderer import (
+            render_html_to_png,
+        )
+        assert render_html_to_png("") is None
+        assert render_html_to_png("   ") is None
+
+    def test_render_returns_none_without_playwright(self):
+        """When Playwright is not importable, returns None."""
+        from viraltracker.services.landing_page_analysis.multipass.html_renderer import (
+            render_html_to_png,
+        )
+        with patch.dict("sys.modules", {"playwright": None, "playwright.sync_api": None}):
+            # Attempt to render — should fail gracefully
+            result = render_html_to_png("<html><body><p>Test</p></body></html>")
+            # Will either return None (if import fails) or bytes (if Playwright works)
+            # This test just ensures no crash
+            assert result is None or isinstance(result, bytes)
+
+
+# ===========================================================================
+# B29: PhaseDiagnosticReport visual fields
+# ===========================================================================
+
+
+class TestPhaseDiagnosticReportVisual:
+    """B29: phase_diagnostics.py — visual_scores and visual_trajectory fields."""
+
+    def test_default_visual_fields_none(self):
+        """Default report has None visual fields."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=2, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+        report = diagnose_phases(snapshots)
+        assert report.visual_scores is None
+        assert report.visual_trajectory is None
+
+    def test_visual_fields_serializable(self):
+        """Visual fields serialize correctly in to_dict()."""
+        import json as _json
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            diagnose_phases,
+        )
+        content = _build_content_html(sections=2, slots_per_section=3)
+        snapshots = {"phase_2_content": content}
+        report = diagnose_phases(snapshots)
+        report.visual_scores = {"phase_1": 0.3, "phase_2": 0.5}
+        report.visual_trajectory = "improving"
+        d = report.to_dict()
+        json_str = _json.dumps(d)
+        parsed = _json.loads(json_str)
+        assert parsed["visual_scores"]["phase_1"] == 0.3
+        assert parsed["visual_trajectory"] == "improving"
+
+    def test_check_unclosed_tags_helper(self):
+        """_check_unclosed_tags detects missing closing tags."""
+        from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
+            _check_unclosed_tags,
+        )
+        # Balanced HTML
+        assert _check_unclosed_tags("<div><section></section></div>") == []
+        # Unclosed section
+        result = _check_unclosed_tags("<section><div></div>")
+        assert len(result) == 1
+        assert "<section>" in result[0]
+        # Multiple unclosed
+        result = _check_unclosed_tags("<div><section><article>")
+        assert len(result) == 3

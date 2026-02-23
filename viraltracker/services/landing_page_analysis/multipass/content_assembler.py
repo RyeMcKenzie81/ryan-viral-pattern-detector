@@ -7,6 +7,7 @@ assigns data-slots, and fills skeleton placeholders.
 
 import json
 import logging
+import os
 import re
 from copy import deepcopy
 from difflib import SequenceMatcher
@@ -17,6 +18,11 @@ from markdown_it import MarkdownIt
 from .html_extractor import ImageRegistry, PageImage
 
 logger = logging.getLogger(__name__)
+
+# Feature flag: controls overflow rendering + smart fallback in Phase 2.
+# True = new behavior (preserve remaining text, keep template styling on fallback)
+# False = old behavior (drop remaining text, generic fallback)
+PHASE2_OVERFLOW = os.environ.get("PHASE2_OVERFLOW", "true").lower() == "true"
 
 # Artifact labels that indicate scraped SEO/invisible content
 _ARTIFACT_LABELS = re.compile(
@@ -310,7 +316,7 @@ def assemble_content(
                             f"({len(rendered_text_only)}/{len(source_text_only)} chars), "
                             f"falling back to linear dump"
                         )
-                        # Fallback: replace entire section with generic template
+                        # Fallback: render full markdown as HTML
                         section_html = md.render(section.markdown)
                         if image_registry:
                             section_html = _enhance_images(section_html, sec_id, image_registry)
@@ -318,8 +324,13 @@ def assemble_content(
                         section_html, heading_counter, body_counter, cta_counter, found_h1, found_h2 = (
                             _assign_data_slots(section_html, heading_counter, body_counter, cta_counter, found_h1, found_h2)
                         )
-                        fallback_html = _build_generic_fallback(sec_id, section_html)
-                        html = _replace_entire_section(html, sec_id, fallback_html)
+                        if PHASE2_OVERFLOW:
+                            # Smart fallback: keep template styling, replace sub-placeholders
+                            html = _replace_section_placeholders(html, sec_id, section_html)
+                        else:
+                            # Old fallback: replace entire section with bland generic wrapper
+                            fallback_html = _build_generic_fallback(sec_id, section_html)
+                            html = _replace_entire_section(html, sec_id, fallback_html)
                         used_structured = True  # We handled this section
 
             except Exception as e:
@@ -501,7 +512,7 @@ def _assign_data_slots(
             slot_name = f"cta-{cta_counter}"
 
         if slot_name:
-            return f'<{tag}{attrs} data-slot="{slot_name}"{rest}'
+            return f'<{tag}{attrs} data-slot="{slot_name}"{rest}>'
         return match.group(0)
 
     pattern = re.compile(
@@ -548,6 +559,27 @@ def _build_generic_fallback(sec_id: str, content_html: str) -> str:
         f'<div class="mp-container">{content_html}</div>'
         f'</section>'
     )
+
+
+def _replace_section_placeholders(html: str, sec_id: str, content_html: str) -> str:
+    """Replace all sub-placeholders for a section, preserving template styling.
+
+    Smart fallback: instead of replacing the entire section with a bland
+    mp-generic wrapper, this keeps the original template section tag (with
+    its CSS classes: mp-hero-split, mp-stats-row, etc.) and fills the first
+    sub-placeholder with the content dump, clearing the rest.
+    """
+    placeholder_re = re.compile(r'\{\{' + re.escape(sec_id) + r'(?:_\w+)?\}\}')
+    first_replaced = False
+
+    def _replace(match):
+        nonlocal first_replaced
+        if not first_replaced:
+            first_replaced = True
+            return content_html
+        return ''
+
+    return placeholder_re.sub(_replace, html)
 
 
 def _build_bg_images_html(sec_id: str, registry: ImageRegistry) -> str:

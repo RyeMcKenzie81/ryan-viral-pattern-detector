@@ -765,7 +765,99 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 **Related files**:
 - `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` — `_run_template_preview()`
 
-### 34. V1/V2 Comparison Script — Live Testing Needed
+### 34. Landing Page Multipass — Per-Section Text Fidelity
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-23
+
+**Context**: `text_fidelity_vs_source` in the phase diagnostics tool uses bag-of-words Jaccard similarity. If section 2's text lands in section 5's slot, similarity is still high — content shuffling goes undetected. Per-section comparison would catch this but requires mapping source markdown sections to output HTML sections.
+
+**What's needed**:
+1. Map source markdown sections (from segmenter) to output `data-section` divs
+2. Compute per-section text fidelity (not just page-level)
+3. Flag sections where content appears to have been shuffled between slots
+
+**Related files**:
+- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
+- `viraltracker/services/landing_page_analysis/multipass/invariants.py`
+
+---
+
+### 35. Landing Page Multipass — Visual SSIM Per Phase
+
+**Priority**: Low
+**Complexity**: High
+**Added**: 2026-02-23
+
+**Context**: The gold standard for measuring "did this phase improve visual quality?" is rendering each phase snapshot in a headless browser and computing SSIM (Structural Similarity Index) against the original screenshot. Currently we only have text-based metrics. Visual comparison would catch CSS regressions, layout breaks, and color drift that text metrics miss.
+
+**What's needed**:
+1. Headless browser rendering infrastructure (Playwright or Puppeteer)
+2. Render each phase snapshot HTML to PNG at consistent viewport
+3. Compute SSIM against original page screenshot
+4. Add per-phase visual score to diagnostic report
+
+---
+
+### 36. Landing Page Multipass — Inline Style Tracking
+
+**Priority**: Low
+**Complexity**: Low-Medium
+**Added**: 2026-02-23
+
+**Context**: Phase diagnostics `css_chars` only measures `<style>` blocks. Phase 4 (patch pass) primarily modifies `style="..."` attributes on elements. If Phase 4 strips inline styles, the diagnostic tool won't detect it — pages silently lose styling.
+
+**What's needed**:
+1. Add `inline_style_chars` metric that sums characters inside all `style="..."` attributes
+2. Track delta between phases to detect Phase 4 stripping inline styles
+3. Add to diagnostic report as informational metric
+
+**Related files**:
+- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
+
+---
+
+### 37. Landing Page Multipass — Per-Phase Timing
+
+**Priority**: Medium
+**Complexity**: Low
+**Added**: 2026-02-23
+
+**Context**: The pipeline has a token budget system that can short-circuit later phases. When Phase 3 or 4 is skipped due to budget exhaustion, it's invisible in the current diagnostic metrics. Per-phase timing would immediately show which phase consumed the budget and whether short-circuits occurred.
+
+**What's needed**:
+1. Record `time.monotonic()` before/after each phase in `pipeline.py`
+2. Store elapsed time in phase snapshots dict (e.g., `phase_1_elapsed_ms`)
+3. Add timing to diagnostic report output
+4. Flag phases that were skipped due to budget exhaustion
+
+**Related files**:
+- `viraltracker/services/landing_page_analysis/multipass/pipeline.py`
+- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
+
+---
+
+### 38. Landing Page Multipass — Cross-Section Style Consistency
+
+**Priority**: Low
+**Complexity**: Medium
+**Added**: 2026-02-23
+
+**Context**: Phase 3 processes sections independently, potentially producing inconsistent fonts, colors, or spacing across sections. Two sections side-by-side could have different heading sizes or color schemes. Currently no metric detects this — only visual inspection catches it.
+
+**What's needed**:
+1. Parse CSS properties from each section's inline styles and `<style>` blocks
+2. Compare font-family, font-size, color, and spacing across sections
+3. Flag significant inconsistencies (e.g., section 1 uses 16px body text, section 3 uses 14px)
+4. Add consistency score to diagnostic report
+
+**Related files**:
+- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
+
+---
+
+### 39. V1/V2 Comparison Script — Live Testing Needed
 
 **Priority**: Medium
 **Complexity**: Medium

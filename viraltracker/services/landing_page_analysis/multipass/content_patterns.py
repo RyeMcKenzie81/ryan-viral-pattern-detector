@@ -8,11 +8,15 @@ All detection is deterministic — regex/heuristic, no LLM.
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .section_templates import PLACEHOLDER_SUFFIXES
+
+# Import feature flag from content_assembler (avoid circular by reading env directly)
+_PHASE2_OVERFLOW = os.environ.get("PHASE2_OVERFLOW", "true").lower() == "true"
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,26 @@ _IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
 # Heading (any level) at start of content
 _SECTION_HEADING_RE = re.compile(r'^(#{1,3})\s+(.+?)$', re.MULTILINE)
+
+
+def _remove_spans(text: str, spans: list) -> str:
+    """Remove matched regex spans from text, returning remaining unmatched text.
+
+    Used by detection functions to compute what text was NOT captured
+    by structured pattern matching (stats, features, etc.).
+    """
+    if not spans:
+        return text
+    sorted_spans = sorted(spans, key=lambda s: s[0])
+    parts = []
+    prev_end = 0
+    for start, end in sorted_spans:
+        if start > prev_end:
+            parts.append(text[prev_end:start])
+        prev_end = max(prev_end, end)
+    if prev_end < len(text):
+        parts.append(text[prev_end:])
+    return '\n'.join(p.strip() for p in parts if p.strip())
 
 
 def detect_content_pattern(
@@ -169,6 +193,7 @@ def _split_header(md: str) -> tuple:
 def _detect_features(md: str) -> Optional[ContentPattern]:
     """Detect feature list: 2+ consecutive ### Heading + paragraph blocks."""
     items = []
+    matched_spans = []
     for match in _FEATURE_BLOCK_RE.finditer(md):
         heading = match.group(1).strip()
         body = match.group(2).strip()
@@ -180,15 +205,18 @@ def _detect_features(md: str) -> Optional[ContentPattern]:
                 item["image_alt"] = img_match.group(1)
                 item["image_url"] = img_match.group(2)
             items.append(item)
+            matched_spans.append((match.start(), match.end()))
 
     if len(items) >= _MIN_FEATURE_ITEMS:
-        return ContentPattern(pattern_type="feature_list", items=items)
+        remaining = _remove_spans(md, matched_spans)
+        return ContentPattern(pattern_type="feature_list", items=items, footer_markdown=remaining)
     return None
 
 
 def _detect_testimonials(md: str) -> Optional[ContentPattern]:
     """Detect testimonials: blockquotes with optional attribution."""
     items = []
+    matched_spans = []
     for match in _QUOTE_RE.finditer(md):
         quote_text = match.group(1).strip()
         # Strip leading > from each line
@@ -204,23 +232,28 @@ def _detect_testimonials(md: str) -> Optional[ContentPattern]:
                 if len(parts) > 1:
                     item["title"] = parts[1].strip()
             items.append(item)
+            matched_spans.append((match.start(), match.end()))
 
     if len(items) >= _MIN_TESTIMONIAL_ITEMS:
-        return ContentPattern(pattern_type="testimonial_list", items=items)
+        remaining = _remove_spans(md, matched_spans)
+        return ContentPattern(pattern_type="testimonial_list", items=items, footer_markdown=remaining)
     return None
 
 
 def _detect_faq(md: str) -> Optional[ContentPattern]:
     """Detect FAQ: ### Question? + answer blocks."""
     items = []
+    matched_spans = []
     for match in _FAQ_RE.finditer(md):
         question = match.group(1).strip()
         answer = match.group(2).strip()
         if question and answer:
             items.append({"question": question, "answer": answer})
+            matched_spans.append((match.start(), match.end()))
 
     if len(items) >= _MIN_FAQ_ITEMS:
-        return ContentPattern(pattern_type="faq_list", items=items)
+        remaining = _remove_spans(md, matched_spans)
+        return ContentPattern(pattern_type="faq_list", items=items, footer_markdown=remaining)
     return None
 
 
@@ -228,6 +261,7 @@ def _detect_stats(md: str) -> Optional[ContentPattern]:
     """Detect stats: prominent numbers with labels."""
     items = []
     seen_numbers = set()
+    matched_spans = []
 
     for regex in (_STAT_BOLD_RE, _STAT_LINE_RE):
         for match in regex.finditer(md):
@@ -236,9 +270,11 @@ def _detect_stats(md: str) -> Optional[ContentPattern]:
             if number and label and number not in seen_numbers:
                 items.append({"number": number, "label": label})
                 seen_numbers.add(number)
+                matched_spans.append((match.start(), match.end()))
 
     if len(items) >= _MIN_STAT_ITEMS:
-        return ContentPattern(pattern_type="stats_list", items=items)
+        remaining = _remove_spans(md, matched_spans)
+        return ContentPattern(pattern_type="stats_list", items=items, footer_markdown=remaining)
     return None
 
 
@@ -376,6 +412,24 @@ def split_content_for_template(
         result[single_key] = md_renderer.render(full_md)
         return result
 
+    # --- Overflow: preserve remaining text alongside structured items ---
+    # When pattern detection captured items (stats, features, etc.) but
+    # significant text remains uncaptured, render it as an overflow block.
+    # Gated by PHASE2_OVERFLOW flag for A/B comparison.
+    if _PHASE2_OVERFLOW and pattern.footer_markdown and pattern.footer_markdown.strip():
+        source_text = normalize_markdown_to_text(section.markdown)
+        overflow_text = normalize_markdown_to_text(pattern.footer_markdown)
+        # Only add overflow if remaining text is > 40% of total section text
+        if source_text and len(overflow_text) > 0.4 * len(source_text):
+            overflow_html = md_renderer.render(pattern.footer_markdown)
+            overflow_block = f'<div class="mp-overflow">{overflow_html}</div>'
+            if items_key in result:
+                result[items_key] = result[items_key] + '\n' + overflow_block
+            logger.info(
+                f"Overflow: {sec_id} — {len(overflow_text)}/{len(source_text)} chars "
+                f"({len(overflow_text) * 100 // len(source_text)}%) preserved"
+            )
+
     # For hero_split, handle text/image split
     layout_type = ""
     if layout and hasattr(layout, 'layout_type'):
@@ -384,13 +438,17 @@ def split_content_for_template(
     if layout_type == "hero_split":
         text_key = sec_id + PLACEHOLDER_SUFFIXES["text"]
         image_key = sec_id + PLACEHOLDER_SUFFIXES["image"]
-        # Render header + body as text
+        # Render header + remaining text as text column
         full_md = ""
         if pattern.header_markdown:
             full_md = pattern.header_markdown + "\n\n"
-        if pattern.pattern_type == "prose":
-            full_md += pattern.footer_markdown or ""
-        result[text_key] = md_renderer.render(full_md)
+        if pattern.footer_markdown:
+            full_md += pattern.footer_markdown
+        text_html = md_renderer.render(full_md)
+        # For non-prose patterns, include rendered items in text column
+        if items_key in result and pattern.pattern_type != "prose":
+            text_html = result.pop(items_key) + '\n' + text_html
+        result[text_key] = text_html
         # Image placeholder — try to find an image in the content
         img_match = _IMAGE_RE.search(section.markdown)
         if img_match:
