@@ -479,7 +479,7 @@ class BlueprintImageService:
         scene description for each image. Results stored in slot.scene_direction.
         Does NOT call progress_cb to avoid flickering with Vision updates.
         """
-        if not product_info:
+        if product_info is None:
             return  # No product context — skip scene direction entirely
 
         sem = asyncio.Semaphore(5)
