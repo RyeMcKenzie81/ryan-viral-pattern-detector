@@ -459,6 +459,8 @@ class BlueprintImageService:
             if desired:
                 persona_context = desired[:100]
 
+        has_persona = bool(persona_age and persona_gender)
+
         for slot in slots:
             if not slot.selected:
                 continue
@@ -468,19 +470,30 @@ class BlueprintImageService:
             # Only use Vision for composition STYLE, not product subject
             composition = analysis.get("composition", "")
             has_people = analysis.get("has_people", False)
-            people_desc = analysis.get("people_description", "")
-            context = slot.surrounding_text[:200] if slot.surrounding_text else ""
 
             # Extract only style cues from composition (lighting, angle, mood)
-            # — strip anything that describes the competitor product itself
+            # — strip anything that describes the competitor product or people
             style_cues = self._extract_style_cues(composition)
 
-            # Person description: prefer persona, fall back to Vision demographics only
+            # Person description: use ONLY persona when available.
+            # Never mix persona demographics with Vision people_description —
+            # conflicting age/gender signals cause hallucination, especially
+            # when the original image is also passed as a reference.
             person_desc = ""
-            if persona_age and persona_gender:
+            if has_persona:
                 person_desc = f"a {persona_age} {persona_gender}"
-            elif has_people and people_desc:
-                person_desc = people_desc
+            # Only fall back to Vision people desc when NO persona is set
+            elif has_people:
+                # Use a generic description — Vision people_description
+                # often includes specific ages that conflict with reference images
+                person_desc = "a person"
+
+            # When the image has people and we have persona demographics,
+            # drop the original image as a composition reference — it shows
+            # the competitor's model which conflicts with the persona age/gender.
+            # Keep it only for non-people images (product shots, banners, etc.)
+            if has_people and has_persona:
+                slot.original_base64 = None
 
             color_note = f", brand colors {brand_colors}" if brand_colors else ""
 
@@ -528,8 +541,7 @@ class BlueprintImageService:
             elif image_type == "infographic":
                 # Infographics contain competitor branding — generate from
                 # scratch based on the SECTION CONTEXT, not the original image.
-                # Do NOT pass the original image as a composition reference.
-                slot.original_base64 = None  # clear so generate_images won't use it
+                slot.original_base64 = None
                 slot.prompt = (
                     f"Clean modern infographic layout for {product_name}{product_desc}, "
                     f"showing key benefits and features, "
@@ -549,14 +561,26 @@ class BlueprintImageService:
 
     @staticmethod
     def _extract_style_cues(composition: str) -> str:
-        """Extract lighting/angle/mood cues from Vision composition, dropping product refs.
+        """Extract lighting/angle/mood cues from Vision composition.
 
-        Vision describes the competitor image: "bright natural lighting, shake bottle
-        on marble counter, warm tones". We want "bright natural lighting, warm tones"
-        but NOT "shake bottle on marble counter".
+        Drops product references AND people/demographic descriptions.
+        Vision describes "bright natural lighting, 30s woman at marble counter,
+        warm tones". We want "bright natural lighting, warm tones" but NOT
+        "30s woman at marble counter".
         """
         if not composition:
             return ""
+
+        # Reject phrases containing people/demographic/product keywords
+        reject_keywords = {
+            "woman", "man", "person", "people", "girl", "boy", "child",
+            "young", "old", "elderly", "teen", "adult", "male", "female",
+            "bottle", "shake", "pill", "product", "package", "jar", "box",
+            "holding", "drinking", "eating", "pouring", "sitting", "standing",
+            "counter", "table", "desk", "kitchen", "bathroom", "gym",
+            "20s", "30s", "40s", "50s", "60s",
+        }
+
         # Keep only style-related phrases
         style_keywords = {
             "lighting", "light", "lit", "bright", "dark", "soft", "warm", "cool",
@@ -569,6 +593,9 @@ class BlueprintImageService:
         kept = []
         for part in parts:
             words = part.lower().split()
+            # Skip if it mentions people or products
+            if any(rk in word for word in words for rk in reject_keywords):
+                continue
             if any(kw in word for word in words for kw in style_keywords):
                 kept.append(part.strip())
         return ", ".join(kept[:3]) if kept else ""

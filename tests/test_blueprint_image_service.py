@@ -305,7 +305,8 @@ class TestBuildGenerationPrompts:
         )
         assert slot.prompt is None
 
-    def test_no_persona_uses_vision_people_desc(self):
+    def test_no_persona_uses_generic_person(self):
+        """Without persona, use generic person desc — NOT Vision's specific demographics."""
         svc = BlueprintImageService.__new__(BlueprintImageService)
         slot = self._make_slot(0, "testimonial_photo", has_people=True)
         svc.build_generation_prompts(
@@ -314,7 +315,10 @@ class TestBuildGenerationPrompts:
             persona=None,
         )
         assert slot.prompt is not None
-        assert "30s woman" in slot.prompt or "satisfied customer" in slot.prompt
+        # Should NOT include Vision's "30s woman, athletic" — that conflicts
+        # with the reference image which Gemini also sees
+        assert "30s" not in slot.prompt
+        assert "a person" in slot.prompt or "satisfied customer" in slot.prompt
 
     def test_brand_colors_included(self):
         svc = BlueprintImageService.__new__(BlueprintImageService)
@@ -380,3 +384,46 @@ class TestBuildGenerationPrompts:
         assert "warm tones" in result.lower()
         assert "shake" not in result.lower()
         assert "marble" not in result.lower()
+
+    def test_style_cues_strips_people_descriptions(self):
+        """People/demographic phrases must be stripped to avoid conflicting with persona."""
+        result = BlueprintImageService._extract_style_cues(
+            "soft natural lighting, 30s woman holding a glass, vibrant tones, candid pose"
+        )
+        assert "30s" not in result
+        assert "woman" not in result
+        assert "holding" not in result
+        assert "lighting" in result.lower()
+
+    def test_people_images_drop_original_ref_with_persona(self):
+        """When persona is set and image has people, original_base64 should be cleared."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = ImageSlot(
+            index=0,
+            original_src="https://example.com/0.jpg",
+            alt_text="test",
+            surrounding_text="",
+            section_heading="",
+            image_analysis={
+                "image_type": "lifestyle",
+                "subject": "woman with shake",
+                "composition": "bright lighting",
+                "has_people": True,
+                "people_description": "30s athletic woman",
+                "aspect_ratio": "16:9",
+            },
+            original_base64="fake_data",
+            selected=True,
+        )
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "CortiControl"},
+            persona={"demographics": {"age_range": "45-54", "gender": "male"}},
+        )
+        # Original cleared because it shows a different person than the persona
+        assert slot.original_base64 is None
+        # Prompt uses persona, not Vision people_description
+        assert "45-54" in slot.prompt
+        assert "male" in slot.prompt
+        assert "30s" not in slot.prompt
+        assert "athletic woman" not in slot.prompt
