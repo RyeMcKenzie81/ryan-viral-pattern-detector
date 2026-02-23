@@ -54,6 +54,7 @@ from .prompts import (
     build_phase_3_css_prompt_section,
     build_phase_4_prompt,
 )
+from .markdown_cleaner import classify_markdown
 from .segmenter import SegmenterSection, segment_markdown
 
 # Feature flag: template pipeline (strict binary compat when False)
@@ -1033,8 +1034,19 @@ class MultiPassPipeline:
         """
         self._start_time = time.time()
 
+        # Pre-segmentation cleanup: classify nav/footer/artifact lines
+        clean_result = classify_markdown(page_markdown, mode="label")
+        self.phase_snapshots["pre_segmentation_cleanup"] = _wrap_json_as_html({
+            "mode": "label",
+            "stats": clean_result.stats,
+            "classified_lines_sample": [
+                {"text": cl.text[:120], "label": cl.label, "zone": cl.zone, "confidence": cl.confidence}
+                for cl in clean_result.classified_lines[:20]
+            ],
+        })
+
         # Segment markdown
-        sections = segment_markdown(page_markdown, element_detection)
+        sections = segment_markdown(clean_result.cleaned_markdown, element_detection)
         # Filter SEO ghost text (meta descriptions, JSON-LD) from sections
         sections = filter_seo_ghost_text(sections, page_html or "")
         section_count = len(sections)

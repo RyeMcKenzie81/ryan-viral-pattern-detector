@@ -24,6 +24,7 @@ B20: Phase 3 image guidance for 0-image sections
 B21: Image count invariant tracking
 B22: SEO ghost text filter
 B23: Phase 2 overflow rendering + smart fallback (A/B comparison)
+B30: MarkdownCleaner — zone detection, line classification, label/extract modes
 """
 
 import re
@@ -4262,3 +4263,301 @@ class TestPhaseDiagnosticReportVisual:
         # Multiple unclosed
         result = _check_unclosed_tags("<div><section><article>")
         assert len(result) == 3
+
+
+# ===========================================================================
+# B30: MarkdownCleaner — zone detection, line classification, label/extract
+# ===========================================================================
+
+class TestMarkdownCleaner:
+    """B30: markdown_cleaner.py — zone-based classification and cleaning."""
+
+    def _classify(self, md, mode="label"):
+        from viraltracker.services.landing_page_analysis.multipass.markdown_cleaner import (
+            classify_markdown,
+        )
+        return classify_markdown(md, mode=mode)
+
+    # ---- Zone detection ----
+
+    def test_zone_pre_heading(self):
+        """Lines before first heading are in pre_heading zone."""
+        md = "Nav link\nAnother nav\n# Heading\nBody text\n## Sub"
+        result = self._classify(md)
+        assert result.classified_lines[0].zone == "pre_heading"
+        assert result.classified_lines[1].zone == "pre_heading"
+        assert result.classified_lines[2].zone == "body"
+        assert result.classified_lines[3].zone == "body"
+
+    def test_zone_post_heading(self):
+        """Lines after last heading are in post_heading zone."""
+        md = "# Heading\nBody\n## Sub\nMore body\n© 2024 Company"
+        result = self._classify(md)
+        # Last line (index 4) is after last heading (index 2)
+        assert result.classified_lines[4].zone == "post_heading"
+
+    def test_zone_no_headings(self):
+        """Markdown with no headings: everything is pre_heading zone."""
+        md = "Just some text\nAnother line\nMore text"
+        result = self._classify(md)
+        for cl in result.classified_lines:
+            assert cl.zone == "pre_heading"
+
+    def test_zone_body_between_headings(self):
+        """Lines between first and last heading are body zone."""
+        md = "Nav\n# First\nContent A\n## Second\nContent B\n### Third\nFooter"
+        result = self._classify(md)
+        # "Content A" at index 2
+        assert result.classified_lines[2].zone == "body"
+        # "Content B" at index 4
+        assert result.classified_lines[4].zone == "body"
+        # "Footer" at index 6 is after last heading
+        assert result.classified_lines[6].zone == "post_heading"
+
+    # ---- Nav classification ----
+
+    def test_nav_skip_to_content(self):
+        """'Skip to content' link classified as nav."""
+        md = "[Skip to content](#MainContent)\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "nav"
+
+    def test_nav_login_cart(self):
+        """Login/Cart links classified as nav in pre_heading."""
+        md = "Log in\nCart\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "nav"
+        assert result.classified_lines[1].label == "nav"
+
+    def test_nav_link_list(self):
+        """Markdown link list items classified as nav in pre_heading."""
+        md = "- [Energy](https://example.com/energy)\n- [Sleep](https://example.com/sleep)\n# Products\nOur products"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "nav"
+        assert result.classified_lines[1].label == "nav"
+
+    # ---- Footer classification ----
+
+    def test_footer_copyright(self):
+        """Copyright line classified as footer."""
+        md = "# Heading\nBody\n© 2024 Company Inc."
+        result = self._classify(md)
+        last = result.classified_lines[-1]
+        assert last.label == "footer"
+
+    def test_footer_legal_links(self):
+        """Terms of Service / Privacy Policy classified as footer."""
+        md = "# Heading\nBody\nTerms of Service\nPrivacy Policy"
+        result = self._classify(md)
+        assert result.classified_lines[2].label == "footer"
+        assert result.classified_lines[3].label == "footer"
+
+    def test_footer_fda_disclaimer(self):
+        """FDA disclaimer classified as footer."""
+        md = "# Heading\nBody\n*These statements have not been evaluated by the FDA."
+        result = self._classify(md)
+        assert result.classified_lines[-1].label == "footer"
+
+    # ---- Artifact classification ----
+
+    def test_artifact_gamma(self):
+        """Unicode mojibake Γ classified as artifact."""
+        md = "Γ\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "artifact"
+
+    def test_artifact_lcp(self):
+        """Web vital 'LCP' classified as artifact."""
+        md = "LCP\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "artifact"
+
+    def test_artifact_empty_links(self):
+        """Empty-text markdown links classified as artifact."""
+        md = "[ ](https://example.com/tracker)\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "artifact"
+
+    # ---- Persuasive element allowlist ----
+
+    def test_persuasive_free_shipping(self):
+        """'Free shipping' classified as persuasive, not nav/footer."""
+        md = "Free shipping on all orders\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "persuasive"
+
+    def test_persuasive_sale(self):
+        """SALE classified as persuasive."""
+        md = "SALE\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "persuasive"
+
+    def test_persuasive_not_nav(self):
+        """Persuasive elements take priority over nav patterns."""
+        md = "Shop now — 50% off\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "persuasive"
+
+    # ---- Body zone protection (sacred) ----
+
+    def test_body_zone_never_modified(self):
+        """Lines in body zone always labeled 'body' regardless of content."""
+        md = "Nav\n# Heading\nTerms of Service\nLog in\nΓ\n## Sub\nMore"
+        result = self._classify(md)
+        # "Terms of Service" at index 2 is between headings → body
+        assert result.classified_lines[2].label == "body"
+        # "Log in" at index 3 is between headings → body
+        assert result.classified_lines[3].label == "body"
+        # "Γ" at index 4 is between headings → body
+        assert result.classified_lines[4].label == "body"
+
+    # ---- Label mode: unchanged output ----
+
+    def test_label_mode_unchanged(self):
+        """Label mode returns markdown completely unchanged."""
+        md = "Γ\nLCP\nSkip to content\n# Heading\nReal content\n© 2024"
+        result = self._classify(md, mode="label")
+        assert result.cleaned_markdown == md
+        assert result.nav_content is None
+        assert result.footer_content is None
+
+    # ---- Extract mode ----
+
+    def test_extract_removes_nav(self):
+        """Extract mode removes nav lines from pre_heading zone."""
+        md = "Skip to content\nLog in\nCart\n# Heading\nReal content here\n## Sub"
+        result = self._classify(md, mode="extract")
+        assert "Skip to content" not in result.cleaned_markdown
+        assert "Log in" not in result.cleaned_markdown
+        assert "Cart" not in result.cleaned_markdown
+        assert "# Heading" in result.cleaned_markdown
+        assert "Real content here" in result.cleaned_markdown
+
+    def test_extract_removes_footer(self):
+        """Extract mode removes footer lines from post_heading zone."""
+        md = "# Heading\nBody content\n## Benefits\nThis product offers amazing benefits for your health.\n© 2024 Company\nTerms of Service"
+        result = self._classify(md, mode="extract")
+        assert "© 2024" not in result.cleaned_markdown
+        assert "Terms of Service" not in result.cleaned_markdown
+        assert "Body content" in result.cleaned_markdown
+        assert "amazing benefits" in result.cleaned_markdown
+
+    def test_extract_removes_artifacts(self):
+        """Extract mode removes artifacts from pre_heading zone."""
+        md = "Γ\nLCP\n# Heading\nBody"
+        result = self._classify(md, mode="extract")
+        assert "Γ" not in result.cleaned_markdown
+        assert "LCP" not in result.cleaned_markdown
+        assert "# Heading" in result.cleaned_markdown
+
+    def test_extract_preserves_body_zone(self):
+        """Extract mode never removes body zone lines."""
+        md = "Nav\n# Heading\nΓ inside body\nTerms of Service in body\n## Sub\nFooter text"
+        result = self._classify(md, mode="extract")
+        assert "Γ inside body" in result.cleaned_markdown
+        assert "Terms of Service in body" in result.cleaned_markdown
+
+    def test_extract_captures_nav_content(self):
+        """Extract mode populates nav_content field."""
+        md = "Skip to content\nLog in\n# Heading\nBody"
+        result = self._classify(md, mode="extract")
+        assert result.nav_content is not None
+        assert "Skip to content" in result.nav_content
+
+    def test_extract_captures_footer_content(self):
+        """Extract mode populates footer_content field."""
+        md = "# Heading\nBody\n© 2024 Company"
+        result = self._classify(md, mode="extract")
+        assert result.footer_content is not None
+        assert "© 2024" in result.footer_content
+
+    # ---- 80% removal cap (bail-out) ----
+
+    def test_removal_cap_bailout(self):
+        """If >80% of lines are removable, bail out and return unchanged."""
+        # 9 nav lines + 1 body line = 90% removable → bail
+        nav_lines = "\n".join(f"[Link{i}](https://x.com/{i})" for i in range(9))
+        md = f"{nav_lines}\n# Heading\nBody"
+        result = self._classify(md, mode="extract")
+        # Should bail — markdown unchanged
+        assert result.cleaned_markdown == md
+
+    # ---- Sentence heuristic ----
+
+    def test_sentence_heuristic_protects_real_copy(self):
+        """Lines with real sentences (5+ words, subject+verb) default to body."""
+        md = "Discover the natural secret to healthier hair today.\n# Heading\nBody"
+        result = self._classify(md)
+        assert result.classified_lines[0].label == "body"
+
+    # ---- Stats ----
+
+    def test_stats_counts(self):
+        """Stats dict has correct counts per label."""
+        md = "Γ\nSkip to content\n# Heading\nBody line\n© 2024"
+        result = self._classify(md)
+        assert result.stats["artifact"] >= 1
+        assert result.stats["nav"] >= 1
+        assert result.stats["body"] >= 1
+        assert result.stats["footer"] >= 1
+
+    # ---- Edge cases ----
+
+    def test_empty_markdown(self):
+        """Empty markdown returns empty result gracefully."""
+        result = self._classify("")
+        assert result.cleaned_markdown == ""
+        assert result.classified_lines == []
+        assert result.stats["body"] == 0
+
+    def test_none_markdown(self):
+        """None markdown handled gracefully."""
+        result = self._classify(None)
+        assert result.cleaned_markdown == ""
+
+    def test_whitespace_only(self):
+        """Whitespace-only markdown handled gracefully."""
+        result = self._classify("   \n  \n   ")
+        assert result.cleaned_markdown == "   \n  \n   "
+
+    # ---- Mixed page (realistic) ----
+
+    def test_realistic_page_classification(self):
+        """Realistic page with nav + body + footer classified correctly."""
+        md = "\n".join([
+            "Γ",
+            "LCP",
+            "[Skip to content](#main)",
+            "Log in",
+            "- [Energy](https://example.com/energy)",
+            "- [Sleep](https://example.com/sleep)",
+            "",
+            "# Sea Moss Advanced for Hair Growth",
+            "",
+            "Discover the natural secret to stronger, thicker hair.",
+            "",
+            "**87%** of users reported improved hair growth",
+            "**83%** experienced reduced hair loss",
+            "",
+            "## Key Benefits",
+            "",
+            "Rich in essential minerals that nourish hair follicles.",
+            "",
+            "© 2024 Infinite Age Inc.",
+            "*These statements have not been evaluated by the FDA.",
+            "Terms of Service",
+        ])
+        result = self._classify(md)
+
+        # Pre-heading artifacts/nav
+        labels_pre = [cl.label for cl in result.classified_lines if cl.zone == "pre_heading" and cl.text.strip()]
+        assert "artifact" in labels_pre
+        assert "nav" in labels_pre
+
+        # Body zone — all labeled body
+        body_labels = [cl.label for cl in result.classified_lines if cl.zone == "body"]
+        assert all(cl == "body" for cl in body_labels)
+
+        # Post-heading footer
+        labels_post = [cl.label for cl in result.classified_lines if cl.zone == "post_heading" and cl.text.strip()]
+        assert "footer" in labels_post
