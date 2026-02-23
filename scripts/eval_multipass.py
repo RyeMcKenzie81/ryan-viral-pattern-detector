@@ -226,12 +226,16 @@ def main():
                 if single_pass_screenshot:
                     (page_dir / "single_pass_render.png").write_bytes(single_pass_screenshot)
 
+            # Use cleaned markdown for fidelity if available (extract mode)
+            eval_snapshots = mockup_svc.get_phase_snapshots()
+            eval_cleaned_md = eval_snapshots.pop("_cleaned_markdown", None) or markdown
+
             # Evaluate
             score = evaluate_page(
                 page_url=url,
                 multipass_html=multi_html,
                 single_pass_html=single_html,
-                source_markdown=markdown,
+                source_markdown=eval_cleaned_md,
                 latency_seconds=multi_time,
                 mockup_service=mockup_svc,
                 original_screenshot=screenshot_bytes,

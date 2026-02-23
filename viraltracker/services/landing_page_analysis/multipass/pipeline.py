@@ -1035,15 +1035,18 @@ class MultiPassPipeline:
         self._start_time = time.time()
 
         # Pre-segmentation cleanup: classify nav/footer/artifact lines
-        clean_result = classify_markdown(page_markdown, mode="label")
+        clean_result = classify_markdown(page_markdown, mode="extract")
         self.phase_snapshots["pre_segmentation_cleanup"] = _wrap_json_as_html({
-            "mode": "label",
+            "mode": "extract",
             "stats": clean_result.stats,
             "classified_lines_sample": [
                 {"text": cl.text[:120], "label": cl.label, "zone": cl.zone, "confidence": cl.confidence}
                 for cl in clean_result.classified_lines[:20]
             ],
         })
+        # Store cleaned markdown for fidelity rebasing (downstream diagnostics
+        # should measure fidelity against cleaned text, not raw nav/footer chrome)
+        self.phase_snapshots["_cleaned_markdown"] = clean_result.cleaned_markdown
 
         # Segment markdown
         sections = segment_markdown(clean_result.cleaned_markdown, element_detection)

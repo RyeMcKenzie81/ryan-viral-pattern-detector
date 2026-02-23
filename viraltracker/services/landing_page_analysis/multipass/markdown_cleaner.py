@@ -292,12 +292,6 @@ def _classify_line(line: str, zone: str) -> tuple:
     if len(words) >= _MIN_SENTENCE_WORDS and _SENTENCE_RE.search(stripped):
         return "body", 0.8
 
-    # Short non-sentence lines in pre/post zones — treat as nav/footer
-    if len(words) < 3 and zone == "pre_heading":
-        return "nav", 0.5
-    if len(words) < 3 and zone == "post_heading":
-        return "footer", 0.5
-
     # Default: body (conservative — don't remove things we're unsure about)
     return "body", 0.6
 

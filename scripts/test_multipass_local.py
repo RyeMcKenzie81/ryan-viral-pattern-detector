@@ -245,6 +245,8 @@ def main():
 
     # Save all phase snapshots
     snapshots = mockup_svc.get_phase_snapshots()
+    # Extract cleaned markdown before saving (not an HTML snapshot)
+    cleaned_markdown = snapshots.pop("_cleaned_markdown", None)
     if snapshots:
         logger.info(f"Saving {len(snapshots)} phase snapshots to {run_dir}")
         for key, html in snapshots.items():
@@ -321,9 +323,12 @@ def main():
             print_diagnostic_report,
         )
 
+        # Use cleaned markdown for fidelity if available (extract mode removes
+        # nav/footer chrome that should not count against fidelity denominator)
+        fidelity_reference = cleaned_markdown or markdown or ""
         report = diagnose_phases(
             snapshots,
-            source_markdown=markdown or "",
+            source_markdown=fidelity_reference,
             expected_section_count=section_count,
         )
 
