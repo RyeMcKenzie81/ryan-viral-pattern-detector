@@ -13,7 +13,7 @@ import base64
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import BytesIO
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -60,6 +60,7 @@ class ImageSlot:
     section_heading: str
     original_base64: Optional[str] = None
     image_analysis: Optional[dict] = None
+    scene_direction: Optional[dict] = None
     aspect_ratio: Optional[str] = None
     prompt: Optional[str] = None
     generated_base64: Optional[str] = None
@@ -263,6 +264,59 @@ VISION_ANALYSIS_PROMPT = """Analyze this image and return a JSON object with the
 Return ONLY the JSON, no markdown fences or explanation."""
 
 
+SCENE_DIRECTOR_PROMPT = """You are a Scene Director for commercial photography on a landing page.
+Decide what scene an image should depict based on the text it accompanies.
+
+CONTEXT:
+- Section heading: "{section_heading}"
+- Surrounding copy: "{surrounding_text}"
+- Original image was: "{alt_text}" (type: {image_type})
+- Has people in original: {has_people}
+
+PRODUCT:
+- Name: {product_name}
+- Benefits: {benefits}
+- Problems solved: {problems}
+
+TARGET CUSTOMER:
+- Demographics: {persona_demographics}
+- Pain symptoms: {pain_symptoms}
+- Desired self-image: {desired_self_image}
+
+Based on the surrounding copy, describe what this image should show to effectively
+support the text. The image must feel like a natural visual companion — not generic stock.
+
+Return ONLY JSON:
+{{
+  "narrative_role": "solution_state|problem_state|social_proof|lifestyle_aspiration|product_showcase|transformation|educational|hero_attention",
+  "scene_description": "One vivid sentence (under 30 words) of the exact scene",
+  "emotional_tone": "One or two words: peaceful, energetic, confident, relieved, etc.",
+  "setting": "Where: bedroom at dawn, modern kitchen, gym, etc.",
+  "activity": "What the subject is doing",
+  "key_element_from_copy": "The specific claim from the surrounding text this illustrates"
+}}
+
+RULES:
+- Scene MUST relate to what the surrounding copy says
+- If copy mentions sleep → show peaceful sleep scene, NOT someone holding a product
+- If copy mentions energy → show vibrant activity
+- If copy is a testimonial → show authentic-looking person
+- If no surrounding text, fall back to image_type and alt_text
+- Be specific about demographics only if persona info is provided"""
+
+# Narrative role → photography style prefix mapping
+NARRATIVE_ROLE_STYLES = {
+    "solution_state": "Realistic lifestyle photo",
+    "problem_state": "Authentic documentary-style photo",
+    "social_proof": "Genuine natural portrait photo",
+    "lifestyle_aspiration": "Aspirational lifestyle photo",
+    "product_showcase": "Professional product photography",
+    "transformation": "Before-and-after style photo",
+    "educational": "Clean infographic-style image",
+    "hero_attention": "Wide cinematic hero image",
+}
+
+
 class BlueprintImageService:
     """Context-aware AI image replacement for blueprint mockups."""
 
@@ -409,6 +463,102 @@ class BlueprintImageService:
         return slots
 
     # ------------------------------------------------------------------
+    # Scene Direction (runs in parallel with Vision)
+    # ------------------------------------------------------------------
+
+    async def direct_scenes_for_slots(
+        self,
+        slots: List[ImageSlot],
+        gemini_service,
+        product_info: Optional[Dict[str, Any]] = None,
+        persona: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Run Scene Director LLM call for all slots in parallel.
+
+        Reads surrounding_text + product/persona context to produce a structured
+        scene description for each image. Results stored in slot.scene_direction.
+        Does NOT call progress_cb to avoid flickering with Vision updates.
+        """
+        if not product_info:
+            return  # No product context — skip scene direction entirely
+
+        sem = asyncio.Semaphore(5)
+
+        async def _direct_one(slot: ImageSlot):
+            # Skip slots with no text context to reason about
+            if not slot.surrounding_text and not slot.section_heading:
+                return
+
+            async with sem:
+                try:
+                    prompt = self._build_scene_director_prompt(slot, product_info, persona)
+                    raw = await gemini_service.analyze_text_async(
+                        text="",
+                        prompt=prompt,
+                        skip_internal_rate_limit=True,
+                    )
+
+                    # Strip markdown fences before parsing (same pattern as Vision)
+                    text = raw.strip()
+                    if text.startswith("```"):
+                        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                        if text.endswith("```"):
+                            text = text[:-3]
+                    slot.scene_direction = json.loads(text.strip())
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Scene direction JSON parse failed for slot {slot.index}: {e}")
+                except Exception as e:
+                    logger.warning(f"Scene direction failed for slot {slot.index}: {e}")
+
+        tasks = [_direct_one(slot) for slot in slots]
+        await asyncio.gather(*tasks)
+
+    @staticmethod
+    def _build_scene_director_prompt(
+        slot: "ImageSlot",
+        product_info: Dict[str, Any],
+        persona: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Format SCENE_DIRECTOR_PROMPT with slot context, product info, and persona."""
+        analysis = slot.image_analysis or {}
+
+        # Product fields
+        product_name = product_info.get("name", "the product")
+        benefits = ", ".join(product_info.get("key_benefits", [])) or "Not specified"
+        problems = ", ".join(product_info.get("key_problems_solved", [])) or "Not specified"
+
+        # Persona fields
+        persona_demographics = "Not specified"
+        pain_symptoms = "Not specified"
+        desired_self_image = "Not specified"
+        if persona:
+            demographics = persona.get("demographics", {})
+            age = demographics.get("age_range", "")
+            gender = demographics.get("gender", "")
+            if age or gender:
+                persona_demographics = f"{age} {gender}".strip()
+            pain = persona.get("pain_symptoms", [])
+            if pain:
+                pain_symptoms = ", ".join(pain[:5]) if isinstance(pain, list) else str(pain)
+            desired = persona.get("desired_self_image", "")
+            if desired:
+                desired_self_image = desired[:200]
+
+        return SCENE_DIRECTOR_PROMPT.format(
+            section_heading=slot.section_heading or "Not specified",
+            surrounding_text=slot.surrounding_text[:500] if slot.surrounding_text else "Not specified",
+            alt_text=slot.alt_text or "Not specified",
+            image_type=analysis.get("image_type", "unknown"),
+            has_people=analysis.get("has_people", False),
+            product_name=product_name,
+            benefits=benefits,
+            problems=problems,
+            persona_demographics=persona_demographics,
+            pain_symptoms=pain_symptoms,
+            desired_self_image=desired_self_image,
+        )
+
+    # ------------------------------------------------------------------
     # Phase 2: Generate
     # ------------------------------------------------------------------
 
@@ -463,6 +613,14 @@ class BlueprintImageService:
 
         for slot in slots:
             if not slot.selected:
+                continue
+
+            # Scene-directed path: when scene_direction is available,
+            # use the contextual prompt instead of generic templates
+            if slot.scene_direction:
+                slot.prompt = self._build_scene_directed_prompt(
+                    slot, product_name, product_desc, persona, brand_colors,
+                )
                 continue
 
             analysis = slot.image_analysis or {}
@@ -600,6 +758,81 @@ class BlueprintImageService:
                 kept.append(part.strip())
         return ", ".join(kept[:3]) if kept else ""
 
+    def _build_scene_directed_prompt(
+        self,
+        slot: "ImageSlot",
+        product_name: str,
+        product_desc: str,
+        persona: Optional[Dict[str, Any]],
+        brand_colors: str,
+    ) -> str:
+        """Build a generation prompt from Scene Director output + Vision style cues.
+
+        Combines the scene description (from surrounding text context) with
+        composition style (from Vision analysis) and persona demographics.
+        """
+        scene = slot.scene_direction
+        analysis = slot.image_analysis or {}
+        has_people = analysis.get("has_people", False)
+        composition = analysis.get("composition", "")
+
+        # Style prefix from narrative role
+        role = scene.get("narrative_role", "")
+        style_prefix = NARRATIVE_ROLE_STYLES.get(role, "High-quality commercial photograph")
+
+        # Scene description is the key differentiator
+        scene_desc = scene.get("scene_description", "")
+        emotional_tone = scene.get("emotional_tone", "")
+        setting = scene.get("setting", "")
+
+        # Person description from persona (same logic as template path)
+        person_desc = ""
+        has_persona = False
+        if persona:
+            demographics = persona.get("demographics", {})
+            age = demographics.get("age_range", "")
+            gender = demographics.get("gender", "")
+            if age and gender:
+                person_desc = f"a {age} {gender}"
+                has_persona = True
+
+        if not person_desc and has_people:
+            person_desc = "a person"
+
+        # Preserve persona/Vision conflict prevention:
+        # drop original image when people + persona to avoid demographic conflicts
+        if has_people and has_persona:
+            slot.original_base64 = None
+
+        # Clear original for infographic/educational (competitor branding)
+        if role == "educational":
+            slot.original_base64 = None
+
+        # Vision style cues (lighting, angle, mood only)
+        style_cues = self._extract_style_cues(composition)
+
+        color_note = f", brand colors {brand_colors}" if brand_colors else ""
+
+        # Compose prompt
+        parts = [style_prefix]
+        if person_desc and role not in ("product_showcase", "educational"):
+            parts.append(f"of {person_desc}")
+        if scene_desc:
+            parts.append(f"— {scene_desc}")
+        if setting:
+            parts.append(f"Setting: {setting}.")
+        if emotional_tone:
+            parts.append(f"Mood: {emotional_tone}.")
+        if product_name and role != "social_proof":
+            parts.append(f"{product_name}{product_desc} visible nearby.")
+        if style_cues:
+            parts.append(f"Style: {style_cues}.")
+        if color_note:
+            parts.append(color_note.lstrip(", ") + ".")
+        parts.append("No text overlays.")
+
+        return " ".join(parts)
+
     async def generate_images(
         self,
         slots: List[ImageSlot],
@@ -713,8 +946,15 @@ class BlueprintImageService:
         blueprint_id: str,
         html: str,
         progress_cb: Optional[Callable] = None,
+        product_info: Optional[Dict[str, Any]] = None,
+        persona: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[ImageSlot], int]:
-        """Phase 1: Extract, download, and analyze images. Saves analysis to DB."""
+        """Phase 1: Extract, download, and analyze images. Saves analysis to DB.
+
+        Args:
+            product_info: Product dict for scene direction context.
+            persona: Persona dict for scene direction demographics.
+        """
         from viraltracker.services.gemini_service import GeminiService
 
         if progress_cb:
@@ -734,7 +974,16 @@ class BlueprintImageService:
         if self._tracker:
             vision_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
 
-        await self.analyze_original_images(slots, vision_svc, progress_cb)
+        # Create separate Scene Director service (independent rate limiter)
+        scene_svc = GeminiService(model="gemini-2.5-flash")
+        if self._tracker:
+            scene_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
+
+        # Run Vision analysis and Scene Direction in parallel — zero added latency
+        await asyncio.gather(
+            self.analyze_original_images(slots, vision_svc, progress_cb),
+            self.direct_scenes_for_slots(slots, scene_svc, product_info, persona),
+        )
 
         # Build and save analysis meta
         meta = {}
@@ -874,7 +1123,7 @@ class BlueprintImageService:
         if not existing_html:
             raise ValueError("No existing generated HTML to update")
 
-        # Rebuild slot from stored meta
+        # Rebuild slot from stored meta (including scene_direction for cached context)
         slot_data = existing_meta[slot_key]
         slot = ImageSlot(
             index=slot_index,
@@ -883,6 +1132,7 @@ class BlueprintImageService:
             surrounding_text=slot_data.get("surrounding_text", ""),
             section_heading=slot_data.get("section_heading", ""),
             image_analysis=slot_data.get("analysis"),
+            scene_direction=slot_data.get("scene_direction"),
             aspect_ratio=slot_data.get("aspect_ratio"),
             selected=True,
         )
@@ -1077,6 +1327,7 @@ class BlueprintImageService:
                 surrounding_text=data.get("surrounding_text", ""),
                 section_heading=data.get("section_heading", ""),
                 image_analysis=data.get("analysis"),
+                scene_direction=data.get("scene_direction"),
                 aspect_ratio=data.get("aspect_ratio"),
                 selected=True,
             )
@@ -1094,6 +1345,7 @@ class BlueprintImageService:
             "section_heading": slot.section_heading,
             "aspect_ratio": slot.aspect_ratio,
             "analysis": slot.image_analysis,
+            "scene_direction": slot.scene_direction,
             "prompt": slot.prompt,
             "storage_path": storage_path,
             "storage_url": slot.storage_url,

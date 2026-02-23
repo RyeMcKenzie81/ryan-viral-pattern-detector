@@ -1639,9 +1639,23 @@ def _render_generate_images_section(
                 def on_progress(idx, total, msg):
                     status.update(label=msg)
 
+                # Build product_info + persona for scene direction
+                _product_info = brand_profile.get("product", {}) if brand_profile else {}
+                _persona_data = None
+                if persona_id:
+                    try:
+                        from uuid import UUID
+                        from viraltracker.services.persona_service import PersonaService
+                        _persona_data = PersonaService().export_for_ad_generation(UUID(persona_id))
+                    except Exception:
+                        pass
+
                 try:
                     slots, download_count = asyncio.run(
-                        svc.analyze_blueprint_images(blueprint_id, mockup_html, on_progress)
+                        svc.analyze_blueprint_images(
+                            blueprint_id, mockup_html, on_progress,
+                            product_info=_product_info, persona=_persona_data,
+                        )
                     )
                     if not slots:
                         st.info("No replaceable images found in the mockup.")
@@ -1784,7 +1798,8 @@ def _render_image_analysis_table(meta: dict, blueprint_id: str):
         if not analysis:
             continue
 
-        col_sel, col_thumb, col_info, col_ratio = st.columns([0.5, 1.5, 3, 0.8])
+        scene = data.get("scene_direction")
+        col_sel, col_thumb, col_info, col_scene, col_ratio = st.columns([0.5, 1.5, 2.5, 2, 0.8])
         with col_sel:
             checked = st.checkbox(
                 f"#{idx_str}",
@@ -1805,6 +1820,12 @@ def _render_image_analysis_table(meta: dict, blueprint_id: str):
         with col_info:
             st.caption(f"**{analysis.get('image_type', 'unknown')}**")
             st.caption(analysis.get("subject", "")[:100])
+        with col_scene:
+            if scene:
+                st.caption(f"**{scene.get('narrative_role', '')}**")
+                st.caption(scene.get("scene_description", "")[:120])
+            else:
+                st.caption("—")
         with col_ratio:
             st.caption(data.get("aspect_ratio", "?"))
 
@@ -1817,7 +1838,6 @@ def _render_prompt_editors(meta: dict, blueprint_id: str, brand_profile: Optiona
     # Build auto-generated prompts so users see the default
     from viraltracker.services.landing_page_analysis.blueprint_image_service import (
         BlueprintImageService,
-        ImageSlot,
     )
     svc = BlueprintImageService.__new__(BlueprintImageService)
 
@@ -1836,22 +1856,11 @@ def _render_prompt_editors(meta: dict, blueprint_id: str, brand_profile: Optiona
         except Exception:
             pass
 
-    # Build slots + prompts to show defaults
-    slots = []
-    for idx_str, data in sorted(meta.items(), key=lambda x: int(x[0])):
-        if not isinstance(data, dict) or not data.get("analysis"):
-            continue
-        slot = ImageSlot(
-            index=int(idx_str),
-            original_src=data.get("original_src", ""),
-            alt_text=data.get("alt_text", ""),
-            surrounding_text=data.get("surrounding_text", ""),
-            section_heading=data.get("section_heading", ""),
-            image_analysis=data.get("analysis"),
-            aspect_ratio=data.get("aspect_ratio"),
-            selected=True,
-        )
-        slots.append(slot)
+    # Rebuild slots from meta — includes scene_direction automatically
+    slots = [
+        s for s in svc._rebuild_slots_from_meta(meta)
+        if s.image_analysis
+    ]
 
     svc.build_generation_prompts(slots, product_info, persona_data, brand_profile)
 

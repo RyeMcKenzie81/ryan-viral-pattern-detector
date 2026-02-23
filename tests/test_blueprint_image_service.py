@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from viraltracker.services.landing_page_analysis.blueprint_image_service import (
     BlueprintImageService,
     ImageSlot,
+    NARRATIVE_ROLE_STYLES,
     _SrcReplacer,
     replace_image_sources,
     snap_aspect_ratio,
@@ -427,3 +428,203 @@ class TestBuildGenerationPrompts:
         assert "male" in slot.prompt
         assert "30s" not in slot.prompt
         assert "athletic woman" not in slot.prompt
+
+
+# ---------------------------------------------------------------------------
+# Scene Direction
+# ---------------------------------------------------------------------------
+
+class TestSceneDirection:
+
+    def _make_slot(self, index=0, image_type="lifestyle", has_people=False,
+                   surrounding_text="Better sleep starts tonight", section_heading="Sleep Better"):
+        return ImageSlot(
+            index=index,
+            original_src=f"https://example.com/{index}.jpg",
+            alt_text=f"Image {index}",
+            surrounding_text=surrounding_text,
+            section_heading=section_heading,
+            image_analysis={
+                "image_type": image_type,
+                "subject": "person in bed",
+                "composition": "soft natural lighting, warm tones",
+                "has_people": has_people,
+                "people_description": "30s woman sleeping" if has_people else "",
+                "aspect_ratio": "16:9",
+            },
+            selected=True,
+        )
+
+    def test_scene_directed_prompt_uses_scene_description(self):
+        """When scene_direction is set, build_generation_prompts uses it instead of template."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(has_people=True)
+        slot.scene_direction = {
+            "narrative_role": "solution_state",
+            "scene_description": "Woman sleeping peacefully in a sunlit bedroom at dawn",
+            "emotional_tone": "peaceful",
+            "setting": "bedroom at dawn",
+            "activity": "sleeping peacefully",
+            "key_element_from_copy": "better sleep",
+        }
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "SleepWell"},
+            persona={"demographics": {"age_range": "35-44", "gender": "female"}},
+        )
+        assert slot.prompt is not None
+        assert "sleeping peacefully" in slot.prompt
+        assert "sunlit bedroom" in slot.prompt
+        assert "SleepWell" in slot.prompt
+        # Should NOT be the generic template "enjoying their daily wellness routine"
+        assert "enjoying their daily wellness routine" not in slot.prompt
+
+    def test_scene_directed_prompt_preserves_persona_logic(self):
+        """Scene-directed path still clears original_base64 when people + persona."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(has_people=True)
+        slot.original_base64 = "fake_data"
+        slot.scene_direction = {
+            "narrative_role": "solution_state",
+            "scene_description": "Person resting after workout",
+            "emotional_tone": "relieved",
+            "setting": "gym",
+            "activity": "resting",
+            "key_element_from_copy": "recovery",
+        }
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "RecoverFast"},
+            persona={"demographics": {"age_range": "25-34", "gender": "male"}},
+        )
+        # Original cleared because it shows different person than persona
+        assert slot.original_base64 is None
+        assert "25-34" in slot.prompt
+        assert "male" in slot.prompt
+
+    def test_scene_directed_fallback_to_template(self):
+        """When scene_direction is None, existing template path runs unchanged."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(has_people=True)
+        slot.scene_direction = None
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "VitaBoost"},
+            persona={"demographics": {"age_range": "25-34", "gender": "female"}},
+        )
+        assert slot.prompt is not None
+        # Template path for lifestyle: should have generic activity
+        assert "VitaBoost" in slot.prompt
+        # Should NOT mention any scene_description
+        assert "sleeping" not in slot.prompt
+
+    def test_scene_direction_meta_round_trip(self):
+        """_build_slot_meta stores scene_direction, _rebuild_slots_from_meta restores it."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot()
+        slot.scene_direction = {
+            "narrative_role": "solution_state",
+            "scene_description": "Peaceful sleep scene",
+            "emotional_tone": "peaceful",
+            "setting": "bedroom",
+            "activity": "sleeping",
+            "key_element_from_copy": "sleep better",
+        }
+        slot.prompt = "Test prompt"
+
+        meta = svc._build_slot_meta(slot)
+        assert meta["scene_direction"] == slot.scene_direction
+
+        # Round-trip
+        rebuilt = svc._rebuild_slots_from_meta({"0": meta})
+        assert len(rebuilt) == 1
+        assert rebuilt[0].scene_direction == slot.scene_direction
+        assert rebuilt[0].image_analysis == slot.image_analysis
+
+    def test_scene_directed_prompt_narrative_role_mapping(self):
+        """Each narrative_role maps to the correct style prefix."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+
+        for role, expected_prefix in NARRATIVE_ROLE_STYLES.items():
+            slot = self._make_slot()
+            slot.scene_direction = {
+                "narrative_role": role,
+                "scene_description": "A test scene",
+                "emotional_tone": "neutral",
+                "setting": "studio",
+                "activity": "posing",
+                "key_element_from_copy": "test",
+            }
+            svc.build_generation_prompts(
+                [slot],
+                product_info={"name": "TestProduct"},
+            )
+            assert slot.prompt is not None, f"No prompt for role {role}"
+            assert expected_prefix in slot.prompt, (
+                f"Expected '{expected_prefix}' in prompt for role '{role}', "
+                f"got: {slot.prompt[:100]}"
+            )
+
+    def test_build_scene_director_prompt_formats_correctly(self):
+        """_build_scene_director_prompt produces valid prompt with all fields."""
+        slot = self._make_slot()
+        product_info = {
+            "name": "CortiControl",
+            "key_benefits": ["reduces cortisol", "better sleep"],
+            "key_problems_solved": ["chronic stress", "insomnia"],
+        }
+        persona = {
+            "demographics": {"age_range": "35-44", "gender": "female"},
+            "pain_symptoms": ["trouble sleeping", "anxiety"],
+            "desired_self_image": "calm and in control",
+        }
+        prompt = BlueprintImageService._build_scene_director_prompt(slot, product_info, persona)
+
+        assert "CortiControl" in prompt
+        assert "reduces cortisol" in prompt
+        assert "chronic stress" in prompt
+        assert "35-44 female" in prompt
+        assert "trouble sleeping" in prompt
+        assert "calm and in control" in prompt
+        assert "Sleep Better" in prompt  # section_heading
+        assert "Better sleep starts tonight" in prompt  # surrounding_text
+
+    def test_scene_directed_educational_clears_original(self):
+        """Educational/infographic role clears original_base64."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slot = self._make_slot(image_type="infographic")
+        slot.original_base64 = "fake_data"
+        slot.scene_direction = {
+            "narrative_role": "educational",
+            "scene_description": "Clean diagram showing cortisol reduction",
+            "emotional_tone": "informative",
+            "setting": "abstract background",
+            "activity": "displaying information",
+            "key_element_from_copy": "cortisol levels",
+        }
+        svc.build_generation_prompts(
+            [slot],
+            product_info={"name": "CortiControl"},
+        )
+        assert slot.original_base64 is None
+
+    def test_meta_round_trip_no_scene_direction(self):
+        """Backward compat: meta without scene_direction rebuilds with None."""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        meta = {
+            "0": {
+                "original_src": "https://example.com/0.jpg",
+                "alt_text": "test",
+                "surrounding_text": "",
+                "section_heading": "",
+                "aspect_ratio": "16:9",
+                "analysis": {"image_type": "lifestyle"},
+                "prompt": "old prompt",
+                "storage_path": None,
+                "storage_url": None,
+                "error": None,
+            }
+        }
+        rebuilt = svc._rebuild_slots_from_meta(meta)
+        assert len(rebuilt) == 1
+        assert rebuilt[0].scene_direction is None
