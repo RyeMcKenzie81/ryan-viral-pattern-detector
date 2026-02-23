@@ -33,7 +33,7 @@ from .invariants import (
     check_global_invariants,
     check_section_invariant,
 )
-from .content_assembler import assemble_content, phase_2_fallback
+from .content_assembler import assemble_content, filter_seo_ghost_text, phase_2_fallback
 from .html_extractor import (
     CSSExtractor,
     ImageRegistry,
@@ -1035,6 +1035,8 @@ class MultiPassPipeline:
 
         # Segment markdown
         sections = segment_markdown(page_markdown, element_detection)
+        # Filter SEO ghost text (meta descriptions, JSON-LD) from sections
+        sections = filter_seo_ghost_text(sections, page_html or "")
         section_count = len(sections)
 
         with self._lf.span(

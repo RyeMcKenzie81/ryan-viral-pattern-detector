@@ -5,8 +5,11 @@ Converts per-section markdown to HTML, injects images with dimensions,
 assigns data-slots, and fills skeleton placeholders.
 """
 
+import json
 import logging
 import re
+from copy import deepcopy
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional
 
 from markdown_it import MarkdownIt
@@ -14,6 +17,181 @@ from markdown_it import MarkdownIt
 from .html_extractor import ImageRegistry, PageImage
 
 logger = logging.getLogger(__name__)
+
+# Artifact labels that indicate scraped SEO/invisible content
+_ARTIFACT_LABELS = re.compile(
+    r'^\*{0,2}(Summary|Key Points|Overview|Description)\s*:\*{0,2}',
+    re.IGNORECASE,
+)
+
+
+def _extract_ghost_texts(page_html: str) -> List[str]:
+    """Extract text fragments from SEO/invisible HTML elements.
+
+    Extracts from:
+    - <meta name="description" content="...">
+    - <meta property="og:description" content="...">
+    - <script type="application/ld+json"> → description fields
+    """
+    fragments = []
+
+    # Meta description
+    for m in re.finditer(
+        r'<meta\s[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']',
+        page_html, re.IGNORECASE,
+    ):
+        fragments.append(m.group(1))
+
+    # Also match content before name (attribute order varies)
+    for m in re.finditer(
+        r'<meta\s[^>]*content=["\']([^"\']+)["\'][^>]*name=["\']description["\']',
+        page_html, re.IGNORECASE,
+    ):
+        fragments.append(m.group(1))
+
+    # OG description
+    for m in re.finditer(
+        r'<meta\s[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']',
+        page_html, re.IGNORECASE,
+    ):
+        fragments.append(m.group(1))
+
+    for m in re.finditer(
+        r'<meta\s[^>]*content=["\']([^"\']+)["\'][^>]*property=["\']og:description["\']',
+        page_html, re.IGNORECASE,
+    ):
+        fragments.append(m.group(1))
+
+    # JSON-LD descriptions
+    for m in re.finditer(
+        r'<script\s[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        page_html, re.DOTALL | re.IGNORECASE,
+    ):
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict) and 'description' in data:
+                fragments.append(data['description'])
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and 'description' in item:
+                        fragments.append(item['description'])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return fragments
+
+
+def _normalize_text(text: str) -> str:
+    """Lowercase and collapse whitespace for comparison."""
+    return re.sub(r'\s+', ' ', text.lower().strip())
+
+
+def filter_seo_ghost_text(sections: list, page_html: str) -> list:
+    """Filter ghost text artifacts from section markdown.
+
+    Ghost text = invisible SEO content (meta descriptions, JSON-LD)
+    that Firecrawl scrapes and includes in the page markdown.
+
+    Uses a dual-gate approach:
+    1. Paragraph must fuzzy-match an SEO metadata fragment (ratio >= 0.8)
+    2. Paragraph must start with an artifact label (Summary:, Key Points:, etc.)
+
+    When page_html is empty, applies conservative fallback on sec_0 only:
+    strips paragraphs starting with **Summary:** that are >= 200 chars.
+
+    Args:
+        sections: List of SegmenterSection objects.
+        page_html: Raw HTML of the page (for SEO metadata extraction).
+
+    Returns:
+        New list of sections with filtered markdown (originals not mutated).
+    """
+    if not sections:
+        return sections
+
+    # No page_html → conservative fallback on sec_0 only
+    if not page_html.strip():
+        result = []
+        for section in sections:
+            if section.section_id == "sec_0":
+                paragraphs = section.markdown.split('\n\n')
+                filtered = []
+                removed = 0
+                for para in paragraphs:
+                    stripped = para.strip()
+                    if (
+                        _ARTIFACT_LABELS.match(stripped)
+                        and len(stripped) >= 200
+                    ):
+                        removed += 1
+                        continue
+                    filtered.append(para)
+                if removed:
+                    logger.info(
+                        f"Ghost text filter (fallback): stripped {removed} "
+                        f"paragraphs from {section.section_id}"
+                    )
+                    new_section = deepcopy(section)
+                    new_section.markdown = '\n\n'.join(filtered)
+                    result.append(new_section)
+                else:
+                    result.append(section)
+            else:
+                result.append(section)
+        return result
+
+    # Full path: extract ghost-text fragments from page_html
+    ghost_fragments = _extract_ghost_texts(page_html)
+    if not ghost_fragments:
+        return sections
+
+    normalized_ghosts = [_normalize_text(f) for f in ghost_fragments if f.strip()]
+    if not normalized_ghosts:
+        return sections
+
+    result = []
+    for section in sections:
+        paragraphs = section.markdown.split('\n\n')
+        filtered = []
+        removed = 0
+
+        for para in paragraphs:
+            stripped = para.strip()
+            if not stripped:
+                filtered.append(para)
+                continue
+
+            # Gate 1: Must start with an artifact label
+            if not _ARTIFACT_LABELS.match(stripped):
+                filtered.append(para)
+                continue
+
+            # Gate 2: Must fuzzy-match an SEO metadata fragment
+            norm_para = _normalize_text(stripped)
+            is_ghost = False
+            for ghost in normalized_ghosts:
+                ratio = SequenceMatcher(None, norm_para, ghost).ratio()
+                if ratio >= 0.8:
+                    is_ghost = True
+                    break
+
+            if is_ghost:
+                removed += 1
+            else:
+                filtered.append(para)
+
+        if removed:
+            logger.info(
+                f"Ghost text filter: stripped {removed} paragraphs "
+                f"from {section.section_id}"
+            )
+            new_section = deepcopy(section)
+            new_section.markdown = '\n\n'.join(filtered)
+            result.append(new_section)
+        else:
+            result.append(section)
+
+    return result
 
 
 def assemble_content(

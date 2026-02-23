@@ -53,12 +53,12 @@ def main():
     # Find a page to test
     if args.page_id:
         result = supabase.table("landing_page_analyses").select(
-            "id, url, page_markdown, screenshot_storage_path"
+            "id, url, page_markdown, page_html, screenshot_storage_path"
         ).eq("id", args.page_id).single().execute()
         analysis = result.data
     elif args.url:
         result = supabase.table("landing_page_analyses").select(
-            "id, url, page_markdown, screenshot_storage_path"
+            "id, url, page_markdown, page_html, screenshot_storage_path"
         ).like("url", f"%{args.url}%").not_.is_(
             "screenshot_storage_path", "null"
         ).order("created_at", desc=True).limit(1).execute()
@@ -68,7 +68,7 @@ def main():
         analysis = result.data[0]
     else:
         result = supabase.table("landing_page_analyses").select(
-            "id, url, page_markdown, screenshot_storage_path"
+            "id, url, page_markdown, page_html, screenshot_storage_path"
         ).not_.is_(
             "screenshot_storage_path", "null"
         ).not_.is_(
@@ -82,11 +82,13 @@ def main():
     page_id = analysis["id"]
     url = analysis.get("url", "unknown")
     markdown = analysis.get("page_markdown", "")
+    page_html = analysis.get("page_html") or None
     screenshot_path = analysis.get("screenshot_storage_path")
 
     logger.info(f"Testing page: {url}")
     logger.info(f"Analysis ID: {page_id}")
     logger.info(f"Markdown length: {len(markdown)} chars")
+    logger.info(f"page_html: {'yes' if page_html else 'no'} ({len(page_html) if page_html else 0} chars)")
 
     # Load screenshot
     screenshot_bytes = analysis_svc._load_screenshot(screenshot_path)
@@ -107,6 +109,7 @@ def main():
             page_markdown=markdown,
             page_url=url,
             use_multipass=False,
+            page_html=page_html,
         )
         single_time = time.time() - start
         single_slots = single_html.count('data-slot=')
@@ -123,6 +126,7 @@ def main():
         page_url=url,
         use_multipass=True,
         progress_callback=progress_callback,
+        page_html=page_html,
     )
     multi_time = time.time() - start
 

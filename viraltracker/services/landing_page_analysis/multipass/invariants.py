@@ -24,6 +24,7 @@ class SectionInvariant:
     slot_set: FrozenSet[str]
     normalized_tokens: List[str]
     char_count: int
+    image_count: int = 0
 
 
 @dataclass
@@ -33,6 +34,7 @@ class PipelineInvariants:
     global_tokens: List[str]
     section_count: int
     sections: Dict[str, SectionInvariant] = field(default_factory=dict)
+    global_image_count: int = 0
 
 
 @dataclass
@@ -239,18 +241,23 @@ def capture_pipeline_invariants(html: str) -> PipelineInvariants:
     for section_id, section_html in section_htmls.items():
         slots = _extract_slots(section_html)
         tokens = _tokenize_visible_text(section_html)
+        image_count = len(re.findall(r'<img\b', section_html, re.IGNORECASE))
         sections[section_id] = SectionInvariant(
             section_id=section_id,
             slot_set=slots,
             normalized_tokens=tokens,
             char_count=len(section_html),
+            image_count=image_count,
         )
+
+    global_image_count = len(re.findall(r'<img\b', html, re.IGNORECASE))
 
     return PipelineInvariants(
         global_slot_set=global_slots,
         global_tokens=global_tokens,
         section_count=len(section_htmls),
         sections=sections,
+        global_image_count=global_image_count,
     )
 
 
@@ -293,6 +300,16 @@ def check_section_invariant(
     if similarity < TEXT_SIMILARITY_THRESHOLD:
         issues.append(
             f"Text drift: similarity={similarity:.3f} < {TEXT_SIMILARITY_THRESHOLD}"
+        )
+
+    # Check image count increase (warning only — Phase 3 can legitimately add images)
+    new_image_count = len(re.findall(r'<img\b', section_html, re.IGNORECASE))
+    if new_image_count > expected.image_count:
+        issues.append(
+            f"Image count increased: {expected.image_count} -> {new_image_count}"
+        )
+        logger.warning(
+            f"Section {section_id}: {new_image_count - expected.image_count} new images added"
         )
 
     passed = not slot_loss and similarity >= TEXT_SIMILARITY_THRESHOLD
@@ -347,6 +364,17 @@ def check_global_invariants(
     if len(section_htmls) != baseline.section_count:
         issues.append(
             f"Section count changed: {baseline.section_count} -> {len(section_htmls)}"
+        )
+
+    # Global image count (warning only — allow small variance)
+    new_image_count = len(re.findall(r'<img\b', html, re.IGNORECASE))
+    if new_image_count > baseline.global_image_count + 3:
+        issues.append(
+            f"Excessive new images: {baseline.global_image_count} -> {new_image_count}"
+        )
+        logger.warning(
+            f"Global image count increased significantly: "
+            f"{baseline.global_image_count} -> {new_image_count}"
         )
 
     section_count_ok = len(section_htmls) == baseline.section_count

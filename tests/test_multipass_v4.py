@@ -19,6 +19,10 @@ B15: Phase 1 prompt constraints (Fix 5)
 B16: Global invariant section-count (Fix 8)
 B17: Integration test — full failure chain reproduction
 B18: wait_for forwarded to FireCrawl + template pipeline guard fallback
+B19: Phase 4 add_element image blocking
+B20: Phase 3 image guidance for 0-image sections
+B21: Image count invariant tracking
+B22: SEO ghost text filter
 """
 
 import re
@@ -2736,3 +2740,340 @@ class TestTemplateGuardFallback:
         assert not phase_1_classify_called, (
             "Expected _run_phase_1_classify NOT to be called when page_html is None"
         )
+
+
+# ===========================================================================
+# B19: Phase 4 add_element image blocking
+# ===========================================================================
+
+
+class TestPhase4AddElementImgBlocking:
+    """B19: patch_applier.py — Block <img> tags in add_element payloads."""
+
+    def _applier(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+        return PatchApplier()
+
+    def test_img_payload_blocked(self):
+        """add_element with <img> payload is skipped."""
+        applier = self._applier()
+        html = '<div data-section="sec_0"><p>Hello</p></div>'
+        patches = [{
+            "type": "add_element",
+            "selector": "[data-section='sec_0']",
+            "value": '<img src="https://example.com/photo.jpg" alt="test">',
+        }]
+        result = applier.apply_patches(html, patches)
+        assert result == html, "img payload should be blocked"
+
+    def test_nested_img_payload_blocked(self):
+        """add_element with nested <img> inside wrapper is also blocked."""
+        applier = self._applier()
+        html = '<div data-section="sec_0"><p>Hello</p></div>'
+        patches = [{
+            "type": "add_element",
+            "selector": "[data-section='sec_0']",
+            "value": '<div class="wrapper"><img src="https://example.com/photo.jpg"></div>',
+        }]
+        result = applier.apply_patches(html, patches)
+        assert result == html, "nested img payload should be blocked"
+
+    def test_div_payload_passes(self):
+        """add_element with non-img, non-text payload passes validation."""
+        applier = self._applier()
+        html = '<div data-section="sec_0"><p>Hello</p></div>'
+        patches = [{
+            "type": "add_element",
+            "selector": "[data-section='sec_0']",
+            "value": '<div style="height: 2px; background: #ddd; margin: 20px 0;"></div>',
+        }]
+        result = applier.apply_patches(html, patches)
+        assert '<div style="height: 2px' in result, "divider payload should be inserted"
+
+    def test_existing_text_blocking_preserved(self):
+        """Existing visible-text blocking still works."""
+        applier = self._applier()
+        html = '<div data-section="sec_0"><p>Hello</p></div>'
+        patches = [{
+            "type": "add_element",
+            "selector": "[data-section='sec_0']",
+            "value": '<p>Some visible text</p>',
+        }]
+        result = applier.apply_patches(html, patches)
+        assert result == html, "visible text payload should still be blocked"
+
+
+# ===========================================================================
+# B20: Phase 3 image guidance for 0-image sections
+# ===========================================================================
+
+
+class TestPhase3ImageGuidance:
+    """B20: prompts.py — IMAGE GUIDANCE block for 0-image sections."""
+
+    def test_no_images_includes_guidance(self):
+        """Section with 0 images gets IMAGE GUIDANCE constraint."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+        prompt = build_phase_3_prompt(
+            section_id="sec_2",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+            image_urls=None,
+            section_images=None,
+        )
+        assert "IMAGE GUIDANCE" in prompt
+        assert "NO images assigned" in prompt
+        assert "adjacent sections" in prompt
+
+    def test_with_images_includes_rules(self):
+        """Section with images gets image list + rules (existing behavior)."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+
+        class FakeImage:
+            url = "https://example.com/img.jpg"
+            alt = "test"
+            width = 400
+            height = 300
+            is_icon = False
+            is_background = False
+
+        prompt = build_phase_3_prompt(
+            section_id="sec_0",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+            section_images=[FakeImage()],
+        )
+        assert "SECTION IMAGES" in prompt
+        assert "IMAGE RULES" in prompt
+        assert "IMAGE GUIDANCE" not in prompt
+
+    def test_legacy_image_urls_no_guidance(self):
+        """Section with legacy image_urls gets legacy block, not guidance."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+        prompt = build_phase_3_prompt(
+            section_id="sec_0",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+            image_urls=[{"alt": "test", "url": "https://example.com/img.jpg"}],
+        )
+        assert "ACTUAL IMAGE URLs" in prompt
+        assert "IMAGE GUIDANCE" not in prompt
+
+
+# ===========================================================================
+# B21: Image count invariant tracking
+# ===========================================================================
+
+
+class TestImageCountInvariant:
+    """B21: invariants.py — Image count tracking in capture and check."""
+
+    def test_capture_records_image_count(self):
+        """capture_pipeline_invariants records image_count per section."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            capture_pipeline_invariants,
+        )
+        html = """
+        <section data-section="sec_0">
+            <p data-slot="body-1">Hello</p>
+            <img src="https://example.com/a.jpg">
+            <img src="https://example.com/b.jpg">
+        </section>
+        <section data-section="sec_1">
+            <p data-slot="body-2">World</p>
+        </section>
+        """
+        inv = capture_pipeline_invariants(html)
+        assert inv.sections["sec_0"].image_count == 2
+        assert inv.sections["sec_1"].image_count == 0
+        assert inv.global_image_count == 2
+
+    def test_check_section_warns_on_image_increase(self):
+        """check_section_invariant logs warning when images increase."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            capture_pipeline_invariants,
+            check_section_invariant,
+        )
+        baseline_html = """
+        <section data-section="sec_0">
+            <p data-slot="body-1">Hello world</p>
+        </section>
+        """
+        baseline = capture_pipeline_invariants(baseline_html)
+        assert baseline.sections["sec_0"].image_count == 0
+
+        # Refined section now has an image
+        refined_html = '<p data-slot="body-1">Hello world</p><img src="new.jpg">'
+        report = check_section_invariant(refined_html, "sec_0", baseline)
+        assert any("Image count increased" in i for i in report.issues)
+
+    def test_check_global_flags_excessive_images(self):
+        """check_global_invariants flags when >3 new images appear."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            capture_pipeline_invariants,
+            check_global_invariants,
+        )
+        baseline_html = """
+        <section data-section="sec_0">
+            <p data-slot="body-1">Hello world test content here</p>
+        </section>
+        """
+        baseline = capture_pipeline_invariants(baseline_html)
+        assert baseline.global_image_count == 0
+
+        # Post-phase HTML has 5 new images (> threshold of 3)
+        modified_html = """
+        <section data-section="sec_0">
+            <p data-slot="body-1">Hello world test content here</p>
+            <img src="a.jpg"><img src="b.jpg"><img src="c.jpg">
+            <img src="d.jpg"><img src="e.jpg">
+        </section>
+        """
+        report = check_global_invariants(modified_html, baseline)
+        assert any("Excessive new images" in i for i in report.issues)
+
+    def test_check_global_allows_small_variance(self):
+        """check_global_invariants allows up to 3 new images."""
+        from viraltracker.services.landing_page_analysis.multipass.invariants import (
+            capture_pipeline_invariants,
+            check_global_invariants,
+        )
+        baseline_html = """
+        <section data-section="sec_0">
+            <p data-slot="body-1">Hello world test content here</p>
+        </section>
+        """
+        baseline = capture_pipeline_invariants(baseline_html)
+
+        # 3 new images (within threshold)
+        modified_html = """
+        <section data-section="sec_0">
+            <p data-slot="body-1">Hello world test content here</p>
+            <img src="a.jpg"><img src="b.jpg"><img src="c.jpg">
+        </section>
+        """
+        report = check_global_invariants(modified_html, baseline)
+        assert not any("Excessive new images" in i for i in report.issues)
+
+
+# ===========================================================================
+# B22: SEO ghost text filter
+# ===========================================================================
+
+
+class TestSEOGhostTextFilter:
+    """B22: content_assembler.py — filter_seo_ghost_text()."""
+
+    def _make_section(self, section_id, markdown):
+        return FakeSection(section_id=section_id, name=section_id, markdown=markdown)
+
+    def test_meta_description_ghost_stripped(self):
+        """Paragraph matching meta description + artifact label is stripped."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            filter_seo_ghost_text,
+        )
+        sections = [self._make_section("sec_0", (
+            "# Hero Heading\n\n"
+            "**Summary:** Boba Nutrition offers premium taro powder for "
+            "bubble tea shops and home baristas. Our all-natural ingredients "
+            "deliver authentic flavor in every sip.\n\n"
+            "Shop now for the best taro experience."
+        ))]
+        page_html = (
+            '<html><head>'
+            '<meta name="description" content="Boba Nutrition offers premium '
+            'taro powder for bubble tea shops and home baristas. Our all-natural '
+            'ingredients deliver authentic flavor in every sip.">'
+            '</head><body></body></html>'
+        )
+        result = filter_seo_ghost_text(sections, page_html)
+        assert "Summary:" not in result[0].markdown
+        assert "Hero Heading" in result[0].markdown
+        assert "Shop now" in result[0].markdown
+
+    def test_jsonld_description_ghost_stripped(self):
+        """Paragraph matching JSON-LD description + artifact label is stripped."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            filter_seo_ghost_text,
+        )
+        sections = [self._make_section("sec_0", (
+            "# Welcome\n\n"
+            "**Description:** We are the leading provider of organic supplements "
+            "designed for athletes and fitness enthusiasts worldwide.\n\n"
+            "Start your journey today."
+        ))]
+        page_html = (
+            '<html><head>'
+            '<script type="application/ld+json">'
+            '{"@type": "Organization", "description": "We are the leading '
+            'provider of organic supplements designed for athletes and fitness '
+            'enthusiasts worldwide."}'
+            '</script></head><body></body></html>'
+        )
+        result = filter_seo_ghost_text(sections, page_html)
+        assert "Description:" not in result[0].markdown
+        assert "Welcome" in result[0].markdown
+
+    def test_legitimate_summary_preserved(self):
+        """Summary: content NOT in meta tags is preserved."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            filter_seo_ghost_text,
+        )
+        sections = [self._make_section("sec_0", (
+            "# Report\n\n"
+            "**Summary:** This quarterly report shows a 25% increase in "
+            "revenue across all product lines and market segments.\n\n"
+            "Details below."
+        ))]
+        page_html = (
+            '<html><head>'
+            '<meta name="description" content="Company official website">'
+            '</head><body></body></html>'
+        )
+        result = filter_seo_ghost_text(sections, page_html)
+        assert "Summary:" in result[0].markdown
+
+    def test_no_page_html_fallback_sec_0(self):
+        """No page_html → conservative fallback strips long Summary: from sec_0."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            filter_seo_ghost_text,
+        )
+        long_summary = "**Summary:** " + "x " * 120  # > 200 chars
+        sections = [
+            self._make_section("sec_0", f"# Hero\n\n{long_summary}\n\nReal content."),
+            self._make_section("sec_1", f"# Section\n\n{long_summary}\n\nMore content."),
+        ]
+        result = filter_seo_ghost_text(sections, "")
+        assert "Summary:" not in result[0].markdown, "sec_0 long Summary: should be stripped"
+        assert "Summary:" in result[1].markdown, "sec_1 should NOT be filtered in fallback"
+
+    def test_short_summary_preserved_in_fallback(self):
+        """Short Summary: paragraph (<200 chars) preserved even in fallback."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            filter_seo_ghost_text,
+        )
+        sections = [self._make_section("sec_0", (
+            "# Hero\n\n"
+            "**Summary:** Short summary here.\n\n"
+            "Main content."
+        ))]
+        result = filter_seo_ghost_text(sections, "")
+        assert "Summary:" in result[0].markdown
+
+    def test_no_ghost_fragments_no_changes(self):
+        """When page_html has no meta descriptions, sections pass through."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            filter_seo_ghost_text,
+        )
+        sections = [self._make_section("sec_0", "# Hello\n\nContent here.")]
+        page_html = "<html><head><title>Test</title></head><body></body></html>"
+        result = filter_seo_ghost_text(sections, page_html)
+        assert result[0].markdown == sections[0].markdown

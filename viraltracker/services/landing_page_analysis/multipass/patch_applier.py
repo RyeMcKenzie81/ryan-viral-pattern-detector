@@ -283,6 +283,10 @@ class PatchApplier:
 
     def _apply_add_element(self, html: str, selector: ParsedSelector, payload: str) -> str:
         """Insert element after first matching element."""
+        # Block content elements — add_element is for structural decorations only
+        if re.search(r'<img\b', payload, re.IGNORECASE):
+            logger.warning("add_element payload contains <img> tag, skipping")
+            return html
         # Validate payload: no visible text, no protected attrs
         if _has_visible_text(payload):
             logger.warning("add_element payload contains visible text, skipping")

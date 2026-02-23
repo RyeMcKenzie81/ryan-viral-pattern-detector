@@ -280,6 +280,15 @@ def build_phase_3_prompt(
             url = img.get("url", "")
             img_lines.append(f'  - {alt}: {url}')
         images_section = f"\n## ACTUAL IMAGE URLs\n" + "\n".join(img_lines) + "\n"
+    else:
+        # No images assigned to this section — provide guidance
+        images_section = (
+            "\n## IMAGE GUIDANCE\n"
+            "This section has NO images assigned in the image registry.\n"
+            "If you see images in the screenshot crop that belong to adjacent sections, do NOT include them.\n"
+            "Only add <img> tags if you can extract the exact src URL from the screenshot "
+            "AND the image clearly belongs to THIS section's content (not a neighboring section).\n"
+        )
 
     css_section = ""
     if original_css_snippet:
