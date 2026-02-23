@@ -601,7 +601,7 @@ class TestSceneDirection:
             "pain_symptoms": ["trouble sleeping", "anxiety"],
             "desired_self_image": "calm and in control",
         }
-        prompt = BlueprintImageService._build_scene_director_prompt(slot, product_info, persona)
+        prompt = BlueprintImageService._build_scene_director_prompt([slot], product_info, persona)
 
         assert "CortiControl" in prompt
         assert "reduces cortisol" in prompt
@@ -611,6 +611,7 @@ class TestSceneDirection:
         assert "calm and in control" in prompt
         assert "Sleep Better" in prompt  # section_heading
         assert "Better sleep starts tonight" in prompt  # surrounding_text
+        assert "SLOT 0" in prompt  # batch format
 
     def test_scene_directed_educational_clears_original(self):
         """Educational/infographic role clears original_base64."""

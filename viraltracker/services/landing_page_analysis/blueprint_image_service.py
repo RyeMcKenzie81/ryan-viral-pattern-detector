@@ -264,18 +264,9 @@ VISION_ANALYSIS_PROMPT = """Analyze this image and return a JSON object with the
 Return ONLY the JSON, no markdown fences or explanation."""
 
 
-SCENE_DIRECTOR_PROMPT = """You are a Scene Director for commercial photography on a landing page.
-Your #1 job: make each image illustrate EXACTLY what the surrounding copy says.
-Read the heading and copy below LITERALLY — the scene must match THAT SPECIFIC text,
-not the general product theme.
-
-SURROUNDING COPY (this is what the image must illustrate):
-- Section heading: "{section_heading}"
-- Surrounding copy: "{surrounding_text}"
-
-IMAGE CONTEXT:
-- Original image was: "{alt_text}" (type: {image_type})
-- Has people in original: {has_people}
+SCENE_DIRECTOR_PROMPT = """You are a Scene Director planning ALL images for a landing page at once.
+Your #1 job: make each image illustrate EXACTLY what its surrounding copy says,
+and ensure VISUAL VARIETY across the full page.
 
 PRODUCT (for reference only — do NOT default every scene to this):
 - Name: {product_name}
@@ -287,30 +278,39 @@ TARGET CUSTOMER (use for demographics when showing people):
 - Pain symptoms: {pain_symptoms}
 - Desired self-image: {desired_self_image}
 
-Return ONLY JSON:
-{{
-  "narrative_role": "solution_state|problem_state|social_proof|lifestyle_aspiration|product_showcase|transformation|educational|hero_attention",
-  "scene_description": "One vivid sentence (under 30 words) of the exact scene",
-  "emotional_tone": "One or two words: peaceful, energetic, confident, relieved, etc.",
-  "setting": "Where: bedroom at dawn, modern kitchen, gym, etc.",
-  "activity": "What the subject is doing",
-  "key_element_from_copy": "The specific claim from the surrounding text this illustrates",
-  "show_product": true/false
-}}
+IMAGE SLOTS TO DIRECT:
+{slots_block}
+
+For EACH slot above, return a JSON object. Return a JSON array with one object per slot:
+[
+  {{
+    "slot_index": 0,
+    "narrative_role": "solution_state|problem_state|social_proof|lifestyle_aspiration|product_showcase|transformation|educational|hero_attention",
+    "scene_description": "One vivid sentence (under 30 words) of the exact scene",
+    "emotional_tone": "One or two words: peaceful, energetic, confident, relieved, etc.",
+    "setting": "Where: bedroom at dawn, modern kitchen, gym, etc.",
+    "activity": "What the subject is doing",
+    "key_element_from_copy": "The specific claim from the surrounding text this illustrates",
+    "show_product": true/false
+  }}
+]
 
 CRITICAL RULES:
-- Each image on the page MUST be visually DIFFERENT — do NOT make every image the same theme
+- Read each slot's heading and copy LITERALLY — the scene must match THAT SPECIFIC text
+- VARIETY IS MANDATORY: never assign the same setting or activity to two different slots.
+  Mix settings (bedroom, kitchen, office, gym, outdoors, studio, etc.) and
+  activities (sleeping, working, exercising, taking pills, reading, etc.)
 - Read the heading LITERALLY:
   - "Two Capsules" → show capsules/pills in a hand (product_showcase), NOT a lifestyle scene
-  - "Sleep Better" → show someone sleeping peacefully
+  - "Sleep Better" → show someone sleeping peacefully (solution_state)
   - "Real Results" with a quote → show an authentic person (social_proof)
   - "How It Works" → show a process or diagram (educational)
   - "Energy crash" → show the problem state, NOT the solution
 - If copy talks about the product form (capsules, pills, powder, dosage, protocol) → use product_showcase
 - If copy talks about a symptom or problem → use problem_state, show the struggle
 - If copy is a testimonial or quote → use social_proof, show a real person
-- set show_product to true ONLY when the copy specifically mentions the product or its usage
-- If no surrounding text, fall back to image_type and alt_text
+- Set show_product to true ONLY when the copy specifically mentions the product or its usage
+- If no surrounding text, fall back to the original image alt text
 - Be specific about demographics only if persona info is provided"""
 
 # Narrative role → photography style prefix mapping
@@ -482,55 +482,63 @@ class BlueprintImageService:
         product_info: Optional[Dict[str, Any]] = None,
         persona: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Run Scene Director LLM call for all slots in parallel.
+        """Run a single batch Scene Director call for ALL slots at once.
 
-        Reads surrounding_text + product/persona context to produce a structured
-        scene description for each image. Results stored in slot.scene_direction.
+        Sends all slots in one prompt so the LLM can see the full page and
+        ensure visual variety across images. Results stored in slot.scene_direction.
         Does NOT call progress_cb to avoid flickering with Vision updates.
         """
         if product_info is None:
-            return  # No product context — skip scene direction entirely
+            return
 
-        sem = asyncio.Semaphore(5)
+        # Filter to slots that have text context
+        directable = [s for s in slots if s.surrounding_text or s.section_heading]
+        if not directable:
+            return
 
-        async def _direct_one(slot: ImageSlot):
-            # Skip slots with no text context to reason about
-            if not slot.surrounding_text and not slot.section_heading:
-                return
+        try:
+            prompt = self._build_scene_director_prompt(directable, product_info, persona)
+            raw = await gemini_service.analyze_text_async(
+                text="",
+                prompt=prompt,
+                skip_internal_rate_limit=True,
+            )
 
-            async with sem:
-                try:
-                    prompt = self._build_scene_director_prompt(slot, product_info, persona)
-                    raw = await gemini_service.analyze_text_async(
-                        text="",
-                        prompt=prompt,
-                        skip_internal_rate_limit=True,
-                    )
+            # Strip markdown fences before parsing
+            text = raw.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
 
-                    # Strip markdown fences before parsing (same pattern as Vision)
-                    text = raw.strip()
-                    if text.startswith("```"):
-                        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-                        if text.endswith("```"):
-                            text = text[:-3]
-                    slot.scene_direction = json.loads(text.strip())
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.warning(f"Scene direction JSON parse failed for slot {slot.index}: {e}")
-                except Exception as e:
-                    logger.warning(f"Scene direction failed for slot {slot.index}: {e}")
+            results = json.loads(text.strip())
 
-        tasks = [_direct_one(slot) for slot in slots]
-        await asyncio.gather(*tasks)
+            # Map results back to slots by slot_index
+            if isinstance(results, list):
+                index_map = {s.index: s for s in directable}
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    idx = item.get("slot_index")
+                    if idx is not None and idx in index_map:
+                        index_map[idx].scene_direction = item
+            elif isinstance(results, dict):
+                # Single-slot fallback: LLM returned a single object
+                if len(directable) == 1:
+                    directable[0].scene_direction = results
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Scene direction batch JSON parse failed: {e}")
+        except Exception as e:
+            logger.warning(f"Scene direction batch call failed: {e}")
 
     @staticmethod
     def _build_scene_director_prompt(
-        slot: "ImageSlot",
+        slots: List["ImageSlot"],
         product_info: Dict[str, Any],
         persona: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Format SCENE_DIRECTOR_PROMPT with slot context, product info, and persona."""
-        analysis = slot.image_analysis or {}
-
+        """Format SCENE_DIRECTOR_PROMPT with all slots, product info, and persona."""
         # Product fields
         product_name = product_info.get("name", "the product")
         benefits = ", ".join(product_info.get("key_benefits", [])) or "Not specified"
@@ -553,18 +561,28 @@ class BlueprintImageService:
             if desired:
                 desired_self_image = desired[:200]
 
+        # Build per-slot context block
+        slot_lines = []
+        for slot in slots:
+            analysis = slot.image_analysis or {}
+            slot_lines.append(
+                f"SLOT {slot.index}:\n"
+                f"  Heading: {slot.section_heading or 'None'}\n"
+                f"  Copy: {(slot.surrounding_text or 'None')[:300]}\n"
+                f"  Alt text: {slot.alt_text or 'None'}\n"
+                f"  Original type: {analysis.get('image_type', 'unknown')}\n"
+                f"  Has people: {analysis.get('has_people', False)}"
+            )
+        slots_block = "\n\n".join(slot_lines)
+
         return SCENE_DIRECTOR_PROMPT.format(
-            section_heading=slot.section_heading or "Not specified",
-            surrounding_text=slot.surrounding_text[:500] if slot.surrounding_text else "Not specified",
-            alt_text=slot.alt_text or "Not specified",
-            image_type=analysis.get("image_type", "unknown"),
-            has_people=analysis.get("has_people", False),
             product_name=product_name,
             benefits=benefits,
             problems=problems,
             persona_demographics=persona_demographics,
             pain_symptoms=pain_symptoms,
             desired_self_image=desired_self_image,
+            slots_block=slots_block,
         )
 
     # ------------------------------------------------------------------
