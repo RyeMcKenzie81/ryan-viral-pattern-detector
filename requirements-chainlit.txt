@@ -84,7 +84,7 @@ rich==13.9.4
 # Web server (Chainlit uses uvicorn + fastapi internally)
 fastapi==0.121.2
 uvicorn[standard]>=0.35.0
-jinja2==3.1.2
+jinja2>=3.1.5
 
 # Email & Notification Dependencies
 resend==2.19.0
