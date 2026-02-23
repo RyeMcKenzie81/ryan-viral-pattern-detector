@@ -113,6 +113,3 @@ opentelemetry-semantic-conventions>=0.60b1
 opentelemetry-util-http>=0.60b1
 streamlit-aggrid
 streamlit-aggrid>=0.3.4
-
-# Chainlit Agent Chat
-chainlit>=2.9.4

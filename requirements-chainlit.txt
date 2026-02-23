@@ -1,0 +1,5 @@
+# Chainlit Agent Chat - includes all base deps + chainlit
+-r requirements.txt
+
+# Chainlit (2.9.4+ patches CVE-2026-22218, CVE-2026-22219)
+chainlit>=2.9.4
