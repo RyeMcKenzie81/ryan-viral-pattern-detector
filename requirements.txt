@@ -101,16 +101,18 @@ firecrawl-py>=1.0.0
 facebook-business>=24.0.0
 
 # Logfire Observability
-logfire==4.14.2
-logfire-api==4.14.2
-opentelemetry-api==1.38.0
-opentelemetry-sdk==1.38.0
-opentelemetry-proto==1.38.0
-opentelemetry-exporter-otlp-proto-common==1.38.0
-opentelemetry-exporter-otlp-proto-http==1.38.0
-opentelemetry-instrumentation==0.59b0
-opentelemetry-instrumentation-httpx==0.59b0
-opentelemetry-semantic-conventions==0.59b0
-opentelemetry-util-http==0.59b0
+logfire>=4.25.0
+opentelemetry-api>=1.39.1
+opentelemetry-sdk>=1.39.1
+opentelemetry-proto>=1.39.1
+opentelemetry-exporter-otlp-proto-common>=1.39.1
+opentelemetry-exporter-otlp-proto-http>=1.39.1
+opentelemetry-instrumentation>=0.60b1
+opentelemetry-instrumentation-httpx>=0.60b1
+opentelemetry-semantic-conventions>=0.60b1
+opentelemetry-util-http>=0.60b1
 streamlit-aggrid
 streamlit-aggrid>=0.3.4
+
+# Chainlit Agent Chat
+chainlit>=2.9.4
