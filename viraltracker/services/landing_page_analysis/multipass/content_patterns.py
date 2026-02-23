@@ -322,10 +322,9 @@ def split_content_for_template(
     sec_id = section.section_id
     result: Dict[str, str] = {}
 
-    # Render header if present
+    # Always fill header key (even empty) to prevent unfilled {{sec_N_header}}
     header_key = sec_id + PLACEHOLDER_SUFFIXES["header"]
-    if pattern.header_markdown:
-        result[header_key] = md_renderer.render(pattern.header_markdown)
+    result[header_key] = md_renderer.render(pattern.header_markdown) if pattern.header_markdown else ""
 
     # Render items based on pattern type
     items_key = sec_id + PLACEHOLDER_SUFFIXES["items"]
@@ -402,15 +401,40 @@ def split_content_for_template(
         result[items_key] = "\n".join(items_html)
 
     elif pattern.pattern_type == "prose":
-        # Prose: render full body as single block
-        single_key = sec_id + PLACEHOLDER_SUFFIXES["single"]
         body = pattern.footer_markdown or ""
         full_md = ""
         if pattern.header_markdown:
             full_md = pattern.header_markdown + "\n\n"
         full_md += body
-        result[single_key] = md_renderer.render(full_md)
-        return result
+        full_html = md_renderer.render(full_md)
+
+        layout_type = ""
+        if layout and hasattr(layout, 'layout_type'):
+            layout_type = layout.layout_type
+
+        # Layouts that use header + items sub-placeholders
+        _HEADER_ITEMS_LAYOUTS = {
+            "feature_grid", "testimonial_cards", "faq_list",
+            "pricing_table", "logo_bar", "stats_row",
+        }
+
+        if layout_type in _HEADER_ITEMS_LAYOUTS:
+            # Map prose content to header + items keys so template
+            # placeholders get filled (header already set above)
+            result[items_key] = md_renderer.render(body) if body.strip() else ""
+            return result
+        elif layout_type == "footer_columns":
+            # Footer only uses items (no header in template)
+            result[items_key] = full_html
+            return result
+        elif layout_type == "hero_split":
+            # Fall through to hero_split block below
+            pass
+        else:
+            # Single placeholder layouts (generic, hero_centered, cta_banner, etc.)
+            single_key = sec_id + PLACEHOLDER_SUFFIXES["single"]
+            result[single_key] = full_html
+            return result
 
     # --- Overflow: preserve remaining text alongside structured items ---
     # When pattern detection captured items (stats, features, etc.) but

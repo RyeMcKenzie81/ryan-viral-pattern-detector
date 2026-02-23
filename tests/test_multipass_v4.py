@@ -3459,6 +3459,244 @@ class TestPhase2Overflow:
 
 
 # ===========================================================================
+# B31: Milestone 3 — Prose-to-structured key mapping + always-fill-header
+# ===========================================================================
+
+
+class TestProseStructuredMapping:
+    """B31: content_patterns.py — prose pattern maps to correct template keys.
+
+    When detect_content_pattern returns 'prose' but the layout expects
+    header+items or text+image keys, split_content_for_template must
+    produce keys matching the template placeholders.
+    """
+
+    PROSE_MARKDOWN = (
+        "## About Our Product\n\n"
+        "We have been building products for over 10 years. "
+        "Our team of experts works tirelessly to deliver the best "
+        "solutions for our customers around the world.\n\n"
+        "Quality is at the heart of everything we do. From sourcing "
+        "raw materials to final delivery, every step is carefully "
+        "monitored and controlled."
+    )
+
+    PROSE_NO_HEADING = (
+        "We have been building products for over 10 years. "
+        "Our team of experts works tirelessly to deliver the best "
+        "solutions for our customers around the world.\n\n"
+        "Quality is at the heart of everything we do."
+    )
+
+    def test_prose_with_feature_grid_produces_header_items(self):
+        """Prose + feature_grid layout → result has header + items keys."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "about", self.PROSE_MARKDOWN)
+        hint = type('H', (), {'layout_type': 'feature_grid'})()
+        pattern = detect_content_pattern(section, hint)
+        assert pattern.pattern_type == "prose"
+
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0_header" in result, "header key must be present"
+        assert "sec_0_items" in result, "items key must be present for feature_grid"
+        assert "sec_0" not in result, "single key should NOT be used for feature_grid"
+        # Header should contain the heading
+        assert "About Our Product" in result["sec_0_header"]
+        # Items should contain the body text
+        assert "building products" in result["sec_0_items"]
+
+    def test_prose_with_stats_row_produces_header_items(self):
+        """Prose + stats_row layout → result has header + items keys."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "stats", self.PROSE_MARKDOWN)
+        hint = type('H', (), {'layout_type': 'stats_row'})()
+        pattern = detect_content_pattern(section, hint)
+        assert pattern.pattern_type == "prose"
+
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0_header" in result
+        assert "sec_0_items" in result
+        assert "sec_0" not in result
+
+    def test_prose_with_hero_split_produces_text_image(self):
+        """Prose + hero_split layout → result has text + image keys."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "hero", self.PROSE_MARKDOWN)
+        hint = type('H', (), {'layout_type': 'hero_split'})()
+        pattern = detect_content_pattern(section, hint)
+        assert pattern.pattern_type == "prose"
+
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0_text" in result, "text key must be present for hero_split"
+        assert "sec_0_image" in result, "image key must be present for hero_split"
+        # Text should contain heading + body
+        assert "About Our Product" in result["sec_0_text"]
+        assert "building products" in result["sec_0_text"]
+
+    def test_prose_with_generic_produces_single_key(self):
+        """Prose + generic layout → result has single key (unchanged behavior)."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "about", self.PROSE_MARKDOWN)
+        hint = type('H', (), {'layout_type': 'generic'})()
+        pattern = detect_content_pattern(section, hint)
+        # Generic doesn't enter structured path, so no layout used
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0" in result, "single key for generic layout"
+        assert "About Our Product" in result["sec_0"]
+
+    def test_prose_with_no_layout_produces_single_key(self):
+        """Prose + no layout hint → result has single key."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "about", self.PROSE_MARKDOWN)
+        pattern = detect_content_pattern(section, None)
+        result = split_content_for_template(pattern, None, section)
+        assert "sec_0" in result
+
+    def test_prose_with_footer_columns_produces_items(self):
+        """Prose + footer_columns layout → items key with full content."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "footer", self.PROSE_MARKDOWN)
+        hint = type('H', (), {'layout_type': 'footer_columns'})()
+        pattern = detect_content_pattern(section, hint)
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0_items" in result
+        # Footer items should contain both heading and body (full content)
+        assert "About Our Product" in result["sec_0_items"]
+        assert "building products" in result["sec_0_items"]
+
+    def test_header_always_filled_even_when_empty(self):
+        """Non-prose pattern with no heading → header_key is empty string, not missing."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            ContentPattern, split_content_for_template,
+        )
+        # Stats pattern with no header
+        pattern = ContentPattern(
+            pattern_type="stats_list",
+            items=[
+                {"number": "10K+", "label": "Users"},
+                {"number": "99%", "label": "Uptime"},
+            ],
+            header_markdown="",  # No header
+        )
+        section = FakeSection("sec_0", "stats", "**10K+** Users\n**99%** Uptime")
+        hint = type('H', (), {'layout_type': 'stats_row'})()
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0_header" in result, "header key must always be in result"
+        assert result["sec_0_header"] == "", "empty header should be empty string"
+        assert "sec_0_items" in result, "items key must be present"
+
+    def test_prose_feature_grid_no_heading(self):
+        """Prose + feature_grid + no heading → header empty, items has all content."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            detect_content_pattern,
+            split_content_for_template,
+        )
+        section = FakeSection("sec_0", "about", self.PROSE_NO_HEADING)
+        hint = type('H', (), {'layout_type': 'feature_grid'})()
+        pattern = detect_content_pattern(section, hint)
+        assert pattern.pattern_type == "prose"
+
+        result = split_content_for_template(pattern, hint, section)
+        assert "sec_0_header" in result
+        assert result["sec_0_header"] == ""
+        assert "sec_0_items" in result
+        assert "building products" in result["sec_0_items"]
+
+    def test_prose_feature_grid_assembly_fills_all_placeholders(self):
+        """End-to-end: prose on feature_grid template fills both placeholders."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        skeleton = (
+            '<section data-section="sec_0" class="mp-feature-grid" style="background: #f5f5f5;">'
+            '<div class="mp-container">'
+            '<div class="mp-section-header">{{sec_0_header}}</div>'
+            '<div class="mp-grid-3">{{sec_0_items}}</div>'
+            '</div></section>'
+        )
+        sections = [FakeSection("sec_0", "about", self.PROSE_MARKDOWN)]
+        layout_hint = type('H', (), {'layout_type': 'feature_grid'})()
+        layout_map = {"sec_0": layout_hint}
+
+        result = assemble_content(skeleton, sections, {}, layout_map=layout_map)
+        # Template class preserved
+        assert 'mp-feature-grid' in result
+        assert 'mp-generic' not in result
+        # No unfilled placeholders
+        assert '{{sec_0_header}}' not in result
+        assert '{{sec_0_items}}' not in result
+        # Content injected
+        assert 'About Our Product' in result
+        assert 'building products' in result
+
+    def test_prose_hero_split_assembly_fills_all_placeholders(self):
+        """End-to-end: prose on hero_split template fills text + image."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        skeleton = (
+            '<section data-section="sec_0" class="mp-hero-split" style="background: #fff;">'
+            '<div class="mp-container mp-grid-2">'
+            '<div class="mp-col">{{sec_0_text}}</div>'
+            '<div class="mp-col">{{sec_0_image}}</div>'
+            '</div></section>'
+        )
+        sections = [FakeSection("sec_0", "hero", self.PROSE_MARKDOWN)]
+        layout_hint = type('H', (), {'layout_type': 'hero_split'})()
+        layout_map = {"sec_0": layout_hint}
+
+        result = assemble_content(skeleton, sections, {}, layout_map=layout_map)
+        # Template class preserved
+        assert 'mp-hero-split' in result
+        # No unfilled placeholders
+        assert '{{sec_0_text}}' not in result
+        assert '{{sec_0_image}}' not in result
+        # Content injected
+        assert 'About Our Product' in result
+        assert 'building products' in result
+
+    def test_empty_header_doesnt_leave_unfilled_placeholder(self):
+        """Stats with no heading → {{sec_0_header}} gets replaced with empty, not left unfilled."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            assemble_content,
+        )
+        md = "**10K+** Users\n**99%** Uptime\n**500M+** Requests"
+        skeleton = (
+            '<section data-section="sec_0" class="mp-stats-row">'
+            '<div class="mp-container">'
+            '<div class="mp-section-header">{{sec_0_header}}</div>'
+            '<div class="mp-grid-3">{{sec_0_items}}</div>'
+            '</div></section>'
+        )
+        sections = [FakeSection("sec_0", "stats", md)]
+        layout_hint = type('H', (), {'layout_type': 'stats_row'})()
+        layout_map = {"sec_0": layout_hint}
+
+        result = assemble_content(skeleton, sections, {}, layout_map=layout_map)
+        assert '{{sec_0_header}}' not in result, "header placeholder must be filled (even if empty)"
+        assert '{{sec_0_items}}' not in result, "items placeholder must be filled"
+        assert 'mp-stat' in result
+
+
+# ===========================================================================
 # B24: Phase Diagnostics
 # ===========================================================================
 
