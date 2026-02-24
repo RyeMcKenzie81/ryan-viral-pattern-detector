@@ -49,7 +49,19 @@ def _run_blocking_async(coro):
 ad_intelligence_agent = Agent(
     model=Config.get_model("orchestrator"),
     deps_type=AgentDependencies,
-    system_prompt="""You are the Ad Intelligence Agent for the ViralTracker system.
+)
+
+
+@ad_intelligence_agent.system_prompt
+async def _build_system_prompt(ctx: RunContext[AgentDependencies]) -> str:
+    """Build system prompt with current date injected."""
+    today = date.today().isoformat()
+    return f"""You are the Ad Intelligence Agent for the ViralTracker system.
+
+**Today's date is {today}.** Use this when interpreting relative dates like "yesterday",
+"last week", "this month", etc. For relative time queries, prefer using `days_back`
+(e.g., days_back=1 for yesterday, days_back=7 for last week). Only use explicit
+`date_start`/`date_end` when the user specifies exact dates (e.g., "January 2026").
 
 Your role is to analyze Meta ad account performance and provide actionable insights.
 
@@ -101,7 +113,6 @@ Your role is to analyze Meta ad account performance and provide actionable insig
 - `get_top_ads` / `get_account_summary` / `get_campaign_breakdown` / `get_ad_details` → Quick data lookups ("what are my top ads?", "how much did I spend?", "show me January results")
 - `analyze_account` → Deep 4-layer diagnostics with classification, baselines, and recommendations ("what's wrong with my account?", "which ads should I kill?")
 """
-)
 
 
 @ad_intelligence_agent.tool(
