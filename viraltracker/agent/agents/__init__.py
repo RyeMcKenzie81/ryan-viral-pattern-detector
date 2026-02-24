@@ -11,9 +11,9 @@ Available Agents:
 - facebook_agent: Facebook Ad Library operations (2 tools)
 - analysis_agent: Advanced statistical and AI analysis (3 tools)
 - ad_creation_agent: Facebook ad creative generation (14 tools)
-- ad_intelligence_agent: Ad intelligence analysis and optimization (8 tools)
+- ad_intelligence_agent: Ad intelligence analysis and optimization (16 tools)
 
-Total: 41 tools across 7 specialized agents
+Total: 49 tools across 7 specialized agents
 
 Example usage:
     from viraltracker.agent.agents import twitter_agent, analysis_agent, ad_creation_agent

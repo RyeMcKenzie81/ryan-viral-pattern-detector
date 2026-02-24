@@ -80,7 +80,9 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Fatigue detection (frequency + CTR trend analysis)
    - Coverage gap analysis (awareness level × creative format inventory)
    - Congruence checking (creative-copy-landing page alignment)
+   - Ad performance queries (top ads, spend breakdown, campaign comparison)
    - Responds to: /analyze_account, /recommend, /fatigue_check, /coverage_gaps, /congruence_check
+   - Also responds to: "what are my top ads?", "how much did I spend?", "which campaigns are best?"
    - Also responds to: "analyze my ad account", "which ads should I kill", "check for fatigued ads"
 
 **Your Responsibilities:**
@@ -189,6 +191,9 @@ async def route_to_ad_intelligence_agent(
     - Coverage gaps or missing awareness levels
     - Creative-copy-landing page alignment
     - Ad recommendations or what to do next
+    - Ad performance queries (top ads, spend, ROAS, campaign breakdown)
+    - Account summaries or period-over-period comparisons
+    - Individual ad performance details
     """
     # Inject cached brand context for follow-up queries
     cached_brand_id = ctx.deps.result_cache.custom.get("ad_intelligence_brand_id")
