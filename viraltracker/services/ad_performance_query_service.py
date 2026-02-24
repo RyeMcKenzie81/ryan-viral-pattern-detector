@@ -1,11 +1,14 @@
 """
 Ad Performance Query Service - Direct ad performance data lookups.
 
-Provides 4 query methods for conversational ad performance querying:
+Provides 7 query methods for conversational ad performance querying:
 - get_top_ads: Rank ads by any metric (ROAS, spend, CTR, etc.)
 - get_account_summary: Account-level totals with optional period comparison
 - get_campaign_breakdown: Campaign or adset level aggregation
 - get_ad_details: Single ad deep dive with daily trends
+- get_breakdown_by_media_type: Performance by video/image/carousel
+- get_breakdown_by_landing_page: Performance by landing page (offer variant)
+- get_breakdown_by_product: Performance by product
 
 All methods are sync (Supabase client is sync). Returns structured dicts.
 Aggregation logic ported from viraltracker/ui/pages/30_Ad_Performance.py.
@@ -295,6 +298,337 @@ class AdPerformanceQueryService:
         }
 
     # -------------------------------------------------------------------------
+    # Breakdown query methods (media type, landing page, product)
+    # -------------------------------------------------------------------------
+
+    def get_breakdown_by_media_type(
+        self,
+        brand_id: str,
+        days_back: int = 30,
+        awareness_level: Optional[str] = None,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate performance by media type (video/image/carousel/other).
+
+        Groups creative_format by prefix:
+        - video_* -> "Video"
+        - image_* -> "Image"
+        - carousel -> "Carousel"
+        - collection, other -> "Other"
+
+        Args:
+            brand_id: Brand UUID string.
+            days_back: Number of days to look back.
+            awareness_level: Optional filter (unaware, problem_aware, etc.).
+            date_start: Explicit start date (ISO format).
+            date_end: Explicit end date (ISO format).
+
+        Returns:
+            Dict with 'groups' list and 'meta' dict.
+        """
+        start, end = self._resolve_date_range(days_back, date_start, date_end)
+        classified = self._fetch_classified_performance(brand_id, start, end)
+
+        if awareness_level:
+            classified = [
+                r for r in classified
+                if r.get("creative_awareness_level") == awareness_level
+            ]
+
+        if not classified:
+            return {
+                "groups": [],
+                "meta": {
+                    "date_start": start.isoformat(),
+                    "date_end": end.isoformat(),
+                    "awareness_level": awareness_level,
+                    "message": "No classified ads found for this period.",
+                },
+            }
+
+        # Group by media type
+        buckets: Dict[str, Dict] = defaultdict(lambda: {
+            "spend": 0, "impressions": 0, "link_clicks": 0,
+            "purchases": 0, "purchase_value": 0, "ad_ids": set(),
+        })
+
+        for row in classified:
+            fmt = row.get("creative_format") or "other"
+            if fmt.startswith("video_"):
+                media_type = "Video"
+            elif fmt.startswith("image_"):
+                media_type = "Image"
+            elif fmt == "carousel":
+                media_type = "Carousel"
+            else:
+                media_type = "Other"
+
+            b = buckets[media_type]
+            b["spend"] += float(row.get("spend") or 0)
+            b["impressions"] += int(row.get("impressions") or 0)
+            b["link_clicks"] += int(row.get("link_clicks") or 0)
+            b["purchases"] += int(row.get("purchases") or 0)
+            b["purchase_value"] += float(row.get("purchase_value") or 0)
+            if row.get("meta_ad_id"):
+                b["ad_ids"].add(row["meta_ad_id"])
+
+        groups = []
+        for media_type, b in buckets.items():
+            spend = b["spend"]
+            imp = b["impressions"]
+            clicks = b["link_clicks"]
+            purchases = b["purchases"]
+            pv = b["purchase_value"]
+            groups.append({
+                "media_type": media_type,
+                "spend": spend,
+                "impressions": imp,
+                "link_clicks": clicks,
+                "ctr": (clicks / imp * 100) if imp > 0 else 0,
+                "cpc": (spend / clicks) if clicks > 0 else 0,
+                "purchases": purchases,
+                "purchase_value": pv,
+                "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / purchases) if purchases > 0 else 0,
+                "ad_count": len(b["ad_ids"]),
+            })
+
+        groups.sort(key=lambda x: x["spend"], reverse=True)
+
+        return {
+            "groups": groups,
+            "meta": {
+                "date_start": start.isoformat(),
+                "date_end": end.isoformat(),
+                "awareness_level": awareness_level,
+                "total_groups": len(groups),
+            },
+        }
+
+    def get_breakdown_by_landing_page(
+        self,
+        brand_id: str,
+        days_back: int = 30,
+        sort_by: str = "spend",
+        limit: int = 20,
+        awareness_level: Optional[str] = None,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate performance by landing page (offer variant).
+
+        Shows aggregate spend, ROAS, CPA, and purchases for ALL ad types
+        (video, image, carousel) per landing page. For video hook-specific
+        LP performance, use hook_analysis with analysis_type='by_lp' instead.
+
+        Args:
+            brand_id: Brand UUID string.
+            days_back: Number of days to look back.
+            sort_by: Metric to sort by.
+            limit: Max items to return.
+            awareness_level: Optional filter (unaware, problem_aware, etc.).
+            date_start: Explicit start date (ISO format).
+            date_end: Explicit end date (ISO format).
+
+        Returns:
+            Dict with 'items' list and 'meta' dict.
+        """
+        start, end = self._resolve_date_range(days_back, date_start, date_end)
+        classified = self._fetch_classified_performance(brand_id, start, end)
+
+        if awareness_level:
+            classified = [
+                r for r in classified
+                if r.get("creative_awareness_level") == awareness_level
+            ]
+
+        if not classified:
+            return {
+                "items": [],
+                "meta": {
+                    "date_start": start.isoformat(),
+                    "date_end": end.isoformat(),
+                    "awareness_level": awareness_level,
+                    "message": "No classified ads found for this period.",
+                },
+            }
+
+        # Collect unique landing_page_ids
+        lp_ids = list(set(
+            r["landing_page_id"] for r in classified
+            if r.get("landing_page_id")
+        ))
+        lp_map = self._fetch_landing_pages(lp_ids) if lp_ids else {}
+
+        # Group by landing_page_id
+        buckets: Dict[str, Dict] = defaultdict(lambda: {
+            "spend": 0, "impressions": 0, "link_clicks": 0,
+            "purchases": 0, "purchase_value": 0, "ad_ids": set(),
+        })
+
+        for row in classified:
+            lp_id = row.get("landing_page_id") or "unclassified"
+            b = buckets[lp_id]
+            b["spend"] += float(row.get("spend") or 0)
+            b["impressions"] += int(row.get("impressions") or 0)
+            b["link_clicks"] += int(row.get("link_clicks") or 0)
+            b["purchases"] += int(row.get("purchases") or 0)
+            b["purchase_value"] += float(row.get("purchase_value") or 0)
+            if row.get("meta_ad_id"):
+                b["ad_ids"].add(row["meta_ad_id"])
+
+        items = []
+        for lp_id, b in buckets.items():
+            spend = b["spend"]
+            imp = b["impressions"]
+            clicks = b["link_clicks"]
+            purchases = b["purchases"]
+            pv = b["purchase_value"]
+
+            lp_info = lp_map.get(lp_id, {})
+            items.append({
+                "landing_page_id": lp_id,
+                "url": lp_info.get("url", "Unclassified" if lp_id == "unclassified" else "Unknown"),
+                "page_title": lp_info.get("page_title", ""),
+                "product_name": lp_info.get("resolved_product_name", ""),
+                "spend": spend,
+                "impressions": imp,
+                "link_clicks": clicks,
+                "ctr": (clicks / imp * 100) if imp > 0 else 0,
+                "cpc": (spend / clicks) if clicks > 0 else 0,
+                "purchases": purchases,
+                "purchase_value": pv,
+                "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / purchases) if purchases > 0 else 0,
+                "ad_count": len(b["ad_ids"]),
+            })
+
+        items.sort(key=lambda x: x.get(sort_by, 0) or 0, reverse=True)
+
+        return {
+            "items": items[:limit],
+            "meta": {
+                "date_start": start.isoformat(),
+                "date_end": end.isoformat(),
+                "sort_by": sort_by,
+                "awareness_level": awareness_level,
+                "total": len(items),
+                "returned": min(limit, len(items)),
+            },
+        }
+
+    def get_breakdown_by_product(
+        self,
+        brand_id: str,
+        days_back: int = 30,
+        sort_by: str = "spend",
+        limit: int = 20,
+        awareness_level: Optional[str] = None,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate performance by product.
+
+        Groups by resolved product name (product_id -> products.name,
+        fallback to product_name text field on landing page).
+        LPs without any product info go into "Unknown Product" bucket.
+
+        Args:
+            brand_id: Brand UUID string.
+            days_back: Number of days to look back.
+            sort_by: Metric to sort by.
+            limit: Max items to return.
+            awareness_level: Optional filter (unaware, problem_aware, etc.).
+            date_start: Explicit start date (ISO format).
+            date_end: Explicit end date (ISO format).
+
+        Returns:
+            Dict with 'items' list and 'meta' dict.
+        """
+        start, end = self._resolve_date_range(days_back, date_start, date_end)
+        classified = self._fetch_classified_performance(brand_id, start, end)
+
+        if awareness_level:
+            classified = [
+                r for r in classified
+                if r.get("creative_awareness_level") == awareness_level
+            ]
+
+        if not classified:
+            return {
+                "items": [],
+                "meta": {
+                    "date_start": start.isoformat(),
+                    "date_end": end.isoformat(),
+                    "awareness_level": awareness_level,
+                    "message": "No classified ads found for this period.",
+                },
+            }
+
+        # Collect unique landing_page_ids
+        lp_ids = list(set(
+            r["landing_page_id"] for r in classified
+            if r.get("landing_page_id")
+        ))
+        lp_map = self._fetch_landing_pages(lp_ids) if lp_ids else {}
+
+        # Group by product name
+        buckets: Dict[str, Dict] = defaultdict(lambda: {
+            "spend": 0, "impressions": 0, "link_clicks": 0,
+            "purchases": 0, "purchase_value": 0, "ad_ids": set(),
+        })
+
+        for row in classified:
+            lp_id = row.get("landing_page_id")
+            lp_info = lp_map.get(lp_id, {}) if lp_id else {}
+            product_name = lp_info.get("resolved_product_name") or "Unknown Product"
+
+            b = buckets[product_name]
+            b["spend"] += float(row.get("spend") or 0)
+            b["impressions"] += int(row.get("impressions") or 0)
+            b["link_clicks"] += int(row.get("link_clicks") or 0)
+            b["purchases"] += int(row.get("purchases") or 0)
+            b["purchase_value"] += float(row.get("purchase_value") or 0)
+            if row.get("meta_ad_id"):
+                b["ad_ids"].add(row["meta_ad_id"])
+
+        items = []
+        for product_name, b in buckets.items():
+            spend = b["spend"]
+            imp = b["impressions"]
+            clicks = b["link_clicks"]
+            purchases = b["purchases"]
+            pv = b["purchase_value"]
+            items.append({
+                "product_name": product_name,
+                "spend": spend,
+                "impressions": imp,
+                "link_clicks": clicks,
+                "ctr": (clicks / imp * 100) if imp > 0 else 0,
+                "cpc": (spend / clicks) if clicks > 0 else 0,
+                "purchases": purchases,
+                "purchase_value": pv,
+                "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / purchases) if purchases > 0 else 0,
+                "ad_count": len(b["ad_ids"]),
+            })
+
+        items.sort(key=lambda x: x.get(sort_by, 0) or 0, reverse=True)
+
+        return {
+            "items": items[:limit],
+            "meta": {
+                "date_start": start.isoformat(),
+                "date_end": end.isoformat(),
+                "sort_by": sort_by,
+                "awareness_level": awareness_level,
+                "total": len(items),
+                "returned": min(limit, len(items)),
+            },
+        }
+
+    # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
 
@@ -371,6 +705,155 @@ class AdPerformanceQueryService:
         )
         return all_rows
 
+    def _fetch_classified_performance(
+        self, brand_id: str, date_start: date, date_end: date
+    ) -> List[Dict]:
+        """Fetch performance rows joined with classification data.
+
+        1. Fetch performance rows (paginated via _fetch_performance_rows).
+        2. Extract unique ad_ids.
+        3. Fetch classifications (paginated) for those ads.
+        4. Build cls_map (latest classification per ad_id).
+        5. Merge performance + classification by meta_ad_id.
+
+        Only returns rows that have a matching classification.
+
+        Returns:
+            List of performance rows enriched with classification fields.
+        """
+        perf_rows = self._fetch_performance_rows(brand_id, date_start, date_end)
+        if not perf_rows:
+            return []
+
+        ad_ids = list(set(r.get("meta_ad_id") for r in perf_rows if r.get("meta_ad_id")))
+        if not ad_ids:
+            return []
+
+        # Fetch classifications with pagination (can exceed 1000 for large accounts)
+        all_cls: List[Dict] = []
+        batch_size = 500  # Supabase IN() limit is generous but keep batches manageable
+        for i in range(0, len(ad_ids), batch_size):
+            batch_ids = ad_ids[i:i + batch_size]
+            offset = 0
+            page_size = 1000
+            while True:
+                cls_result = (
+                    self.supabase.table("ad_creative_classifications")
+                    .select(
+                        "meta_ad_id, creative_awareness_level, creative_format, "
+                        "video_length_bucket, landing_page_id"
+                    )
+                    .eq("brand_id", brand_id)
+                    .in_("meta_ad_id", batch_ids)
+                    .order("classified_at", desc=True)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                if not cls_result.data:
+                    break
+                all_cls.extend(cls_result.data)
+                if len(cls_result.data) < page_size:
+                    break
+                offset += page_size
+
+        # Build map: latest classification per ad_id (first seen wins due to DESC order)
+        cls_map: Dict[str, Dict] = {}
+        for c in all_cls:
+            aid = c.get("meta_ad_id")
+            if aid and aid not in cls_map:
+                cls_map[aid] = c
+
+        logger.info(
+            f"Fetched {len(all_cls)} classification rows, "
+            f"{len(cls_map)} unique ads classified"
+        )
+
+        # Merge: enrich each perf row with classification fields
+        result = []
+        for row in perf_rows:
+            aid = row.get("meta_ad_id")
+            cls = cls_map.get(aid)
+            if not cls:
+                continue  # Skip unclassified ads
+            merged = dict(row)
+            merged["creative_awareness_level"] = cls.get("creative_awareness_level")
+            merged["creative_format"] = cls.get("creative_format")
+            merged["video_length_bucket"] = cls.get("video_length_bucket")
+            merged["landing_page_id"] = cls.get("landing_page_id")
+            result.append(merged)
+
+        return result
+
+    def _fetch_landing_pages(self, lp_ids: List[str]) -> Dict[str, Dict]:
+        """Batch-fetch landing pages with product resolution.
+
+        Fetches landing page details and resolves product names:
+        - If product_id is set, uses products.name as resolved_product_name.
+        - Falls back to product_name text field on the LP.
+        - Returns None if neither is available.
+
+        Args:
+            lp_ids: List of landing page UUID strings.
+
+        Returns:
+            Dict mapping lp_id to {url, page_title, product_name, product_id, resolved_product_name}.
+        """
+        if not lp_ids:
+            return {}
+
+        # Fetch landing pages in batches
+        all_lps: List[Dict] = []
+        batch_size = 500
+        for i in range(0, len(lp_ids), batch_size):
+            batch = lp_ids[i:i + batch_size]
+            result = (
+                self.supabase.table("brand_landing_pages")
+                .select("id, url, page_title, product_name, product_id")
+                .in_("id", batch)
+                .execute()
+            )
+            if result.data:
+                all_lps.extend(result.data)
+
+        # Collect product_ids that need name resolution
+        product_ids = list(set(
+            lp["product_id"] for lp in all_lps
+            if lp.get("product_id")
+        ))
+
+        # Batch-fetch product names
+        product_names: Dict[str, str] = {}
+        if product_ids:
+            for i in range(0, len(product_ids), batch_size):
+                batch = product_ids[i:i + batch_size]
+                result = (
+                    self.supabase.table("products")
+                    .select("id, name")
+                    .in_("id", batch)
+                    .execute()
+                )
+                if result.data:
+                    for p in result.data:
+                        product_names[p["id"]] = p["name"]
+
+        # Build result map
+        lp_map: Dict[str, Dict] = {}
+        for lp in all_lps:
+            pid = lp.get("product_id")
+            resolved = product_names.get(pid) if pid else None
+            if not resolved:
+                resolved = lp.get("product_name")  # Fallback to text field
+
+            lp_map[lp["id"]] = {
+                "url": lp.get("url", ""),
+                "page_title": lp.get("page_title", ""),
+                "product_name": lp.get("product_name"),
+                "product_id": pid,
+                "resolved_product_name": resolved,
+            }
+
+        return lp_map
+
     def _aggregate_by_ad(self, rows: List[Dict]) -> List[Dict]:
         """Aggregate daily rows into per-ad summaries.
 
@@ -428,6 +911,7 @@ class AdPerformanceQueryService:
                 "purchases": a["purchases"],
                 "purchase_value": pv,
                 "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / a["purchases"]) if a["purchases"] > 0 else 0,
                 "conversion_rate": (a["purchases"] / clicks * 100) if clicks > 0 else 0,
                 "frequency": (imp / a["reach"]) if a["reach"] > 0 else 0,
             })
@@ -482,6 +966,7 @@ class AdPerformanceQueryService:
                 "purchases": c["purchases"],
                 "purchase_value": pv,
                 "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / c["purchases"]) if c["purchases"] > 0 else 0,
                 "conversion_rate": (c["purchases"] / clicks * 100) if clicks > 0 else 0,
                 "adset_count": len(c["adset_ids"]),
                 "ad_count": len(c["ad_ids"]),
@@ -539,6 +1024,7 @@ class AdPerformanceQueryService:
                 "purchases": a["purchases"],
                 "purchase_value": pv,
                 "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / a["purchases"]) if a["purchases"] > 0 else 0,
                 "conversion_rate": (a["purchases"] / clicks * 100) if clicks > 0 else 0,
                 "ad_count": len(a["ad_ids"]),
             })
@@ -570,6 +1056,7 @@ class AdPerformanceQueryService:
             "purchases": purchases,
             "purchase_value": purchase_value,
             "roas": (purchase_value / spend) if spend > 0 else 0,
+            "cpa": (spend / purchases) if purchases > 0 else 0,
             "conversion_rate": (purchases / link_clicks * 100) if link_clicks > 0 else 0,
             "unique_ads": unique_ads,
             "unique_campaigns": unique_campaigns,
