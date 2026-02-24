@@ -312,6 +312,9 @@ def _build_shared_css(ds: Dict) -> str:
     margin: 0 0 12px 0;
     font-style: italic;
 }}
+.mp-testimonial-card blockquote p {{
+    margin: 0;
+}}
 .mp-testimonial-card cite {{
     font-style: normal;
     font-weight: 600;
@@ -319,8 +322,8 @@ def _build_shared_css(ds: Dict) -> str:
 
 /* Stats */
 .mp-stat {{ padding: {gap}; }}
-.mp-stat-number {{ font-size: 2.5rem; font-weight: 700; color: {accent}; display: block; }}
-.mp-stat-label {{ font-size: 0.9rem; opacity: 0.8; display: block; }}
+p.mp-stat-number {{ font-size: 2.5rem; font-weight: 700; color: {accent}; display: block; margin: 0; }}
+p.mp-stat-label {{ font-size: 0.9rem; opacity: 0.8; display: block; margin: 0; }}
 
 /* Overflow content alongside structured items (spans full grid width) */
 .mp-overflow {{ grid-column: 1 / -1; text-align: left; margin-top: 24px; }}

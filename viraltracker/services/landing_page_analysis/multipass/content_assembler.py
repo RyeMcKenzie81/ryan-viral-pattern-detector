@@ -272,6 +272,8 @@ def assemble_content(
                         or not source_text_only.strip()
                     ):
                         # Coverage OK — inject sub-values into template placeholders
+                        all_content = []
+                        any_replaced = False
                         for key, rendered_html in sub_values.items():
                             # Enhance images in each sub-value
                             if image_registry:
@@ -279,7 +281,18 @@ def assemble_content(
                                     rendered_html, sec_id, image_registry
                                 )
                             placeholder = "{{" + key + "}}"
-                            html = html.replace(placeholder, rendered_html, 1)
+                            if placeholder in html:
+                                html = html.replace(placeholder, rendered_html, 1)
+                                any_replaced = True
+                            all_content.append(rendered_html)
+
+                        # If none of the sub_value keys matched skeleton
+                        # placeholders, fall back to filling sub-placeholders
+                        if not any_replaced and all_content:
+                            combined = "\n".join(all_content)
+                            html = _replace_section_placeholders(
+                                html, sec_id, combined
+                            )
 
                         # Inject background images for this section
                         if image_registry:
@@ -338,11 +351,19 @@ def assemble_content(
                 used_structured = False
 
         if not used_structured:
-            # EXISTING PATH: Linear content dump (unchanged)
+            # EXISTING PATH: Linear content dump
             placeholder = "{{" + sec_id + "}}"
 
-            if placeholder not in html:
-                logger.debug(f"Placeholder {placeholder} not in skeleton, skipping")
+            # Check if single placeholder exists; if not, try sub-placeholder
+            # fallback (Claude may generate {{sec_N_header}}+{{sec_N_items}}
+            # even when layout says content_block/generic)
+            has_single = placeholder in html
+            has_sub = not has_single and (
+                "{{" + sec_id + "_" in html
+            )
+
+            if not has_single and not has_sub:
+                logger.debug(f"No placeholder for {sec_id} in skeleton, skipping")
                 continue
 
             # Step 1: Convert markdown to HTML
@@ -367,8 +388,13 @@ def assemble_content(
                 )
             )
 
-            # Step 4: Replace placeholder (only first occurrence)
-            html = html.replace(placeholder, section_html, 1)
+            # Step 4: Replace placeholder(s)
+            if has_single:
+                html = html.replace(placeholder, section_html, 1)
+            else:
+                # Sub-placeholder fallback: fill first sub-placeholder,
+                # clear the rest (keeps template styling)
+                html = _replace_section_placeholders(html, sec_id, section_html)
 
     return html
 

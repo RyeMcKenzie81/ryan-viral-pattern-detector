@@ -357,10 +357,10 @@ def split_content_for_template(
                 cite_parts.append(author)
             if title:
                 cite_parts.append(title)
-            cite_html = f'<cite>{", ".join(cite_parts)}</cite>' if cite_parts else ""
+            cite_html = f'<p><cite>{", ".join(cite_parts)}</cite></p>' if cite_parts else ""
             items_html.append(
                 f'<div class="mp-testimonial-card">'
-                f'<blockquote>{quote}</blockquote>'
+                f'<blockquote><p>{quote}</p></blockquote>'
                 f'{cite_html}'
                 f'</div>'
             )
@@ -386,8 +386,8 @@ def split_content_for_template(
             label = item.get("label", "")
             items_html.append(
                 f'<div class="mp-stat">'
-                f'<span class="mp-stat-number">{number}</span>'
-                f'<span class="mp-stat-label">{label}</span>'
+                f'<p class="mp-stat-number">{number}</p>'
+                f'<p class="mp-stat-label">{label}</p>'
                 f'</div>'
             )
         result[items_key] = "\n".join(items_html)

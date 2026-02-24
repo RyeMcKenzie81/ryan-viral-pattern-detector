@@ -996,6 +996,76 @@ def _build_fallback_skeleton(sections: List[SegmenterSection]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# v2 skeleton CSS post-processing
+# ---------------------------------------------------------------------------
+
+# Regex to find CSS range values like "16-24px", "60-80px", "32-48px"
+_CSS_RANGE_RE = re.compile(r'(\d+)-(\d+)(px|rem|em|%)')
+
+
+def _fix_css_range_value(match: re.Match) -> str:
+    """Replace a CSS range like '16-24px' with its midpoint '20px'."""
+    low = int(match.group(1))
+    high = int(match.group(2))
+    unit = match.group(3)
+    midpoint = (low + high) // 2
+    return f"{midpoint}{unit}"
+
+
+def _fix_v2_skeleton_css(skeleton_html: str, design_system: Dict) -> str:
+    """Fix Claude's CSS and append shared CSS for reliable rendering.
+
+    Claude generates CSS with documentation-style range values (e.g.,
+    'gap: 16-24px') that are invalid CSS, and may use custom classes
+    not in the shared CSS. This function:
+    1. Fixes range values in Claude's <style> block (preserving custom classes).
+    2. Appends _build_shared_css() after Claude's CSS to override common
+       mp-* selectors with valid design system values.
+    3. Fixes inline style="" range values with midpoint values.
+
+    Args:
+        skeleton_html: Raw skeleton from Claude with potentially invalid CSS.
+        design_system: Design system dict for _build_shared_css().
+
+    Returns:
+        Skeleton HTML with valid CSS.
+    """
+    from .section_templates import _build_shared_css
+
+    shared_css = _build_shared_css(design_system)
+
+    # Fix range values inside Claude's <style> block (keep custom classes)
+    style_re = re.compile(r'(<style[^>]*>)(.*?)(</style>)', re.DOTALL | re.IGNORECASE)
+    style_match = style_re.search(skeleton_html)
+    if style_match:
+        fixed_css_content = _CSS_RANGE_RE.sub(
+            _fix_css_range_value, style_match.group(2)
+        )
+        skeleton_html = (
+            skeleton_html[:style_match.start()]
+            + style_match.group(1) + fixed_css_content + style_match.group(3)
+            + '\n' + shared_css
+            + skeleton_html[style_match.end():]
+        )
+    else:
+        skeleton_html = f'{shared_css}\n{skeleton_html}'
+
+    # Fix inline style="" range values (e.g., "padding: 60-80px 30px")
+    def _fix_inline_style(match: re.Match) -> str:
+        style_value = match.group(1)
+        fixed = _CSS_RANGE_RE.sub(_fix_css_range_value, style_value)
+        return f'style="{fixed}"'
+
+    skeleton_html = re.sub(
+        r'style="([^"]*)"',
+        _fix_inline_style,
+        skeleton_html,
+    )
+
+    return skeleton_html
+
+
+# ---------------------------------------------------------------------------
 # Placeholder contract: layout_type → expected placeholder suffixes
 # ---------------------------------------------------------------------------
 
@@ -1477,6 +1547,15 @@ class MultiPassPipeline:
             # Ensure minimum slots
             content_html = _ensure_minimum_slots(content_html)
 
+            # Strip any unresolved placeholders (e.g., from duplicate
+            # placeholders in Claude's skeleton or layout_map mismatches)
+            content_html, stripped = _strip_unresolved_placeholders(content_html)
+            if stripped:
+                self._lf.info(
+                    "Phase 2 cleanup: stripped {n} unresolved placeholders",
+                    n=stripped,
+                )
+
             # Snapshot: Phase 2 content (after assembly + section attr fix + slots)
             self.phase_snapshots["phase_2_content"] = content_html
 
@@ -1499,7 +1578,9 @@ class MultiPassPipeline:
                 fallback_skeleton = _build_fallback_skeleton(sections)
                 fallback_skeleton = f'<div class="lp-mockup">\n{fallback_skeleton}\n</div>'
                 content_html = assemble_content(
-                    fallback_skeleton, sections, section_map, image_registry
+                    fallback_skeleton, sections, section_map, image_registry,
+                    layout_map=layout_map if use_templates_this_run else None,
+                    extracted_css=extracted_css if use_templates_this_run else None,
                 )
                 content_html = _ensure_section_attributes(
                     content_html, section_map, self._lf
@@ -2016,19 +2097,13 @@ class MultiPassPipeline:
                 self._lf.info("Fallback level 4: bare fallback skeleton")
 
             # -----------------------------------------------------------
-            # CSS injection: add _build_shared_css() for mp-* classes
+            # CSS fix: replace Claude's <style> with shared CSS +
+            # fix invalid CSS range values in inline styles
             # -----------------------------------------------------------
             if fallback_level <= 1:
-                # Claude's skeleton — inject shared CSS for mp-* classes
-                shared_css = _build_shared_css(design_system)
-                if '</style>' in skeleton_html:
-                    # Inject shared CSS after the first </style> tag
-                    skeleton_html = skeleton_html.replace(
-                        '</style>', f'</style>\n{shared_css}', 1
-                    )
-                else:
-                    # Prepend shared CSS
-                    skeleton_html = f'{shared_css}\n{skeleton_html}'
+                skeleton_html = _fix_v2_skeleton_css(
+                    skeleton_html, design_system
+                )
 
             # Store telemetry
             self.phase_snapshots["phase_1_v2_telemetry"] = _wrap_json_as_html({

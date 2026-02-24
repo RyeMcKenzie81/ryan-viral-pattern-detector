@@ -5299,3 +5299,214 @@ class TestPhase1FallbackCascade:
         assert cost != (0.0, 0.0), "claude-opus-4-6 should have non-zero costs"
         cost = Config.get_token_cost("claude-sonnet-4-6")
         assert cost != (0.0, 0.0), "claude-sonnet-4-6 should have non-zero costs"
+
+
+# ---------------------------------------------------------------------------
+# B31: Phase 2 v2 CSS fix + slot generation improvements
+# ---------------------------------------------------------------------------
+
+
+class TestFixV2SkeletonCSS:
+    """Tests for _fix_v2_skeleton_css() — fixes Claude's invalid CSS
+    ranges and appends shared CSS for reliable rendering."""
+
+    def test_fixes_range_and_appends_shared_css(self):
+        """Range values should be fixed and shared CSS appended."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _fix_v2_skeleton_css,
+        )
+
+        skeleton = (
+            '<style>.mp-grid-2 { gap: 16-24px; } .mp-custom { color: red; }</style>'
+            '<section data-section="sec_0" style="padding: 70px 30px;">'
+            '{{sec_0}}</section>'
+        )
+        ds = {"spacing": {"element_gap": "20px", "group_gap": "40px"}}
+        result = _fix_v2_skeleton_css(skeleton, ds)
+
+        # Should contain valid gap value from shared CSS
+        assert "gap: 20px" in result
+        # Claude's range should be fixed to midpoint
+        assert "gap: 20px" in result
+        assert "16-24px" not in result
+        # Claude's custom class should be preserved
+        assert "mp-custom" in result
+        assert "color: red" in result
+        # Section HTML should be preserved
+        assert 'data-section="sec_0"' in result
+        assert "{{sec_0}}" in result
+
+    def test_fixes_inline_style_ranges(self):
+        """Inline style="" range values like 60-80px should become midpoints."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _fix_v2_skeleton_css,
+        )
+
+        skeleton = (
+            '<style>.mp-container { max-width: 1200px; }</style>'
+            '<section data-section="sec_0" style="background: #f6ebe4; '
+            'padding: 60-80px 30px;">'
+            '{{sec_0}}</section>'
+        )
+        ds = {}
+        result = _fix_v2_skeleton_css(skeleton, ds)
+
+        # 60-80px should become 70px (midpoint)
+        assert "70px" in result
+        assert "60-80px" not in result
+        # Non-range values should be preserved
+        assert "30px" in result
+        assert "#f6ebe4" in result
+
+    def test_multiple_inline_ranges(self):
+        """Multiple range values in different sections should all be fixed."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _fix_v2_skeleton_css,
+        )
+
+        skeleton = (
+            '<style>.mp-grid-2 { gap: 16-24px; }</style>'
+            '<section data-section="sec_0" style="padding: 60-80px 30px;">'
+            '{{sec_0}}</section>'
+            '<section data-section="sec_1" style="padding: 32-48px 30px;">'
+            '{{sec_1}}</section>'
+        )
+        ds = {"spacing": {"element_gap": "22px"}}
+        result = _fix_v2_skeleton_css(skeleton, ds)
+
+        assert "60-80px" not in result
+        assert "32-48px" not in result
+        assert "70px" in result   # midpoint of 60-80
+        assert "40px" in result   # midpoint of 32-48
+
+    def test_preserves_valid_css(self):
+        """Valid single-value CSS should not be modified."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _fix_v2_skeleton_css,
+        )
+
+        skeleton = (
+            '<style>.mp-grid-2 { gap: 20px; }</style>'
+            '<section data-section="sec_0" style="padding: 70px 30px;">'
+            '{{sec_0}}</section>'
+        )
+        ds = {}
+        result = _fix_v2_skeleton_css(skeleton, ds)
+
+        assert "70px" in result
+        assert "30px" in result
+
+    def test_no_style_block_prepends(self):
+        """If no <style> block exists, shared CSS should be prepended."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _fix_v2_skeleton_css,
+        )
+
+        skeleton = (
+            '<section data-section="sec_0" style="padding: 60-80px 30px;">'
+            '{{sec_0}}</section>'
+        )
+        ds = {"spacing": {"element_gap": "20px"}}
+        result = _fix_v2_skeleton_css(skeleton, ds)
+
+        assert "<style>" in result
+        assert "gap: 20px" in result
+        assert "70px" in result
+
+
+class TestSlotGenerationImprovements:
+    """Tests for improved slot generation in stats and testimonials."""
+
+    def test_stats_use_p_tags(self):
+        """Stats should use <p> tags instead of <span> for slottability."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            ContentPattern,
+            split_content_for_template,
+        )
+
+        pattern = ContentPattern(
+            pattern_type="stats_list",
+            items=[
+                {"number": "87%", "label": "Satisfaction"},
+                {"number": "10K+", "label": "Users"},
+            ],
+            header_markdown="## Our Stats",
+        )
+
+        class FakeHint:
+            layout_type = "stats_row"
+
+        class FakeSec:
+            section_id = "sec_0"
+            markdown = "## Our Stats\n**87%** Satisfaction\n**10K+** Users"
+
+        result = split_content_for_template(pattern, FakeHint(), FakeSec())
+
+        items = result.get("sec_0_items", "")
+        assert '<p class="mp-stat-number">' in items
+        assert '<p class="mp-stat-label">' in items
+        # Should NOT use span
+        assert "<span" not in items
+
+    def test_testimonials_use_p_tags(self):
+        """Testimonials should wrap quotes in <p> for slottability."""
+        from viraltracker.services.landing_page_analysis.multipass.content_patterns import (
+            ContentPattern,
+            split_content_for_template,
+        )
+
+        pattern = ContentPattern(
+            pattern_type="testimonial_list",
+            items=[
+                {"quote": "Great product!", "author": "John", "title": "CEO"},
+            ],
+            header_markdown="## Reviews",
+        )
+
+        class FakeHint:
+            layout_type = "testimonial_cards"
+
+        class FakeSec:
+            section_id = "sec_0"
+            markdown = "> Great product!\n— John, CEO"
+
+        result = split_content_for_template(pattern, FakeHint(), FakeSec())
+
+        items = result.get("sec_0_items", "")
+        assert "<blockquote><p>" in items
+        assert "<p><cite>" in items
+
+    def test_stats_slots_are_countable(self):
+        """Stats rendered with <p> tags should produce data-slot attributes."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            _assign_data_slots,
+        )
+
+        stats_html = (
+            '<div class="mp-stat">'
+            '<p class="mp-stat-number">87%</p>'
+            '<p class="mp-stat-label">Satisfaction</p>'
+            '</div>'
+        )
+        result, h, b, c, fh, fh2 = _assign_data_slots(stats_html, 0, 0, 0, False, False)
+
+        # Should have 2 body slots (2 <p> tags)
+        assert 'data-slot="body-1"' in result
+        assert 'data-slot="body-2"' in result
+
+    def test_testimonial_slots_are_countable(self):
+        """Testimonials rendered with <p> tags should produce data-slot attributes."""
+        from viraltracker.services.landing_page_analysis.multipass.content_assembler import (
+            _assign_data_slots,
+        )
+
+        testimonial_html = (
+            '<div class="mp-testimonial-card">'
+            '<blockquote><p>Great product!</p></blockquote>'
+            '<p><cite>John, CEO</cite></p>'
+            '</div>'
+        )
+        result, h, b, c, fh, fh2 = _assign_data_slots(testimonial_html, 0, 0, 0, False, False)
+
+        assert 'data-slot="body-1"' in result
+        assert 'data-slot="body-2"' in result
